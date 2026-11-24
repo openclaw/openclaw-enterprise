@@ -165,7 +165,7 @@ test("credential source registration checks Namespace readiness before TokenServ
   const namespace = await createNamespace(controller, "source-readiness");
   const material = randomUUID();
   const path = `/namespaces/${namespace.id}/credential-sources`;
-  const body = { name: "openai-key", type: "static", secret: { opaque: material } };
+  const body = { name: "openai-key", type: "static", secret: material };
 
   // Source enrollment must check the Namespace before trying its unavailable credential owner.
   const notReady = await controller.request("POST", path, { body });

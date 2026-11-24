@@ -334,17 +334,11 @@
             "type": "string"
           },
           "secret": {
-            "additionalProperties": {
-              "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
-              "maxLength": 65536,
-              "minLength": 1,
-              "pattern": "^[^\\u0000]*$",
-              "type": "string"
-            },
-            "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
-            "maxProperties": 1,
-            "minProperties": 1,
-            "type": "object",
+            "description": "Opaque credential value.",
+            "maxLength": 65536,
+            "minLength": 1,
+            "pattern": "^[^\\u0000]*$",
+            "type": "string",
             "writeOnly": true
           },
           "type": { "const": "static", "type": "string" }
@@ -365,17 +359,11 @@
             "type": "object"
           },
           "secret": {
-            "additionalProperties": {
-              "description": "Protected Secret value. It must be nonempty UTF-8 without NUL; OCC accepts at most 65,536 UTF-8 bytes and still enforces the route request body limit.",
-              "maxLength": 65536,
-              "minLength": 1,
-              "pattern": "^[^\\u0000]*$",
-              "type": "string"
-            },
-            "description": "Write-only: one opaque credential value. The field name does not grant destination authority.",
-            "maxProperties": 1,
-            "minProperties": 1,
-            "type": "object",
+            "description": "Opaque credential value.",
+            "maxLength": 65536,
+            "minLength": 1,
+            "pattern": "^[^\\u0000]*$",
+            "type": "string",
             "writeOnly": true
           }
         },
@@ -13701,6 +13689,872 @@
           }
         },
         "summary": "Rename a connection template or create a version with updated settings",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/credential-clients": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "listCredentialClients",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "clientId": "example-client",
+                          "createdAt": "2026-10-01T12:00:00.000Z",
+                          "displayName": "Example provider client",
+                          "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+                          "issuer": "https://accounts.example.com",
+                          "kind": "oauth2",
+                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                          "tokenEndpointAuthMethod": "client_secret_basic",
+                          "tokenUrl": "https://accounts.example.com/token"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
+                              "createdAt": { "type": "string" },
+                              "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                              "id": {
+                                "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "issuer": {
+                                "maxLength": 2048,
+                                "pattern": "^https://[^\\s/]",
+                                "type": "string"
+                              },
+                              "kind": { "const": "oauth2", "type": "string" },
+                              "namespaceId": {
+                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "revocationUrl": {
+                                "maxLength": 2048,
+                                "pattern": "^https://[^\\s/]",
+                                "type": "string"
+                              },
+                              "tokenEndpointAuthMethod": {
+                                "anyOf": [
+                                  { "const": "none", "type": "string" },
+                                  { "const": "client_secret_basic", "type": "string" },
+                                  { "const": "client_secret_post", "type": "string" }
+                                ]
+                              },
+                              "tokenUrl": {
+                                "maxLength": 2048,
+                                "pattern": "^https://[^\\s/]",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "displayName",
+                              "clientId",
+                              "tokenEndpointAuthMethod",
+                              "issuer",
+                              "tokenUrl",
+                              "id",
+                              "createdAt"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
+                              "createdAt": { "type": "string" },
+                              "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                              "id": {
+                                "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "kind": { "const": "github-app", "type": "string" }
+                            },
+                            "required": ["kind", "id", "displayName", "appId", "createdAt"],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "redirectUri": { "type": "string" },
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List registered credential clients",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "createCredentialClient",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "clientId": "example-client",
+                    "clientSecret": "example-client-secret",
+                    "displayName": "Example provider client",
+                    "issuer": "https://accounts.example.com",
+                    "kind": "oauth2",
+                    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                    "tokenEndpointAuthMethod": "client_secret_basic",
+                    "tokenUrl": "https://accounts.example.com/token"
+                  }
+                }
+              },
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
+                      "clientSecret": {
+                        "maxLength": 4096,
+                        "minLength": 1,
+                        "type": "string",
+                        "writeOnly": true
+                      },
+                      "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "issuer": {
+                        "maxLength": 2048,
+                        "pattern": "^https://[^\\s/]",
+                        "type": "string"
+                      },
+                      "kind": { "const": "oauth2", "type": "string" },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "revocationUrl": {
+                        "maxLength": 2048,
+                        "pattern": "^https://[^\\s/]",
+                        "type": "string"
+                      },
+                      "tokenEndpointAuthMethod": {
+                        "anyOf": [
+                          { "const": "none", "type": "string" },
+                          { "const": "client_secret_basic", "type": "string" },
+                          { "const": "client_secret_post", "type": "string" }
+                        ]
+                      },
+                      "tokenUrl": {
+                        "maxLength": 2048,
+                        "pattern": "^https://[^\\s/]",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "displayName",
+                      "clientId",
+                      "tokenEndpointAuthMethod",
+                      "issuer",
+                      "tokenUrl"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
+                      "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                      "kind": { "const": "github-app", "type": "string" },
+                      "privateKey": {
+                        "maxLength": 20000,
+                        "minLength": 1,
+                        "type": "string",
+                        "writeOnly": true
+                      }
+                    },
+                    "required": ["kind", "displayName", "appId", "privateKey"],
+                    "type": "object"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "clientId": "example-client",
+                        "createdAt": "2026-10-01T12:00:00.000Z",
+                        "displayName": "Example provider client",
+                        "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+                        "issuer": "https://accounts.example.com",
+                        "kind": "oauth2",
+                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                        "tokenEndpointAuthMethod": "client_secret_basic",
+                        "tokenUrl": "https://accounts.example.com/token"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "id": {
+                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "issuer": {
+                              "maxLength": 2048,
+                              "pattern": "^https://[^\\s/]",
+                              "type": "string"
+                            },
+                            "kind": { "const": "oauth2", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "revocationUrl": {
+                              "maxLength": 2048,
+                              "pattern": "^https://[^\\s/]",
+                              "type": "string"
+                            },
+                            "tokenEndpointAuthMethod": {
+                              "anyOf": [
+                                { "const": "none", "type": "string" },
+                                { "const": "client_secret_basic", "type": "string" },
+                                { "const": "client_secret_post", "type": "string" }
+                              ]
+                            },
+                            "tokenUrl": {
+                              "maxLength": 2048,
+                              "pattern": "^https://[^\\s/]",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "displayName",
+                            "clientId",
+                            "tokenEndpointAuthMethod",
+                            "issuer",
+                            "tokenUrl",
+                            "id",
+                            "createdAt"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "id": {
+                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "github-app", "type": "string" }
+                          },
+                          "required": ["kind", "id", "displayName", "appId", "createdAt"],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "redirectUri": { "type": "string" },
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Register an OAuth or GitHub App credential client",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/credential-clients/{credentialClientId}": {
+      "delete": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "deleteCredentialClient",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ccr_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "credentialClientId",
+            "required": true,
+            "schema": {
+              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": { "description": "No Content" },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Delete an unused credential client",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/credential-clients/{credentialClientId}/rotate": {
+      "post": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "rotateCredentialClient",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ccr_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "credentialClientId",
+            "required": true,
+            "schema": {
+              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": { "clientSecret": "replacement-example-client-secret", "kind": "oauth2" }
+                }
+              },
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "clientSecret": {
+                        "maxLength": 4096,
+                        "minLength": 1,
+                        "type": "string",
+                        "writeOnly": true
+                      },
+                      "kind": { "const": "oauth2", "type": "string" }
+                    },
+                    "required": ["kind", "clientSecret"],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "const": "github-app", "type": "string" },
+                      "privateKey": {
+                        "maxLength": 20000,
+                        "minLength": 1,
+                        "type": "string",
+                        "writeOnly": true
+                      }
+                    },
+                    "required": ["kind", "privateKey"],
+                    "type": "object"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "clientId": "example-client",
+                        "createdAt": "2026-10-01T12:00:00.000Z",
+                        "displayName": "Example provider client",
+                        "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+                        "issuer": "https://accounts.example.com",
+                        "kind": "oauth2",
+                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                        "tokenEndpointAuthMethod": "client_secret_basic",
+                        "tokenUrl": "https://accounts.example.com/token"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "id": {
+                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "issuer": {
+                              "maxLength": 2048,
+                              "pattern": "^https://[^\\s/]",
+                              "type": "string"
+                            },
+                            "kind": { "const": "oauth2", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "revocationUrl": {
+                              "maxLength": 2048,
+                              "pattern": "^https://[^\\s/]",
+                              "type": "string"
+                            },
+                            "tokenEndpointAuthMethod": {
+                              "anyOf": [
+                                { "const": "none", "type": "string" },
+                                { "const": "client_secret_basic", "type": "string" },
+                                { "const": "client_secret_post", "type": "string" }
+                              ]
+                            },
+                            "tokenUrl": {
+                              "maxLength": 2048,
+                              "pattern": "^https://[^\\s/]",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "displayName",
+                            "clientId",
+                            "tokenEndpointAuthMethod",
+                            "issuer",
+                            "tokenUrl",
+                            "id",
+                            "createdAt"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "id": {
+                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "github-app", "type": "string" }
+                          },
+                          "required": ["kind", "id", "displayName", "appId", "createdAt"],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "redirectUri": { "type": "string" },
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Rotate credential client private material",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -40775,7 +41629,7 @@
                   "value": {
                     "config": { "provider_preset": "openai" },
                     "name": "Model credentials",
-                    "secret": { "value": "replace-with-your-authorized-model-key" },
+                    "secret": "replace-with-your-authorized-model-key",
                     "type": "static"
                   }
                 }
@@ -41281,7 +42135,7 @@
               "examples": {
                 "example": {
                   "summary": "Example request",
-                  "value": { "secret": { "value": "replace-with-your-rotated-model-key" } }
+                  "value": { "secret": "replace-with-your-rotated-model-key" }
                 }
               },
               "schema": { "$ref": "#/components/schemas/UpdateTokenServiceSourceBody" }
@@ -41560,7 +42414,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Ask the recorded owner to refresh a credential source",
+        "summary": "Renew an OAuth or GitHub App installation credential source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "credential_source", "scope": "requested" }
@@ -47979,857 +48833,6 @@
             "resourceKind": "agent",
             "scope": "requested"
           }
-        ]
-      }
-    },
-    "/oauth-clients": {
-      "get": {
-        "description": "Requires administer permission on the requested Installation.",
-        "operationId": "listOAuthClients",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "empty": {
-                    "summary": "No readable resources",
-                    "value": {
-                      "data": [],
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  },
-                  "example": {
-                    "summary": "Example response",
-                    "value": {
-                      "data": [
-                        {
-                          "clientId": "example-client",
-                          "createdAt": "2026-10-01T12:00:00.000Z",
-                          "displayName": "Example provider client",
-                          "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                          "issuer": "https://accounts.example.com",
-                          "kind": "oauth2",
-                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                          "tokenEndpointAuthMethod": "client_secret_basic",
-                          "tokenUrl": "https://accounts.example.com/token"
-                        }
-                      ],
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "data": {
-                      "items": {
-                        "anyOf": [
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
-                              "createdAt": { "type": "string" },
-                              "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                              "id": {
-                                "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "issuer": {
-                                "maxLength": 2048,
-                                "pattern": "^https://[^\\s/]",
-                                "type": "string"
-                              },
-                              "kind": { "const": "oauth2", "type": "string" },
-                              "namespaceId": {
-                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "revocationUrl": {
-                                "maxLength": 2048,
-                                "pattern": "^https://[^\\s/]",
-                                "type": "string"
-                              },
-                              "tokenEndpointAuthMethod": {
-                                "anyOf": [
-                                  { "const": "none", "type": "string" },
-                                  { "const": "client_secret_basic", "type": "string" },
-                                  { "const": "client_secret_post", "type": "string" }
-                                ]
-                              },
-                              "tokenUrl": {
-                                "maxLength": 2048,
-                                "pattern": "^https://[^\\s/]",
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "displayName",
-                              "clientId",
-                              "tokenEndpointAuthMethod",
-                              "issuer",
-                              "tokenUrl",
-                              "id",
-                              "createdAt"
-                            ],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
-                              "createdAt": { "type": "string" },
-                              "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                              "id": {
-                                "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "kind": { "const": "github-app", "type": "string" }
-                            },
-                            "required": ["kind", "id", "displayName", "appId", "createdAt"],
-                            "type": "object"
-                          }
-                        ]
-                      },
-                      "type": "array"
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "redirectUri": { "type": "string" },
-                        "requestId": {
-                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
-                      },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["data", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request does not match the operation contract."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller did not provide valid credentials."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller is not allowed to perform this operation."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested platform resource was not found."
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The platform request could not be completed."
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "A required dependency is unavailable."
-          }
-        },
-        "summary": "List registered OAuth clients",
-        "tags": ["Connections"],
-        "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
-        ]
-      },
-      "post": {
-        "description": "Requires administer permission on the requested Installation.",
-        "operationId": "createOAuthClient",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "examples": {
-                "example": {
-                  "summary": "Example request",
-                  "value": {
-                    "clientId": "example-client",
-                    "clientSecret": "example-client-secret",
-                    "displayName": "Example provider client",
-                    "issuer": "https://accounts.example.com",
-                    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                    "tokenEndpointAuthMethod": "client_secret_basic",
-                    "tokenUrl": "https://accounts.example.com/token"
-                  }
-                }
-              },
-              "schema": {
-                "anyOf": [
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
-                      "clientSecret": {
-                        "maxLength": 4096,
-                        "minLength": 1,
-                        "type": "string",
-                        "writeOnly": true
-                      },
-                      "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                      "issuer": {
-                        "maxLength": 2048,
-                        "pattern": "^https://[^\\s/]",
-                        "type": "string"
-                      },
-                      "namespaceId": {
-                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                        "type": "string"
-                      },
-                      "revocationUrl": {
-                        "maxLength": 2048,
-                        "pattern": "^https://[^\\s/]",
-                        "type": "string"
-                      },
-                      "tokenEndpointAuthMethod": {
-                        "anyOf": [
-                          { "const": "none", "type": "string" },
-                          { "const": "client_secret_basic", "type": "string" },
-                          { "const": "client_secret_post", "type": "string" }
-                        ]
-                      },
-                      "tokenUrl": {
-                        "maxLength": 2048,
-                        "pattern": "^https://[^\\s/]",
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "displayName",
-                      "clientId",
-                      "tokenEndpointAuthMethod",
-                      "issuer",
-                      "tokenUrl"
-                    ],
-                    "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
-                      "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                      "kind": { "const": "github-app", "type": "string" },
-                      "privateKey": { "maxLength": 20000, "minLength": 1, "type": "string" }
-                    },
-                    "required": ["kind", "displayName", "appId", "privateKey"],
-                    "type": "object"
-                  }
-                ]
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "Example response",
-                    "value": {
-                      "data": {
-                        "clientId": "example-client",
-                        "createdAt": "2026-10-01T12:00:00.000Z",
-                        "displayName": "Example provider client",
-                        "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                        "issuer": "https://accounts.example.com",
-                        "kind": "oauth2",
-                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "tokenEndpointAuthMethod": "client_secret_basic",
-                        "tokenUrl": "https://accounts.example.com/token"
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "data": {
-                      "anyOf": [
-                        {
-                          "additionalProperties": false,
-                          "properties": {
-                            "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
-                            "createdAt": { "type": "string" },
-                            "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                            "id": {
-                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "issuer": {
-                              "maxLength": 2048,
-                              "pattern": "^https://[^\\s/]",
-                              "type": "string"
-                            },
-                            "kind": { "const": "oauth2", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "revocationUrl": {
-                              "maxLength": 2048,
-                              "pattern": "^https://[^\\s/]",
-                              "type": "string"
-                            },
-                            "tokenEndpointAuthMethod": {
-                              "anyOf": [
-                                { "const": "none", "type": "string" },
-                                { "const": "client_secret_basic", "type": "string" },
-                                { "const": "client_secret_post", "type": "string" }
-                              ]
-                            },
-                            "tokenUrl": {
-                              "maxLength": 2048,
-                              "pattern": "^https://[^\\s/]",
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "displayName",
-                            "clientId",
-                            "tokenEndpointAuthMethod",
-                            "issuer",
-                            "tokenUrl",
-                            "id",
-                            "createdAt"
-                          ],
-                          "type": "object"
-                        },
-                        {
-                          "additionalProperties": false,
-                          "properties": {
-                            "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
-                            "createdAt": { "type": "string" },
-                            "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                            "id": {
-                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "kind": { "const": "github-app", "type": "string" }
-                          },
-                          "required": ["kind", "id", "displayName", "appId", "createdAt"],
-                          "type": "object"
-                        }
-                      ]
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "redirectUri": { "type": "string" },
-                        "requestId": {
-                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
-                      },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["data", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Created"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request does not match the operation contract."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller did not provide valid credentials."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller is not allowed to perform this operation."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested platform resource was not found."
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested operation conflicts with the current resource state."
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request body exceeds the permitted size."
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request content type is not supported."
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The platform request could not be completed."
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "A required dependency is unavailable."
-          }
-        },
-        "summary": "Register an OAuth client from a connection template",
-        "tags": ["Connections"],
-        "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
-        ]
-      }
-    },
-    "/oauth-clients/{oauthClientId}": {
-      "delete": {
-        "description": "Requires administer permission on the requested Installation.",
-        "operationId": "deleteOAuthClient",
-        "parameters": [
-          {
-            "examples": {
-              "example": {
-                "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "ccr_123e4567-e89b-42d3-a456-426614174000"
-              }
-            },
-            "in": "path",
-            "name": "oauthClientId",
-            "required": true,
-            "schema": {
-              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": { "description": "No Content" },
-          "400": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request does not match the operation contract."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller did not provide valid credentials."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller is not allowed to perform this operation."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested platform resource was not found."
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested operation conflicts with the current resource state."
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The platform request could not be completed."
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "A required dependency is unavailable."
-          }
-        },
-        "summary": "Delete an unused OAuth client",
-        "tags": ["Connections"],
-        "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
-        ]
-      }
-    },
-    "/oauth-clients/{oauthClientId}/rotate-secret": {
-      "post": {
-        "description": "Requires administer permission on the requested Installation.",
-        "operationId": "rotateOAuthClientSecret",
-        "parameters": [
-          {
-            "examples": {
-              "example": {
-                "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "ccr_123e4567-e89b-42d3-a456-426614174000"
-              }
-            },
-            "in": "path",
-            "name": "oauthClientId",
-            "required": true,
-            "schema": {
-              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "examples": {
-                "example": {
-                  "summary": "Example request",
-                  "value": { "clientSecret": "replacement-example-client-secret" }
-                }
-              },
-              "schema": {
-                "anyOf": [
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "clientSecret": {
-                        "maxLength": 4096,
-                        "minLength": 1,
-                        "type": "string",
-                        "writeOnly": true
-                      }
-                    },
-                    "required": ["clientSecret"],
-                    "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "privateKey": { "maxLength": 20000, "minLength": 1, "type": "string" }
-                    },
-                    "required": ["privateKey"],
-                    "type": "object"
-                  }
-                ]
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "Example response",
-                    "value": {
-                      "data": {
-                        "clientId": "example-client",
-                        "createdAt": "2026-10-01T12:00:00.000Z",
-                        "displayName": "Example provider client",
-                        "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                        "issuer": "https://accounts.example.com",
-                        "kind": "oauth2",
-                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "tokenEndpointAuthMethod": "client_secret_basic",
-                        "tokenUrl": "https://accounts.example.com/token"
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "data": {
-                      "anyOf": [
-                        {
-                          "additionalProperties": false,
-                          "properties": {
-                            "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
-                            "createdAt": { "type": "string" },
-                            "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                            "id": {
-                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "issuer": {
-                              "maxLength": 2048,
-                              "pattern": "^https://[^\\s/]",
-                              "type": "string"
-                            },
-                            "kind": { "const": "oauth2", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "revocationUrl": {
-                              "maxLength": 2048,
-                              "pattern": "^https://[^\\s/]",
-                              "type": "string"
-                            },
-                            "tokenEndpointAuthMethod": {
-                              "anyOf": [
-                                { "const": "none", "type": "string" },
-                                { "const": "client_secret_basic", "type": "string" },
-                                { "const": "client_secret_post", "type": "string" }
-                              ]
-                            },
-                            "tokenUrl": {
-                              "maxLength": 2048,
-                              "pattern": "^https://[^\\s/]",
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "displayName",
-                            "clientId",
-                            "tokenEndpointAuthMethod",
-                            "issuer",
-                            "tokenUrl",
-                            "id",
-                            "createdAt"
-                          ],
-                          "type": "object"
-                        },
-                        {
-                          "additionalProperties": false,
-                          "properties": {
-                            "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
-                            "createdAt": { "type": "string" },
-                            "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                            "id": {
-                              "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "kind": { "const": "github-app", "type": "string" }
-                          },
-                          "required": ["kind", "id", "displayName", "appId", "createdAt"],
-                          "type": "object"
-                        }
-                      ]
-                    },
-                    "meta": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "redirectUri": { "type": "string" },
-                        "requestId": {
-                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
-                      },
-                      "required": ["requestId"],
-                      "type": "object"
-                    }
-                  },
-                  "required": ["data", "meta"],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request does not match the operation contract."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller did not provide valid credentials."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller is not allowed to perform this operation."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested platform resource was not found."
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested operation conflicts with the current resource state."
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request body exceeds the permitted size."
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request content type is not supported."
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The platform request could not be completed."
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "A required dependency is unavailable."
-          }
-        },
-        "summary": "Rotate an OAuth client secret",
-        "tags": ["Connections"],
-        "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
         ]
       }
     },

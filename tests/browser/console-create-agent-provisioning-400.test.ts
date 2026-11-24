@@ -681,7 +681,7 @@ test("Create Agent saves a managed static Source and binds its exact ID to a dra
       assert.deepEqual(object(enrolled.request().postDataJSON()), {
         name: `Source-backed ${harness} model credential`,
         type: "static",
-        secret: { opaque: material },
+        secret: material,
         config: { provider_preset: "openai" },
       });
       assert.deepEqual(payload.harnessAuth, { method: "credential_source", sourceId: source.id });
@@ -798,7 +798,7 @@ test("Agent Credentials saves its existing model source without replacing the bi
     body: {
       name: "Agent model source",
       type: "static",
-      secret: { opaque: "synthetic-retained-source-key" },
+      secret: "synthetic-retained-source-key",
       config: { provider_preset: "openai" },
     },
   });

@@ -359,11 +359,12 @@ test("a template needs an explicit availability when the administrator has no Na
   await publicMethod.selectOption("none");
   assert.equal(await publicMethod.inputValue(), "none");
   assert.equal(await registration.getByLabel("Client secret", { exact: true }).isVisible(), false);
-  const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  const registered = responseTo(page, "POST", fixture.origin + "/credential-clients");
   await registration.getByRole("button", { name: "Register client" }).click();
   const regResult = await registered;
   assert.equal(regResult.status(), 201, await regResult.text());
-  assert.deepEqual(pathRequests(requests, "POST", "/oauth-clients")[0]?.body, {
+  assert.deepEqual(pathRequests(requests, "POST", "/credential-clients")[0]?.body, {
+    kind: "oauth2",
     displayName: "Tools client",
     issuer: template.current.issuer,
     tokenUrl: template.current.tokenUrl,
@@ -418,7 +419,7 @@ test("an administrator registers independent OAuth clients with exact availabili
   await form.getByLabel("Client ID", { exact: true }).fill("engineering-directory");
   const privateValue = "browser-write-only-client-material";
   await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
-  const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  const registered = responseTo(page, "POST", fixture.origin + "/credential-clients");
   await form.getByRole("button", { name: "Register client" }).click();
   const response = await registered;
   assert.equal(response.status(), 201, await response.text());
@@ -441,7 +442,9 @@ test("an administrator registers independent OAuth clients with exact availabili
     .waitFor();
   assert.equal(await row.count(), 0);
   restrict(fixture.policy, "administer", "installation");
-  await page.goto(fixture.origin + "/console/credentials/oauth-clients?namespace=" + namespace.id);
+  await page.goto(
+    fixture.origin + "/console/credentials/credential-clients?namespace=" + namespace.id,
+  );
   await page.getByRole("heading", { name: "Installation administrator access required" }).waitFor();
   assert.equal(
     await sections.getByRole("link", { name: "Credential clients", exact: true }).count(),
@@ -457,8 +460,9 @@ test("a Template neither assigns nor fences an independent credential client", a
     (template: { displayName: string }) => template.displayName === "Google OAuth",
   );
   assert.ok(google);
-  const registered = await fixture.request("POST", "/oauth-clients", {
+  const registered = await fixture.request("POST", "/credential-clients", {
     body: {
+      kind: "oauth2",
       displayName: "Google app",
       clientId: "google-app",
       issuer: google.current.issuer,
@@ -482,7 +486,7 @@ test("a Template neither assigns nor fences an independent credential client", a
   const removed = responseTo(
     page,
     "DELETE",
-    fixture.origin + "/oauth-clients/" + registered.data.id,
+    fixture.origin + "/credential-clients/" + registered.data.id,
   );
   await deletion.getByRole("button", { name: "Delete credential client", exact: true }).click();
   assert.equal((await removed).status(), 204);
@@ -525,7 +529,7 @@ test("an administrator registers and rotates a verified GitHub App signing key",
     buffer: Buffer.from(privateKey),
   });
   // A real signing-key verification refusal leaves the form retryable without a catalog refresh.
-  const refused = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  const refused = responseTo(page, "POST", fixture.origin + "/credential-clients");
   const submit = form.getByRole("button", { name: "Register client" });
   await submit.click();
   assert.equal((await refused).status(), 404);
@@ -543,7 +547,7 @@ test("an administrator registers and rotates a verified GitHub App signing key",
     mimeType: "application/x-pem-file",
     buffer: Buffer.from(privateKey),
   });
-  const registration = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  const registration = responseTo(page, "POST", fixture.origin + "/credential-clients");
   await form.getByRole("button", { name: "Register client" }).click();
   const response = await registration;
   assert.equal(response.status(), 201, await response.text());
@@ -572,7 +576,7 @@ test("an administrator registers and rotates a verified GitHub App signing key",
   const replaced = responseTo(
     page,
     "POST",
-    fixture.origin + "/oauth-clients/" + client.id + "/rotate-secret",
+    fixture.origin + "/credential-clients/" + client.id + "/rotate",
   );
   await rotation.getByRole("button", { name: "Rotate", exact: true }).click();
   assert.equal((await replaced).status(), 200);

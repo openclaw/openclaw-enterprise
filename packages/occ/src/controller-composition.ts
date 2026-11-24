@@ -247,7 +247,7 @@ interface ControllerDispatch
     Pick<CredentialSourceOperations, "createCredentialSource">,
     Pick<ManagedCredentialSources, "deleteCredentialSource">,
     Pick<ReturnType<typeof createConfigurationOperations>, "updateConfiguration"> {
-  maintainConnectionToken(
+  refreshTokenServiceSource(
     namespaceId: string,
     sourceId: string,
   ): Promise<import("@openclaw-enterprise/contracts").CredentialRefreshStatus>;
@@ -503,7 +503,7 @@ function createCredentialServices({
     | "createCredentialSource"
     | "deleteCredentialSource"
     | "withOAuthClientSecret"
-    | "maintainConnectionToken"
+    | "refreshTokenServiceSource"
   >;
   preparedTokens: TokenService | undefined;
   credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
@@ -557,8 +557,8 @@ function createCredentialServices({
         "TokenService",
       );
     },
-    maintainConnectionToken: (namespaceId, sourceId) =>
-      publicController.maintainConnectionToken(namespaceId, sourceId),
+    refreshTokenServiceSource: (namespaceId, sourceId) =>
+      publicController.refreshTokenServiceSource(namespaceId, sourceId),
   });
   const deviceAuthorization = createDeviceAuthorizationFlow({
     installationId,

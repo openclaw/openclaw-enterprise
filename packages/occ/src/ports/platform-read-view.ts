@@ -74,7 +74,7 @@ export const platformReadMethods = deepFreeze({
     "isEgressMaterialRejected",
     "findCredentialSource",
     "listCredentialSources",
-    "listReadyTokenServiceSources",
+    "scanReadyTokenServiceSourceIds",
     "findCredentialWithdrawal",
     "listCredentialWithdrawals",
   ],

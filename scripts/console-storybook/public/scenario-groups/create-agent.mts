@@ -1801,7 +1801,7 @@ export const createAgentProvisioningScenarios = {
     name: "GitHub App Clients loading",
     oauthCatalog: "ready",
     actions: gitClientPreview.actions,
-    rules: [{ path: "/oauth-clients", method: "GET", hold: true }],
+    rules: [{ path: "/credential-clients", method: "GET", hold: true }],
     description: "Client discovery is pending. Saving repository access remains unavailable.",
   },
   createGitHubClientError: {
@@ -1809,7 +1809,7 @@ export const createAgentProvisioningScenarios = {
     name: "GitHub App Client discovery failed",
     oauthCatalog: "ready",
     actions: gitClientPreview.actions,
-    rules: [{ path: "/oauth-clients", method: "GET", status: 503 }],
+    rules: [{ path: "/credential-clients", method: "GET", status: 503 }],
     description: "The administrator can retry after the Client catalog request fails.",
   },
   createGitHubClientMember: {

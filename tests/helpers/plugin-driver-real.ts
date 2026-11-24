@@ -509,11 +509,11 @@ function createImportedCodexServiceAccountDriverFactory(
         const owner = controller.selectedDriver("token_service");
         const source = await owner.createSource(
           {
-            kind: "static",
+            type: "static",
             namespaceId: account.namespaceId,
             name: `${account.name} issued PAT`,
-            lifecycleConfig: { type: "static", settings: {} },
-            secret: { opaque: imported.accessToken },
+            lifecycleConfig: { settings: {} },
+            secret: imported.accessToken,
             config: { provider_preset: "codex-pat" },
           },
           AbortSignal.timeout(30_000),

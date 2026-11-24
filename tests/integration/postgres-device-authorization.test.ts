@@ -192,7 +192,8 @@ test(
       destinations: [{ host: "api.example.test", path: "/v1/**" }],
     });
     assert.equal(template.statusCode, 201, template.body);
-    const client = await first.inject("POST", "/oauth-clients", {
+    const client = await first.inject("POST", "/credential-clients", {
+      kind: "oauth2",
       namespaceId,
       issuer: consentIssuer,
       tokenUrl: `${consentIssuer}/token`,
@@ -502,7 +503,10 @@ test(
       `/connection-templates/${template.json().data.id}`,
     );
     assert.equal(removedTemplate.statusCode, 204, removedTemplate.body);
-    const removedClient = await first.inject("DELETE", `/oauth-clients/${client.json().data.id}`);
+    const removedClient = await first.inject(
+      "DELETE",
+      `/credential-clients/${client.json().data.id}`,
+    );
     assert.equal(removedClient.statusCode, 204, removedClient.body);
     const deleting = await first.inject("DELETE", namespacePath);
     assert.equal(deleting.statusCode, 202, deleting.body);

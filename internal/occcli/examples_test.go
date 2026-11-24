@@ -77,8 +77,8 @@ func checkJSONExample(t *testing.T, command *cobra.Command, invocation string) {
 		if strings.Contains(command.Example, "<<") {
 			t.Fatalf("%s: example must not put credentials in a shell heredoc", command.CommandPath())
 		}
-		secret, ok := decoded["secret"].(map[string]any)
-		if !ok || len(secret) != 1 || secret["opaque"] == "" || secret["opaque"] == nil {
+		secret, ok := decoded["secret"].(string)
+		if !ok || secret == "" {
 			t.Fatalf("%s: example must supply one write-only credential: %#v", command.CommandPath(), decoded)
 		}
 		if command.Name() == "create" && decoded["type"] != "static" {

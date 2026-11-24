@@ -31,8 +31,10 @@ export interface CredentialSourceReadRepository {
     namespaceId: string,
     credentialSourceId: string,
   ): Promise<Readonly<CredentialSource> | undefined>;
+  /** Namespace inventory for every Source owner. Callers enforce resource authorization. */
   listCredentialSources(namespaceId: string): Promise<readonly Readonly<CredentialSource>[]>;
-  listReadyTokenServiceSources(
+  /** Page across ready Namespaces by Source ID for maintenance by the selected owner. */
+  scanReadyTokenServiceSourceIds(
     type: TokenServiceCredentialSource["type"],
     tokenServiceInstanceId: string,
     limit: number,

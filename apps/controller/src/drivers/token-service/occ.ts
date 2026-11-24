@@ -74,23 +74,16 @@ interface GitHubAppEnrollment {
 }
 
 function checkLifecycle(config: SourceLifecycleConfig): void {
-  if (config.type !== "static" || Object.keys(config.settings).length !== 0) {
+  if (Object.keys(config.settings).length !== 0) {
     throw new TokenServiceSourceInputError("A static source has no lifecycle settings.");
   }
 }
 
-function encodeCredential(secret: Extract<SourceRegistrationInput, { kind: "static" }>["secret"]): {
+function encodeCredential(value: string): {
   stored: string;
   version: string;
 } {
-  const fields = Object.values(secret);
-  const value = fields[0];
-  if (
-    fields.length !== 1 ||
-    !isNonEmptyString(value) ||
-    value.includes("\0") ||
-    !value.isWellFormed()
-  ) {
+  if (!isNonEmptyString(value) || value.includes("\0") || !value.isWellFormed()) {
     throw new TokenServiceSourceInputError(
       "A static source requires one nonempty UTF-8 credential value.",
     );
@@ -384,7 +377,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     const { account, ...grant } = result;
     const source = await this.createSource(
       {
-        kind: "oauth_refresh_token",
+        type: "oauth2-refresh-token",
         namespaceId: context.namespaceId,
         name: `Codex account ${randomUUID()}`,
         consent: { kind: "builtin_codex", ownerPrincipalId: context.ownerPrincipalId, account },
@@ -462,7 +455,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   }
 
   private async createGitHubAppSource(
-    input: Extract<SourceRegistrationInput, { kind: "github_app_installation" }>,
+    input: Extract<SourceRegistrationInput, { type: "github-app-installation" }>,
     ref: CredentialSourceReference,
     signal: AbortSignal,
   ): Promise<GitHubAppInstallationCredentialSource> {
@@ -527,7 +520,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       namespaceId: input.namespaceId,
       id,
     };
-    if (input.kind === "static") {
+    if (input.type === "static") {
       checkLifecycle(input.lifecycleConfig);
       const stored = encodeCredential(input.secret);
       return this.state.transact(async ({ namespaces, credentialSources }) => {
@@ -557,7 +550,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         return source;
       });
     }
-    if (input.kind === "github_app_installation") {
+    if (input.type === "github-app-installation") {
       return this.createGitHubAppSource(input, ref, signal);
     }
     const oauth = this.oauth;
@@ -685,12 +678,6 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         credential: token.accessToken,
         version: token.version,
         expiresAt: token.expiresAt,
-        ...(found.consent.kind === "builtin_codex"
-          ? {
-              accountId: found.consent.account.accountId,
-              isFedramp: found.consent.account.isFedramp,
-            }
-          : {}),
       };
     }
     const resolved =
@@ -742,7 +729,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   /** Process one page independently of Agent deployments. */
   async maintainSources(limit: number, afterId?: string) {
     const sources = await this.state.read(({ credentialSources }) =>
-      credentialSources.listReadyTokenServiceSources(
+      credentialSources.scanReadyTokenServiceSourceIds(
         "github-app-installation",
         this.tokenServiceInstanceId,
         limit,

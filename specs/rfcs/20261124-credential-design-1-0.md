@@ -15,7 +15,7 @@ Use one Credential Client catalog and one Source lifecycle for OAuth and GitHub 
 
 ## Client registration
 
-Installation administrators use the Console catalog and `/credential-clients`. Create and rotate requests explicitly select `oauth2` or `github-app`. OAuth client registration is independent of Connection Templates and supplies its own scope, issuer, approved endpoints, and authentication method. GitHub App clients have an immutable App ID and Installation scope. The stored App ID identifies a GitHub App client, so persistence derives the client kind from the same metadata.
+Installation administrators use the Console catalog and `/credential-clients`. Create and rotate requests explicitly select `oauth2` or `github-app`. OAuth client registration is independent of Connection Templates and supplies its own scope, issuer, approved endpoints, and authentication method. GitHub App clients have an immutable App ID and Installation scope. The stored Client kind remains canonical. The TokenService's client purpose type comes from the same typed Client union.
 
 Keep [OAuth client selection and consent](0023-egress-proxy-credential-lifecycle/oauth-client-associations.md). The caller needs `credential_source:create` in the destination Namespace and explicitly selects an eligible OAuth client from that Namespace or the Installation. PostgreSQL enforces the client kind on saved references and blocks deletion while a Source or pending consent references the client. Built-in Codex OAuth Sources carry no registration reference.
 
@@ -33,7 +33,7 @@ A Namespace Source pins one App client and records its GitHub installation and f
 
 Static Source enrollment and update take a single write-only credential string. TokenService registration uses the public Source types `static`, `oauth2-refresh-token`, and `github-app-installation`. Credential resolution returns the value and any applicable delivery version and expiry. Codex callers take account context from the Source's trusted consent metadata.
 
-A caller with `credential_source:update` on the exact Namespace Source can request renewal with `POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/renew`. A ready OAuth or GitHub App installation Source renews through its selected TokenService's `forceRefresh` operation. The existing committed-update path delivers the replacement through Credential Proxy. If delivery fails after the commit, the delivery retry uses the committed version. Static credentials use the existing update operation.
+A caller with `credential_source:update` on the exact Namespace Source can request renewal with `POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`. A ready OAuth or GitHub App installation Source renews through its selected TokenService's `forceRefresh` operation. The existing committed-update path delivers the replacement through Credential Proxy. If delivery fails after the commit, the delivery retry uses the committed version. Static credentials use the existing update operation.
 
 ## Acceptance criteria
 

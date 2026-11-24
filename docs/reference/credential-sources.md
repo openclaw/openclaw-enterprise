@@ -39,7 +39,7 @@ This table separates implemented behavior from work remaining in the proposed de
 | Plugin connections              | OCC admits eligible Google OAuth and Slack MCP TokenService selections against the associated Template and original OAuth consent.                                                                                                       | Qualify delivery through a deployed Plugin Agent.                                                                      |
 | Guided creation and Console     | Console can register a static OpenAI Source or complete Codex account login and save an Agent draft. The Agent API can bind a managed Source and save a network grant. Guided creation with a managed Source returns `409`.              | Admit network policy and grant Source access during guided creation; qualify deployment through that flow.             |
 | Replacement and retry           | Stop removes the current Sandbox and its Proxy attachment. The OpenShell Proxy retires its owned Provider and profile after the last binding is removed.                                                                                 | Replace an active managed-credential deployment and recover without requiring Stop.                                    |
-| Credential updates              | TokenService commits static replacements and OAuth renewals before notifying Proxy. OpenShell updates existing Providers and checks readiness. Failed delivery retains committed custody for retry.                                      | Qualify rotation in the same running Harness.                                                                          |
+| Credential updates              | TokenService commits static replacements and OAuth or GitHub App renewals before notifying Proxy. OpenShell updates existing Providers and checks readiness. Failed delivery retains committed custody for retry.                        | Qualify rotation in the same running Harness.                                                                          |
 | Withdrawal and retirement       | OCC denies withdrawn Source use. Proxy confirms detachment or Sandbox absence. On retry, Worker omits confirmed optional Plugin withdrawals and requires the model binding. Source retirement removes Proxy copies before custody.       | Qualify live withdrawal and recover previously retained copies if an Installation restarts without the Proxy selected. |
 | Enforcement qualification       | Compute checks applied network policy and Proxy readiness during preparation.                                                                                                                                                            | Qualify allowed and denied requests from an activated Agent using the selected OpenShell pair.                         |
 
@@ -69,7 +69,7 @@ For example, register an OpenAI API key as a managed static Source with `POST /n
   "name": "Model access",
   "type": "static",
   "config": { "provider_preset": "openai" },
-  "secret": { "opaque": "<credential>" }
+  "secret": "<credential>"
 }
 ```
 
@@ -122,6 +122,10 @@ covers existing Agents with PAT Secrets. Live native PAT transport qualification
 ## Update a source
 
 Send PATCH with `credential_source:update`. [Managed static updates](credential-sources/managed-static.md#update-a-source) replace the write-only credential or change its provider association. TokenService renews OAuth grants with the original consent settings. Current delivery-update limitations are in [implementation status](#implementation-status).
+
+## Request renewal
+
+Send `POST /namespaces/:namespaceId/credential-sources/:credentialSourceId/rotate` with `credential_source:update` on the exact Source. The selected TokenService renews a ready OAuth or GitHub App installation credential, commits the replacement, and pushes it through Credential Proxy. Use `PATCH` to replace a static credential.
 
 ## Retry credential delivery
 

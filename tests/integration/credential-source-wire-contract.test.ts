@@ -45,7 +45,7 @@ test("published TokenService source request schemas validate managed static mate
   assert.partialDeepStrictEqual(published("RegisterTokenServiceSourceBody"), writeOnlySecret);
   assert.partialDeepStrictEqual(published("UpdateTokenServiceSourceBody"), writeOnlySecret);
 
-  const credential = { api_key: "synthetic-registration-material" };
+  const credential = "synthetic-registration-material";
   const refs = { api_key: { kind: "secret", namespaceId, id: `sec_${uuid}` } };
   const source = { name: "Model access", type: "static" };
   const config = {};
@@ -60,8 +60,8 @@ test("published TokenService source request schemas validate managed static mate
     });
     const update = validatorCompiler({ ...route, schema: resolve("UpdateTokenServiceSourceBody") });
     assert.equal(register({ ...source, config, secret: credential }), true);
-    // Static custody accepts one opaque value without assigning authority to its field name.
-    assert.equal(register({ ...source, secret: { "client-id": "synthetic-material" } }), true);
+    // Credential material is a string and does not use a client-selected field name.
+    assert.equal(register({ ...source, secret: { "client-id": "synthetic-material" } }), false);
     // Source enrollment selects a Template by identity; version selection belongs to admission.
     assert.equal(register({ ...source, connectionTemplateId, secret: credential }), true);
     assert.equal(
@@ -105,7 +105,7 @@ test("namespace Source registration distinguishes TokenService material from pro
   assert.ok(update && "body" in update.schema);
   const register = validatorCompiler({ ...route, schema: create.schema.body });
   const patch = validatorCompiler({ ...route, method: "PATCH", schema: update.schema.body });
-  const material = { opaque: "synthetic-registration-material" };
+  const material = "synthetic-registration-material";
   const reference = { kind: "secret", namespaceId, id: `sec_${uuid}` };
   const managed = {
     name: "Model access",
@@ -186,7 +186,7 @@ test("existing Source responses serialize sanitized managed metadata for detail 
   for (const source of [metadata, oauth, builtin]) {
     const privateSource = {
       ...source,
-      secret: { opaque: "synthetic-material" },
+      secret: "synthetic-material",
       ownerCapability: "token_service",
       secrets: {},
       tokenServiceInstanceId: "private-instance",

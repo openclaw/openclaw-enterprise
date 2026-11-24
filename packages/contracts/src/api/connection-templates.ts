@@ -1,8 +1,8 @@
 import { Type } from "typebox";
 import { oauthScopeTokenPattern, staticKeyHttpMethodPattern } from "../connection-templates.ts";
-import { RequestId, NamespaceId, ConnectionTemplateId, OAuthClientId } from "./common.ts";
+import { RequestId, NamespaceId, ConnectionTemplateId, CredentialClientId } from "./common.ts";
 
-export { ConnectionTemplateId, OAuthClientId } from "./common.ts";
+export { ConnectionTemplateId, CredentialClientId } from "./common.ts";
 
 const HttpsUrl = Type.String({ maxLength: 2048, pattern: "^https://[^\\s/]" });
 export const OAuthScope = Type.String({
@@ -113,14 +113,18 @@ export const ConnectionTemplateParams = Type.Object(
   { connectionTemplateId: ConnectionTemplateId },
   strict,
 );
-export const OAuthClientParams = Type.Object({ oauthClientId: OAuthClientId }, strict);
+export const CredentialClientParams = Type.Object(
+  { credentialClientId: CredentialClientId },
+  strict,
+);
 const registration = {
   displayName: DisplayName,
   clientId: Type.String({ minLength: 1, maxLength: 256 }),
   tokenEndpointAuthMethod: AuthMethod,
 };
-const createOAuthClient = Type.Object(
+const createCredentialClient = Type.Object(
   {
+    kind: Type.Literal("oauth2"),
     ...registration,
     namespaceId: Type.Optional(NamespaceId),
     issuer: HttpsUrl,
@@ -131,15 +135,18 @@ const createOAuthClient = Type.Object(
   strict,
 );
 const appId = Type.String({ pattern: "^[1-9][0-9]{0,15}$" });
-const privateKey = Type.String({ minLength: 1, maxLength: 20000 });
+const privateKey = Type.String({ minLength: 1, maxLength: 20000, writeOnly: true });
 const createGitHubAppClient = Type.Object(
   { kind: Type.Literal("github-app"), displayName: DisplayName, appId, privateKey },
   strict,
 );
-export const CreateOAuthClientBody = Type.Union([createOAuthClient, createGitHubAppClient]);
-export const RotateOAuthClientSecretBody = Type.Union([
-  Type.Object({ clientSecret: ClientSecret }, strict),
-  Type.Object({ privateKey }, strict),
+export const CreateCredentialClientBody = Type.Union([
+  createCredentialClient,
+  createGitHubAppClient,
+]);
+export const RotateCredentialClientBody = Type.Union([
+  Type.Object({ kind: Type.Literal("oauth2"), clientSecret: ClientSecret }, strict),
+  Type.Object({ kind: Type.Literal("github-app"), privateKey }, strict),
 ]);
 export const DiscoverTemplateBody = Type.Object(
   { serverUrl: HttpsUrl, issuer: Type.Optional(HttpsUrl) },
@@ -170,7 +177,7 @@ export const OAuthClientSchema = Type.Object(
     issuer: HttpsUrl,
     tokenUrl: HttpsUrl,
     revocationUrl: Type.Optional(HttpsUrl),
-    id: OAuthClientId,
+    id: CredentialClientId,
     createdAt: Type.String(),
   },
   strict,
@@ -178,7 +185,7 @@ export const OAuthClientSchema = Type.Object(
 const publicGitHubAppClient = Type.Object(
   {
     kind: Type.Literal("github-app"),
-    id: OAuthClientId,
+    id: CredentialClientId,
     displayName: DisplayName,
     appId,
     createdAt: Type.String(),
@@ -235,8 +242,8 @@ export const ConnectionTemplateListResponse = Type.Object(
   { data: Type.Array(template), meta: Meta },
   strict,
 );
-export const OAuthClientResponse = Type.Object({ data: publicClient, meta: Meta }, strict);
-export const OAuthClientListResponse = Type.Object(
+export const CredentialClientResponse = Type.Object({ data: publicClient, meta: Meta }, strict);
+export const CredentialClientListResponse = Type.Object(
   { data: Type.Array(publicClient), meta: Meta },
   strict,
 );

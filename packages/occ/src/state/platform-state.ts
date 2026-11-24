@@ -2866,7 +2866,7 @@ function repositories(
           .map((source) => immutableCopy(source)),
       );
     },
-    listReadyTokenServiceSources: async (type, instanceId, limit, afterId) =>
+    scanReadyTokenServiceSourceIds: async (type, instanceId, limit, afterId) =>
       Object.freeze(
         [...snapshot.credentialSources.values()]
           .filter((source) => {

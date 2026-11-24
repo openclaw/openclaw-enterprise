@@ -3442,7 +3442,7 @@ function renderAgentForm(
       body: {
         name: sourceName,
         type: "static",
-        secret: { opaque: apiKey.value },
+        secret: apiKey.value,
         config: { provider_preset: preset },
       },
     });

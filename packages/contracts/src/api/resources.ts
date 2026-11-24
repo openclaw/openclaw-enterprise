@@ -1,4 +1,4 @@
-import { OAuthClientId } from "./connection-templates.ts";
+import { CredentialClientId } from "./connection-templates.ts";
 import { SandboxPolicyDecisionSchema } from "../sandbox-policy.ts";
 import { Type } from "typebox";
 import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
@@ -829,7 +829,7 @@ export const GitHubAppInstallationCredentialSourceSchema = Type.Object(
   {
     ...CredentialSourceCommon,
     type: Type.Literal("github-app-installation"),
-    clientId: OAuthClientId,
+    clientId: CredentialClientId,
     scope: Type.Object(
       {
         appId: GitHubNumericId,

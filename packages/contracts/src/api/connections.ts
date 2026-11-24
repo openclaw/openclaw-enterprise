@@ -4,7 +4,7 @@ import {
   ConnectionTemplateId,
   ConnectionTemplateResponse,
   OAuthScope,
-  OAuthClientId,
+  CredentialClientId,
   OAuthClientSchema,
 } from "./connection-templates.ts";
 
@@ -26,7 +26,7 @@ export const EligibleOAuthClientsResponse = Type.Object(
 export const StartNamespaceConnectionBody = Type.Object(
   {
     connectionTemplateId: ConnectionTemplateId,
-    oauthClientId: OAuthClientId,
+    oauthClientId: CredentialClientId,
     selectedScopes: Type.Optional(Type.Array(OAuthScope, { uniqueItems: true })),
   },
   { additionalProperties: false },

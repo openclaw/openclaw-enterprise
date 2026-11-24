@@ -7,15 +7,9 @@ import {
   RepositoryBindingRequestSchema,
   SecretValue,
 } from "./common.ts";
-import { OAuthClientId } from "./connection-templates.ts";
+import { CredentialClientId } from "./connection-templates.ts";
 
-const material = Type.Record(Type.String(), SecretValue, {
-  minProperties: 1,
-  maxProperties: 1,
-  writeOnly: true,
-  description:
-    "Write-only: one opaque credential value. The field name does not grant destination authority.",
-});
+const material = { ...SecretValue, writeOnly: true, description: "Opaque credential value." };
 
 const managedConfig = {
   ...CredentialSourceConfig,
@@ -44,7 +38,7 @@ export const RegisterGitHubAppTokenServiceSourceBody = Type.Object(
     name: Name,
     type: Type.Literal("github-app-installation"),
     clientId: {
-      ...OAuthClientId,
+      ...CredentialClientId,
       description: "OCC registration ID of the GitHub App client.",
     },
     repositoryRefs: Type.Array(RepositoryBindingRequestSchema.properties.repositoryRef, {

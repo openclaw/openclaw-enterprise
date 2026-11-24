@@ -4144,7 +4144,7 @@ export function registerSharingCredentialsAndChannelsCases(
           name: "Issued PAT source",
           type: "static",
           config: { provider_preset: "codex-pat" },
-          secret: { opaque: `at-${randomUUID()}` },
+          secret: `at-${randomUUID()}`,
         },
       },
     );
@@ -4331,7 +4331,7 @@ export function registerSharingCredentialsAndChannelsCases(
           name: "OpenAI API key",
           type: "static",
           config: { provider_preset: "openai" },
-          secret: { opaque: randomUUID() },
+          secret: randomUUID(),
         },
       },
     );

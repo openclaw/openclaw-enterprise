@@ -19,7 +19,7 @@ import type {
 import { type CreateNamespaceInput } from "./namespace-operations.ts";
 import {
   type CreateConnectionTemplateInput,
-  type CreateOAuthClientInput,
+  type CreateCredentialClientInput,
   type RotateCredentialClientInput,
   type DiscoverMcp,
   type UpdateConnectionTemplateInput,
@@ -705,15 +705,15 @@ export class OpenClawController {
       registrationSource,
     );
   }
-  async maintainConnectionToken(
+  async refreshTokenServiceSource(
     namespaceId: string,
     sourceId: string,
   ): Promise<CredentialRefreshStatus> {
     const source = await this.composition.transactions.read((state) =>
       state.credentialSources.findCredentialSource(namespaceId, sourceId),
     );
-    if (source?.ownerCapability !== "token_service" || source.type !== "oauth2-refresh-token") {
-      throw new ScopeViolationError("The OAuth Source is unavailable.");
+    if (source?.ownerCapability !== "token_service" || source.type === "static") {
+      throw new ScopeViolationError("The renewable Source is unavailable.");
     }
     const driver = this.composition.credentials.managedCredentialSources.ownedTokenServiceDriver(
       source.tokenServiceInstanceId,
@@ -807,17 +807,17 @@ export class OpenClawController {
     );
   }
 
-  async listOAuthClients(principalId: string) {
-    return this.composition.credentials.connectionAdministration.listOAuthClients(principalId);
+  async listCredentialClients(principalId: string) {
+    return this.composition.credentials.connectionAdministration.listCredentialClients(principalId);
   }
 
-  async createOAuthClient(
+  async createCredentialClient(
     principalId: string,
-    input: CreateOAuthClientInput,
+    input: CreateCredentialClientInput,
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.credentials.connectionAdministration.createOAuthClient(
+    return this.composition.credentials.connectionAdministration.createCredentialClient(
       principalId,
       input,
       audit,
@@ -825,14 +825,14 @@ export class OpenClawController {
     );
   }
 
-  async rotateOAuthClientSecret(
+  async rotateCredentialClient(
     principalId: string,
     id: string,
     input: RotateCredentialClientInput,
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.credentials.connectionAdministration.rotateOAuthClientSecret(
+    return this.composition.credentials.connectionAdministration.rotateCredentialClient(
       principalId,
       id,
       input,
@@ -841,13 +841,13 @@ export class OpenClawController {
     );
   }
 
-  async deleteOAuthClient(
+  async deleteCredentialClient(
     principalId: string,
     id: string,
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.credentials.connectionAdministration.deleteOAuthClient(
+    return this.composition.credentials.connectionAdministration.deleteCredentialClient(
       principalId,
       id,
       audit,
@@ -855,8 +855,8 @@ export class OpenClawController {
     );
   }
 
-  async cleanupOAuthClients(): Promise<void> {
-    return this.composition.credentials.connectionAdministration.cleanupOAuthClients();
+  async cleanupCredentialClients(): Promise<void> {
+    return this.composition.credentials.connectionAdministration.cleanupCredentialClients();
   }
 
   /** Trusted, server-side OAuth operations resolve the current value at each use. */

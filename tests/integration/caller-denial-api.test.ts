@@ -338,9 +338,10 @@ test("a staged credential source refuses an ungranted Agent principal before rev
     fixture.principal.id,
     namespace.id,
     {
+      type: "static",
       name: "Staged source",
-      lifecycleConfig: { type: "static", settings: {} },
-      secret: { opaque: randomUUID() },
+      lifecycleConfig: { settings: {} },
+      secret: randomUUID(),
     },
     event,
   );

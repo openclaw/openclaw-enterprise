@@ -22,8 +22,8 @@ use committed tokens and cannot trigger issuance.
 ## Entry Points
 
 - Trigger: `POST /namespaces/:namespaceId/credential-sources` with a `refresh`
-  type, `PATCH`, `GET`, or `DELETE …/credential-sources/:credentialSourceId`,
-  and `POST …/credential-sources/:credentialSourceId/rotate`.
+  type, or `PATCH`, `GET`, and `DELETE …/credential-sources/:credentialSourceId`.
+- Trigger: `POST …/credential-sources/:credentialSourceId/rotate` for managed OAuth and GitHub App Sources.
 - Source: `packages/occ/src/credential-source-operations.ts:createCredentialSource`
 - Source: `packages/occ/src/credential-source-operations.ts:rotateCredentialSource`
 - Source: `apps/controller/src/drivers/credential-refresh/openshell.ts:OpenShellCredentialRefreshDriver`
@@ -152,11 +152,12 @@ redeploy.
 
 `packages/occ/src/credential-source-operations.ts:rotateCredentialSource`
 
-`POST …/rotate` requires `credential_source:update`, a `ready` source, and a
-`refresh` type; a static type returns `409`. It calls `rotate` under the source
-lock and returns the new status. The HTTP handler commits the audit event in
-the same transaction; a failed mint commits a `failure` event instead. A commit
-whose outcome is unknown records neither event.
+`POST …/rotate` requires `credential_source:update` on the exact Namespace Source.
+OCC requires a ready OAuth or GitHub App installation Source, then calls the
+selected TokenService's `forceRefresh`. TokenService commits the replacement
+before notifying Credential Proxy. A failed delivery can retry the committed
+version. OCC returns Source metadata after successful renewal. Static Sources
+use `PATCH` for replacement and return `409` from `/rotate`.
 
 ### 5. Deletion
 

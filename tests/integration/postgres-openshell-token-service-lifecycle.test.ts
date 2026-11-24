@@ -199,7 +199,7 @@ test(
       name: "Isolated OpenAI key",
       type: "static",
       config: { provider_preset: "openai" },
-      secret: { opaque: original },
+      secret: original,
     });
     assert.equal(created.statusCode, 201, created.body);
     const source = created.json().data;
@@ -278,7 +278,7 @@ test(
       ),
       "A reader receives public Source metadata without custody fields.",
     );
-    const denied = await requestAsReader("PATCH", sourcePath, { secret: { opaque: deniedValue } });
+    const denied = await requestAsReader("PATCH", sourcePath, { secret: deniedValue });
     assert.equal(denied.status, 403);
     assert.ok(
       (await readNativeValue()) === original,
@@ -295,7 +295,7 @@ test(
     );
     assert.deepEqual(denialAudit.rows, [{ kind: "authorization_denial", outcome: "denied" }]);
 
-    const updated = await inject("PATCH", sourcePath, { secret: { opaque: replacement } });
+    const updated = await inject("PATCH", sourcePath, { secret: replacement });
     assert.equal(updated.statusCode, 200, updated.body);
     const updatedProvider = await client.getProvider(workspace, name, t.signal);
     assert.ok(updatedProvider);

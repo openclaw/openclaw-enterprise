@@ -503,7 +503,7 @@ test(
         name: "Invalid static source",
         type: "static",
         config: { unsupported: "setting" },
-        secret: { opaque: invalidMaterial },
+        secret: invalidMaterial,
       }),
     );
     assert.equal(invalidSource.statusCode, 400, invalidSource.body);
@@ -517,7 +517,7 @@ test(
         name: "Invalid preset",
         type: "static",
         config: { provider_preset: "unknown" },
-        secret: { opaque: invalidMaterial },
+        secret: invalidMaterial,
       }),
     );
     assert.equal(invalidPreset.statusCode, 400, invalidPreset.body);
@@ -542,7 +542,7 @@ test(
       name: "Plugin Source",
       type: "static",
       connectionTemplateId: templateId,
-      secret: { opaque: selectedMaterial },
+      secret: selectedMaterial,
     };
     // A Template scoped to the first ready Namespace is unavailable in another real Namespace.
     const otherNamespace = await inject("POST", "/namespaces", { name: `Other ${randomUUID()}` });
@@ -663,7 +663,7 @@ test(
     material.push(selectedReplacement);
     const selectedUpdate = remember(
       await inject("PATCH", `${base}/credential-sources/${selectedId}`, {
-        secret: { opaque: selectedReplacement },
+        secret: selectedReplacement,
       }),
     );
     assert.equal(selectedUpdate.statusCode, 200, selectedUpdate.body);
@@ -701,7 +701,7 @@ test(
         name: "Private source",
         type: "static",
         config: { provider_preset: "openai" },
-        secret: { opaque: enrollmentMaterial },
+        secret: enrollmentMaterial,
       }),
     );
     assert.equal(createdSource.statusCode, 201, createdSource.body);
@@ -906,7 +906,7 @@ test(
         type: "static",
         config: { provider_preset: "unknown" },
         connectionTemplateId: `ctp_${randomUUID()}`,
-        secret: { opaque: deniedEnrollmentMaterial },
+        secret: deniedEnrollmentMaterial,
       }),
     );
     assert.equal(deniedEnrollment.statusCode, 403, deniedEnrollment.body);
@@ -923,7 +923,7 @@ test(
       async (id) => {
         const response = remember(
           await memberRequest("PATCH", `${base}/credential-sources/${id}`, {
-            secret: { opaque: deniedMaterial },
+            secret: deniedMaterial,
           }),
         );
         return { status: response.statusCode, body: response.json() };
@@ -958,7 +958,7 @@ test(
     material.push(replacementMaterial);
     const updated = remember(
       await memberRequest("PATCH", sourcePath, {
-        secret: { opaque: replacementMaterial },
+        secret: replacementMaterial,
       }),
     );
     assert.equal(updated.statusCode, 200, updated.body);
@@ -975,7 +975,7 @@ test(
     const deliveryLogOffset = logs.length;
     controlledDeliveryFailure = new Error(`Controlled delivery failure ${deliveryFailureMaterial}`);
     const failedDelivery = remember(
-      await memberRequest("PATCH", sourcePath, { secret: { opaque: deliveryFailureMaterial } }),
+      await memberRequest("PATCH", sourcePath, { secret: deliveryFailureMaterial }),
     );
     assert.equal(controlledDeliveryFailure, undefined, "the delivery failure must be reached");
     assert.equal(failedDelivery.statusCode, 503, failedDelivery.body);
@@ -1041,7 +1041,7 @@ test(
       const logOffset = logs.length;
       controlledStoreFailure = new errorType(`Controlled supplier failure ${submittedMaterial}`);
       const refused = remember(
-        await memberRequest("PATCH", sourcePath, { secret: { opaque: submittedMaterial } }),
+        await memberRequest("PATCH", sourcePath, { secret: submittedMaterial }),
       );
       assert.equal(
         controlledStoreFailure,
@@ -1146,7 +1146,7 @@ test(
     const combinedReduction = remember(
       await memberRequest("PATCH", sourcePath, {
         config: {},
-        secret: { opaque: refusedMaterial },
+        secret: refusedMaterial,
       }),
     );
     assert.equal(combinedReduction.statusCode, 409, combinedReduction.body);
@@ -1169,7 +1169,7 @@ test(
     const combinedNoOp = remember(
       await memberRequest("PATCH", sourcePath, {
         config: { provider_preset: "openai" },
-        secret: { opaque: boundMaterial },
+        secret: boundMaterial,
       }),
     );
     assert.equal(combinedNoOp.statusCode, 200, combinedNoOp.body);
@@ -1503,7 +1503,7 @@ test(
           name: "Production admission source",
           type: "static",
           config: { provider_preset: "openai" },
-          secret: { opaque: nativeMaterial },
+          secret: nativeMaterial,
         },
         nativeApp,
       ),
@@ -1608,7 +1608,7 @@ test(
         {
           name: "Source without a provider preset",
           type: "static",
-          secret: { opaque: providerlessMaterial },
+          secret: providerlessMaterial,
         },
         nativeApp,
       ),
@@ -1710,7 +1710,7 @@ test(
           name: "Gmail Source",
           type: "static",
           connectionTemplateId: googleTemplateId,
-          secret: { opaque: googleMaterial },
+          secret: googleMaterial,
         },
         nativeApp,
       ),
@@ -1831,7 +1831,7 @@ test(
           name: "Native retirement source",
           type: "static",
           config: { provider_preset: "openai" },
-          secret: { opaque: retirementMaterial },
+          secret: retirementMaterial,
         },
         nativeApp,
       ),
@@ -1895,7 +1895,7 @@ test(
     material.push(accessToken, refreshToken);
     const oauth = await owner.createSource(
       {
-        kind: "oauth_refresh_token",
+        type: "oauth2-refresh-token",
         namespaceId,
         name: "Native OAuth retirement source",
         consent: {
@@ -2361,7 +2361,7 @@ test(
         name: "Slack withdrawal Source",
         type: "static",
         connectionTemplateId: slackTemplate.id,
-        secret: { opaque: slackMaterial },
+        secret: slackMaterial,
       },
       201,
     );

@@ -237,7 +237,8 @@ test(
     });
     assert.equal(template.statusCode, 201, template.body);
     const connectionTemplateId = template.json().data.id;
-    const client = await inject("POST", "/oauth-clients", {
+    const client = await inject("POST", "/credential-clients", {
+      kind: "oauth2",
       namespaceId,
       issuer: slot.issuer,
       tokenUrl: discoveredTokenUrl,
@@ -259,7 +260,7 @@ test(
     const createSlackSource = (name: string) =>
       owner.createSource(
         {
-          kind: "oauth_refresh_token",
+          type: "oauth2-refresh-token",
           namespaceId,
           name,
           connectionTemplateId,
@@ -322,7 +323,8 @@ test(
       const restored = await inject("PATCH", starterPath, original);
       assert.equal(restored.statusCode, 200, restored.body);
     };
-    const googleClient = await inject("POST", "/oauth-clients", {
+    const googleClient = await inject("POST", "/credential-clients", {
+      kind: "oauth2",
       namespaceId,
       issuer,
       tokenUrl,
@@ -347,7 +349,7 @@ test(
     const gmailConsent = approved.json().data.current;
     const googleSource = await owner.createSource(
       {
-        kind: "oauth_refresh_token",
+        type: "oauth2-refresh-token",
         namespaceId,
         name: "Google Workspace account",
         connectionTemplateId: starter.id,
@@ -461,7 +463,7 @@ test(
         name: "Staged model credential",
         type: "static",
         config: { provider_preset: "openai" },
-        secret: { opaque: randomUUID() },
+        secret: randomUUID(),
       },
       app,
     );
@@ -706,7 +708,7 @@ test(
         name: "Slack static bearer",
         type: "static",
         connectionTemplateId: slackBearerTemplate.json().data.id,
-        secret: { opaque: randomUUID() },
+        secret: randomUUID(),
       },
       app,
     );

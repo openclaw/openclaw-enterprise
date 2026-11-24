@@ -184,7 +184,7 @@ test(
         modelSource.consent.kind === "builtin_codex",
       "Use a ready builtin Codex OAuth Source.",
     );
-    const clients = await data<{ id: string; kind: string }[]>("GET", "/oauth-clients", 200);
+    const clients = await data<{ id: string; kind: string }[]>("GET", "/credential-clients", 200);
     assert.ok(
       clients.some((client) => client.id === clientId && client.kind === "github-app"),
       "Use a registered GitHub App Client.",

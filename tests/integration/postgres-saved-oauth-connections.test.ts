@@ -107,7 +107,8 @@ test(
       scopes: ["read"],
     });
     assert.equal(template.statusCode, 201, template.body);
-    const client = await inject("POST", "/oauth-clients", {
+    const client = await inject("POST", "/credential-clients", {
+      kind: "oauth2",
       namespaceId,
       issuer: localIssuer,
       tokenUrl,
@@ -117,7 +118,8 @@ test(
     });
     assert.equal(client.statusCode, 201, client.body);
     const clientId = client.json().data.id;
-    const second = await inject("POST", "/oauth-clients", {
+    const second = await inject("POST", "/credential-clients", {
+      kind: "oauth2",
       namespaceId,
       issuer: localIssuer,
       tokenUrl,
@@ -126,7 +128,8 @@ test(
       tokenEndpointAuthMethod: "none",
     });
     assert.equal(second.statusCode, 201, second.body);
-    const incompatible = await inject("POST", "/oauth-clients", {
+    const incompatible = await inject("POST", "/credential-clients", {
+      kind: "oauth2",
       namespaceId,
       issuer: localIssuer,
       tokenUrl: `${localIssuer}/other-token`,
@@ -211,7 +214,7 @@ test(
       [createHash("sha256").update(stateValue).digest("hex")],
     );
     assert.deepEqual(held.rows, [{ oauth_client_id: clientId, consumed: true }]);
-    const inUse = await secondAdmin("DELETE", `/oauth-clients/${clientId}`);
+    const inUse = await secondAdmin("DELETE", `/credential-clients/${clientId}`);
     assert.equal(inUse.statusCode, 409, inUse.body);
     resumeExchange.resolve();
     const callback = await callbackPromise;
@@ -262,7 +265,7 @@ test(
     );
     assert.equal(removedTemplate.statusCode, 204, removedTemplate.body);
     for (const id of [clientId, second.json().data.id, incompatible.json().data.id]) {
-      const removed = await inject("DELETE", `/oauth-clients/${id}`);
+      const removed = await inject("DELETE", `/credential-clients/${id}`);
       assert.equal(removed.statusCode, 204, removed.body);
     }
   },
@@ -437,7 +440,8 @@ test(
       (await inject("POST", connections, { connectionTemplateId: manualTemplateId })).statusCode,
       400,
     );
-    const registered = await inject("POST", "/oauth-clients", {
+    const registered = await inject("POST", "/credential-clients", {
+      kind: "oauth2",
       namespaceId,
       issuer,
       tokenUrl,
@@ -748,7 +752,8 @@ test(
       clientSecret,
       tokenUrl,
     );
-    const beforeCallback = await inject("POST", `/oauth-clients/${oauthClientId}/rotate-secret`, {
+    const beforeCallback = await inject("POST", `/credential-clients/${oauthClientId}/rotate`, {
+      kind: "oauth2",
       clientSecret: callbackSecret,
     });
     assert.equal(beforeCallback.statusCode, 200, beforeCallback.body);
@@ -972,7 +977,8 @@ test(
     assert.equal((await owner("POST", source + "/rotate")).statusCode, 200);
     assert.equal(await subject(await prepared()), alice);
     // Future consent can select a different Client without changing an existing Source's pair.
-    const futureRegistration = await inject("POST", "/oauth-clients", {
+    const futureRegistration = await inject("POST", "/credential-clients", {
+      kind: "oauth2",
       namespaceId,
       issuer,
       tokenUrl,
@@ -1053,7 +1059,8 @@ test(
       [clientFailure.state, clientFailure.failureCode, clientFailure.recoveryAction],
       ["failed", "client_refused", "fix_configuration"],
     );
-    const updatedClient = await inject("POST", `/oauth-clients/${oauthClientId}/rotate-secret`, {
+    const updatedClient = await inject("POST", `/credential-clients/${oauthClientId}/rotate`, {
+      kind: "oauth2",
       clientSecret: replacement,
     });
     assert.equal(updatedClient.statusCode, 200);
@@ -1219,7 +1226,8 @@ test(
     });
     assert.equal(secondTemplate.statusCode, 201, secondTemplate.body);
     const secondTemplateId = secondTemplate.json().data.id;
-    const secondClient = await inject("POST", "/oauth-clients", {
+    const secondClient = await inject("POST", "/credential-clients", {
+      kind: "oauth2",
       namespaceId,
       issuer: secondIssuer,
       tokenUrl: secondIssuer + "/token",
@@ -1254,7 +1262,7 @@ test(
       204,
     );
     assert.equal(
-      (await inject("DELETE", "/oauth-clients/" + secondClient.json().data.id)).statusCode,
+      (await inject("DELETE", "/credential-clients/" + secondClient.json().data.id)).statusCode,
       204,
     );
     // A peer can revoke a browser session after its callback has already passed admission.

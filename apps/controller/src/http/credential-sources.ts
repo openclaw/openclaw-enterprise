@@ -107,7 +107,7 @@ export const credentialSourceHandlers = {
         context.actorId,
         namespaceId,
         {
-          kind: "github_app_installation",
+          type: "github-app-installation",
           clientId: body.clientId as string,
           repositoryRefs: body.repositoryRefs as readonly string[],
           name: body.name as string,
@@ -144,9 +144,10 @@ export const credentialSourceHandlers = {
       context.actorId,
       namespaceId,
       {
+        type: "static",
         name: body!.name as string,
-        lifecycleConfig: { type: "static", settings },
-        secret: body!.secret as Record<string, string>,
+        lifecycleConfig: { settings },
+        secret: body!.secret as string,
         ...(providerPreset === undefined ? {} : { providerPreset }),
         ...(body!.connectionTemplateId === undefined
           ? {}
@@ -197,12 +198,12 @@ export const credentialSourceHandlers = {
     const failureAudit = (reasonCode: string) =>
       mutationEvent(resource, undefined, undefined, { reasonCode });
     const config = body?.config as Record<string, string> | undefined;
-    const secret = body?.secret as Record<string, string> | undefined;
+    const secret = body?.secret as string | undefined;
     const { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset, ...settings } = config ?? {};
     const presetUpdate = config === undefined ? {} : { providerPreset: providerPreset ?? null };
     const lifecycleUpdate =
       config !== undefined && Object.keys(settings).length > 0
-        ? { lifecycleConfig: { type: "static", settings } }
+        ? { lifecycleConfig: { settings } }
         : {};
     let input: UpdateManagedCredentialSourceInput;
     if (secret !== undefined) {
@@ -232,13 +233,13 @@ export const credentialSourceHandlers = {
   }) {
     const credentialSourceId = params.credentialSourceId as string;
     const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
-    const rotated = await controller.rotateCredentialSource(
+    const renewed = await controller.rotateCredentialSource(
       context.actorId,
       { namespaceId, credentialSourceId },
       (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
       mutationEvent(resource),
     );
-    const source = clientCredentialSource(rotated);
+    const source = clientCredentialSource(renewed);
     reply.send({ data: source, meta: { requestId: request.id } });
   },
   async pushAgentCredentials({

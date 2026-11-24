@@ -597,7 +597,7 @@ export async function runServiceApiKeysCliScenario(
       JSON.stringify({
         name: "openai-key",
         type: "static",
-        secret: { opaque: material },
+        secret: material,
       }),
       { mode: 0o600 },
     );

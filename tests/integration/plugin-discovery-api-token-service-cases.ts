@@ -5,7 +5,7 @@ import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/inde
 import type { ConnectionTemplate } from "../../packages/contracts/src/index.ts";
 import {
   ConnectionTemplateResponse,
-  OAuthClientResponse,
+  CredentialClientResponse,
 } from "../../packages/contracts/src/api/connection-templates.ts";
 import { DEVICE_ACCOUNT_ID, DEVICE_OAUTH_ACCESS_TOKEN } from "../helpers/device-token-service.ts";
 import { CredentialSourceResponse } from "../../packages/contracts/src/api/resources.ts";
@@ -123,8 +123,9 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
     "create OAuth Template",
   ).data as ConnectionTemplate;
   const client = fixture.fixtureResponse(
-    await fixture.request("POST", "/oauth-clients", {
+    await fixture.request("POST", "/credential-clients", {
       body: {
+        kind: "oauth2",
         namespaceId: fixture.namespace.id,
         issuer,
         tokenUrl: `${issuer}/token`,
@@ -134,7 +135,7 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
       },
     }),
     201,
-    OAuthClientResponse,
+    CredentialClientResponse,
     "register approved OAuth client",
   ).data;
   const approved = fixture.fixtureResponse(
@@ -145,7 +146,7 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
   ).data as ConnectionTemplate;
   const templateSource = await fixture.owner.createSource(
     {
-      kind: "oauth_refresh_token",
+      type: "oauth2-refresh-token",
       namespaceId: fixture.namespace.id,
       name: "External OAuth account",
       connectionTemplateId: approved.id,
@@ -286,7 +287,7 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
         name: "Hosted service account",
         type: "static",
         config: { provider_preset: "codex-pat" },
-        secret: { opaque: pat },
+        secret: pat,
       },
     }),
     201,

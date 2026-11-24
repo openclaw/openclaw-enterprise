@@ -3373,7 +3373,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             ),
           ).map(credentialSourceFromRow),
         ),
-      listReadyTokenServiceSources: async (type, tokenServiceInstanceId, limit, afterId) =>
+      scanReadyTokenServiceSourceIds: async (type, tokenServiceInstanceId, limit, afterId) =>
         Object.freeze(
           decodeQueryRows(
             await client.query(

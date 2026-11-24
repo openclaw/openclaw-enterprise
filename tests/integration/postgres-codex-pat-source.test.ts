@@ -135,7 +135,7 @@ test(
       name: "Codex PAT",
       type: "static",
       config: { provider_preset: "codex-pat" },
-      secret: { opaque: pat },
+      secret: pat,
     });
     assert.equal(enrolled.statusCode, 201, enrolled.body);
     assert.equal(enrolled.body.includes(pat), false);

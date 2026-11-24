@@ -250,7 +250,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
       name: "Model",
       type: "static",
       config: { provider_preset: "openai" },
-      secret: { opaque: modelKey },
+      secret: modelKey,
     },
     201,
   );
@@ -279,7 +279,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
       name: "Slack",
       type: "static",
       connectionTemplateId: slackTemplate.id,
-      secret: { opaque: randomUUID() },
+      secret: randomUUID(),
     },
     201,
   );
@@ -307,8 +307,9 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   );
   const client = await request(
     "POST",
-    "/oauth-clients",
+    "/credential-clients",
     {
+      kind: "oauth2",
       namespaceId: namespace.id,
       issuer: googleSlot.issuer,
       tokenUrl: googleSlot.tokenEndpoint,
@@ -320,7 +321,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   );
   const googleSource = await owner.createSource(
     {
-      kind: "oauth_refresh_token",
+      type: "oauth2-refresh-token",
       namespaceId: namespace.id,
       name: "Google",
       connectionTemplateId: googleTemplate.id,

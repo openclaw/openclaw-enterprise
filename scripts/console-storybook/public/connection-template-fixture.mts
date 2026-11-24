@@ -157,7 +157,7 @@ export function createConnectionTemplateFixture(
         ),
       );
     }
-    if (path === "/oauth-clients" && method === "GET") {
+    if (path === "/credential-clients" && method === "GET") {
       return response(oauthClients, 200, undefined, {
         redirectUri: "https://console.example.com/oauth/callback",
       });
@@ -170,8 +170,8 @@ export function createConnectionTemplateFixture(
       templates.splice(index, 1);
       return new Response(null, { status: 204 });
     }
-    if (method === "DELETE" && path.startsWith("/oauth-clients/")) {
-      const index = oauthClients.findIndex((client) => path === "/oauth-clients/" + client.id);
+    if (method === "DELETE" && path.startsWith("/credential-clients/")) {
+      const index = oauthClients.findIndex((client) => path === "/credential-clients/" + client.id);
       if (index === -1) {
         return error(404, "NOT_FOUND", "The OAuth client does not exist.");
       }
@@ -203,7 +203,10 @@ export function createConnectionTemplateFixture(
           ? error(400, "INVALID_REQUEST", "The MCP server did not return supported metadata.")
           : response(observed);
       }
-      if (path === "/oauth-clients" && method === "POST") {
+      if (path === "/credential-clients" && method === "POST") {
+        if (body.kind !== "oauth2" && body.kind !== "github-app") {
+          return error(400, "INVALID_REQUEST", "Select a credential client kind.");
+        }
         if (mode === "github-app-verification-failed" && body.kind === "github-app") {
           return error(404, "NOT_FOUND", "The requested platform resource was not found.");
         }
@@ -233,13 +236,20 @@ export function createConnectionTemplateFixture(
         oauthClients.push(client);
         return response(client, 201);
       }
-      if (method === "POST" && path.endsWith("/rotate-secret")) {
+      if (
+        method === "POST" &&
+        path.startsWith("/credential-clients/") &&
+        path.endsWith("/rotate")
+      ) {
         const client = oauthClients.find(
-          (item) => path === "/oauth-clients/" + item.id + "/rotate-secret",
+          (item) => path === "/credential-clients/" + item.id + "/rotate",
         );
-        return client
+        if (!client) {
+          return error(404, "RESOURCE_NOT_FOUND", "The credential client does not exist.");
+        }
+        return client.kind === body.kind
           ? response(client)
-          : error(404, "RESOURCE_NOT_FOUND", "The credential client does not exist.");
+          : error(400, "INVALID_REQUEST", "Select the registered credential client kind.");
       }
       if (path.startsWith("/connection-templates/") && method === "PATCH") {
         const template = templates.find((item) => path === "/connection-templates/" + item.id);

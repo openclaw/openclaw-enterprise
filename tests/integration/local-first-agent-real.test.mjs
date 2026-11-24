@@ -834,7 +834,7 @@ test(
         name: `first-agent-native-${suffix}`,
         type: "static",
         config: { provider_preset: "openai" },
-        secret: { opaque: process.env.OPENAI_API_KEY },
+        secret: process.env.OPENAI_API_KEY,
       });
       assert.equal(nativeSource.type, "static");
       assert.equal(nativeSource.state, "ready");

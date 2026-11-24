@@ -219,6 +219,7 @@ test(
     assert.ok(namespaceObject);
     Object.assign(namespaceObject, { apiVersion: "v1", kind: "Namespace" });
     let deliveryAttempts = 0;
+    let failNextDelivery = true;
     const observedCredentials: string[] = [];
     const gateway = workspaceGatewayClient([
       {
@@ -278,7 +279,8 @@ test(
         assert.equal(provider.resourceVersion, expectedVersion);
         assert.ok(request.credentials.GITHUB_TOKEN);
         observedCredentials.push(request.credentials.GITHUB_TOKEN);
-        if (deliveryAttempts === 1) {
+        if (failNextDelivery) {
+          failNextDelivery = false;
           throw new Error("Controlled OpenShell outage before the Provider update.");
         }
         const updated = {
@@ -400,7 +402,7 @@ test(
       })),
     );
     const appKey = github.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-    const client = await request("POST", "/oauth-clients", {
+    const client = await request("POST", "/credential-clients", {
       kind: "github-app",
       displayName: "GitHub App for Agent repositories",
       appId: fixtureAppId,
@@ -442,7 +444,7 @@ test(
     // The provider grant is synthetic; custody and the Agent admission path are real.
     const modelSource = await owner.createSource(
       {
-        kind: "oauth_refresh_token",
+        type: "oauth2-refresh-token",
         namespaceId,
         name: "Codex account",
         consent: {
@@ -620,7 +622,7 @@ test(
       assert.equal(github.issuesOfTokens.length, issueCountBeforeSave + agents.length);
       if (agents.length === 0) {
         // The saved Agent already pins this Client before its first Git Source exists.
-        const clientDelete = await request("DELETE", `/oauth-clients/${clientId}`);
+        const clientDelete = await request("DELETE", `/credential-clients/${clientId}`);
         assert.equal(clientDelete.statusCode, 409, clientDelete.body);
         assert.match(
           clientDelete.json().error.message,
@@ -969,15 +971,12 @@ test(
       2,
     );
     corruptedReply = undefined;
-    await owner.forceRefresh(installedSource, t.signal);
-    const renewed = await owner.resolveCredential(installedSource, t.signal);
-    assert.notEqual(renewed.version, beforeRenewal.version);
     assert.deepEqual(
       github.issuesOfTokens.slice(2).map(({ repositoryIds, requestedNames }) => ({
         repositoryIds,
         requestedNames,
       })),
-      Array.from({ length: 2 }, () => ({
+      Array.from({ length: 1 }, () => ({
         repositoryIds: repositories.map(({ repositoryId }) => Number(repositoryId)),
         requestedNames: undefined,
       })),
@@ -1095,6 +1094,11 @@ test(
       ).allowed;
     assert.equal(await canOperate(modelSource.id), true);
     assert.equal(await canOperate(gitSource.id), false);
+    const renewalPath = `${base}/credential-sources/${gitSource.id}/rotate`;
+    const mintsBeforeForbiddenRenewal = github.issuesOfTokens.length;
+    const forbiddenRenewal = await creatorRequest("POST", renewalPath);
+    assert.equal(forbiddenRenewal.statusCode, 403, forbiddenRenewal.body);
+    assert.equal(github.issuesOfTokens.length, mintsBeforeForbiddenRenewal);
     const creatorAgent = await request("PATCH", `${base}/agents/${mixedId}`, {
       configurationId: config.json().data.id,
       repositoryAccess: selected("read"),
@@ -1382,7 +1386,6 @@ test(
         (deliveryAttempts === 2 && (await readReceipt()).deliveryPending === undefined) ||
         undefined,
     );
-    await resumedAPI.close();
     assert.equal((await readReceipt()).version, pending.version);
     assert.ok(observedCredentials.every((value) => value === pending.credential));
     assert.equal(github.issuesOfTokens.length, mintsBeforeAPI + 1);
@@ -1399,6 +1402,42 @@ test(
       (await state.read((view) => view.agents.findAgent(namespaceId, agentId)))?.activeRevisionId,
       agedRevision.id,
     );
+
+    // The public renewal route uses the same finite mint and Provider delivery as API maintenance.
+    const manual = await inject("POST", renewalPath, undefined, resumedAPI);
+    assert.equal(manual.statusCode, 200, manual.body);
+    assert.equal(manual.json().data.id, gitSource.id);
+    assert.equal(manual.json().data.type, "github-app-installation");
+    assert.equal(Object.hasOwn(manual.json().data, "expiresAt"), false);
+    const manuallyRenewed = await readReceipt();
+    assert.notEqual(manuallyRenewed.version, pending.version);
+    assert.equal(manuallyRenewed.deliveryPending, undefined);
+    assert.ok(manuallyRenewed.credential !== pending.credential);
+    assert.equal(github.issuesOfTokens.length, mintsBeforeAPI + 2);
+    assert.deepEqual(
+      github.issuesOfTokens.at(-1)?.repositoryIds,
+      repositories.map(({ repositoryId }) => Number(repositoryId)),
+    );
+    assert.equal(deliveryAttempts, 3);
+    assert.ok(observedCredentials.at(-1) === manuallyRenewed.credential);
+    assert.ok((await store.withValue(signerStorage, async (value) => value)) === signerBefore);
+
+    // A lost Provider update is a delivery failure after a committed renewal.
+    failNextDelivery = true;
+    const interrupted = await inject("POST", renewalPath, undefined, resumedAPI);
+    await resumedAPI.close();
+    assert.equal(interrupted.statusCode, 503, interrupted.body);
+    const interruptedAudit = await pool.query(
+      `SELECT outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason
+       FROM occ.audit_events WHERE resource_id=$1 AND action='openclaw.credential_sources.rotate'
+         AND details->'__occAuditMetadata'->>'requestId'=$2
+       ORDER BY outcome DESC`,
+      [gitSource.id, interrupted.headers["x-request-id"]],
+    );
+    assert.deepEqual(interruptedAudit.rows, [
+      { outcome: "success", reason: null },
+      { outcome: "failure", reason: "CREDENTIAL_DELIVERY_FAILED" },
+    ]);
 
     // Source-backed authorization still uses finite installation credentials. Cross the issuer
     // receipt's expiry after the Worker has shut down so only custody resolution sees this clock.

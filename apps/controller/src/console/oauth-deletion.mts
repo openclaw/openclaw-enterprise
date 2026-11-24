@@ -88,7 +88,7 @@ export function oauthDeleteButton(
       confirm.disabled = true;
       confirm.textContent = "Deleting…";
       const collection =
-        kind === "connection template" ? "/connection-templates" : "/oauth-clients";
+        kind === "connection template" ? "/connection-templates" : "/credential-clients";
       try {
         await context.request(`${collection}/${encodeURIComponent(item.id)}`, {
           method: "DELETE",

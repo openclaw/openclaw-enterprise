@@ -473,6 +473,7 @@ test(
     }
     function input() {
       return {
+        kind: "oauth2",
         issuer,
         tokenUrl,
         displayName: "Private real API client",
@@ -487,7 +488,7 @@ test(
     ) {
       assert.equal(response.body.includes(value.clientSecret), false);
       assert.equal(response.body.includes(driver.id), false);
-      const listed = await inject("GET", "/oauth-clients");
+      const listed = await inject("GET", "/credential-clients");
       assert.equal(listed.statusCode, 200);
       assert.equal(listed.body.includes(value.clientSecret), false);
       assert.equal(listed.body.includes(driver.id), false);
@@ -596,7 +597,7 @@ test(
           await state.appendNativeIAMPrincipal(auth.principalSeed(reader, { grant: "none" }));
           headers = await signIn(credentials);
         }
-        const response = await inject("POST", "/oauth-clients", value, headers);
+        const response = await inject("POST", "/credential-clients", value, headers);
         const expectedStatus = {
           "denied-registration": 403,
           "refused-create": 404,

@@ -1809,7 +1809,7 @@ export class ControllerWorker {
           await this.sweepConnectionRevocation();
           if (Date.now() >= this.nextClientCleanup) {
             this.nextClientCleanup = Date.now() + 30_000;
-            await this.provisioningController?.cleanupOAuthClients();
+            await this.provisioningController?.cleanupCredentialClients();
           }
         }
         if (this.stopping) {
@@ -1963,7 +1963,7 @@ export class ControllerWorker {
           // Advance past unhealthy accounts so later sources can renew in the same scan.
           const outcomes = await Promise.allSettled(
             accounts.map(({ namespaceId, id }) =>
-              controller.maintainConnectionToken(namespaceId, id),
+              controller.refreshTokenServiceSource(namespaceId, id),
             ),
           );
           if (outcomes.some(({ status }) => status === "rejected")) {
@@ -6312,7 +6312,7 @@ export class ControllerWorker {
           throw new DependencyUnavailableError("The staged OAuth grant is unavailable.");
         }
         if (custody.due) {
-          const status = await this.provisioningController.maintainConnectionToken(
+          const status = await this.provisioningController.refreshTokenServiceSource(
             revision.namespaceId,
             source.id,
           );

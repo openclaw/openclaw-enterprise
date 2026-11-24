@@ -1043,7 +1043,7 @@ export function registerConnectedEgressInputPreflightCases(): void {
         name: "Connected model Source",
         type: "static",
         config: { provider_preset: "openai" },
-        secret: { opaque: randomUUID() },
+        secret: randomUUID(),
       },
       503,
     );

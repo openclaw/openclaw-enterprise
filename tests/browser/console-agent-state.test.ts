@@ -1526,13 +1526,13 @@ test("Installation-administration reads after a revoke are refused and audited o
       assert.equal(await page.getByRole("alert").count(), 0);
     },
     templates: async () => {
-      const before = reads("/connection-templates") + reads("/oauth-clients");
+      const before = reads("/connection-templates") + reads("/credential-clients");
       await page.goto(`${fixture.origin}/console/credentials/connection-templates`);
       await page
         .getByRole("heading", { name: "Installation administrator access required" })
         .waitFor();
       assert.equal(await page.getByRole("link", { name: "Connection templates" }).count(), 0);
-      assert.equal(reads("/connection-templates") + reads("/oauth-clients"), before);
+      assert.equal(reads("/connection-templates") + reads("/credential-clients"), before);
     },
     backends: async () => {
       const refused = reads("/backends");

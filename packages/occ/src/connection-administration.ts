@@ -59,10 +59,10 @@ export type CreateConnectionTemplateInput = TemplateInput & {
 };
 export type UpdateConnectionTemplateInput =
   { readonly displayName: string } | (TemplateInput & { readonly displayName?: string });
-export type CreateOAuthClientInput =
+export type CreateCredentialClientInput =
   | (Pick<
       OAuthClient,
-      "displayName" | "clientId" | "tokenEndpointAuthMethod" | "issuer" | "tokenUrl"
+      "kind" | "displayName" | "clientId" | "tokenEndpointAuthMethod" | "issuer" | "tokenUrl"
     > & {
       readonly namespaceId?: string;
       readonly revocationUrl?: string;
@@ -75,7 +75,8 @@ export type CreateOAuthClientInput =
       readonly privateKey: string;
     };
 export type RotateCredentialClientInput =
-  { readonly clientSecret: string } | { readonly privateKey: string };
+  | { readonly kind: "oauth2"; readonly clientSecret: string }
+  | { readonly kind: "github-app"; readonly privateKey: string };
 export type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 
 async function effectiveConnectionTemplate(
@@ -324,7 +325,7 @@ export function createConnectionAdministration({
     });
   }
 
-  async function listOAuthClients(principalId: string) {
+  async function listCredentialClients(principalId: string) {
     await authorizeAdministration(principalId);
     const clients = await read((view) => view.connectionTemplates.listCredentialClients());
     return Object.freeze(clients.map(clientMetadata));
@@ -378,9 +379,9 @@ export function createConnectionAdministration({
     }
   }
 
-  async function createOAuthClient(
+  async function createCredentialClient(
     principalId: string,
-    input: CreateOAuthClientInput,
+    input: CreateCredentialClientInput,
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
@@ -397,7 +398,7 @@ export function createConnectionAdministration({
     const createdAt = timestamp();
     let client: CredentialClient;
     let material: string | undefined;
-    if ("kind" in input && input.kind === "github-app") {
+    if (input.kind === "github-app") {
       if (!/^[1-9][0-9]{0,15}$/.test(input.appId) || !Number.isSafeInteger(Number(input.appId))) {
         throw new ConnectionTemplateValidationError("appId", "Provide a valid GitHub App ID.");
       }
@@ -413,7 +414,7 @@ export function createConnectionAdministration({
       };
       material = input.privateKey;
     } else {
-      const oauth = input as Extract<CreateOAuthClientInput, { issuer: string }>;
+      const oauth = input;
       checkedOAuthUrl("issuer", oauth.issuer);
       checkedOAuthUrl("tokenUrl", oauth.tokenUrl);
       if (oauth.revocationUrl !== undefined) {
@@ -495,7 +496,7 @@ export function createConnectionAdministration({
     return client;
   }
 
-  async function rotateOAuthClientSecret(
+  async function rotateCredentialClient(
     principalId: string,
     id: string,
     input: RotateCredentialClientInput,
@@ -514,7 +515,7 @@ export function createConnectionAdministration({
       if (client.kind === "oauth2" && client.tokenEndpointAuthMethod === "none") {
         throw new ResourceStateConflictError("This public client authenticates without a secret.");
       }
-      if (client.kind === "github-app" ? !("privateKey" in input) : !("clientSecret" in input)) {
+      if (client.kind !== input.kind) {
         throw new ConnectionTemplateValidationError(
           "secret",
           "Supply private material for the stored client kind.",
@@ -536,7 +537,7 @@ export function createConnectionAdministration({
       const client = await lockClient(state);
       const instance = clientInstance(client);
       const owner = tokenServiceDriver(instance.tokenServiceInstanceId);
-      const material = "privateKey" in input ? input.privateKey : input.clientSecret;
+      const material = input.kind === "github-app" ? input.privateKey : input.clientSecret;
       await driverOperation(
         () => owner.updateClientSecret(instance, material, signal()),
         "TokenService",
@@ -548,7 +549,7 @@ export function createConnectionAdministration({
     });
   }
 
-  async function deleteOAuthClient(
+  async function deleteCredentialClient(
     principalId: string,
     id: string,
     audit?: AuditEvent,
@@ -580,7 +581,7 @@ export function createConnectionAdministration({
     });
   }
 
-  async function cleanupOAuthClients(): Promise<void> {
+  async function cleanupCredentialClients(): Promise<void> {
     const ids = await read((view) => view.connectionTemplates.listCredentialClientCleanups(32));
     for (const id of ids) {
       await transact(async (state) => {
@@ -637,11 +638,11 @@ export function createConnectionAdministration({
     createConnectionTemplate,
     updateConnectionTemplate,
     deleteConnectionTemplate,
-    listOAuthClients,
-    createOAuthClient,
-    rotateOAuthClientSecret,
-    deleteOAuthClient,
-    cleanupOAuthClients,
+    listCredentialClients,
+    createCredentialClient,
+    rotateCredentialClient,
+    deleteCredentialClient,
+    cleanupCredentialClients,
     withOAuthClientSecret,
   };
 }

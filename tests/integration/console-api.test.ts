@@ -1662,7 +1662,7 @@ test("the Agent sources answer matches what a real Agent update checks", async (
       name: "Managed Harness Source",
       type: "static",
       config: { provider_preset: "openai" },
-      secret: { opaque: "controlled-answer-model-key" },
+      secret: "controlled-answer-model-key",
     },
   });
   assert.equal(source.status, 201);

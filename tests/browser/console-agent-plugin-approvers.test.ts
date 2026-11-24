@@ -934,7 +934,7 @@ async function managedSlackPluginFixture(t: TestContext, withSibling = false) {
         name,
         type: "static",
         connectionTemplateId: templateId,
-        secret: { opaque: crypto.randomUUID() },
+        secret: crypto.randomUUID(),
       },
     });
     assert.equal(result.status, 201);

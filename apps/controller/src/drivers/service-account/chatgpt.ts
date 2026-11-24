@@ -140,11 +140,11 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
     });
     const created = await owner.createSource(
       {
-        kind: "static",
+        type: "static",
         namespaceId: account.namespaceId,
         name: `${account.name.slice(0, 145)} managed token ${account.id}`,
-        lifecycleConfig: { type: "static", settings: {} },
-        secret: { opaque: credential.accessToken },
+        lifecycleConfig: { settings: {} },
+        secret: credential.accessToken,
         config: { provider_preset: "codex-pat" },
       },
       AbortSignal.timeout(30_000),

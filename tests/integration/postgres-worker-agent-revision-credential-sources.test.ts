@@ -356,9 +356,10 @@ async function stagedCredentialScenario(
     actorId,
     namespaceId,
     {
+      type: "static",
       name: `Activation source ${randomUUID()}`,
-      lifecycleConfig: { type: "static", settings: {} },
-      secret: { opaque: enrolledCredential },
+      lifecycleConfig: { settings: {} },
+      secret: enrolledCredential,
       providerPreset: "openai",
     },
     (ref, phase) => ({
@@ -612,9 +613,10 @@ cases.revisionTest(
       actorId,
       namespaceId,
       {
+        type: "static",
         name: `Unbound source ${randomUUID()}`,
-        lifecycleConfig: { type: "static", settings: {} },
-        secret: { opaque: randomUUID() },
+        lifecycleConfig: { settings: {} },
+        secret: randomUUID(),
         providerPreset: "openai",
       },
       (ref, phase) => ({
@@ -730,7 +732,7 @@ cases.revisionTest(
         method: "PATCH",
         url: `/namespaces/${namespaceId}/credential-sources/${source.id}`,
         headers,
-        payload: { secret: { opaque: replacement } },
+        payload: { secret: replacement },
       });
       assert.equal(patched.statusCode, 503, patched.body);
       const committed = await resolve(sourceInstance, context.signal);
@@ -999,7 +1001,7 @@ cases.revisionTest(
         method: "PATCH",
         url: `/namespaces/${namespaceId}/credential-sources/${source.id}`,
         headers,
-        payload: { secret: { opaque: replacement } },
+        payload: { secret: replacement },
       });
       assert.equal(updated.statusCode, 200, updated.body);
       assert.equal(updated.body.includes(replacement), false);

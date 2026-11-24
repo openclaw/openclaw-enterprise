@@ -46,7 +46,7 @@ export async function honorsDisconnectsDuringIam(t: TestContext) {
         type: "static",
         name: "Hosted Apps test account",
         config: { provider_preset: "codex-pat" },
-        secret: { opaque: accessToken },
+        secret: accessToken,
       },
     },
   );

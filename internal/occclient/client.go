@@ -286,7 +286,7 @@ func (client *Client) UpdateCredentialSource(
 	)
 }
 
-// RotateCredentialSource asks TokenService to refresh an OAuth Source.
+// RotateCredentialSource asks TokenService to renew an OAuth or GitHub App Source.
 func (client *Client) RotateCredentialSource(namespaceID, sourceID string) (any, error) {
 	return client.send(
 		http.MethodPost,

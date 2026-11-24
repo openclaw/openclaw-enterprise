@@ -99,7 +99,7 @@ operator recovery.
 
 `privateSecretStore` applies the same conditional removal to confirmed but
 refused OAuth-client creates. OCC keeps the hidden registration and selected
-Driver until `cleanupOAuthClients` confirms deletion or absence. Ordinary private
+Driver until `cleanupCredentialClients` confirms deletion or absence. Ordinary private
 ownership checks and unknown SQL outcomes remain unchanged. See
 [private registration behavior](../reference/drivers/kubernetes-secret.md#installation-private-oauth-client-secrets).
 

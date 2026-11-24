@@ -1221,7 +1221,7 @@ async function main(options: Options) {
           name: record.credentialSourceName,
           type: "static",
           config: { provider_preset: authMethod === "codex_pat" ? "codex-pat" : "openai" },
-          secret: { opaque: await modelKey(authMethod) },
+          secret: await modelKey(authMethod),
         });
         enrolled = true;
       } else {
@@ -1269,7 +1269,7 @@ async function main(options: Options) {
           "name",
           "PATCH",
           `${base}/credential-sources/${modelCredential.id}`,
-          { secret: { opaque: value } },
+          { secret: value },
         );
         assertManagedCredentialSource(modelCredential, record);
       } else {

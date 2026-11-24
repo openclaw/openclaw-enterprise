@@ -133,7 +133,7 @@ export function registerFirstAgentFailureAdviceCases({
                   name: sourceName,
                   type: "static",
                   config: { provider_preset: "codex-pat" },
-                  secret: { opaque: "at-synthetic-source-enrollment" },
+                  secret: "at-synthetic-source-enrollment",
                 });
                 status = 201;
                 source = {

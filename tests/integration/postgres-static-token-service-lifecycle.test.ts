@@ -133,9 +133,10 @@ test(
         principal.id,
         namespaceId,
         {
+          type: "static",
           name,
-          lifecycleConfig: { type: "static", settings: {} },
-          secret: { opaque: credential },
+          lifecycleConfig: { settings: {} },
+          secret: credential,
           ...(providerPreset === undefined ? {} : { providerPreset }),
         },
         createAudit,
@@ -159,15 +160,16 @@ test(
       ).rows;
 
     const createsBefore = core.calls.createNamespacedSecret;
-    // The owner resolves one static value; ambiguous material must fail before custody starts.
+    // A blank credential fails before custody starts.
     await assert.rejects(
       controller.createManagedCredentialSource(
         principal.id,
         namespaceId,
         {
-          name: "Ambiguous credential",
-          lifecycleConfig: { type: "static", settings: {} },
-          secret: { first: randomUUID(), second: randomUUID() },
+          type: "static",
+          name: "Blank credential",
+          lifecycleConfig: { settings: {} },
+          secret: " ",
         },
         createAudit,
       ),
@@ -189,9 +191,10 @@ test(
         principal.id,
         namespaceId,
         {
+          type: "static",
           name: "Lifecycle cannot approve a provider",
-          lifecycleConfig: { type: "static", settings: { provider_preset: "openai" } },
-          secret: { opaque: randomUUID() },
+          lifecycleConfig: { settings: { provider_preset: "openai" } },
+          secret: randomUUID(),
         },
         createAudit,
       ),
@@ -221,7 +224,7 @@ test(
     const unknown = await inject("POST", base, {
       name: "Unknown credential write",
       type: "static",
-      secret: { opaque: unknownKey },
+      secret: unknownKey,
     });
     assert.equal(unknown.statusCode, 503, unknown.body);
     assert.equal(unknown.json().error.code, "DEPENDENCY_UNAVAILABLE");
@@ -305,7 +308,7 @@ test(
     const duplicate = await inject("POST", base, {
       name: "Approved provider",
       type: "static",
-      secret: { opaque: randomUUID() },
+      secret: randomUUID(),
     });
     assert.equal(duplicate.statusCode, 409, duplicate.body);
     assert.equal(core.calls.createNamespacedSecret, beforeDuplicate);
@@ -368,7 +371,7 @@ test(
         }),
       );
     const update = (actorId: string, credential: string) =>
-      updateSource(actorId, { secret: { replacement: credential } });
+      updateSource(actorId, { secret: credential });
     const sourceConfig = async () =>
       (await pool.query("SELECT config FROM occ.credential_sources WHERE id=$1", [sourceId]))
         .rows[0].config;
@@ -396,7 +399,7 @@ test(
     // A mixed approval and material change is rejected before custody changes.
     await assert.rejects(
       updateSource(principal.id, {
-        secret: { replacement: randomUUID() },
+        secret: randomUUID(),
         providerPreset: null,
       }),
       ResourceStateConflictError,
@@ -412,11 +415,11 @@ test(
       ).rows,
       [{ preset: "openai" }],
     );
-    await updateSource(principal.id, { lifecycleConfig: { type: "static", settings: {} } });
+    await updateSource(principal.id, { lifecycleConfig: { settings: {} } });
     assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
     const replacementKey = randomUUID();
     await updateSource(principal.id, {
-      secret: { replacement: replacementKey },
+      secret: replacementKey,
       providerPreset: "openai",
     });
     assert.equal(await resolve(), replacementKey);
@@ -576,7 +579,7 @@ test(
     const refreshToken = randomUUID();
     const builtin = await owner.createSource(
       {
-        kind: "oauth_refresh_token",
+        type: "oauth2-refresh-token",
         namespaceId,
         name: "Built-in Codex account",
         consent: {
@@ -629,8 +632,11 @@ test(
       AbortSignal.timeout(5_000),
     );
     assert.equal(resolved.credential, accessToken);
-    assert.equal(resolved.accountId, codexAccount.accountId);
-    assert.equal(resolved.isFedramp, codexAccount.isFedramp);
+    assert.deepEqual(exact.json().data.consent.account, codexAccount);
+    assert.equal(
+      Object.hasOwn(resolved, "accountId") || Object.hasOwn(resolved, "isFedramp"),
+      false,
+    );
     const directEnrollment = await inject("POST", base, {
       name: "Caller-selected Codex account",
       type: "oauth2-refresh-token",

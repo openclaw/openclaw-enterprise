@@ -36,7 +36,7 @@ export const ConfigurationId = Type.String({ pattern: `^cfg_${UUID_V4}$` });
 export const ServiceAccountId = Type.String({ pattern: `^sa_${UUID_V4}$` });
 export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
 export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
-export const OAuthClientId = Type.String({ pattern: `^ccr_${UUID_V4}$` });
+export const CredentialClientId = Type.String({ pattern: `^ccr_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMAccessBindingId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMServicePrincipalId = Type.String({ minLength: 1, maxLength: 200 });
@@ -742,7 +742,7 @@ export const RepositoryBindingSelectionSchema = Type.Object(
 export const RepositoryAccessSchema = Type.Object(
   {
     defaultProfile: RepositoryBindingSelector,
-    githubAppClientId: Type.Optional(OAuthClientId),
+    githubAppClientId: Type.Optional(CredentialClientId),
     repositories: Type.Array(
       Type.Object(
         {

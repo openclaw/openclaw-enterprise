@@ -55,17 +55,16 @@ import type { TokenServiceInstance } from "./ports/token-service.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 type CreateStaticCredentialSourceInput = Omit<
-  Extract<SourceRegistrationInput, { kind: "static" }>,
-  "kind" | "namespaceId" | "config"
+  Extract<SourceRegistrationInput, { type: "static" }>,
+  "namespaceId" | "config"
 > & {
-  readonly kind?: never;
   readonly providerPreset?: string;
   readonly connectionTemplateId?: string;
 };
 
 export type CreateManagedCredentialSourceInput =
   | CreateStaticCredentialSourceInput
-  | Omit<Extract<SourceRegistrationInput, { kind: "github_app_installation" }>, "namespaceId">;
+  | Omit<Extract<SourceRegistrationInput, { type: "github-app-installation" }>, "namespaceId">;
 
 export type UpdateManagedCredentialSourceInput =
   | (SourceUpdate & { readonly providerPreset?: string | null })
@@ -189,7 +188,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       id: namespaceId,
       namespaceId,
     };
-    const staticInput = input.kind === undefined ? input : undefined;
+    const staticInput = input.type === "static" ? input : undefined;
     const owner = await dependencies.transactions.transact(async (state) => {
       await dependencies.authority.holdAuthority(state);
       await dependencies.authority.authorize(principalId, "create", collection);
@@ -243,9 +242,9 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     const config =
       providerPreset === undefined ? {} : { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset };
     const registration: SourceRegistrationInput =
-      input.kind === undefined
+      input.type === "static"
         ? {
-            kind: "static",
+            type: "static",
             namespaceId,
             name: input.name,
             ...(input.connectionTemplateId === undefined
@@ -262,7 +261,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       "TokenService",
     ).catch((error: unknown) => {
       if (
-        registration.kind === "github_app_installation" &&
+        registration.type === "github-app-installation" &&
         error instanceof DependencyUnavailableError
       ) {
         throw new RetryLaterError("githubRepositoryEnrollment");
@@ -282,15 +281,14 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     }
     let metadata: CredentialSourceMetadata;
     if (
-      registration.kind === "static" &&
+      registration.type === "static" &&
       created.type === "static" &&
-      created.type === registration.lifecycleConfig.type &&
       created.connectionTemplateId === registration.connectionTemplateId &&
       JSON.stringify(created.config) === JSON.stringify(config)
     ) {
       metadata = credentialSourceMetadata(created);
     } else if (
-      registration.kind === "github_app_installation" &&
+      registration.type === "github-app-installation" &&
       created.type === "github-app-installation" &&
       created.clientId === registration.clientId
     ) {
@@ -378,7 +376,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       principalId,
       namespaceId,
       {
-        kind: "github_app_installation",
+        type: "github-app-installation",
         clientId: input.clientId,
         name: `GitHub repository access ${crypto.randomUUID()}`,
         repositoryRefs: input.repositoryRefs,

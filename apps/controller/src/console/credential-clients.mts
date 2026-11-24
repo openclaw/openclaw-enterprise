@@ -16,7 +16,7 @@ import {
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
 
-export function renderOAuthClients(
+export function renderCredentialClients(
   context: Context,
   namespaces: readonly Namespace[],
   currentNamespace: string | null,
@@ -178,11 +178,13 @@ export function renderOAuthClients(
         value.disabled = true;
         status.textContent = "Rotating…";
         const result = (await context.request(
-          "/oauth-clients/" + encodeURIComponent(client.id) + "/rotate-secret",
+          "/credential-clients/" + encodeURIComponent(client.id) + "/rotate",
           {
             method: "POST",
             installationAdministration: "required",
-            body: github ? { privateKey } : { clientSecret: value.value },
+            body: github
+              ? { kind: "github-app", privateKey }
+              : { kind: "oauth2", clientSecret: value.value },
           },
         )) as CredentialClient;
         if (!dialog.open || !context.isCurrent()) {

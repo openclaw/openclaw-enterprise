@@ -124,12 +124,12 @@ func TestCredentialSourceAndWithdrawalCommandsReachTheirRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	registration := filepath.Join(directory, "source.json")
-	createBody := `{"name":"example-model","type":"static","config":{"provider_preset":"openai"},"secret":{"opaque":"synthetic-key"}}`
+	createBody := `{"name":"example-model","type":"static","config":{"provider_preset":"openai"},"secret":"synthetic-key"}`
 	if err := os.WriteFile(registration, []byte(createBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	replacement := filepath.Join(directory, "replacement.json")
-	updateBody := `{"secret":{"opaque":"synthetic-replacement"}}`
+	updateBody := `{"secret":"synthetic-replacement"}`
 	if err := os.WriteFile(replacement, []byte(updateBody), 0o600); err != nil {
 		t.Fatal(err)
 	}

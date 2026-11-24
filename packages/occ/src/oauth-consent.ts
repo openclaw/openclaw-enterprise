@@ -317,7 +317,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       );
       const source = await owner.createSource(
         {
-          kind: "oauth_refresh_token",
+          type: "oauth2-refresh-token",
           namespaceId: session.namespaceId,
           name: `Connection ${randomUUID()}`,
           connectionTemplateId: session.connectionTemplateId,

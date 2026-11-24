@@ -1340,8 +1340,8 @@ const firstRepositoryDeploymentWarning =
 
 test("Console requires a registered GitHub App Client for per-repository Agent access", async (t) => {
   const { page, requests, fixture, namespaceId, tooling } = await openRepositoryCreate(t);
-  assert.equal(pathRequests(requests, "GET", "/oauth-clients").length, 0);
-  const catalog = responseTo(page, "GET", fixture.origin + "/oauth-clients");
+  assert.equal(pathRequests(requests, "GET", "/credential-clients").length, 0);
+  const catalog = responseTo(page, "GET", fixture.origin + "/credential-clients");
   await repositoryCheckbox(page, tooling.repository).click();
   assert.equal((await catalog).status(), 200);
   await page
@@ -1370,7 +1370,7 @@ test("Console saves, reopens, and edits GitHub repository access through Agent-s
     clock,
   });
   const { fixture, namespaceId, tooling } = setup;
-  const registered = await fixture.request("POST", "/oauth-clients", {
+  const registered = await fixture.request("POST", "/credential-clients", {
     body: {
       kind: "github-app",
       displayName: "Repository App",

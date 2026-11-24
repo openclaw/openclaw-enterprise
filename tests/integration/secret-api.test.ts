@@ -1232,7 +1232,7 @@ test("credential source writes commit one value-free audit row each", async (t) 
   const sources = `/namespaces/${namespace.id}/credential-sources`;
   const created = await request(fixture.app, "POST", sources, {
     schema: CredentialSourceResponse,
-    body: { name: "audit source", type: "static", secret: { opaque: value } },
+    body: { name: "audit source", type: "static", secret: value },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   assert.equal(storeCreate.mock.calls.length, 1);
@@ -1246,7 +1246,7 @@ test("credential source writes commit one value-free audit row each", async (t) 
   assert.equal(await resolve(), value);
 
   const updated = await request(fixture.app, "PATCH", `${sources}/${created.data.id}`, {
-    body: { secret: { opaque: rotated } },
+    body: { secret: rotated },
   });
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
   assert.equal(await resolve(), rotated);

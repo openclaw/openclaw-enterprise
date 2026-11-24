@@ -365,7 +365,7 @@ test(
     // through supervisor readiness so the test does not send this value to the model endpoint.
     assertSource(
       await data<CredentialSourceWire>("PATCH", sourcePath, 200, {
-        secret: { opaque: `synthetic-native-agent-${randomUUID()}` },
+        secret: `synthetic-native-agent-${randomUUID()}`,
       }),
     );
     const rotated = await gateway.getProvider(workspace, providerName, rpc());

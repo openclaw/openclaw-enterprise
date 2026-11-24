@@ -63,7 +63,7 @@ export const connectionTemplateScenarios = {
   credentialsOAuthClientCatalog: {
     group: "Pages/Credentials",
     name: "Credential client catalog",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
     description: "OAuth clients and a GitHub App share one administrator-only catalog.",
     steps: [
@@ -85,7 +85,7 @@ export const connectionTemplateScenarios = {
   credentialsReferencedClient: {
     group: "Pages/Credentials",
     name: "OAuth client in use",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
     actions: [
       { selector: 'button[aria-label^="Delete Support service ("]', click: true },
@@ -97,7 +97,7 @@ export const connectionTemplateScenarios = {
   credentialsRegisterOAuthClient: {
     group: "Pages/Credentials",
     name: "Register OAuth client",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
     actions: [click("Register client")],
     description:
@@ -106,7 +106,7 @@ export const connectionTemplateScenarios = {
   credentialsRegisterGoogleClient: {
     group: "Pages/Credentials",
     name: "Register a Google OAuth client",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
     actions: [
       click("Register client"),
@@ -119,7 +119,7 @@ export const connectionTemplateScenarios = {
   credentialsRegisterFromMcp: {
     group: "Pages/Credentials",
     name: "Register an MCP OAuth client",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
     actions: [
       click("Register client"),
@@ -132,7 +132,7 @@ export const connectionTemplateScenarios = {
   credentialsRegisterGitHubApp: {
     group: "Pages/Credentials",
     name: "Register GitHub App",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
     actions: [
       click("Register client"),
@@ -144,7 +144,7 @@ export const connectionTemplateScenarios = {
   credentialsGitHubAppVerificationFailed: {
     group: "Pages/Credentials",
     name: "GitHub App verification failed",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "github-app-verification-failed",
     actions: [
       click("Register client"),
@@ -160,7 +160,7 @@ export const connectionTemplateScenarios = {
   credentialsRotateGitHubApp: {
     group: "Pages/Credentials",
     name: "Rotate GitHub App key",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
     actions: [{ selector: 'button[aria-label="Rotate Repository automation"]', click: true }],
     description:
@@ -252,7 +252,7 @@ export const connectionTemplateScenarios = {
       | "/console/secrets"
       | "/console/credentials/connection-templates"
       | `/console/credentials/connection-templates?${string}`
-      | "/console/credentials/oauth-clients";
+      | "/console/credentials/credential-clients";
     actions?: StoryAction[];
     emptyNamespaces?: true;
     oauthCatalog?: "ready" | "error" | "unconfirmed-save" | "github-app-verification-failed";

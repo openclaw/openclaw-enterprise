@@ -57,9 +57,9 @@ For manual OAuth, OCC accepts the configured settings and destinations. For MCP,
 
 ### 2. Register and maintain the OAuth client
 
-`packages/occ/src/connection-administration.ts:createOAuthClient` and `packages/occ/src/connection-administration.ts:cleanupOAuthClients`
+`packages/occ/src/connection-administration.ts:createCredentialClient` and `packages/occ/src/connection-administration.ts:cleanupCredentialClients`
 
-`createOAuthClient` and `rotateOAuthClientSecret` reject calls inside `OpenClawController.transact`, including an inherited transaction context, before private operations. Their independent commits preserve the cleanup reservation or, when the caller supplies an audit event, the requested-rotation audit if a later operation fails. The HTTP handlers call these methods directly and supply audit events. `deleteOAuthClient` only stages database work for worker cleanup and remains composable.
+`createCredentialClient` and `rotateCredentialClient` reject calls inside `OpenClawController.transact`, including an inherited transaction context, before private operations. Their independent commits preserve the cleanup reservation or, when the caller supplies an audit event, the requested-rotation audit if a later operation fails. The HTTP handlers call these methods directly and supply audit events. `deleteCredentialClient` only stages database work for worker cleanup and remains composable.
 
 If the save response lacks a valid version, the Console keeps the editor open and disables another save. Close the editor to refresh the catalog and check whether the change was saved before continuing registration.
 

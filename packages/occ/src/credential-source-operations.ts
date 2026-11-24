@@ -31,6 +31,7 @@ import {
   isManagedTokenServiceSource,
 } from "./credential-source-metadata.ts";
 import {
+  CredentialDeliveryFailedError,
   CredentialSourceConfigError,
   DependencyUnavailableError,
   keyedSettingPath,
@@ -76,10 +77,10 @@ interface CredentialSourceDependencies {
     namespaceId: string,
     sourceId: string,
   ) => Promise<OAuthConnectionStatus>;
-  readonly maintainConnectionToken: (
+  readonly refreshTokenServiceSource: (
     namespaceId: string,
     sourceId: string,
-  ) => Promise<OAuthConnectionStatus | undefined>;
+  ) => Promise<CredentialRefreshStatus>;
 }
 
 function legacySource(
@@ -94,9 +95,7 @@ function assertRefreshMinted(status: CredentialRefreshStatus): void {
     return;
   }
   const code = status.failureCode === undefined ? "" : ` (${status.failureCode})`;
-  throw new DependencyUnavailableError(
-    `The Credential Refresh Driver did not mint a token${code}.`,
-  );
+  throw new DependencyUnavailableError(`TokenService did not mint a token${code}.`);
 }
 
 function credentialSourceFieldsMatch(
@@ -290,7 +289,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
     failureAudit?: (reasonCode: string) => AuditEvent,
   ): Promise<CredentialSourceManagementMetadata> {
     namespaceIdentity(input.namespaceId);
-    const rotation = await dependencies.transactions.transact(async (state) => {
+    const source = await dependencies.transactions.transact(async (state) => {
       await dependencies.authority.authorize(principalId, "update", {
         kind: "credential_source",
         namespaceId: input.namespaceId,
@@ -311,21 +310,17 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       }
       if (
         !isManagedTokenServiceSource(source) ||
-        source.type !== "oauth2-refresh-token" ||
+        source.type === "static" ||
         source.state !== "ready"
       ) {
         throw new ResourceStateConflictError(
-          "Only a ready TokenService OAuth Source can be rotated.",
+          "Only a ready TokenService OAuth or GitHub App installation Source can be renewed.",
         );
       }
       return source;
     });
-    const source = rotation;
     try {
-      const refresh = await dependencies.maintainConnectionToken(source.namespaceId, source.id);
-      if (!refresh) {
-        throw new ResourceStateConflictError("The OAuth Source was retired.");
-      }
+      const refresh = await dependencies.refreshTokenServiceSource(source.namespaceId, source.id);
       assertRefreshMinted(refresh);
       if (audit) {
         await dependencies.transactions.transact((state) => state.audit.append(audit));
@@ -337,19 +332,31 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         );
         if (
           !isManagedTokenServiceSource(current) ||
-          current.type !== "oauth2-refresh-token" ||
+          current.type !== source.type ||
           current.state !== "ready"
         ) {
-          throw new ResourceStateConflictError("The OAuth Source was retired during rotation.");
+          throw new ResourceStateConflictError("The credential Source was retired during renewal.");
         }
-        return oauthCredentialSourceMetadata(view, current, { state: "ready", refresh });
+        return current.type === "github-app-installation"
+          ? githubAppCredentialSourceMetadata(current)
+          : oauthCredentialSourceMetadata(view, current, { state: "ready", refresh });
       });
     } catch (error) {
       if (failureAudit) {
+        const deliveryFailed = error instanceof CredentialDeliveryFailedError;
         await dependencies.transactions
-          .transact((state) =>
-            state.audit.append(failureAudit("CREDENTIAL_REFRESH_ROTATION_FAILED")),
-          )
+          .transact(async (state) => {
+            if (deliveryFailed && audit) {
+              await state.audit.append(audit);
+            }
+            await state.audit.append(
+              failureAudit(
+                deliveryFailed
+                  ? "CREDENTIAL_DELIVERY_FAILED"
+                  : "CREDENTIAL_REFRESH_ROTATION_FAILED",
+              ),
+            );
+          })
           .catch(() => undefined);
       }
       throw error;

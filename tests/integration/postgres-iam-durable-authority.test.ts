@@ -463,7 +463,8 @@ test(
         201,
       );
       const client = data<{ id: string }>(
-        await f.inject("POST", "/oauth-clients", {
+        await f.inject("POST", "/credential-clients", {
+          kind: "oauth2",
           namespaceId,
           issuer,
           tokenUrl,
@@ -662,7 +663,7 @@ test(
 
       // OAuth material can change only through provider exchange, even for an administrator.
       const before = refreshes;
-      const rejected = await f.inject("PATCH", sourcePath, { secret: { opaque: randomUUID() } });
+      const rejected = await f.inject("PATCH", sourcePath, { secret: randomUUID() });
       assert.equal(rejected.statusCode, 409, rejected.body);
       assert.equal(rejected.json().error.message, "Only a static Source can be updated.");
       assert.equal(refreshes, before);

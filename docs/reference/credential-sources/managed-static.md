@@ -11,7 +11,7 @@ In a ready Namespace, send `POST /namespaces/:namespaceId/credential-sources` wi
   "name": "Model access",
   "type": "static",
   "config": { "provider_preset": "openai" },
-  "secret": { "opaque": "<credential>" }
+  "secret": "<credential>"
 }
 ```
 

@@ -87,24 +87,15 @@ function ownershipConflict(): never {
 }
 
 function validateLifecycle(config: SourceLifecycleConfig): void {
-  if (config.type !== "static" || Object.keys(config.settings).length !== 0) {
+  if (Object.keys(config.settings).length !== 0) {
     throw new TokenServiceSourceInputError(
       "OpenShell requires a static Source with no lifecycle settings.",
     );
   }
 }
 
-function staticCredential(
-  secret: Extract<SourceRegistrationInput, { kind: "static" }>["secret"],
-): string {
-  const values = Object.values(secret);
-  const value = values[0];
-  if (
-    values.length !== 1 ||
-    !isNonEmptyString(value) ||
-    value.includes("\0") ||
-    !value.isWellFormed()
-  ) {
+function staticCredential(value: string): string {
+  if (!isNonEmptyString(value) || value.includes("\0") || !value.isWellFormed()) {
     throw new TokenServiceSourceInputError(
       "A static Source requires one nonempty UTF-8 credential value.",
     );
@@ -362,7 +353,7 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
     if (!isNonEmptyString(input.namespaceId) || !isName(input.name)) {
       throw new ScopeViolationError("The credential source identity is invalid.");
     }
-    if (input.kind !== "static") {
+    if (input.type !== "static") {
       throw new TokenServiceSourceInputError(
         "The OpenShell TokenService supports only static Sources.",
       );

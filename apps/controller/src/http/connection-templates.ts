@@ -1,7 +1,7 @@
 import type { AuditEvent, OccApiOperationId } from "@openclaw-enterprise/contracts";
 import type {
   CreateConnectionTemplateInput,
-  CreateOAuthClientInput,
+  CreateCredentialClientInput,
   RotateCredentialClientInput,
   OpenClawController,
   PlatformUnitOfWork,
@@ -19,7 +19,9 @@ type TemplateHandler = (input: {
   actorId: string;
   request: FastifyRequest;
   reply: FastifyReply;
-  mutationEvent: (templateId: string) => AuditEvent;
+  mutationEvent: (
+    details: { connectionTemplateId: string } | { credentialClientId: string },
+  ) => AuditEvent;
 }) => Promise<void>;
 
 export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, TemplateHandler>> = {
@@ -41,7 +43,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
       actorId,
       request.body as CreateConnectionTemplateInput,
       discover,
-      mutationEvent,
+      (connectionTemplateId) => mutationEvent({ connectionTemplateId }),
       holdSession,
     );
     reply.status(201).send({ data: created, meta });
@@ -67,7 +69,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
       connectionTemplateId,
       request.body as UpdateConnectionTemplateInput,
       discover,
-      mutationEvent(connectionTemplateId),
+      mutationEvent({ connectionTemplateId }),
       holdSession,
     );
     reply.send({ data: updated, meta });
@@ -84,7 +86,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
     await controller.deleteConnectionTemplate(
       actorId,
       connectionTemplateId,
-      mutationEvent(connectionTemplateId),
+      mutationEvent({ connectionTemplateId }),
       holdSession,
     );
     reply.status(204).send();
@@ -97,11 +99,11 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
     );
     reply.send({ data, meta });
   },
-  async listOAuthClients({ meta, controller, actorId, reply }) {
-    const clients = await controller.listOAuthClients(actorId);
+  async listCredentialClients({ meta, controller, actorId, reply }) {
+    const clients = await controller.listCredentialClients(actorId);
     reply.send({ data: clients, meta });
   },
-  async createOAuthClient({
+  async createCredentialClient({
     holdSession,
     meta,
     controller,
@@ -110,15 +112,15 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
     reply,
     mutationEvent,
   }) {
-    const client = await controller.createOAuthClient(
+    const client = await controller.createCredentialClient(
       actorId,
-      request.body as CreateOAuthClientInput,
-      mutationEvent,
+      request.body as CreateCredentialClientInput,
+      (credentialClientId) => mutationEvent({ credentialClientId }),
       holdSession,
     );
     reply.status(201).send({ data: client, meta });
   },
-  async rotateOAuthClientSecret({
+  async rotateCredentialClient({
     holdSession,
     meta,
     controller,
@@ -127,22 +129,29 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
     reply,
     mutationEvent,
   }) {
-    const { oauthClientId } = request.params as { oauthClientId: string };
-    const client = await controller.rotateOAuthClientSecret(
+    const { credentialClientId } = request.params as { credentialClientId: string };
+    const client = await controller.rotateCredentialClient(
       actorId,
-      oauthClientId,
+      credentialClientId,
       request.body as RotateCredentialClientInput,
-      mutationEvent(oauthClientId),
+      mutationEvent({ credentialClientId }),
       holdSession,
     );
     reply.send({ data: client, meta });
   },
-  async deleteOAuthClient({ holdSession, controller, actorId, request, reply, mutationEvent }) {
-    const { oauthClientId } = request.params as { oauthClientId: string };
-    await controller.deleteOAuthClient(
+  async deleteCredentialClient({
+    holdSession,
+    controller,
+    actorId,
+    request,
+    reply,
+    mutationEvent,
+  }) {
+    const { credentialClientId } = request.params as { credentialClientId: string };
+    await controller.deleteCredentialClient(
       actorId,
-      oauthClientId,
-      mutationEvent(oauthClientId),
+      credentialClientId,
+      mutationEvent({ credentialClientId }),
       holdSession,
     );
     reply.status(204).send();

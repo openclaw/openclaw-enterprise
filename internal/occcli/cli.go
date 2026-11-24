@@ -617,7 +617,7 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 
 	rotate := &cobra.Command{
 		Use:   "rotate ID",
-		Short: "Force an OAuth credential source to refresh its token",
+		Short: "Renew an OAuth or GitHub App installation credential source",
 		Args:  idArgs(credentialSourceIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()

@@ -2458,7 +2458,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
       name: "Plugin revision PAT",
       type: "static",
       config: { provider_preset: "codex-pat" },
-      secret: { opaque: "at-browser-plugin-revision" },
+      secret: "at-browser-plugin-revision",
     },
   });
   assert.equal(enrolled.status, 201);
@@ -3316,7 +3316,7 @@ test("Harness controls submit the latest request directly and recover from desti
       name: "OpenAI",
       type: "static",
       config: { provider_preset: "openai" },
-      secret: { opaque: randomUUID() },
+      secret: randomUUID(),
     },
   });
   assert.equal(source.status, 201, JSON.stringify(source.body));

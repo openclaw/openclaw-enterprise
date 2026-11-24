@@ -59,7 +59,7 @@ export function oauthFailure(cause: unknown, operation: string) {
 }
 
 export async function oauthClients(context: Context) {
-  return (await context.request("/oauth-clients", {
+  return (await context.request("/credential-clients", {
     installationAdministration: "required",
     includeMeta: true,
   })) as { data: CredentialClient[]; meta?: { redirectUri?: string } };
@@ -285,6 +285,7 @@ export function openCredentialClientRegistration(
       const registration = github
         ? { kind: "github-app", displayName, appId: appId.value.trim(), privateKey }
         : {
+            kind: "oauth2",
             displayName,
             issuer: issuer.value.trim(),
             tokenUrl: tokenUrl.value.trim(),
@@ -296,7 +297,7 @@ export function openCredentialClientRegistration(
           };
       fields.disabled = true;
       status.textContent = "Registering client…";
-      const result = (await context.request("/oauth-clients", {
+      const result = (await context.request("/credential-clients", {
         method: "POST",
         installationAdministration: "required",
         expectedStatus: 201,

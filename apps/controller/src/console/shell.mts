@@ -3,7 +3,7 @@ import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
 import { button, element, focusSaveOutcome, requestIdLine, setUnavailable } from "./dom.mjs";
 import {
   connectionTemplatesPage,
-  oauthClientsPage,
+  credentialClientsPage,
   type createNavigation,
   type pages,
 } from "./navigation.mjs";
@@ -635,7 +635,7 @@ export function createShell({
       });
     }
     const credentialAdministration =
-      feature === connectionTemplatesPage || feature === oauthClientsPage;
+      feature === connectionTemplatesPage || feature === credentialClientsPage;
     const icons = {
       agents:
         "M12 3v3M4 9a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M9 11v2m6-2v2M2 12v3m20-3v3",
@@ -787,7 +787,7 @@ export function createShell({
       for (const [name, label] of [
         ["secrets", "Secrets"],
         [connectionTemplatesPage, "Connection templates"],
-        [oauthClientsPage, "Credential clients"],
+        [credentialClientsPage, "Credential clients"],
       ] as const) {
         if (name !== "secrets" && !state.installationAdmin) {
           continue;
@@ -1090,7 +1090,7 @@ export function createShell({
     // The shown page learned that the caller does not administer the Installation, whose
     // administrators alone get the link (finding D760).
     dropAdministrationLinks() {
-      for (const page of [connectionTemplatesPage, oauthClientsPage]) {
+      for (const page of [connectionTemplatesPage, credentialClientsPage]) {
         app.querySelector(`.credential-tabs [data-nav="${page}"]`)?.remove();
       }
       observabilityUrl = null;

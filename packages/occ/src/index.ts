@@ -13,7 +13,7 @@ export type {
 } from "./oauth-consent.ts";
 export type {
   CreateConnectionTemplateInput,
-  CreateOAuthClientInput,
+  CreateCredentialClientInput,
   RotateCredentialClientInput,
   UpdateConnectionTemplateInput,
 } from "./connection-administration.ts";

@@ -331,7 +331,7 @@ export function createRepositoryFields(
     clientState = "loading";
     renderClient();
     try {
-      const result = await context.request("/oauth-clients", {
+      const result = await context.request("/credential-clients", {
         installationAdministration: "required",
         expectedStatus: 200,
       });

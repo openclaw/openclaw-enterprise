@@ -5,7 +5,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { requestFailure } from "../api-client.mjs";
 import { button, dismissOnBackdrop, element, field, mayReturnFocus } from "../dom.mjs";
-import { connectionTemplatesPage, oauthClientsPage } from "../navigation.mjs";
+import { connectionTemplatesPage, credentialClientsPage } from "../navigation.mjs";
 import { namespacePath } from "./list.mjs";
 import type { PluginDiscoveryContext } from "./plugin-discovery.mjs";
 
@@ -462,7 +462,7 @@ export function pluginConnectionControl(
                 status.textContent =
                   "No eligible OAuth client is registered for this template. Ask an Installation administrator to register one.";
                 if (context.installationAdmin === true) {
-                  const settings = new URL(`/console/${oauthClientsPage}`, location.origin);
+                  const settings = new URL(`/console/${credentialClientsPage}`, location.origin);
                   settings.searchParams.set("namespace", context.namespaceId);
                   clientArea.append(
                     element(

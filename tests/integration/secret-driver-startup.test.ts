@@ -227,11 +227,11 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   await owner.removeClientSecret(client, AbortSignal.timeout(5_000));
   const source = await owner.createSource(
     {
-      kind: "static",
+      type: "static",
       namespaceId,
       name: "Active source",
-      lifecycleConfig: { type: "static", settings: {} },
-      secret: { credential: randomUUID() },
+      lifecycleConfig: { settings: {} },
+      secret: randomUUID(),
       config: {},
     },
     AbortSignal.timeout(5_000),
@@ -243,7 +243,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   const refreshedCredential = randomUUID();
   await owner.updateSource(
     sourceInstance,
-    { secret: { credential: refreshedCredential } },
+    { secret: refreshedCredential },
     AbortSignal.timeout(5_000),
   );
   assert.equal(deliveredCredential, refreshedCredential);

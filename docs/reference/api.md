@@ -1524,13 +1524,13 @@ Example response
 | [`DELETE /connection-templates/{connectionTemplateId}`](#delete-connectiontemplatesconnectiontemplateid) | Delete a connection template |
 | [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
 | [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template or create a version with updated settings |
+| [`GET /credential-clients`](#get-credentialclients) | List registered credential clients |
+| [`POST /credential-clients`](#post-credentialclients) | Register an OAuth or GitHub App credential client |
+| [`DELETE /credential-clients/{credentialClientId}`](#delete-credentialclientscredentialclientid) | Delete an unused credential client |
+| [`POST /credential-clients/{credentialClientId}/rotate`](#post-credentialclientscredentialclientidrotate) | Rotate credential client private material |
 | [`GET /namespaces/{namespaceId}/connection-templates`](#get-namespacesnamespaceidconnectiontemplates) | List connection templates available in this Namespace |
 | [`POST /namespaces/{namespaceId}/connections`](#post-namespacesnamespaceidconnections) | Start consent for a reusable account in this Namespace |
 | [`GET /namespaces/{namespaceId}/connections/oauth-clients`](#get-namespacesnamespaceidconnectionsoauthclients) | List OAuth clients eligible for a connection template in this Namespace |
-| [`GET /oauth-clients`](#get-oauthclients) | List registered OAuth clients |
-| [`POST /oauth-clients`](#post-oauthclients) | Register an OAuth client from a connection template |
-| [`DELETE /oauth-clients/{oauthClientId}`](#delete-oauthclientsoauthclientid) | Delete an unused OAuth client |
-| [`POST /oauth-clients/{oauthClientId}/rotate-secret`](#post-oauthclientsoauthclientidrotatesecret) | Rotate an OAuth client secret |
 | [`GET /oauth/callback`](#get-oauthcallback) | Complete a browser connection for the signed-in person who started it |
 
 #### `GET /connection-templates`
@@ -2286,6 +2286,299 @@ Example response
 }
 ```
 
+#### `GET /credential-clients`
+
+<span id="get-credentialclients"></span>
+
+List registered credential clients
+
+**Operation ID:** `listCredentialClients`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object or object>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "clientId": "example-client",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "displayName": "Example provider client",
+      "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "issuer": "https://accounts.example.com",
+      "kind": "oauth2",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "tokenEndpointAuthMethod": "client_secret_basic",
+      "tokenUrl": "https://accounts.example.com/token"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /credential-clients`
+
+<span id="post-credentialclients"></span>
+
+Register an OAuth or GitHub App credential client
+
+**Operation ID:** `createCredentialClient`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+**`kind: "oauth2"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `clientId` | `string` | Yes | min length: 1; max length: 256 |
+| `clientSecret` | `string` | No | min length: 1; max length: 4096 |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `kind` | `"oauth2"` | Yes | — |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
+| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+
+**`kind: "github-app"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `appId` | `string` | Yes | pattern: `^[1-9][0-9]{0,15}$` |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `kind` | `"github-app"` | Yes | — |
+| `privateKey` | `string` | Yes | min length: 1; max length: 20000 |
+
+Example request
+```json
+{
+  "clientId": "example-client",
+  "clientSecret": "example-client-secret",
+  "displayName": "Example provider client",
+  "issuer": "https://accounts.example.com",
+  "kind": "oauth2",
+  "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+  "tokenEndpointAuthMethod": "client_secret_basic",
+  "tokenUrl": "https://accounts.example.com/token"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "clientId": "example-client",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "displayName": "Example provider client",
+    "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+    "issuer": "https://accounts.example.com",
+    "kind": "oauth2",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "tokenEndpointAuthMethod": "client_secret_basic",
+    "tokenUrl": "https://accounts.example.com/token"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /credential-clients/{credentialClientId}`
+
+<span id="delete-credentialclientscredentialclientid"></span>
+
+Delete an unused credential client
+
+**Operation ID:** `deleteCredentialClient`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `credentialClientId` | path | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ccr_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `POST /credential-clients/{credentialClientId}/rotate`
+
+<span id="post-credentialclientscredentialclientidrotate"></span>
+
+Rotate credential client private material
+
+**Operation ID:** `rotateCredentialClient`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `credentialClientId` | path | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ccr_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+**`kind: "oauth2"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `clientSecret` | `string` | Yes | min length: 1; max length: 4096 |
+| `kind` | `"oauth2"` | Yes | — |
+
+**`kind: "github-app"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `kind` | `"github-app"` | Yes | — |
+| `privateKey` | `string` | Yes | min length: 1; max length: 20000 |
+
+Example request
+```json
+{
+  "clientSecret": "replacement-example-client-secret",
+  "kind": "oauth2"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "clientId": "example-client",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "displayName": "Example provider client",
+    "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+    "issuer": "https://accounts.example.com",
+    "kind": "oauth2",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "tokenEndpointAuthMethod": "client_secret_basic",
+    "tokenUrl": "https://accounts.example.com/token"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `GET /namespaces/{namespaceId}/connection-templates`
 
 <span id="get-namespacesnamespaceidconnectiontemplates"></span>
@@ -2575,284 +2868,6 @@ Example response
       "tokenUrl": "https://accounts.example.com/token"
     }
   ],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `GET /oauth-clients`
-
-<span id="get-oauthclients"></span>
-
-List registered OAuth clients
-
-**Operation ID:** `listOAuthClients`
-
-**Permissions:** Requires administer permission on the requested Installation.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `array<object or object>` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.redirectUri` | `string` | No | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-No readable resources
-```json
-{
-  "data": [],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-Example response
-```json
-{
-  "data": [
-    {
-      "clientId": "example-client",
-      "createdAt": "2026-10-01T12:00:00.000Z",
-      "displayName": "Example provider client",
-      "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
-      "issuer": "https://accounts.example.com",
-      "kind": "oauth2",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "tokenEndpointAuthMethod": "client_secret_basic",
-      "tokenUrl": "https://accounts.example.com/token"
-    }
-  ],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `POST /oauth-clients`
-
-<span id="post-oauthclients"></span>
-
-Register an OAuth client from a connection template
-
-**Operation ID:** `createOAuthClient`
-
-**Permissions:** Requires administer permission on the requested Installation.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-**Required fields: `displayName`, `clientId`, `tokenEndpointAuthMethod`, `issuer`, `tokenUrl`**
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `clientId` | `string` | Yes | min length: 1; max length: 256 |
-| `clientSecret` | `string` | No | min length: 1; max length: 4096 |
-| `displayName` | `string` | Yes | min length: 1; max length: 200 |
-| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-
-**`kind: "github-app"`**
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `appId` | `string` | Yes | pattern: `^[1-9][0-9]{0,15}$` |
-| `displayName` | `string` | Yes | min length: 1; max length: 200 |
-| `kind` | `"github-app"` | Yes | — |
-| `privateKey` | `string` | Yes | min length: 1; max length: 20000 |
-
-Example request
-```json
-{
-  "clientId": "example-client",
-  "clientSecret": "example-client-secret",
-  "displayName": "Example provider client",
-  "issuer": "https://accounts.example.com",
-  "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-  "tokenEndpointAuthMethod": "client_secret_basic",
-  "tokenUrl": "https://accounts.example.com/token"
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `201` | Created |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`201` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object or object` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.redirectUri` | `string` | No | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "clientId": "example-client",
-    "createdAt": "2026-10-01T12:00:00.000Z",
-    "displayName": "Example provider client",
-    "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
-    "issuer": "https://accounts.example.com",
-    "kind": "oauth2",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "tokenEndpointAuthMethod": "client_secret_basic",
-    "tokenUrl": "https://accounts.example.com/token"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `DELETE /oauth-clients/{oauthClientId}`
-
-<span id="delete-oauthclientsoauthclientid"></span>
-
-Delete an unused OAuth client
-
-**Operation ID:** `deleteOAuthClient`
-
-**Permissions:** Requires administer permission on the requested Installation.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `oauthClientId` | path | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ccr_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `204` | No Content |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-#### `POST /oauth-clients/{oauthClientId}/rotate-secret`
-
-<span id="post-oauthclientsoauthclientidrotatesecret"></span>
-
-Rotate an OAuth client secret
-
-**Operation ID:** `rotateOAuthClientSecret`
-
-**Permissions:** Requires administer permission on the requested Installation.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `oauthClientId` | path | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ccr_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-Schema: `object or object`.
-
-Example request
-```json
-{
-  "clientSecret": "replacement-example-client-secret"
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object or object` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.redirectUri` | `string` | No | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "clientId": "example-client",
-    "createdAt": "2026-10-01T12:00:00.000Z",
-    "displayName": "Example provider client",
-    "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
-    "issuer": "https://accounts.example.com",
-    "kind": "oauth2",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "tokenEndpointAuthMethod": "client_secret_basic",
-    "tokenUrl": "https://accounts.example.com/token"
-  },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }
@@ -11210,7 +11225,7 @@ Example response
 | [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source |
 | [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one readable credential source and its available status |
 | [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Update a Source through its recorded owner |
-| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Ask the recorded owner to refresh a credential source |
+| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Renew an OAuth or GitHub App installation credential source |
 
 #### `GET /namespaces/{namespaceId}/credential-sources`
 
@@ -11370,7 +11385,7 @@ Register a managed static Source. Optionally supply connectionTemplateId. OCC va
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects an approved model operation: openai or codex-pat. |
 | `connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `secret` | `object<string, string>` | Yes | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
+| `secret` | `string` | Yes | min length: 1; max length: 65536; pattern: `^[^\u0000]*$`; Opaque credential value. |
 | `type` | `"static"` | Yes | — |
 
 **RegisterGitHubAppTokenServiceSourceBody (required fields: `name`, `type`, `clientId`, `repositoryRefs`)**
@@ -11391,9 +11406,7 @@ Example request
     "provider_preset": "openai"
   },
   "name": "Model credentials",
-  "secret": {
-    "value": "replace-with-your-authorized-model-key"
-  },
+  "secret": "replace-with-your-authorized-model-key",
   "type": "static"
 }
 ```
@@ -11597,14 +11610,12 @@ Update a Source through its recorded owner
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects an approved model operation: openai or codex-pat. |
-| `secret` | `object<string, string>` | No | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
+| `secret` | `string` | No | min length: 1; max length: 65536; pattern: `^[^\u0000]*$`; Opaque credential value. |
 
 Example request
 ```json
 {
-  "secret": {
-    "value": "replace-with-your-rotated-model-key"
-  }
+  "secret": "replace-with-your-rotated-model-key"
 }
 ```
 
@@ -11660,7 +11671,7 @@ Example response
 
 <span id="post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate"></span>
 
-Ask the recorded owner to refresh a credential source
+Renew an OAuth or GitHub App installation credential source
 
 **Operation ID:** `rotateCredentialSource`
 

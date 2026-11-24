@@ -26,6 +26,7 @@ const issuer = "https://accounts.example.test";
 const tokenUrl = issuer + "/token";
 const clientStoreIdentity = randomUUID();
 const clientInput = (namespaceId?: string) => ({
+  kind: "oauth2" as const,
   ...(namespaceId && { namespaceId }),
   issuer,
   tokenUrl,
@@ -142,7 +143,7 @@ test(
     assert.ok(oauthDraft);
     const oauthId = await createManualDraft(inject, namespaceId);
     await installClientOwner(controller, state);
-    const registered = await inject("POST", "/oauth-clients", clientInput(namespaceId));
+    const registered = await inject("POST", "/credential-clients", clientInput(namespaceId));
     assert.equal(registered.statusCode, 201, registered.body);
     const usable = async (id: string) => {
       const result = await inject("GET", `/namespaces/${id}/connection-templates`);
@@ -270,13 +271,13 @@ test(
       0,
     );
     assert.equal(
-      (await inject("DELETE", `/oauth-clients/${registered.json().data.id}`)).statusCode,
+      (await inject("DELETE", `/credential-clients/${registered.json().data.id}`)).statusCode,
       204,
     );
     await pool.query("UPDATE occ.oauth_clients SET cleanup_after=now() WHERE id=$1", [
       registered.json().data.id,
     ]);
-    await controller.cleanupOAuthClients();
+    await controller.cleanupCredentialClients();
   },
 );
 
@@ -414,18 +415,18 @@ test(
     await state.appendNativeIAMPrincipal(auth.principalSeed(reader, { grant: "none" }));
     const denied = await app.inject({
       method: "POST",
-      url: "/oauth-clients",
+      url: "/credential-clients",
       headers: await signedInHeaders(app, "https://console.oce.localhost", member),
       payload: input,
     });
     assert.equal(denied.statusCode, 403, denied.body);
-    const invalid = await inject("POST", "/oauth-clients", {
+    const invalid = await inject("POST", "/credential-clients", {
       ...input,
       tokenEndpointAuthMethod: "private_key_jwt",
     });
     assert.equal(invalid.statusCode, 400, invalid.body);
     assert.equal(core.calls.createNamespacedSecret, 0);
-    const created = await inject("POST", "/oauth-clients", input);
+    const created = await inject("POST", "/credential-clients", input);
     assert.equal(created.statusCode, 201, created.body);
     const global = created.json().data;
     assert.equal(global.issuer, issuer);
@@ -444,9 +445,9 @@ test(
       false,
       "Client registration must not mutate a Template",
     );
-    const scoped = await inject("POST", "/oauth-clients", clientInput(namespaceId));
+    const scoped = await inject("POST", "/credential-clients", clientInput(namespaceId));
     assert.equal(scoped.statusCode, 201, scoped.body);
-    const incompatible = await inject("POST", "/oauth-clients", {
+    const incompatible = await inject("POST", "/credential-clients", {
       ...clientInput(namespaceId),
       tokenUrl: issuer + "/other",
     });
@@ -465,7 +466,8 @@ test(
     assert.deepEqual(await eligible(namespaceId), [global.id, scoped.json().data.id].sort());
     assert.deepEqual(await eligible(peer.json().data.id), [global.id]);
     assert.equal((await inject("GET", `/namespaces/${namespaceId}/secrets`)).json().data.length, 0);
-    const pub = await inject("POST", "/oauth-clients", {
+    const pub = await inject("POST", "/credential-clients", {
+      kind: "oauth2",
       issuer,
       tokenUrl,
       revocationUrl: manual.revocationUrl,
@@ -480,7 +482,8 @@ test(
     );
     assert.equal(
       (
-        await inject("POST", `/oauth-clients/${pub.json().data.id}/rotate-secret`, {
+        await inject("POST", `/credential-clients/${pub.json().data.id}/rotate`, {
+          kind: "oauth2",
           clientSecret: randomUUID(),
         })
       ).statusCode,
@@ -491,7 +494,7 @@ test(
     });
     assert.equal(renamed.json().data.current.version, 1);
     assert.equal(
-      (await inject("DELETE", `/oauth-clients/${global.id}`)).statusCode,
+      (await inject("DELETE", `/credential-clients/${global.id}`)).statusCode,
       204,
       "a Template no longer holds a default Client",
     );
@@ -499,16 +502,16 @@ test(
       await eligible(namespaceId),
       [pub.json().data.id, scoped.json().data.id].sort(),
     );
-    const listing = await inject("GET", "/oauth-clients");
+    const listing = await inject("GET", "/credential-clients");
     assert.equal(listing.body.includes(input.clientSecret), false);
     assert.equal(listing.body.includes(driver.id), false);
     for (const id of [scoped.json().data.id, incompatible.json().data.id, pub.json().data.id]) {
-      assert.equal((await inject("DELETE", `/oauth-clients/${id}`)).statusCode, 204);
+      assert.equal((await inject("DELETE", `/credential-clients/${id}`)).statusCode, 204);
     }
     await pool.query(
       "UPDATE occ.oauth_clients SET cleanup_after=now() WHERE cleanup_after IS NOT NULL",
     );
-    await controller.cleanupOAuthClients();
+    await controller.cleanupCredentialClients();
     assert.equal(core.secrets.size, 0);
   },
 );
@@ -525,7 +528,7 @@ test(
         );
         const { core } = await installClientOwner(controller, state);
         const input = clientInput();
-        const original = await inject("POST", "/oauth-clients", input);
+        const original = await inject("POST", "/credential-clients", input);
         assert.equal(original.statusCode, 201, original.body);
         const client = original.json().data;
         const installation = await state.loadInstallation();
@@ -545,11 +548,11 @@ test(
           actorId: principal.id,
           action:
             operation === "create"
-              ? "openclaw.oauth_clients.create"
-              : "openclaw.oauth_clients.rotate_secret",
+              ? "openclaw.credential_clients.create"
+              : "openclaw.credential_clients.rotate",
           resource: { kind: "installation" as const, id: installation.id },
           outcome: "success" as const,
-          details: { oauthClientId: id, transactionProbe: probe },
+          details: { credentialClientId: id, transactionProbe: probe },
         });
 
         // The public composition API must refuse before a private write. Otherwise an
@@ -557,12 +560,12 @@ test(
         const failure = await controller
           .transact(async () => {
             if (operation === "create") {
-              await controller.createOAuthClient(principal.id, next, audit);
+              await controller.createCredentialClient(principal.id, next, audit);
             } else {
-              await controller.rotateOAuthClientSecret(
+              await controller.rotateCredentialClient(
                 principal.id,
                 client.id,
-                { clientSecret: next.clientSecret },
+                { kind: "oauth2", clientSecret: next.clientSecret },
                 audit(client.id),
               );
             }
@@ -617,7 +620,7 @@ test(
     });
     const { core } = await installClientOwner(controller, state);
     const input = clientInput();
-    const original = await inject("POST", "/oauth-clients", input);
+    const original = await inject("POST", "/credential-clients", input);
     assert.equal(original.statusCode, 201, original.body);
     const client = original.json().data;
     const next = randomUUID();
@@ -633,7 +636,8 @@ test(
       },
       { times: 1 },
     );
-    const response = await inject("POST", `/oauth-clients/${client.id}/rotate-secret`, {
+    const response = await inject("POST", `/credential-clients/${client.id}/rotate`, {
+      kind: "oauth2",
       clientSecret: next,
     });
     assert.equal(response.statusCode, 503, response.body);
@@ -642,8 +646,8 @@ test(
       `SELECT attempted.actor_id AS requester, completed.actor_id AS writer
        FROM occ.audit_events attempted JOIN occ.audit_events completed
          ON attempted.details->'__occAuditMetadata'->>'requestId'=completed.details->'__occAuditMetadata'->>'requestId'
-       WHERE attempted.details->>'oauthClientId'=$1 AND attempted.details->>'phase'='requested'
-         AND completed.details->>'oauthClientId'=$1 AND completed.details->>'phase' IS NULL AND completed.outcome='success'`,
+       WHERE attempted.details->>'credentialClientId'=$1 AND attempted.details->>'phase'='requested'
+         AND completed.details->>'credentialClientId'=$1 AND completed.details->>'phase' IS NULL AND completed.outcome='success'`,
       [client.id],
     );
     assert.equal(audit.rowCount, 1);
@@ -651,7 +655,7 @@ test(
 
     // An unknown audit commit cannot switch references or retire material still used by the client.
     assert.deepEqual([...core.secrets.keys()], secretNames);
-    await controller.cleanupOAuthClients();
+    await controller.cleanupCredentialClients();
     assert.equal(core.secrets.size, 1);
     assert.equal(
       await controller.withOAuthClientSecret(client, async (value) => value === next),
@@ -659,14 +663,14 @@ test(
       "existing registrations must resolve the rotated value",
     );
     assert.equal(
-      (await inject("DELETE", `/oauth-clients/${client.id}`, undefined)).statusCode,
+      (await inject("DELETE", `/credential-clients/${client.id}`, undefined)).statusCode,
       204,
     );
     // A failed private deletion leaves a hidden client that the worker can still identify and retry.
     core.failureCodes.deleteNamespacedSecret.push(403);
-    await controller.cleanupOAuthClients();
+    await controller.cleanupCredentialClients();
     assert.equal(core.secrets.size, 1);
-    const hidden = await inject("GET", "/oauth-clients");
+    const hidden = await inject("GET", "/credential-clients");
     assert.equal(hidden.statusCode, 200, hidden.body);
     assert.ok(!hidden.json().data.some((row: { id: string }) => row.id === client.id));
     const due = await pool.query(
@@ -674,7 +678,7 @@ test(
       [client.id],
     );
     assert.equal(due.rowCount, 1);
-    await controller.cleanupOAuthClients();
+    await controller.cleanupCredentialClients();
     assert.equal(core.secrets.size, 0);
   },
 );
@@ -709,7 +713,7 @@ test(
     recovered.registerDriver(driver);
     recovered.selectDriver("secret", driver.id);
     const input = clientInput();
-    const original = await inject("POST", "/oauth-clients", input);
+    const original = await inject("POST", "/credential-clients", input);
     assert.equal(original.statusCode, 201, original.body);
     const stage = core.createNamespacedSecret.bind(core);
     const stagedClientId = randomUUID();
@@ -723,7 +727,7 @@ test(
       },
       { times: 1 },
     );
-    const response = inject("POST", "/oauth-clients", {
+    const response = inject("POST", "/credential-clients", {
       ...input,
       clientId: stagedClientId,
       clientSecret: randomUUID(),
@@ -857,7 +861,7 @@ test(
     const { controller, inject, pool, state } = await createPostgresAgentApp(t, options);
     const { app: peer } = await createPostgresAgentApp(t, options);
     const { core } = await installClientOwner(controller, state);
-    const client = await inject("POST", "/oauth-clients", clientInput());
+    const client = await inject("POST", "/credential-clients", clientInput());
     assert.equal(client.statusCode, 201, client.body);
     assert.equal(core.calls.createNamespacedSecret, 1);
     const id = client.json().data.id;
@@ -869,7 +873,8 @@ test(
         "SELECT pg_backend_pid() AS pid FROM occ.oauth_clients WHERE id=$1 FOR UPDATE",
         [id],
       );
-      rotation = inject("POST", `/oauth-clients/${id}/rotate-secret`, {
+      rotation = inject("POST", `/credential-clients/${id}/rotate`, {
+        kind: "oauth2",
         clientSecret: randomUUID(),
       });
       await waitForLockWaiter(

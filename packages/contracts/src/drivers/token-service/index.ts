@@ -1,5 +1,6 @@
 import type {
   AccessBinding,
+  CredentialClient,
   CredentialSource,
   CredentialSourceReference,
   OAuthCredentialSource,
@@ -9,7 +10,7 @@ import type {
 } from "../../index.ts";
 import type { Driver } from "../index.ts";
 
-export type CredentialClientPurpose = "oauth2" | "github-app";
+export type CredentialClientPurpose = CredentialClient["kind"];
 export type CredentialClientScope = "installation" | "namespace";
 export type TokenServiceClientScopes = Readonly<
   Partial<Record<CredentialClientPurpose, readonly CredentialClientScope[]>>
@@ -50,25 +51,23 @@ export interface TokenServiceSourceInstance<
 
 /** Only the selected owner's adapter interprets its reviewed source type and lifecycle fields. */
 export interface SourceLifecycleConfig {
-  readonly type: string;
   readonly settings: Readonly<Record<string, string>>;
 }
 
-type SecretFields = Readonly<Record<string, string>>;
 type SourceConfig = Readonly<Record<string, string>>;
 
 export type SourceRegistrationInput =
   | {
-      readonly kind: "static";
+      readonly type: "static";
       readonly namespaceId: string;
       readonly name: string;
-      readonly secret: SecretFields;
+      readonly secret: string;
       readonly lifecycleConfig: SourceLifecycleConfig;
       readonly config: SourceConfig;
       readonly connectionTemplateId?: string;
     }
   | ({
-      readonly kind: "oauth_refresh_token";
+      readonly type: "oauth2-refresh-token";
       readonly namespaceId: string;
       readonly name: string;
       readonly grant: OAuthConnectionGrant;
@@ -89,7 +88,7 @@ export type SourceRegistrationInput =
         }
     ))
   | {
-      readonly kind: "github_app_installation";
+      readonly type: "github-app-installation";
       readonly namespaceId: string;
       readonly name: string;
       readonly clientId: string;
@@ -98,12 +97,12 @@ export type SourceRegistrationInput =
 
 export type SourceUpdate =
   | {
-      readonly secret: SecretFields;
+      readonly secret: string;
       readonly lifecycleConfig?: SourceLifecycleConfig;
     }
   | {
       readonly lifecycleConfig: SourceLifecycleConfig;
-      readonly secret?: SecretFields;
+      readonly secret?: string;
     };
 
 export interface ResolvedCredential {
@@ -111,9 +110,6 @@ export interface ResolvedCredential {
   /** Required when the resolved value is pushed to a delivery resource. */
   readonly version?: string;
   readonly expiresAt?: string;
-  /** Trusted account context when the consumer must route an account-scoped request. */
-  readonly accountId?: string;
-  readonly isFedramp?: boolean;
 }
 
 export interface CredentialRefreshStatus {

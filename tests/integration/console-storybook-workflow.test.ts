@@ -495,7 +495,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
       name: "Registered model",
       type: "static",
       config: { provider_preset: "openai" },
-      secret: { opaque: "SYNTHETIC-preview-key" },
+      secret: "SYNTHETIC-preview-key",
     };
     // A lost answer leaves a committed Source visible to subsequent inspection,
     // while its submitted credential material is never returned by the fixture.
@@ -520,7 +520,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         state: "ready",
       },
     });
-    assert.equal(JSON.stringify(exact).includes(registration.secret.opaque), false);
+    assert.equal(JSON.stringify(exact).includes(registration.secret), false);
     const listed: unknown = await (await request("credential-sources")).json();
     assert.ok(
       listed !== null &&
@@ -667,7 +667,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
       name: "New model",
       type: "static",
       config: { provider_preset: "openai" },
-      secret: { opaque: "SYNTHETIC-preview-key" },
+      secret: "SYNTHETIC-preview-key",
     };
     const valid = await request("credential-sources", "POST", registration);
     assert.equal(valid.status, 201);
@@ -681,7 +681,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         state: "ready",
       },
     });
-    assert.equal(JSON.stringify(saved).includes(registration.secret.opaque), false);
+    assert.equal(JSON.stringify(saved).includes(registration.secret), false);
   });
 
   await t.test("Opaque IAM replies retain payload order and binding identity", async () => {

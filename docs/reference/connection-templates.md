@@ -17,11 +17,14 @@ that list, use `client_secret_basic`.
 
 A public client uses `none`. For `client_secret_basic` or `client_secret_post`,
 enter the write-only secret. The selected TokenService keeps the private value.
-Use `POST /oauth-clients` to register and `GET /oauth-clients` to list clients.
+Use `POST /credential-clients` to register a client. Supply `kind: "oauth2"` or
+`kind: "github-app"` and the fields for that kind. Use `GET /credential-clients` to
+list registered clients.
 
 Use **Rotate OAuth client secret** or
-`POST /oauth-clients/{oauthClientId}/rotate-secret` to replace the secret for the
-same client ID. Later code exchanges and renewals use the new value. Before
+`POST /credential-clients/{credentialClientId}/rotate` to replace the secret for the
+same client ID. Include `kind: "oauth2"` and the write-only `clientSecret` in the API
+request. Later code exchanges and renewals use the new value. Before
 retrying an operation with an unknown outcome, refresh the list. A pending
 consent attempt or a Source that uses the client blocks its removal.
 
