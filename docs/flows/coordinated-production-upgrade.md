@@ -88,8 +88,8 @@ Operators authenticate receipts. Resume and migration apply recover journaled
 digests. Preview shows target and CA. Apply and resume recheck approval and inputs.
 
 Both entrypoints refuse active kubectl preferences. Approved exec plugin environments
-must disable preferences. Private snapshots reject built-in `auth-provider`.
-Recovery rechecks target, CA and parameters under lock.
+must already disable preferences. Private snapshots reject built-in `auth-provider`.
+Profiled recovery rechecks target, CA and parameters under lock.
 
 Before `scripts/upgrade-production-images:prepare_upgrade`, the helper refuses
 other Helm stores, [endpoint and TLS overrides](../guides/deploy/production-upgrade.md),
@@ -111,7 +111,7 @@ Preparation rejects extra active Deployments or StatefulSets matching the drain 
 
 `read_restart_inventory` requires complete authorized inventory without nonterminal deployments. Running revisions require saved Harness objects and an accepted
 [restart assessment](../reference/repository-credentials/worker-replacement.md).
-Preflight records original-worker requirements. Unknown assessments block rehearsal.
+Standalone preflight records original-worker requirements. Unknown assessments block rehearsal.
 Runtime upgrades record replacements and check draft images, sizes, baseline versions
 and Namespace readiness. Exclude stopped or deleting Agents. Allow pending repository cleanup.
 
