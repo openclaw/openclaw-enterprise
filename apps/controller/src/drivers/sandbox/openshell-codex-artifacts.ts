@@ -1,15 +1,11 @@
 import { isIP } from "node:net";
 
 import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
-import type {
-  AgentRevision,
-  OpenClawConfigurationDocument,
-  RepositoryGitDeliveryProfile,
-} from "@openclaw-enterprise/contracts";
+import type { AgentRevision, OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 
-import { githubActionsDownloads } from "./openshell-github-actions.ts";
-import { AGENT_POLICY_PREFIX } from "./openshell-policy.ts";
+import { repositoryDeploymentGrantsMatch } from "../repo/deployment-network.ts";
+import { AGENT_POLICY_PREFIX, openShellDeploymentNetworkRule } from "./openshell-policy.ts";
 
 // These are the two native entrypoints shipped by the qualified bundled Codex release.
 const CODEX_BINARIES = new Set([
@@ -83,19 +79,12 @@ function literalArtifactHost(value: unknown): boolean {
 }
 
 /** Validate the complete closed wire form, including data rehydrated from persistence. */
-function qualifiedMap(
-  value: unknown,
-  revision?: Readonly<AgentRevision>,
-): Readonly<OpenClawConfigurationDocument> {
+function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
   const map = asRecord(value);
   if (!map) {
     refuse();
   }
   for (const [name, value] of Object.entries(map)) {
-    if (revision !== undefined && name === githubActionsDownloads.name) {
-      githubActionsDownloads.validate(value, revision);
-      continue;
-    }
     if (!ruleName(name)) {
       refuse();
     }
@@ -148,7 +137,6 @@ function qualifiedMap(
 export function qualifyOpenShellCodexArtifactRules(
   defaults: Readonly<OpenClawConfigurationDocument>,
   names: readonly string[],
-  onlineProfile?: RepositoryGitDeliveryProfile,
 ): Readonly<OpenClawConfigurationDocument> {
   if (
     !Array.isArray(names) ||
@@ -159,8 +147,7 @@ export function qualifyOpenShellCodexArtifactRules(
   ) {
     refuse();
   }
-  const declared = qualifiedMap(Object.fromEntries(names.map((name) => [name, defaults[name]!])));
-  return githubActionsDownloads.admit(declared, onlineProfile);
+  return qualifiedMap(Object.fromEntries(names.map((name) => [name, defaults[name]!])));
 }
 
 /** Both paired compilers consume immutable admission, never current Installation defaults. */
@@ -192,6 +179,10 @@ export function openShellProtectedCodexArtifacts(
       refuse();
     }
   }
+  const { deploymentGrants } = snapshot;
+  if (deploymentGrants !== undefined) {
+    keys.push("deploymentGrants");
+  }
   exactKeys(snapshot, keys);
   if (
     revision.executionAdmission.mode !== "protected" ||
@@ -213,5 +204,19 @@ export function openShellProtectedCodexArtifacts(
   ) {
     refuse();
   }
-  return qualifiedMap(snapshot.defaults, revision);
+  const artifacts = qualifiedMap(snapshot.defaults);
+  if (deploymentGrants === undefined) {
+    return artifacts;
+  }
+  if (!repositoryDeploymentGrantsMatch(revision, deploymentGrants)) {
+    throw new ConfigurationValidationError([
+      {
+        path: "/sandboxPolicy/deploymentGrants",
+        code: "INVALID_VALUE",
+        message: "Deployment grants must match the admitted online repository credentials.",
+      },
+    ]);
+  }
+  const rule = openShellDeploymentNetworkRule(deploymentGrants);
+  return immutableCopy({ ...artifacts, [rule.name]: rule });
 }

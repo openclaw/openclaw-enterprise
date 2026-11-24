@@ -1,10 +1,6 @@
 import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
-import type {
-  EgressInstallation,
-  ProxyWiring,
-  RepositoryGitDeliveryProfile,
-} from "../credential-proxy/index.ts";
+import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
 import type {
   CredentialDeploymentTarget,
   CredentialProjection,
@@ -25,6 +21,7 @@ import type { RepositoryExecutionIdentity } from "../repo/index.ts";
 import type { SandboxLogChunk, SandboxLogContext, SandboxLogRequest } from "../../runtime-logs.ts";
 import type {
   ProtectedCodexArtifactPolicyAdmission,
+  SandboxDeploymentGrants,
   SandboxNetworkGrant,
   SandboxPolicyObservation,
   SandboxPolicyRecommendations,
@@ -244,12 +241,17 @@ export interface SandboxDriver extends Driver {
    * `scope.repositoryCredentials` marks a policy for an Agent or revision with repository
    * bindings, which a Driver may route only through its own repository path; it refuses an
    * overlapping policy with a `SandboxNetworkPolicyConflictError` naming the rule.
+   * A supplied deployment set requires exact acknowledgement alongside qualified
+   * protected defaults and empty Agent additions.
    */
   admitNetworkPolicy?(
     additions: readonly SandboxNetworkGrant[],
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
-    scope?: { readonly repositoryCredentials?: boolean },
+    scope?: {
+      readonly repositoryCredentials?: boolean;
+      readonly deploymentGrants?: SandboxDeploymentGrants;
+    },
   ): SandboxPolicySnapshot;
   /**
    * Side-effect-free admission of the exact ACL against the base network snapshot.
@@ -269,14 +271,9 @@ export interface SandboxDriver extends Driver {
    * Side-effect-free admission for protected, dedicated Codex repository execution.
    * A normal network-policy result cannot acknowledge this purpose. The result names
    * exactly the qualified defaults map's keys and carries no Agent additions.
-   * The optional profile describes matching online repository bindings without a
-   * saved repository network policy. Omission grants no profile-specific access.
-   * Absence of the method refuses this composition; it never imports ordinary defaults.
+   * Absence refuses this composition; it never imports ordinary defaults.
    */
-  admitProtectedCodexArtifactPolicy?(
-    version: number,
-    onlineProfile?: RepositoryGitDeliveryProfile,
-  ): ProtectedCodexArtifactPolicyAdmission;
+  admitProtectedCodexArtifactPolicy?(version: number): ProtectedCodexArtifactPolicyAdmission;
   observeNetworkPolicy?(
     context: SandboxLogContext,
     snapshot: SandboxPolicySnapshot,

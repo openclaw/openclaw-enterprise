@@ -15,7 +15,9 @@ import {
   OpenShellLegacyEgressProxyDriver,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { openShellProtectedCodexArtifacts } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
-import { openShellGitRuntimeFixture } from "../helpers/openshell-git-runtime.ts";
+import { defaultDeploymentSandboxPolicy } from "../../packages/occ/src/sandbox-policy-admission.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { openShellGitRuntimeFixture, registry } from "../helpers/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
@@ -60,11 +62,13 @@ function sandbox(
   rules: readonly OpenShellNetworkPolicyRule[],
   names?: readonly string[],
   backend = newBackend(),
+  openShellGit?: ReturnType<typeof openShellGitRuntimeFixture>["runtime"],
 ) {
   t.after(() => backend.client.close());
   return new OpenShellSandboxDriver(
     {
       integrationMode: "legacy",
+      ...(openShellGit && { egress: repositoryEgress }),
       gateway: {},
       kubernetes: {
         userNamespaces: false,
@@ -81,7 +85,7 @@ function sandbox(
         ...(names === undefined ? {} : { codexArtifactRuleNames: names }),
       },
     },
-    { id: "artifact-sandbox", backend },
+    { id: "artifact-sandbox", backend, ...(openShellGit && { openShellGit }) },
   );
 }
 
@@ -224,15 +228,54 @@ function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
   };
 }
 
+const repositoryEgress = {
+  middlewareName: "artifact-exchange",
+  repositoryMiddlewareName: "oce-prepared-git",
+  authorityScope: "execution",
+} as const;
+
+function repositorySandbox(
+  t: TestContext,
+  rules: readonly OpenShellNetworkPolicyRule[],
+  names?: readonly string[],
+) {
+  return sandbox(t, rules, names, newBackend(), openShellGitRuntimeFixture().runtime);
+}
+
+function resolveRepository(selected: boolean) {
+  const driver = new GitHubRepositoryPolicy(
+    { driverId: "repo-driver", backendId: registry.backendId },
+    selected
+      ? {
+          ...registry,
+          repositories: registry.repositories.map((repo) => ({
+            ...repo,
+            namespaces: [
+              {
+                namespaceId: "namespace-a",
+                profiles: ["github-repository"],
+                permissions: { metadata: "read", actions: "read", contents: "read" },
+              },
+            ],
+          })),
+        }
+      : registry,
+    { sessionDurationSeconds: 60 },
+  );
+  return driver.resolve({
+    namespaceId: "namespace-a",
+    bindings: [
+      { repositoryRef: "application", profile: selected ? "github-repository" : "git-write" },
+    ],
+  });
+}
+
 function onlineRepositoryRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
   const revision = protectedRevision(snapshot);
   const { policyReductionVersion: _, ...plan } = revision.egressPlan!;
   const repository = {
     ...revision.repositoryCredentials!,
-    bindings: revision.repositoryCredentials!.bindings.map((binding) => ({
-      ...binding,
-      profile: "github-repository" as const,
-    })),
+    bindings: resolveRepository(true).bindings,
   };
   return {
     ...revision,
@@ -263,30 +306,36 @@ const expectedDownloads = {
   })),
 };
 
-test("only the online repository profile adds Actions downloads and old snapshots keep their rules", (t) => {
+function selectedPolicy(driver: OpenShellSandboxDriver) {
+  const { deploymentGrants } = resolveRepository(true);
+  assert.ok(deploymentGrants, "selected repository declares Actions download destinations");
+  return defaultDeploymentSandboxPolicy(
+    driver,
+    2,
+    true,
+    { id: "codex", mode: "dedicated" },
+    { repositoryCredentials: true, deploymentGrants },
+  )!;
+}
+
+test("repository downloads compile alongside inspected artifacts and leave old revisions unchanged", (t) => {
   const plugin = artifact();
-  const driver = sandbox(t, [plugin], [plugin.name]);
+  const driver = repositorySandbox(t, [plugin, { ...plugin, name: "ambient" }], [plugin.name]);
   const historical = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
-  const admission = driver.admitProtectedCodexArtifactPolicy(2, "github_repository");
-  assert.deepEqual(admission.declaredRuleNames, [plugin.name, actionsDownloads]);
-  assert.deepEqual(admission.snapshot.defaults, {
+  const snapshot = selectedPolicy(driver);
+  assert.deepEqual(snapshot.defaults, historical.defaults);
+  assert.deepEqual(snapshot.additions, []);
+  assert.equal(resolveRepository(false).deploymentGrants, undefined);
+  const revision: AgentRevision = JSON.parse(JSON.stringify(onlineRepositoryRevision(snapshot)));
+  const compiled = openShellEgressConfiguration(revision.egressPlan!, repositoryEgress, revision);
+  assert.deepEqual(compiled.network_policies, {
     ...historical.defaults,
     [actionsDownloads]: expectedDownloads,
   });
-  const revision: AgentRevision = JSON.parse(
-    JSON.stringify(onlineRepositoryRevision(admission.snapshot)),
-  );
-  assert.deepEqual(openShellProtectedCodexArtifacts(revision), admission.snapshot.defaults);
   assert.deepEqual(
     openShellProtectedCodexArtifacts(onlineRepositoryRevision(historical)),
     historical.defaults,
   );
-  for (const profile of ["repository_git", "github_installation"] as const) {
-    assert.deepEqual(
-      driver.admitProtectedCodexArtifactPolicy(2, profile).snapshot.defaults,
-      historical.defaults,
-    );
-  }
   assert.throws(
     () =>
       sandbox(
@@ -298,24 +347,69 @@ test("only the online repository profile adds Actions downloads and old snapshot
   );
 });
 
-test("frozen Actions downloads reject changes to the rule or the repository that qualified", (t) => {
-  const { snapshot } = sandbox(t, [artifact()]).admitProtectedCodexArtifactPolicy(
-    1,
-    "github_repository",
+test("deployment grants cannot become Agent additions or disappear in an older Sandbox Driver", (t) => {
+  const driver = repositorySandbox(t, [artifact()]);
+  const snapshot = selectedPolicy(driver);
+  const deploymentGrants = snapshot.deploymentGrants!;
+  const grants = deploymentGrants.grants;
+  assert.equal(driver.admitNetworkPolicy(grants.slice(0, 32), 1).additions.length, 32);
+  assert.throws(
+    () => driver.admitNetworkPolicy(grants.slice(0, 33), 1),
+    ConfigurationValidationError,
   );
+  const scope = { repositoryCredentials: true, deploymentGrants };
+  assert.throws(() => driver.admitNetworkPolicy(grants.slice(0, 1), 1, {}, scope), {
+    name: "SandboxNetworkPolicyConflictError",
+  });
+  const template = grants[0]!;
+  const oversized = Array.from({ length: 257 }, (_, i) => ({
+    ...template,
+    id: "destination-" + i,
+    host: "storage" + i + ".example.com",
+  }));
+  assert.throws(
+    () =>
+      driver.admitNetworkPolicy(
+        [],
+        1,
+        {},
+        { ...scope, deploymentGrants: { ...deploymentGrants, grants: oversized } },
+      ),
+    ConfigurationValidationError,
+  );
+  const legacy = driver.admitNetworkPolicy.bind(driver);
+  const ignoresGrants: OpenShellSandboxDriver["admitNetworkPolicy"] = (
+    additions,
+    version,
+    defaults,
+  ) => legacy(additions, version, defaults);
+  t.mock.method(driver, "admitNetworkPolicy", ignoresGrants);
+  assert.throws(() => selectedPolicy(driver), { name: "ResourceStateConflictError" });
+});
+
+test("frozen deployment grants reject changes to the rule or the repository that qualified", (t) => {
+  const driver = repositorySandbox(t, [artifact()]);
+  const snapshot = selectedPolicy(driver);
   const revision = onlineRepositoryRevision(snapshot);
+  const set = snapshot.deploymentGrants!;
+  const [first, ...rest] = set.grants;
+  assert.ok(first);
   const reject = (changed: AgentRevision) =>
     assert.throws(() => openShellProtectedCodexArtifacts(changed), ConfigurationValidationError);
   for (const altered of [
-    { ...expectedDownloads, binaries: [{ path: "/usr/bin/curl" }] },
-    { ...expectedDownloads, endpoints: expectedDownloads.endpoints.slice(1) },
-    { ...expectedDownloads, credentialAlias: "forbidden" },
+    { ...set, id: "unknown-grant-set" },
+    { ...set, grants: [{ ...first, binary: "/usr/bin/curl" }, ...rest] },
+    { ...set, grants: [{ ...first, host: "outside.example.com" }, ...rest] },
+    { ...set, grants: [{ ...first, ports: [{ from: 80, to: 80 }] }, ...rest] },
+    { ...set, grants: rest },
+    { ...set, credentialAlias: "forbidden" },
   ]) {
-    reject({
-      ...revision,
-      sandboxPolicy: { ...snapshot, defaults: { [actionsDownloads]: altered } },
-    });
+    reject({ ...revision, sandboxPolicy: { ...snapshot, deploymentGrants: altered } });
   }
+  reject({
+    ...revision,
+    sandboxPolicy: { ...snapshot, defaults: { [actionsDownloads]: expectedDownloads } },
+  });
   const plan = revision.egressPlan!;
   const repository = revision.repositoryCredentials!;
   const gitOnly = protectedRevision(snapshot).repositoryCredentials!;
@@ -345,7 +439,10 @@ test("frozen Actions downloads reject changes to the rule or the repository that
   assert.deepEqual(
     openShellProtectedCodexArtifacts({
       ...native,
-      sandboxPolicy: { ...native.sandboxPolicy, defaults: {} },
+      sandboxPolicy: {
+        ...driver.admitProtectedCodexArtifactPolicy(1).snapshot,
+        repositoryNetworkPolicy: native.sandboxPolicy.repositoryNetworkPolicy,
+      },
     }),
     {},
   );

@@ -1,3 +1,4 @@
+import type { SandboxDeploymentGrants } from "../../sandbox-policy.ts";
 import type { RepositoryGitDeliveryProfile } from "../credential-proxy/index.ts";
 import type { Driver } from "../index.ts";
 
@@ -61,6 +62,8 @@ export interface AdmittedRepositoryBinding extends RepositoryBindingSelection {
 export interface RepositoryCredentialResolution {
   readonly bindings: readonly AdmittedRepositoryBinding[];
   readonly sessionDurationSeconds: number;
+  /** Proposed by the profile owner. OCC and Sandbox admission determine eligibility. */
+  readonly deploymentGrants?: SandboxDeploymentGrants;
 }
 
 /** Nonsecret identity obtained by a read-only verification of the already running execution. */

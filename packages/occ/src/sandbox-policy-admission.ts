@@ -1,9 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import {
   ConfigurationValidationError,
+  validateSandboxDeploymentGrants,
   validateSandboxNetworkGrants,
   type AgentRevision,
-  type RepositoryGitDeliveryProfile,
+  type SandboxDeploymentGrants,
   type SandboxDriver,
   type SandboxNetworkGrant,
   type SandboxPolicySnapshot,
@@ -30,7 +31,7 @@ const sandboxPolicyRefused = () =>
 
 export type DeploymentRepositoryScope = {
   readonly repositoryCredentials: boolean;
-  readonly onlineProfile?: RepositoryGitDeliveryProfile | undefined;
+  readonly deploymentGrants?: SandboxDeploymentGrants;
 };
 
 export function defaultDeploymentSandboxPolicy(
@@ -38,18 +39,19 @@ export function defaultDeploymentSandboxPolicy(
   version: number,
   protectedExecution: boolean,
   harness: Pick<AgentRevision["harness"], "id" | "mode">,
-  scope: { readonly repositoryCredentials: boolean },
-  onlineProfile?: RepositoryGitDeliveryProfile,
+  scope: DeploymentRepositoryScope,
 ): SandboxPolicySnapshot | undefined {
   if (protectedExecution) {
     return harness.id === "codex" && harness.mode === "dedicated" && scope.repositoryCredentials
-      ? checkedProtectedCodexArtifactPolicy(sandbox, version, onlineProfile)
+      ? checkedProtectedCodexPolicy(sandbox, version, scope.deploymentGrants)
       : undefined;
   }
   if (sandbox?.admitNetworkPolicy === undefined) {
     return undefined;
   }
-  return checkedSandboxPolicySnapshot(sandbox, [], version, undefined, scope);
+  return checkedSandboxPolicySnapshot(sandbox, [], version, undefined, {
+    repositoryCredentials: scope.repositoryCredentials,
+  });
 }
 
 export function checkedSandboxPolicySnapshot(
@@ -57,9 +59,10 @@ export function checkedSandboxPolicySnapshot(
   additions: readonly SandboxNetworkGrant[],
   version: number,
   defaults?: SandboxPolicySnapshot["defaults"],
-  scope?: { readonly repositoryCredentials: boolean },
+  scope?: DeploymentRepositoryScope,
   producer?: () => SandboxPolicySnapshot,
 ): SandboxPolicySnapshot {
+  const requestsDeploymentGrants = scope?.deploymentGrants !== undefined;
   let returned: SandboxPolicySnapshot;
   try {
     returned =
@@ -80,6 +83,7 @@ export function checkedSandboxPolicySnapshot(
     const snapshot = immutableCopy(returned);
     validateSandboxNetworkGrants(snapshot?.additions);
     if (
+      Object.hasOwn(snapshot, "deploymentGrants") !== requestsDeploymentGrants ||
       snapshot.driverId !== driver.id ||
       snapshot.implementation !== driver.implementation ||
       snapshot.version !== version ||
@@ -97,10 +101,10 @@ export function checkedSandboxPolicySnapshot(
   }
 }
 
-function checkedProtectedCodexArtifactPolicy(
+function checkedProtectedCodexPolicy(
   driver: SandboxPolicyAdmissionDriver | undefined,
   version: number,
-  onlineProfile: RepositoryGitDeliveryProfile | undefined,
+  deploymentGrants: SandboxDeploymentGrants | undefined,
 ): SandboxPolicySnapshot {
   const admit = (() => {
     try {
@@ -114,16 +118,10 @@ function checkedProtectedCodexArtifactPolicy(
       "Deploy requires a Sandbox Driver that supports protected Codex artifact admission. Ask your Installation administrator to check drivers.sandbox and the selected Driver version.",
     );
   }
-  return checkedSandboxPolicySnapshot(driver, [], version, undefined, undefined, () => {
+  const artifacts = checkedSandboxPolicySnapshot(driver, [], version, undefined, undefined, () => {
     const result = (() => {
       try {
-        return immutableCopy(
-          Reflect.apply(
-            admit,
-            driver,
-            onlineProfile === undefined ? [version] : [version, onlineProfile],
-          ),
-        );
+        return immutableCopy(Reflect.apply(admit, driver, [version]));
       } catch {
         // Protected admission never publishes Driver diagnostics, even for typed errors.
         throw sandboxPolicyRefused();
@@ -155,4 +153,19 @@ function checkedProtectedCodexArtifactPolicy(
     }
     return result.snapshot;
   });
+  if (deploymentGrants === undefined) {
+    return artifacts;
+  }
+  try {
+    const scope = immutableCopy({ repositoryCredentials: true, deploymentGrants });
+    validateSandboxDeploymentGrants(scope.deploymentGrants);
+    const snapshot = checkedSandboxPolicySnapshot(driver, [], version, artifacts.defaults, scope);
+    if (!isDeepStrictEqual(snapshot, { ...artifacts, deploymentGrants })) {
+      throw sandboxPolicyRefused();
+    }
+    return snapshot;
+  } catch {
+    // Protected policy admission also withholds typed Driver diagnostics.
+    throw sandboxPolicyRefused();
+  }
 }

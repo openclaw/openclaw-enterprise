@@ -118,15 +118,17 @@ fields are forbidden. Deploy freezes rules without Agent additions. Changes requ
 
 ### GitHub Actions downloads
 
-For protected, dedicated Codex with matching online `github-repository` bindings
-and no saved repository policy,
-`gh run view --log-failed` and `gh run download` follow signed URLs. The proxy
-keeps credentials on the API route. Private repositories require Actions read access.
-OpenShell permits `/usr/local/bin/gh` and its descendants to reach the Actions
-receiver and 140 storage hosts on TCP port 443. The CLI verifies TLS.
-OpenShell allows any method or path. URLs can authorize other repositories or writes and outlive withdrawal.
-Native Git and earlier revisions keep their rules. Upgrade all readers before
-admission, including the recovery controller. Redeploy without this profile to remove access.
+On protected, dedicated Codex, `gh run view --log-failed` and `gh run download`
+follow signed URLs. With matching online `github-repository` bindings and no
+saved repository policy, the Repo Driver supplies 141 deployment grants,
+separate from Agent additions. OpenShell emits one rule for
+`/usr/local/bin/gh` and its descendants on TCP port 443.
+
+Private repositories require Actions read access. Only the API receives the
+GitHub credential. The CLI verifies TLS. OpenShell allows any method or path.
+URLs can authorize writes or other repositories and outlive withdrawal.
+Native Git and older revisions are unchanged. Upgrade readers and the recovery
+controller first. Redeploy without this profile to remove access.
 
 ### Gateway readiness and workspace
 

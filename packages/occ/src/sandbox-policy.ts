@@ -915,7 +915,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   ): Promise<SandboxPolicySnapshot | undefined> {
     const policyScope = { repositoryCredentials: scope.repositoryCredentials };
     // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
-    // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
+    // explicitly acknowledged deployment snapshot can accompany dedicated Codex repository
     // execution. The caller learns of saved additions only with SandboxPolicy read access.
     // Finding 2151: every refusal below that names saved additions (protected execution, the
     // ceiling, the Driver) comes after SandboxPolicy read, so a deployer without it learns nothing.
@@ -940,8 +940,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
             policy?.version ?? 1,
             protectedExecution,
             revisionHarness,
-            policyScope,
-            scope.onlineProfile,
+            scope,
           );
     if ((policy?.additions.length ?? 0) > 0 && sandboxPolicy === undefined) {
       throw new ResourceStateConflictError(
