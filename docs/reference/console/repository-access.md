@@ -38,11 +38,7 @@ The server resolves selections against current Namespace policy on save and
 deployment. Push and PR permissions remain bundled; see
 [access levels](../repository-credentials/access-levels.md) for token permissions,
 merges, and the API contract. Edit saved drafts in **Open draft** >
-**Repositories**; saved versions stay unchanged. Save or cancel edits before
-navigating away; returning to the tab can refresh the session and discard them.
-While a repository save is pending, **Account → Settings** keeps the editor open
-and asks you to wait. After a successful save, Settings opens normally.
-An interrupted save may complete; inspect the saved draft before retrying.
+**Repositories**; saved versions stay unchanged. Save or cancel edits before navigating away.
 
 Failed rediscovery keeps unsaved repository choices for retry and
 navigation in explicitly selected Preset forms.
@@ -55,7 +51,7 @@ repository bindings if no selections remain. When guided provisioning is availab
 it can still request immediate deployment. Remove retained selections to continue.
 The **Repositories** tab offers **Save** only for an edit that removes every
 repository, which drops stale bindings. Other failures, including generic `503`,
-throttling and connection errors, block both writes and offer retry. Denial and
+throttling and connection errors, leave repository access unverified, block both writes, and offer retry. Denial and
 Namespace lifecycle conflict remain distinct. Each subsequent write rechecks
 authorization.
 
@@ -65,6 +61,35 @@ policy while retaining the Configuration. Retry requires an approved repository;
 an empty catalog cannot convert the attempt to an ordinary Agent. Failed reloads
 disable creation and show the Configuration ID. Expiry returns to sign-in.
 **Start a new draft** preserves the saved Configuration.
+
+## Recover a repository edit or save
+
+When you return to the browser tab or refocus the window, the Console rechecks the
+session, Namespace, Agent, and editing permissions. If the same session and access
+are confirmed and the view can be reused, unsaved repository edits remain. A changed
+Configuration or narrower access can rebuild the view. If the permission check is unavailable,
+the Console retains the edits and hides the chooser. **Retry access check** repeats the
+foreground checks without saving. If the check interrupted a Save before it was sent,
+select **Save repository access** again after access is confirmed.
+
+A confirmed denial removes the chooser and unsaved edits. If the Agent remains readable,
+the Console shows its saved selections read-only. Session expiry or a changed user or
+session clears private state.
+
+Save rereads the Agent and waits for overlapping foreground checks. If either read shows
+changed repository access or a changed Configuration, no PATCH is sent; use **Reload draft**.
+A later writer can still race the PATCH. Dirty edits and pending or unresolved saves block
+navigation and deployment. **Account → Settings** keeps the editor open while guarded;
+after a successful save, Settings opens normally.
+
+If update access is denied after the PATCH starts, the Console removes the chooser but
+keeps the save guard. A confirmed success reads the same Agent again. A known rejection
+says the write was not saved and requires **Reload draft**. If the outcome is unknown,
+inspect saved access with **Reload draft** before another save. If **Reload draft** is
+disabled, retry the access check first. A transient reload failure keeps the guard and
+offers **Reload draft** again. A denied Agent read retires the protected view. Restored
+update access alone does not reopen an unresolved editor. Recovery reads saved access and
+does not repeat the PATCH.
 
 ## Use repositories and Slack on the same Agent
 

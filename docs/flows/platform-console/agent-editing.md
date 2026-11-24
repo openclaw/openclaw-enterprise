@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-11-24
-last_updated_session: authoring-run/261aa429-df62-4285-b574-5417ff787bdc
+last_updated_session: authoring-run/d35fdaf2-b0d2-41c9-bfd5-a7d854b50361
 ---
 
 # Console Agent editing and runtime requests
@@ -130,15 +130,13 @@ references Compute's `OPENCLAW_GATEWAY_PASSWORD` through the default env alias.
 Unsavable references replace the button with a hint. **Deploy** shows `stored-configuration-rules.ts`
 refusals in order, or Kubernetes-only `agents/validate` refusals.
 
-Saves preserve scroll and admitted snapshots. Refusals keep edits.
-Unsaved edits block deployment. Pending saves block tab and version changes.
-`apps/controller/src/console/shell.mts:createShell` guards Account → Settings against
-pending or dirty repository edits.
-Blocked Back/Forward calls `apps/controller/src/console/navigation.mts:traverse`, which
-restores the address without reload for missing or equal markers or impossible steps.
-Overflowed markers are untracked.
-Write refusals list required grants without guessing which failed. Preflight refusals name
-read access, Workspace saves Agent `operate`. Without Agent `update`, Configuration `read` or
+Saves preserve scroll and admitted snapshots; refusals keep edits. Dirty drafts block deployment;
+pending saves block tabs and versions. Dirty or pending repository edits guard Settings
+(`shell.mts:createShell`).
+`navigation.mts:traverse` restores blocked Back/Forward addresses without reload for missing/equal
+markers or impossible steps. Overflowed markers are untracked.
+Write refusals list grants without guessing failures. Preflight names read access;
+Workspace saves need Agent `operate`. Without Agent `update`, Configuration `read` or
 bound-source grants (the note names `operate` and Harness ServiceAccount `read`), the Console summarizes
 plugins and repositories, drops retained plugin edits, disables authentication and skips denied reads.
 Configuration and channel edits require Configuration `update` and bound Secret `operate`.
@@ -156,9 +154,8 @@ repeating PATCH. Success rebuilds the editor from saved settings. Failure reopen
 the draft page. The Plugin Driver
 validates the selections before deployment [snapshots the saved settings](../agent-plugins.md).
 
-**Repositories** uses `createRepositoryFields` with exact-Agent discovery and
-PATCHes `repositoryAccess`. Unsaved edits also block tabs; failed discovery leaves
-access unverified.
+[**Repositories**](../../reference/console/repository-access.md#recover-a-repository-edit-or-save)
+retains edits during unavailable checks. `createRepositoryFields` uses exact-Agent discovery. Save PATCHes `repositoryAccess`.
 
 Deployment rereads Agent and Configuration, requires authentication and
 Slack bindings, and blocks Teams. Reload if association, generation,
@@ -357,6 +354,10 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 09:44: Link recovery. (authoring-run/d35fdaf2-b0d2-41c9-bfd5-a7d854b50361 - ed9efca109dd769c22dd53cb4caff1d4f9618111)
+
+- 2026-11-24 09:39: Explain repository access check and save recovery. (authoring-run/cb2925c6-b169-43f1-be1b-dea9619f8c8b - ed9efca109dd769c22dd53cb4caff1d4f9618111)
 
 - 2026-11-24 06:58: Guard Settings during pending saves. (authoring-run/261aa429-df62-4285-b574-5417ff787bdc - 4d4681144427368743596e0379b28dbadfef8c58)
 - 2026-11-22 21:08: Conflict focus. (authoring-run/303eb0c9-04da-4bab-9fac-cc0dca754630 - 2b01b92963bfeb8bfa0f29fe583f9523d48a78a3)

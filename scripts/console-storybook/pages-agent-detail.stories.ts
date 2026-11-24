@@ -296,6 +296,12 @@ export const RepositoryEditorNotConfigured = story("repositoryEditorNotConfigure
 export const RepositoryEditorNotConfiguredMember = story("repositoryEditorNotConfiguredMember");
 export const RepositoryEditorLoading = story("repositoryEditorLoading");
 export const RepositoryEditorSaveRefused = story("repositoryEditorSaveRefused");
+export const RepositoryEditorAccessCheckUnavailable = story(
+  "repositoryEditorAccessCheckUnavailable",
+  {
+    openInNewTab: true,
+  },
+);
 export const ConfigurationNavigation = story("configurationNavigation");
 
 export const RevisionDeployDenied = {

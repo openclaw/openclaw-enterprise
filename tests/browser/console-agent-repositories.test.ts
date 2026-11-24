@@ -27,11 +27,13 @@ import {
   apiRequests,
   holdRequests,
   login,
+  loginThroughForm,
   MEMBER_WRITE,
   nativeValues,
   newPage,
   pathRequests,
   repositoryCheckbox,
+  settledView,
   statusTone,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
@@ -40,14 +42,21 @@ import {
   configurationPostRequests,
   createRepositoryLaunchFixture,
 } from "./console-agents-test-support.ts";
-import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import {
+  settledFetches,
+  trackSettledFetches,
+  waitForIdleFetches,
+  waitForSettledFetches,
+} from "./console-fetch-accounting.ts";
+import { responseTo } from "./console-action-helpers.ts";
+import { heldView, refocus } from "./console-refocus-helpers.ts";
 import {
   AGENT_SAVE_DENIED,
   REPOSITORY_ACCESS_CHANGED,
   REPOSITORY_ACCESS_NOT_CONFIGURED,
   REPOSITORY_SETUP_ASK,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.ts";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 test("Agent repository access labels target the right repository when references overlap", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
@@ -843,6 +852,14 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
     await page.keyboard.press("Enter");
   };
   const reload = page.getByRole("button", { name: "Reload draft", exact: true });
+  const recheckUpdate = async (allowed: boolean) => {
+    const answer = responseTo(page, "GET", `${fixture.origin}${path}/permissions`);
+    await refocus(page);
+    const response = await answer;
+    assert.equal(response.status(), 200);
+    assert.equal(asRecord(asRecord(await response.json())?.data)?.update, allowed);
+    await page.locator(settledView).waitFor();
+  };
   const assertSettingsHeldForRecovery = async (message: string) => {
     const feedback = page.getByText(message, { exact: true });
     await feedback.waitFor();
@@ -866,6 +883,21 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   assert.equal(pathRequests(requests, "PATCH", path).length, 0);
   assert.equal(await save.isDisabled(), true);
   assert.equal(await cancel.isDisabled(), true);
+
+  // Losing update removes the stale editor, and regrant requires a saved read before a new edit.
+  const staleRestriction = restrict(fixture.policy, "update", "agent", {
+    namespaceId: namespace.id,
+  });
+  await recheckUpdate(false);
+  assert.equal(await save.count(), 0);
+  assert.equal(await page.locator("#repository-default-git-read").count(), 0);
+  await assertSettingsHeldForRecovery(REPOSITORY_ACCESS_CHANGED);
+  liftRestriction(fixture.policy, staleRestriction);
+  await recheckUpdate(true);
+  assert.equal(await save.count(), 0);
+  await assertSettingsHeldForRecovery(REPOSITORY_ACCESS_CHANGED);
+  assert.equal(pathRequests(requests, "PATCH", path).length, 0);
+
   await reload.click();
   await page
     .getByText("Contributor · no issue management · Agent default", { exact: true })
@@ -901,16 +933,52 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   );
   assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isDisabled(), true);
   committed.release();
-  await assertSettingsHeldForRecovery(
-    "Outcome unknown. The result could not be confirmed. Refresh and inspect the saved state before trying again.",
-  );
+  const unknownOutcome =
+    "Outcome unknown. The result could not be confirmed. Refresh and inspect the saved state before trying again.";
+  await assertSettingsHeldForRecovery(unknownOutcome);
   assert.equal(await save.isDisabled(), true);
   assert.equal(await cancel.isDisabled(), true);
   const persisted: AgentReadWire = (await fixture.request("GET", path)).data;
   assert.ok("repositoryAccess" in persisted);
   assert.deepEqual(persisted.repositoryAccess, access("git-full"));
   assert.equal(pathRequests(requests, "PATCH", path).length, 2);
+
+  // A real write committed even though its response was lost. Regrant must not reopen the
+  // chooser or release Settings before an explicit readback of the saved draft.
+  const unknownRestriction = restrict(fixture.policy, "update", "agent", {
+    namespaceId: namespace.id,
+  });
+  await recheckUpdate(false);
+  assert.equal(await save.count(), 0);
+  assert.equal(await cancel.count(), 0);
+  await assertSettingsHeldForRecovery(unknownOutcome);
+  // Reload is a read even under denial. A transient read failure must leave the same hold.
+  const failedRead = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    method: "GET",
+    once: true,
+    afterServer: true,
+    fulfill: { status: 503, json: { error: { message: "Temporarily unavailable" } } },
+  });
+  const readFailure = responseTo(page, "GET", `${fixture.origin}${path}`);
   await reload.click();
+  assert.equal((await failedRead.requested)?.status(), 200);
+  failedRead.release();
+  assert.equal((await readFailure).status(), 503);
+  const unknownAfterFailedRead =
+    "The save outcome is still unknown. Could not reload saved repository access. Try Reload draft again.";
+  await assertSettingsHeldForRecovery(unknownAfterFailedRead);
+  liftRestriction(fixture.policy, unknownRestriction);
+  await recheckUpdate(true);
+  assert.equal(await save.count(), 0);
+  await assertSettingsHeldForRecovery(unknownAfterFailedRead);
+  const readback = responseTo(page, "GET", `${fixture.origin}${path}`);
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await reload.evaluate((node) => document.activeElement === node), true);
+  await page.keyboard.press("Enter");
+  const recovered = await readback;
+  assert.equal(recovered.status(), 200);
+  const recoveredAgent: AgentResponse = await recovered.json();
+  assert.deepEqual(recoveredAgent.data.repositoryAccess, access("git-full"));
   await reload.waitFor({ state: "hidden" });
   await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
   assert.equal(await save.isDisabled(), true);
@@ -1028,6 +1096,382 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   assert.equal(await page.evaluate(() => history.length), historyLength + 1);
   assert.equal(savePatches().length, 1);
 });
+
+for (const outcome of [
+  "healthy",
+  "unavailable during Save",
+  "unavailable during editing",
+  "unavailable after PATCH",
+  "unavailable after a lost PATCH reply",
+  "another writer during Save",
+  "denied",
+  "denied after PATCH",
+  "Agent read revoked",
+]) {
+  test(`Agent repository editor handles a foreground permission check: ${outcome}`, async (t) => {
+    const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+      {
+        repositoryRef: "application",
+        repositoryId: "1600",
+        repository: "example/application",
+        namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+      },
+    ]);
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Repository permission check",
+      nativeValues("repo-check"),
+    );
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const agentUrl = `${fixture.origin}${path}`;
+    const permissionsUrl = `${agentUrl}/permissions`;
+    const access = (defaultProfile: GitHubProfile) => ({
+      defaultProfile,
+      repositories: [{ repositoryRef: "application" }],
+    });
+    const update = (profile: GitHubProfile) => ({
+      configurationId: agent.configurationId,
+      repositoryAccess: access(profile),
+    });
+    assert.equal((await fixture.request("PATCH", path, { body: update("git-full") })).status, 200);
+
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    const requests = apiRequests(page, fixture.origin);
+    const patches = () => pathRequests(requests, "PATCH", path);
+    const assertSavedAccess = async (profile: GitHubProfile) => {
+      const response = await fixture.request("GET", path);
+      assert.equal(response.status, 200);
+      const agentRead: AgentReadWire = response.data;
+      assert.ok("repositoryAccess" in agentRead);
+      assert.deepEqual(agentRead.repositoryAccess, access(profile));
+      assert.deepEqual(agentRead.repositoryBindings, [{ repositoryRef: "application", profile }]);
+    };
+    await loginThroughForm(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
+    );
+    await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    const save = page.getByRole("button", { name: "Save repository access", exact: true });
+    const readOnly = page.locator("#repository-default-git-read");
+    await readOnly.check();
+    await waitForEnabled(save);
+
+    const denied = outcome.startsWith("denied");
+    const lostReply = outcome === "unavailable after a lost PATCH reply";
+    const sent =
+      lostReply || outcome.endsWith("after PATCH")
+        ? await holdRequests(t, page, agentUrl, {
+            method: "PATCH",
+            once: true,
+            afterServer: true,
+            loseResponse: lostReply,
+          })
+        : undefined;
+    const preflight =
+      sent || outcome === "unavailable during editing"
+        ? undefined
+        : await holdRequests(t, page, agentUrl, { method: "GET", once: true, afterServer: true });
+    const held = sent ?? preflight;
+    if (held) {
+      await save.click();
+      const response = await held.requested;
+      assert.ok(response);
+      assert.equal(response.status(), 200);
+      const original: AgentResponse = await response.json();
+      assert.deepEqual(original.data.repositoryAccess, access(sent ? "git-read" : "git-full"));
+      assert.equal(await save.getAttribute("aria-busy"), "true");
+    }
+    const editor = await save.elementHandle();
+    assert.ok(editor);
+    const unavailable = outcome.startsWith("unavailable");
+    const readRevoked = outcome === "Agent read revoked";
+    const restriction =
+      denied || readRevoked
+        ? restrict(fixture.policy, readRevoked ? "read" : "update", "agent", {
+            namespaceId: namespace.id,
+          })
+        : null;
+    let injected = false;
+    if (unavailable) {
+      await page.route(permissionsUrl, async (route) => {
+        if (injected || route.request().method() !== "GET") {
+          await route.fallback();
+          return;
+        }
+        injected = true;
+        const upstream = await route.fetch();
+        assert.equal(upstream.status(), 200);
+        assert.equal(asRecord(asRecord(await upstream.json())?.data)?.update, true);
+        await route.fulfill({
+          status: 503,
+          json: { error: { message: "Temporarily unavailable" } },
+        });
+      });
+    }
+
+    const admission = await holdRequests(t, page, `${fixture.origin}/api/auth/session`, {
+      method: "GET",
+      once: true,
+    });
+    const checked = responseTo(page, "GET", readRevoked ? agentUrl : permissionsUrl);
+    await refocus(page);
+    await admission.requested;
+    await page.locator(heldView).waitFor();
+    if (outcome === "another writer during Save") {
+      // The held Save already read Contributor. Only foreground admission sees this newer write.
+      const concurrent = await fixture.request("PATCH", path, { body: update("git-write") });
+      assert.equal(concurrent.status, 200);
+    }
+    if (outcome === "healthy" || outcome === "another writer during Save") {
+      preflight?.release();
+      await waitForIdleFetches(page, { except: "/api/auth/session" });
+    }
+    assert.equal(patches().length, sent ? 1 : 0, "must not start a PATCH while admission is held");
+    const applied = outcome === "healthy" ? responseTo(page, "PATCH", agentUrl) : undefined;
+    admission.release();
+    const answer = await checked;
+    assert.equal(answer.status(), readRevoked ? 403 : unavailable ? 503 : 200);
+    if (readRevoked) {
+      await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+      assert.equal(await editor.evaluate((node) => node.isConnected), false);
+      preflight?.release();
+      await waitForIdleFetches(page);
+      assert.deepEqual(patches(), [], "losing Agent read must discard the pending Save");
+      assert.ok(restriction);
+      liftRestriction(fixture.policy, restriction);
+      await assertSavedAccess("git-full");
+      return;
+    }
+    if (!unavailable) {
+      assert.equal(asRecord(asRecord(await answer.json())?.data)?.update, !denied);
+    }
+    await page.locator(settledView).waitFor();
+
+    const trySettings = async () => {
+      const url = page.url();
+      await page.locator(".account-toggle, .topbar-avatar").and(page.getByRole("button")).focus();
+      await page.keyboard.press("ArrowDown");
+      const settings = page.getByRole("menuitem", { name: "Settings", exact: true });
+      await settings.waitFor();
+      assert.equal(await settings.evaluate((node) => document.activeElement === node), true);
+      await page.keyboard.press("Enter");
+      assert.equal(page.url(), url);
+    };
+    if (outcome === "another writer during Save") {
+      await page
+        .getByText("Repository access changed while you were editing.", { exact: false })
+        .waitFor();
+      assert.deepEqual(patches(), [], "the old preflight must not overwrite a newer binding");
+      await assertSavedAccess("git-write");
+      return;
+    }
+    if (outcome === "denied after PATCH") {
+      assert.ok(sent);
+      const receipt = page.getByRole("status").filter({
+        hasText: "Waiting for the repository access save to finish.",
+      });
+      await receipt.waitFor();
+      assert.equal(await editor.evaluate((node) => node.isConnected), false);
+      assert.equal(await readOnly.count(), 0);
+      assert.equal(await page.locator(".repository-access-summary").count(), 0);
+      const channels = page.getByRole("tab", { name: "Channels", exact: true });
+      assert.equal(await channels.isDisabled(), true);
+      await trySettings();
+      const heldStatus = page.getByText(
+        "Wait for repository access save to finish before leaving the editor.",
+        { exact: true },
+      );
+      assert.equal(await heldStatus.evaluate((node) => document.activeElement === node), true);
+      await assertSavedAccess("git-read");
+
+      const readback = responseTo(page, "GET", agentUrl);
+      sent.release();
+      const confirmed = await readback;
+      assert.equal(confirmed.status(), 200);
+      const reread: AgentResponse = await confirmed.json();
+      assert.deepEqual(reread.data.repositoryAccess, access("git-read"));
+      await page
+        .locator(".repository-access-summary")
+        .getByText("application · Read-only")
+        .waitFor();
+      await page.getByText("Repository access saved.", { exact: true }).waitFor();
+      await waitForEnabled(channels);
+      assert.equal(await readOnly.count(), 0);
+      assert.deepEqual(
+        patches().map(({ body }) => body),
+        [update("git-read")],
+      );
+      return;
+    }
+    if (outcome === "denied") {
+      await page
+        .locator(".repository-access-summary")
+        .getByText("application · Contributor")
+        .waitFor();
+      assert.equal(await editor.evaluate((node) => node.isConnected), false);
+      assert.ok(restriction);
+      liftRestriction(fixture.policy, restriction);
+    } else if (unavailable) {
+      const feedback = page
+        .getByRole("status")
+        .filter({ hasText: /Could not confirm permission to edit repository access/ });
+      await feedback.waitFor();
+      assert.equal(await editor.evaluate((node) => node.isConnected), true);
+      assert.equal(await readOnly.isChecked(), true);
+      assert.equal(await readOnly.isDisabled(), true);
+      assert.equal(await readOnly.isVisible(), false);
+      assert.equal(await save.isDisabled(), true);
+      assert.equal(await feedback.evaluate((node) => document.activeElement === node), true);
+      const warning = await feedback.textContent();
+      assert.equal(warning?.includes("Your changes are still here."), !sent);
+      assert.equal(warning?.includes("Save was not sent."), Boolean(preflight));
+      assert.equal(warning?.includes("Waiting for the save result."), Boolean(sent));
+      assert.equal(
+        await page.getByText(/Your access does not include deploying this Agent/).count(),
+        0,
+      );
+      assert.equal(
+        await page.getByText(/Version draft · read-only with your access/).isVisible(),
+        false,
+      );
+      if (sent && !lostReply) {
+        // This write already committed. Losing a permission read must not discard its confirmation.
+        await assertSavedAccess("git-read");
+        sent.release();
+        await page.getByRole("status").filter({ hasText: "Repository access saved." }).waitFor();
+        await waitForIdleFetches(page);
+        assert.deepEqual(
+          patches().map(({ body }) => body),
+          [update("git-read")],
+        );
+        return;
+      }
+      if (lostReply) {
+        assert.ok(sent);
+        // The write committed while the browser was still waiting. Lose the reply only after
+        // the permission check failed, so the visible warning must update without another check.
+        await assertSavedAccess("git-read");
+        sent.release();
+        await page
+          .getByText(
+            "Could not confirm permission to edit repository access. Repository access may already have been saved. Retry the check, then reload this draft.",
+            { exact: true },
+          )
+          .waitFor();
+        await page
+          .getByText(
+            "The repository access save outcome is unknown. Check access and reload this draft before deploying.",
+            { exact: true },
+          )
+          .waitFor();
+        await trySettings();
+        assert.equal(await feedback.evaluate((node) => document.activeElement === node), true);
+        assert.equal(
+          await page.getByRole("button", { name: "Reload draft", exact: true }).isDisabled(),
+          true,
+        );
+      } else {
+        assert.deepEqual(patches(), []);
+      }
+    }
+
+    if (!applied) {
+      if (!lostReply) {
+        await assertSavedAccess("git-full");
+      }
+      const recovered = responseTo(page, "GET", permissionsUrl);
+      if (unavailable) {
+        const sessionCheck = responseTo(page, "GET", `${fixture.origin}/api/auth/session`);
+        await page.keyboard.press("Tab");
+        const retry = page.getByRole("button", { name: "Retry access check", exact: true });
+        assert.equal(await retry.evaluate((node) => document.activeElement === node), true);
+        await page.keyboard.press("Enter");
+        assert.equal((await sessionCheck).status(), 200);
+      } else {
+        await refocus(page);
+      }
+      const reply = await recovered;
+      assert.equal(reply.status(), 200);
+      assert.equal(asRecord(asRecord(await reply.json())?.data)?.update, true);
+      await page.locator(settledView).waitFor();
+      if (lostReply) {
+        const reload = page.getByRole("button", { name: "Reload draft", exact: true });
+        await waitForEnabled(reload);
+        assert.equal(await save.isDisabled(), true);
+        const readback = responseTo(page, "GET", agentUrl);
+        await reload.click();
+        const saved = await readback;
+        assert.equal(saved.status(), 200);
+        const savedAgent: AgentResponse = await saved.json();
+        assert.deepEqual(savedAgent.data.repositoryAccess, access("git-read"));
+        await page.getByText("Read-only · Agent default", { exact: true }).waitFor();
+        await reload.waitFor({ state: "hidden" });
+        await waitForIdleFetches(page);
+        assert.deepEqual(
+          patches().map(({ body }) => body),
+          [update("git-read")],
+        );
+        return;
+      }
+      if (outcome === "denied") {
+        await save.waitFor();
+        assert.equal(await readOnly.isChecked(), false);
+        assert.equal(await save.isDisabled(), true);
+      } else {
+        await waitForEnabled(save);
+        assert.equal(await readOnly.isChecked(), true);
+        if (preflight) {
+          await page
+            .getByRole("status")
+            .filter({
+              hasText: /Repository access was not saved\./,
+            })
+            .waitFor();
+        }
+      }
+
+      assert.deepEqual(patches(), [], "recovery must not send an earlier Save");
+      if (outcome === "denied") {
+        preflight?.release();
+        await waitForIdleFetches(page);
+        assert.deepEqual(patches(), []);
+        return;
+      }
+      const explicitSave = responseTo(page, "PATCH", agentUrl);
+      const retry =
+        preflight &&
+        (await holdRequests(t, page, agentUrl, {
+          method: "GET",
+          once: true,
+          afterServer: true,
+        }));
+      await save.click();
+      if (retry) {
+        assert.equal((await retry.requested)?.status(), 200);
+        const settled = await settledFetches(page, path);
+        preflight.release();
+        await waitForSettledFetches(page, path, settled + 1);
+        assert.equal(await save.getAttribute("aria-busy"), "true");
+        assert.deepEqual(patches(), [], "only the new preflight may complete the explicit Save");
+        retry.release();
+      }
+      assert.equal((await explicitSave).status(), 200);
+    } else {
+      assert.equal((await applied).status(), 200);
+    }
+
+    await page.getByRole("status").filter({ hasText: "Repository access saved." }).waitFor();
+    await waitForIdleFetches(page);
+    assert.deepEqual(
+      patches().map(({ body }) => body),
+      [update("git-read")],
+    );
+    await assertSavedAccess("git-read");
+  });
+}
 
 for (const includeInstallationAccess of [false, true]) {
   const catalog = includeInstallationAccess ? "installation scope only" : "empty catalog";
