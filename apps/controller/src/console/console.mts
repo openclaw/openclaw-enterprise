@@ -3037,8 +3037,12 @@ async function loadPage({
           );
         // A rebuild started at the top. Restore the snapshot's scroll and let focus
         // bring the shortcut into view if the page changed height.
+        const rebuiltAgentList =
+          current.feature === "agents" &&
+          !current.creating &&
+          shell.view !== retainedView?.snapshot;
         const restoreScroll = Boolean(
-          focusTarget && (current.agentId || current.feature === "namespaces"),
+          focusTarget && (current.agentId || current.feature === "namespaces" || rebuiltAgentList),
         );
         if (restoreScroll && retainedView) {
           window.scrollTo({ top: retainedView.scrollY, left: 0 });
