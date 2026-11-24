@@ -20,6 +20,7 @@ width matters, start narrow and scale both dimensions together, for example from
 920 × 900 to 1150 × 1125 and back, to avoid gray bands. If exact width and height
 or orientation matter, keep them and accept padding or use separate recordings.
 Never crop or edit the proof.
+See the [Agent tab resize walkthrough](https://github.com/openclaw/openclaw-enterprise/pull/7194#verification).
 
 Call [`recordWalkthrough`](../../../scripts/console/record-walkthrough.ts) from a local
 TypeScript evidence script. Give it a new path in an existing directory outside the
