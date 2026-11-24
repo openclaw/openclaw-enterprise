@@ -3,7 +3,7 @@
 Always run this workflow before merging a change to a default controller or
 runtime image version, image digest, upstream source pin, or bundled runtime
 version such as Codex. Also use it when changing image recipes or version gates.
-Record the evidence in the PR's Verification section. Missing, failed, cancelled,
+Record the evidence in the PR's Evidence section. Missing, failed, cancelled,
 or skipped required image checks block merging.
 
 The branch check and publication have different inputs. The

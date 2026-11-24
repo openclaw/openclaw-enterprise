@@ -37,6 +37,6 @@ in-memory storage for those API boundaries.
    the list. The confirmation keeps the creation message.
 
 Capture desktop and phone screenshots and a short creation walkthrough outside
-the checkout. Attach them to the task and the PR's Verification section. Record
+the checkout. Attach them to the task and the PR's Evidence section. Record
 the tested revision and label this evidence as simulated UI proof. Namespace
 renaming, deletion, and infrastructure placement are outside this workflow.

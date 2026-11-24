@@ -150,7 +150,7 @@ branch. An explicit `--head` keeps `gh pr create` from choosing where to push th
   required checks before merging.
 - Before merging Console UI changes, upload screenshots and a short video of
   the final UI as native GitHub attachments, not gists, and show them in the
-  PR's Verification section.
+  PR's Evidence section.
   Missing or stale media blocks merging even when CI passes. Follow the
   [Console evidence requirements](AGENTS.md#console-storybook) for capture,
   review, and reporting.
