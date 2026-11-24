@@ -10,10 +10,10 @@ import { publishChart, validateImageReceipt } from "./chart-release.ts";
 import {
   ghcrPackageName,
   github,
+  readReleaseNodeBase,
   releaseWorkflow,
   publicationAlias,
   validatePackage,
-  verifyCi,
   verifyEnvironment,
   verifyGhcr,
   verifyMainSource,
@@ -33,6 +33,8 @@ import {
   skopeo,
   skopeoLogin,
 } from "./container-release/registry.ts";
+
+import { verifyProducer } from "./release-oce.ts";
 
 type Target = { image: string; destination: string; digest: string };
 
@@ -167,14 +169,11 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
     workflowSha,
   );
   execFileSync("git", ["merge-base", "--is-ancestor", sourceSha, workflowSha]);
-  for (const key of ["PRODUCER_RUN_ID", "CI_RUN_ID", "CI_ATTEMPT"]) {
-    match(env[key], integerPattern);
-  }
+  match(env.PRODUCER_RUN_ID, integerPattern);
   assert.equal(env.PRODUCER_ATTEMPT, "1");
   assert.ok(env.GITHUB_EVENT_PATH);
   const inputs = field(await json(env.GITHUB_EVENT_PATH), "inputs");
   assert.equal(field(inputs, "source_sha"), sourceSha);
-  assert.equal(field(inputs, "ci_run_id"), env.CI_RUN_ID);
   assert.equal(field(inputs, "image_tag") ?? "", env.IMAGE_TAG ?? "");
   assert.equal(field(inputs, "recovery_run_id") || env.GITHUB_RUN_ID, env.PRODUCER_RUN_ID);
   if (phase !== "preflight") {
@@ -185,12 +184,11 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
     );
   }
   const recovery = env.PRODUCER_RUN_ID !== env.GITHUB_RUN_ID;
-  if (!recovery) {
-    assert.equal(sourceSha, env.GITHUB_WORKFLOW_SHA);
-  }
+  const producerWorkflowSha = recovery
+    ? await verifyProducer({ ...env, RECOVERY_RUN_ID: env.PRODUCER_RUN_ID })
+    : workflowSha;
   const verify = async () => {
     await verifyMainSource(env, releaseWorkflow);
-    await verifyCi(env);
     if (phase !== "preflight") {
       await verifyEnvironment();
     }
@@ -198,13 +196,12 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
   await verify();
   const producer = {
     sourceSha,
-    workflowSha: sourceSha,
+    workflowSha: producerWorkflowSha,
     runId: env.PRODUCER_RUN_ID,
     attempt: env.PRODUCER_ATTEMPT,
-    ciRunId: env.CI_RUN_ID,
-    ciAttempt: env.CI_ATTEMPT,
-    nodeBaseImage: env.NODE_BASE_IMAGE,
+    nodeBaseImage: readReleaseNodeBase(sourceSha),
   };
+  const chartEnv = { ...env, NODE_BASE_IMAGE: producer.nodeBaseImage };
   const prepared = await json(join(directory, "chart/chart-preparation.json"));
   const version = await readChartVersion(sourceSha);
   const archive = join(directory, "chart", `openclaw-enterprise-${version}.tgz`);
@@ -224,7 +221,7 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
   assert.ok(controller && runtime);
   const { chartSha256 } = await verifyPreparedReleaseChart(
     archive,
-    env,
+    chartEnv,
     producer,
     `${controller.destination}@${controller.digest}`,
     `${runtime.destination}@${runtime.digest}`,
@@ -288,10 +285,11 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
       const digests = new Map(targets.map((target) => [target.image, target.digest]));
       const receipt = await publishPrepared(directory, env, producer, verify, undefined, digests);
       await save(receiptPath, receipt);
-      await publishChart(directory, env, {
+      await publishChart(directory, chartEnv, {
         archive,
         runId: producer.runId,
         attempt: producer.attempt,
+        workflowSha: producer.workflowSha,
         releaseVersion: version,
         verify,
       });
@@ -301,8 +299,7 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
       sourceSha,
       runId: producer.runId,
       attempt: producer.attempt,
-      ciRunId: producer.ciRunId,
-      ciAttempt: producer.ciAttempt,
+      workflowSha: producer.workflowSha,
       controllerImage: env.GHCR_CONTROLLER_IMAGE,
       runtimeImage: env.GHCR_RUNTIME_IMAGE,
     });

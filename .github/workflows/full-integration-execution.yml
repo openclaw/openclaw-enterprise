@@ -7,6 +7,10 @@ on:
         description: Successful full-suite result bound to its source SHA, run and attempt.
         value: ${{ jobs.full-aggregate.outputs.full_suite }}
     inputs:
+      source_sha:
+        type: string
+        default: ""
+        description: Reviewed ancestor to test for Release OCE.
       lane:
         type: string
         default: ""
@@ -35,12 +39,13 @@ jobs:
     outputs:
       run_all: ${{ steps.select.outputs.run_all }}
       selected_lane: ${{ steps.select.outputs.selected_lane }}
+      tested_sha: ${{ steps.source.outputs.sha }}
       matrix: ${{ steps.fresh-plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 2
+          fetch-depth: ${{ inputs.source_sha != '' && '0' || '2' }}
           persist-credentials: false
       - name: Set up preflight runtime
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
@@ -53,13 +58,34 @@ jobs:
           INPUT_LANE: ${{ inputs.lane }}
         run: |
           node scripts/ci/full-integration-preflight.ts
+      - name: Verify the selected test source
+        id: source
+        env:
+          SELECTED_SOURCE: ${{ inputs.source_sha }}
+          SELECTED_LANE: ${{ steps.select.outputs.selected_lane }}
+          DISPATCH_SOURCE: ${{ github.event.inputs.source_sha }}
+        run: |
+          source="$GITHUB_SHA"
+          if [[ "$GITHUB_WORKFLOW_REF" == 'openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main' ]]; then
+            [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF_PROTECTED" == true && "$GITHUB_RUN_ATTEMPT" == 1 ]] || exit 1
+            [[ "$SELECTED_LANE" == all && "$SELECTED_SOURCE" =~ ^[0-9a-f]{40}$ && "$SELECTED_SOURCE" == "$DISPATCH_SOURCE" ]] || exit 1
+            [[ "$GITHUB_WORKFLOW_SHA" == "$GITHUB_SHA" && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || exit 1
+            git merge-base --is-ancestor "$SELECTED_SOURCE" "$GITHUB_SHA"
+            source="$SELECTED_SOURCE"
+          else
+            [[ -z "$SELECTED_SOURCE" ]] || exit 1
+          fi
+          echo "sha=$source" >> "$GITHUB_OUTPUT"
       - name: Prepare fresh lane fallback
         id: fresh-plan
         if: steps.select.outputs.run_all == 'true'
+        env:
+          TEST_SOURCE: ${{ steps.source.outputs.sha }}
         run: |
+          git show "$TEST_SOURCE:scripts/ci/full-integration-lanes.json" > "$RUNNER_TEMP/selected-lanes.json"
           node <<'NODE'
           const fs = require("fs");
-          const matrix = JSON.parse(fs.readFileSync("scripts/ci/full-integration-lanes.json", "utf8"));
+          const matrix = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/selected-lanes.json`, "utf8"));
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(matrix)}\n`);
           NODE
       - name: Prepare full admission marker
@@ -92,7 +118,7 @@ jobs:
     name: Reuse successful same-SHA CI
     runs-on: ubuntu-24.04
     needs: preflight
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && needs.preflight.outputs.run_all == 'true' }}
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && needs.preflight.outputs.run_all == 'true' && !inputs.source_sha }}
     timeout-minutes: 16
     continue-on-error: true
     outputs:
@@ -165,6 +191,11 @@ jobs:
           # Sign-in profile tests compare real historical controller/catalog inputs.
           fetch-depth: ${{ matrix.lane == 'checks-baseline-2' && '0' || '1' }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: ${{ matrix.lane }}
@@ -196,8 +227,8 @@ jobs:
     steps:
       - id: select
         env:
-          GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
-          AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+          GATEWAY_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE || '' }}
+          AGENT_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_AGENT_IMAGE || '' }}
         run: |
           node <<'NODE'
           const fs = require("fs");
@@ -212,6 +243,8 @@ jobs:
     needs: [preflight, gateway-image-selection]
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true' || (needs.preflight.outputs.selected_lane == 'gateway-routing' && needs.gateway-image-selection.outputs.use-runtime-artifact == 'true') || needs.preflight.outputs.selected_lane == 'production-tui') }}
     uses: ./.github/workflows/ci-runtime-artifact.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
 
   image-lanes-same-sha:
     name: Same-SHA ${{ matrix.title }}
@@ -244,6 +277,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: ${{ matrix.lane }}
@@ -268,6 +306,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - name: Pull Docker Hub images through a mirror
         run: bash scripts/ci/docker-hub-mirror.sh setup
       - uses: ./.github/actions/run-ci-lane
@@ -291,13 +334,18 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
-      OCC_DOCKER_RUNTIME_IMAGE: ${{ vars.OCC_DOCKER_RUNTIME_IMAGE }}
+      OCC_DOCKER_RUNTIME_IMAGE: ${{ !inputs.source_sha && vars.OCC_DOCKER_RUNTIME_IMAGE || '' }}
       NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - name: Verify successful runtime producer has an artifact
         if: needs.runtime-artifact.result == 'success'
         env:
@@ -327,14 +375,19 @@ jobs:
       CI_RUNNER_TEST_TIMEOUT_MS: "5400000"
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
-      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
-      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE || '' }}
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_AGENT_IMAGE || '' }}
       NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: k3d-model
@@ -361,6 +414,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - name: Verify Gateway runtime selection
         env:
           RUNTIME_ARTIFACT_MODE: ${{ needs.gateway-image-selection.outputs.use-runtime-artifact }}
@@ -404,8 +462,8 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
-      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: ${{ vars.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE }}
-      OCC_TEST_KUBERNETES_RUNTIME_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_RUNTIME_IMAGE }}
+      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE || '' }}
+      OCC_TEST_KUBERNETES_RUNTIME_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_RUNTIME_IMAGE || '' }}
       OCC_TEST_PRODUCTION_POSTGRES_IMAGE: ${{ vars.OCC_TEST_PRODUCTION_POSTGRES_IMAGE }}
       OCC_TEST_PRODUCTION_NODE_IMAGE: ${{ vars.OCC_TEST_PRODUCTION_NODE_IMAGE }}
       NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
@@ -414,6 +472,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - name: Verify successful runtime producer has an artifact
         env:
           RUNTIME_ARTIFACT_ID: ${{ needs.runtime-artifact.outputs.artifact-id }}
@@ -446,8 +509,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
-      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
-      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE || '' }}
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_AGENT_IMAGE || '' }}
       OCC_TEST_SLACK_CHANNEL_ID: ${{ vars.OCC_TEST_QA_SLACK_CHANNEL_ID }}
       OCC_TEST_SLACK_SENDER_BOT_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
       SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
@@ -457,6 +520,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: slack
@@ -491,6 +559,7 @@ jobs:
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') && needs.openshell-build-inputs.result == 'success' }}
     uses: ./.github/workflows/ci-image-cache.yml
     with:
+      source_sha: ${{ inputs.source_sha }}
       require-export: true
       node-base-image: ${{ needs.openshell-build-inputs.outputs.node-base-image }}
 
@@ -498,7 +567,7 @@ jobs:
     name: OpenShell (${{ matrix.lane }})
     runs-on: ubuntu-24.04
     needs: [preflight, openshell-build-inputs, openshell-image-cache]
-    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') && needs.openshell-image-cache.result == 'success' && needs.openshell-image-cache.outputs.source-sha == github.sha }}
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') && needs.openshell-image-cache.result == 'success' && needs.openshell-image-cache.outputs.source-sha == (inputs.source_sha || github.sha) }}
     timeout-minutes: 150
     environment: integration-main
     strategy:
@@ -514,8 +583,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
       OCC_TEST_OPENSHELL_SECRET_PROJECTION: ${{ vars.OCC_TEST_OPENSHELL_SECRET_PROJECTION || '1' }}
-      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
-      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE || '' }}
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_AGENT_IMAGE || '' }}
       OCC_TEST_OPENSHELL_GATEWAY_IMAGE: ${{ vars.OCC_TEST_OPENSHELL_GATEWAY_IMAGE }}
       OCC_TEST_OPENSHELL_SANDBOX_IMAGE: ${{ vars.OCC_TEST_OPENSHELL_SANDBOX_IMAGE }}
       OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: ${{ vars.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE }}
@@ -524,6 +593,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: ${{ matrix.lane }}
@@ -543,14 +617,19 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
-      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
-      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
+      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE || '' }}
+      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ !inputs.source_sha && vars.OCC_TEST_KUBERNETES_AGENT_IMAGE || '' }}
       NODE_BASE_IMAGE: ${{ vars.NODE_BASE_IMAGE }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: k3d-otel
@@ -571,6 +650,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: helper-timeout
@@ -590,6 +674,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: logging-collector
@@ -615,6 +704,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - name: Pull Docker Hub images through a mirror
         run: bash scripts/ci/docker-hub-mirror.sh setup
       - uses: ./.github/actions/run-ci-lane
@@ -648,6 +742,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -794,6 +893,13 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Check out the approved source manifest
+        if: inputs.source_sha != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.tested_sha || 'missing-test-source' }}
+          path: tested-source
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -866,10 +972,14 @@ jobs:
       - name: Aggregate full suite
         id: aggregate-full
         if: needs.preflight.outputs.run_all == 'true'
-        run: >-
-          node scripts/ci/run-tests.ts aggregate full
-          --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
-          --full-coverage-marker "$RUNNER_TEMP/full-integration-exercised"
+        env:
+          TEST_SOURCE: ${{ needs.preflight.outputs.tested_sha }}
+          TEST_ROOT: ${{ inputs.source_sha != '' && 'tested-source' || '.' }}
+        run: |
+          [[ "$TEST_SOURCE" == "$(git -C "$TEST_ROOT" rev-parse HEAD)" ]] || exit 1
+          GITHUB_SHA="$TEST_SOURCE" node scripts/ci/run-tests.ts aggregate full --root "$TEST_ROOT" \
+            --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json" \
+            --full-coverage-marker "$RUNNER_TEMP/full-integration-exercised"
       - name: Upload full coverage marker
         id: coverage-marker
         if: ${{ !cancelled() && github.workflow == 'Full Integration' && steps.aggregate-full.outputs.full_coverage_exercised == 'true' }}
@@ -886,7 +996,9 @@ jobs:
       - name: Record successful full suite
         id: qualified
         if: ${{ success() && needs.preflight.outputs.selected_lane == 'all' && steps.aggregate-full.outcome == 'success' && steps.aggregate-full.outputs.full_coverage_exercised == 'true' }}
-        run: printf 'full_suite=all:%s:%s:%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+        env:
+          TEST_SOURCE: ${{ needs.preflight.outputs.tested_sha }}
+        run: printf 'full_suite=all:%s:%s:%s\n' "$TEST_SOURCE" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
   qa-matrix:
     name: Shipped Installation QA Matrix
@@ -911,6 +1023,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select the approved release checkout
+        if: inputs.source_sha != ''
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ needs.preflight.outputs.tested_sha }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}

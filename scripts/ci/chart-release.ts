@@ -24,6 +24,7 @@ import {
   verifyMainSource,
 } from "./container-release.ts";
 
+import { isReleaseOce } from "./container-release/metadata.ts";
 import { verifyPreparedReleaseChart, readChartVersion } from "./prepare-release-chart.ts";
 
 export { stageReleaseChart } from "./prepare-release-chart.ts";
@@ -43,10 +44,11 @@ type ImageReceipt = NamedReceipt & {
 
 type ExpectedPublication = {
   sourceSha: string;
+  workflowSha: string;
   runId: string | undefined;
   attempt: string | undefined;
-  ciRunId: string | undefined;
-  ciAttempt: string | undefined;
+  ciRunId?: string | undefined;
+  ciAttempt?: string | undefined;
   controllerImage: string | undefined;
   runtimeImage: string | undefined;
 };
@@ -74,13 +76,15 @@ function assertReceiptImages(
     "Expected controller and runtime images once each.",
   );
   assert.match(expected.sourceSha, shaPattern);
+  assert.match(expected.workflowSha, shaPattern);
   for (const image of images) {
     assert.equal(image.sourceSha, expected.sourceSha);
-    assert.equal(image.workflowSha, expected.sourceSha);
+    assert.equal(image.workflowSha, expected.workflowSha);
     assert.equal(String(image.runId), expected.runId);
     assert.equal(String(image.attempt), expected.attempt);
-    assert.equal(String(image.ciRunId), expected.ciRunId);
-    assert.equal(String(image.ciAttempt), expected.ciAttempt);
+    for (const key of ["ciRunId", "ciAttempt"] as const) {
+      assert.equal(image[key] === undefined ? undefined : String(image[key]), expected[key]);
+    }
     assert.equal(
       image.destination,
       image.image === "controller" ? expected.controllerImage : expected.runtimeImage,
@@ -217,12 +221,14 @@ export async function publishChart(
     archive,
     runId,
     attempt,
+    workflowSha,
     releaseVersion,
     verify,
   }: {
     archive: string;
     runId: string | undefined;
     attempt: string | undefined;
+    workflowSha: string;
     releaseVersion?: string;
     verify: () => Promise<void>;
   },
@@ -233,7 +239,16 @@ export async function publishChart(
     validatePackage(await github(packagePath), chartPackage, { allowMissingRepository: true });
   }
   await verifyPublication();
-  for (const key of ["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "CI_RUN_ID", "CI_ATTEMPT"]) {
+  const exactArchive = isReleaseOce(env);
+  if (exactArchive) {
+    assert.equal(env.CI_RUN_ID, undefined);
+    assert.equal(env.CI_ATTEMPT, undefined);
+  } else {
+    assert.equal(env.GITHUB_WORKFLOW_REF, `${repository}/${publishWorkflow}@refs/heads/main`);
+    assert.match(env.CI_RUN_ID ?? "", integerPattern);
+    assert.match(env.CI_ATTEMPT ?? "", integerPattern);
+  }
+  for (const key of ["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"]) {
     assert.match(env[key] ?? "", integerPattern);
   }
   const imagePublication: unknown = JSON.parse(
@@ -242,6 +257,7 @@ export async function publishChart(
   assert.ok(typeof env.SOURCE_SHA === "string");
   const images = validateImageReceipt(imagePublication, {
     sourceSha: env.SOURCE_SHA,
+    workflowSha,
     runId,
     attempt,
     ciRunId: env.CI_RUN_ID,
@@ -252,7 +268,7 @@ export async function publishChart(
   const { version } = await verifyPreparedReleaseChart(
     archive,
     env,
-    { runId, attempt },
+    { runId, attempt, workflowSha },
     `${images[0].destination}@${images[0].digest}`,
     `${images[1].destination}@${images[1].digest}`,
     releaseVersion,
@@ -295,8 +311,6 @@ export async function publishChart(
       );
       imageTags.push({ ...image, exists: Boolean(actual) });
     }
-    const exactArchive =
-      env.GITHUB_WORKFLOW_REF !== `${repository}/${publishWorkflow}@refs/heads/main`;
     if (existingChartDigest) {
       const pulled = join(temporary, "existing");
       await mkdir(pulled);
@@ -421,7 +435,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   const version = await readChartVersion();
   const archive = join(directory, `openclaw-enterprise-${version}.tgz`);
+  assert.ok(process.env.GITHUB_WORKFLOW_SHA);
   publishChart(directory, process.env, {
+    workflowSha: process.env.GITHUB_WORKFLOW_SHA,
     archive,
     runId: process.env.GITHUB_RUN_ID,
     attempt: process.env.GITHUB_RUN_ATTEMPT,

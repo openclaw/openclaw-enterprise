@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -10,6 +10,7 @@ import Type from "typebox";
 import { Check } from "typebox/value";
 import { prepareReleaseChart } from "../../scripts/ci/prepare-release-chart.ts";
 import { registryImage } from "../../scripts/ci/fixture-support-images.ts";
+import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 
 const indexMediaType = "application/vnd.oci.image.index.v1+json";
@@ -242,6 +243,52 @@ test(
 
     const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     assert.match(sourceSha, /^[a-f0-9]{40}$/);
+    // Add two descendants of the source commit in a disposable local clone.
+    // Git shares the original objects for reads. All new commits and refs belong to the fixture.
+    const checkout = join(directory, "dispatch");
+    execFileSync("git", [
+      "clone",
+      "--quiet",
+      "--local",
+      "--shared",
+      "--no-checkout",
+      "--single-branch",
+      "--no-tags",
+      ".",
+      checkout,
+    ]);
+    const git = (...args: string[]) =>
+      execFileSync(
+        "git",
+        [
+          "-C",
+          checkout,
+          "-c",
+          "user.name=Release test",
+          "-c",
+          "user.email=release@example.invalid",
+          ...args,
+        ],
+        { encoding: "utf8" },
+      ).trim();
+    const dispatchSha = git(
+      "commit-tree",
+      `${sourceSha}^{tree}`,
+      "-p",
+      sourceSha,
+      "-m",
+      "Release dispatch",
+    );
+    const recoverySha = git(
+      "commit-tree",
+      `${sourceSha}^{tree}`,
+      "-p",
+      dispatchSha,
+      "-m",
+      "Recovery dispatch",
+    );
+    git("update-ref", "HEAD", dispatchSha);
+    const gitEnv = { GIT_DIR: join(checkout, ".git"), GIT_WORK_TREE: checkout };
     const suite: unknown = JSON.parse(
       await readFile("scripts/ci/test-suites/images-packaging.json", "utf8"),
     );
@@ -260,20 +307,30 @@ test(
       await mkdir(prepared);
       const archiveBytes = await readFile(current.path);
       await writeFile(join(prepared, "image.tar"), archiveBytes);
+      const metadata = {
+        sourceSha,
+        workflowSha: dispatchSha,
+        runId: "123",
+        attempt: "1",
+        nodeBaseImage,
+        image,
+        platforms,
+        digest: current.digest,
+        archiveSha256: sha256(archiveBytes).slice(7),
+      };
+      await writeFile(join(prepared, "metadata.json"), JSON.stringify(metadata));
+      // The independent container workflow still uses ordinary push CI receipts.
+      const standalone = join(directory, `container-${image}-110-1`);
+      await mkdir(standalone);
+      await copyFile(join(prepared, "image.tar"), join(standalone, "image.tar"));
       await writeFile(
-        join(prepared, "metadata.json"),
+        join(standalone, "metadata.json"),
         JSON.stringify({
-          sourceSha,
+          ...metadata,
+          runId: "110",
           workflowSha: sourceSha,
-          runId: "123",
-          attempt: "1",
           ciRunId: "456",
           ciAttempt: "1",
-          nodeBaseImage,
-          image,
-          platforms,
-          digest: current.digest,
-          archiveSha256: sha256(archiveBytes).slice(7),
         }),
       );
       // Seed actual registry tags so publishing must replace an existing alias.
@@ -348,13 +405,21 @@ process.exit(result.status);
       `
 const repo = { full_name: "openclaw/openclaw-enterprise", private: false, default_branch: "main" };
 const sha = ${JSON.stringify(sourceSha)};
+const dispatch = ${JSON.stringify(dispatchSha)};
+const recovery = ${JSON.stringify(recoverySha)};
 globalThis.fetch = async (url) => {
   const { origin, pathname: path } = new URL(url);
   if (origin !== "https://api.github.com") {
     throw new Error("Unexpected metadata origin " + origin);
   }
   if (path === "/repos/openclaw/openclaw-enterprise") return Response.json(repo);
-  if (path.includes("/compare/")) return Response.json({ status: "identical" });
+  if ([dispatch, recovery, "main"].some(head => path.endsWith("/compare/" + sha + "..." + head))) return Response.json({status:"ahead"});
+  if (path.endsWith("/workflows/release-oce.yml")) return Response.json({ id:2, path:".github/workflows/release-oce.yml", state:"active" });
+  if (path.endsWith("/runs/123")) return Response.json({id:123, path:".github/workflows/release-oce.yml", workflow_id:2, event:"workflow_dispatch", head_branch:"main", head_sha:dispatch, repository:repo, head_repository:repo, run_attempt:1, status:"completed", conclusion:"failure"});
+  if (path.endsWith("/runs/123/attempts/1/jobs")) return Response.json({jobs:["Approve release", "Verify approval", "Full Integration / Full Integration Aggregate", "Record qualified release"].map(name=>({name, head_sha:dispatch, status:"completed", conclusion:"success"}))});
+  if (process.env.GITHUB_WORKFLOW_REF?.includes("/release-oce.yml@") && path.includes("/actions/")) {
+    throw new Error("Release OCE requested unexpected Actions metadata: " + path);
+  }
   if (path.endsWith("/workflows/ci.yml")) return Response.json({ id: 1, path: ".github/workflows/ci.yml", state: "active" });
   if (path.endsWith("/runs/456")) return Response.json({ id: 456, workflow_id: 1, path: ".github/workflows/ci.yml", repository: repo, head_repository: repo, head_sha: sha, head_branch: "main", event: "push", status: "completed", conclusion: "success", run_attempt: 1 });
   if (path.endsWith("/runs/456/attempts/1/jobs")) return Response.json({ jobs: [{ name: "CI Required", head_sha: sha, conclusion: "success", status: "completed" }] });
@@ -377,12 +442,10 @@ globalThis.fetch = async (url) => {
         "openclaw/openclaw-enterprise/.github/workflows/container-publish.yml@refs/heads/main",
       GITHUB_WORKFLOW_SHA: sourceSha,
       GITHUB_SHA: sourceSha,
-      GITHUB_RUN_ID: "123",
+      GITHUB_RUN_ID: "110",
       GITHUB_RUN_ATTEMPT: "1",
       GITHUB_STEP_SUMMARY: join(directory, "summary"),
       SOURCE_SHA: sourceSha,
-      CI_RUN_ID: "456",
-      CI_ATTEMPT: "1",
       NODE_BASE_IMAGE: nodeBaseImage,
       GHCR_CONTROLLER_IMAGE: "ghcr.io/openclaw/enterprise-controller",
       GHCR_RUNTIME_IMAGE: "ghcr.io/openclaw/enterprise-runtime",
@@ -429,6 +492,10 @@ process.exit(result.status ?? 1);
     );
     const releaseEnv = {
       ...env,
+      ...gitEnv,
+      GITHUB_RUN_ID: "123",
+      GITHUB_SHA: dispatchSha,
+      GITHUB_WORKFLOW_SHA: dispatchSha,
       IMAGE_TAG: "release-candidate",
       GITHUB_REF_PROTECTED: "true",
       HELM_REGISTRY_CONFIG: join(directory, "helm-auth.json"),
@@ -441,14 +508,18 @@ process.exit(result.status ?? 1);
       CONTROLLER_DIGEST: controller.currentDigest,
       RUNTIME_DIGEST: runtime.currentDigest,
     };
-    const chart = await prepareReleaseChart(join(directory, "chart"), releaseEnv);
+    const chart = await withEnvironment(gitEnv, () =>
+      prepareReleaseChart(join(directory, "chart"), releaseEnv),
+    );
+    assert.equal(chart.sourceSha, sourceSha);
+    assert.equal(chart.workflowSha, dispatchSha);
+    assert.equal(Object.hasOwn(chart, "ciRunId"), false);
     const dispatch = (recovery: string) =>
       writeFile(
         releaseEnv.GITHUB_EVENT_PATH,
         JSON.stringify({
           inputs: {
             source_sha: sourceSha,
-            ci_run_id: "456",
             image_tag: releaseEnv.IMAGE_TAG,
             publish: "true",
             recovery_run_id: recovery,
@@ -456,15 +527,24 @@ process.exit(result.status ?? 1);
         }),
       );
     let run = 123;
-    const execute = (phase: "preflight" | "immutable" | "aliases", interruptAfter?: string) =>
-      execFileSync(
+    const execute = (phase: "preflight" | "immutable" | "aliases", interruptAfter?: string) => {
+      const head = run === 123 ? dispatchSha : recoverySha;
+      git("update-ref", "HEAD", head);
+      return execFileSync(
         process.execPath,
         ["--import", preload, "scripts/ci/release-registry.ts", phase, directory],
         {
-          env: { ...releaseEnv, GITHUB_RUN_ID: String(run), INTERRUPT_AFTER: interruptAfter },
+          env: {
+            ...releaseEnv,
+            GITHUB_RUN_ID: String(run),
+            GITHUB_WORKFLOW_SHA: head,
+            GITHUB_SHA: head,
+            INTERRUPT_AFTER: interruptAfter,
+          },
           stdio: "pipe",
         },
       );
+    };
     await dispatch("");
     execute("preflight");
 
@@ -541,7 +621,7 @@ assert.equal(remoteTagDigest(image, ${JSON.stringify(record.sourceTag)}, undefin
       execFileSync(
         process.execPath,
         ["--import", preload, "scripts/ci/container-release.ts", "publish", directory],
-        { env: { ...env, IMAGE_TAG: tag }, stdio: "pipe" },
+        { env: { ...env, CI_RUN_ID: "456", CI_ATTEMPT: "1", IMAGE_TAG: tag }, stdio: "pipe" },
       );
     }
     publish("");

@@ -1,0 +1,30 @@
+name: Select Full Integration source
+description: Run release tests from the approved commit using its own test helpers.
+inputs:
+  source-sha:
+    description: Source commit admitted by the protected release preflight.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Verify and select the approved checkout
+      shell: bash
+      env:
+        TEST_SOURCE: ${{ inputs.source-sha }}
+        DISPATCH_SOURCE: ${{ github.event.inputs.source_sha }}
+      run: |
+        [[ "$GITHUB_WORKFLOW_REF" == 'openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main' ]] || exit 1
+        [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF_PROTECTED" == true && "$GITHUB_RUN_ATTEMPT" == 1 ]] || exit 1
+        [[ "$TEST_SOURCE" =~ ^[0-9a-f]{40}$ && "$TEST_SOURCE" == "$DISPATCH_SOURCE" ]] || exit 1
+        [[ "$GITHUB_SHA" == "$GITHUB_WORKFLOW_SHA" && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || exit 1
+        if ! git cat-file -e "$TEST_SOURCE^{commit}" 2>/dev/null; then
+          git fetch --no-tags --depth=1 origin "$TEST_SOURCE"
+        fi
+        git -c advice.detachedHead=false checkout --detach "$TEST_SOURCE"
+        [[ "$(git rev-parse HEAD)" == "$TEST_SOURCE" ]] || exit 1
+
+        # Older test runners check these two values against their local Git HEAD
+        # and suite name. Scope their test context to shell steps in this job.
+        shell_context="$RUNNER_TEMP/full-integration-test-context"
+        printf "unset BASH_ENV\nexport GITHUB_SHA='%s'\nexport GITHUB_WORKFLOW='Full Integration'\n" "$TEST_SOURCE" > "$shell_context"
+        echo "BASH_ENV=$shell_context" >> "$GITHUB_ENV"

@@ -12,7 +12,11 @@ import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 import { array, jsonRecord, present, record, text } from "./full-integration-json-fixture.ts";
 import { readSuiteLane, reuseFixture } from "./full-integration-reuse-fixture.ts";
-import { readWorkflow, workflowCondition } from "./full-integration-workflow-fixture.ts";
+import {
+  readLaneAction,
+  readWorkflow,
+  workflowCondition,
+} from "./full-integration-workflow-fixture.ts";
 
 function files(lane: Record<string, unknown>) {
   return array(lane.files).map((raw) => {
@@ -239,7 +243,8 @@ test("full coverage receipts require real case evidence and retain approved same
       const emitted = spawnSync("/bin/sh", ["-ec", text(qualified.run)], {
         env: {
           GITHUB_OUTPUT: qualificationOutput,
-          GITHUB_SHA: sha,
+          GITHUB_SHA: "0".repeat(40),
+          TEST_SOURCE: sha,
           GITHUB_RUN_ID: "456",
           GITHUB_RUN_ATTEMPT: "1",
         },
@@ -547,4 +552,124 @@ test("full coverage receipts require real case evidence and retain approved same
   needs.openshell.result = "cancelled";
   await json(needsPath, needs);
   await verify(1, false);
+});
+
+test("release qualification runs and aggregates the selected ancestor after main advances", async (t) => {
+  const directory = await temporaryDirectory(t, "release-test-source-");
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    GITHUB_WORKFLOW_REF:
+      "openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main",
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_REF_PROTECTED: "true",
+    GITHUB_EVENT_NAME: "workflow_dispatch",
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_RUN_ID: "456",
+    GITHUB_WORKFLOW: "Release OCE",
+    OCC_CI_SUITE_VIEW: "default",
+    RUNNER_TEMP: directory,
+    GITHUB_ENV: join(directory, "environment"),
+    GITHUB_OUTPUT: join(directory, "output"),
+  };
+  const exec = (program: string, args: string[], expected = 0, extra = {}) => {
+    const result = spawnSync(program, args, {
+      cwd: directory,
+      env: { ...env, ...extra },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(result.status, expected, result.stderr || result.stdout);
+    return result.stdout.trim();
+  };
+  const git = (...args: string[]) =>
+    exec("git", [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.org",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ]);
+  git("init", "-q");
+  const file = "tests/integration/source.test.mjs";
+  const suite = join(directory, "scripts/ci");
+  await mkdir(join(directory, "tests/integration"), { recursive: true });
+  await mkdir(suite, { recursive: true });
+  await writeFile(
+    join(suite, "test-suites.json"),
+    JSON.stringify({
+      version: 1,
+      lanes: { sample: { files: [{ path: file, expectedTests: ["source test"] }] } },
+      groups: { full: ["sample"] },
+    }),
+  );
+  await writeFile(
+    join(directory, file),
+    'import test from "node:test"; test("source test", () => {});',
+  );
+  git("add", ".");
+  git("commit", "-qm", "Selected source");
+  const selected = git("rev-parse", "HEAD");
+  await writeFile(
+    join(directory, file),
+    'import test from "node:test"; test("source test", () => { throw Error("main tip ran"); });',
+  );
+  git("commit", "-qam", "Later dispatch");
+  const dispatch = git("rev-parse", "HEAD");
+  env.GITHUB_SHA = dispatch;
+  env.GITHUB_WORKFLOW_SHA = dispatch;
+  env.DISPATCH_SOURCE = selected;
+  const workflow = await readWorkflow("full-integration-execution");
+  const verify = text(
+    present(workflow.jobs.preflight?.steps?.find((step) => step.id === "source")).run,
+  );
+  const bash = (command: string, extra = {}, exit = 0) =>
+    exec("/bin/bash", ["--noprofile", "--norc", "-ec", command], exit, extra);
+  bash(verify, { SELECTED_LANE: "all", SELECTED_SOURCE: "" }, 1);
+  bash(verify, { SELECTED_LANE: "docker-model", SELECTED_SOURCE: selected }, 1);
+  bash(verify, { SELECTED_LANE: "all", SELECTED_SOURCE: selected });
+  assert.equal(await readFile(env.GITHUB_OUTPUT!, "utf8"), `sha=${selected}\n`);
+  const bind = text(present((await readLaneAction("select-integration-source"))[0]).run);
+  bash(bind, { TEST_SOURCE: dispatch, DISPATCH_SOURCE: selected }, 1);
+  bash(bind, { TEST_SOURCE: selected, DISPATCH_SOURCE: selected });
+  assert.equal(git("rev-parse", "HEAD"), selected);
+  const shellEnv = (await readFile(env.GITHUB_ENV!, "utf8")).trim().slice("BASH_ENV=".length);
+  const runner = fileURLToPath(new URL("../../scripts/ci/run-tests.ts", import.meta.url));
+  const cleanup = fileURLToPath(new URL("../../scripts/ci/cleanup.ts", import.meta.url));
+  // Execute the test that passes only in the ancestor, record its cleanup, then verify
+  // the receipt with dispatch-owned code and the selected source's manifest.
+  bash(
+    '"$NODE" "$RUNNER" run sample --root . --state state/sample.json --results results/sample.json',
+    {
+      BASH_ENV: shellEnv,
+      RUNNER: runner,
+      NODE: process.execPath,
+    },
+  );
+  bash('"$NODE" "$CLEANUP" --state state/sample.json --results results/sample.json', {
+    BASH_ENV: shellEnv,
+    CLEANUP: cleanup,
+    NODE: process.execPath,
+  });
+  const receipt = jsonRecord(await readFile(join(directory, "results/sample.json"), "utf8"));
+  assert.equal(receipt.sourceSha, selected);
+  const needs = join(directory, "needs.json");
+  await writeFile(needs, JSON.stringify({ sample: { result: "success" } }));
+  const aggregate = [
+    "aggregate",
+    "full",
+    "--root",
+    directory,
+    "--needs",
+    needs,
+    "--results-dir",
+    join(directory, "results"),
+  ];
+  const summary = jsonRecord(
+    exec(process.execPath, [runner, ...aggregate], 0, { GITHUB_SHA: selected }),
+  );
+  assert.equal(summary.sourceSha, selected);
+  assert.equal(summary.status, "passed");
+  exec(process.execPath, [runner, ...aggregate], 1, { GITHUB_SHA: dispatch });
 });

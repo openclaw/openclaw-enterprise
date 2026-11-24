@@ -71,7 +71,8 @@ function command(
 }
 
 async function validate(env: NodeJS.ProcessEnv, publishing = false) {
-  assert.match(env.SOURCE_SHA ?? "", sourcePattern);
+  const sourceSha = env.SOURCE_SHA ?? "";
+  assert.match(sourceSha, sourcePattern);
   const repo: unknown = await github(`repos/${repository}`);
   assertRecord(repo);
   assert.equal(env.GITHUB_REPOSITORY, repository);
@@ -84,35 +85,33 @@ async function validate(env: NodeJS.ProcessEnv, publishing = false) {
     "Only the CLI and OCE release workflows on main can prepare or publish the CLI.",
   );
   assert.equal(env.GITHUB_SHA, env.GITHUB_WORKFLOW_SHA);
-  const comparison: unknown = await github(`repos/${repository}/compare/${env.SOURCE_SHA}...main`);
+  const comparison: unknown = await github(`repos/${repository}/compare/${sourceSha}...main`);
   assertRecord(comparison);
   assert.ok(comparison.status === "ahead" || comparison.status === "identical");
-  let recovery = false;
+  // The tooling always runs at the main commit selected by GitHub. The build
+  // checks out the admitted CLI source separately in its read-only job.
+  assert.equal(command("git", ["rev-parse", "HEAD"]).trim(), env.GITHUB_WORKFLOW_SHA);
+  let ciAttempt = "";
   if (env.GITHUB_WORKFLOW_REF === releaseWorkflow) {
+    assert.equal(env.GITHUB_REF_PROTECTED, "true", "Release OCE requires protected main.");
+    command("git", ["merge-base", "--is-ancestor", sourceSha, "HEAD"]);
     const event: unknown = JSON.parse(await readFile(env.GITHUB_EVENT_PATH!, "utf8"));
     assertRecord(event);
     assertRecord(event.inputs);
-    assert.equal(event.inputs.source_sha, env.SOURCE_SHA);
+    assert.equal(event.inputs.source_sha, sourceSha);
     if (publishing) {
       assert.equal(event.inputs.publish, "true", "Release OCE must explicitly select publication.");
       assert.equal(repo.private, false, "Release OCE requires public CLI downloads.");
     }
-    recovery =
-      typeof event.inputs.recovery_run_id === "string" &&
-      /^[1-9][0-9]*$/u.test(event.inputs.recovery_run_id);
     assert.equal(env.GITHUB_RUN_ATTEMPT, "1");
+  } else {
+    assert.equal(sourceSha, env.GITHUB_WORKFLOW_SHA);
+    ciAttempt = await verifyCi(env);
   }
-  if (!recovery) {
-    assert.equal(env.SOURCE_SHA, env.GITHUB_WORKFLOW_SHA);
-  }
-  const head = command("git", ["rev-parse", "HEAD"]).trim();
-  assert.ok(head === env.GITHUB_WORKFLOW_SHA || head === env.SOURCE_SHA, "Unexpected checkout.");
-
-  const ciAttempt = await verifyCi(env);
   if (publishing) {
     await verifyEnvironment();
   }
-  return { version: await releaseVersion(env.SOURCE_SHA), ciAttempt };
+  return { version: await releaseVersion(sourceSha), ciAttempt };
 }
 
 async function packageCli(directory: string) {
@@ -120,6 +119,11 @@ async function packageCli(directory: string) {
   const version = await releaseVersion();
   if (process.env.SOURCE_SHA) {
     assert.match(process.env.SOURCE_SHA, sourcePattern);
+    assert.equal(
+      command("git", ["rev-parse", "HEAD"]).trim(),
+      process.env.SOURCE_SHA,
+      "CLI checkout differs from the selected release source.",
+    );
     assert.equal(command("go", ["env", "GOVERSION"]).trim(), "go1.27.3");
   }
   await mkdir(directory, { recursive: true });

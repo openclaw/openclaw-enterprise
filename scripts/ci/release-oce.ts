@@ -9,8 +9,7 @@ import {
   publicationAlias,
   releaseWorkflow,
   repository,
-  validate,
-  verifyCi,
+  verifyEnvironment,
   verifyMainSource,
 } from "./container-release/admission.ts";
 import {
@@ -30,7 +29,8 @@ export function validateProducer(run: unknown, jobs: unknown[], env: NodeJS.Proc
   assert.equal(field(run, "path"), releaseWorkflow);
   assert.equal(field(run, "event"), "workflow_dispatch");
   assert.equal(field(run, "head_branch"), "main");
-  assert.equal(field(run, "head_sha"), env.SOURCE_SHA);
+  const workflowSha = field(run, "head_sha");
+  match(workflowSha, shaPattern);
   for (const key of ["repository", "head_repository"]) {
     assert.equal(field(field(run, key), "full_name"), repository);
   }
@@ -48,10 +48,21 @@ export function validateProducer(run: unknown, jobs: unknown[], env: NodeJS.Proc
   ]) {
     const matches = jobs.filter((job) => field(job, "name") === name);
     assert.equal(matches.length, 1, `Missing or ambiguous original job: ${name}.`);
-    assert.equal(field(matches[0], "head_sha"), env.SOURCE_SHA);
+    assert.equal(field(matches[0], "head_sha"), workflowSha);
     assert.equal(field(matches[0], "status"), "completed");
     assert.equal(field(matches[0], "conclusion"), "success", `Original job did not pass: ${name}.`);
   }
+  return workflowSha;
+}
+
+async function verifySourceAtDispatch(source: string | undefined, workflowSha: string | undefined) {
+  match(source, shaPattern);
+  match(workflowSha, shaPattern);
+  if (source === workflowSha) {
+    return;
+  }
+  const comparison = await github(`repos/${repository}/compare/${source}...${workflowSha}`);
+  assert.equal(field(comparison, "status"), "ahead", "Source must be in main history at dispatch.");
 }
 
 export async function verifyProducer(env: NodeJS.ProcessEnv) {
@@ -65,32 +76,29 @@ export async function verifyProducer(env: NodeJS.ProcessEnv) {
   assert.equal(field(definition, "path"), releaseWorkflow);
   assert.equal(field(definition, "state"), "active");
   assert.equal(field(run, "workflow_id"), field(definition, "id"));
-  validateProducer(run, jobs, env);
+  const workflowSha = validateProducer(run, jobs, env);
+  await verifySourceAtDispatch(env.SOURCE_SHA, workflowSha);
+  return workflowSha;
 }
 
 async function admit(env: NodeJS.ProcessEnv) {
-  assert.equal(env.GITHUB_REF_PROTECTED, "true", "Select protected main.");
-  assert.equal(env.GITHUB_RUN_ATTEMPT, "1", "Start a new dispatch for approval.");
   publicationAlias(env.IMAGE_TAG);
-  let attempt: string;
+  await verifyMainSource(env, releaseWorkflow);
+  await verifySourceAtDispatch(env.SOURCE_SHA, env.GITHUB_WORKFLOW_SHA);
+  if (env.PUBLISH === "true") {
+    await verifyEnvironment();
+  }
   if (env.RECOVERY_RUN_ID) {
     assert.equal(env.PUBLISH, "true", "Recovery requires explicit publication.");
-    await verifyMainSource(env, releaseWorkflow);
     await verifyProducer(env);
-    attempt = await verifyCi(env);
-  } else {
-    assert.equal(env.GITHUB_WORKFLOW_REF, `${repository}/${releaseWorkflow}@refs/heads/main`);
-    attempt = await validate(env);
   }
-  await appendFile(env.GITHUB_OUTPUT!, `ci_attempt=${attempt}\n`);
 }
 
 export function validateQualification(env: NodeJS.ProcessEnv) {
   match(env.SOURCE_SHA, shaPattern);
   match(env.GITHUB_RUN_ID, integerPattern);
   assert.equal(env.GITHUB_RUN_ATTEMPT, "1");
-  match(env.CI_RUN_ID, integerPattern);
-  match(env.CI_ATTEMPT, integerPattern);
+  match(env.GITHUB_WORKFLOW_SHA, shaPattern);
   assert.equal(
     env.FULL_SUITE,
     `all:${env.SOURCE_SHA}:${env.GITHUB_RUN_ID}:1`,
@@ -99,7 +107,6 @@ export function validateQualification(env: NodeJS.ProcessEnv) {
   match(env.VERSION, /^\d+\.\d+\.\d+$/u);
   assert.equal(env.IMAGE_VERSION, env.VERSION);
   assert.equal(env.CLI_VERSION, `v${env.VERSION}`);
-  assert.equal(env.CLI_CI_ATTEMPT, env.CI_ATTEMPT);
   match(env.IMAGE_CONTROLLER, digestPattern);
   match(env.IMAGE_RUNTIME, digestPattern);
   match(env.CHART_SHA256, hexDigest);
@@ -110,8 +117,7 @@ export function validateQualification(env: NodeJS.ProcessEnv) {
     version: env.VERSION,
     producer: env.GITHUB_RUN_ID,
     attempt: "1",
-    ci: env.CI_RUN_ID,
-    ciAttempt: env.CI_ATTEMPT,
+    workflowSha: env.GITHUB_WORKFLOW_SHA,
     alias: publicationAlias(env.IMAGE_TAG),
     publish: env.PUBLISH === "true",
     suite: env.FULL_SUITE,
@@ -148,25 +154,23 @@ async function record(directory: string, env: NodeJS.ProcessEnv) {
   );
   await appendFile(
     env.GITHUB_STEP_SUMMARY!,
-    `Qualified ${evidence.version} from \`${evidence.source}\` in run ${evidence.producer}, attempt 1. CI ${evidence.ci}, attempt ${evidence.ciAttempt}.\n\n| Output | Digest |\n| --- | --- |\n| Controller | \`${evidence.controller}\` |\n| Runtime | \`${evidence.runtime}\` |\n| Helm archive | \`${evidence.chart}\` |\n| CLI SHA256SUMS | \`${evidence.cli}\` |\n\nSelected image alias: \`${evidence.alias}\`.\n`,
+    `Qualified ${evidence.version} from \`${evidence.source}\` in run ${evidence.producer}, attempt 1. Workflow commit \`${evidence.workflowSha}\`.\n\n| Output | Digest |\n| --- | --- |\n| Controller | \`${evidence.controller}\` |\n| Runtime | \`${evidence.runtime}\` |\n| Helm archive | \`${evidence.chart}\` |\n| CLI SHA256SUMS | \`${evidence.cli}\` |\n\nSelected image alias: \`${evidence.alias}\`.\n`,
   );
 }
 
 async function verifyManifest(directory: string, env: NodeJS.ProcessEnv) {
   const producer = env.RECOVERY_RUN_ID || env.GITHUB_RUN_ID;
   match(producer, integerPattern);
-  if (env.RECOVERY_RUN_ID) {
-    await verifyProducer(env);
-  }
-  await verifyCi(env);
+  await verifyMainSource(env, releaseWorkflow);
+  await verifySourceAtDispatch(env.SOURCE_SHA, env.GITHUB_WORKFLOW_SHA);
+  const workflowSha = env.RECOVERY_RUN_ID ? await verifyProducer(env) : env.GITHUB_WORKFLOW_SHA;
   const receipt: unknown = JSON.parse(await readFile(join(directory, "release.json"), "utf8"));
   assert.equal(field(receipt, "producer"), producer);
   assert.equal(field(receipt, "attempt"), "1");
   assert.equal(field(receipt, "publish"), true, "A rehearsal cannot authorize recovery.");
   assert.equal(field(receipt, "source"), env.SOURCE_SHA);
   assert.equal(field(receipt, "suite"), `all:${env.SOURCE_SHA}:${producer}:1`);
-  assert.equal(field(receipt, "ci"), env.CI_RUN_ID);
-  assert.equal(field(receipt, "ciAttempt"), env.CI_ATTEMPT);
+  assert.equal(field(receipt, "workflowSha"), workflowSha);
   assert.equal(field(receipt, "version"), env.VERSION);
   assert.equal(field(receipt, "alias"), publicationAlias(env.IMAGE_TAG));
   assert.deepEqual(

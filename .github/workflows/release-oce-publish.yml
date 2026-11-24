@@ -6,12 +6,6 @@ on:
       source_sha:
         required: true
         type: string
-      ci_run_id:
-        required: true
-        type: string
-      ci_attempt:
-        required: true
-        type: string
       version:
         required: true
         type: string
@@ -37,8 +31,6 @@ jobs:
       cli_digest: ${{ steps.manifest.outputs.cli_digest }}
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
-      CI_RUN_ID: ${{ inputs.ci_run_id }}
-      CI_ATTEMPT: ${{ inputs.ci_attempt }}
       IMAGE_TAG: ${{ inputs.image_tag }}
       VERSION: ${{ inputs.version }}
       RECOVERY_RUN_ID: ${{ github.event.inputs.recovery_run_id }}
@@ -69,7 +61,7 @@ jobs:
           run-id: ${{ inputs.producer_run_id }}
           name: qualified-release-${{ inputs.producer_run_id }}-1
           path: ${{ runner.temp }}/evidence
-      - name: Verify original proof, immutable artifact identities and current CI attempt
+      - name: Verify the original qualification and artifact identities
         id: manifest
         env:
           GH_TOKEN: ${{ github.token }}
@@ -97,8 +89,6 @@ jobs:
     with:
       phase: preflight
       source_sha: ${{ inputs.source_sha }}
-      ci_run_id: ${{ inputs.ci_run_id }}
-      ci_attempt: ${{ inputs.ci_attempt }}
       image_tag: ${{ inputs.image_tag }}
       producer_run_id: ${{ inputs.producer_run_id }}
       producer_attempt: "1"
@@ -114,8 +104,6 @@ jobs:
     with:
       phase: immutable
       source_sha: ${{ inputs.source_sha }}
-      ci_run_id: ${{ inputs.ci_run_id }}
-      ci_attempt: ${{ inputs.ci_attempt }}
       image_tag: ${{ inputs.image_tag }}
       producer_run_id: ${{ inputs.producer_run_id }}
       producer_attempt: "1"
@@ -129,8 +117,6 @@ jobs:
     uses: ./.github/workflows/cli-release-publish.yml
     with:
       source_sha: ${{ inputs.source_sha }}
-      ci_run_id: ${{ inputs.ci_run_id }}
-      ci_attempt: ${{ inputs.ci_attempt }}
       artifact_run_id: ${{ inputs.producer_run_id }}
       artifact_name: occ-cli-${{ inputs.producer_run_id }}-1
       sha256sums_digest: ${{ needs.evidence.outputs.cli_digest }}
@@ -146,8 +132,6 @@ jobs:
     with:
       phase: aliases
       source_sha: ${{ inputs.source_sha }}
-      ci_run_id: ${{ inputs.ci_run_id }}
-      ci_attempt: ${{ inputs.ci_attempt }}
       image_tag: ${{ inputs.image_tag }}
       producer_run_id: ${{ inputs.producer_run_id }}
       producer_attempt: "1"

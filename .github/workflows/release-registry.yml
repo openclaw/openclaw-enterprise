@@ -9,12 +9,6 @@ on:
       source_sha:
         type: string
         required: true
-      ci_run_id:
-        type: string
-        required: true
-      ci_attempt:
-        type: string
-        required: true
       image_tag:
         type: string
         required: false
@@ -39,26 +33,21 @@ jobs:
     timeout-minutes: 45
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
-      CI_RUN_ID: ${{ inputs.ci_run_id }}
-      CI_ATTEMPT: ${{ inputs.ci_attempt }}
       IMAGE_TAG: ${{ inputs.image_tag }}
       PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
       PRODUCER_ATTEMPT: ${{ inputs.producer_attempt }}
-      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
       GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
     steps:
       - name: Match the protected dispatch before checking out release code
         env:
           DISPATCH_SOURCE: ${{ github.event.inputs.source_sha }}
-          DISPATCH_CI: ${{ github.event.inputs.ci_run_id }}
           DISPATCH_TAG: ${{ github.event.inputs.image_tag }}
           DISPATCH_PUBLISH: ${{ github.event.inputs.publish }}
           RECOVERY_RUN_ID: ${{ github.event.inputs.recovery_run_id }}
           PHASE: ${{ inputs.phase }}
         run: |
           test "$SOURCE_SHA" = "$DISPATCH_SOURCE"
-          test "$CI_RUN_ID" = "$DISPATCH_CI"
           test "$IMAGE_TAG" = "$DISPATCH_TAG"
           test "$PRODUCER_RUN_ID" = "${RECOVERY_RUN_ID:-$GITHUB_RUN_ID}"
           test "$PRODUCER_ATTEMPT" = 1

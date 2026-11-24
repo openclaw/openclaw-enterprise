@@ -16,8 +16,8 @@ to the tested image digests.
 
 ## Entry Points
 
-- `.github/workflows/release-oce.yml:jobs.validate` accepts the source commit, CI run ID,
-  optional image alias, publication choice, and optional recovery run ID.
+- `.github/workflows/release-oce.yml:jobs.validate` requires only the 40-character source SHA.
+  The image alias, publication choice, and recovery run ID are optional.
 - `scripts/ci/full-integration-preflight.ts:validateManualApproval` verifies
   the protected environment, reviewer team, and dispatcher's approval.
 
@@ -25,7 +25,7 @@ to the tested image digests.
 
 ```mermaid
 graph TD
-  Gate["Review source, version and CI"] --> Approval["Approve release run"]
+  Gate["Verify source ancestry and version"] --> Approval["Approve release run"]
   Approval -->|new release| Tests["Full Integration, lane all"]
   Approval -->|new release| Build["Native images, chart and CLI"]
   Tests --> Check["Verify qualification and prepared bytes"]
@@ -43,20 +43,20 @@ graph TD
 
 ### 1. Bind approval to the reviewed release
 
-`scripts/ci/container-release/admission.ts:verifyCi` checks the requested CI
-push run and its required job for the exact commit. A new release must match
-the workflow commit. The workflow records the CI attempt, validates the
-versions in the root package and chart, and shows the selected alias before
-approval. `scripts/ci/full-integration-preflight.ts:validateManualApproval`
+`.github/workflows/release-oce.yml:jobs.validate` verifies that the
+selected source commit is the protected workflow commit or one of its
+ancestors. It checks the package and chart versions at the selected source
+and shows the version, source, and alias before approval. `scripts/ci/full-integration-preflight.ts:validateManualApproval`
 checks the dispatcher against the approval history of the release run.
 
 ### 2. Qualify one set of artifacts
 
 `.github/workflows/full-integration-execution.yml:jobs.full-aggregate` checks
-the results for `lane=all`, including any eligible CI results reused for the
-same commit. `scripts/ci/release-oce.ts:validateQualification` requires positive
-evidence that the full suite passed for this source, run, and attempt. A skipped or targeted aggregate cannot
-authorize a release.
+the results for `lane=all` at the selected source SHA.
+`scripts/ci/release-oce.ts:validateQualification` requires evidence that the
+full aggregate passed for that source in this release run and attempt. The
+qualification record identifies the protected workflow commit separately
+from the source under test.
 
 `scripts/ci/container-release/oci.ts:assemble` joins the natively tested
 controller and runtime exports into two Linux AMD64/ARM64 indexes. Their
@@ -83,16 +83,19 @@ against its recorded prior digest or the intended release digest before moving i
 ### 4. Recover from an interrupted publication
 
 `scripts/ci/release-oce.ts:verifyProducer` checks the producer for a fresh recovery dispatch with the
-original publish run ID. It checks that the source still belongs to `main` and
-verifies the original approval, full-suite result, and artifact evidence.
+original publish run ID. The recovery workflow runs at the protected `main`
+commit selected for recovery. It checks the original producer's workflow SHA,
+source SHA, approval, full-suite result, and artifact evidence. The reviewed
+source must remain in `main` history.
 Recovery uses the original bytes. It verifies completed steps and stops at a
 conflicting immutable object or an alias that another release has moved. Each
 registry or GitHub write can succeed before the next one fails.
 
 ## Debugging and Verification
 
-- For an admission failure, compare the source SHA, workflow SHA, CI run ID,
-  and CI attempt. Inspect the release run's environment review and aggregate.
+- For an admission failure, check whether the selected source belongs to the
+  protected workflow commit's history. For a qualification failure, inspect
+  that run's environment review and full-suite aggregate for the source SHA.
 - For a partial publication, inspect the protected jobs and compare registry
   digests, the Git tag target, and the five release assets with the original
   preparation evidence. Follow [release recovery](../release/README.md#recover-a-partial-release).
@@ -111,5 +114,7 @@ registry or GitHub write can succeed before the next one fails.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 13:12: Document selection of a reviewed source in protected main history and its qualifying workflow commit. (authoring-run/90c31b49-3d89-43f7-922e-ba48b6f34371 - 165ced7e4797491e18768dafac4a76b369a025cb)
 
 - 2026-11-24 11:31: Document release qualification, publication order, and recovery. (authoring-run/90c31b49-3d89-43f7-922e-ba48b6f34371 - 6908216b29038bd850b44f084b07ba7f886614d5)

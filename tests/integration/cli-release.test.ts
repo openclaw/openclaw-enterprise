@@ -24,18 +24,43 @@ const executableHeaders: Record<ReleasePlatform["os"], readonly number[]> = {
   linux: [0x7f, 0x45, 0x4c, 0x46],
 };
 
-async function stageSourceFixture(directory: string): Promise<string> {
+async function stageSourceFixture(directory: string) {
+  const main = join(directory, "main");
   const source = join(directory, "source");
-  await mkdir(source);
+  await mkdir(main);
+  const git = (...args: string[]) =>
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Release test",
+        "-c",
+        "user.email=release@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        ...args,
+      ],
+      { cwd: main, encoding: "utf8" },
+    );
   for (const path of ["cmd", "internal", "go.mod", "go.sum", "package.json"]) {
-    await cp(path, join(source, path), { recursive: true });
+    await cp(path, join(main, path), { recursive: true });
   }
-  await mkdir(join(source, "deploy/helm/openclaw-enterprise"), { recursive: true });
+  await mkdir(join(main, "deploy/helm/openclaw-enterprise"), { recursive: true });
   await cp(
     "deploy/helm/openclaw-enterprise/Chart.yaml",
-    join(source, "deploy/helm/openclaw-enterprise/Chart.yaml"),
+    join(main, "deploy/helm/openclaw-enterprise/Chart.yaml"),
   );
-  return source;
+  git("init", "--quiet", "--initial-branch=main");
+  // Current-directory packaging on retry must leave the selected commit clean.
+  await appendFile(join(main, ".git/info/exclude"), "\n/occ-v*\n/SHA256SUMS\n");
+  git("add", ".");
+  git("commit", "--quiet", "-m", "Initial CLI source");
+  const sha = git("rev-parse", "HEAD").trim();
+  git("commit", "--quiet", "--allow-empty", "-m", "Advance main after source selection");
+  git("worktree", "add", "--quiet", "--detach", source, sha);
+  return { main, source, sha };
 }
 
 async function assertPlatformArtifacts(output: string, version: string): Promise<void> {
@@ -53,12 +78,22 @@ async function assertPlatformArtifacts(output: string, version: string): Promise
 test("CLI release builds four installable platform binaries and rejects changed assets", async (t) => {
   const directory = await temporaryDirectory(t, "oce-cli-release-test-");
   // Keep current-directory packaging inside an owned source fixture, never the checkout.
-  const source = await stageSourceFixture(directory);
+  const { main, source, sha } = await stageSourceFixture(directory);
   const output = join(directory, "dist");
   // Builds use the toolchain's normal cache (GOCACHEPROG or the setup-go cache on CI, the user
   // cache locally). A fresh cache recompiled the standard library for four platforms every run.
   const script = resolve("scripts/ci/cli-release.ts");
-  execFileSync(process.execPath, [script, "package", output], { cwd: source });
+  const buildEnv = { ...process.env, SOURCE_SHA: sha };
+  // The latest checkout must fail before compilation. Only the selected ancestor
+  // can supply the binary bytes and embedded commit shared by the release.
+  const wrongSource = spawnSync(process.execPath, [script, "package", output], {
+    cwd: main,
+    env: buildEnv,
+    encoding: "utf8",
+  });
+  assert.notEqual(wrongSource.status, 0);
+  assert.match(wrongSource.stderr, /CLI checkout differs from the selected release source/u);
+  execFileSync(process.execPath, [script, "package", output], { cwd: source, env: buildEnv });
 
   const manifest: unknown = JSON.parse(await readFile("package.json", "utf8"));
   assert.ok(manifest !== null && typeof manifest === "object" && "version" in manifest);
@@ -123,7 +158,7 @@ test("CLI release builds four installable platform binaries and rejects changed 
   // current source directory on retry, which must execute the built file rather than search PATH.
   const retry = source;
   await new Promise((resolve) => setTimeout(resolve, 2_000));
-  execFileSync(process.execPath, [script, "package", "."], { cwd: source });
+  execFileSync(process.execPath, [script, "package", "."], { cwd: source, env: buildEnv });
   assert.deepEqual(
     await readFile(join(output, "SHA256SUMS")),
     await readFile(join(retry, "SHA256SUMS")),

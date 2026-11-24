@@ -23,11 +23,11 @@ publish those bytes and a checksum file to GitHub Releases.
 
 ```mermaid
 graph TD
-  A["Select main source and successful CI"] --> B["Validate source, CI and OCE version"]
+  A["Select source on main"] --> B["Validate source and OCE version"]
   B --> C["Build four versioned Go binaries"]
   C --> D["Check platform metadata, native command and SHA-256"]
   D --> E["Retain exact assets in the workflow run"]
-  E --> F["Revalidate source, CI and protected environment"]
+  E --> F["Revalidate release evidence and protected environment"]
   F --> G["Create or verify source tag and draft release"]
   G --> H["Upload missing assets and compare downloads"]
   H --> I["Publish the verified draft"]
@@ -37,11 +37,11 @@ graph TD
 
 ### 1. Bind the source to a tested OCE version
 
-`scripts/ci/cli-release.ts:validate` requires a manual dispatch from this
-repository's `main`, a full source SHA matching the selected workflow source commit,
-and a successful `CI Required` job from the exact main-push CI run. The root
-package version and chart `version` and `appVersion` must agree. The standalone
-workflow publishes only the CLI. Release OCE coordinates the chart and images.
+`scripts/ci/cli-release.ts:validate` checks the root package version against the
+chart `version` and `appVersion`. The standalone workflow requires a successful
+push CI run and `CI Required` for its own workflow commit on `main`. Release OCE
+builds the CLI from its reviewed source commit and requires the approved full
+suite for that source before publication.
 
 ### 2. Prepare the binaries before write access
 
@@ -60,7 +60,7 @@ standalone failed-job rerun can use the retained build artifact.
 
 ### 3. Publish only the verified bytes
 
-`scripts/ci/cli-release.ts:publish` rechecks source, CI, the protected
+`scripts/ci/cli-release.ts:publish` rechecks the release source, the protected
 `container-publish` environment, and each local checksum. It creates a
 lightweight version tag only when none exists; a matching tag is required on a
 retry. It finds an existing draft through the authenticated release list,
@@ -101,6 +101,8 @@ the asset checks and draft publication could invalidate their binding. Users dow
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 13:12: Distinguish CLI source qualification for standalone and combined releases. (authoring-run/90c31b49-3d89-43f7-922e-ba48b6f34371 - 165ced7e4797491e18768dafac4a76b369a025cb)
 
 - 2026-11-24 11:32: Trace shared CLI jobs and public asset verification. (authoring-run/90c31b49-3d89-43f7-922e-ba48b6f34371 - 6908216b29038bd850b44f084b07ba7f886614d5)
 

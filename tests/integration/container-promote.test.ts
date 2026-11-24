@@ -164,6 +164,10 @@ const artifact = {
   id: 789, name: "container-publication-123-" + env.FIXTURE_ARTIFACT_ATTEMPT,
   expired: false, workflow_run: { id: 123, head_sha: headSha },
 };
+const qualified = (sha) => [
+  "Approve release", "Verify approval", "Full Integration / Full Integration Aggregate", "Record qualified release"
+].map(name => ({name, head_sha: sha, status: "completed",
+  conclusion: name === "Full Integration / Full Integration Aggregate" ? env.FIXTURE_SUITE_RESULT ?? "success" : "success"}));
 const prefix = "/repos/" + repository;
 const responses = new Map([
   [prefix, repo],
@@ -178,7 +182,7 @@ const responses = new Map([
   }],
   [prefix + "/actions/runs/123", run],
   [prefix + "/actions/workflows/" + workflow.split("/").at(-1), { id: 89, path: workflow, state: "active" }],
-  [prefix + "/actions/runs/123/attempts/1/jobs", { jobs: [{
+  [prefix + "/actions/runs/123/attempts/1/jobs", { jobs: [...qualified(headSha), {
     name: "Publish / Aliases / aliases", head_sha: headSha, status: "completed",
     conclusion: env.FIXTURE_ALIAS_RESULT,
   }] }],
@@ -186,6 +190,12 @@ const responses = new Map([
 ]);
 if (headSha !== env.SOURCE_SHA) {
   responses.set(prefix + "/compare/" + env.SOURCE_SHA + "..." + headSha, {status: "ahead"});
+}
+if (env.FIXTURE_ORIGINAL_SHA) {
+  const original = env.FIXTURE_ORIGINAL_SHA;
+  responses.set(prefix + "/actions/runs/456", { ...run, id: 456, head_sha: original, conclusion: "failure" });
+  responses.set(prefix + "/actions/runs/456/attempts/1/jobs", { jobs: qualified(original) });
+  responses.set(prefix + "/compare/" + env.SOURCE_SHA + "..." + original, {status: "ahead"});
 }
 globalThis.fetch = async (url) => {
   const { origin, pathname } = new URL(url);
@@ -196,8 +206,13 @@ globalThis.fetch = async (url) => {
 `,
   );
   const command = new URL("../../scripts/ci/container-promote.ts", import.meta.url);
-  const validate = (artifactAttempt: string, outputPath: string, fixture: NodeJS.ProcessEnv = {}) =>
-    spawnSync(process.execPath, ["--import", preload, fileURLToPath(command), "validate"], {
+  const validate = (
+    artifactAttempt: string,
+    outputPath: string,
+    fixture: NodeJS.ProcessEnv = {},
+    args = ["validate"],
+  ) =>
+    spawnSync(process.execPath, ["--import", preload, fileURLToPath(command), ...args], {
       encoding: "utf8",
       env: {
         ...env,
@@ -240,4 +255,45 @@ globalThis.fetch = async (url) => {
   assert.equal(skipped.status, 1);
   assert.match(skipped.stderr, /skipped/);
   await assert.rejects(readFile(refusedOutput), { code: "ENOENT" });
+
+  // Reach the Docker Hub destination check through both publication paths.
+  // The test supplies no destination credentials or registry writes.
+  const receiptPath = join(directory, "publication.json");
+  const originalSha = "e".repeat(40);
+  const qualify = async (runId: string, workflowSha: string, suiteResult = "success") => {
+    const images = ["controller", "runtime"].map((image) => ({
+      image,
+      sourceSha,
+      workflowSha,
+      runId,
+      attempt: "1",
+      digest,
+      nodeBaseImage: env.NODE_BASE_IMAGE,
+      platforms: ["linux/amd64", "linux/arm64"],
+      archiveSha256: "c".repeat(64),
+      destination: `ghcr.io/openclaw/enterprise-${image}`,
+      tag: `sha-${sourceSha}`,
+    }));
+    await writeFile(receiptPath, JSON.stringify(images));
+    return validate(
+      "1",
+      recoveredOutput,
+      {
+        ...recovered,
+        FIXTURE_ORIGINAL_SHA: originalSha,
+        FIXTURE_SUITE_RESULT: suiteResult,
+        ARTIFACT_ID: "789",
+      },
+      ["promote", receiptPath],
+    );
+  };
+  const destinations = /Use separate Docker Hub repositories/;
+  assert.match((await qualify("123", recovered.FIXTURE_PUBLICATION_SHA)).stderr, destinations);
+  const missingSuite = await qualify("123", recovered.FIXTURE_PUBLICATION_SHA, "skipped");
+  assert.match(missingSuite.stderr, /skipped/);
+  assert.match((await qualify("456", originalSha)).stderr, destinations);
+  assert.match(
+    (await qualify("456", recovered.FIXTURE_PUBLICATION_SHA)).stderr,
+    /Prepared image workflowSha/,
+  );
 });

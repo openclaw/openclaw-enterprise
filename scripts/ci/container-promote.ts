@@ -25,13 +25,13 @@ const promoteWorkflow = ".github/workflows/container-promote.yml";
 
 type ReceiptImage = {
   image: string;
-  ciRunId: string;
-  ciAttempt: string;
   destination: unknown;
   platformDigests?: unknown;
   digest: string;
   tag: string;
 };
+
+type StandaloneReceiptImage = ReceiptImage & { ciRunId: string; ciAttempt: string };
 
 function property<K extends PropertyKey>(value: unknown, key: K): unknown {
   return (value as { [P in K]: unknown })[key];
@@ -64,9 +64,10 @@ export function validatePublicationRun(
   assert.equal(property(run, "conclusion"), "success");
 }
 
-export function validateReceipt(
+function validateImageReceipt(
   receipt: unknown,
   env: NodeJS.ProcessEnv,
+  qualifiedWorkflowSha?: string,
 ): asserts receipt is [ReceiptImage, ReceiptImage] {
   assert.ok(Array.isArray(receipt));
   const images: unknown[] = receipt;
@@ -74,8 +75,15 @@ export function validateReceipt(
     images.map((image) => property(image, "image")),
     ["controller", "runtime"],
   );
-  assert.match((property(images[0], "ciRunId") ?? "") as string, /^[1-9][0-9]*$/);
-  assert.match((property(images[0], "ciAttempt") ?? "") as string, /^[1-9][0-9]*$/);
+  const ciRunId = property(images[0], "ciRunId");
+  const ciAttempt = property(images[0], "ciAttempt");
+  if (qualifiedWorkflowSha === undefined) {
+    assert.match((ciRunId ?? "") as string, /^[1-9][0-9]*$/);
+    assert.match((ciAttempt ?? "") as string, /^[1-9][0-9]*$/);
+  } else {
+    assert.equal(ciRunId, undefined);
+    assert.equal(ciAttempt, undefined);
+  }
   assert.match(
     env.NODE_BASE_IMAGE ?? "",
     /^docker\.io\/library\/node:24[.-][a-z0-9.-]+@sha256:[a-f0-9]{64}$/,
@@ -83,17 +91,25 @@ export function validateReceipt(
   for (const image of images) {
     validatePreparedImage(image, {
       sourceSha: env.SOURCE_SHA,
-      workflowSha: env.SOURCE_SHA,
+      workflowSha: qualifiedWorkflowSha ?? env.SOURCE_SHA,
       runId: env.PUBLICATION_RUN_ID,
       attempt: env.PUBLICATION_ATTEMPT,
-      ciRunId: property(images[0], "ciRunId"),
-      ciAttempt: property(images[0], "ciAttempt"),
+      ciRunId,
+      ciAttempt,
       nodeBaseImage: env.NODE_BASE_IMAGE,
       image: property(image, "image"),
     });
     assert.equal(property(image, "tag"), `sha-${env.SOURCE_SHA}`);
   }
   assert.notEqual(property(images[0], "destination"), property(images[1], "destination"));
+}
+
+// Staging and runtime projection consume standalone publications with exact push CI.
+export function validateReceipt(
+  receipt: unknown,
+  env: NodeJS.ProcessEnv,
+): asserts receipt is [StandaloneReceiptImage, StandaloneReceiptImage] {
+  validateImageReceipt(receipt, env);
 }
 
 export function hubRepositoryPath(image: string | undefined) {
@@ -136,20 +152,21 @@ async function verifyProducer(env: NodeJS.ProcessEnv) {
   );
   const headSha = property(run, "head_sha");
   assert.ok(typeof headSha === "string" && /^[a-f0-9]{40}$/.test(headSha));
+  let jobs: unknown[] = [];
   if (unified) {
     assert.equal(env.PUBLICATION_ATTEMPT, "1");
     validatePublicationRun(run, workflow, { ...env, SOURCE_SHA: headSha }, releaseWorkflow);
-    // Recovery may use a newer main workflow than the commit in the binary and images.
+    // A release from an earlier main commit uses the workflow from its dispatch.
     if (headSha !== env.SOURCE_SHA) {
       const history = await github(`repos/${repository}/compare/${env.SOURCE_SHA}...${headSha}`);
-      assert.equal(property(history, "status"), "ahead", "Source must precede the recovery run.");
+      assert.equal(
+        property(history, "status"),
+        "ahead",
+        "Source must precede the release workflow.",
+      );
     }
-    const jobs = await githubPages(`${runPath}/attempts/${env.PUBLICATION_ATTEMPT}/jobs`, "jobs");
-    const aliases = jobs.filter((job) => property(job, "name") === "Publish / Aliases / aliases");
-    assert.equal(aliases.length, 1, "Require the final Release OCE alias publication job.");
-    assert.equal(property(aliases[0], "head_sha"), headSha);
-    assert.equal(property(aliases[0], "status"), "completed");
-    assert.equal(property(aliases[0], "conclusion"), "success");
+    jobs = await githubPages(`${runPath}/attempts/${env.PUBLICATION_ATTEMPT}/jobs`, "jobs");
+    requireSuccessfulJob(jobs, "Publish / Aliases / aliases", headSha);
   } else {
     validatePublicationRun(run, workflow, env);
   }
@@ -169,7 +186,15 @@ async function verifyProducer(env: NodeJS.ProcessEnv) {
   assert.equal(optionalProperty(property(artifact, "workflow_run"), "head_sha"), headSha);
   const id = property(artifact, "id");
   assert.ok(typeof id === "number" && Number.isSafeInteger(id) && id > 0, "Invalid artifact ID.");
-  return { artifactId: String(Number(id)), headSha, unified };
+  return { artifactId: String(Number(id)), headSha, unified, jobs };
+}
+
+function requireSuccessfulJob(jobs: unknown[], name: string, headSha: string) {
+  const selected = jobs.filter((job) => property(job, "name") === name);
+  assert.equal(selected.length, 1, `Expected one Release OCE job: ${name}.`);
+  assert.equal(property(selected[0], "head_sha"), headSha);
+  assert.equal(property(selected[0], "status"), "completed");
+  assert.equal(property(selected[0], "conclusion"), "success");
 }
 
 async function hub(
@@ -216,28 +241,36 @@ async function verifyHub(
   return existing !== undefined;
 }
 
-async function promote(path: string | undefined, env: NodeJS.ProcessEnv) {
+async function verifyImages(receipt: unknown, env: NodeJS.ProcessEnv) {
   const producer = await verifyProducer(env);
   assert.equal(producer.artifactId, env.ARTIFACT_ID, "Publication artifact identity changed.");
-  const receipt: unknown = JSON.parse(await readFile(path as string, "utf8"));
-  let preparation = env;
   if (producer.unified) {
     assert.ok(Array.isArray(receipt) && receipt.length === 2);
     const runId = property(receipt[0], "runId");
     assert.ok(typeof runId === "string" && /^[1-9][0-9]*$/.test(runId));
+    let workflowSha = producer.headSha;
     if (runId === env.PUBLICATION_RUN_ID) {
-      assert.equal(producer.headSha, env.SOURCE_SHA);
+      requireSuccessfulJob(
+        producer.jobs,
+        "Full Integration / Full Integration Aggregate",
+        workflowSha,
+      );
+      requireSuccessfulJob(producer.jobs, "Record qualified release", workflowSha);
     } else {
-      // The final receipt is emitted by the trusted recovery workflow. Check
-      // that both images still identify its original preparation on main.
-      preparation = { ...env, PUBLICATION_RUN_ID: runId, PUBLICATION_ATTEMPT: "1" };
-      await verifyReleasePreparation({ ...env, RECOVERY_RUN_ID: runId });
+      workflowSha = await verifyReleasePreparation({ ...env, RECOVERY_RUN_ID: runId });
     }
+    validateImageReceipt(receipt, { ...env, PUBLICATION_RUN_ID: runId }, workflowSha);
+    return receipt;
   }
-  validateReceipt(receipt, preparation);
-  const ci = { ...env, CI_RUN_ID: receipt[0].ciRunId, CI_ATTEMPT: receipt[0].ciAttempt };
-  await verifyCi(ci);
-  const targets = receipt.map((image) => ({
+  validateReceipt(receipt, env);
+  await verifyCi({ ...env, CI_RUN_ID: receipt[0].ciRunId, CI_ATTEMPT: receipt[0].ciAttempt });
+  return receipt;
+}
+
+async function promote(path: string | undefined, env: NodeJS.ProcessEnv) {
+  const receipt: unknown = JSON.parse(await readFile(path as string, "utf8"));
+  const images = await verifyImages(receipt, env);
+  const targets = images.map((image) => ({
     ...image,
     hubImage: env[`DOCKERHUB_${image.image.toUpperCase()}_IMAGE`],
   }));
@@ -257,8 +290,7 @@ async function promote(path: string | undefined, env: NodeJS.ProcessEnv) {
     skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
     skopeoLogin("docker.io", authfile, env.DOCKERHUB_USERNAME, env.DOCKERHUB_TOKEN);
     for (const image of targets) {
-      assert.equal((await verifyProducer(env)).artifactId, env.ARTIFACT_ID);
-      await verifyCi(ci);
+      await verifyImages(receipt, env);
       await verifyGhcr(image.destination, image.digest, image.tag);
       assert.equal(
         inspectDigest(`docker://${image.destination}:${image.tag}`, authfile),

@@ -7,10 +7,6 @@ on:
         description: Reviewed main commit (original commit for recovery)
         type: string
         required: true
-      ci_run_id:
-        description: Successful push CI run for that commit
-        type: string
-        required: true
       image_tag:
         description: Image alias to move after verification (defaults to latest)
         type: string
@@ -26,7 +22,6 @@ permissions: {}
 
 env:
   SOURCE_SHA: ${{ inputs.source_sha }}
-  CI_RUN_ID: ${{ inputs.ci_run_id }}
   IMAGE_TAG: ${{ inputs.image_tag }}
   RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
   PUBLISH: ${{ inputs.publish }}
@@ -40,7 +35,6 @@ jobs:
       contents: read
       actions: read
     outputs:
-      ci_attempt: ${{ steps.source.outputs.ci_attempt }}
       version: ${{ steps.destination.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -51,25 +45,21 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.22.1"
-      - name: Validate the dispatch, source and push CI
-        id: source
+      - name: Validate the protected main dispatch and source commit
         env:
-          NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
           GH_TOKEN: ${{ github.token }}
         run: node scripts/ci/release-oce.ts admit
       - name: Check the destination and show the release for approval
         id: destination
         env:
           GH_TOKEN: ${{ github.token }}
-          CI_ATTEMPT: ${{ steps.source.outputs.ci_attempt }}
         run: node scripts/ci/cli-release.ts preflight
       - name: Show version, source and image alias for approval
         env:
           VERSION: ${{ steps.destination.outputs.version }}
-          CI_ATTEMPT: ${{ steps.source.outputs.ci_attempt }}
         run: |
-          printf 'Version %s, commit %s, alias %s, publish=%s. CI run %s, attempt %s.\n' \
-            "$VERSION" "$SOURCE_SHA" "${IMAGE_TAG:-latest}" "$PUBLISH" "$CI_RUN_ID" "$CI_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Version %s, commit %s, alias %s, publish=%s.\n' \
+            "$VERSION" "$SOURCE_SHA" "${IMAGE_TAG:-latest}" "$PUBLISH" >> "$GITHUB_STEP_SUMMARY"
 
   approve:
     name: Approve release
@@ -114,6 +104,7 @@ jobs:
     uses: ./.github/workflows/full-integration-execution.yml
     with:
       lane: all
+      source_sha: ${{ inputs.source_sha }}
     secrets: inherit
 
   prepare:
@@ -125,9 +116,6 @@ jobs:
     uses: ./.github/workflows/container-check.yml
     with:
       source_sha: ${{ inputs.source_sha }}
-      ci_run_id: ${{ inputs.ci_run_id }}
-      ci_attempt: ${{ needs.validate.outputs.ci_attempt }}
-      node_base_image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       prepare_chart: true
 
   cli:
@@ -140,7 +128,6 @@ jobs:
     uses: ./.github/workflows/cli-release-prepare.yml
     with:
       source_sha: ${{ inputs.source_sha }}
-      ci_run_id: ${{ inputs.ci_run_id }}
 
   qualify:
     name: Record qualified release
@@ -169,8 +156,6 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
           IMAGE_VERSION: ${{ needs.prepare.outputs.version }}
           CLI_VERSION: ${{ needs.cli.outputs.version }}
-          CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
-          CLI_CI_ATTEMPT: ${{ needs.cli.outputs.ci_attempt }}
           IMAGE_CONTROLLER: ${{ needs.prepare.outputs.controller_digest }}
           IMAGE_RUNTIME: ${{ needs.prepare.outputs.runtime_digest }}
           CHART_SHA256: ${{ needs.prepare.outputs.chart_sha256 }}
@@ -199,8 +184,6 @@ jobs:
     with:
       phase: preflight
       source_sha: ${{ inputs.source_sha }}
-      ci_run_id: ${{ inputs.ci_run_id }}
-      ci_attempt: ${{ needs.validate.outputs.ci_attempt }}
       image_tag: ${{ inputs.image_tag }}
       producer_run_id: ${{ github.run_id }}
       producer_attempt: "1"
@@ -218,6 +201,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
@@ -228,7 +212,6 @@ jobs:
           path: ${{ runner.temp }}/cli
       - env:
           GH_TOKEN: ${{ github.token }}
-          CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
           CLI_SHA256SUMS_DIGEST: ${{ needs.cli.outputs.sha256sums_digest }}
         run: node scripts/ci/cli-release.ts preflight "$RUNNER_TEMP/cli"
 
@@ -249,8 +232,6 @@ jobs:
     uses: ./.github/workflows/release-oce-publish.yml
     with:
       source_sha: ${{ inputs.source_sha }}
-      ci_run_id: ${{ inputs.ci_run_id }}
-      ci_attempt: ${{ needs.validate.outputs.ci_attempt }}
       version: ${{ needs.validate.outputs.version }}
       image_tag: ${{ inputs.image_tag }}
       producer_run_id: ${{ inputs.recovery_run_id || github.run_id }}

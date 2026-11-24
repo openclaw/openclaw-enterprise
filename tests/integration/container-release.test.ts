@@ -24,6 +24,10 @@ import {
   verifyPreparedReleaseChart,
   readChartVersion,
 } from "../../scripts/ci/prepare-release-chart.ts";
+import {
+  selectPreparationSource,
+  releaseWorkflow,
+} from "../../scripts/ci/container-release/admission.ts";
 import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import {
@@ -81,6 +85,7 @@ const releaseImages = [controllerReceipt, runtimeReceipt];
 test("chart release binds one exact image publication to the OCE version", () => {
   const expected = {
     sourceSha,
+    workflowSha: sourceSha,
     runId: "123",
     attempt: "1",
     ciRunId: "456",
@@ -126,20 +131,41 @@ test("chart release binds one exact image publication to the OCE version", () =>
   );
 });
 
-test("chart recovery reads the approved version from Git after main advances", async (t) => {
+test("release preparation uses the reviewed image recipe, base and Helm files after main advances", async (t) => {
   const directory = await temporaryDirectory(t, "oce-chart-version-");
   const chartPath = "deploy/helm/openclaw-enterprise/Chart.yaml";
   await mkdir(join(directory, "deploy/helm/openclaw-enterprise"), { recursive: true });
   const git = (...args: string[]) =>
     execFileSync("git", ["-C", directory, ...args], { encoding: "utf8" }).trim();
   git("init", "--quiet", "--template=");
+  await mkdir(join(directory, "deploy/runtime"), { recursive: true });
+  await mkdir(join(directory, "scripts/ci/test-suites"), { recursive: true });
+  const nodeBase = (version: string) =>
+    `docker.io/library/node:24.22.1-bookworm@sha256:${version === "1.2.3" ? "a".repeat(64) : "b".repeat(64)}`;
   async function commitVersion(version: string, appVersion: string) {
+    await writeFile(
+      join(directory, "deploy/runtime/Dockerfile"),
+      `ARG NODE_BASE_IMAGE=${nodeBase(version)}\n`,
+    );
+    await writeFile(
+      join(directory, "scripts/ci/test-suites/images-packaging.json"),
+      JSON.stringify({ prepare: { defaultEnv: { NODE_BASE_IMAGE: nodeBase(version) } } }),
+    );
+    await writeFile(
+      join(directory, "deploy/helm/openclaw-enterprise/values.yaml"),
+      'images:\n  controller: ""\n',
+    );
+    await writeFile(
+      join(directory, "deploy/helm/openclaw-enterprise/README.md"),
+      `Reviewed chart ${version}\n`,
+    );
+
     await writeFile(join(directory, "package.json"), JSON.stringify({ version }));
     await writeFile(
       join(directory, chartPath),
-      `version: ${version}\nappVersion: "${appVersion}"\n`,
+      `apiVersion: v2\nname: openclaw-enterprise\nversion: ${version}\nappVersion: "${appVersion}"\n`,
     );
-    git("add", "package.json", chartPath);
+    git("add", "package.json", "deploy", "scripts");
     git(
       "-c",
       "user.name=Fixture",
@@ -164,6 +190,51 @@ test("chart recovery reads the approved version from Git after main advances", a
   assert.equal(await readChartVersion(source), "1.2.3");
   await assert.rejects(readChartVersion(head), /Chart appVersion must match/);
   await assert.rejects(readChartVersion("HEAD"), /full commit SHA/);
+  const env = {
+    GITHUB_WORKFLOW_REF: `${repository}/${releaseWorkflow}@refs/heads/main`,
+    GITHUB_WORKFLOW_SHA: head,
+    SOURCE_SHA: source,
+    GITHUB_RUN_ID: "123",
+    GITHUB_RUN_ATTEMPT: "1",
+    GHCR_CONTROLLER_IMAGE: controllerReceipt.destination,
+    GHCR_RUNTIME_IMAGE: runtimeReceipt.destination,
+    CONTROLLER_DIGEST: controllerReceipt.digest,
+    RUNTIME_DIGEST: runtimeReceipt.digest,
+    NODE_BASE_IMAGE: nodeBase("2.0.0"),
+  };
+  const selected = selectPreparationSource(env, join(directory, "native-source"));
+  assert.equal(selected.nodeBase, nodeBase("1.2.3"));
+  assert.equal(
+    await readFile(join(selected.path, "deploy/runtime/Dockerfile"), "utf8"),
+    `ARG NODE_BASE_IMAGE=${selected.nodeBase}\n`,
+  );
+  assert.throws(
+    () =>
+      selectPreparationSource({
+        ...env,
+        GITHUB_WORKFLOW_REF: `${repository}/${publishWorkflow}@refs/heads/main`,
+      }),
+    /Expected the selected checkout/,
+  );
+  const helm = process.env.OCC_HELM_BIN ?? "helm";
+  if (spawnSync(helm, ["version", "--short"]).status !== 0) {
+    t.skip("Helm is required to verify the selected chart bytes.");
+    return;
+  }
+  const out = join(directory, "prepared");
+  const receipt = await prepareReleaseChart(out, { ...env, OCC_HELM_BIN: helm });
+  assert.equal(receipt.workflowSha, head);
+  assert.equal(receipt.sourceSha, source);
+  assert.equal(receipt.nodeBaseImage, selected.nodeBase);
+  assert.ok(!Object.hasOwn(receipt, "ciRunId") && !Object.hasOwn(receipt, "ciAttempt"));
+  assert.equal(
+    execFileSync(
+      "tar",
+      ["-xOzf", join(out, "openclaw-enterprise-1.2.3.tgz"), "openclaw-enterprise/README.md"],
+      { encoding: "utf8" },
+    ),
+    "Reviewed chart 1.2.3\n",
+  );
   assert.equal(git("rev-parse", "HEAD"), head);
 });
 
@@ -1640,6 +1711,24 @@ test("native platform exports verify offline and assemble into a digest-bound ar
     () => verify("amd64", { CI_RUN_ID: undefined, CI_ATTEMPT: undefined }),
     /Expected a CI run ID/,
   );
+  // Release OCE can smoke an older source in a newer trusted workflow. Its
+  // receipt binds both commits and cannot borrow standalone push CI evidence.
+  const release = {
+    GITHUB_WORKFLOW_REF: `${repository}/${releaseWorkflow}@refs/heads/main`,
+    GITHUB_WORKFLOW_SHA: "e".repeat(40),
+    CI_RUN_ID: undefined,
+    CI_ATTEMPT: undefined,
+  };
+  const unified = {
+    ...receipt,
+    workflowSha: release.GITHUB_WORKFLOW_SHA,
+    ciRunId: undefined,
+    ciAttempt: undefined,
+  };
+  await writeFile(receiptPath, JSON.stringify(unified));
+  verify("amd64", release);
+  await writeFile(receiptPath, JSON.stringify({ ...unified, ciRunId: "456", ciAttempt: "1" }));
+  assert.throws(() => verify("amd64", release), /does not use push CI receipts/);
   await writeFile(receiptPath, original);
   for (const entry of ["oci-layout", "blobs/sha256"]) {
     const path = join(valid.output, "amd64", entry);

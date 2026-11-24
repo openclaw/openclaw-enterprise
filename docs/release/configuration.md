@@ -32,9 +32,10 @@ credentials; it does not publish container images.
 
 ## Publication configuration
 
-Protect `main`, require `CI Required`, and review workflow changes. Publication
-requires the entire exact-source main-push CI run to succeed, including First Agent Smoke. Repository writers can dispatch the standalone publication workflows.
-**Release OCE** also requires the dispatcher's approval through
+Protect `main`, require `CI Required` for merge, and review workflow changes.
+The standalone image and CLI workflows require successful push CI for the
+release commit. **Release OCE** qualifies the selected commit through Full
+Integration and requires the dispatcher's approval through
 [`integration-main-approval`](../testing/ci/configuration.md#environments).
 Keep provider credentials in the integration environments.
 

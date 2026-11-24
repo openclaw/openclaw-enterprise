@@ -138,7 +138,10 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
   assert.equal(execute.uses, "./.github/workflows/full-integration-execution.yml");
   const trigger = record(execution.on);
   assert.deepEqual(Object.keys(trigger), ["workflow_call"]);
-  assert.deepEqual(record(trigger.workflow_call).inputs, { lane: { type: "string", default: "" } });
+  assert.deepEqual(record(record(trigger.workflow_call).inputs).lane, {
+    type: "string",
+    default: "",
+  });
   assert.equal(record(execute.with).lane, "${{ inputs.lane || '' }}");
   assert.equal(execute.secrets, "inherit");
   assert.deepEqual(execution.permissions, dispatcher.permissions);
@@ -593,7 +596,12 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   for (const selected of [...Object.values(dispatcher.jobs), ...Object.values(workflow.jobs)]) {
     for (const step of selected.steps ?? []) {
       if (typeof step.uses === "string" && step.uses.startsWith("actions/checkout@")) {
-        assert.equal(record(step.with).ref, "${{ github.sha }}");
+        assert.ok(
+          [
+            "${{ github.sha }}",
+            "${{ needs.preflight.outputs.tested_sha || 'missing-test-source' }}",
+          ].includes(text(record(step.with).ref)),
+        );
         assert.equal(record(step.with)["persist-credentials"], false);
       }
     }

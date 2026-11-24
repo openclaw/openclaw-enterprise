@@ -4,11 +4,18 @@ import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { loadTestSuites } from "../test-suites.ts";
-import { integerPattern, shaPattern, field, match } from "./metadata.ts";
+import {
+  integerPattern,
+  shaPattern,
+  field,
+  match,
+  isReleaseOce,
+  repository,
+  releaseWorkflow,
+} from "./metadata.ts";
 
-export const repository = "openclaw/openclaw-enterprise";
+export { repository, releaseWorkflow };
 export const publishWorkflow = ".github/workflows/container-publish.yml";
-export const releaseWorkflow = ".github/workflows/release-oce.yml";
 const releaseVersionPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 
 export function isReleaseVersion(version: string) {
@@ -263,13 +270,49 @@ export function publicationAlias(value: string | undefined) {
   return tag;
 }
 
+export function readReleaseNodeBase(sourceSha: string) {
+  assert.match(sourceSha, shaPattern, "Select a full commit SHA before reading image inputs.");
+  const gitFile = (path: string) =>
+    execFileSync("git", ["show", "--no-textconv", `${sourceSha}:${path}`], { encoding: "utf8" });
+  const lane: unknown = JSON.parse(gitFile("scripts/ci/test-suites/images-packaging.json"));
+  const nodeBase = field(field(field(lane, "prepare"), "defaultEnv"), "NODE_BASE_IMAGE");
+  match(
+    nodeBase,
+    /^docker\.io\/library\/node:[a-z0-9.-]+@sha256:[a-f0-9]{64}$/u,
+    "Select a digest-pinned Node base.",
+  );
+  assert.equal(
+    gitFile("deploy/runtime/Dockerfile").match(/^ARG NODE_BASE_IMAGE=(.+)$/mu)?.[1],
+    nodeBase,
+    "The selected runtime recipe and packaging manifest must pin the same Node base.",
+  );
+  return nodeBase;
+}
+
+// Keep release tooling on the workflow commit. A separate worktree supplies
+// the selected commit's Docker context and source files for the package.
+export function selectPreparationSource(env: NodeJS.ProcessEnv, destination?: string) {
+  const source = env.SOURCE_SHA;
+  match(source, shaPattern);
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  if (isReleaseOce(env)) {
+    assert.equal(head, env.GITHUB_WORKFLOW_SHA);
+    execFileSync("git", ["merge-base", "--is-ancestor", source, head]);
+  } else {
+    assert.equal(head, source, "Expected the selected checkout.");
+  }
+  const nodeBase =
+    isReleaseOce(env) || !env.CI_RUN_ID ? readReleaseNodeBase(source) : env.NODE_BASE_IMAGE;
+  match(nodeBase, /^\S+@sha256:[a-f0-9]{64}$/, "Prepare with a digest-pinned Node base.");
+  if (source !== head && destination) {
+    execFileSync("git", ["worktree", "add", "--detach", destination, source], { stdio: "inherit" });
+  }
+  return { path: source !== head && destination ? destination : ".", nodeBase };
+}
+
 export async function validate(env: NodeJS.ProcessEnv) {
   publicationAlias(env.IMAGE_TAG);
-  const workflow =
-    env.GITHUB_WORKFLOW_REF === `${repository}/${releaseWorkflow}@refs/heads/main`
-      ? releaseWorkflow
-      : publishWorkflow;
-  await verifyMainSource(env, workflow);
+  await verifyMainSource(env, publishWorkflow);
   assert.equal(
     env.SOURCE_SHA,
     env.GITHUB_WORKFLOW_SHA,

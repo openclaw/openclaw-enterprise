@@ -11,6 +11,8 @@ import { readWorkflow, workflowCondition } from "./full-integration-workflow-fix
 
 const repo = { full_name: "openclaw/openclaw-enterprise", private: false, default_branch: "main" };
 const sha = "a".repeat(40);
+const dispatchSha = "c".repeat(40);
+const recoverySha = "d".repeat(40);
 const hex = "b".repeat(64);
 const producer = {
   id: 123,
@@ -18,7 +20,7 @@ const producer = {
   path: ".github/workflows/release-oce.yml",
   event: "workflow_dispatch",
   head_branch: "main",
-  head_sha: sha,
+  head_sha: dispatchSha,
   repository: repo,
   head_repository: repo,
   status: "completed",
@@ -30,18 +32,22 @@ const jobs = [
   "Verify approval",
   "Full Integration / Full Integration Aggregate",
   "Record qualified release",
-].map((name) => ({ name, head_sha: sha, status: "completed", conclusion: "success" }));
+].map((name) => ({ name, head_sha: dispatchSha, status: "completed", conclusion: "success" }));
 const inputs: NodeJS.ProcessEnv = {
   GITHUB_RUN_ID: "123",
   GITHUB_RUN_ATTEMPT: "1",
   SOURCE_SHA: sha,
-  CI_RUN_ID: "42",
-  CI_ATTEMPT: "2",
+  GITHUB_WORKFLOW_SHA: dispatchSha,
+  GITHUB_SHA: dispatchSha,
+  GITHUB_REPOSITORY: repo.full_name,
+  GITHUB_WORKFLOW_REF: repo.full_name + "/.github/workflows/release-oce.yml@refs/heads/main",
+  GITHUB_EVENT_NAME: "workflow_dispatch",
+  GITHUB_REF: "refs/heads/main",
+  GITHUB_REF_PROTECTED: "true",
   FULL_SUITE: `all:${sha}:123:1`,
   VERSION: "1.2.3",
   IMAGE_VERSION: "1.2.3",
   CLI_VERSION: "v1.2.3",
-  CLI_CI_ATTEMPT: "2",
   IMAGE_CONTROLLER: `sha256:${hex}`,
   IMAGE_RUNTIME: `sha256:${"c".repeat(64)}`,
   CHART_SHA256: hex,
@@ -54,6 +60,8 @@ const inputs: NodeJS.ProcessEnv = {
 test("release requires successful full coverage for the reviewed SHA, run and first attempt", () => {
   const good = validateQualification(inputs);
   assert.equal(good.alias, "candidate");
+  assert.equal(good.source, sha);
+  assert.equal(good.workflowSha, dispatchSha);
   assert.equal(validateQualification({ ...inputs, IMAGE_TAG: "" }).alias, "latest");
   for (const changed of [
     { FULL_SUITE: undefined },
@@ -61,7 +69,7 @@ test("release requires successful full coverage for the reviewed SHA, run and fi
     { FULL_SUITE: `all:${sha}:123:2` },
     { FULL_SUITE: `docker-model:${sha}:123:1` },
     { SOURCE_SHA: "f".repeat(40) },
-    { CLI_CI_ATTEMPT: "1" },
+    { FULL_SUITE: `all:${dispatchSha}:123:1` },
     { IMAGE_CONTROLLER: "" },
     { CHART_SHA256: "" },
     { CLI_SHA256SUMS_DIGEST: "" },
@@ -78,7 +86,12 @@ test("release requires successful full coverage for the reviewed SHA, run and fi
   }
   // A failed release can have a green preparation job even if the actual full
   // aggregate failed or was skipped. Recovery checks the original attempt's jobs.
-  const recovery = { ...inputs, RECOVERY_RUN_ID: "123" };
+  const recovery = {
+    ...inputs,
+    GITHUB_WORKFLOW_SHA: recoverySha,
+    GITHUB_SHA: recoverySha,
+    RECOVERY_RUN_ID: "123",
+  };
   validateProducer(producer, jobs, recovery);
   for (const changed of [
     { path: ".github/workflows/container-publish.yml" },
@@ -109,7 +122,7 @@ test("recovery consumes the recorded inventory and rejects rehearsal, replaced o
   const directory = await temporaryDirectory(t, "oce-release-evidence-");
   const fixture = join(directory, "metadata.mjs");
   // Supply only observed read API shapes. The shipped commands write and read
-  // the qualification manifest, bind CI and reject changes across dispatches.
+  // the qualification manifest. Any lookup of a push CI run or workflow fails.
   await writeFile(
     fixture,
     `
@@ -133,28 +146,28 @@ test("recovery consumes the recorded inventory and rejects rehearsal, replaced o
       digest: `sha256:${hex}`,
     }),
   );
-  const ci = {
-    ...producer,
-    id: 42,
-    path: ".github/workflows/ci.yml",
-    event: "push",
-    workflow_id: 88,
-    conclusion: "success",
-    run_attempt: 2,
-  };
-  const metadata = {
+  const repositoryPath = "/repos/" + repo.full_name;
+  const compare = (head: string) => `${repositoryPath}/compare/${sha}...${head}`;
+  const metadata: Record<string, unknown> = {
+    [repositoryPath]: repo,
+    [repositoryPath + "/environments/container-publish"]: {
+      name: "container-publish",
+      can_admins_bypass: false,
+      deployment_branch_policy: { custom_branch_policies: true, protected_branches: false },
+    },
+    [repositoryPath + "/environments/container-publish/deployment-branch-policies"]: {
+      branch_policies: [{ name: "main", type: "branch" }],
+    },
+    [compare("main")]: { status: "ahead" },
+    [compare(dispatchSha)]: { status: "ahead" },
+    [compare(recoverySha)]: { status: "ahead" },
     [artifactPath]: { artifacts },
     [api + "/workflows/release-oce.yml"]: { id: 89, path: producer.path, state: "active" },
     [api + "/runs/123"]: producer,
     [api + "/runs/123/attempts/1/jobs"]: { jobs },
-    [api + "/workflows/ci.yml"]: { id: 88, path: ci.path, state: "active" },
-    [api + "/runs/42"]: ci,
-    [api + "/runs/42/attempts/2/jobs"]: {
-      jobs: [{ name: "CI Required", status: "completed", conclusion: "success", head_sha: sha }],
-    },
   };
   const command = (
-    operation: "record" | "verify",
+    operation: "admit" | "record" | "verify",
     changed: NodeJS.ProcessEnv = {},
     observed = metadata,
   ) => {
@@ -176,18 +189,54 @@ test("recovery consumes the recorded inventory and rejects rehearsal, replaced o
     assert.equal(result.error, undefined);
     return result;
   };
-  const fresh = { GITHUB_RUN_ID: "789", RECOVERY_RUN_ID: "123" };
+  const fresh = {
+    GITHUB_RUN_ID: "789",
+    GITHUB_WORKFLOW_SHA: recoverySha,
+    GITHUB_SHA: recoverySha,
+    RECOVERY_RUN_ID: "123",
+  };
+  // The reviewed commit is already behind protected main at the initial
+  // dispatch. Neither the original proof nor its recovery has a push CI run.
+  for (const context of [{ GITHUB_WORKFLOW_SHA: dispatchSha }, fresh]) {
+    const admitted = command("admit", context);
+    assert.equal(admitted.status, 0, admitted.stderr);
+    const head = context.GITHUB_WORKFLOW_SHA;
+    const unrelated = command("admit", context, {
+      ...metadata,
+      [compare(head)]: { status: "diverged" },
+    });
+    assert.notEqual(unrelated.status, 0, unrelated.stdout);
+  }
+  assert.notEqual(command("admit", { GITHUB_REF_PROTECTED: "false" }).status, 0);
   const rehearsal = command("record", { PUBLISH: "false" });
   assert.equal(rehearsal.status, 0, rehearsal.stderr);
   assert.match(command("verify", fresh).stderr, /rehearsal/i);
   const qualified = command("record");
   assert.equal(qualified.status, 0, qualified.stderr);
+  const manifest = record(JSON.parse(await readFile(join(directory, "release.json"), "utf8")));
+  assert.equal(manifest.source, sha);
+  assert.equal(manifest.workflowSha, dispatchSha);
+  assert.equal(manifest.suite, `all:${sha}:123:1`);
+  assert.equal(Object.hasOwn(manifest, "ci"), false);
+  assert.equal(Object.hasOwn(manifest, "ciAttempt"), false);
+  const current = command("verify");
+  assert.equal(current.status, 0, current.stderr);
   const resolved = command("verify", fresh);
   assert.equal(resolved.status, 0, resolved.stderr);
   assert.match(await readFile(join(directory, "output"), "utf8"), new RegExp(`cli_digest=${hex}`));
-  for (const invalid of [{ IMAGE_TAG: "latest" }, { CI_ATTEMPT: "1" }, { VERSION: "1.2.4" }]) {
+  for (const invalid of [{ IMAGE_TAG: "latest" }, { VERSION: "1.2.4" }]) {
     assert.notEqual(command("verify", { ...fresh, ...invalid }).status, 0);
   }
+  await writeFile(
+    join(directory, "release.json"),
+    JSON.stringify({ ...manifest, workflowSha: recoverySha }),
+  );
+  assert.notEqual(
+    command("verify", fresh).status,
+    0,
+    "Recovery must bind the original workflow commit.",
+  );
+  await writeFile(join(directory, "release.json"), JSON.stringify(manifest));
   for (const changed of [{ id: 2200 }, { expired: true }, { digest: `sha256:${"d".repeat(64)}` }]) {
     const moved = artifacts.map((item, index) => (index === 0 ? { ...item, ...changed } : item));
     const rejected = command("verify", fresh, {
@@ -204,6 +253,7 @@ test("only approved publish runs can enter the shared lock and move aliases afte
   const dispatch = record(record(release.on).workflow_dispatch);
   assert.deepEqual(Object.keys(record(release.on)), ["workflow_dispatch"]);
   assert.equal(record(record(dispatch.inputs).publish).default, false);
+  assert.equal(Object.hasOwn(record(dispatch.inputs), "ci_run_id"), false);
   const publish = present(release.jobs.publish);
   assert.deepEqual(release.permissions, {});
   assert.deepEqual(publish.concurrency, {
@@ -241,6 +291,7 @@ test("only approved publish runs can enter the shared lock and move aliases afte
   const integration = present(release.jobs.integration);
   assert.equal(integration.uses, "./.github/workflows/full-integration-execution.yml");
   assert.equal(record(integration.with).lane, "all");
+  assert.equal(record(integration.with).source_sha, "${{ inputs.source_sha }}");
   assert.equal(release.jobs.approve?.environment, "integration-main-approval");
   assert.equal(integration.needs, "approval");
   const gate = present(
@@ -253,7 +304,7 @@ test("only approved publish runs can enter the shared lock and move aliases afte
     for (const outcome of ["skipped", "failure", "cancelled"]) {
       // Execute the shipped gate. GitHub supplies the outcome and runs shell
       // steps with errexit. A rejected result must fail before writing evidence.
-      const result = spawnSync("bash", ["-ec", text(gate.run)], {
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-ec", text(gate.run)], {
         env: { ...process.env, ...success, [key]: outcome, RUNNER_TEMP: directory },
         encoding: "utf8",
       });

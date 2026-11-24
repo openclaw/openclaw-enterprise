@@ -5,13 +5,18 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { ghcrPackageName, isReleaseVersion } from "./container-release/admission.ts";
+import {
+  ghcrPackageName,
+  isReleaseVersion,
+  readReleaseNodeBase,
+} from "./container-release/admission.ts";
 import {
   digestPattern,
   field,
   fileDigest,
   images,
   integerPattern,
+  isReleaseOce,
   match,
   shaPattern,
 } from "./container-release/metadata.ts";
@@ -60,13 +65,26 @@ export async function stageReleaseChart(
     sourceSha,
     version,
     images,
-  }: { sourceSha: string; version: string; images: PreparedChartImage[] },
+    fromCommit = false,
+  }: { sourceSha: string; version: string; images: PreparedChartImage[]; fromCommit?: boolean },
 ) {
   assert.match(sourceSha, shaPattern);
   assert.ok(isReleaseVersion(version), "Expected an OCE release version.");
-  assert.equal(await readChartVersion(), version);
+  assert.equal(await readChartVersion(fromCommit ? sourceSha : undefined), version);
   const destination = join(directory, "chart");
-  await cp(join(root, "deploy/helm/openclaw-enterprise"), destination, { recursive: true });
+  const chartPath = "deploy/helm/openclaw-enterprise";
+  if (fromCommit) {
+    // Stage only files from the approved source. The chart job keeps the
+    // workflow commit checked out for its Helm installer and release scripts.
+    const archive = execFileSync("git", ["archive", "--format=tar", `${sourceSha}:${chartPath}`], {
+      cwd: root,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    await mkdir(destination);
+    execFileSync("tar", ["-xf", "-", "-C", destination], { input: archive });
+  } else {
+    await cp(join(root, chartPath), destination, { recursive: true });
+  }
   const metadataPath = join(destination, "Chart.yaml");
   const metadata = await readFile(metadataPath, "utf8");
   assert.ok(!/^annotations:/mu.test(metadata), "Release annotations must be staged once.");
@@ -99,24 +117,29 @@ export async function stageReleaseChart(
 
 function chartPreparationReceipt(
   env: NodeJS.ProcessEnv,
-  producer: { runId: string | undefined; attempt: string | undefined },
+  producer: {
+    runId: string | undefined;
+    attempt: string | undefined;
+    workflowSha?: string | undefined;
+  },
   version: string,
   chartSha256: string,
   controller: string,
   runtime: string,
 ) {
   assert.match(env.SOURCE_SHA ?? "", shaPattern);
-  for (const value of [producer.runId, producer.attempt, env.CI_RUN_ID, env.CI_ATTEMPT]) {
+  const unified = isReleaseOce(env);
+  const ci = unified ? [] : [env.CI_RUN_ID, env.CI_ATTEMPT];
+  for (const value of [producer.runId, producer.attempt, ...ci]) {
     assert.match(value ?? "", integerPattern);
   }
   assert.match(chartSha256, /^[a-f0-9]{64}$/u);
   return {
     sourceSha: env.SOURCE_SHA,
-    workflowSha: env.SOURCE_SHA,
+    workflowSha: producer.workflowSha ?? env.GITHUB_WORKFLOW_SHA,
     runId: producer.runId,
     attempt: producer.attempt,
-    ciRunId: env.CI_RUN_ID,
-    ciAttempt: env.CI_ATTEMPT,
+    ...(unified ? {} : { ciRunId: env.CI_RUN_ID, ciAttempt: env.CI_ATTEMPT }),
     nodeBaseImage: env.NODE_BASE_IMAGE,
     version,
     chartSha256,
@@ -128,7 +151,11 @@ function chartPreparationReceipt(
 export async function verifyPreparedReleaseChart(
   archive: string,
   env: NodeJS.ProcessEnv,
-  producer: { runId: string | undefined; attempt: string | undefined },
+  producer: {
+    runId: string | undefined;
+    attempt: string | undefined;
+    workflowSha?: string | undefined;
+  },
   controller: string,
   runtime: string,
   releaseVersion?: string,
@@ -180,8 +207,16 @@ function verifyPackagedMetadata(
 export async function prepareReleaseChart(directory: string, env: NodeJS.ProcessEnv) {
   const sourceSha = env.SOURCE_SHA;
   match(sourceSha, shaPattern);
-  assert.equal(sourceSha, env.GITHUB_WORKFLOW_SHA);
-  const version = await readChartVersion();
+  const unified = isReleaseOce(env);
+  if (unified) {
+    match(env.GITHUB_WORKFLOW_SHA, shaPattern);
+    execFileSync("git", ["merge-base", "--is-ancestor", sourceSha, env.GITHUB_WORKFLOW_SHA], {
+      cwd: root,
+    });
+  } else {
+    assert.equal(sourceSha, env.GITHUB_WORKFLOW_SHA);
+  }
+  const version = await readChartVersion(unified ? sourceSha : undefined);
   const pinnedImages = images.map((image) => {
     const destination = env[`GHCR_${image.toUpperCase()}_IMAGE`];
     assert.ok(destination);
@@ -198,13 +233,18 @@ export async function prepareReleaseChart(directory: string, env: NodeJS.Process
   await mkdir(directory);
   const temporary = await mkdtemp(join(tmpdir(), "oce-chart-preparation-"));
   try {
-    const staged = await stageReleaseChart(temporary, { sourceSha, version, images: pinnedImages });
+    const staged = await stageReleaseChart(temporary, {
+      sourceSha,
+      version,
+      images: pinnedImages,
+      fromCommit: unified,
+    });
     execFileSync(env.OCC_HELM_BIN ?? "helm", ["package", staged, "--destination", directory], {
       stdio: "inherit",
     });
     const archive = join(directory, `openclaw-enterprise-${version}.tgz`);
     const receipt = chartPreparationReceipt(
-      env,
+      unified ? { ...env, NODE_BASE_IMAGE: readReleaseNodeBase(sourceSha) } : env,
       { runId: env.GITHUB_RUN_ID, attempt: env.GITHUB_RUN_ATTEMPT },
       version,
       await fileDigest(archive),

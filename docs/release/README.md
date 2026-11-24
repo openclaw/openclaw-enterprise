@@ -10,13 +10,13 @@ Start with a rehearsal.
 
 1. Set the root `package.json` version and Helm chart `version` and `appVersion` to the
    same numeric `major.minor.patch` version. Merge the change to protected `main`.
-2. Record the full commit SHA and the GitHub Actions run ID for its successful
-   **CI** push run on `main`. The entire run, including **CI Required**, must succeed.
-   Check [release configuration](configuration.md), the [GHCR package setup](containers.md#bootstrap-ghcr-packages),
+2. Select a reviewed commit in protected `main` history and record its full
+   40-character SHA. You can select the tip or an earlier commit. Check [release configuration](configuration.md), the [GHCR package setup](containers.md#bootstrap-ghcr-packages),
    and the [integration approval environment](../testing/ci/configuration.md#environments).
 3. In **Actions → Release OCE → Run workflow**, select `main`. Set `source_sha`
-   to the reviewed commit and `ci_run_id` to the CI run ID. The selected
-   workflow commit must match `source_sha`. Leave `publish` unchecked.
+   to the reviewed SHA. This is the only required input. Leave `publish`
+   unchecked for a rehearsal. The workflow qualifies the source in its own run
+   without requiring a previous push CI run.
 4. To move a custom image tag such as `candidate` at publication, set
    `image_tag`. A blank value selects `latest`. A custom tag leaves `latest`
    unchanged. The [image tag rules](containers.md#prepare-and-publish) reserve
@@ -28,8 +28,10 @@ Start with a rehearsal.
 
 A successful rehearsal checks the release destinations and leaves the prepared
 artifacts and `qualified-release-<run-id>-1` record in GitHub Actions. It
-creates no registry tags or GitHub Release. A later push to `main` cannot change
-the commit in a running release.
+creates no registry tags or GitHub Release. The release records two commits.
+The source SHA identifies the code under test and the artifacts. The workflow
+SHA identifies the protected `main` workflow that qualified those artifacts.
+Both stay fixed if `main` advances.
 
 ## Publish and verify
 
@@ -53,12 +55,12 @@ Use digest references while recovering.
 
 Keep the original failed or cancelled run at attempt 1. The image and chart
 artifacts expire after seven days. Start a new **Release OCE** run on
-protected `main`. Enter the original
-`source_sha`, `ci_run_id`, and `image_tag`, select `publish`, and set
+protected `main`. Enter the original `source_sha` and `image_tag`, select
+`publish`, and set
 `recovery_run_id` to the original publication run ID. Complete the new
-approval. Recovery checks the original run, attempt, qualification, and
-prepared bytes before it completes missing steps. The original commit must
-still be on `main`. Expired evidence, conflicting bytes, or a newer alias
+approval. Recovery uses the current protected workflow to verify the original
+run, attempt, source SHA, qualifying workflow SHA, and prepared bytes. It
+completes missing steps from those bytes. The source must still be in `main` history. Expired evidence, conflicting bytes, or a newer alias
 stops recovery. Preserve the original run and refer the conflict to a release
 maintainer.
 
