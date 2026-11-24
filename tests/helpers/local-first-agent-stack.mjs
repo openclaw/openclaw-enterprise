@@ -12,7 +12,6 @@ import {
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.ts";
 import { configurePodmanComposeProvider } from "../../scripts/lib/podman-compose-provider.ts";
-import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { selectComposeSubnet } from "./compose-network.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -654,6 +653,8 @@ export async function localFirstAgentStack(context, { modelCredential, nativeMod
     context.after(() => rm(policyFile, { force: true }));
     startupArguments.push("--sandbox-network-policy-file", policyFile);
     if (nativeModelGrant) {
+      const { OPEN_SHELL_CODEX_BINARIES } =
+        await import("../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts");
       const ceilingFile = `${directory}-network-policy-ceiling.json`;
       const codexGrants = OPEN_SHELL_CODEX_BINARIES.flatMap((binary, architecture) =>
         ["api.openai.com", "auth.openai.com", "chatgpt.com"].map((host) => ({

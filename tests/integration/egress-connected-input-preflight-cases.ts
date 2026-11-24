@@ -1037,9 +1037,20 @@ export function registerConnectedEgressInputPreflightCases(): void {
     };
     const configuration = await post("/configurations", protectedConfigurationBody("gpt-6"));
     assert.ok(hasResourceId(configuration));
+    const sourceError = await post(
+      "/credential-sources",
+      {
+        name: "Connected model Source",
+        type: "static",
+        config: { provider_preset: "openai" },
+        secret: { opaque: randomUUID() },
+      },
+      503,
+    );
+    assert.equal(sourceError.code, "DEPENDENCY_UNAVAILABLE");
     const agentBody = protectedAgentBody("synthetic", configuration.id, `cs_${randomUUID()}`);
-    const agentError = await post("/agents", agentBody, 409);
-    assert.equal(agentError.code, "CREDENTIAL_GATEWAY_NOT_CONFIGURED");
+    const agentError = await post("/agents", agentBody, 404);
+    assert.equal(agentError.code, "NOT_FOUND");
     const role = await post("/iam/roles", {
       name: "exact source only",
       permissions: [{ action: "operate", resourceKind: "credential_source" }],

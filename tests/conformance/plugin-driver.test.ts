@@ -367,7 +367,7 @@ test("Slack describes only the selected account at its single default projection
   }
 });
 
-test("staged Plugin placement exempts only authorized staged bindings from the legacy Gateway requirement", () => {
+test("managed Plugin placement requires staged credential delivery for every bound Plugin", () => {
   const driver = new OCCPluginDriver();
   const slots = driver.credentials.choices([]);
   const google = slots.find(({ pluginId }) => pluginId === "occ-plugin:google@1.0.0")!;
@@ -383,10 +383,10 @@ test("staged Plugin placement exempts only authorized staged bindings from the l
   const harness = { id: "openclaw", mode: "dedicated" } as const;
   const runtime = { sandbox: "openshell", gateway: undefined };
 
-  // Staging Slack cannot bypass the legacy runtime prerequisite for a distinct Google binding.
+  // Staging Slack does not authorize the separate Google binding.
   assert.throws(
     () => driver.validatePlacement(plugins, harness, "occ/kubernetes", runtime),
-    /OpenShell Sandbox and Credential Gateway/,
+    /Bound Plugin credentials require TokenService Sources and staged credential delivery/,
   );
   assert.throws(
     () =>
@@ -394,7 +394,7 @@ test("staged Plugin placement exempts only authorized staged bindings from the l
         ...runtime,
         stagedPluginIds: new Set([slack.pluginId]),
       }),
-    /OpenShell Sandbox and Credential Gateway/,
+    /Bound Plugin credentials require TokenService Sources and staged credential delivery/,
   );
   assert.doesNotThrow(() =>
     driver.validatePlacement(plugins, harness, "occ/kubernetes", {
@@ -402,10 +402,12 @@ test("staged Plugin placement exempts only authorized staged bindings from the l
       stagedPluginIds: new Set([google.pluginId, slack.pluginId]),
     }),
   );
-  assert.doesNotThrow(() =>
-    driver.validatePlacement(plugins, harness, "occ/kubernetes", {
-      ...runtime,
-      gateway: "openshell",
-    }),
+  assert.throws(
+    () =>
+      driver.validatePlacement(plugins, harness, "occ/kubernetes", {
+        ...runtime,
+        gateway: "openshell",
+      }),
+    /Bound Plugin credentials require TokenService Sources and staged credential delivery/,
   );
 });
