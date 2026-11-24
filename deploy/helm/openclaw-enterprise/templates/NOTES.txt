@@ -1,4 +1,11 @@
 OpenClaw Enterprise is installed as release {{ .Release.Name }} in {{ .Release.Namespace }}.
+{{- if and .Release.IsInstall (or (hasKey .Values.bootstrap "password") (hasKey .Values.bootstrap "serviceKey")) }}
+
+Warning: This install ignores bootstrap.password and bootstrap.serviceKey.
+It reads the selected Secret and writes no credentials to the old volume.
+Keep the original values. To prepare a copy for a future install, see
+occ installation migrate-values --help.
+{{- end }}
 {{- with include "openclaw.trustedProxy.notice" . }}
 
 {{ . }}

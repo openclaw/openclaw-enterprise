@@ -2610,6 +2610,10 @@ exec "$0.fixture" "$@"
       "the channel one-off preserves an Installation key matching the channel input filename",
     ],
     [
+      "worker-patch-denied",
+      "the channel one-off refuses a named Worker patch denial before Agent Stop",
+    ],
+    [
       "worker-admission-denied",
       "the channel one-off refuses a Worker admission denial before Agent Stop",
       "worker",
@@ -2983,6 +2987,11 @@ exec "$0.fixture" "$@"
             await installationFile.close();
           }
         }
+        if (scenario === "worker-patch-denied") {
+          const state = await f.state();
+          state.denyWorkerPatch = true;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        }
         if (denyAdmission) {
           // Patch access is allowed, but admission refuses changing this writer to zero replicas.
           const state = await f.state();
@@ -3007,7 +3016,18 @@ exec "$0.fixture" "$@"
             [],
           );
         }
-        if (denyAdmission) {
+        if (scenario === "worker-patch-denied") {
+          assert.deepEqual(f.stopRequests, []);
+          assert.equal(failure.code, 1);
+          assert.match(
+            failure.stderr,
+            /Kubernetes denied patch on worker Deployment system\/openclaw-enterprise-worker\. Obtain patch access before resuming\./u,
+          );
+          assert.equal(existsSync(join(f.evidence, "quiescence-worker-preview.err")), false);
+          assert.equal(existsSync(join(f.evidence, "quiescence-api-preview.err")), false);
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+          await assertStoppedBeforeWriters(f);
+        } else if (denyAdmission) {
           const writer = denyAdmission === "worker" ? "Worker" : "API";
           assert.deepEqual(f.stopRequests, []);
           assert.equal(failure.code, 1);

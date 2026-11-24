@@ -34,12 +34,13 @@ Gateways use the control-cluster Gateway namespace. Required
 `runtime.gatewayStorageClassName` selects an operator-provisioned local or cloud
 block StorageClass by DNS-subdomain name.
 
-Select `runtime.gatewayStorageSizeGiB` before creating claims: integer 1–65536 GiB,
-default 10, subject to provider support. Keep this Installation-wide setting
-fixed until normal Agent deletion removes all claims under their original setting. Reuse and final deletion reject
-different capacities without resizing, replacing or adopting claims. Preparation
-may detect the mismatch after stopping the predecessor. Restore the original setting before creating different-sized claims;
-no single setting supports a mixed population.
+Installation-wide `runtime.gatewayStorageSizeGiB` accepts 1–65536 whole GiB
+(default 10), subject to provider support. Reuse and final deletion require
+matching storage requests. The Driver never resizes, replaces or adopts mismatched
+claims. Preparation may detect mismatches after predecessor shutdown.
+Keep or restore the original size until normal Agent deletion removes every claim
+requesting it. Set the new size before creating claims.
+Mixed sizes are unsupported. Don’t edit or delete claims to bypass this check.
 
 The filesystem must support SQLite locking, durable `fsync`, and colocated
 database and WAL/SHM files. The Driver checks claim configuration, not filesystem

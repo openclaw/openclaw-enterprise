@@ -43,16 +43,20 @@ const unexpectedEnrollment: GatewayNodeEnrollment = {
   },
 };
 
-export async function checkAgentScopedWorkspaceNodeIdentity() {
-  const driver = new KubernetesComputeDriver(
+function createWorkspaceNodeDriver(nodeEnrollment: GatewayNodeEnrollment) {
+  return new KubernetesComputeDriver(
     routedOptions({
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
       },
     }),
-    { nodeEnrollment: unexpectedEnrollment },
+    { nodeEnrollment },
   );
+}
+
+export async function checkAgentScopedWorkspaceNodeIdentity() {
+  const driver = createWorkspaceNodeDriver(unexpectedEnrollment);
   const revision = routedRevision(driver);
   const replacement = { ...revision, id: "revision-routed-2", revision: 2 };
   // OpenClaw keeps each session on its recorded device, so a replacement
@@ -143,15 +147,7 @@ export async function checkAgentScopedWorkspaceNodeIdentity() {
 }
 
 export async function checkLegacyWorkspaceNodeRetirement() {
-  const driver = new KubernetesComputeDriver(
-    routedOptions({
-      runtime: {
-        transportSecretPrefix: "transport",
-        gatewayStorageClassName: "local-path",
-      },
-    }),
-    { nodeEnrollment: unexpectedEnrollment },
-  );
+  const driver = createWorkspaceNodeDriver(unexpectedEnrollment);
   const revision = routedRevision(driver);
   const namespace = {
     name: kubernetesNamespaceName(revision.namespaceId),
@@ -253,27 +249,17 @@ export async function checkLegacyWorkspaceNodeRetirement() {
 
 export async function checkEnrolledWorkspaceNodePreservation() {
   const setups = [];
-  const driver = new KubernetesComputeDriver(
-    routedOptions({
-      runtime: {
-        transportSecretPrefix: "transport",
-        gatewayStorageClassName: "local-path",
-      },
-    }),
-    {
-      nodeEnrollment: {
-        ...unexpectedEnrollment,
-        async createSetup() {
-          setups.push("setup");
-          return {
-            setupId: `setup-${setups.length + 1}`,
-            setupCode: `code-${setups.length + 1}`,
-            expiresAtMs: Date.now() + 600_000,
-          };
-        },
-      },
+  const driver = createWorkspaceNodeDriver({
+    ...unexpectedEnrollment,
+    async createSetup() {
+      setups.push("setup");
+      return {
+        setupId: `setup-${setups.length + 1}`,
+        setupCode: `code-${setups.length + 1}`,
+        expiresAtMs: Date.now() + 600_000,
+      };
     },
-  );
+  });
   const revision = routedRevision(driver);
   const namespace = {
     name: kubernetesNamespaceName(revision.namespaceId),
@@ -351,29 +337,19 @@ export async function checkExpiredWorkspaceNodeSetup() {
     const setups = [];
     const observed: string[] = [];
     const deviceId = "b".repeat(64);
-    const driver = new KubernetesComputeDriver(
-      routedOptions({
-        runtime: {
-          transportSecretPrefix: "transport",
-          gatewayStorageClassName: "local-path",
-        },
-      }),
-      {
-        nodeEnrollment: {
-          async createSetup() {
-            setups.push("setup");
-            return { setupId: "setup-b", setupCode: "code-b", expiresAtMs: Date.now() + 600_000 };
-          },
-          async isConnected() {
-            return true;
-          },
-          async observeSetup(_url, setupId) {
-            observed.push(setupId);
-            return redeemed ? { deviceId, delivery: "confirmed" } : undefined;
-          },
-        },
+    const driver = createWorkspaceNodeDriver({
+      async createSetup() {
+        setups.push("setup");
+        return { setupId: "setup-b", setupCode: "code-b", expiresAtMs: Date.now() + 600_000 };
       },
-    );
+      async isConnected() {
+        return true;
+      },
+      async observeSetup(_url, setupId) {
+        observed.push(setupId);
+        return redeemed ? { deviceId, delivery: "confirmed" } : undefined;
+      },
+    });
     const revision = routedRevision(driver);
     const namespace = {
       name: kubernetesNamespaceName(revision.namespaceId),
