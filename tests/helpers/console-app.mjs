@@ -24,6 +24,7 @@ import { createControllerAuth } from "./password-hasher.ts";
 import { backendSummariesFromDefinitions } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
   AgentResponse,
@@ -72,6 +73,13 @@ export const backendFixtures = Object.freeze([
     drivers: Object.freeze({ service_account: "chatgpt-backend-service-account" }),
   }),
 ]);
+
+// Slack's auth.test for the fixture's bot tokens; other Slack methods are unavailable here.
+async function slackAuthStandIn(url) {
+  return new URL(String(url)).pathname === "/api/auth.test"
+    ? Response.json({ ok: true, bot_id: "BFIXTURE", team_id: "TFIXTURE" })
+    : Response.json({ ok: false, error: "not_available_in_fixture" });
+}
 
 function computeDriver({
   repositoryCredentials = false,
@@ -454,6 +462,14 @@ export async function createConsoleAppFixture(t, options = {}) {
     configurationDriver = new FilesystemConfigurationDriver(root);
   }
   let controller;
+  // Composition gives Compute and OCC the same provider-to-Driver set. With a channel runtime,
+  // the default Slack Driver answers credential checks from a local stand-in for Slack's
+  // auth.test, never slack.com; deployment refuses an enabled channel without an OCC Driver.
+  const channelDrivers =
+    options.channelDrivers ??
+    (options.channelRuntime === true
+      ? [{ provider: "slack", driver: new SlackChannelDriver(slackAuthStandIn) }]
+      : undefined);
   const appOptions = {
     metrics: options.metrics,
     ...(options.logger === undefined ? {} : { logger: options.logger }),
@@ -477,7 +493,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       computeDriver({
         repositoryCredentials: options.repositoryCredentials === true,
         channelRuntime: options.channelRuntime === true,
-        channelDrivers: options.channelDrivers,
+        channelDrivers,
         routed: options.routed !== false,
         discoverHarnessModels: options.discoverHarnessModels,
         agentProvisioning: options.agentProvisioning,
@@ -496,8 +512,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       ? {}
       : { observabilityUrl: options.observabilityUrl }),
     ...(options.consoleTheme === undefined ? {} : { consoleTheme: options.consoleTheme }),
-    // Composition gives Compute and OCC the same provider-to-Driver set.
-    ...(options.channelDrivers === undefined ? {} : { channelDrivers: options.channelDrivers }),
+    ...(channelDrivers === undefined ? {} : { channelDrivers }),
     ...(options.nativeAdmin === undefined ? {} : { nativeAdmin: options.nativeAdmin }),
     ...(options.agentRuntimeLogs === undefined
       ? {}
