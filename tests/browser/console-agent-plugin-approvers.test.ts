@@ -2836,8 +2836,7 @@ test("A reader sees the version draft's default plugin approvers and can read lo
     "fixture-value",
   );
   await fixture.grantAgentSecretOperate(agent, token.ref);
-  const pluginId =
-    "codex-plugin:example-document-review-and-records-retention-workspace@openai-curated-remote";
+  const pluginId = `codex-plugin:${"workspace".repeat(6)}@openai-curated-remote`;
   const plugins = { [pluginId]: { enabled: true } };
   const approver = "team:TTEST123:user:UREADER1";
   await fixture.updateAgent(namespace.id, agent.id, {
@@ -2897,7 +2896,7 @@ test("A reader sees the version draft's default plugin approvers and can read lo
         }),
       );
       assert.equal(blockScrollWidth, blockWidth, `Plugin JSON fits its block at ${width}px`);
-      assert.equal(pageScrollWidth, pageWidth, `The page fits the viewport at ${width}px`);
+      assert.ok(pageScrollWidth <= pageWidth, `The page fits the viewport at ${width}px`);
     }
   }
 
