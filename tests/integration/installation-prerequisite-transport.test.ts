@@ -125,9 +125,15 @@ function serviceReply(name: string, spec: object) {
   };
 }
 
-const kubectlError = spawnSync("kubectl", ["version", "--client"], {
-  stdio: "ignore",
-}).error;
+const clientProbe = spawnSync(
+  "kubectl",
+  ["--kubeconfig", "/dev/null", "version", "--client", "-o", "json"],
+  {
+    encoding: "utf8",
+    env: { ...process.env, KUBECTL_KUBERC: "false", KUBERC: "off" },
+  },
+);
+const kubectlError = clientProbe.error;
 const withoutKubectl =
   !process.env.OCC_TEST_KUBERNETES_CONFIGURATION &&
   kubectlError !== undefined &&
@@ -703,24 +709,54 @@ fi
     });
     const policyFile = join(source, "required-kuberc");
     const policyArgs = [...diagnosticArgs, "--require-kuberc"];
+    // Select expectations from the actual client, independently of the CLI under test.
+    assert.equal(clientProbe.status, 0);
+    const { clientVersion } = JSON.parse(clientProbe.stdout);
+    const supportsPolicy =
+      clientVersion.platform === "linux/amd64" &&
+      ["v1.35.0", "v1.36.2", "v1.36.4"].includes(clientVersion.gitVersion);
+    const policyClient = { skip: supportsPolicy ? false : "requires a qualified kubectl" };
+
     const denyAll = JSON.stringify({ ...preference, credentialPluginPolicy: "DenyAll" });
+    if (!supportsPolicy) {
+      await t.test(
+        "an unqualified client refuses required policy before authentication",
+        async () => {
+          await writeFile(path, execConfig, { mode: 0o600 });
+          await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
+          await rm(pluginMarker, { force: true });
+          httpsRequests.length = 0;
+          httpRequests.length = 0;
+          const result = await collect({ KUBERC: policyFile }, true, policyArgs).result;
+          assert.equal(result.code, 2);
+          assert.equal(result.stdout, "");
+          assert.match(result.stderr, /stock kubectl/u);
+          await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+          assert.equal(httpsRequests.length + httpRequests.length, 0);
+        },
+      );
+    }
     for (const [name, user, code, status] of [
       ["DenyAll", execUser, 2, "unknown"],
       ["a static token alongside exec", { ...execUser, token: replacementToken }, 1, "failed"],
     ] as const) {
-      await t.test(`required kuberc prevents credential use with ${name}`, async () => {
-        await writeFile(policyFile, denyAll);
-        await rm(pluginMarker, { force: true });
-        const checks = await observations(
-          config("bearer", user),
-          code,
-          { KUBERC: policyFile },
-          policyArgs,
-        );
-        assert.equal(checks.get("kubernetes-api")?.status, status);
-        await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
-        assert.equal(httpsRequests.length + httpRequests.length, 0);
-      });
+      await t.test(
+        `required kuberc prevents credential use with ${name}`,
+        policyClient,
+        async () => {
+          await writeFile(policyFile, denyAll);
+          await rm(pluginMarker, { force: true });
+          const checks = await observations(
+            config("bearer", user),
+            code,
+            { KUBERC: policyFile },
+            policyArgs,
+          );
+          assert.equal(checks.get("kubernetes-api")?.status, status);
+          await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+          assert.equal(httpsRequests.length + httpRequests.length, 0);
+        },
+      );
     }
     await t.test(
       "required kuberc rejects missing or invalid policy and conflicting flags before authentication",
@@ -753,6 +789,7 @@ fi
     );
     await t.test(
       "a change to required kuberc at proxy startup stops the first authenticated read",
+      policyClient,
       async () => {
         await writeFile(path, execConfig, { mode: 0o600 });
         await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
@@ -802,34 +839,38 @@ exec "$TEST_KUBECTL" "$@"
         assert.match(stderr, /kuberc.*changed/iu);
       },
     );
-    await t.test("a change to required kuberc stops later authenticated reads", async () => {
-      await writeFile(path, execConfig, { mode: 0o600 });
-      await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
-      await rm(pluginMarker, { force: true });
-      httpsRequests.length = 0;
-      httpRequests.length = 0;
-      firstServiceRead = () => {
-        // The replacement also allows this plugin. Only a check for a change
-        // to the original policy can stop the next read.
-        writeFileSync(policyFile, JSON.stringify(allowlist(pluginPath, "another-plugin")));
-      };
-      try {
-        const { code, stdout, stderr } = await collect({ KUBERC: policyFile }, true, policyArgs)
-          .result;
-        assert.deepEqual(
-          httpsRequests.map(({ path }) => path),
-          [apiPath],
-        );
-        assert.ok(httpsRequests[0]?.bearer === `Bearer ${token}`);
-        assert.equal(httpRequests.length, 0);
-        assert.equal(await readFile(pluginMarker, "utf8"), "started\n");
-        assert.equal(code, 2);
-        assert.equal(stdout, "");
-        assert.match(stderr, /kuberc.*changed/iu);
-      } finally {
-        firstServiceRead = undefined;
-      }
-    });
+    await t.test(
+      "a change to required kuberc stops later authenticated reads",
+      policyClient,
+      async () => {
+        await writeFile(path, execConfig, { mode: 0o600 });
+        await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
+        await rm(pluginMarker, { force: true });
+        httpsRequests.length = 0;
+        httpRequests.length = 0;
+        firstServiceRead = () => {
+          // The replacement also allows this plugin. Only a check for a change
+          // to the original policy can stop the next read.
+          writeFileSync(policyFile, JSON.stringify(allowlist(pluginPath, "another-plugin")));
+        };
+        try {
+          const { code, stdout, stderr } = await collect({ KUBERC: policyFile }, true, policyArgs)
+            .result;
+          assert.deepEqual(
+            httpsRequests.map(({ path }) => path),
+            [apiPath],
+          );
+          assert.ok(httpsRequests[0]?.bearer === `Bearer ${token}`);
+          assert.equal(httpRequests.length, 0);
+          assert.equal(await readFile(pluginMarker, "utf8"), "started\n");
+          assert.equal(code, 2);
+          assert.equal(stdout, "");
+          assert.match(stderr, /kuberc.*changed/iu);
+        } finally {
+          firstServiceRead = undefined;
+        }
+      },
+    );
     await t.test("plaintext contexts fail before any Kubernetes request", async () => {
       const checks = await observations(plaintextConfig);
       assert.equal(checks.get("kubernetes-api")?.status, "failed");
@@ -1204,12 +1245,18 @@ esac
               await writeFile(environment.KUBERC, JSON.stringify(allowlist("another-plugin")));
               httpsRequests.length = 0;
               await rm(pluginMarker, { force: true });
-              await expectInventoryFailure(/kubernetes-api/u, requiredArgs, environment);
+              await expectInventoryFailure(
+                supportsPolicy ? /kubernetes-api/u : /stock kubectl/u,
+                requiredArgs,
+                environment,
+              );
               await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
               assert.equal(httpsRequests.length + httpRequests.length, 0);
 
-              await writeFile(environment.KUBERC, JSON.stringify(allowlist("aws")));
-              await expectCompleteInventory(environment, requiredArgs);
+              if (supportsPolicy) {
+                await writeFile(environment.KUBERC, JSON.stringify(allowlist("aws")));
+                await expectCompleteInventory(environment, requiredArgs);
+              }
 
               // Valid IPv4 replies cannot conceal a structurally invalid or unrelated item.
               for (const extra of [
