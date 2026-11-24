@@ -870,14 +870,6 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
             } satisfies PluginRevisionState)
           : undefined;
       const selectedPlugins = selectedPluginBindings(driver, lockedAgent.plugins);
-      if (
-        sandbox === undefined &&
-        ((lockedAgent.credentialSources?.length ?? 0) > 0 || selectedPlugins.length > 0)
-      ) {
-        throw new ResourceStateConflictError(
-          "Agent credential sources require a selected Sandbox Driver.",
-        );
-      }
       await dependencies.credentialAccess.grantDeployedAgentSources(
         state,
         principalId,
@@ -956,6 +948,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         state,
         principalId,
         lockedAgent,
+        sandbox,
         driver,
         revisionHarness,
         compute,

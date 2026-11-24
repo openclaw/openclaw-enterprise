@@ -22,6 +22,7 @@ import {
   type PluginDriver,
   type PluginDeploymentDescription,
   type RevisionHarnessDescriptor,
+  type SandboxDriver,
   type SecretBindings,
   type SecretReference,
 } from "@openclaw-enterprise/contracts";
@@ -378,12 +379,18 @@ export function createAgentCredentialAccess({
     state: PlatformUnitOfWork,
     principalId: string,
     agent: Readonly<Agent>,
+    sandbox: SandboxDriver | undefined,
     driver: PluginDriver | undefined,
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
     selected: readonly SelectedPluginBinding[],
   ) {
     const explicit = agent.credentialSources ?? [];
+    if (sandbox === undefined && (explicit.length > 0 || selected.length > 0)) {
+      throw new ResourceStateConflictError(
+        "Agent credential sources require a selected Sandbox Driver.",
+      );
+    }
     const attached =
       explicit.length === 0
         ? []
