@@ -3352,6 +3352,7 @@ exec "$0.fixture" "$@"
     const { backend, drivers } = createCredentialProxyInstallationConfiguration();
     const gateway = drivers.credential_gateway;
     const tenant = restartInventory().namespaces[0]!;
+    let includeExtra = true;
     const entries = scenarios.map(({ name, override, allowed, additionalOpenAi }) => {
       const agent = {
         ...tenant.agents[0]!,
@@ -3367,17 +3368,20 @@ exec "$0.fixture" "$@"
         source_type: "openai",
         driver_id: gateway.id,
         overrides: JSON.stringify(override ? { modelProvider: provider(override) } : {}),
-        config: JSON.stringify({ authorized_base_url: allowed }),
       };
-      return { agent, row, additionalOpenAi };
+      const primary = { id: row.source_id, config: { authorized_base_url: allowed } };
+      const extra = additionalOpenAi
+        ? { id: `cs_${randomUUID()}`, config: { authorized_base_url: additionalOpenAi } }
+        : undefined;
+      const sources = () => (includeExtra && extra ? [primary, extra] : [primary]);
+      return { agent, row, sources };
     });
     const agents = entries.map(({ agent }) => agent);
-    const rows = entries.map(({ row }) => row);
     const values = {
       agents: { defaults: { model: "codex/gpt-5.1" } },
       models: { providers: { codex: { agentRuntime: { id: "codex" } } } },
     };
-    let forecasts = 0;
+    const forecasts: string[] = [];
     const f = await fixture(t, {
       agent: true,
       chart: {
@@ -3406,26 +3410,27 @@ exec "$0.fixture" "$@"
       inventoryNamespaces: [{ ...tenant, agents }],
       inventoryRequiresApi: true,
       configurationValues: Object.fromEntries(agents.map(({ id }) => [`cfg_${id}`, values])),
-      databaseAnswer: (query) => {
-        if (query.includes("occ.agent_revisions")) {
-          forecasts += 1;
+      databaseAnswer: (_query, { textParameter }) => {
+        if (textParameter !== undefined) {
+          forecasts.push(textParameter);
           return {
-            rows: entries.map(({ row: { config, ...row }, additionalOpenAi }) => ({
-              ...row,
-              openai_configs: JSON.stringify([
-                JSON.parse(config),
-                ...(additionalOpenAi ? [{ authorized_base_url: additionalOpenAi }] : []),
-              ]),
+            rows: entries.map((entry) => ({
+              ...entry.row,
+              openai_configs: JSON.stringify(entry.sources().map(({ config }) => config)),
             })),
           };
         }
         return { rows: [{ id: "ins_test" }] };
       },
     });
-    async function setAgentBindings(overrides: Readonly<Record<string, unknown>> = {}) {
+    async function setAgentBindings({
+      attachExtra = true,
+      ...overrides
+    }: { attachExtra?: boolean; harnessAuth?: unknown } = {}) {
+      includeExtra = attachExtra;
       const seed = await f.state();
       seed.agentDrafts = Object.fromEntries(
-        entries.map(({ agent, row }) => [
+        entries.map(({ agent, row, sources }) => [
           agent.id,
           {
             ...agent,
@@ -3433,6 +3438,7 @@ exec "$0.fixture" "$@"
             name: "Mail triage",
             configurationId: `cfg_${agent.id}`,
             harnessAuth: { method: "credential_source", sourceId: row.source_id },
+            credentialSources: sources().map(({ id }) => ({ sourceId: id })),
             ...overrides,
           },
         ]),
@@ -3440,7 +3446,7 @@ exec "$0.fixture" "$@"
       await writeFile(join(f.directory, "state.json"), JSON.stringify(seed));
     }
     await setAgentBindings();
-    return { f, rows, setAgentBindings, forecastCount: () => forecasts };
+    return { f, entries, setAgentBindings, forecasts, forecastCount: () => forecasts.length };
   }
 
   const retainedHarnessDefaultUrl = "https://provider.example.test/v1";
@@ -3451,7 +3457,7 @@ exec "$0.fixture" "$@"
       return;
     }
     // The active revision used the primary source. A second source was saved on the draft.
-    const { f, rows } = await retainedHarnessFixture(t, [
+    const { f, entries, forecasts } = await retainedHarnessFixture(t, [
       {
         name: "mismatch",
         allowed: retainedHarnessDefaultUrl,
@@ -3464,7 +3470,7 @@ exec "$0.fixture" "$@"
         override: retainedHarnessExplicitUrl,
       },
     ]);
-    // End the stock run at the first Helm submission, after it crosses the writer stop boundary.
+    // Bound the failure if a regression lets the upgrade reach Helm.
     await f.failNext("reject-helm-submission");
 
     const { stderr, error } = await runForFailure(f.run);
@@ -3475,11 +3481,26 @@ exec "$0.fixture" "$@"
     assert.match(stderr, /No OCC writer was stopped; the old release keeps serving\./);
     const log = await f.readEvidence("preflight-api.log");
     assert.equal(log.match(/^Agent draft refused: /gm)?.length, 1);
+    // Check what the Job sent to PostgreSQL. The wire fixture does not execute the SQL.
+    assert.deepEqual(
+      forecasts.map((value) => JSON.parse(value)),
+      [
+        entries.map(({ agent, row }) => ({
+          namespace_id: "ns_test",
+          agent_id: agent.id,
+          configuration_id: `cfg_${agent.id}`,
+          revision_id: agent.activeRevisionId,
+          source_id: row.source_id,
+          generation: 1,
+          execution_mode: "dedicated",
+        })),
+      ],
+    );
     const diagnostics = commandStdout(error) + stderr + log;
     for (const value of [
       retainedHarnessDefaultUrl,
       retainedHarnessExplicitUrl,
-      ...rows.map(({ source_id }) => source_id),
+      ...entries.flatMap(({ sources }) => sources().map(({ id }) => id)),
     ]) {
       assert.ok(!diagnostics.includes(value), "destination details must remain private");
     }
@@ -3488,16 +3509,18 @@ exec "$0.fixture" "$@"
     assert.equal(state.dispatches, 0);
   });
 
-  test("runtime upgrade resume checks current Harness destination policy before cutover", async (t) => {
+  test("runtime upgrade resume checks OpenAI sources added to the draft before cutover", async (t) => {
     if (skipWithoutHelm(t, realHelm)) {
       return;
     }
-    const { f, rows, forecastCount } = await retainedHarnessFixture(t, [
-      { name: "retained", allowed: retainedHarnessDefaultUrl },
+    const { f, forecastCount, setAgentBindings } = await retainedHarnessFixture(t, [
+      {
+        name: "retained",
+        allowed: retainedHarnessDefaultUrl,
+        additionalOpenAi: retainedHarnessExplicitUrl,
+      },
     ]);
-    const [row] = rows;
-    assert.ok(row);
-    const originalPolicy = row.config;
+    await setAgentBindings({ attachExtra: false });
 
     // Interrupt after a positive preparation, at the first attempted writer stop.
     await runWithInjectedFault(f, "fail-scale-api");
@@ -3506,8 +3529,9 @@ exec "$0.fixture" "$@"
     assert.equal(forecastCount(), 1);
     await assertStoppedBeforeWriters(f);
 
-    // An allowed destination can change while the deployment inventory stays identical.
-    row.config = JSON.stringify({ authorized_base_url: retainedHarnessExplicitUrl });
+    // Source authorizations are immutable. Attach a second source to the draft
+    // without changing either the Harness source or the active revision.
+    await setAgentBindings();
     await f.failNext("reject-helm-submission");
     const { stderr } = await runForFailure(f.run, "--resume");
     assert.match(stderr, /config\.authorized_base_url[^\n]*retained Harness destination/);
@@ -3516,8 +3540,8 @@ exec "$0.fixture" "$@"
     assert.equal(state.helmSubmissions ?? 0, 0);
     assert.equal(state.dispatches, 0);
 
-    // A permitted current policy lets this same attempt cross the writer stop boundary.
-    row.config = originalPolicy;
+    // Removing the incompatible extra binding lets this attempt resume.
+    await setAgentBindings({ attachExtra: false });
     await runWithInjectedFault(f, "reject-helm-submission", "--resume");
     assert.equal(forecastCount(), 3);
     assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "secret-replaced"]);
@@ -3531,8 +3555,8 @@ exec "$0.fixture" "$@"
     const { f, forecastCount, setAgentBindings } = await retainedHarnessFixture(t, [
       { name: "retained", allowed: retainedHarnessExplicitUrl },
     ]);
-    // The recorded, unbound draft gives no indication that a destination check
-    // will be required after its binding changes with the same active revision.
+    // The initial draft has no Harness authentication. Binding a source later
+    // still requires a forecast, even when the active revision is unchanged.
     await setAgentBindings({ harnessAuth: null });
     await runWithInjectedFault(f, "fail-scale-api");
     assert.equal(forecastCount(), 0);
@@ -3548,15 +3572,13 @@ exec "$0.fixture" "$@"
     assert.equal(state.dispatches, 0);
   });
 
-  test("runtime upgrade resume preserves fenced recovery after the Harness policy changes", async (t) => {
+  test("runtime upgrade resume preserves fenced recovery without a serving API", async (t) => {
     if (skipWithoutHelm(t, realHelm)) {
       return;
     }
-    const { f, rows, forecastCount } = await retainedHarnessFixture(t, [
+    const { f, forecastCount } = await retainedHarnessFixture(t, [
       { name: "retained", allowed: retainedHarnessDefaultUrl },
     ]);
-    const [row] = rows;
-    assert.ok(row);
 
     await runWithInjectedFault(f, "reject-helm-submission");
     const stopped = await f.state();
@@ -3569,7 +3591,6 @@ exec "$0.fixture" "$@"
 
     // With OCC unavailable, the existing guarded recovery needs neither a new
     // prospective forecast nor a repeated stop to reach the reconciled Helm attempt.
-    row.config = JSON.stringify({ authorized_base_url: retainedHarnessExplicitUrl });
     await runWithInjectedFault(
       f,
       "reject-helm-submission",

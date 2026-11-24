@@ -780,7 +780,6 @@ timeout_seconds=900
 doctor_heap_mib=384
 resume=0
 preflight_only=0
-check_harness_destinations=false
 migration_check_only=0
 migration_apply_only=0
 verbose=0
@@ -1816,9 +1815,6 @@ record_agent_drafts() {
     ' "$prefix.configuration.json" >>"$agent_drafts" ||
       die "cannot confirm the recorded draft or Harness source binding of Agent $agent_id in Namespace $namespace_id; no OCC writer was stopped."
   done <"$selection"
-  check_harness_destinations=$(jq -n 'any(inputs; has("destination"))' "$agent_drafts") ||
-    die "cannot read the recorded Harness source bindings for startup preflight; no OCC writer was stopped."
-
 }
 
 # Before any writer stops, start the selected controller image on the candidate
@@ -1834,8 +1830,11 @@ preflight_startup() {
   [[ "$evidence_dir" == "$upgrade_evidence_dir" ]] || attempt=${evidence_dir##*/}
   local suffix secret delete_options
   local drafts='' channel_targets='' drafts_flag=none drafts_status=0 guarded_migration_id=''
+  local check_harness_destinations=false
   suffix=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
   if [[ "$preflight_action" == job && -s "${agent_drafts:-}" ]]; then
+    check_harness_destinations=$(jq -n 'any(inputs; has("destination"))' "$agent_drafts") ||
+      die "cannot read the recorded Harness source bindings for startup preflight; no OCC writer was stopped."
     drafts="$evidence_dir/inventory/agent-drafts.json.gz"
     if [[ "$channel_egress_enabled" == true ]]; then
       channel_targets="$evidence_dir/inventory/channel-targets.json.gz"
@@ -1919,7 +1918,7 @@ preflight_startup() {
 # writers are already stopped. The frozen ID was revalidated against the live Secret.
 preflight_resume() {
   local expected_migration=${1:-} forecast=${2:-false}
-  local evidence_dir agent_drafts='' check_harness_destinations=false action=identity-job
+  local evidence_dir agent_drafts='' action=identity-job
   evidence_dir=$(mktemp -d "$upgrade_evidence_dir/upgrade-preflight-resume.XXXXXXXX")
   preflight_resources=()
   preflight_children=()

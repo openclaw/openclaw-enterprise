@@ -22,6 +22,8 @@ type FakePostgresSession = {
   database: string | undefined;
   password: string | undefined;
   queries: string[];
+  // Available only to the callback for this extended query.
+  textParameter?: string;
 };
 
 type FakePostgresAnswer = {
@@ -203,7 +205,7 @@ function matchesUnnamedPortalFrame(type: string, body: Buffer) {
 function serveSession(socket: Socket, sessions: FakePostgresSession[], onQuery: FakePostgresQuery) {
   let buffer: Buffer = Buffer.alloc(0);
   let session: FakePostgresSession | undefined;
-  let extended: { query: string; remaining: string } | undefined;
+  let extended: { query: string; remaining: string; textParameter?: string } | undefined;
   let queue = Promise.resolve();
   socket.on("data", (chunk) => {
     if (!Buffer.isBuffer(chunk)) {
@@ -288,6 +290,9 @@ function serveSession(socket: Socket, sessions: FakePostgresSession[], onQuery: 
           socket.destroy();
           return;
         }
+        if (type === "B") {
+          extended.textParameter = body.toString("utf8", 12, body.length - 4);
+        }
         if (type !== "S") {
           extended.remaining = extended.remaining.slice(1);
           continue;
@@ -304,9 +309,12 @@ function serveSession(socket: Socket, sessions: FakePostgresSession[], onQuery: 
         );
       } else if (type === "Q" || type === "S") {
         const query = extended?.query ?? body.toString("utf8").replace(/\0$/, "");
+        const activeSession =
+          extended?.textParameter === undefined
+            ? session
+            : { ...session, textParameter: extended.textParameter };
         extended = undefined;
         session.queries.push(query);
-        const activeSession = session;
         queue = queue.then(async () => {
           const answer = await onQuery(query, activeSession);
           if (answer?.hang || socket.destroyed) {
