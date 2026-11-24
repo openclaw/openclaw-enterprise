@@ -64,6 +64,7 @@ Construct a new Driver after changing Installation settings.
 | `validateWorkspaceSetup`                     | Optional              | Synchronously checks the projected configuration. Without it, Compute rejects initial workspace files in a Sandbox. Compute still checks storage and workload identity.                                                                                   |
 | `ensureNamespace`                            | Optional              | Prepare the backend after baseline Namespace isolation through the OCC Namespace lifecycle.                                                                                                                                                               |
 | `provisionHarness`                           | Optional              | Create a dedicated Harness and return its [resource identity](#sandbox-resource-identity). Required for a non-staged provider-owned Harness.                                                                                                              |
+| `confirmHarnessPod`                          | Optional              | Requires `provisionHarness` and Compute-owned storage. At readiness and activation, confirm the sole Ready Pod's name and UID against the original allocation for the Namespace and revision. Only `true` permits routing.                                |
 | `provisionStagedHarness`                     | Optional              | Provision an idle target. `prepareStagedHarness` prepares launch inputs after policy readiness; `activateStagedHarness` starts the Harness. All three are required for staged deployment.                                                                 |
 | `harnessEndpoint`, `harnessStatus`           | Optional              | Compute calls `harnessEndpoint` for the transport and `harnessStatus` to check startup. See [Sandbox-provided Harness transport](#harness-transport).                                                                                                     |
 | `withdrawHarnessExposure`                    | Optional              | Remove the temporary Harness status endpoint after the dedicated worker's workspace node enrolls.                                                                                                                                                         |
@@ -236,11 +237,11 @@ See [authorization](../authorization.md) and [Harness execution](../harness-exec
 
 ### Admission and lifecycle
 
-Startup validates Sandbox facets. Namespace and workload removal share one cleanup operation. Drivers have no initializer or destructor.
+Drivers have no initializer or destructor.
 
 Dedicated native OpenClaw requires `provisionHarness` and all three containment facets. Other dedicated Harnesses may use fewer facets or omit the Sandbox.
 
-An optional positive `maintenanceIntervalMs` schedules active-revision checks and requires `provisionHarness`. During those checks, `existingHarnessOnly` requires the provider to report a missing Harness without recreating it.
+A positive `maintenanceIntervalMs` schedules active-revision checks and requires `provisionHarness`. With `existingHarnessOnly`, report a missing Harness without recreating it.
 
 ```mermaid
 sequenceDiagram
@@ -281,8 +282,7 @@ sequenceDiagram
 The revision stores the selected `sandboxDriverId`. Before routing traffic,
 Compute checks that the workload's revision ID matches the requested revision.
 Namespace setup, provisioning, and cleanup must be safe to repeat.
-Run revision cleanup even when the Pod is already absent. The Sandbox removes
-any workload it owns. Namespace cleanup follows revision cleanup.
+Clean up each revision before its Namespace, even if the Pod is absent. Remove Sandbox-owned workloads.
 
 - If the Driver cannot run this revision, throw
   [`SandboxRevisionUnsupportedError`](../../../packages/occ/src/errors.ts).

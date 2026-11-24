@@ -26,6 +26,7 @@
     "gateway-routing": "./test-suites/gateway-routing.json",
     "production-tui": "./test-suites/production-tui.json",
     "slack": "./test-suites/slack.json",
+    "opensandbox-k3d": "./test-suites/opensandbox-k3d.json",
     "openshell": "./test-suites/openshell.json",
     "openshell-saved-agent": "./test-suites/openshell-saved-agent.json",
     "openshell-provider-replacement": "./test-suites/openshell-provider-replacement.json",

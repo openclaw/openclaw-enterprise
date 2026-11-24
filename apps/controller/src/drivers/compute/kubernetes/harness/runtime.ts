@@ -19,6 +19,7 @@ import {
   ComputeStopYieldedError,
   computeStopShouldYield,
   isGatewayDrainStop,
+  withComputeAbortSignal,
 } from "../../operation-context.ts";
 import { ConfigurationFailure, OwnershipFailure } from "../failures.ts";
 
@@ -198,10 +199,21 @@ export class SandboxHarnessRuntime<Workload> {
 
   async stop(context: HarnessContext): Promise<void> {
     await this.awaitHarnessStartup(context);
-    await this.sandbox.cleanup({
+    const target = {
       ...(await this.resources.sandboxContext(context)),
       revision: context.revision,
-    });
+    };
+    if (this.sandbox.confirmHarnessPod === undefined) {
+      await this.sandbox.cleanup(target);
+    } else {
+      // Bound ownership reads and deletion requests through the Kubernetes client's middleware.
+      const signal = AbortSignal.any([
+        target.signal,
+        AbortSignal.timeout(WORKLOAD_TERMINATION_TIMEOUT_MS),
+      ]);
+      await withComputeAbortSignal(signal, () => this.sandbox.cleanup({ ...target, signal }));
+      signal.throwIfAborted();
+    }
     if (this.sandbox.workspaceStorage !== "provider") {
       await this.resources.waitForPods(context);
     }

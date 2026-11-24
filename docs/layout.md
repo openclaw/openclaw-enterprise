@@ -155,6 +155,10 @@ The quickstart’s shared operator-session helpers, Agent onboarding, cluster in
 | `tests/browser/`, `tests/docs/`                          | Browser-console and documentation-tooling suites.                                                |
 | `tests/fixtures/`, `tests/helpers/`                      | Suite fixtures and reusable test support.                                                        |
 
+The [OpenSandbox example](../deploy/examples/opensandbox/README.md) keeps the
+optional Sandbox Driver outside the root workspace. Its k3d test lives in
+`tests/integration/opensandbox-k3d-real.test.ts`.
+
 Repository credential Dockerfiles live under
 `deploy/runtime/repository-credentials/`, with the standalone Compose example
 under `deploy/examples/repository-credentials/`. The build stages only the

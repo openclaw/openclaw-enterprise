@@ -103,6 +103,7 @@
     "conformance/plugin-driver-openclaw-policy-cases.ts",
     "conformance/plugin-driver-openclaw-tool-denial-cases.ts",
     "fixtures/codex-catalog-peer.mts",
+    "fixtures/opensandbox-model.ts",
     "fixtures/egress-send-receipt-owner.mts",
     "fixtures/egress-custody-postgres-observer.ts",
     "conformance/standing-approval-history-cases.ts",
@@ -373,6 +374,9 @@
     },
     {
       "path": "../apps/controller"
+    },
+    {
+      "path": "../deploy/examples/opensandbox/driver"
     }
   ]
 }

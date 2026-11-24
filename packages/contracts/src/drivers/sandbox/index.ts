@@ -326,6 +326,14 @@ export interface SandboxDriver extends Driver {
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
   ): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
+  /** Confirm ownership of the sole Ready Pod at preparation and activation with Compute-owned storage. */
+  confirmHarnessPod?(
+    context: SandboxNamespaceContext & {
+      readonly revision: Readonly<AgentRevision>;
+      readonly podName: string;
+      readonly podUid: string;
+    },
+  ): Promise<boolean>;
   /** The launcher stays held while the Driver observes its request challenge.
    * A denial observed here can select material, never release work. */
   observeHeldRepositoryGitPreview?(

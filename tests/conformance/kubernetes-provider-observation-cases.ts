@@ -222,6 +222,39 @@ export async function checkProviderActivationBeforeRouting() {
     /invalid or incomplete/,
   );
   assert.equal(fixture.requests.length, 5);
+
+  // The same name and labels can select a replacement between preparation and activation.
+  const pod = fixture.pod("harness");
+  fixture.sandbox.confirmHarnessPod = async ({ namespace, revision, podName, podUid }) =>
+    namespace.name === fixture.namespace &&
+    revision.id === fixture.revision.id &&
+    podName === pod.metadata.name &&
+    podUid === "original";
+  fixture.setObservation({ items: [pod] });
+  await assert.rejects(fixture.ready(), /invalid or incomplete/);
+  const selected = { ...pod, metadata: { ...pod.metadata, uid: "original" } };
+  fixture.setObservation({ items: [selected] });
+  assert.equal(await fixture.ready(), true);
+  selected.metadata.uid = "replacement";
+  assert.equal(await fixture.ready(), false);
+  await assert.rejects(
+    fixture.driver.activateRevision(fixture.revision, context),
+    /The exact AgentRevision workload is not ready/,
+  );
+
+  // A provider that finishes after the worker loses authority cannot release the route.
+  const owner = new AbortController();
+  const cancelled = new Error("ownership check cancelled");
+  fixture.sandbox.confirmHarnessPod = async () => {
+    owner.abort(cancelled);
+    return true;
+  };
+  await assert.rejects(
+    withComputeAbortSignal(owner.signal, () =>
+      fixture.driver.activateRevision(fixture.revision, context),
+    ),
+    (error) => error === cancelled,
+  );
 }
 
 export async function checkProviderReadinessErrorsAndCancellation() {

@@ -10,6 +10,16 @@ last_verified: "2026-11-04"
 
 Use disposable local k3d with enforcing NetworkPolicies. Fixtures exclude real gateways/models; runtime tests include them.
 
+PR typechecks build the [OpenSandbox example](../../deploy/examples/opensandbox/README.md).
+Follow its setup for the opt-in lifecycle test. To record results, replace its
+`node --test` line with these commands. Require one pass with zero skips.
+
+```sh
+results="$(mktemp -d)"
+echo "$results/results.json"
+node scripts/ci/run-tests.ts run opensandbox-k3d --state "$results/state.json" --results "$results/results.json"
+```
+
 ## Local Kubernetes installation
 
 Install k3d, kubectl, Helm, `certutil`, and Chromium with sandbox support.

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-23
-last_updated_session: authoring-run/3c950f6a-7199-45dc-aa5d-a50930d02e77
+updated: 2026-11-24
+last_updated_session: authoring-run/c476e976-6379-4155-8c05-28a44a04e3fa
 ---
 
 # Harness Execution Topology Flow
@@ -88,12 +88,10 @@ Dedicated Gateways enforce tool policy, including [MCP routing](agent-plugins.md
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
-Docker starts embedded gateways or dedicated Codex containers but rejects
-harness-auth bindings before deployment; no Agent path is deployable.
-`dockerGatewayConfigurationDocument` admits supported authentication fields/modes;
+Docker Compute rejects Agent deployment at Harness authentication.
+`dockerGatewayConfigurationDocument` checks
+[authentication settings](../reference/drivers/docker-compute.md#gateway-authentication).
 `reconcileGateway` generates `OPENCLAW_GATEWAY_PASSWORD` only for new containers.
-The [Docker gateway authentication reference](../reference/drivers/docker-compute.md#gateway-authentication)
-owns mode and password rules.
 
 The Strands supervisor and workload share read-only runtime objects. `listenerCertificate` binds the supervisor certificate and Pod UID to the revision.
 [SSH](pr-24-ssh-compute.md) supports runtime authentication for unmanaged embedded OpenClaw. Operator credentials stay on the host. OCC checks Gateway readiness without model validation.
@@ -164,12 +162,20 @@ Compute and Sandbox supply private temporary directories.
 
 Embedded OpenClaw combines identity and model credentials. Scoped worker permissions deliver Secrets and enrollment; Gateways receive no controller or Harness Kubernetes credentials.
 
-Sandbox receives projections and login mode through `HarnessWorkloadRequirements`; unsupported delivery fails.
+`HarnessWorkloadRequirements` supplies projections and login mode. Unsupported
+delivery fails. Templates, policies, peers and readiness checks require the
+[network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles).
+Compute checks Deployment generation, profile and ready replicas.
+With Compute storage, one nonterminating Sandbox Pod must match the Service,
+carry the required labels and report `Ready=True`. Invalid or incomplete
+lists trigger preparation cleanup or block activation. [Provider storage](../reference/drivers/kubernetes-compute.md#sandbox-provisioning)
+requires `observeHarness` to report `running`.
 
-Compute templates, allow policies and peers require the
-[network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles); readiness rejects its absence.
-
-Compute checks its Harness Deployment’s network profile, observed generation and ready replicas. For a Sandbox-provisioned Harness with Compute storage, Compute counts all nonterminating Service matches in the complete, valid Pod list. The sole match needs every required label and `Ready=True`. Invalid lists trigger preparation cleanup or block activation before routing. Provider storage requires `observeHarness` to report `running`. [Sandbox provisioning](../reference/drivers/kubernetes-compute.md#sandbox-provisioning).
+`deploy/examples/opensandbox/driver/index.ts:OpenSandboxDriver.provisionHarness`
+creates a `BatchSandbox`. The operator creates its Pod. The [Driver](../../deploy/examples/opensandbox/README.md)
+records both UIDs in a ConfigMap. Compute calls its optional `confirmHarnessPod`
+hook at readiness and activation to verify both UIDs and the egress policy.
+Cleanup removes the policy and waits for both resources to disappear.
 
 After authenticated HTTP 101 and accept-key validation,
 `apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceWebSocketHandshake`
@@ -316,12 +322,9 @@ removal.
   `pnpm test:files --test-name-pattern='dedicated replacement starts a candidate Gateway' -- tests/conformance/kubernetes-compute.test.mjs`.
 - Check embedded Gateway repair after a never-served unready predecessor:
   `pnpm test:files --test-name-pattern='never-served unready Gateway' -- tests/conformance/kubernetes-compute.test.mjs`.
-- For real model turns, run
-  `node --test tests/integration/harness-topology-k3d-real.test.mjs` (Kubernetes) with the
-  inputs in [the real-runtime suite](../testing/kubernetes.md#run-the-real-runtime-suite-directly).
-  Docker Compute deploys no Agent: it rejects every Harness authentication binding.
-- Missing credentials, images, access or either model response fail verification;
-  readiness probes, handshakes, fixtures and skipped tests are not substitutes.
+- Run `node --test tests/integration/harness-topology-k3d-real.test.mjs` with
+  [real credentials, images and access](../testing/kubernetes.md#run-the-real-runtime-suite-directly).
+  Require both live model replies. Skips, fixtures and handshakes do not qualify.
 - HTTP 401 before worker admission indicates callback fallthrough from node-only
   worker ingress to the administrative route.
 
@@ -343,6 +346,7 @@ removal.
 
 ## Changelog
 
+- 2026-11-24 23:20: Trace OpenSandbox Pod ownership at readiness and activation. (authoring-run/c476e976-6379-4155-8c05-28a44a04e3fa - e1d4fb8c81816576a35937a2e2413852bc3a5459)
 - 2026-11-23 03:34: Correct dedicated preparation, readiness and stop ordering. (authoring-run/3c950f6a-7199-45dc-aa5d-a50930d02e77 - 627029a99cf9b5dc5f20bda8450cffd73900a538)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-18 22:35: Retain native scope policy (authoring-run/348cb0b0-dd7c-4486-a0b4-415cb90f72d1 - 3f273a16a)

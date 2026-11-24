@@ -174,6 +174,10 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         typeof candidate.ensureNamespace === "function") &&
       (candidate.provisionHarness === undefined ||
         typeof candidate.provisionHarness === "function") &&
+      (candidate.confirmHarnessPod === undefined ||
+        (typeof candidate.confirmHarnessPod === "function" &&
+          typeof candidate.provisionHarness === "function" &&
+          candidate.workspaceStorage !== "provider")) &&
       (candidate.readSandboxLogs === undefined ||
         typeof candidate.readSandboxLogs === "function") &&
       (candidate.observeHarness === undefined || typeof candidate.observeHarness === "function") &&

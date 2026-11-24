@@ -1,0 +1,22 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "./dist",
+    "tsBuildInfoFile": "../../../../.build/opensandbox/tsconfig.tsbuildinfo",
+    "paths": {
+      "@openclaw-enterprise/contracts": ["../../../../packages/contracts/dist/index.d.ts"],
+      "@openclaw-enterprise/occ": ["../../../../packages/occ/dist/index.d.ts"],
+      "@openclaw-enterprise/utils": ["../../../../packages/utils/dist/index.d.ts"],
+      "@kubernetes/client-node": [
+        "../../../../apps/controller/node_modules/@kubernetes/client-node/dist/index.d.ts"
+      ]
+    }
+  },
+  "include": ["*.ts"],
+  "references": [
+    { "path": "../../../../packages/contracts" },
+    { "path": "../../../../packages/occ" },
+    { "path": "../../../../packages/utils" }
+  ]
+}
