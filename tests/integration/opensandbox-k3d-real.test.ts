@@ -151,10 +151,11 @@ test(
       /^oce-fixture-[a-f0-9]{64}$/u.test(modelPlaceholder),
       "Only a generated fixture bearer may enter the Harness",
     );
-    const modelEndpoint = URL.parse(required("OCC_TEST_CODEX_OPENAI_BASE_URL"));
+    const modelEndpoint =
+      URL.parse(required("OCC_TEST_CODEX_OPENAI_BASE_URL")) ??
+      assert.fail("Use the fixture HTTPS endpoint without credentials, query or fragment");
     assert.ok(
-      modelEndpoint &&
-        modelEndpoint.protocol === "https:" &&
+      modelEndpoint.protocol === "https:" &&
         modelEndpoint.pathname === "/v1" &&
         !modelEndpoint.username &&
         !modelEndpoint.password &&
