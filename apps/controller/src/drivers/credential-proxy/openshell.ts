@@ -309,7 +309,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     assertOpenShellDeploymentContext(context, this.sandbox.id);
     assertOpenShellDeploymentConfiguration(context, input);
     const admitted = context.revision.credentialDeployment;
-    if (!admitted || input.bindings.length !== admitted.bindings.length) {
+    if (!admitted) {
       throw new DependencyUnavailableError("The native credential bindings are unavailable.");
     }
     this.routes(admitted);
@@ -330,6 +330,18 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       assertOpenShellPushedBindingScope(context, binding);
     }
     const initialTarget = await this.readSandboxTarget(context, input);
+    const attached = initialTarget.sandbox.spec?.providers;
+    if (
+      !initialTarget.sandbox.spec ||
+      (attached !== undefined && !Array.isArray(attached)) ||
+      [...remaining.values()].some(
+        (binding) =>
+          binding.consumer.kind === "model" ||
+          attached?.includes(openShellCredentialProviderName(binding)),
+      )
+    ) {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
     if (typeof initialTarget.client.attachSandboxProviderWithReceipt !== "function") {
       throw new DependencyUnavailableError("Native credential attachment is unavailable.");
     }
@@ -404,6 +416,17 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           throw new DependencyUnavailableError("The native Provider attachment changed.");
         }
       }
+      const configured = await this.readSandboxTarget(context, input);
+      const providers = configured.sandbox.spec?.providers;
+      if (
+        !Array.isArray(providers) ||
+        admitted.bindings.some((binding) => {
+          const selected = !remaining.has(binding.bindingRef);
+          return providers.includes(openShellCredentialProviderName(binding)) !== selected;
+        })
+      ) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
       return {
         credentialProjections: input.bindings.map(({ binding }) => ({
           bindingRef: binding.bindingRef,
@@ -441,9 +464,25 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       if (!admitted || admitted.proxyDriverId !== this.id) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
-      const routes = this.routes(admitted);
-      const bindings = admitted.bindings;
+      const admittedRoutes = this.routes(admitted);
       const target = await this.readSandboxTarget(context, expected);
+      const attached = target.sandbox.spec?.providers;
+      if (!Array.isArray(attached)) {
+        return { state: "pending" };
+      }
+      const bindings = admitted.bindings.filter((binding) =>
+        attached.includes(openShellCredentialProviderName(binding)),
+      );
+      const active = new Set(bindings.map(({ bindingRef }) => bindingRef));
+      if (
+        bindings.length === 0 ||
+        admitted.bindings.some(
+          ({ bindingRef, consumer }) => consumer.kind === "model" && !active.has(bindingRef),
+        )
+      ) {
+        return { state: "pending" };
+      }
+      const routes = admittedRoutes.filter((route) => active.has(route.binding.bindingRef));
       const providers = [];
       for (const binding of bindings) {
         assertOpenShellPushedBindingScope(context, binding);
@@ -454,12 +493,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           binding,
           signal: context.signal,
         });
-        if (
-          !Array.isArray(target.sandbox.spec?.providers) ||
-          !target.sandbox.spec.providers.includes(provider.name)
-        ) {
-          return { state: "pending" };
-        }
         providers.push({ binding, provider });
       }
       if (!target.client.getSandboxConfig || !target.client.getSandboxPolicyStatus) {

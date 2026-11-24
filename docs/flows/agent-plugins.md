@@ -149,7 +149,7 @@ remain browsable.
 
 On save, the [Plugin Driver](../../packages/occ/src/plugin-credential-bindings.ts) reports selected Sources. OCC checks exact `operate`, Template and slot. Deployment rechecks caller and Agent authority and intersects reviewed requests with current Template destinations.
 
-OCC qualifies the full policy and freezes the associated Template version. Eligible Google OAuth and Slack MCP TokenService selections can be admitted. Live Plugin delivery remains unqualified; see [delivery limits](../reference/credential-sources.md#bind-a-source-to-an-agent).
+OCC freezes the qualified policy and associated Template version for eligible Google OAuth and Slack MCP selections. [Live delivery remains unqualified](../reference/credential-sources.md#bind-a-source-to-an-agent).
 
 Worker checks Driver–Harness compatibility. Gateway and Worker verify Compute descriptors.
 

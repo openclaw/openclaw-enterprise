@@ -1215,6 +1215,15 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
     }),
     DependencyUnavailableError,
   );
+  // An idle target cannot configure the optional Plugin alone if the revision requires its model.
+  await assert.rejects(
+    f.proxy.configureDeployment(context, {
+      ...configuration,
+      bindings: [{ binding: plugin, resolveCredential: f.suppliedBinding.resolveCredential }],
+      injectionPolicies: policies,
+    }),
+    DependencyUnavailableError,
+  );
   assert.equal(f.resolutions(), 0);
   assert.equal(f.state.creates.length, 0);
   let pluginResolutions = 0;
@@ -1249,6 +1258,15 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
   const pluginName = pluginProvider.metadata.name;
   assert.notEqual(modelName, pluginName);
   assert.deepEqual(f.sandbox.spec.providers, [modelName, pluginName]);
+  // An omitted admitted binding cannot be treated as withdrawn while its Provider remains attached.
+  await assert.rejects(
+    f.proxy.configureDeployment(context, {
+      ...configuration,
+      bindings: [f.suppliedBinding],
+      injectionPolicies: policies,
+    }),
+    DependencyUnavailableError,
+  );
   assert.deepEqual(
     f.state.creates.map((creation) => record(creation.provider).credentials),
     [
@@ -1304,6 +1322,18 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
   });
   f.state.additionalProviderStatuses.set(pluginName, pluginStatus);
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "ready" });
+
+  // A ready Plugin cannot establish deployment readiness after the required model has detached.
+  const networks = record(evidence.policy.network_policies);
+  f.sandbox.spec.providers = [pluginName];
+  Reflect.deleteProperty(networks, "model");
+  f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
+  record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(evidence.policy);
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "pending" });
+  f.sandbox.spec.providers = [modelName, pluginName];
+  networks.model = evidence.rule;
+  f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
+  record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(evidence.policy);
 
   // The Google Source update leaves the separately authorized model Source untouched.
   await f.proxy.notifyCredentialUpdated(
@@ -1372,6 +1402,39 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
   assert.equal(f.state.detachReceipts.get(String(detachRead.receipt_id))?.provider, pluginName);
   assert.ok(f.state.profile);
   assert.equal(f.state.additionalProfiles.size, 0);
+
+  // The Worker can configure exactly the retained authorized binding against the unchanged admission.
+  const remaining = await f.proxy.configureDeployment(context, {
+    ...configuration,
+    bindings: [f.suppliedBinding],
+    injectionPolicies: policies,
+  });
+  assert.deepEqual(remaining.credentialProjections, [configured.credentialProjections[0]]);
+  assert.deepEqual(f.sandbox.spec.providers, [modelName]);
+
+  // Controlled source/effective policy and supervisor receipts now represent the reduced deployment.
+  const reduced = f.observeServing();
+  record(reduced.endpoint).path = modelRequest.requestPolicy.path;
+  reduced.rule.binaries = [{ path: modelRequest.binary }];
+  record(reduced.policy.network_policies).discovery = structuredClone(
+    record(evidence.policy.network_policies).discovery,
+  );
+  f.sandbox.spec.policy = sourcePolicyFrom(reduced.policy);
+  record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(reduced.policy);
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "ready" });
+
+  // A retained credential route for the withdrawn Provider is never accepted as readiness.
+  record(reduced.policy.network_policies).stale = {
+    name: "stale",
+    binaries: [{ path: pluginRequest.binary }],
+    endpoints: [pluginEndpoint],
+  };
+  f.sandbox.spec.policy = sourcePolicyFrom(reduced.policy);
+  record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(reduced.policy);
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
+    state: "failed",
+    code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
+  });
 });
 
 test("OpenShell Source retry updates each owned copy in workspace inventory", async (t) => {

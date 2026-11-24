@@ -2,8 +2,9 @@ import { admitsFrozenWorkspace } from "./inspected-workspace-release.ts";
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
 import {
   compileOpenShellCredentialPolicy,
-  openShellNetworksOverlappingCredentialPath,
   credentialPolicyFailure,
+  openShellCredentialProviderName,
+  openShellNetworksOverlappingCredentialPath,
 } from "./openshell-credential-policy.ts";
 
 import { compileOpenShellBoundGitRule } from "./openshell-git-network-policy.ts";
@@ -2552,6 +2553,7 @@ function stagedCredentialPolicies(
   policy: Readonly<Record<string, unknown>>,
   revision: Readonly<AgentRevision>,
   snapshot: SandboxPolicySnapshot,
+  activeBindingRefs?: ReadonlySet<string>,
 ): {
   readonly idle: Readonly<Record<string, unknown>>;
   readonly admitted: Readonly<Record<string, unknown>>;
@@ -2645,6 +2647,13 @@ function stagedCredentialPolicies(
     ...publicRoutes,
   ];
   for (const [index, route] of compiled.entries()) {
+    if (
+      "provider" in route &&
+      activeBindingRefs !== undefined &&
+      !activeBindingRefs.has(route.binding.bindingRef)
+    ) {
+      continue;
+    }
     const matching = snapshot.additions.filter(
       (grant) =>
         grant.binary === route.binary &&
@@ -2694,6 +2703,34 @@ function stagedCredentialPolicies(
   return {
     idle: { ...policy, network_policies: idleNetworks },
     admitted: { ...policy, network_policies: admitted },
+  };
+}
+
+function stagedAttachedBindings(
+  revision: Readonly<AgentRevision>,
+  sandbox: OpenShellSandboxResponse,
+): { readonly activeBindingRefs: ReadonlySet<string>; readonly modelsAttached: boolean } {
+  const bindings = revision.credentialDeployment?.bindings;
+  const providers = sandbox.spec?.providers;
+  if (
+    !bindings ||
+    !Array.isArray(providers) ||
+    providers.some((provider) => typeof provider !== "string") ||
+    new Set(providers).size !== providers.length
+  ) {
+    credentialPolicyFailure();
+  }
+  const attached = new Set(providers);
+  const activeBindingRefs = new Set(
+    bindings
+      .filter((binding) => attached.has(openShellCredentialProviderName(binding)))
+      .map(({ bindingRef }) => bindingRef),
+  );
+  return {
+    activeBindingRefs,
+    modelsAttached: bindings.every(
+      (binding) => binding.consumer.kind !== "model" || activeBindingRefs.has(binding.bindingRef),
+    ),
   };
 }
 
@@ -3704,8 +3741,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     projections: readonly CredentialProjection[],
   ): Promise<void> {
     this.requireStagedRevision(context);
-    const bindings = context.revision.credentialDeployment!.bindings;
+    const { client, sandbox } = await this.policyTarget(context);
+    const { activeBindingRefs, modelsAttached } = stagedAttachedBindings(context.revision, sandbox);
+    const bindings = context.revision.credentialDeployment!.bindings.filter(({ bindingRef }) =>
+      activeBindingRefs.has(bindingRef),
+    );
     if (
+      !modelsAttached ||
       projections.length !== bindings.length ||
       new Set(projections.map(({ bindingRef }) => bindingRef)).size !== projections.length ||
       projections.some((projection) => {
@@ -3722,7 +3764,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new OpenShellSandboxConfigurationFailure("The staged Harness projections are invalid.");
     }
     const ref = this.sandboxRef(context);
-    const client = this.gatewayClientForNamespace(ref.namespaceName);
     if (!(await this.initializeWorkspace(context, ref, client))) {
       throw new ActivationPendingError(
         "CREDENTIAL_ACTIVATION_PENDING",
@@ -5605,11 +5646,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const staged =
       context.revision.executionAdmission.mode === "standalone" &&
       context.revision.credentialDeployment !== undefined;
-    const candidate = staged
-      ? stagedCredentialPolicies(baseline, context.revision, snapshot).admitted
+    const attached = staged ? stagedAttachedBindings(context.revision, sandbox) : undefined;
+    const candidate = attached
+      ? stagedCredentialPolicies(baseline, context.revision, snapshot, attached.activeBindingRefs)
+          .admitted
       : openShellPolicyCandidate(baseline, snapshot);
     const status = await client.getPolicyStatus(request, context.signal);
-    const matches = sameOpenShellPolicy(status.policy, candidate);
+    const matches =
+      (attached === undefined || attached.modelsAttached) &&
+      sameOpenShellPolicy(status.policy, candidate);
     const state =
       status.state === "POLICY_STATUS_LOADED" && status.activeVersion === status.version
         ? "applied"
@@ -5663,8 +5708,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const staged =
       context.revision.executionAdmission.mode === "standalone" &&
       context.revision.credentialDeployment !== undefined;
-    const candidate = staged
-      ? stagedCredentialPolicies(baseline, context.revision, input.snapshot).admitted
+    const attached = staged ? stagedAttachedBindings(context.revision, sandbox) : undefined;
+    if (attached && !attached.modelsAttached) {
+      throw new OpenShellSandboxConfigurationFailure("A required staged model Provider is absent.");
+    }
+    const candidate = attached
+      ? stagedCredentialPolicies(
+          baseline,
+          context.revision,
+          input.snapshot,
+          attached.activeBindingRefs,
+        ).admitted
       : openShellPolicyCandidate(baseline, input.snapshot);
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {

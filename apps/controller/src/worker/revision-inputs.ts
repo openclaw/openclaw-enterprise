@@ -257,7 +257,7 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
     operation: "reconcile" | "withdraw",
   ): Promise<
     | { readonly context: ComputeRevisionContext }
-    | { readonly result: ReturnType<typeof refuseRevisionInputs>["result"] }
+    | { readonly result: { readonly outcome: "pending" | "permanent"; readonly code: string } }
   > {
     try {
       validateExecutionAdmission(compute, revision, credentialDeliveryRef);
@@ -353,13 +353,24 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
         ) {
           return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
         }
+        const bindings = revision.credentialDeployment.bindings.filter(
+          ({ sourceRef }) => sourceRef.id === snapshot.sourceId,
+        );
+        if (bindings.length === 0 || bindings.some(({ consumer }) => consumer.kind !== "plugin")) {
+          return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
+        }
         const { source, withdrawal } = await resolveRevisionCredentialSource(
           state,
           revision,
           snapshot,
         );
+        if (withdrawal?.state === "pending") {
+          return { result: { outcome: "pending", code: "CREDENTIAL_WITHDRAWAL_PENDING" } };
+        }
+        if (withdrawal?.state === "revoked") {
+          continue;
+        }
         if (
-          withdrawal !== undefined ||
           source === undefined ||
           source.ownerCapability !== "token_service" ||
           source.tokenServiceInstanceId !== snapshot.tokenServiceInstanceId

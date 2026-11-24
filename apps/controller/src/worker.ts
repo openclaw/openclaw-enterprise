@@ -6214,7 +6214,7 @@ export class ControllerWorker {
     const owner = this.provisioningController.selectedDriver("token_service");
     const instanceId = this.provisioningController.currentTokenServiceInstanceId();
     const sources = new Map<string, Readonly<CredentialSource>>();
-    for (const { sourceRef } of policy.bindings) {
+    for (const { sourceRef, consumer } of policy.bindings) {
       if (
         sourceRef.namespaceId !== revision.namespaceId ||
         sourceRef.kind !== "credential_source"
@@ -6237,8 +6237,11 @@ export class ControllerWorker {
         revision,
         snapshot,
       );
+      if (withdrawal?.state === "revoked" && consumer.kind === "plugin") {
+        continue;
+      }
       if (
-        withdrawal ||
+        withdrawal !== undefined ||
         !source ||
         source.ownerCapability !== "token_service" ||
         source.tokenServiceInstanceId !== instanceId
@@ -6248,7 +6251,8 @@ export class ControllerWorker {
       sources.set(source.id, source);
     }
     signal.throwIfAborted();
-    return { namespace, owner, instanceId, sources, policy };
+    const bindings = policy.bindings.filter(({ sourceRef }) => sources.has(sourceRef.id));
+    return { namespace, owner, instanceId, sources, policy, bindings };
   }
 
   private async configureCredentialDeployment(
@@ -6297,7 +6301,7 @@ export class ControllerWorker {
         {
           ...expected,
           injectionPolicies: current.policy.injectionPolicies,
-          bindings: current.policy.bindings.map((binding) => ({
+          bindings: current.bindings.map((binding) => ({
             binding,
             resolveCredential: async () => {
               requireOpen();
@@ -6329,21 +6333,29 @@ export class ControllerWorker {
           })),
         },
       );
-      if (!Array.isArray(result.credentialProjections)) {
+      if (
+        !Array.isArray(result.credentialProjections) ||
+        result.credentialProjections.length !== current.bindings.length
+      ) {
         throw new DependencyUnavailableError("The Credential Proxy returned invalid projections.");
       }
+      const expectedEnvironments = new Map(
+        current.bindings.map(({ bindingRef, projection }) => [bindingRef, projection.environment]),
+      );
       const credentialProjections: CredentialProjection[] = result.credentialProjections.map(
         (projection) => {
           if (
             !projection ||
             typeof projection.bindingRef !== "string" ||
             typeof projection.environment !== "string" ||
+            expectedEnvironments.get(projection.bindingRef) !== projection.environment ||
             !projection.placeholder
           ) {
             throw new DependencyUnavailableError(
               "The Credential Proxy returned an invalid projection.",
             );
           }
+          expectedEnvironments.delete(projection.bindingRef);
           const placeholder = projection.placeholder;
           if (placeholder.kind === "runtime") {
             return {
