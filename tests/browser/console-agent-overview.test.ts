@@ -134,6 +134,15 @@ function records(value: unknown): Record<string, unknown>[] {
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type Identified = { id: string };
 type Revision = Awaited<ReturnType<Fixture["deployAgent"]>>;
+type UrlFixture = Parameters<typeof detailUrl>[0];
+
+function configUrl(fixture: UrlFixture, namespaceId: string, agentId: string, revision: unknown) {
+  return detailUrl(fixture, namespaceId, agentId, revision, "configuration");
+}
+
+function draftConfigUrl(fixture: UrlFixture, namespaceId: string, agentId: string) {
+  return configUrl(fixture, namespaceId, agentId, "draft");
+}
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
 // polls, a steady layout, and failed-version recovery scoped to the caller.
@@ -182,7 +191,7 @@ test("an individual Agent keeps its fallback heading through a failed read and k
     method: "GET",
     fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable."),
   });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   await first.requested;
   const heading = page.getByRole("heading", { level: 1 });
   assert.equal(await heading.textContent(), "Agent details");
@@ -288,7 +297,7 @@ test("the Agent summary's loading text follows the 250 ms rule", async (t) => {
     },
   );
   await page.clock.install();
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
   const value = summary.locator(":scope > div:nth-child(2) > strong");
   await page.waitForFunction(() =>
@@ -335,7 +344,7 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
   const agentUrl = `${fixture.origin}${agentPath}`;
   await trackSettledFetches(page);
   await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   await page.getByRole("heading", { name: "Quiet Deletion" }).first().waitFor();
   await page.getByRole("button", { name: "Delete Agent" }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Quiet Deletion?" });
@@ -457,7 +466,7 @@ test("A failed older version raises no recovery while the current version is hid
   denyRevisionRead(fixture, namespace, second.revision);
   await routeFailedRecord(page, fixture, namespace, agent, first.revision);
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   await page.getByRole("heading", { name: "Hidden current" }).waitFor();
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("v1 · Failed", { exact: true }).waitFor();
@@ -488,7 +497,7 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
   await routeFailedRecord(page, fixture, namespace, agent, first);
   await routeFailedListing(page, fixture, namespace, agent, first);
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const rail = page.locator(".revision-selector");
   await versionOption(rail, 1).waitFor({ state: "attached" });
   // A second deploy makes v2 the latest version, whose record is the one the list reads.
@@ -569,11 +578,7 @@ for (const [code, outcome, notice] of [
     await routeFailedListing(page, fixture, namespace, agent, first, code);
     await fixture.deployAgent(namespace.id, agent.id);
 
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    );
+    await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
     const rail = page.locator(".revision-selector");
     await rail
       .locator("option")
@@ -699,12 +704,7 @@ for (const surface of ["list", "detail"]) {
     const readerSession = await fixture.signIn(reader.credentials);
     const denied = await fixture.request("POST", `${path}/stop`, { session: readerSession });
     assert.equal(denied.status, 403);
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-      reader.credentials,
-    );
+    await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id), reader.credentials);
     await page
       .locator(".agent-current-summary")
       .getByText("v1 · Failed", { exact: true })
@@ -720,7 +720,7 @@ for (const surface of ["list", "detail"]) {
       fixture,
       surface === "list"
         ? `/console/agents?namespace=${namespace.id}`
-        : detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+        : draftConfigUrl(fixture, namespace.id, agent.id),
       member.credentials,
     );
     const response = await listing;
@@ -819,7 +819,7 @@ test("Stop stays enabled and says it cancels a first deployment that is queued",
     route.fulfill(deploymentStatusResponse(queued, { status: "queued" })),
   );
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("v1 · Queued", { exact: true }).waitFor();
   const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
@@ -849,11 +849,7 @@ for (const readback of ["stop status", "deployment"]) {
     await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, first.id), (route) =>
       route.fulfill(deploymentStatusResponse(first, { status: "queued" })),
     );
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    );
+    await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
     const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
     await stopRegion.getByText(STOP_CANCELS_FIRST_DEPLOYMENT, { exact: true }).waitFor();
     await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).click();
@@ -953,7 +949,7 @@ test("Agent detail keeps Stop when its Agent reread fails after a first deployme
     route.fulfill(deploymentStatusResponse(first, { status })),
   );
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("v1 · Queued", { exact: true }).waitFor();
   const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
@@ -1019,11 +1015,7 @@ test("A failed first version's page says nothing runs and offers one Open draft"
   const failed = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedRecord(page, fixture, namespace, agent, failed);
 
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, failed.id, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, failed.id));
   await waitForChosenVersion(page);
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
   await summary.getByText("v1 · Failed", { exact: true }).waitFor();
@@ -1108,7 +1100,7 @@ async function openSandboxDraft(
     route.fulfill(deploymentStatusResponse(revision, { status: "succeeded" })),
   );
   await trackSettledFetches(page);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   await expectDeploymentOutcome(page, "Completed");
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
 }
@@ -1171,7 +1163,7 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     );
     await page.addInitScript(recordLayoutShifts);
     // A full load, so no recent input excuses a shift.
-    await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+    await page.goto(draftConfigUrl(fixture, namespace.id, agent.id).href);
     await liveServing(page).locator(".stat-help", { hasText: "Checking Sandbox…" }).waitFor();
     await sandboxRead.requested;
     await nextFrames(page);
@@ -1566,7 +1558,7 @@ test("An older failed version's record keeps its own error under a newer failure
   );
   await routeFailedRecord(page, fixture, namespace, agent, second);
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, first.id, "configuration"));
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, first.id));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
   const record = await expectVersionRecord(page, "Failed");
@@ -1593,7 +1585,7 @@ test("Recovery offers no Credentials link for operator-managed harness credentia
   const { page } = await newPage(t, fixture, { browser });
   await routeFailedRecord(page, fixture, namespace, agent, failed, "RUNTIME_AUTHENTICATION_FAILED");
   await trackSettledFetches(page);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
     .getByText("v1 did not deploy successfully (RUNTIME_AUTHENTICATION_FAILED).", {
@@ -1623,12 +1615,7 @@ test("Recovery offers Open Credentials only when an Agent update would pass its 
   await trackSettledFetches(page);
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const permissions = page.waitForResponse((r) => r.url().endsWith(`${path}/permissions`));
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    member.credentials,
-  );
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id), member.credentials);
   const answer = record(record(await (await permissions).json()).data);
   assert.equal(answer.update, true);
   assert.equal(answer.agentSourcesOperate, false);
@@ -1699,7 +1686,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
       await login(
         page,
         fixture,
-        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+        draftConfigUrl(fixture, namespace.id, agent.id),
         member.credentials,
       );
     } else {
@@ -1807,7 +1794,7 @@ test("A failed version raises no recovery while the current version is on no loa
   });
   await trackSettledFetches(page);
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   await page.getByRole("heading", { name: "Paged history" }).waitFor();
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("v2 · Failed", { exact: true }).waitFor();
@@ -1862,11 +1849,7 @@ test("Load older versions preserves the viewed version and returns focus to its 
   const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
   await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
   await routeOneVersionPerPage(page, fixture, namespace, agent);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, first.revision.id));
   const chooser = versionChooser(page);
   await chooser.waitFor();
   assert.equal(await chooser.inputValue(), first.revision.id);
@@ -1899,7 +1882,7 @@ test("A succeeded version says when the current version is on no loaded page", a
   );
   await routeOneVersionPerPage(page, fixture, namespace, agent);
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   await page.getByRole("heading", { name: "Paged success" }).waitFor();
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("v2 · Completed", { exact: true }).waitFor();
@@ -1934,11 +1917,7 @@ test("A readable current version on an older page is still read", async (t) => {
     (response) => new URL(response.url()).pathname === snapshotPath,
   );
 
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, undefined, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, undefined));
   await page.getByRole("heading", { name: "Paged current" }).waitFor();
   assert.equal((await snapshot).status(), 200);
   await waitForIdleFetches(page);
@@ -1969,11 +1948,7 @@ test("Recovery offers no draft link without Agent update or deploy permission", 
       }),
   );
 
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, active.revision.id));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByText("v2 deployment failed").waitFor();
   // The header relabels once the permission answer arrives; the recovery follows it.
@@ -2008,7 +1983,7 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
     }),
   );
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
     .getByText(
@@ -2071,7 +2046,7 @@ test("A replaced current version still says who can check the logs once Logs is 
     }),
   );
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByRole("heading", { name: "This Agent may be offline" }).waitFor();
   // Over a line about serving, the label names the failed version.
@@ -2108,7 +2083,7 @@ test("Recovery waits for the caller's permission answer before offering the draf
   );
 
   await page.clock.install();
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const summary = page.locator(".agent-current-summary");
   const failed = summary.getByText("v2 · Failed", { exact: true });
   await failed.waitFor({ state: "attached" });
@@ -2157,7 +2132,7 @@ test("Recovery offers no draft link when the caller's permission answer fails", 
       }),
   );
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByText("v2 deployment failed").waitFor();
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
@@ -2546,7 +2521,7 @@ test("A failed deployment's banner offers no Deploy again once the Configuration
     (response) => response.url() === configurationPath && response.request().method() === "GET",
   );
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   assert.equal((await denied).status(), 403);
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
@@ -2576,11 +2551,7 @@ test("A failed deployment's Deploy again opens the draft's deploy step from anot
   });
   await routeFailedRecord(page, fixture, namespace, agent, revision, "DEPENDENCY_UNAVAILABLE");
 
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, active.revision.id));
   const again = page
     .getByRole("region", { name: "Deployment needs attention" })
     .getByRole("link", { name: "Deploy again" });
@@ -2624,7 +2595,7 @@ test("A failed deployment's banner offers Deploy again only with deploy permissi
       }),
   );
 
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
     .getByText(persistedDeploymentError("DEPENDENCY_UNAVAILABLE").message, { exact: false })
@@ -2712,11 +2683,7 @@ test("opening the Logs tab keeps its output steady", async (t) => {
       },
     );
     await trackSettledFetches(page);
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
-    );
+    await login(page, fixture, configUrl(fixture, namespace.id, agent.id, active.revision.id));
     await waitForChosenVersion(page);
     await page.getByRole("button", { name: "Stop Agent" }).waitFor();
     await page.evaluate(() => globalThis.document.fonts.ready);
@@ -2769,7 +2736,7 @@ test("a failed version's banner does not move the overview on a slow link", asyn
     await page.addInitScript(recordLayoutShifts);
     await trackSettledFetches(page);
     // A full load, so no recent input excuses a shift.
-    await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+    await page.goto(draftConfigUrl(fixture, namespace.id, agent.id).href);
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
     await recovery
       .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", {
@@ -2874,7 +2841,7 @@ test("a late first deployment read moves nothing above the version tabs", async 
   // Control: a pending record read before the page shows opens its details as before, and the
   // summary keeps a status note for both successful and delayed updates.
   answer = Promise.resolve(deploymentStatusResponse(revision, { status: "running" }));
-  await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+  await page.goto(draftConfigUrl(fixture, namespace.id, agent.id).href);
   await page.locator(".agent-detail-pending").waitFor({ state: "detached" });
   await expectDeploymentOutcome(page, "In progress", { folded: false });
   const freshnessNote = summary.locator(":scope > div:nth-child(2) > p");
@@ -2903,7 +2870,7 @@ test("a late first deployment read moves nothing above the version tabs", async 
         requested = resolve;
       });
       const selected = view === "draft" ? "draft" : revision.id;
-      await page.goto(detailUrl(fixture, namespace.id, agent.id, selected, "configuration").href);
+      await page.goto(configUrl(fixture, namespace.id, agent.id, selected).href);
       await read;
       // The held read keeps the page hidden until the overview's bounded wait runs out; run it
       // out rather than wait for it.
@@ -3100,7 +3067,7 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
     context: { viewport: { width: 390, height: 844 }, reducedMotion: "reduce" },
   });
   await routeFailedRecord(page, fixture, namespace, agent, failed);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const open = page
     .getByRole("region", { name: "Deployment needs attention" })
     .getByRole("link", { name: "Open Configuration" });
@@ -3259,11 +3226,7 @@ test("Draft shows deployment in progress for the selected version until it compl
   const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id);
   let deployment = deploymentStatusResponse(revision, { status: "running" });
   await page.route(recordUrl, (route) => route.fulfill(deployment));
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, revision.id));
   await expectDeploymentOutcome(page, "In progress", { reveal: false });
   await page.getByText("Current version · read-only admitted snapshot.", { exact: true }).waitFor();
   await page.locator(".agent-toolbar-actions").getByRole("button", { name: "Open draft" }).click();
@@ -3955,11 +3918,7 @@ test("A recovery link left before its page opens does not scroll a later visit",
     context: { viewport: { width: 1440, height: 900 } },
   });
   await routeFailedRecord(page, fixture, namespace, agent, failed);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, active.revision.id));
   const settled = page.locator('.content [aria-live="polite"][aria-busy="false"]');
   const open = page
     .getByRole("region", { name: "Deployment needs attention" })
@@ -4003,11 +3962,7 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
   });
   await routeFailedRecord(page, fixture, namespace, agent, failed);
   await trackSettledFetches(page);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, revision.id));
   const settled = page.locator('.content [aria-live="polite"][aria-busy="false"]');
   await waitForChosenVersion(page);
   await settled.waitFor();
@@ -4081,11 +4036,7 @@ for (const viewport of [
     const replacement = await fixture.deployAgent(namespace.id, agent.id);
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await routeFailedRecord(page, fixture, namespace, agent, replacement);
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
-    );
+    await login(page, fixture, configUrl(fixture, namespace.id, agent.id, active.revision.id));
     await waitForChosenVersion(page);
     const summary = page.getByRole("region", { name: "Agent state at a glance" });
     await summary.getByText("May be offline", { exact: true }).waitFor();
@@ -4275,11 +4226,7 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   const policyReads = () => requests.filter((request) => request.path.includes("/iam/"));
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, revision.id));
   await waitForChosenVersion(page);
   await page.getByText("Current version · read-only admitted snapshot.", { exact: true }).waitFor();
   const tabNames = () => page.getByRole("tab").allTextContents();
@@ -4469,7 +4416,7 @@ test("A share in flight holds a Retry that would rebuild the page", async (t) =>
     `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
     { method: "POST", once: true },
   );
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const url = draftConfigUrl(fixture, namespace.id, agent.id);
   await login(page, fixture, url);
   const retry = page.getByRole("tabpanel").getByRole("button", { name: "Retry", exact: true });
   await retry.waitFor();
@@ -4553,7 +4500,7 @@ test("Delete during a Configuration save keeps saying why the page stays open", 
   const { fixture, namespace } = await readyNamespace(t, "Save delete hold");
   const agent = await fixture.createAgent(namespace.id, "Save Delete Agent", nativeValues("v1"));
   const { page } = await newPage(t, fixture, { browser });
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const url = draftConfigUrl(fixture, namespace.id, agent.id);
   await login(page, fixture, url);
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await page
@@ -4635,11 +4582,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
     `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
     { method: "POST", once: true },
   );
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, revision.id));
   await page.locator(".agent-toolbar-actions").getByRole("button", { name: "Open draft" }).click();
   const draft = page.getByRole("heading", { name: "Configuration draft" });
   await draft.waitFor();
@@ -4715,11 +4658,7 @@ for (const viewport of [
     const { fixture, namespace } = await readyNamespace(t, `Next step ${size}`);
     const agent = await fixture.createAgent(namespace.id, "Next Step Agent", nativeValues("v1"));
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    );
+    await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
     const card = page.locator(".agent-draft-actions");
     await card.getByText("Ready to deploy.", { exact: true }).waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
@@ -4848,11 +4787,7 @@ test("Version picker retains selection and focus while deployment outcomes chang
   await page.route(recordUrl, (route) => route.fulfill(record));
   await trackSettledFetches(page);
   await page.clock.install();
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
-  );
+  await login(page, fixture, configUrl(fixture, namespace.id, agent.id, active.revision.id));
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
   await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
   const chooser = versionChooser(page);

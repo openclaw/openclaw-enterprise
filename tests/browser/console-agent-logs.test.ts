@@ -14,9 +14,6 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import type {
-  AgentRuntimeEvent,
-  AgentRuntimeLogChunk,
-  ComputeDriver,
   Permission,
   PermissionAction,
   SandboxLogLine,
@@ -68,34 +65,11 @@ import { refocus } from "./console-refocus-helpers.ts";
 import { within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
-type LogLine = AgentRuntimeLogChunk["lines"][number];
 type LogsView = typeof import("../../apps/controller/src/console/agents/logs-view.mts");
 type FixtureRole = { permissions: Permission[] };
 type LogTestWindow = typeof globalThis & {
   shownScroll: number[];
   inFlightFetchCount(): number;
-};
-
-// The JavaScript Compute fixture adds these test controls to its ready Driver.
-type LogTestDriver = ReturnType<typeof createRuntimeLogComputeDriver> & {
-  state: {
-    lines: LogLine[];
-    previousLines: LogLine[];
-    harnessLines: LogLine[];
-    harnessPod: { ready: boolean; stale?: boolean } | { created: false } | undefined;
-    events: AgentRuntimeEvent[];
-    extraPods: { name: string; uid: string }[];
-    gatewayPod: boolean;
-    podlessRevisions: string[];
-    restartCount: number;
-    observedAt?: string;
-    readPodUid?: string;
-    describeError: Error | undefined;
-    readError: Error | undefined;
-  };
-  calls: { operation: string; revisionId?: string }[];
-  podName(revision: { id: string }): string;
-  runtimeLogging?: ComputeDriver["runtimeLogging"];
 };
 
 // The console runs against the production controller app, IAM, cursor signing and
@@ -104,7 +78,10 @@ type LogTestDriver = ReturnType<typeof createRuntimeLogComputeDriver> & {
 // Namespace, Agent and revision, and starts and ends with the Driver's Pod state, calls and
 // properties as they were when it was made. The Driver's methods hold its `state` and `calls`, so
 // tests change those in place and never replace them.
-const computeDriver = createRuntimeLogComputeDriver() as LogTestDriver;
+type LogDriver = ReturnType<typeof createRuntimeLogComputeDriver>;
+// The log capability scenario sets runtimeLogging after the shared Driver is created.
+const computeDriver: LogDriver & { runtimeLogging?: LogDriver["runtimeLogging"] } =
+  createRuntimeLogComputeDriver();
 const initialDriver = { ...computeDriver, state: structuredClone(computeDriver.state) };
 // The app's own State, so a test can record what the worker records (a completed stop).
 const logsState: { state?: InMemoryPlatformState } = {};
