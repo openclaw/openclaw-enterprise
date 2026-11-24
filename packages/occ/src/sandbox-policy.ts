@@ -399,11 +399,11 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
             null);
       const storesRepositoryPolicy = state.sandboxPolicies.supportsRepositoryNetworkPolicy === true;
       const canWithdraw = storesRepositoryPolicy && policy.repositoryNetworkPolicy !== undefined;
-      const firstSave =
+      const edit =
         storesRepositoryPolicy &&
-        !canWithdraw &&
         unavailableReason === undefined &&
-        (await state.revisions.listRevisionMetadata(namespaceId, agentId)).length === 0
+        (canWithdraw ||
+          (await state.revisions.listRevisionMetadata(namespaceId, agentId)).length === 0)
           ? await dependencies.qualifyRepositoryEdit(
               state,
               agent,
@@ -421,6 +421,10 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         policy,
         repositoryNetworkPolicyCeiling,
       );
+      const supported = edit?.supports(repositoryNetworkPolicyCeiling) === true;
+      const repositoryApiMaxima = supported
+        ? edit.apiMaxima(repositoryNetworkPolicyCeiling)
+        : undefined;
       return {
         policy,
         configuration: await policyConfigurationDescriptor(
@@ -437,8 +441,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
         repositoryNetworkPolicyCeiling,
-        repositoryNetworkPolicySaveSupported:
-          canWithdraw || firstSave?.supports(repositoryNetworkPolicyCeiling) === true,
+        ...(repositoryApiMaxima && { repositoryApiMaxima }),
+        repositoryNetworkPolicySaveSupported: canWithdraw || supported,
         defaults,
         // A fresh deploy carries the saved version into its Sandbox; no application is
         // requested for it (D773).

@@ -5,6 +5,8 @@ import {
   admitRepositoryNetworkPolicy,
   admitSandboxRepositoryNetworkPolicy,
   RepositoryNetworkPolicyAdmissionError,
+  type RepositoryApiLevel,
+  type RepositoryApiMaximum,
   type Agent,
   type AgentRevision,
   type AgentRevisionRead,
@@ -54,6 +56,8 @@ export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
   readonly requiresNetworkPolicy?: boolean;
   /** The selected registry permits deployment-scoped Git when the Agent saves an ACL. */
   readonly nativeGit?: "v1";
+  /** Eligible native API levels, before the Agent narrows access. */
+  readonly repositoryApiMaxima?: readonly RepositoryApiMaximum[];
   /** The network access of these resolved bindings. The Namespace ceiling is independent. */
   readonly selectedRepositoryNetworkGrants?: RepositoryNetworkPolicyCeiling;
   /** The TokenService Source that holds the credential in place of the GitHub App. */
@@ -292,7 +296,7 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
       }
     };
     const fitsSelected = (grant: RepositoryNetworkGrant) =>
-      selectedRepositoryGrantAllows(resolution.selectedRepositoryNetworkGrants, grant);
+      selectedRepositoryGrantAllows(resolution, grant);
     const dedicated = { id: harness.id, version: harness.version, mode: "dedicated" } as const;
     const { type, ownerCapability, driverId } = source;
     const topology: ProtectedRepositoryNetworkPolicySaveContext = immutableCopy({
@@ -352,17 +356,45 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
           return ready;
         });
       },
+      apiMaxima(delegatedCeiling: RepositoryNetworkPolicyCeiling) {
+        const options = resolution.repositoryApiMaxima;
+        if (resolution.nativeGit !== "v1" || !options) {
+          return undefined;
+        }
+        // Project only selected, delegated names. Never forward provider metadata.
+        return delegatedCeiling.flatMap(({ repository, access }) => {
+          const option = options.find((item) => item.repository === repository);
+          if (!option || !fitsSelected({ repository, access: "read" })) {
+            return [];
+          }
+          const write = access === "write" && fitsSelected({ repository, access });
+          const cap = (level: RepositoryApiLevel): RepositoryApiLevel =>
+            level === "write" && !write ? "read" : level;
+          return [
+            {
+              repository,
+              access: write ? ("write" as const) : ("read" as const),
+              issues: cap(option.issues),
+              pull_requests: cap(option.pull_requests),
+            },
+          ];
+        });
+      },
       admit: admitEdit,
     };
   };
 }
 
 function selectedRepositoryGrantAllows(
-  selected: RepositoryNetworkPolicyCeiling | undefined,
+  selected: RepositoryPolicyResolution | undefined,
   grant: RepositoryNetworkGrant,
 ): boolean {
   return (
-    selected?.some(
+    (!grant.apiLimits ||
+      (selected?.nativeGit === "v1" &&
+        selected.repositoryApiMaxima?.some((option) => option.repository === grant.repository) ===
+          true)) &&
+    selected?.selectedRepositoryNetworkGrants?.some(
       ({ repository, access }) =>
         repository === grant.repository && (access === grant.access || access === "write"),
     ) === true
@@ -377,36 +409,33 @@ export function effectiveRepositoryGrants(
   grants: readonly RepositoryNetworkGrant[] | undefined,
   limits: readonly (RepositoryNetworkPolicyCeiling | undefined)[],
 ): RepositoryNetworkGrant[] {
+  const allows = (
+    limit: RepositoryNetworkPolicyCeiling | undefined,
+    grant: RepositoryNetworkGrant,
+  ) =>
+    limit?.some(
+      ({ repository, access }) =>
+        repository === grant.repository && (access === grant.access || access === "write"),
+    ) === true;
   return (grants ?? []).flatMap(({ repository, access }) => {
     const levels = access === "write" ? (["write", "read"] as const) : (["read"] as const);
     const allowed = levels
       .map((level) => ({ repository, access: level }))
-      .find((grant) => limits.every((limit) => selectedRepositoryGrantAllows(limit, grant)));
+      .find((grant) => limits.every((limit) => allows(limit, grant)));
     return allowed === undefined ? [] : [allowed];
   });
 }
 
-function assertRepositoryGrantsWithin(
-  grants: readonly RepositoryNetworkGrant[] | undefined,
-  limit: RepositoryNetworkPolicyCeiling | undefined,
-  message: string,
-): void {
-  if (grants?.some((grant) => !selectedRepositoryGrantAllows(limit, grant))) {
-    throw new ResourceStateConflictError(message, [
-      { path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" },
-    ]);
-  }
-}
-
 export function assertSelectedRepositoryGrants(
   grants: readonly RepositoryNetworkGrant[] | undefined,
-  selected: RepositoryNetworkPolicyCeiling | undefined,
+  selected: RepositoryPolicyResolution | undefined,
 ): void {
-  assertRepositoryGrantsWithin(
-    grants,
-    selected,
-    "The saved repository network policy exceeds the Agent's selected Git credential. Review the saved policy and repository bindings before deploying.",
-  );
+  if (grants?.some((grant) => !selectedRepositoryGrantAllows(selected, grant))) {
+    throw new ResourceStateConflictError(
+      "The saved repository network policy exceeds the Agent's selected Git credential. Review the saved policy and repository bindings before deploying.",
+      [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+    );
+  }
 }
 
 /** The Source ceiling is one more limit on the saved grants, beside the registry and Installation. */
@@ -414,11 +443,17 @@ export function assertSourceRepositoryGrants(
   grants: readonly RepositoryNetworkGrant[] | undefined,
   ceiling: RepositoryNetworkPolicyCeiling,
 ): void {
-  assertRepositoryGrantsWithin(
-    grants,
-    ceiling,
-    "The saved repository network policy exceeds the repository ceiling of the credential source that the repository registration selects. Remove those grants, or ask an operator to widen the source's ceiling.",
-  );
+  const within = (grant: RepositoryNetworkGrant) =>
+    ceiling.some(
+      ({ repository, access }) =>
+        repository === grant.repository && (access === grant.access || access === "write"),
+    );
+  if (grants?.some((grant) => !within(grant))) {
+    throw new ResourceStateConflictError(
+      "The saved repository network policy exceeds the repository ceiling of the credential source that the repository registration selects. Remove those grants, or ask an operator to widen the source's ceiling.",
+      [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+    );
+  }
 }
 
 function refuseRepositoryPolicy(error: unknown, operation: "save" | "deploy"): never {

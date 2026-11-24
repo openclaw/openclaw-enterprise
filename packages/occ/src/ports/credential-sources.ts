@@ -19,7 +19,7 @@ export interface RepositorySourceCopy {
 
 /**
  * What the copy record holds about the delivery of a Source to one revision's copy. TokenService
- * stamps `expectedSourceVersion` when a replacement commits while the copy is unretired (0094);
+ * stamps `expectedSourceVersion` when a replacement commits while the copy is unretired (0095);
  * the Worker records `confirmedSourceVersion` when the target Sandbox's supervisor activated the
  * Provider credential it wrote for that version (0093).
  */
