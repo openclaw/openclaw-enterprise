@@ -14,6 +14,8 @@ import {
   processGone,
   readSetupReads,
   recordingChildWithArguments,
+  setupReadMatches,
+  setupRefreshWitness,
   startSupervisor,
   type ChildEvent,
   type ProcessEventRow,
@@ -341,6 +343,7 @@ export async function startsBeforeSetupAndReconnects(t: TestContext) {
   const setupPath = join(setupDirectory, "setup-code");
   const setupReadsPath = join(directory, "setup-reads.jsonl");
   const identityPath = join(directory, "identity.json");
+  const refreshes = setupRefreshWitness(directory, setupPath, setupReadsPath);
   // Substitute the saved-identity lookup as well; the supervisor's setup polling and
   // restarts run unchanged.
   const { supervisor, exited, events, waitFor, waitForValue, output } = await startSupervisor(
@@ -360,8 +363,9 @@ export async function startsBeforeSetupAndReconnects(t: TestContext) {
         `  try { callback(null, require("node:fs").readFileSync(${JSON.stringify(identityPath)}, "utf8")); }`,
         '  catch (error) { callback(error, ""); }',
         "};",
-        ...observeSetupReads(setupPath, setupReadsPath),
+        ...refreshes.stubs,
       ],
+      entrypoint: refreshes.entrypoint,
       env: {
         OPENCLAW_NODE_SETUP_PATH: setupPath,
         OPENCLAW_NODE_DISPLAY_NAME: "agent-0123456789ab-workspace",
@@ -376,16 +380,37 @@ export async function startsBeforeSetupAndReconnects(t: TestContext) {
     return waitForValue(
       "a setup poll after the selected projection was read",
       (reads) => {
-        const expectedRead =
-          content === null ? null : Buffer.from(content).subarray(0, 65_537).toString("utf8");
         const index = reads.findIndex(
-          (read, row) =>
-            row >= offset && (read.content === expectedRead || read.content === content),
+          (read, row) => row >= offset && setupReadMatches(read.content, content),
         );
         return index !== -1 && index < reads.length - 1;
       },
       () => readSetupReads(setupReadsPath),
     );
+  };
+  const preservesLiveSetup = async (content: string | null, pid: number, polls = 1) => {
+    const { offset, publication } = await refreshes.publish(content);
+    await waitForValue(
+      `${polls} completed setup refresh poll(s) for publication ${publication} and node ${pid}`,
+      (rows) => {
+        const observations = rows.slice(offset);
+        // A refresh can read the new file before its publication marker changes.
+        assert.ok(
+          observations.every((row) => !row.retiring),
+          `setup refresh attempted or scheduled group retirement for publication ${publication}`,
+        );
+        const completed = observations.filter(
+          (row) =>
+            row.publication === publication &&
+            row.pid === pid &&
+            row.reads.length === 1 &&
+            setupReadMatches(row.reads[0] ?? null, content),
+        );
+        return completed.length >= polls;
+      },
+      refreshes.read,
+    );
+    process.kill(pid, 0);
   };
 
   const codex = (
@@ -471,10 +496,8 @@ export async function startsBeforeSetupAndReconnects(t: TestContext) {
       "base64url",
     ) + " ".repeat(65_536),
   ]) {
-    await writeFile(setupPath, incomplete);
-    await evaluated(incomplete);
+    await preservesLiveSetup(incomplete, paired.pid);
     assert.equal(nodes(await events()).length, 1);
-    process.kill(paired.pid, 0);
   }
   // Projection serialization is not setup identity: no restart for reordered
   // JSON, whitespace, or the optional URL prefix around the same payload.
@@ -485,8 +508,8 @@ export async function startsBeforeSetupAndReconnects(t: TestContext) {
       url: payload.url,
     }),
   ).toString("base64url");
-  await writeFile(setupPath, equivalent);
-  await evaluated(equivalent);
+  // Keep the equivalent file in place for another tick before valid renewal.
+  await preservesLiveSetup(equivalent, paired.pid, 2);
   assert.equal(nodes(await events()).length, 1);
   const renewed = Buffer.from(
     JSON.stringify({ ...payload, bootstrapToken: "renewed-bootstrap" }),
@@ -498,11 +521,10 @@ export async function startsBeforeSetupAndReconnects(t: TestContext) {
   assert.ok(refreshed?.args, "node recorded its arguments");
   assert.equal(refreshed.args[4], renewed);
   await processGone("previous node survived setup renewal", paired.pid);
-  await evaluated(renewed);
+  await preservesLiveSetup(renewed, refreshed.pid);
   assert.equal(nodes(await events()).length, 2, "unchanged setup must not restart the node");
   const prefixed = "oc-pair://" + renewed + "\n";
-  await writeFile(setupPath, prefixed);
-  await evaluated(prefixed);
+  await preservesLiveSetup(prefixed, refreshed.pid);
   assert.equal(
     nodes(await events()).length,
     2,
@@ -512,10 +534,9 @@ export async function startsBeforeSetupAndReconnects(t: TestContext) {
   // After pairing the controller removes the code and the kubelet removes the
   // file. Removal leaves the running node alone; a later process failure
   // reconnects with its saved device identity.
-  await rm(setupPath);
-  await evaluated(null);
+  // The deliberate kill below could cancel a retirement armed by withdrawal.
+  await preservesLiveSetup(null, refreshed.pid, 2);
   assert.equal(nodes(await events()).length, 2);
-  process.kill(refreshed.pid, 0);
   await writeFile(identityPath, JSON.stringify({ deviceId: "a".repeat(64) }));
   process.kill(refreshed.pid, "SIGKILL");
   const restarted = nodes(
