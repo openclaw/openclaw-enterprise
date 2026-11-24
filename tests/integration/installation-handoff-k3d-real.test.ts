@@ -283,7 +283,7 @@ test(
         resourceVersion: string;
       }[];
     };
-    async function invokeDiagnostic(plan: Plan, sensitiveValues: string[] = []) {
+    async function invokeDiagnostic(plan: unknown, sensitiveValues: string[] = []) {
       await writeFile(configPath, JSON.stringify(plan));
       const result = spawnSync(
         process.execPath,

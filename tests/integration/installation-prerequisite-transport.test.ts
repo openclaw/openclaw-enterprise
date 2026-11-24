@@ -247,9 +247,23 @@ test(
       `${Buffer.from('{"alg":"none"}').toString("base64url")}.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.`;
     const expiredIdToken = idToken(1);
     const currentIdToken = idToken(Math.floor(Date.now() / 1_000) + 600);
+    let quotaReply: Reply | undefined;
     const verifiedApi = api(httpsRequests, ({ path: requestPath }) => {
       if (redirect?.path === requestPath) {
         return { status: 307, location: redirect.location, body: {} };
+      }
+      if (quotaReply && requestPath === "/api/v1/namespaces/default") {
+        return {
+          status: 200,
+          body: {
+            apiVersion: "v1",
+            kind: "Namespace",
+            metadata: { name: "default", uid: "selected-namespace" },
+          },
+        };
+      }
+      if (requestPath === "/api/v1/namespaces/default/resourcequotas") {
+        return quotaReply;
       }
       if (requestPath === rolloutPath) {
         return {
@@ -1190,6 +1204,34 @@ esac
         denyDependency = false;
       }
     });
+    await t.test(
+      "only a complete quota list for the selected namespace establishes capacity",
+      async () => {
+        const empty = {
+          apiVersion: "v1",
+          kind: "ResourceQuotaList",
+          metadata: { resourceVersion: "42" },
+          items: [],
+        };
+        async function status(body: object) {
+          quotaReply = { status: 200, body };
+          return (await observations(verifiedConfig)).get("resource-quotas")?.status;
+        }
+        try {
+          assert.equal(await status(empty), "passed");
+          assert.equal(await status({ ...empty, kind: "ServiceList" }), "unknown");
+          assert.equal(await status({ ...empty, metadata: { continue: "next-page" } }), "unknown");
+          const other = {
+            metadata: { namespace: "other", name: "storage" },
+            spec: { hard: { "requests.storage": "1Gi" } },
+          };
+          assert.equal(await status({ ...empty, items: [other] }), "unknown");
+        } finally {
+          quotaReply = undefined;
+        }
+      },
+    );
+
     await t.test("only the selected Service can establish an ExternalName mismatch", async () => {
       const alias = object("Service", "dependency", {
         spec: { type: "ExternalName", externalName: dnsName },

@@ -153,7 +153,7 @@ type QuotaResource = "count/jobs.batch" | "count/replicasets.apps";
 type QuotaQuantities = Partial<Record<QuotaResource, string>>;
 
 type ResourceQuota = {
-  metadata: { name: string };
+  metadata: { name: string; namespace: string };
   spec: {
     hard: QuotaQuantities;
     scopes?: string[];
@@ -1115,16 +1115,24 @@ function apiServiceIpv4({ spec }: ApiService): string[] {
   return addresses.filter((address) => isIP(address) === 4);
 }
 
+function isCompleteList(
+  value: unknown,
+  version: string,
+  kind: string,
+): value is KubernetesList<unknown> {
+  return (
+    isObject(value) &&
+    value.apiVersion === version &&
+    value.kind === kind &&
+    isObject(value.metadata) &&
+    (value.metadata.continue === undefined || value.metadata.continue === "") &&
+    Array.isArray(value.items)
+  );
+}
+
 function apiEndpointSliceIpv4(list: unknown): string[] {
   const incomplete = "The API EndpointSlice inventory is incomplete.";
-  if (
-    !isObject(list) ||
-    list.apiVersion !== "discovery.k8s.io/v1" ||
-    list.kind !== "EndpointSliceList" ||
-    !isObject(list.metadata) ||
-    (list.metadata.continue !== undefined && list.metadata.continue !== "") ||
-    !Array.isArray(list.items)
-  ) {
+  if (!isCompleteList(list, "discovery.k8s.io/v1", "EndpointSliceList")) {
     throw new DiagnosticError(incomplete);
   }
 
@@ -1660,15 +1668,20 @@ async function diagnose(
         `/api/v1/namespaces/${config.namespace}/resourcequotas`,
       );
       if (
-        !list ||
-        !Array.isArray(list.items) ||
-        list.metadata?.continue ||
+        !isCompleteList(list, "v1", "ResourceQuotaList") ||
         namespace.metadata?.deletionTimestamp
       ) {
         throw new Error("incomplete quota inventory");
       }
       const limits: QuotaLimit[] = [];
       for (const quota of list.items) {
+        if (
+          quota.metadata?.namespace !== config.namespace ||
+          typeof quota.metadata.name !== "string" ||
+          !isResourceName(quota.metadata.name)
+        ) {
+          throw new Error("invalid quota identity");
+        }
         for (const [resource, field] of [
           ["count/jobs.batch", "jobs"],
           ["count/replicasets.apps", "replicaSets"],
