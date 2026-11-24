@@ -297,8 +297,10 @@ Resume by deploying a new version; disabling Slack does not stop an Agent. See
 
 ## Delete
 
-Open **Delete Agent**; inspect, cancel, or confirm permanent deletion. The UI
-enters cleanup state without editing/deployment controls.
+Open **Delete Agent** and expand **View retained resource IDs**. Inspect the
+Namespace and Configuration IDs. If shown, inspect the model credential Secret
+ID and **Consumers** guidance. Cancel or confirm permanent deletion. The UI enters
+cleanup state without editing/deployment controls.
 **Refresh deletion status** completes the fixture and returns to the Agent list.
 The console has no detailed cleanup-progress view. Namespace-owned Configurations
 and Secrets remain; manage them separately. See

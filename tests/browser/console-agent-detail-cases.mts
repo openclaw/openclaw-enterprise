@@ -26,6 +26,7 @@ import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   AGENT_READ,
+  accessibleDescription,
   apiRequests,
   authorizationDenials,
   denyRevisionRead,
@@ -131,6 +132,11 @@ async function slackSelectionValue(locator: Locator): Promise<string> {
 }
 
 export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof fileConsoleApp>) {
+  const keptConfiguration =
+    "The Configuration stays in this Namespace. Other Agents may still use it.";
+  const keptConfigurationAndSecret =
+    "The Configuration and model credential Secret stay in this Namespace. Other resources may still use them.";
+
   test("Agent delete confirmation can be canceled without sending a write request", async (t) => {
     const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
@@ -139,6 +145,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     const agent = await fixture.createAgent(namespace.id, "Cancel Candidate", nativeValues("keep"));
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
+    await trackSettledFetches(page);
     // A fake clock that keeps running on its own, so the check after Cancel can fire every timer
     // the page has started instead of waiting on wall-clock time (finding 1994).
     await page.clock.install();
@@ -154,160 +161,87 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     await page.getByRole("button", { name: "Delete Agent" }).click();
     const dialog = page.getByRole("dialog", { name: "Delete Cancel Candidate?" });
     await dialog.getByText(/Agent, its version history, and its workspace data/i).waitFor();
-    // Deletion keeps the Agent's Configuration and model credential Secret, which the console
-    // names up front. Exact commands are available separately, without confirming the deletion.
     const harnessAuth = agent.harnessAuth;
     assert.ok(harnessAuth?.method === "api_key");
-    const harnessSource = harnessAuth.source;
     const cancel = dialog.getByRole("button", { name: "Cancel" });
     assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
-    await dialog
-      .getByText("The Configuration and model credential Secret stay in this Namespace.")
-      .waitFor();
-    const cli = `occ --namespace ${namespace.id}`;
-    const configuration = `${cli} configuration delete ${agent.configurationId}`;
-    const secret = `${cli} secret delete ${harnessSource.id}`;
-    assert.equal(await dialog.getByText(configuration, { exact: true }).isVisible(), false);
-    assert.equal(await dialog.getByText(secret, { exact: true }).isVisible(), false);
-    const disclosure = dialog.getByText("View separate cleanup commands");
-    await disclosure.press("Enter");
-    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-    for (const [kind, command] of [
-      ["Configuration", configuration],
-      ["Secret", secret],
-    ] as const) {
-      const row = dialog.locator(".agent-kept-command").filter({ hasText: command });
-      await row.getByText(command, { exact: true }).waitFor();
-      await row.getByRole("button", { name: `Copy ${kind} command` }).press("Enter");
-      await row
-        .getByRole("status")
-        .filter({ hasText: /^Command copied\.$/ })
-        .waitFor();
-      assert.equal(await page.evaluate(() => globalThis.navigator.clipboard.readText()), command);
-    }
-    const clipboard = await page.evaluateHandle(() => {
-      const writes = new Map<string, { accept(): void; deny(): void }>();
+    assert.match(await accessibleDescription(dialog), /This cannot be undone\./);
+    assert.ok((await accessibleDescription(dialog)).endsWith(keptConfigurationAndSecret));
+
+    // The disclosure is a keyboard-reachable lookup aid. It cannot initiate a request or write
+    // to the clipboard. Count any Clipboard API access without granting browser permissions.
+    const clipboardAccesses = await page.evaluateHandle(() => {
+      const original = globalThis.navigator.clipboard;
+      let count = 0;
       Object.defineProperty(globalThis.navigator, "clipboard", {
         configurable: true,
-        value: {
-          writeText: (command: string) =>
-            new Promise<void>((resolve, reject) => {
-              writes.set(command, {
-                accept: resolve,
-                deny: () => reject(new Error("Clipboard denied by test")),
-              });
-            }),
+        get() {
+          count++;
+          return original;
         },
       });
-      return (command: string) => {
-        const write = writes.get(command);
-        if (!write) {
-          throw new Error(`No clipboard write for ${command}`);
-        }
-        writes.delete(command);
-        return write;
-      };
+      return () => count;
     });
-    function commandRow(command: string) {
-      const row = dialog.locator(".agent-kept-command").filter({ hasText: command });
-      return {
-        command,
-        button: row.getByRole("button"),
-        status: row.getByRole("status", { includeHidden: true }),
-      };
-    }
-    type CommandRow = ReturnType<typeof commandRow>;
-    const configRow = commandRow(configuration);
-    const secretRow = commandRow(secret);
-    async function startCopy(row: CommandRow) {
-      await row.button.press("Enter");
-      const write = await clipboard.evaluateHandle((take, command) => take(command), row.command);
-      return async (outcome: "accept" | "deny") => {
-        await write.evaluate((pending, result) => pending[result](), outcome);
-        await write.dispose();
-      };
-    }
-    const selectionText = () => page.evaluate(() => globalThis.document.getSelection()?.toString());
-    async function assertManualCopy(current: CommandRow, previous: CommandRow) {
-      assert.equal(
-        await current.status.textContent(),
-        "Command selected. Use your copy shortcut to copy it.",
-      );
-      assert.equal(await previous.status.textContent(), "");
-      assert.equal(await selectionText(), current.command);
-      assert.equal(
-        await current.button.evaluate((node) => node.ownerDocument.activeElement === node),
-        true,
-      );
-    }
+    await waitForIdleFetches(page);
+    const beforeDisclosure = requests.length;
+    const disclosure = dialog.getByText("View retained resource IDs", { exact: true });
+    const configuration = dialog.getByText(agent.configurationId, { exact: true });
+    const secret = dialog.getByText(harnessAuth.source.id, { exact: true });
+    assert.equal(await configuration.isVisible(), false);
+    assert.equal(await secret.isVisible(), false);
+    // From Cancel, the disclosure is the previous item in the natural Tab order.
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(
+      await disclosure.evaluate((node) => node.ownerDocument.activeElement === node),
+      true,
+    );
+    await page.keyboard.press("Enter");
+    await configuration.waitFor();
+    await secret.waitFor();
+    assert.deepEqual(await dialog.locator("dt").allTextContents(), [
+      "Namespace ID",
+      "Configuration ID",
+      "Model credential Secret ID",
+    ]);
+    assert.deepEqual(await dialog.locator("dd").allTextContents(), [
+      namespace.id,
+      agent.configurationId,
+      harnessAuth.source.id,
+    ]);
+    assert.equal(await secret.evaluate((node) => getComputedStyle(node).userSelect), "text");
+    assert.equal(await secret.evaluate((node) => getComputedStyle(node).overflowWrap), "anywhere");
+    await dialog
+      .getByText(
+        "If you have access, open Secrets in this Namespace, search by ID and select the Secret to review Consumers.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.deepEqual(await dialog.getByRole("button").allTextContents(), [
+      "Cancel",
+      "Permanently delete Agent",
+    ]);
+    assert.equal(await dialog.getByRole("link").count(), 0);
+    assert.doesNotMatch(await dialog.innerHTML(), /occ --namespace|Copy .* command/);
 
-    // A late success must not replace a newer manual selection, even for the same command.
-    const firstConfig = await startCopy(configRow);
-    assert.equal(await secretRow.status.textContent(), "", "Pending copy clears prior success");
-    const retryConfig = await startCopy(configRow);
-    await retryConfig("deny");
-    await firstConfig("accept");
-    await assertManualCopy(configRow, secretRow);
-
-    // Once denial has settled, switching rows must retire its selection notice in either direction.
-    for (const [current, previous] of [
-      [secretRow, configRow],
-      [configRow, secretRow],
-    ] as const) {
-      const next = await startCopy(current);
-      assert.equal(await previous.status.textContent(), "");
-      await next("deny");
-      await assertManualCopy(current, previous);
-    }
-
-    const pendingConfig = await startCopy(configRow);
-    const latestSecret = await startCopy(secretRow);
-    await latestSecret("deny");
-    await pendingConfig("deny");
-    await assertManualCopy(secretRow, configRow);
-
-    // Collapse ends this attempt. Neither completion while closed nor a rejection after reopening
-    // may select the hidden command or leave feedback for the next visit.
-    const pendingWhileHidden = await startCopy(configRow);
-    await disclosure.press("Enter");
-    assert.equal(await configRow.button.isVisible(), false);
-    await pendingWhileHidden("accept");
-    assert.equal(await configRow.status.textContent(), "");
-
-    await disclosure.press("Enter");
-    const pendingAcrossReopen = await startCopy(configRow);
-    await disclosure.press("Enter");
-    await disclosure.press("Enter");
-    await page.evaluate(() => globalThis.document.getSelection()?.removeAllRanges());
-    await pendingAcrossReopen("deny");
-    assert.equal(await selectionText(), "");
-    assert.equal(await configRow.status.textContent(), "");
-    assert.equal(await secretRow.status.textContent(), "");
-
-    // Keep rejection and reopening in one browser task so the rejection handler runs after both toggles.
-    await configRow.button.press("Enter");
-    await clipboard.evaluate((take, command) => {
-      const details = globalThis.document.activeElement?.closest("details");
-      if (!details?.open) {
-        throw new Error("Expected focus inside the open cleanup disclosure");
-      }
-      take(command).deny();
-      details.open = false;
-      details.open = true;
-    }, configuration);
-    assert.equal(await selectionText(), "");
-    assert.equal(await configRow.status.textContent(), "");
-
-    const canceled = await startCopy(configRow);
-    await cancel.click();
-    await dialog.waitFor({ state: "detached" });
-    await page.getByRole("button", { name: "Delete Agent" }).click();
-    await disclosure.press("Enter");
-    const reopened = await startCopy(secretRow);
-    await reopened("deny");
-    await canceled("deny");
-    await assertManualCopy(secretRow, configRow);
-    await clipboard.dispose();
+    await page.keyboard.press("Enter");
+    assert.equal(await configuration.isVisible(), false);
+    assert.equal(await secret.isVisible(), false);
+    assert.equal(
+      await disclosure.evaluate((node) => node.ownerDocument.activeElement === node),
+      true,
+    );
+    await settlePageRequests(page);
+    assert.deepEqual(
+      requests
+        .slice(beforeDisclosure)
+        .filter(({ path }) => !path.startsWith("/console/favicon-16.png?request-sentinel=")),
+      [],
+    );
+    assert.equal(await clipboardAccesses.evaluate((count) => count()), 0);
+    await clipboardAccesses.dispose();
+    // Collapsing leaves the disclosure focused. Tab proceeds to Cancel and Enter dismisses it.
+    await page.keyboard.press("Tab");
+    assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
 
     // Attach the rejection check when the timed wait starts: on a loaded runner the click can
     // outlast the 300 ms window, and a wait that times out with no handler fails the test as an
@@ -322,7 +256,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
       ),
       /Timeout/,
     );
-    await cancel.click();
+    await page.keyboard.press("Enter");
     await unexpectedDelete;
     // Cancel returns focus to the control that opened the dialog.
     assert.equal(
@@ -343,6 +277,85 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     assert.deepEqual(nonAuthWriteRequests(requests), []);
     const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
     assert.equal(responseData(current).status, "active");
+  });
+
+  test("Agent delete confirmation only identifies a directly visible same-Namespace model Secret", async (t) => {
+    const fixture = await detailApp(t);
+    const namespace = await fixture.createNamespace("Retained reference scope", { ready: true });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Reference Candidate",
+      nativeValues("keep"),
+    );
+    const harnessAuth = agent.harnessAuth;
+    assert.ok(harnessAuth?.method === "api_key");
+    const otherNamespace = await fixture.createNamespace("Other reference scope", { ready: true });
+    const foreign = await fixture.createSecret(
+      otherNamespace.id,
+      "Other model credential",
+      "test-key",
+    );
+    const indirectId = `sa_${randomUUID()}`;
+    const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const { page } = await newPage(t, fixture);
+    const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+    await login(page, fixture, url);
+
+    for (const retained of [
+      { name: "absent", auth: null },
+      { name: "omitted" },
+      {
+        name: "non-Secret",
+        auth: {
+          method: "codex_pat",
+          source: { kind: "service_account", namespaceId: namespace.id, id: indirectId },
+        },
+      },
+      { name: "foreign", auth: { method: "api_key", source: foreign.ref } },
+    ]) {
+      // Replace just the auth projection of a real Agent read. The omitted variant models
+      // unreadable saved settings. The foreign variant probes the Console's defensive scope check.
+      const endpoint = `${fixture.origin}${agentPath}`;
+      await page.route(endpoint, async (route) => {
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        const payload = record(await response.json());
+        const data = record(payload.data);
+        assert.equal(data.id, agent.id);
+        if ("auth" in retained) {
+          data.harnessAuth = retained.auth;
+        } else {
+          delete data.harnessAuth;
+          data.configurationReadError = {
+            code: "SAVED_CONFIGURATION_UNREADABLE",
+            field: "harnessAuth",
+          };
+        }
+        await route.fulfill({ response, json: payload });
+      });
+      await page.goto(url.href);
+      await page.getByRole("button", { name: "Delete Agent" }).click();
+      const dialog = page.getByRole("dialog", { name: "Delete Reference Candidate?" });
+      assert.ok((await accessibleDescription(dialog)).endsWith(keptConfiguration), retained.name);
+      await dialog.getByText("View retained resource IDs", { exact: true }).press("Enter");
+      await dialog.getByText(agent.configurationId, { exact: true }).waitFor();
+      assert.deepEqual(await dialog.locator("dt").allTextContents(), [
+        "Namespace ID",
+        "Configuration ID",
+      ]);
+      assert.deepEqual(await dialog.locator("dd").allTextContents(), [
+        namespace.id,
+        agent.configurationId,
+      ]);
+      const markup = await dialog.innerHTML();
+      for (const omitted of [harnessAuth.source.id, foreign.id, otherNamespace.id, indirectId]) {
+        assert.equal(markup.includes(omitted), false, retained.name);
+      }
+      assert.doesNotMatch(markup, /Consumers|Model credential Secret ID|occ --namespace/);
+      await dialog.getByRole("button", { name: "Cancel" }).press("Enter");
+      await dialog.waitFor({ state: "detached" });
+      await page.unroute(endpoint);
+    }
   });
 
   test("Agent delete confirmation sends the real delete API and leaves visible queued state", async (t) => {
@@ -507,6 +520,22 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     } else {
       await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
       await repeatDialog.getByRole("button", { name: "Cancel", exact: true }).waitFor();
+      const harnessAuth = agent.harnessAuth;
+      assert.ok(harnessAuth?.method === "api_key");
+      // This member can read and delete the Agent, but has no grant on Secrets. The dialog
+      // can identify the direct binding already in the Agent read without requesting Secrets.
+      assert.ok((await accessibleDescription(repeatDialog)).endsWith(keptConfigurationAndSecret));
+      const beforeDisclosure = requests.length;
+      await repeatDialog.getByText("View retained resource IDs", { exact: true }).press("Enter");
+      await repeatDialog.getByText(harnessAuth.source.id, { exact: true }).waitFor();
+      assert.equal(await repeatDialog.getByRole("link").count(), 0);
+      await settlePageRequests(page);
+      assert.equal(
+        requests
+          .slice(beforeDisclosure)
+          .some(({ path }) => path.startsWith(`/namespaces/${namespace.id}/secrets`)),
+        false,
+      );
     }
     const removed = await fixture.request(
       "DELETE",

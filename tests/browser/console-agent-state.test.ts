@@ -4064,7 +4064,12 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   const namespace = await fixture.createNamespace("Row actions", { ready: true });
   const running = await fixture.createAgent(namespace.id, "Running Agent", nativeValues("run"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, running.id);
-  const draft = await fixture.createAgent(namespace.id, "Draft Agent", nativeValues("draft"));
+  assert.ok(running.harnessAuth?.method === "api_key");
+  // The other Agent uses the same direct model Secret. The retention wording makes no claim
+  // about exclusive use, and deleting this row still targets only its Agent.
+  const draft = await fixture.createAgent(namespace.id, "Draft Agent", nativeValues("draft"), {
+    harnessAuth: running.harnessAuth,
+  });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
@@ -4156,16 +4161,22 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   dialog = page.getByRole("dialog", { name: "Delete Running Agent?" });
   await expectConfirmationAgentId(dialog, running.id);
   assert.equal(await dialog.getByText(draft.id, { exact: true }).count(), 0);
-  await dialog
-    .getByText("The Configuration and model credential Secret stay in this Namespace.")
-    .waitFor();
-  const cli = `occ --namespace ${namespace.id}`;
-  const configuration = dialog.getByText(`${cli} configuration delete ${running.configurationId}`);
+  assert.ok(
+    (await accessibleDescription(dialog)).endsWith(
+      "The Configuration and model credential Secret stay in this Namespace. Other resources may still use them.",
+    ),
+  );
+  const configuration = dialog.getByText(running.configurationId, { exact: true });
   assert.equal(await configuration.isVisible(), false);
-  await dialog.getByText("View separate cleanup commands").click();
+  await dialog.getByText("View retained resource IDs", { exact: true }).press("Enter");
   await configuration.waitFor();
-  assert.ok(running.harnessAuth?.method === "api_key");
-  await dialog.getByText(`${cli} secret delete ${running.harnessAuth.source.id}`).waitFor();
+  await dialog.getByText(running.harnessAuth.source.id, { exact: true }).waitFor();
+  assert.deepEqual(await dialog.locator("dd").allTextContents(), [
+    namespace.id,
+    running.configurationId,
+    running.harnessAuth.source.id,
+  ]);
+  assert.doesNotMatch(await dialog.innerHTML(), /occ --namespace|Copy .* command/);
   const deleteResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${running.id}` &&

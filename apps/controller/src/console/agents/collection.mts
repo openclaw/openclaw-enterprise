@@ -847,7 +847,7 @@ export function renderAgentList(context: AgentListContext) {
       ),
       targetId,
       description,
-      ...(kept ? [kept.summary, kept.commands] : []),
+      ...(kept ? [kept.summary, kept.details] : []),
       element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {

@@ -3298,19 +3298,11 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .agent-kept-resources {
   margin-top: var(--space-3);
 }
-.agent-kept-command {
-  display: grid;
-  justify-items: start;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
-  padding: var(--space-3);
-  background: var(--color-surface-2);
-  border-radius: var(--radius-sm);
+.agent-kept-resources dd {
+  margin: 0;
 }
-.agent-kept-command code {
-  font-size: var(--text-sm);
-  overflow-wrap: anywhere;
-  user-select: all;
+.agent-kept-resources dd + dt {
+  margin-top: var(--space-2);
 }
 /* Dialog pattern (UX plan C6): every modal shares this chrome, backdrop, shadow and open motion.
    `--wide` holds a workspace (plugins), `--drawer` sits at the right edge (channels), and at

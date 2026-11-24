@@ -12,11 +12,11 @@ simulated data.
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
    Create Secret). In Stop and Delete, check the Agent name and ID before
    confirming.
-   In Delete, read what stays in the Namespace, then open **View separate cleanup
-   commands**. Each command includes the Namespace ID. Press Enter on **Copy
-   Configuration command**, then on **Copy Secret command** if it appears. Only
-   the latest row shows feedback. If copying fails, its full command is selected.
-   Copying keeps the confirmation open and runs nothing. Choose **Cancel**.
+   In Delete, read what stays in the Namespace. Press Enter on **View retained
+   resource IDs** to expand it. Inspect the Namespace ID and Configuration ID.
+   If the Agent exposes a direct model credential Secret reference in this
+   Namespace, inspect its ID and the guidance for reviewing **Consumers**.
+   Collapse the disclosure and choose **Cancel**.
    In **Backdrop at the desktop scrollbar**, choose **Open preview in its own tab**
    to check the window’s scrollbar gutter, rather than the surrounding frame.
    An empty gutter blends into the backdrop; a classic scrollbar remains visible.
