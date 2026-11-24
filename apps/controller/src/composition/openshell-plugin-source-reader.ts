@@ -1,6 +1,7 @@
 import type { Backend, CredentialGatewayDriver } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError, type ControllerOptions } from "@openclaw-enterprise/occ";
 import {
+  openShellOwnedBy,
   openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
@@ -31,16 +32,12 @@ export function bindOpenShellPluginSourceReader(
         throw new ScopeViolationError("The Codex OAuth source is not owned by this Gateway.");
       }
       const workspace = openShellWorkspaceName(namespace);
-      const name = openShellProviderName(source.id);
+      const sourceId = source.id;
+      const name = openShellProviderName(sourceId);
       const provider = await backend.client
         .clientForNamespace(namespace.name)
         .getProvider(workspace, name, signal);
-      if (
-        provider?.name !== name ||
-        provider.type !== name ||
-        provider.labels["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
-        provider.labels["openclaw.dev/credential-source-id"] !== source.id
-      ) {
+      if (provider?.name !== name || !openShellOwnedBy(provider, sourceId)) {
         throw new ScopeViolationError(
           "The OpenShell provider is not owned by this Codex OAuth source.",
         );

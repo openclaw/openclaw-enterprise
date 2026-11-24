@@ -19,7 +19,7 @@ enforce, and which failures must stop the operation:
 
 Installed npm packages can implement **Compute, Configuration, IAM, or Sandbox**.
 A Sandbox package can also provide Credential Proxy through one registration;
-follow the [Credential Proxy walkthrough](credential-proxy-driver.md) for that
+follow the [legacy egress Driver walkthrough](credential-proxy-driver.md) for that
 paired capability and its profile limits. Secret, Plugin, and ServiceAccount
 have bundled selections only. If you need one of those capabilities, change the
 existing platform implementation; adding an npm package alone will not make it
@@ -27,6 +27,32 @@ selectable. Use the [supported selections](../reference/drivers/selection.md#sup
 and [repository layout](../layout.md#source-ownership) to find its owner. Bundled
 infrastructure implementations live under `apps/controller/src/drivers/`; native
 IAM lives in `packages/iam/`. Composition lives in `apps/controller/src/composition/`.
+
+### Use the contracts in a separate Driver project
+
+From the OpenClaw Enterprise repository root, with dependencies installed via
+`pnpm install --frozen-lockfile`, pack both packages from the same revision.
+Set `archives` to the absolute path of the `vendor` directory in your Driver
+project.
+
+```sh
+archives=/absolute/path/to/driver-project/vendor
+mkdir -p "$archives"
+pnpm --dir packages/utils pack --out "$archives/utils.tgz"
+pnpm --dir packages/contracts pack --out "$archives/contracts.tgz"
+```
+
+In the Driver project's root `pnpm-workspace.yaml`, add this entry to the
+top-level `overrides` mapping. The path is relative to the workspace root.
+
+```yaml
+overrides:
+  "@openclaw-enterprise/utils": "file:./vendor/utils.tgz"
+```
+
+From that same root, run `pnpm add ./vendor/contracts.tgz`. The override resolves
+the contracts package's dependency on `@openclaw-enterprise/utils` to the local
+archive. Your TypeScript code can then import from `@openclaw-enterprise/contracts`.
 
 ## 2. Implement and register it
 
@@ -63,7 +89,7 @@ Run the following from the repository root with dependencies installed:
 
 ```sh
 pnpm typecheck
-pnpm test:files -- tests/integration/driver-plugin-installation.test.mjs
+pnpm test:files -- tests/integration/driver-plugin-installation.test.ts
 ```
 
 The second command exercises package installation and controller admission for

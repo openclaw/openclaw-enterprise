@@ -18,7 +18,7 @@ import type {
   NamespaceWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   routeFailedDeployment,
   assertControlEdge,
@@ -774,7 +774,7 @@ test("The version picker names the service selection, and bindings and Namespace
         edge: table.borderTopWidth,
       };
     }),
-    { card: false, surface: "rgb(255, 255, 255)", radius: "14px", edge: "1px" },
+    { card: false, surface: "rgb(255, 255, 255)", radius: "10px", edge: "1px" },
   );
   const { badge, text, tone, painted } = await badgeState(row.locator(".badge"));
   assert.deepEqual(
@@ -913,7 +913,7 @@ test("Links and disclosures use the link colour with an underline, not the accen
     accent: false,
     line: "underline",
     lineShows: false,
-    weight: "500",
+    weight: "600",
   });
   await name.hover();
   assert.equal((await tone(name)).lineShows, true, "name link underlines on hover");

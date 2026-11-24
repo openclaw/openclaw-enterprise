@@ -9,9 +9,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { before } from "node:test";
 import { promisify } from "node:util";
-import { prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
-import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
+import { prepareDevUpImage } from "../../scripts/ci/prepare.ts";
+import { availablePort } from "../helpers/available-port.ts";
+import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.ts";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
@@ -90,10 +90,8 @@ test(
 
         // This invokes the regular launcher and real Helm, PostgreSQL, API, and worker.
         const started = await execute(join(repository, "scripts", "dev-up"), [], {
-          cwd: repository,
           env: environment,
           timeout: 1_100_000,
-          maxBuffer: 16 * 1024 * 1024,
         });
         assert.match(started.stdout, /Deployment: Kubernetes only/);
         assert.match(started.stdout, /Sandbox Driver: none/);
@@ -166,8 +164,7 @@ test(
           body: JSON.stringify({ email: "admin@development.openclaw.invalid", password }),
         });
         assert.equal(signedIn.statusCode, 200, "browser sign-in failed");
-        // Sign-in clears stale cookie variants before issuing the new session.
-        // Select the nonempty session rather than one of those clearing cookies.
+        // Select the issued shared session cookie.
         const sessionCookie = signedIn.headers["set-cookie"]?.find((entry) =>
           /^(?:__Secure-)?openclaw_occ_shared\.session_token=[^;]+/.test(entry),
         );
@@ -187,7 +184,6 @@ test(
           OCC_SERVICE_KEY_FILE: join(stateDirectory, "initial-admin-service-key.json"),
         };
         const namespaces = await execute(occ, ["namespace", "list", "--output", "json"], {
-          cwd: repository,
           env: clientEnvironment,
         });
         const namespace = JSON.parse(namespaces.stdout).find(
@@ -324,7 +320,7 @@ test(
                 "-o",
                 "json",
               ],
-              { cwd: repository, env: environment },
+              { env: environment },
             )
           ).stdout,
         ).items;
@@ -365,7 +361,7 @@ test(
             "-c",
             script,
           ],
-          { cwd: repository, env: environment, timeout: 90_000 },
+          { env: environment, timeout: 90_000 },
         );
         if (environment.OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY) {
           // This checks the deployed API's Namespace-scoped discovery. It does not
@@ -409,7 +405,7 @@ test(
                 "-o",
                 "json",
               ],
-              { cwd: repository, env: environment },
+              { env: environment },
             )
           ).stdout,
         );

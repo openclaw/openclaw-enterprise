@@ -19,8 +19,10 @@ import (
 //
 // The first step to fail cancels the others, and only its error is returned:
 // a sibling's failure after that cancellation is its consequence, not a second
-// cause. When the caller's context ends first, every step fails after the
-// cancellation, so the first failed step in argument order is reported.
+// cause. Tracked cleanup failures from any completed step are retained as
+// diagnostic metadata on that selected error. When the caller's context ends
+// first, every step fails after the cancellation, so the first failed step in
+// argument order is reported.
 func (r *runner) concurrently(ctx context.Context, steps ...func(context.Context, *runner) error) error {
 	stepCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -53,15 +55,21 @@ func (r *runner) concurrently(ctx context.Context, steps ...func(context.Context
 		})
 	}
 	wg.Wait()
-	if first != nil {
-		return first
-	}
+	cleanupFailed := false
 	for _, err := range errs {
-		if err != nil {
-			return err
+		if first == nil && err != nil {
+			first = err
 		}
+		_, failed := startupFailureDetails(err)
+		cleanupFailed = cleanupFailed || failed
 	}
-	return nil
+	stage, selectedCleanupFailed := startupFailureDetails(first)
+	if cleanupFailed && !selectedCleanupFailed {
+		failure := startupError(stage, first).(*startupFailure)
+		failure.cleanupFailed = true
+		return failure
+	}
+	return first
 }
 
 // lockedOutput serializes writes to a shared writer. A file is returned

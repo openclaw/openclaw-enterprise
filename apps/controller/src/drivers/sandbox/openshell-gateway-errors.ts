@@ -123,19 +123,20 @@ export const POD_LABELS_NOT_PERMITTED_DETAILS =
   "pod labels not permitted by the gateway's allowed_pod_labels: ";
 
 /**
- * OpenShell refused a mutation because OCC's gateway identity holds its maximum of 1000
- * durable request admissions. Completed admissions free up 24 h after completion, so the
- * worker holds the revision pending without spending attempts; admissions left unresolved
- * never expire, so a limit still reached at the deployment deadline fails it.
+ * OpenShell refused a mutation because OCC's gateway identity holds the Gateway's limit of
+ * durable request admissions (`mutation_admission_limit_per_caller`; OCE's values set 5000,
+ * OpenShell's default is 1000). Completed admissions free up after the replay window (default
+ * 24 h), so the worker holds the revision pending without spending attempts; admissions left
+ * unresolved never expire, so a limit still reached at the deployment deadline fails it.
  */
 export class OpenShellAdmissionLimitError extends TransientDependencyError {
   constructor(method: string, cause: unknown) {
     super(
       "sandbox_admission",
       "unavailable",
-      `OpenShell refused ${method}: the controller's gateway identity holds OpenShell's limit of 1000 durable request admissions. ` +
-        "Completed admissions free up 24 h after completion; unresolved ones never expire and OpenShell has no reset API, " +
-        "so if the limit persists, investigate the unresolved admissions in the OpenShell gateway database, then redeploy.",
+      `OpenShell refused ${method}: the controller's gateway identity holds the Gateway's limit of durable request admissions. ` +
+        "Completed admissions free up after the Gateway's replay window; unresolved ones never expire and OpenShell has no reset API, " +
+        "so if the limit persists, raise mutation_admission_limit_per_caller or investigate the unresolved admissions in the OpenShell gateway database, then redeploy.",
       { cause },
     );
     this.name = "OpenShellAdmissionLimitError";
@@ -233,11 +234,8 @@ function utf8(bytes: Uint8Array | undefined): string | undefined {
   return bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8");
 }
 
-/** OpenShell's google.rpc.ErrorInfo reason from a FAILED_PRECONDITION status details trailer. */
-export function openShellErrorReason(
-  error: unknown,
-  failedPrecondition: number,
-): string | undefined {
+/** OpenShell's google.rpc.ErrorInfo reason from a matching status details trailer. */
+export function openShellErrorReason(error: unknown, expectedStatus: number): string | undefined {
   const metadata = asRecord(error)?.metadata as { get?: unknown } | undefined;
   const values =
     typeof metadata?.get === "function"
@@ -250,7 +248,7 @@ export function openShellErrorReason(
   // google.rpc.Status: 1 = code, 3 = repeated Any details; Any: 1 = type_url,
   // 2 = value; ErrorInfo: 1 = reason, 2 = domain. Scalars are last-wins.
   const status = protobufFields(details);
-  if (status === undefined || (status.varints.get(1)?.at(-1) ?? 0) !== failedPrecondition) {
+  if (status === undefined || (status.varints.get(1)?.at(-1) ?? 0) !== expectedStatus) {
     return undefined;
   }
   for (const any of status.bytes.get(3) ?? []) {

@@ -1,18 +1,139 @@
-import type { Agent } from "@openclaw-enterprise/contracts";
+import {
+  migrationEntry,
+  selectedImageMigrationEntry,
+} from "../../scripts/lib/selected-image-migration.ts";
+import type { Agent } from "../../packages/contracts/src/index.ts";
 import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
+import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import type {
+  V1Job,
+  V1PodTemplateSpec,
+} from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
+import { ProductionTuiRequestError, type ProductionTuiResponse } from "./production-tui-request.ts";
 import {
+  assertProtectedEqual,
   protectedJSON,
   type FixtureRun,
   type LocalRehearsalCluster,
   type RehearsalCustody,
 } from "./production-rehearsal-custody.ts";
+import { Type, type Static } from "typebox";
+import { Check } from "typebox/value";
 
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const commitPattern = /^[a-f0-9]{40}$/u;
+
+const gatewayContinuityReceipt = Type.Object({
+  namespaceId: Type.String(),
+  agentId: Type.String(),
+  revisionId: Type.String(),
+  runtime: Type.Object({
+    revisionId: Type.String(),
+    pods: Type.Array(
+      Type.Object({
+        role: Type.String(),
+        uid: Type.String({ minLength: 1 }),
+        phase: Type.String(),
+        containers: Type.Optional(
+          Type.Array(
+            Type.Object({
+              name: Type.String(),
+              state: Type.Optional(Type.String()),
+              restartCount: Type.Optional(Type.Unknown()),
+            }),
+          ),
+        ),
+      }),
+    ),
+  }),
+});
+
+export async function readGatewayContinuity(
+  directory: string,
+  {
+    namespaceId,
+    agentId,
+    revisionId,
+  }: { namespaceId: string; agentId: string; revisionId: string },
+) {
+  async function readGateway(phase: "before" | "after", filename: string) {
+    const label = `Agent continuity ${phase} the controller upgrade`;
+    const receipt = await readFile(join(directory, filename), "utf8")
+      .then(protectedJSON<unknown>)
+      .catch(() => {
+        throw new Error(`${label}: cannot read the receipt`);
+      });
+    assert.ok(Check(gatewayContinuityReceipt, receipt), `${label}: invalid receipt`);
+    assert.ok(
+      receipt.namespaceId === namespaceId &&
+        receipt.agentId === agentId &&
+        receipt.revisionId === revisionId &&
+        receipt.runtime.revisionId === revisionId,
+      `${label}: receipt identity does not match the selected Agent revision`,
+    );
+
+    // The upgrade CLI verifies readiness. Select the one live Gateway for comparison.
+    const gateways = receipt.runtime.pods.filter(
+      ({ role, phase }) => role === "gateway" && phase !== "Succeeded" && phase !== "Failed",
+    );
+    const [gateway] = gateways;
+    assert.ok(gateways.length === 1 && gateway, `${label}: expected exactly one live Gateway Pod`);
+    const containers = gateway.containers?.filter(({ name }) => name === "gateway");
+    const container = containers?.length === 1 ? containers[0] : undefined;
+    const count = container?.restartCount;
+    // Runtime inspection supplies a default zero when it has no container status.
+    const observed =
+      container?.state === "running" ||
+      container?.state === "waiting" ||
+      container?.state === "terminated";
+    return {
+      uid: gateway.uid,
+      restartCount:
+        observed && typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+          ? count
+          : null,
+    };
+  }
+
+  const before = await readGateway("before", "agent-continuity.json");
+  const after = await readGateway("after", "agent-continuity-after.json");
+  return {
+    podReplaced: before.uid !== after.uid,
+    gatewayRestartCountBefore: before.restartCount,
+    gatewayRestartCountAfter: after.restartCount,
+  };
+}
+
+// Both c0b09b2e and 4835e8bf ship these bytes at
+// deploy/helm/openclaw-enterprise/files/migrate-selected-image.cjs.
+const legacyRehearsalLoaderHash =
+  "4a6a55d777d238c127c3e0b9d357d87bdcdd91ad9937a2e5460a43e6dd7dd202";
+
+export function rehearsalMigrationProbeArgs(
+  args: readonly string[] = [],
+  mode: "--check" | "--require-current" = "--check",
+) {
+  if (!migrationEntry(args)) {
+    const [evaluate, program, separator, option, ...extra] = args;
+    if (
+      evaluate !== "-e" ||
+      separator !== "--" ||
+      !program ||
+      extra.length !== 0 ||
+      (option !== undefined && option !== "--expect-empty" && option !== "--require-current") ||
+      sha256Hex(program) !== legacyRehearsalLoaderHash
+    ) {
+      return undefined;
+    }
+  }
+  // The retained Job is evidence only. Use the current loader's guarded-mode check.
+  return [...selectedImageMigrationEntry, mode];
+}
 
 type ControllerImage = {
   reference: string;
@@ -22,6 +143,59 @@ type ControllerImage = {
   checkout: string;
   revision: string;
 };
+
+type InstallationSecret = {
+  metadata: {
+    name: string;
+    uid: string;
+    annotations: Record<string, string>;
+    deletionTimestamp?: string;
+  };
+  immutable: boolean;
+  type: string;
+  data: Record<string, string> & { "installation.yaml": string };
+};
+
+export async function readImmutableInstallationSecret(
+  run: FixtureRun,
+  kubeArgs: string[],
+  name: string,
+) {
+  const secret = protectedJSON<InstallationSecret>(
+    await run("kubectl", [...kubeArgs, "get", `secret/${name}`, "-o", "json"], {
+      protectedInput: true,
+    }),
+  );
+  assert.equal(secret.metadata.name, name);
+  assert.ok(secret.metadata.uid && !secret.metadata.deletionTimestamp);
+  assert.equal(secret.immutable, true, "the Installation reference must be immutable");
+  return secret;
+}
+
+export function assertInstallationSecretRetained(
+  observed: InstallationSecret,
+  expected: InstallationSecret,
+) {
+  assert.equal(observed.metadata.uid, expected.metadata.uid, "Installation Secret was replaced");
+  assert.equal(observed.type, expected.type);
+  assert.equal(
+    observed.metadata.annotations["openclaw.dev/installation-id"],
+    expected.metadata.annotations["openclaw.dev/installation-id"],
+  );
+  assertProtectedEqual(observed.data, expected.data, "Installation Secret bytes changed");
+}
+
+export function assertInstallationVolume(
+  spec: { volumes?: { name: string; secret?: { secretName?: string; items?: unknown } }[] },
+  name: string,
+) {
+  const volumes = spec.volumes?.filter((volume) => volume.name === "installation-startup");
+  assert.equal(volumes?.length, 1, "expected exactly one Installation volume");
+  const volume = volumes?.[0];
+  assert.ok(volume);
+  assert.equal(volume.secret?.secretName, name, "workload uses the wrong Installation Secret");
+  assert.deepEqual(volume.secret?.items, [{ key: "installation.yaml", path: "installation.yaml" }]);
+}
 
 type AgentIdentity = {
   id: string;
@@ -133,6 +307,20 @@ export function assertLocalRehearsalSelection(env: NodeJS.ProcessEnv) {
       !env.OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE,
     "run the controller rehearsal locally without model credentials or the live TUI/runtime upgrade",
   );
+  const recoveryImage = env.OCC_TEST_REHEARSAL_RECOVERY_IMAGE;
+  const recoverySource = env.OCC_TEST_REHEARSAL_RECOVERY_SOURCE;
+  if (env.OCC_TEST_PRODUCTION_TUI_REHEARSAL === "in-place") {
+    assertControllerReference(recoveryImage);
+    assert.ok(
+      recoverySource && isAbsolute(recoverySource),
+      "select an absolute recovery source checkout",
+    );
+  } else {
+    assert.ok(
+      recoveryImage === undefined && recoverySource === undefined,
+      "recovery image and source require OCC_TEST_PRODUCTION_TUI_REHEARSAL=in-place",
+    );
+  }
 }
 
 // Git status alone trusts assume-unchanged/skip-worktree bits and excludes ignored
@@ -240,6 +428,26 @@ export async function selectRehearsalControllers(run: FixtureRun, env: NodeJS.Pr
       cwd: candidateSource.checkout,
     },
   );
+  const recoverySource =
+    env.OCC_TEST_PRODUCTION_TUI_REHEARSAL === "in-place"
+      ? await select(
+          env.OCC_TEST_REHEARSAL_RECOVERY_IMAGE,
+          env.OCC_TEST_REHEARSAL_RECOVERY_SOURCE,
+          "recovery",
+        )
+      : undefined;
+  if (recoverySource) {
+    assert.notEqual(
+      recoverySource.reference.split("@")[1],
+      candidateSource.reference.split("@")[1],
+      "recovery and candidate controller manifest digests must differ",
+    );
+    assert.notEqual(
+      recoverySource.revision,
+      candidateSource.revision,
+      "recovery and candidate controller source commits must differ",
+    );
+  }
   const platform = (
     await run("docker", ["version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"])
   ).trim();
@@ -276,7 +484,20 @@ export async function selectRehearsalControllers(run: FixtureRun, env: NodeJS.Pr
   const previous = await inspect(previousSource);
   const candidate = await inspect(candidateSource);
   assertDistinctControllers(previous, candidate);
-  return { previous, candidate };
+  const recovery = recoverySource && (await inspect(recoverySource));
+  if (recovery) {
+    assertDistinctControllers(candidate, recovery);
+    if (previous.reference.split("@")[1] === recovery.reference.split("@")[1]) {
+      assert.deepEqual(
+        [recovery.platform, recovery.manifestDigest, recovery.configDigest, recovery.revision],
+        [previous.platform, previous.manifestDigest, previous.configDigest, previous.revision],
+        "reusing the previous controller requires identical image and source identity",
+      );
+    } else {
+      assertDistinctControllers(previous, recovery);
+    }
+  }
+  return { previous, candidate, recovery };
 }
 
 type Controllers = Awaited<ReturnType<typeof selectRehearsalControllers>>;
@@ -291,8 +512,259 @@ type ExternalRequest = (
   method: "GET",
   path: string,
   body: undefined,
-  options: { authenticated: boolean },
-) => Promise<{ status?: number; body: unknown }>;
+  options: { authenticated: boolean; signal?: AbortSignal },
+) => Promise<ProductionTuiResponse>;
+type MeasureGuardedResume = <T>(resume: () => Promise<T>) => Promise<T>;
+
+// These observations describe the fixture's authenticated HTTPS route. They do
+// not establish continuous availability between requests or gate the action.
+export async function measureUpgradeAvailability<T>(
+  request: ExternalRequest,
+  installationId: string,
+  directory: string,
+  upgrade: (measureGuardedResume: MeasureGuardedResume) => Promise<T>,
+  record: (details: object) => Promise<void>,
+  receiptName:
+    | "forward-api-availability.json"
+    | "runtime-api-availability.json"
+    | "return-api-availability.json" = "forward-api-availability.json",
+) {
+  const samples: {
+    phase: "before" | "during" | "after";
+    startedAt: string;
+    finishedAt: string;
+    elapsedMs: number;
+    gapMs: number | null;
+    startOffsetMs: number;
+    startGapMs: number | null;
+    scheduledSlot: number | null;
+    scheduleDelayMs: number | null;
+    outcome:
+      "ok" | "http-error" | "invalid-response" | "wrong-installation" | "timeout" | "request-error";
+    status: number | undefined;
+    requestId?: string;
+    upstreamSocketReused?: boolean;
+  }[] = [];
+  const origin = performance.now();
+  const nominalIntervalMs = 1_000;
+  let previousStart: number | undefined;
+  let previousFinish: number | undefined;
+  let maxStartGapMs = 0;
+  const cadence: { start?: number; finish?: number } = {};
+  const evidenceErrors: unknown[] = [];
+  let guardedResume: { startOffsetMs: number; endOffsetMs?: number } | undefined;
+  const measureGuardedResume: MeasureGuardedResume = async (resume) => {
+    const timing: NonNullable<typeof guardedResume> = { startOffsetMs: performance.now() - origin };
+    guardedResume = timing;
+    try {
+      return await resume();
+    } finally {
+      timing.endOffsetMs = performance.now() - origin;
+    }
+  };
+  const evidence = (upgradeSucceeded: boolean | null) => {
+    // A checkpoint covers only the last completed request. File-write time is
+    // exposed by the next start; an interrupted write cannot extend this boundary.
+    const through = previousFinish ?? origin;
+    const duration = cadence.start === undefined ? 0 : (cadence.finish ?? through) - cadence.start;
+    const scheduledSlots = Math.floor(duration / nominalIntervalMs) + 1;
+    const probedSlots = samples.filter(({ scheduledSlot }) => scheduledSlot !== null).length;
+    let successful = 0;
+    let unsuccessfulBeforeFirstSuccess: number | null = null;
+    let unsuccessfulAfterLastSuccess: number | null = null;
+    let previousSuccessfulFinish: number | undefined;
+    let maxSuccessfulResponseIntervalMs: number | null = null;
+    for (const [index, sample] of samples.entries()) {
+      if (sample.outcome !== "ok") {
+        continue;
+      }
+      const finish = sample.startOffsetMs + sample.elapsedMs;
+      if (previousSuccessfulFinish === undefined) {
+        unsuccessfulBeforeFirstSuccess = index;
+      } else {
+        maxSuccessfulResponseIntervalMs = Math.max(
+          maxSuccessfulResponseIntervalMs ?? 0,
+          finish - previousSuccessfulFinish,
+        );
+      }
+      previousSuccessfulFinish = finish;
+      unsuccessfulAfterLastSuccess = samples.length - index - 1;
+      successful++;
+    }
+    return {
+      schemaVersion: 2,
+      requestTimeoutMs: 5_000,
+      // Version 1 slept after each response. Null explicitly retires that policy.
+      intervalAfterResponseMs: null,
+      nominalIntervalMs,
+      upgradeSucceeded,
+      complete: upgradeSucceeded !== null,
+      throughOffsetMs: through - origin,
+      maxStartGapMs,
+      tailGapMs: previousStart === undefined ? 0 : through - previousStart,
+      responseSummary: {
+        successful,
+        unsuccessful: samples.length - successful,
+        unsuccessfulBeforeFirstSuccess,
+        unsuccessfulAfterLastSuccess,
+        maxSuccessfulResponseIntervalMs:
+          maxSuccessfulResponseIntervalMs === null
+            ? null
+            : Math.round(maxSuccessfulResponseIntervalMs),
+      },
+      cadence:
+        cadence.start === undefined
+          ? null
+          : {
+              startOffsetMs: cadence.start - origin,
+              endOffsetMs: (cadence.finish ?? through) - origin,
+              complete: cadence.finish !== undefined,
+              scheduledSlots,
+              probedSlots,
+              unprobedSlots: scheduledSlots - probedSlots,
+            },
+      ...(guardedResume === undefined ? {} : { guardedResume: { ...guardedResume } }),
+      samples: samples.map((observation) => ({ ...observation })),
+    };
+  };
+  const sample = async (
+    phase: (typeof samples)[number]["phase"],
+    upgradeSucceeded: boolean | null = null,
+  ) => {
+    const startedAt = new Date().toISOString();
+    const start = performance.now();
+    const startGapMs = previousStart === undefined ? null : start - previousStart;
+    const scheduledSlot =
+      phase === "during" ? Math.floor((start - cadence.start!) / nominalIntervalMs) : null;
+    const signal = AbortSignal.timeout(5_000);
+    let outcome: (typeof samples)[number]["outcome"];
+    let status: number | undefined;
+    let requestId: string | undefined;
+    let upstreamSocketReused: boolean | undefined;
+    try {
+      const response = await request("GET", "/installation", undefined, {
+        authenticated: true,
+        signal,
+      });
+      status = response.status;
+      const body = response.body as {
+        data?: { id?: unknown };
+      } | null;
+      if (status !== 200) {
+        outcome = "http-error";
+      } else if (typeof body?.data?.id !== "string") {
+        outcome = "invalid-response";
+      } else if (body.data.id !== installationId) {
+        outcome = "wrong-installation";
+      } else {
+        outcome = "ok";
+        requestId = response.requestId;
+        if (requestId !== undefined) {
+          upstreamSocketReused = response.upstreamSocketReused;
+        }
+      }
+    } catch (error) {
+      // Keep received status even when strict response parsing rejects the body.
+      // Transport errors can contain private bytes; never retain their text.
+      status = error instanceof ProductionTuiRequestError ? error.status : undefined;
+      if (signal.aborted) {
+        outcome = "timeout";
+      } else if (status !== undefined && status !== 200) {
+        outcome = "http-error";
+      } else {
+        outcome = "request-error";
+      }
+    }
+    const finish = performance.now();
+    samples.push({
+      phase,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      elapsedMs: Math.round(finish - start),
+      gapMs: previousFinish === undefined ? null : Math.round(start - previousFinish),
+      startOffsetMs: start - origin,
+      startGapMs,
+      scheduledSlot,
+      scheduleDelayMs:
+        scheduledSlot === null ? null : start - cadence.start! - scheduledSlot * nominalIntervalMs,
+      outcome,
+      status,
+      ...(requestId === undefined ? {} : { requestId }),
+      ...(upstreamSocketReused === undefined ? {} : { upstreamSocketReused }),
+    });
+    previousStart = start;
+    previousFinish = finish;
+    maxStartGapMs = Math.max(maxStartGapMs, startGapMs ?? 0);
+    try {
+      // A killed runner leaves the last complete snapshot, never a truncated one.
+      // Null means the action has not been recorded as settled.
+      const path = join(directory, receiptName);
+      await writeFile(`${path}.tmp`, JSON.stringify(evidence(upgradeSucceeded)) + "\n", {
+        mode: 0o600,
+      });
+      await rename(`${path}.tmp`, path);
+    } catch (error) {
+      // Keep observing without rejecting in parallel with the running upgrade.
+      if (evidenceErrors.length === 0) {
+        evidenceErrors.push(error);
+      }
+    }
+  };
+  await sample("before");
+  const stopped = new AbortController();
+  let observing: Promise<void> | undefined;
+  let outcome: { succeeded: true; value: T } | { succeeded: false; error: unknown };
+  cadence.start = performance.now();
+  try {
+    const upgrading = upgrade(measureGuardedResume);
+    observing = (async () => {
+      while (!stopped.signal.aborted) {
+        await sample("during");
+        // Start at most once per nominal slot, with at least one interval between
+        // actual starts. A slow request/write or late wake skips slots, never
+        // queues requests to replay them. Recheck time after early timer wakes.
+        const nextStart = previousStart! + nominalIntervalMs;
+        while (!stopped.signal.aborted) {
+          const remainingMs = nextStart - performance.now();
+          if (remainingMs <= 0) {
+            break;
+          }
+          await delay(remainingMs, undefined, { signal: stopped.signal }).catch(() => {});
+        }
+      }
+    })();
+    outcome = { succeeded: true, value: await upgrading };
+  } catch (error) {
+    outcome = { succeeded: false, error };
+  }
+  cadence.finish = performance.now();
+  stopped.abort();
+  // Join the final bounded request before taking the post-upgrade observation.
+  await observing;
+  await sample("after", outcome.succeeded);
+  try {
+    await record(evidence(outcome.succeeded));
+  } catch (error) {
+    evidenceErrors.push(error);
+  }
+  if (!outcome.succeeded) {
+    if (evidenceErrors.length > 0) {
+      throw new AggregateError(
+        [outcome.error, ...evidenceErrors],
+        "Upgrade failed and API availability observations could not be recorded",
+        { cause: outcome.error },
+      );
+    }
+    throw outcome.error;
+  }
+  if (evidenceErrors.length === 1) {
+    throw evidenceErrors[0];
+  }
+  if (evidenceErrors.length > 1) {
+    throw new AggregateError(evidenceErrors, "API availability observations could not be recorded");
+  }
+  return outcome.value;
+}
 
 async function assertReturnedInstallationAuthentication(
   request: ExternalRequest,
@@ -310,6 +782,7 @@ async function assertReturnedInstallationAuthentication(
 }
 type Rehearsal = {
   controllers: Controllers;
+  ordinaryUpgrade: boolean;
   kubeconfig: string;
   context: string;
   namespace: string;
@@ -339,20 +812,125 @@ type ContainerStatus = {
   imageID: string;
   containerID: string;
   ready: boolean;
+  state?: { terminated?: { exitCode: number } };
 };
 
 type Pod = {
-  metadata: { name: string; uid: string; labels: Record<string, string> };
+  metadata: {
+    name: string;
+    uid: string;
+    labels: Record<string, string>;
+    annotations?: Record<string, string>;
+    deletionTimestamp?: string;
+    ownerReferences?: { uid: string; controller?: boolean }[];
+  };
   spec: {
     nodeName: string;
     serviceAccountName: string;
     containers: { name: string; image: string }[];
+    initContainers?: { name: string; image: string }[];
+    volumes?: { name: string; secret?: { secretName: string; items?: unknown } }[];
   };
-  status: { phase: string; podIP: string; containerStatuses?: ContainerStatus[] };
+  status: {
+    phase: string;
+    podIP: string;
+    containerStatuses?: ContainerStatus[];
+    initContainerStatuses?: ContainerStatus[];
+  };
 };
 
+const labels = Type.Record(Type.String(), Type.String());
+const container = Type.Object({ name: Type.String(), image: Type.String() });
+const controllerContainer = Type.Object({
+  ...container.properties,
+  resources: Type.Optional(
+    Type.Object({
+      limits: Type.Optional(
+        Type.Object({ cpu: Type.Optional(Type.String()), memory: Type.Optional(Type.String()) }),
+      ),
+    }),
+  ),
+});
+const installationVolumes = Type.Optional(
+  Type.Array(
+    Type.Object({
+      name: Type.String(),
+      secret: Type.Optional(
+        Type.Object({ secretName: Type.String(), items: Type.Optional(Type.Unknown()) }),
+      ),
+    }),
+  ),
+);
+const runningContainer = Type.Object({
+  name: Type.String(),
+  imageID: Type.String(),
+  containerID: Type.Optional(Type.String()),
+  ready: Type.Boolean(),
+});
+const controllerPod = Type.Object({
+  metadata: Type.Object({
+    name: Type.String(),
+    uid: Type.String(),
+    labels,
+    deletionTimestamp: Type.Optional(Type.String()),
+  }),
+  spec: Type.Object({
+    nodeName: Type.Optional(Type.String()),
+    serviceAccountName: Type.String(),
+    containers: Type.Array(controllerContainer),
+    volumes: installationVolumes,
+  }),
+  status: Type.Object({
+    phase: Type.Optional(Type.String()),
+    podIP: Type.Optional(Type.String()),
+    containerStatuses: Type.Optional(Type.Array(runningContainer)),
+  }),
+});
+const controllerPods = Type.Object({ items: Type.Array(controllerPod) });
+const persistentClaim = Type.Object({
+  metadata: Type.Object({ uid: Type.String() }),
+  spec: Type.Object({ volumeName: Type.String() }),
+});
+const controllerDeployment = Type.Object({
+  metadata: Type.Object({ uid: Type.String(), labels }),
+  spec: Type.Object({
+    replicas: Type.Integer(),
+    template: Type.Object({
+      spec: Type.Object({
+        containers: Type.Array(container),
+        volumes: installationVolumes,
+      }),
+    }),
+  }),
+});
+const serviceAccount = Type.Object({ metadata: Type.Object({ uid: Type.String() }) });
+const nodeIdentity = Type.Object({
+  metadata: Type.Object({ uid: Type.String() }),
+  status: Type.Object({
+    nodeInfo: Type.Object({
+      operatingSystem: Type.String(),
+      architecture: Type.String(),
+    }),
+  }),
+});
+const scheduledPod = Type.Object({
+  metadata: Type.Object({ uid: Type.String() }),
+  spec: Type.Object({ nodeName: Type.String() }),
+});
+const imageStatus = Type.Object({ imageID: Type.String(), containerID: Type.String() });
+const runningImage = Type.Object({
+  reference: Type.String(),
+  platform: Type.String(),
+  manifestDigest: Type.String(),
+  configDigest: Type.String(),
+});
+type RunningControllerImage = Pick<
+  ControllerImage,
+  "reference" | "platform" | "manifestDigest" | "configDigest"
+>;
+
 export async function assertRunningController(
-  image: Pick<ControllerImage, "reference" | "platform" | "manifestDigest" | "configDigest">,
+  image: RunningControllerImage,
   platform: string,
   imageID: string | undefined,
   readContainerImage: () => Promise<string | undefined>,
@@ -381,13 +959,19 @@ const originalDatabase = "openclaw_enterprise";
 const restoredDatabase = "occ_return";
 const staleDatabase = "occ_stale";
 
-export function returnedDatabaseConnections(active: readonly string[], podIPs: readonly string[]) {
+export function returnedDatabaseConnections(
+  active: readonly string[],
+  podIPs: readonly string[],
+  database = restoredDatabase,
+) {
   assert.equal(new Set(podIPs).size, 2, "expected distinct API and worker Pod addresses");
-  assert.ok(
-    active.every((client) => !client.startsWith(`${originalDatabase}:`)),
-    "the retained candidate database still has an application connection",
-  );
-  return podIPs.every((ip) => active.includes(`${restoredDatabase}:${ip}`));
+  if (database === restoredDatabase) {
+    assert.ok(
+      active.every((client) => !client.startsWith(`${originalDatabase}:`)),
+      "the retained candidate database still has an application connection",
+    );
+  }
+  return podIPs.every((ip) => active.includes(`${database}:${ip}`));
 }
 
 export async function verifyCompletedMigrationHistory(
@@ -426,8 +1010,153 @@ export async function verifyCompletedMigrationHistory(
   );
 }
 
+export function rehearsalPlane({
+  kube,
+  get,
+  run,
+  release,
+  localCluster,
+  kubeconfig,
+  context,
+  namespace,
+  recordResourceLimits = false,
+}: Pick<Rehearsal, "run" | "release" | "localCluster" | "kubeconfig" | "context" | "namespace"> & {
+  kube: Kubectl;
+  get: (resource: string) => Promise<unknown>;
+  recordResourceLimits?: boolean;
+}) {
+  const pods = async () => {
+    const listed = protectedJSON<unknown>(
+      await kube(
+        "get",
+        "pods",
+        "-l",
+        `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${release},app.kubernetes.io/component in (api,worker)`,
+        "-o",
+        "json",
+      ),
+    );
+    assert.ok(Check(controllerPods, listed), "invalid controller Pod list");
+    return listed.items;
+  };
+  const claimIdentity = async () =>
+    Promise.all(
+      ["postgres-data"].map(async (name) => {
+        const claim = await get(`pvc/${name}`);
+        assert.ok(Check(persistentClaim, claim), `invalid claim ${name}`);
+        const { metadata, spec } = claim;
+        assert.ok(metadata.uid && spec.volumeName, `unbound claim ${name}`);
+        return { name, uid: metadata.uid, volume: spec.volumeName };
+      }),
+    );
+  async function verifyPodImage(
+    image: RunningControllerImage,
+    pod: { metadata: { uid: string }; spec: { nodeName?: string } },
+    status: Pick<Static<typeof runningContainer>, "imageID" | "containerID"> | undefined,
+  ): Promise<string>;
+  async function verifyPodImage(image: unknown, pod: unknown, status: unknown) {
+    // The migration observer passes these values directly from kubectl through JavaScript.
+    assert.ok(Check(runningImage, image), "invalid controller image");
+    assert.ok(Check(scheduledPod, pod), "invalid scheduled Pod");
+    assert.ok(Check(imageStatus, status), "invalid container image status");
+    assert.equal(
+      pod.spec.nodeName,
+      localCluster.node,
+      "controller Pod must use the owned k3d Node",
+    );
+    const node = await get(`node/${pod.spec.nodeName}`);
+    assert.ok(Check(nodeIdentity, node), "invalid controller Node");
+    assert.equal(node.metadata.uid, localCluster.nodeUID, "the owned k3d Node was replaced");
+    const { operatingSystem, architecture } = node.status.nodeInfo;
+    return assertRunningController(
+      image,
+      `${operatingSystem}/${architecture}`,
+      status.imageID,
+      () => localCluster.runningConfigDigest(status.containerID, pod.metadata.uid),
+    );
+  }
+  const controlPlane = async (
+    image: RunningControllerImage,
+    database: string,
+    secretName: string,
+  ) => {
+    const currentPods = await pods();
+    assert.equal(currentPods.length, components.length, "expected one API and one worker Pod");
+    return Promise.all(
+      components.map(async (component) => {
+        const deployment = await get(`deployment/openclaw-enterprise-${component}`);
+        assert.ok(Check(controllerDeployment, deployment), "invalid controller Deployment");
+        assert.equal(deployment.metadata.labels["app.kubernetes.io/instance"], release);
+        assert.equal(deployment.spec.replicas, 1);
+        assert.ok(deployment.metadata.uid);
+        assertInstallationVolume(deployment.spec.template.spec, secretName);
+        assert.equal(
+          deployment.spec.template.spec.containers.find((container) => container.name === component)
+            ?.image,
+          image.reference,
+        );
+        const pod = currentPods.find(
+          (item) => item.metadata.labels["app.kubernetes.io/component"] === component,
+        );
+        assert.ok(
+          pod?.metadata.uid &&
+            pod.spec.nodeName &&
+            pod.status.podIP &&
+            pod.status.phase === "Running",
+          `${component} Pod did not start`,
+        );
+        const podContainer = pod.spec.containers.find((container) => container.name === component);
+        assert.equal(podContainer?.image, image.reference);
+        assertInstallationVolume(pod.spec, secretName);
+        const status = pod.status.containerStatuses?.find((item) => item.name === component);
+        assert.ok(status?.ready && status.containerID, `${component} container is not ready`);
+        const imageDigest = await verifyPodImage(image, pod, status);
+        assert.equal(pod.spec.serviceAccountName, `openclaw-enterprise-${component}`);
+        const account = await get(`serviceaccount/${pod.spec.serviceAccountName}`);
+        assert.ok(Check(serviceAccount, account), "invalid controller ServiceAccount");
+        assert.ok(account.metadata.uid, `${component} ServiceAccount must have an identity`);
+        const selectedDatabase = await run(
+          "kubectl",
+          [
+            `--kubeconfig=${kubeconfig}`,
+            `--context=${context}`,
+            `--namespace=${namespace}`,
+            "exec",
+            `pod/${pod.metadata.name}`,
+            "-c",
+            component,
+            "--",
+            "node",
+            "-e",
+            "console.log(new URL(process.env.OCC_DATABASE_URL).pathname.slice(1))",
+          ],
+          { protectedInput: true },
+        );
+        assert.equal(selectedDatabase.trim(), database, `${component} uses the wrong database`);
+        const limits = podContainer?.resources?.limits;
+        return {
+          component,
+          pod: pod.metadata.name,
+          uid: pod.metadata.uid,
+          deploymentUID: deployment.metadata.uid,
+          serviceAccountUID: account.metadata.uid,
+          ip: pod.status.podIP,
+          containerID: status.containerID,
+          imageID: status.imageID,
+          imageDigest,
+          ...(recordResourceLimits && {
+            limits: { cpu: limits?.cpu ?? null, memory: limits?.memory ?? null },
+          }),
+        };
+      }),
+    );
+  };
+  return { pods, verifyPodImage, controlPlane, claimIdentity };
+}
+
 export async function rehearsePopulatedReturn({
   controllers,
+  ordinaryUpgrade,
   kubeconfig,
   context,
   namespace,
@@ -447,7 +1176,7 @@ export async function rehearsePopulatedReturn({
   waitFor,
   record,
 }: Rehearsal) {
-  const { previous, candidate } = controllers;
+  const { previous, candidate, recovery } = controllers;
   const helmArgs = [
     `--kubeconfig=${kubeconfig}`,
     `--kube-context=${context}`,
@@ -461,15 +1190,8 @@ export async function rehearsePopulatedReturn({
   ];
   const kube = (...args: string[]) => kubectl("--namespace", namespace, ...args);
   const get = async (resource: string) => JSON.parse(await kube("get", resource, "-o", "json"));
-  const startupSecret = async () =>
-    protectedJSON<{
-      metadata: { uid: string; annotations: Record<string, string> };
-      data: { "installation.yaml": string };
-    }>(
-      await run("kubectl", [...kubeArgs, "get", "secret/occ-installation-startup", "-o", "json"], {
-        protectedInput: true,
-      }),
-    );
+  const startupSecret = (name = "occ-installation-startup") =>
+    readImmutableInstallationSecret(run, kubeArgs, name);
   const installationPath = "/installation";
   const namespacePath = `/namespaces/${encodeURIComponent(namespaceId)}`;
   const agentPath = `${namespacePath}/agents`;
@@ -493,10 +1215,10 @@ export async function rehearsePopulatedReturn({
     return result;
   };
   const { postgres } = custody;
+  const queryPostgres = (database: string, query: string) =>
+    postgres("psql", "-XAt", "-v", "ON_ERROR_STOP=1", `--dbname=${database}`, "-c", query);
   const sql = async (database: string, query: string) =>
-    (
-      await postgres("psql", "-XAt", "-v", "ON_ERROR_STOP=1", `--dbname=${database}`, "-c", query)
-    ).trim();
+    (await queryPostgres(database, query)).trim();
   const dump = (file: string) =>
     postgres("pg_dump", "--format=custom", `--file=${file}`, originalDatabase);
   const restore = async (database: string, file: string) => {
@@ -511,7 +1233,19 @@ export async function rehearsePopulatedReturn({
     await sql(database, `GRANT CREATE ON DATABASE ${database} TO occ_migrator`);
   };
   const migrationReceipts = (database: string) =>
-    sql(database, "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id");
+    queryPostgres(
+      database,
+      "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id",
+    );
+  const databaseOID = () =>
+    sql(
+      originalDatabase,
+      "SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database()",
+    );
+  const originalDatabaseOID = recovery && (await databaseOID());
+  if (originalDatabaseOID !== undefined) {
+    assert.match(originalDatabaseOID, /^[1-9][0-9]*$/u);
+  }
   const databaseAgents = async (database: string) =>
     (
       JSON.parse(
@@ -523,111 +1257,17 @@ export async function rehearsePopulatedReturn({
         ),
       ) as unknown[]
     ).map(agentIdentity);
-  const pods = async () =>
-    (
-      JSON.parse(
-        await kube(
-          "get",
-          "pods",
-          "-l",
-          `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${release},app.kubernetes.io/component in (api,worker)`,
-          "-o",
-          "json",
-        ),
-      ) as { items: Pod[] }
-    ).items;
-  const claimIdentity = async () =>
-    Promise.all(
-      ["postgres-data", "bootstrap-password"].map(async (name) => {
-        const { metadata, spec } = await get(`pvc/${name}`);
-        assert.ok(metadata.uid && spec.volumeName, `unbound claim ${name}`);
-        return { name, uid: metadata.uid, volume: spec.volumeName };
-      }),
-    );
-  const verifyPodImage = async (
-    image: ControllerImage,
-    pod: Pod,
-    status: ContainerStatus | undefined,
-  ) => {
-    assert.equal(
-      pod.spec.nodeName,
-      localCluster.node,
-      "controller Pod must use the owned k3d Node",
-    );
-    const node = await get(`node/${pod.spec.nodeName}`);
-    assert.equal(node.metadata.uid, localCluster.nodeUID, "the owned k3d Node was replaced");
-    const { operatingSystem, architecture } = node.status.nodeInfo;
-    assert.ok(status, "the controller container has no runtime status");
-    return assertRunningController(
-      image,
-      `${operatingSystem}/${architecture}`,
-      status.imageID,
-      () => localCluster.runningConfigDigest(status.containerID, pod.metadata.uid),
-    );
-  };
-  const controlPlane = async (image: ControllerImage, database: string) => {
-    const currentPods = await pods();
-    assert.equal(currentPods.length, components.length, "expected one API and one worker Pod");
-    return Promise.all(
-      components.map(async (component) => {
-        const deployment = await get(`deployment/openclaw-enterprise-${component}`);
-        assert.equal(deployment.metadata.labels["app.kubernetes.io/instance"], release);
-        assert.equal(deployment.spec.replicas, 1);
-        assert.ok(deployment.metadata.uid);
-        assert.equal(
-          deployment.spec.template.spec.containers.find(
-            (container: { name: string }) => container.name === component,
-          )?.image,
-          image.reference,
-        );
-        const pod = currentPods.find(
-          (item) => item.metadata.labels["app.kubernetes.io/component"] === component,
-        );
-        assert.ok(
-          pod?.metadata.uid && pod.status.podIP && pod.status.phase === "Running",
-          `${component} Pod did not start`,
-        );
-        assert.equal(
-          pod.spec.containers.find((container) => container.name === component)?.image,
-          image.reference,
-        );
-        const status = pod.status.containerStatuses?.find((item) => item.name === component);
-        assert.ok(status?.ready, `${component} container is not ready`);
-        const imageDigest = await verifyPodImage(image, pod, status);
-        assert.equal(pod.spec.serviceAccountName, `openclaw-enterprise-${component}`);
-        const account = await get(`serviceaccount/${pod.spec.serviceAccountName}`);
-        assert.ok(account.metadata.uid, `${component} ServiceAccount must have an identity`);
-        const selectedDatabase = await run(
-          "kubectl",
-          [
-            `--kubeconfig=${kubeconfig}`,
-            `--context=${context}`,
-            `--namespace=${namespace}`,
-            "exec",
-            `pod/${pod.metadata.name}`,
-            "-c",
-            component,
-            "--",
-            "node",
-            "-e",
-            "console.log(new URL(process.env.OCC_DATABASE_URL).pathname.slice(1))",
-          ],
-          { protectedInput: true },
-        );
-        assert.equal(selectedDatabase.trim(), database, `${component} uses the wrong database`);
-        return {
-          component,
-          pod: pod.metadata.name,
-          uid: pod.metadata.uid,
-          deploymentUID: deployment.metadata.uid,
-          serviceAccountUID: account.metadata.uid,
-          ip: pod.status.podIP,
-          imageID: status.imageID,
-          imageDigest,
-        };
-      }),
-    );
-  };
+  const { pods, controlPlane, verifyPodImage, claimIdentity } = rehearsalPlane({
+    kube,
+    get,
+    run,
+    release,
+    localCluster,
+    kubeconfig,
+    context,
+    namespace,
+    recordResourceLimits: true,
+  });
   const candidateConnections = () =>
     sql(
       "postgres",
@@ -642,6 +1282,8 @@ export async function rehearsePopulatedReturn({
     assert.equal(await candidateConnections(), "0");
   };
   const baselineRelease = await helmStatus();
+  const candidateValuesPath = join(directory, "return-candidate-values.json");
+  const candidateValues = JSON.parse(await readFile(join(directory, "values.json"), "utf8"));
   assert.equal(baselineRelease.info.status, "deployed");
   assert.ok(Number.isSafeInteger(baselineRelease.version) && baselineRelease.version > 0);
   await custody.assertRelease();
@@ -665,6 +1307,34 @@ export async function rehearsePopulatedReturn({
     initialStartupSecret.metadata.annotations["openclaw.dev/installation-id"],
     installationId,
   );
+  // The operator stages a new immutable reference; neither the forward upgrade
+  // nor returning to the previous release may rewrite either Secret.
+  const successorName = "occ-installation-successor";
+  const successorObject = {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      ...custody.metadata(successorName),
+      annotations: { "openclaw.dev/installation-id": installationId },
+    },
+    immutable: true,
+    type: initialStartupSecret.type,
+    data: initialStartupSecret.data,
+  };
+  const successorUID = await custody.create(successorObject);
+  const successor = await startupSecret(successorName);
+  assert.equal(successor.metadata.uid, successorUID, "staged Installation Secret was replaced");
+  assert.notEqual(successor.metadata.uid, initialStartupSecret.metadata.uid);
+  assertProtectedEqual(successor.data, initialStartupSecret.data, "staged configuration differs");
+  candidateValues.installation.secretName = successorName;
+  await writeFile(candidateValuesPath, JSON.stringify(candidateValues), {
+    mode: 0o600,
+    flag: "wx",
+  });
+  const retainInstallationSecrets = async () => {
+    assertInstallationSecretRetained(await startupSecret(), initialStartupSecret);
+    assertInstallationSecretRetained(await startupSecret(successorName), successor);
+  };
   const verifyInstallation = async () => {
     const installation = (await api("GET", installationPath)) as { id: string };
     assert.equal(installation.id, installationId);
@@ -672,13 +1342,18 @@ export async function rehearsePopulatedReturn({
     assert.equal(saved.id, namespaceId);
     assert.equal(saved.status, "ready");
   };
-  const previousPods = await controlPlane(previous, originalDatabase);
+  const previousPods = await controlPlane(
+    previous,
+    originalDatabase,
+    initialStartupSecret.metadata.name,
+  );
   const writerIdentities = (observed: typeof previousPods) =>
     observed.map(({ deploymentUID, serviceAccountUID }) => ({ deploymentUID, serviceAccountUID }));
-  const previousJob = (await get(`job/${release}-initialization`)).spec.template;
-  const priorMigration = previousJob.spec.initContainers.find(
-    (container: { name: string }) => container.name === "migration",
-  );
+  const getInitializer = async () =>
+    protectedJSON<V1Job>(await kube("get", `job/${release}-initialization`, "-o", "json"));
+  const previousJob = (await getInitializer()).spec?.template;
+  assert.ok(previousJob?.spec, "previous initializer is missing its Pod template");
+  const priorMigration = previousJob.spec.initContainers?.find(({ name }) => name === "migration");
   assert.equal(
     priorMigration?.image,
     previous.reference,
@@ -697,6 +1372,81 @@ export async function rehearsePopulatedReturn({
     201,
   )) as { id: string };
   assert.ok(configurationId);
+  const checkMigration = async (
+    image: ControllerImage,
+    template: V1PodTemplateSpec,
+    database: string,
+    probeName: string,
+    mode: "--check" | "--require-current" = "--check",
+  ) => {
+    const spec = template.spec;
+    assert.ok(spec, "initializer is missing its Pod spec");
+    const migration = spec.initContainers?.find(({ name }) => name === "migration");
+    assert.ok(migration, "initializer is missing its migration container");
+    assert.equal(
+      migration.image,
+      mode === "--require-current" ? candidate.reference : image.reference,
+      "migration probe template must come from the selected release",
+    );
+    assert.ok(migration.env, "initializer migration container is missing its environment");
+    const args = rehearsalMigrationProbeArgs(migration.args, mode);
+    assert.ok(args, "initializer has an unsupported migration entry point");
+    const probeSecret = {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: custody.metadata(probeName),
+      data: { "migration-url": await custody.restoredMigrationURL(database) },
+    };
+    const probe = {
+      apiVersion: "v1",
+      kind: "Pod",
+      // Copy the chart's network policy labels, not the Job's ownership labels.
+      metadata: custody.metadata(probeName, {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": release,
+        "app.kubernetes.io/component": "initialization",
+      }),
+      spec: {
+        restartPolicy: "Never",
+        activeDeadlineSeconds: 120,
+        automountServiceAccountToken: false,
+        securityContext: spec.securityContext,
+        volumes: spec.volumes?.filter((volume) =>
+          migration.volumeMounts?.some((mount) => mount.name === volume.name),
+        ),
+        containers: [
+          {
+            ...migration,
+            image: image.reference,
+            command: ["node"],
+            args,
+            env: [
+              ...migration.env.filter(({ name }) => name !== "OCC_MIGRATION_DATABASE_URL"),
+              {
+                name: "OCC_MIGRATION_DATABASE_URL",
+                valueFrom: { secretKeyRef: { name: probeName, key: "migration-url" } },
+              },
+            ],
+          },
+        ],
+      },
+    };
+    await custody.create(probeSecret);
+    const probeUID = await custody.create(probe);
+    const completed = await waitFor<Pod>("controller migration check", async () => {
+      const pod: Pod = await get(`pod/${probeName}`);
+      assert.equal(pod.metadata.uid, probeUID, "the compatibility Pod was replaced");
+      return ["Succeeded", "Failed"].includes(pod.status.phase) ? pod : false;
+    });
+    await verifyPodImage(
+      image,
+      completed,
+      completed.status.containerStatuses?.find(({ name }) => name === "migration"),
+    );
+    assert.equal(completed.status.phase, "Succeeded", "selected image cannot use the database");
+    await verifyCompletedMigrationHistory(run, kubeArgs, probeName);
+  };
+
   const createAgent = async (name: string) => {
     const agent = returnedAgentSnapshot(
       await api("POST", agentPath, { name, configurationId, executionMode: "embedded" }, 201),
@@ -725,7 +1475,9 @@ export async function rehearsePopulatedReturn({
 
   const staleArchive = "/tmp/occ-before-upgrade.pgdump";
   const candidateArchive = "/tmp/occ-after-write.pgdump";
-  await phase("Capture the pre-upgrade control archive", () => dump(staleArchive));
+  if (!recovery) {
+    await phase("Capture the pre-upgrade control archive", () => dump(staleArchive));
+  }
 
   const upgradeArgs = [
     "--kubeconfig",
@@ -740,8 +1492,6 @@ export async function rehearsePopulatedReturn({
     join(directory, "values.json"),
     "--installation",
     join(directory, "installation.json"),
-    "--controller-image",
-    candidate.reference,
     "--source-revision",
     candidate.revision,
     "--occ",
@@ -749,27 +1499,338 @@ export async function rehearsePopulatedReturn({
     "--timeout-seconds",
     "300",
   ];
-  const upgrade = async (args: string[]) => {
+  const upgrade = async (args: string[], env = occEnv, image = candidate) => {
     await localCluster.assertCluster();
     await custody.assertPostgres();
     await custody.assertRelease();
-    return run("bash", ["scripts/upgrade-production-images", ...upgradeArgs, ...args], {
+    const command = [
+      "scripts/upgrade-production-images",
+      ...upgradeArgs,
+      "--controller-image",
+      image.reference,
+      ...(image === candidate ? ["--candidate-values", candidateValuesPath] : []),
+      ...args,
+    ];
+    return run("bash", command, {
       cwd: candidate.checkout,
-      env: occEnv,
+      env,
+      protectedInput: true,
       timeout: 720_000,
     });
   };
   await phase("Check the candidate without stopping writers", () =>
     upgrade(["--preflight-only", "--evidence-dir", join(directory, "preflight")]),
   );
-  await phase("Upgrade the controller and confirm authenticated OCC recovery", async () => {
-    await upgrade(["--evidence-dir", join(directory, "forward")]);
-    await verifyInstallation();
-  });
+  const forwardPhase = ordinaryUpgrade
+    ? "Complete the ordinary controller upgrade"
+    : "Recover the interrupted controller upgrade after committed initialization";
+  await phase(forwardPhase, () =>
+    measureUpgradeAvailability(
+      externalRequest,
+      installationId,
+      directory,
+      async (measureGuardedResume) => {
+        const evidence = join(directory, "forward");
+        if (ordinaryUpgrade) {
+          await upgrade(["--evidence-dir", evidence]);
+          const deployed = await helmStatus();
+          assert.equal(deployed.version, baselineRelease.version + 1);
+          assert.equal(deployed.info.status, "deployed");
+          await verifyInstallation();
+          return;
+        }
+        const client = join(directory, "helm-client.json");
+        const shimDirectory = join(directory, "helm-client-bin");
+        const shim = join(shimDirectory, "helm");
+        const controller = fileURLToPath(new URL("./rehearsal-helm-client.py", import.meta.url));
+        const executable = (await run("sh", ["-c", "command -v helm"])).trim();
+        assert.ok(isAbsolute(executable), "the real Helm executable must have an absolute path");
+        await mkdir(shimDirectory, { mode: 0o700 });
+        await copyFile(controller, shim);
+        await chmod(shim, 0o700);
+        const clientAction = (action: string) => run("python3", [controller, client, action]);
+        const readIfPresent = async (path: string) => {
+          try {
+            return await readFile(path, "utf8");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+              return undefined;
+            }
+            throw error;
+          }
+        };
+        const save = (name: string, value: unknown) =>
+          writeFile(join(directory, name), JSON.stringify(value) + "\n", {
+            mode: 0o600,
+            flag: "wx",
+          });
+
+        // The shim execs stock Helm with unchanged arguments. Only its exact PID and
+        // Linux start time can be signalled; no API, chart hook or Helm record is faked.
+        let ended = false;
+        const command = upgrade(["--evidence-dir", evidence], {
+          ...occEnv,
+          PATH: `${shimDirectory}:${occEnv.PATH ?? process.env.PATH}`,
+          OCE_REHEARSAL_HELM: executable,
+          OCE_REHEARSAL_RELEASE: release,
+          OCE_REHEARSAL_HELM_CLIENT: client,
+        }).then(
+          () => {
+            ended = true;
+            return undefined;
+          },
+          (error: unknown) => {
+            ended = true;
+            return error;
+          },
+        );
+        const annotation = "openclaw.dev/upgrade-attempt";
+        let intent = "";
+        let initializer:
+          | {
+              metadata: { uid: string; annotations: Record<string, string> };
+              spec: { template: V1PodTemplateSpec };
+            }
+          | undefined;
+        let pending;
+        let completedPod: Pod | undefined;
+        try {
+          initializer = await waitFor("the submitted candidate's initializer", async () => {
+            assert.ok(!ended, "the upgrade ended before its Helm client could be interrupted");
+            const submitted = await readIfPresent(join(evidence, "helm-started"));
+            if (!submitted) {
+              return false;
+            }
+            const { attempt, previousRevision, expectedRevision } = protectedJSON<{
+              attempt: { nonce: string };
+              previousRevision: number;
+              expectedRevision: number;
+            }>(submitted);
+            assert.equal(previousRevision, baselineRelease.version);
+            assert.equal(expectedRevision, baselineRelease.version + 1);
+            const output = await kube(
+              "get",
+              `job/${release}-initialization`,
+              "--ignore-not-found",
+              "-o",
+              "json",
+            );
+            if (!output.trim()) {
+              return false;
+            }
+            const job = protectedJSON<V1Job>(output);
+            const metadata = job.metadata;
+            const template = job.spec?.template;
+            if (metadata?.annotations?.[annotation] !== attempt.nonce) {
+              return false;
+            }
+            assert.equal(template?.metadata?.annotations?.[annotation], attempt.nonce);
+            assert.ok(metadata.uid && template?.spec);
+            intent = submitted;
+            return {
+              metadata: { uid: metadata.uid, annotations: metadata.annotations },
+              spec: { template },
+            };
+          });
+          assert.ok(initializer);
+          await save("helm-client-stopped.json", JSON.parse(await clientAction("stop")));
+          pending = await helmStatus();
+          assert.equal(pending.version, baselineRelease.version + 1);
+          assert.equal(
+            pending.info.status,
+            "pending-upgrade",
+            "the interruption lost the Helm completion race",
+          );
+          assert.equal(
+            pending.config.installation.upgradeAttemptId,
+            initializer.metadata.annotations[annotation],
+          );
+          await custody.bindPendingRelease(pending.version);
+          const initializerUID = initializer.metadata.uid;
+          const initializerAttempt = initializer.metadata.annotations[annotation];
+          assert.ok(initializerAttempt, "initializer Job lost its upgrade attempt");
+          const installedSpec = initializer.spec.template.spec;
+          assert.ok(installedSpec);
+          assertInstallationVolume(installedSpec, successorName);
+          await retainInstallationSecrets();
+
+          // Kubernetes continues the real initialization while Helm is suspended.
+          // A successful Job alone is insufficient: require its owned, successful
+          // Pod, then independently check PostgreSQL with the candidate migrator.
+          completedPod = await waitFor<Pod>("the interrupted initializer to complete", async () => {
+            const job = await getInitializer();
+            const metadata = job.metadata;
+            assert.ok(metadata);
+            assert.equal(metadata.uid, initializerUID, "initializer Job was replaced");
+            assert.equal(
+              metadata.annotations?.[annotation],
+              initializerAttempt,
+              "initializer Job no longer identifies the submitted attempt",
+            );
+            assert.ok(
+              !metadata.deletionTimestamp && !job.status?.failed,
+              "initializer failed or is deleting",
+            );
+            const result = JSON.parse(
+              await kube(
+                "get",
+                "pods",
+                "-l",
+                `batch.kubernetes.io/controller-uid=${initializerUID}`,
+                "-o",
+                "json",
+              ),
+            ) as { items: Pod[] };
+            assert.ok(result.items.length <= 1, "initializer unexpectedly retried");
+            const pod = result.items[0];
+            if (
+              !job.status?.conditions?.some(
+                (condition: { type: string; status: string }) =>
+                  condition.type === "Complete" && condition.status === "True",
+              ) ||
+              !pod ||
+              pod.status.phase !== "Succeeded"
+            ) {
+              return false;
+            }
+            assert.ok(!pod.metadata.deletionTimestamp);
+            assertInstallationVolume(pod.spec, successorName);
+            assert.ok(
+              pod.metadata.ownerReferences?.some(
+                (owner) => owner.controller && owner.uid === initializerUID,
+              ),
+            );
+            assert.equal(pod.metadata.annotations?.[annotation], initializerAttempt);
+            const statuses = [
+              ...(pod.status.initContainerStatuses ?? []),
+              ...(pod.status.containerStatuses ?? []),
+            ];
+            assert.deepEqual(
+              statuses.map(({ name }) => name).sort(),
+              [...(pod.spec.initContainers ?? []), ...pod.spec.containers]
+                .map(({ name }) => name)
+                .sort(),
+            );
+            for (const status of statuses) {
+              assert.equal(
+                status.state?.terminated?.exitCode,
+                0,
+                "initializer container did not complete successfully",
+              );
+              await verifyPodImage(candidate, pod, status);
+            }
+            return pod;
+          });
+          await save("interrupted-initializer.json", {
+            job: await get(`job/${release}-initialization`),
+            pod: completedPod,
+          });
+          assertProtectedEqual(
+            await helmStatus(),
+            pending,
+            "pending Helm state changed during initialization",
+          );
+        } finally {
+          // Always reap this invocation before attempting recovery. If the race or
+          // a real hook fails, leave the owned fixture for diagnosis, never replay.
+          try {
+            if (await readIfPresent(client)) {
+              await save("helm-client-terminated.json", JSON.parse(await clientAction("kill")));
+            }
+          } finally {
+            await command;
+          }
+        }
+        const outcome = await command;
+        assert.ok(
+          outcome instanceof Error && /failed \(137\)/u.test(outcome.message),
+          "the interrupted helper must exit with Helm's SIGKILL status",
+        );
+        await save("helm-client-reaped.json", {
+          ...JSON.parse(await clientAction("absent")),
+          helperExit: 137,
+        });
+        await assert.rejects(
+          lstat(join(evidence, ".upgrade-lock")),
+          { code: "ENOENT" },
+          "the exited helper retained its evidence lock",
+        );
+        assert.ok(completedPod && initializer);
+        await assertNoCandidateWriters();
+        const committedHistory = await migrationReceipts(originalDatabase);
+        assert.ok(
+          committedHistory.trim().length > 0,
+          "the interrupted initializer left no committed history",
+        );
+        await checkMigration(
+          candidate,
+          initializer.spec.template,
+          originalDatabase,
+          "recovery-history",
+        );
+        assert.equal(await migrationReceipts(originalDatabase), committedHistory);
+        await save("interrupted-migration-history.json", {
+          history: committedHistory,
+          check: "completed",
+        });
+
+        const recoveryArgs = [
+          "--evidence-dir",
+          evidence,
+          "--resume",
+          "--recover-helm",
+          "--migration-history-checked",
+          "--recovery-reviewed",
+        ];
+        // The current chart has no obsolete external channel proxy to reconcile.
+        // Resume still verifies completed migration and the complete live resource set.
+        await measureGuardedResume(() => upgrade(recoveryArgs));
+        const recovered = await helmStatus();
+        assert.equal(recovered.version, baselineRelease.version + 2);
+        assert.equal(recovered.info.status, "deployed");
+        assert.equal(recovered.info.description, `Rollback to ${baselineRelease.version + 1}`);
+        for (const field of ["manifest", "config", "hooks"]) {
+          assertProtectedEqual(
+            recovered[field],
+            pending[field],
+            `recovery changed candidate ${field}`,
+          );
+        }
+        assertProtectedEqual(
+          await readFile(join(evidence, "helm-started"), "utf8"),
+          intent,
+          "recovery rewrote the original submission",
+        );
+        assert.equal(
+          (await get(`job/${release}-initialization`)).metadata.uid,
+          initializer.metadata.uid,
+          "recovery reran initialization",
+        );
+        const retainedPod = await get(`pod/${completedPod.metadata.name}`);
+        assert.equal(retainedPod.metadata.uid, completedPod.metadata.uid);
+        assertProtectedEqual(
+          retainedPod.status,
+          completedPod.status,
+          "recovery changed the completed initializer",
+        );
+        assert.equal(
+          await migrationReceipts(originalDatabase),
+          committedHistory,
+          "recovery changed the committed migration history",
+        );
+        await verifyInstallation();
+      },
+      (details) => record("Forward upgrade API availability observations", details),
+    ),
+  );
+  const candidateInitializer = await getInitializer();
+  const candidateInitializerUID = candidateInitializer.metadata?.uid;
+  assert.ok(candidateInitializerUID);
   const candidateRelease = await helmStatus();
   assert.equal(candidateRelease.info.status, "deployed");
   await custody.bindRelease(candidateRelease.version);
-  const candidatePods = await controlPlane(candidate, originalDatabase);
+  await retainInstallationSecrets();
+  const candidatePods = await controlPlane(candidate, originalDatabase, successorName);
   assert.deepEqual(writerIdentities(candidatePods), writerIdentities(previousPods));
   assert.deepEqual(await readAgent(baseline.id), baseline);
   const accepted = await createAgent("acknowledged-after-upgrade");
@@ -782,8 +1843,46 @@ export async function rehearsePopulatedReturn({
     candidatePods,
     helmRevision: candidateRelease.version,
   });
+  const returnHistory = recovery && (await migrationReceipts(originalDatabase));
+  if (recovery) {
+    await phase("Check current migration history with the recovery controller", async () => {
+      await custody.assertRelease();
+      const template = candidateInitializer.spec?.template;
+      assert.ok(template?.spec && returnHistory?.trim());
+      assertInstallationVolume(template.spec, successorName);
+      const migration = template.spec.initContainers?.find(({ name }) => name === "migration");
+      const expected = {
+        name: "OCC_MIGRATION_DATABASE_URL",
+        valueFrom: { secretKeyRef: { name: "occ-database", key: "migration-url" } },
+      };
+      for (const container of [priorMigration, migration]) {
+        const connection = container?.env?.filter(({ name }) => name === expected.name);
+        assertProtectedEqual(connection, [expected], "initializer database identity changed");
+      }
+      await checkMigration(
+        recovery,
+        template,
+        originalDatabase,
+        "return-migration-check",
+        "--require-current",
+      );
+      assert.equal(await migrationReceipts(originalDatabase), returnHistory);
+    });
+    await phase("Check recovery startup without stopping writers", () =>
+      upgrade(
+        ["--preflight-only", "--evidence-dir", join(directory, "return-preflight")],
+        occEnv,
+        recovery,
+      ),
+    );
+  } else {
+    await phase("Check the candidate database with the previous controller", async () => {
+      await custody.assertRelease();
+      await checkMigration(previous, previousJob, originalDatabase, "return-preflight");
+    });
+  }
 
-  await phase("Stop both candidate writers", async () => {
+  const stopCandidateWriters = async () => {
     await custody.assertPostgres();
     await custody.assertRelease();
     for (const { component, deploymentUID } of candidatePods) {
@@ -806,10 +1905,10 @@ export async function rehearsePopulatedReturn({
       async () => (await pods()).length === 0 && (await candidateConnections()) === "0",
     );
     await assertNoCandidateWriters();
-  });
-  await phase("Restore the candidate archive and reject the stale archive", async () => {
+  };
+  const restoreCandidateArchive = async () => {
     const receipts = await migrationReceipts(originalDatabase);
-    assert.ok(receipts.length > 0, "no candidate migration receipts");
+    assert.ok(receipts.trim().length > 0, "no candidate migration receipts");
     await dump(candidateArchive);
     await restore(staleDatabase, staleArchive);
     const stale = await databaseAgents(staleDatabase);
@@ -825,66 +1924,8 @@ export async function rehearsePopulatedReturn({
       agentIdentity(accepted),
       await databaseAgents(restoredDatabase),
     );
-  });
-
-  const probeName = "return-compatibility";
-  await phase("Check the restored database with the previous controller", async () => {
-    const probeSecret = {
-      apiVersion: "v1",
-      kind: "Secret",
-      metadata: custody.metadata(probeName),
-      data: { "migration-url": await custody.restoredMigrationURL(restoredDatabase) },
-    };
-    const probe = {
-      apiVersion: "v1",
-      kind: "Pod",
-      // Copy the chart's network policy labels, not the Job's ownership labels.
-      metadata: custody.metadata(probeName, {
-        "app.kubernetes.io/name": "openclaw-enterprise",
-        "app.kubernetes.io/instance": release,
-        "app.kubernetes.io/component": "initialization",
-      }),
-      spec: {
-        restartPolicy: "Never",
-        activeDeadlineSeconds: 120,
-        automountServiceAccountToken: false,
-        securityContext: previousJob.spec.securityContext,
-        containers: [
-          {
-            ...priorMigration,
-            args: ["scripts/migrate-production.mjs", "--check"],
-            env: [
-              { name: "NODE_ENV", value: "production" },
-              {
-                name: "OCC_MIGRATION_DATABASE_URL",
-                valueFrom: { secretKeyRef: { name: probeName, key: "migration-url" } },
-              },
-            ],
-          },
-        ],
-      },
-    };
-    await custody.create(probeSecret);
-    const probeUID = await custody.create(probe);
-    const completed = await waitFor<Pod>("previous controller migration check", async () => {
-      const pod: Pod = await get(`pod/${probeName}`);
-      assert.equal(pod.metadata.uid, probeUID, "the compatibility Pod was replaced");
-      return ["Succeeded", "Failed"].includes(pod.status.phase) ? pod : false;
-    });
-    await verifyPodImage(
-      previous,
-      completed,
-      completed.status.containerStatuses?.find(({ name }) => name === "migration"),
-    );
-    assert.equal(
-      completed.status.phase,
-      "Succeeded",
-      "previous image cannot use the restored database",
-    );
-    await verifyCompletedMigrationHistory(run, kubeArgs, probeName);
-  });
-
-  await phase("Return to the previous Helm revision on the restored database", async () => {
+  };
+  const rollBackHelm = async () => {
     await localCluster.assertCluster();
     await custody.assertRelease();
     await assertNoCandidateWriters();
@@ -893,22 +1934,83 @@ export async function rehearsePopulatedReturn({
     await custody.assertRelease();
     await helm("rollback", release, String(baselineRelease.version), "--wait", "--timeout=5m");
     await verifyInstallation();
-  });
+  };
+  const returnCustody = async () => {
+    const { metadata, spec } = await get("service/openclaw-enterprise-api");
+    assert.ok(metadata.uid && spec.clusterIP);
+    const output = await kube(
+      "get",
+      "secret/occ-auth",
+      "-o",
+      'jsonpath={.metadata.uid}{" "}{.metadata.resourceVersion}',
+    );
+    const [uid, version] = output.split(" ");
+    assert.ok(uid && version);
+    custody.assertUID("secret/occ-auth", uid);
+    return { serviceUID: metadata.uid, clusterIP: spec.clusterIP, authSecretVersion: version };
+  };
+  const custodyBeforeReturn = recovery && (await returnCustody());
+  const returnedDatabase = recovery ? originalDatabase : restoredDatabase;
+  const returnedSecret = recovery ? successorName : initialStartupSecret.metadata.name;
+  await measureUpgradeAvailability(
+    externalRequest,
+    installationId,
+    directory,
+    async () => {
+      if (recovery) {
+        await phase("Switch the controller on the live database", async () => {
+          await upgrade(["--evidence-dir", join(directory, "return")], occEnv, recovery);
+          await verifyInstallation();
+        });
+        return;
+      }
+      await phase("Stop both candidate writers", stopCandidateWriters);
+      await phase(
+        "Restore the candidate archive and reject the stale archive",
+        restoreCandidateArchive,
+      );
+      await phase("Check the restored database with the previous controller", () =>
+        checkMigration(previous, previousJob, restoredDatabase, "return-compatibility"),
+      );
+      await phase("Return to the previous Helm revision on the restored database", rollBackHelm);
+    },
+    (details) => record("Return API availability observations", details),
+    "return-api-availability.json",
+  );
   const returned = await helmStatus();
   assert.equal(returned.info.status, "deployed");
   await custody.bindRelease(returned.version);
   assert.deepEqual(await claimIdentity(), claims);
   assert.equal((await get(`namespace/${namespace}`)).metadata.uid, namespaceUID);
   assert.equal((await get(`namespace/${tenant}`)).metadata.uid, tenantUID);
-  const returnedSecret = await startupSecret();
-  assert.equal(returnedSecret.metadata.uid, initialStartupSecret.metadata.uid);
-  assert.ok(
-    returnedSecret.data["installation.yaml"] === initialStartupSecret.data["installation.yaml"],
-    "the original installation startup Secret contents changed",
+  await retainInstallationSecrets();
+  assert.equal(
+    returned.config.installation.secretName ?? "occ-installation-startup",
+    returnedSecret,
   );
-  assert.equal(returnedSecret.metadata.annotations["openclaw.dev/installation-id"], installationId);
+  const returnedInitializer = await getInitializer();
+  const returnedTemplate = returnedInitializer.spec?.template.spec;
+  assert.ok(returnedTemplate);
+  assertInstallationVolume(returnedTemplate, successorName);
+  if (recovery) {
+    assert.equal(returned.version, candidateRelease.version + 1);
+    assert.ok(
+      returnedInitializer.metadata?.uid &&
+        returnedInitializer.metadata.uid !== candidateInitializerUID,
+    );
+    assert.equal(
+      returnedTemplate.initContainers?.find(({ name }) => name === "migration")?.image,
+      recovery.reference,
+    );
+    assert.equal(await databaseOID(), originalDatabaseOID);
+    assert.equal(await migrationReceipts(originalDatabase), returnHistory);
+    assert.deepEqual(await returnCustody(), custodyBeforeReturn);
+  } else {
+    // Helm rollback retains the candidate's completed initializer.
+    assert.equal(returnedInitializer.metadata?.uid, candidateInitializerUID);
+  }
   await custody.assertPostgres();
-  const returnedPods = await controlPlane(previous, restoredDatabase);
+  const returnedPods = await controlPlane(recovery ?? previous, returnedDatabase, returnedSecret);
   assert.deepEqual(writerIdentities(returnedPods), writerIdentities(previousPods));
   for (const pod of returnedPods) {
     assert.ok(![...previousPods, ...candidatePods].some((earlier) => earlier.uid === pod.uid));
@@ -917,10 +2019,10 @@ export async function rehearsePopulatedReturn({
     "Verify authentication and read the acknowledged write through the returned OCC",
     async () => {
       await assertReturnedInstallationAuthentication(externalRequest, installationId);
-      // Bind the database readback to both serving controller Pods and check that
-      // the retained candidate database has no application connections.
+      // Bind the database readback to both serving controller Pods. Archive
+      // returns must also leave the original database without application connections.
       await waitFor(
-        "both returned controller connections on the restored database",
+        "both returned controller connections on the selected database",
         async () => {
           assertReturnedAgents(baseline, accepted, [
             await readAgent(baseline.id),
@@ -937,6 +2039,7 @@ export async function rehearsePopulatedReturn({
           return returnedDatabaseConnections(
             active,
             returnedPods.map(({ ip }) => ip),
+            returnedDatabase,
           );
         },
         30_000,
@@ -948,14 +2051,39 @@ export async function rehearsePopulatedReturn({
       );
     },
   );
+  if (recovery) {
+    const written = await createAgent("acknowledged-after-return");
+    assert.deepEqual(await readAgent(written.id), written);
+    assertReturnedAgents(
+      agentIdentity(accepted),
+      agentIdentity(written),
+      await databaseAgents(originalDatabase),
+    );
+    await record("Recovery OCC acknowledged a new Agent on the retained database", { written });
+  }
   await record("Populated controller upgrade and compatible return", {
     installationId,
     namespaceId,
     baseline,
     accepted,
     returnedPods,
-    restoredDatabase,
+    ...(recovery
+      ? {
+          recovery,
+          retainedDatabase: originalDatabase,
+          databaseOID: originalDatabaseOID,
+          migrationHistoryUnchanged: true,
+          serviceUID: custodyBeforeReturn?.serviceUID,
+        }
+      : { restoredDatabase, returnedToHelmRevision: baselineRelease.version }),
     returnedHelmRevision: returned.version,
-    returnedToHelmRevision: baselineRelease.version,
+    installationReferences: {
+      original: {
+        name: initialStartupSecret.metadata.name,
+        uid: initialStartupSecret.metadata.uid,
+      },
+      successor: { name: successorName, uid: successor.metadata.uid },
+      retained: true,
+    },
   });
 }

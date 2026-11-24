@@ -1,29 +1,31 @@
 # Enable OIDC sign-in
 
-Generic OpenID Connect (OIDC) sign-in lets enrolled accounts sign in through one
-identity provider (IdP) such as Keycloak, Okta, Microsoft Entra ID or Auth0. It works
-like [Google sign-in](google-sign-in.md): an Installation administrator attaches a
-person's exact IdP identity to an existing OpenClaw Enterprise (OCE) account, and that
-person can then sign in with the IdP or with the account password. OIDC sign-in creates
-no account, maps no groups or roles, and never matches accounts by email address.
+Generic OpenID Connect (OIDC) lets people sign in through one configured identity
+provider (IdP). For an existing OCE account, attach the person's exact IdP identity
+explicitly. To create new accounts at first login, configure
+[OIDC enrollment](../../reference/authentication/team-enrollment.md) with an
+admission rule and initial access. Neither path links accounts by email.
+For existing direct GitHub installations, follow the [upgrade procedure](oidc-upgrade.md).
 
 It uses the same guarded
-[single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-as GitHub and Google: exact `Origin` checks, PKCE (`S256`), one-use state, the
+[single-controller profile](../../reference/authentication/external-sign-in.md#external-sign-in-profile)
+as Google: exact `Origin` checks, PKCE (`S256`), one-use state, the
 `__Host-` browser-binding cookie, the shared admission limits, eight-hour sessions, and
 the `attemptId`, login receipt and one-use result exchange. You can enable OIDC alone or
-together with GitHub and Google. One issuer is supported per Installation.
+together with Google. One issuer is supported per Installation.
 
 ## Requirements
 
-- Everything the [GitHub profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
+- Everything the [external sign-in profile](../../reference/authentication/external-sign-in.md#external-sign-in-profile)
   requires: one serving controller, PostgreSQL State, native IAM, one canonical HTTPS
-  Console origin, and `agentNativeAdmin.enabled: false`.
+  Console origin, and an Agent DNS suffix under the same non-public domain.
+  OIDC can enable [native chat and administration](native-admin.md); the existing
+  `operate` and `administer` permissions select access.
 - A controller image that includes OIDC sign-in.
   [Build a compatible image](production-installation.md#build-and-publish-production-images).
 - An IdP that serves its issuer, authorization, token and JWKS URLs over HTTPS on port
-  443 from one DNS host name, and signs ID tokens with RS256 keys of at least 2,048 bits.
-- API Pod HTTPS egress to that host. Browsers, not the API, visit the authorization URL.
+  443 with DNS host names, and signs ID tokens with RS256 keys of at least 2,048 bits.
+- API Pod HTTPS egress to the token and JWKS hosts. Browsers visit the authorization URL.
 - A certificate the API and users' browsers trust. Publicly trusted certificates need
   no extra chart configuration. For a private IdP CA, use the
   [CA Secret settings](#trust-a-private-idp-ca) below; browser trust is managed separately.
@@ -33,30 +35,43 @@ together with GitHub and Google. One issuer is supported per Installation.
 Create a confidential web client (authorization code flow, no implicit grant) with one
 redirect URI: `OCC_AUTH_BASE_URL` followed by `/api/auth/providers/oidc/callback`, for
 example `https://occ.example.com/api/auth/providers/oidc/callback`. The controller
-requests only the `openid` scope, sends PKCE and a nonce, and never reads email or
-profile claims. Save the client ID and secret to protected files.
+sends PKCE and a nonce. It requests `openid`, adding `email`, `profile` and
+configured additional scopes when enrollment is enabled. Save the client ID and secret to protected files.
+
+For first-login account creation, configure the IdP to include a standard `email`
+and the admission group claim in its signed ID token. A single group may be a
+string; multiple groups use an array of strings. Set
+`auth.oidc.enrollment.createAccount.requireVerifiedEmail: false` only when your
+policy permits creating accounts with unverified email. The default is `true`.
+The same field works in `controlPlane.oidc.enrollment` for installation profiles
+and in the `OCC_AUTH_OIDC_ENROLLMENT` JSON object. See the
+[enrollment policy](../../reference/authentication/team-enrollment.md) for claim
+validation, initial access and collision handling.
 
 Copy four values from the IdP's discovery document
 (`<issuer>/.well-known/openid-configuration`): `issuer`, `authorization_endpoint`,
 `token_endpoint` and `jwks_uri`. The controller never fetches the discovery document, so
 these values are reviewed configuration. Each must be `https:` on port 443 with a DNS
-host name, no user name, query or fragment, and all four must share the issuer's host.
+host name and no user name, query or fragment. The endpoint hosts can differ. Review the
+token URL carefully: the controller sends the confidential client secret to that exact URL. It
+does not accept token endpoints from responses or follow redirects.
 Copy the issuer exactly, without a port: the controller compares it byte for byte with the
 token's `iss`.
 
-| IdP      | Values that fit                                                                                                                                                                  |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Keycloak | Issuer `https://<host>/realms/<realm>`; endpoints `…/protocol/openid-connect/{auth,token,certs}`; a confidential client. Verified in CI; see [Keycloak](oidc-keycloak.md).       |
-| Okta     | Org server `https://<org>.okta.com` with `/oauth2/v1/…`, or a custom server `https://<org>.okta.com/oauth2/<id>` with `/oauth2/<id>/v1/…`.                                       |
-| Auth0    | Issuer `https://<tenant>.auth0.com/` (with the trailing slash) or the custom domain for all four values; the application must sign with RS256.                                   |
-| Entra ID | Tenant **v2** only: `https://login.microsoftonline.com/<tenant>/v2.0`, `/oauth2/v2.0/{authorize,token}`, `/discovery/v2.0/keys`. The v1 issuer `sts.windows.net` does not match. |
+| IdP      | Values that fit                                                                                                                                                                                    |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Google   | [Public metadata](https://accounts.google.com/.well-known/openid-configuration) uses issuer `https://accounts.google.com`, token host `oauth2.googleapis.com`, and JWKS host `www.googleapis.com`. |
+| Keycloak | Issuer `https://<host>/realms/<realm>`; endpoints `…/protocol/openid-connect/{auth,token,certs}`; a confidential client. Verified in CI; see [Keycloak](oidc-keycloak.md).                         |
+| Okta     | Org server `https://<org>.okta.com` with `/oauth2/v1/…`, or a custom server `https://<org>.okta.com/oauth2/<id>` with `/oauth2/<id>/v1/…`.                                                         |
+| Auth0    | Issuer `https://<tenant>.auth0.com/` (with the trailing slash) or the custom domain for all four values; the application must sign with RS256.                                                     |
+| Entra ID | Tenant **v2** only: `https://login.microsoftonline.com/<tenant>/v2.0`, `/oauth2/v2.0/{authorize,token}`, `/discovery/v2.0/keys`. The v1 issuer `sts.windows.net` does not match.                   |
 
 The `issuer` value must equal the ID token's `iss` exactly, trailing slash included.
 
 ## Configure the chart
 
 Create a dedicated Secret, distinct from every other Secret the chart reads, including
-the GitHub and Google ones:
+the Google one:
 
 ```bash
 kubectl -n openclaw-system create secret generic occ-oidc-login \
@@ -81,15 +96,17 @@ auth:
     tokenAuth: client_secret_post # or client_secret_basic
     displayName: Acme SSO # optional button label, up to 40 characters
     egressCidrs: [] # optional IPv4 CIDRs
-agentNativeAdmin:
-  enabled: false
 ```
 
-Rendering fails on the URL rules above, a shared Secret, an HTTP base URL, native
-administration, an unknown `tokenAuth`, a label over 40 characters, or an invalid CIDR;
+OIDC supports [native browser access](native-admin.md); enable it separately
+when users need Agent chat or administration.
+
+Rendering fails on the URL rules above, a shared Secret, an HTTP base URL,
+an unknown `tokenAuth`, a label over 40 characters, or an invalid CIDR;
 the API refuses the same values at startup. The chart adds the API-only NetworkPolicy
 `openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `egressCidrs` allows any
-address except link-local `169.254.0.0/16`; list the IdP's ranges to narrow it.
+address except link-local `169.254.0.0/16`; list the ranges for both the token and JWKS
+hosts to narrow it.
 
 The policy matches the destination Pod port after the Service forwards the connection,
 not the Service port. An IdP outside the cluster is reached on 443. For an IdP that runs
@@ -133,7 +150,7 @@ The API reads these variables; see
 | `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET`     | `auth.oidc` Secret keys                                   |
 | `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`, rendered only when not the default |
 | `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`, rendered only when set           |
-| `OCC_AUTH_GITHUB_RECOVERY_USER_ID`                           | `auth.recoveryUserId`                                     |
+| `OCC_AUTH_RECOVERY_USER_ID`                                  | `auth.recoveryUserId`                                     |
 
 Enable it with the same stopped maintenance as
 [Google](google-sign-in.md#enable-it). `GET /api/auth/providers` then returns
@@ -272,8 +289,12 @@ kubectl -n openclaw-system rollout restart deployment/openclaw-enterprise-api
 kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api --timeout=5m
 ```
 
-Replacing the single API replica interrupts service until it is ready. Ordinary leaf
-renewal under the same CA needs no restart.
+Replacing the single API replica interrupts Console requests and closes open Agent
+connections. After the API is ready, reload the named Agent page. With the same
+authentication settings, a live Console session and an unexpired host-only handle
+can reopen the same Agent revision. If the handle expired or the revision changed,
+open the Agent again from the Console. Ordinary leaf renewal under the same CA
+needs no restart.
 
 ## Find a person's subject
 
@@ -327,7 +348,7 @@ afterwards. To add someone who should sign in only through the IdP, follow
 - An IdP outage fails sign-in closed while sessions and the recovery password keep
   working. When the IdP is down before the person reaches it, OCE sees nothing; when it
   fails after, the Console says sign-in is unavailable. OIDC shares the external sign-in
-  budgets with GitHub and Google. See [Read an outage](oidc-operations.md#read-an-outage).
+  budgets with Google. See [Read an outage](oidc-operations.md#read-an-outage).
 - OCE does not learn when the IdP disables someone, and sign-out is local. For
   offboarding, see [Offboard a person](oidc-operations.md#offboard-a-person).
 

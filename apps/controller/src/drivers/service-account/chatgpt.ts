@@ -40,9 +40,9 @@ interface CredentialStorage {
     readonly namespaceId: string;
     readonly serviceAccountId: string;
     readonly secretRef: SecretReference;
-    /** Set by a failed issuance's compensation: delete only a Secret holding this token. */
+    /** Set by failed issuance compensation: the Secret must still hold this token. */
     readonly accessToken?: string;
-    /** Set when reclaiming a leftover: delete only a Secret recording this credential. */
+    /** When supplied, the Secret must also record this exact credential. */
     readonly credentialId?: string;
   }): Promise<void>;
 }
@@ -125,29 +125,40 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
       accountId: linked.externalAccountId,
       name: `occ-${account.id}`,
     });
-    this.controller.registerRollback(() =>
-      this.client.deleteCredential({
+    let secretRef: SecretReference | undefined = undefined;
+    // Rollback releases the account row lock before compensation. Revoke the exact
+    // provider credential first, then remove only its receipt; another issuance may
+    // already have stored a different Secret under the same deterministic name.
+    this.controller.registerRollback(async () => {
+      await this.client.deleteCredential({
         accountId: linked.externalAccountId,
         credentialId: credential.id,
-      }),
-    );
+      });
+      const reference =
+        secretRef ??
+        (
+          await this.compute.findServiceAccountCredential({
+            namespaceId: account.namespaceId,
+            serviceAccountId: account.id,
+          })
+        )?.secretRef;
+      if (reference !== undefined) {
+        await this.compute.deleteServiceAccountCredential({
+          namespaceId: account.namespaceId,
+          serviceAccountId: account.id,
+          secretRef: reference,
+          accessToken: credential.accessToken,
+          credentialId: credential.id,
+        });
+      }
+    });
 
-    const secretRef = await this.compute.storeServiceAccountCredential({
+    secretRef = await this.compute.storeServiceAccountCredential({
       namespaceId: account.namespaceId,
       serviceAccountId: account.id,
       credentialId: credential.id,
       accessToken: credential.accessToken,
     });
-    // Compensations run after ROLLBACK released the account row lock, when another issuance
-    // may already have stored its Secret under the same name: delete only this token's.
-    this.controller.registerRollback(() =>
-      this.compute.deleteServiceAccountCredential({
-        namespaceId: account.namespaceId,
-        serviceAccountId: account.id,
-        secretRef,
-        accessToken: credential.accessToken,
-      }),
-    );
 
     const result = await this.query(
       `UPDATE occ.service_account_driver_bindings

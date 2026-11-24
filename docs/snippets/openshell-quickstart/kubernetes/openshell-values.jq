@@ -24,7 +24,7 @@
     "image": {
       "registry": $registry,
       "repository": $repository,
-      "digest": "sha256:9ca31b210cb0811db12bb52783de74f1fe279722cbc70cc24588e56811616e0d",
+      "digest": "sha256:493cfd8a2697534e69b781755d4adbd54cab50eb39f0a564635f865da3cfcc57",
       "pullPolicy": "IfNotPresent"
     }
   },
@@ -32,7 +32,7 @@
     "image": {
       "registry": $registry,
       "repository": $repository,
-      "digest": "sha256:c931744fd5755e714972f594dc3d65f917bf41fb89af81d0f8ecad66cdc2adc0",
+      "digest": "sha256:a22db0292463d7bbdbbac0bc16625c1d2fc60a1d86b77638169f9d6c11035920",
       "pullPolicy": "IfNotPresent"
     }
   },
@@ -40,7 +40,7 @@
     "image": {
       "registry": $registry,
       "repository": $repository,
-      "digest": "sha256:8128d88fb564497d6c0281295e87eae57f11d21cdc95ac69025a670de5e52c7d",
+      "digest": "sha256:e93c39c4afe715ae5409b19d20cea74db767c51ac8cf1f92970d7925efe925e5",
       "pullPolicy": "IfNotPresent"
     }
   },
@@ -69,7 +69,6 @@
       "signingSecretName": "openshell-jwt-signing-key",
       "gatewayId": "openshell-gateway"
     },
-    "defaultRuntimeClassName": "openshell-sandbox",
     "dataStorageClass": $storageClass,
     "dataStorageSize": "1Gi",
     "drivers": {
@@ -84,6 +83,9 @@
     }
   },
   "gatewayConfig": {
+    "openshell.gateway": {
+      "mutation_admission_limit_per_caller": 5000
+    },
     "openshell.drivers.kubernetes": {
       "allowed_pod_labels": [
         "openclaw.dev/*",

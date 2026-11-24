@@ -3,7 +3,7 @@ import { GitHubRepositoryPolicy } from "../../drivers/repo/github/policy.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   type GitHubRepositoryRegistry,
-} from "../../drivers/repo/github/credentials/registry.ts";
+} from "../../drivers/repo/github/access/registry.ts";
 import { loadGitHubRepositoryRegistry } from "./registry.ts";
 
 export type RepositoryPolicyInput<Configuration = Readonly<Record<string, unknown>>> = {

@@ -1,16 +1,16 @@
-import type { ModelProviderConfiguration } from "../compute/model-provider.ts";
 import type {
   Backend,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   CredentialProviderDefinition,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import type { OpenShellGateway } from "../../backends/openshell.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import type { RepositoryTransportBinding } from "../../composition/repository-credentials/contracts.ts";
-import type { RepositoryGitDeliveryResolver } from "../repo/credentials/delivery.ts";
+import type { RepositoryGitDeliveryResolver } from "../repo/access/delivery.ts";
 import type { OpenShellSandboxDriverSelection } from "../sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
+import { PostgresOpenShellGitRouteStore } from "./openshell-git-route-store.ts";
+import { OpenShellLegacyEgressProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
 import {
   OpenShellGitRuntime,
   type OpenShellGitRuntimeConfiguration,
@@ -35,11 +35,11 @@ export function createOpenShellCapabilities(input: {
     readonly resolveDelivery: RepositoryGitDeliveryResolver | undefined;
   };
   readonly proxy?: {
-    readonly modelProvider?: ModelProviderConfiguration;
     readonly id: string;
     readonly configuration: OpenShellProxyOptions;
     readonly exchangeAuthority?: EgressAuthorityConfiguration;
     readonly preparedProviders: readonly CredentialProviderDefinition[];
+    readonly repositoryOriginRefusal?: string | undefined;
   };
 }) {
   const configuration = input.repository?.configuration;
@@ -62,24 +62,27 @@ export function createOpenShellCapabilities(input: {
       ...(git && { openShellGit: git }),
     },
   );
-  const proxy: CredentialProxyDriver | undefined =
+  const proxy: LegacyEgressProxyDriver | undefined =
     input.proxy &&
-    new OpenShellCredentialProxyDriver(input.proxy.configuration, {
+    new OpenShellLegacyEgressProxyDriver(input.proxy.configuration, {
       id: input.proxy.id,
       backend: input.backend,
       sandbox,
       preparedProviders: input.proxy.preparedProviders,
-      ...(input.proxy.modelProvider === undefined
-        ? {}
-        : { modelProvider: input.proxy.modelProvider }),
+      repositoryOriginRefusal: input.proxy.repositoryOriginRefusal,
       ...(input.proxy.exchangeAuthority && { exchangeAuthority: input.proxy.exchangeAuthority }),
       ...(git && {
         bindRepositoryGit: git.bindRepositoryGit.bind(git),
         previewEnforcement: git.previewEnforcement.bind(git),
+        boundGitRule: git.boundGitRule.bind(git),
         mandatoryEnforcement: git.mandatoryEnforcement.bind(git),
       }),
     });
   const repositoryTransport: RepositoryTransportBinding | undefined = git && {
+    connectRestartObservation(pool) {
+      const store = new PostgresOpenShellGitRouteStore(pool);
+      git.connectRestartObservation(store.restartEvidence.bind(store));
+    },
     async bind(authority, pool, emit) {
       if (!authority || !proxy?.bindRepositoryGit) {
         throw new Error("Missing the selected Driver's protected repository Git authority.");

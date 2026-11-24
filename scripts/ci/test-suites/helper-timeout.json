@@ -1,7 +1,7 @@
 {
   "files": [
     {
-      "path": "tests/integration/dev-up-timeout.test.mjs",
+      "path": "tests/integration/dev-up-timeout.test.ts",
       "expectedTests": [
         "dev-up waits the full helper deadline before failing a running but unready worker"
       ]

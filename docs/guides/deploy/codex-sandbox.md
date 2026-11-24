@@ -1,8 +1,8 @@
 # Enable Codex sandbox execution on Kubernetes
 
 Use a reviewed node-local seccomp profile when the container runtime's
-`RuntimeDefault` profile blocks Codex's bubblewrap sandbox. Keep the Agent's
-`workspace-write` sandbox enabled. The Kubernetes Compute Driver's existing
+`RuntimeDefault` profile blocks Codex's bubblewrap sandbox. This default procedure
+keeps the Agent's `workspace-write` sandbox enabled. The Kubernetes Compute Driver's existing
 `runtime.codexSeccompProfile` setting selects the profile for the dedicated Codex
 container; [security](../../reference/security.md#pod-and-container-hardening) defines
 the remaining containment requirements.
@@ -25,6 +25,27 @@ production runtime digest before enabling it for Agents. The disposable
 [local Kubernetes launcher](local-kubernetes-development.md#start-the-profile)
 separately prepares and verifies a profile inside its own k3d node.
 
+## Explicit container-only development verification
+
+For an authorized disposable development run with Sandbox Driver `none`, set
+`OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE=danger-full-access` before `occ dev up`.
+The default is `workspace-write`. This selector changes startup verification;
+it does not change Agent or Preset configuration.
+
+The launcher reports workspace-write sandbox proof as not applicable and not
+performed. It installs no custom seccomp profile and does not verify the container
+boundary at startup. The real Agent workflow must verify its Pod security,
+NetworkPolicies and effective native turn policy.
+
+Configure each intended Codex Agent explicitly with
+`plugins.entries.codex.config.appServer.sandbox: danger-full-access` and disable
+that Agent's inner Codex network proxy profile, which otherwise selects a workspace
+permission profile. Keep Kubernetes NetworkPolicies in force. Retain its
+approval policy and reviewer. Verify the authenticated runtime's effective grant
+before model execution: managed requirements can refuse this mode. The container
+is the containment boundary for this run. Do not describe it as workspace-write
+proof. Standard presets and host security policy remain unchanged.
+
 ## Identify the restriction
 
 The message `bwrap: No permissions to create a new namespace` does not identify
@@ -33,6 +54,13 @@ architecture, runtime image digest, Codex version, effective OCI seccomp policy,
 and container security context. Check the host's user-namespace support and any
 AppArmor or SELinux restrictions separately. Successful execution through
 `require_escalated` establishes neither sandbox compatibility nor containment.
+
+On disposable k3d, a failed probe on a Ready Pod emits an
+`OCE_CODEX_SECCOMP_PROBE_FAILURE` record before cleanup. Use the Pod and container
+IDs, node, image digest, and timestamps to correlate authorized host evidence.
+`profileVerification: "passed"` means the effective OCI profile matched the
+installed profile. The sandbox probe still failed. The record reports the
+Pod's security settings and omits raw command output and runtime inspection.
 
 An EKS investigation on Amazon Linux 2023, kernel `6.12.103`, containerd `2.2.7`,
 and Codex `0.156.0` found that the effective profile defaulted to
@@ -49,8 +77,16 @@ or host probe contradicts that diagnosis.
 On each distinct eligible node configuration, create a disposable probe Pod
 using your approved runtime digest, `RuntimeDefault`, UID/GID 1000, dropped
 capabilities, `allowPrivilegeEscalation: false`, and a read-only root filesystem.
-Set size limits for its writable workspace, home, and temporary volumes. Do not
-include Agent credentials or persistent data. Keep the default kubeconfig unchanged.
+Use this setup for both the baseline Pod and the profile check below.
+
+- Set `spec.automountServiceAccountToken: false` and `spec.securityContext.fsGroup: 1000`.
+- Mount separate size-limited `emptyDir` volumes at `/workspace`, `/home/node`, and
+  `/tmp`. Set `CODEX_HOME=/home/node/.codex`.
+- Name the container `probe`. Set its `command` to
+  `["node", "-e", "setInterval(()=>{},1000)"]` to keep it running.
+
+Do not include credentials or persistent data. Keep the default kubeconfig
+unchanged. Wait until the container is Ready before you inspect it.
 
 Through your authorized host-management channel, capture only the running
 probe container's effective seccomp policy. On a containerd node with `crictl`
@@ -71,7 +107,7 @@ containerd or Docker profile from the internet.
 From the OCE repository root, generate the compatibility artifact offline:
 
 ```sh
-node scripts/generate-codex-seccomp.mjs \
+node scripts/generate-codex-seccomp.ts \
   --baseline runtime-default.json \
   --codex-version 0.164.0 \
   --out codex-bwrap.json
@@ -120,7 +156,56 @@ the Codex container from starting. A node label alone does not prove installatio
 your provisioning process must verify the file and runtime probe before assigning
 eligibility.
 
-Set the relative path in the Installation configuration for both API and worker:
+## Verify the sandbox boundary
+
+Create a second [restricted disposable Pod](#capture-and-generate-the-profile)
+on the same node with the same container command and volume settings.
+Keep the Pod on `RuntimeDefault`. Select the installed `Localhost` profile
+for the `probe` container. Wait until it is Ready. Verify its running image
+digest and effective OCI policy before you run the probe.
+**Never use an Agent Pod or persistent data.** The probe deletes and rewrites
+fixed marker files in the home directory and workspace.
+
+From the OCE checkout for your runtime, run the following command with permission
+to execute commands in the disposable Pod. Set the four `PROBE_*` variables to
+select that Pod. Use the Codex version approved for the profile.
+
+```sh
+script=$(cat scripts/lib/codex-sandbox-probe.sh) &&
+nonce=$(openssl rand -hex 16) &&
+timeout 90s kubectl --kubeconfig "${PROBE_KUBECONFIG:?}" --context "${PROBE_CONTEXT:?}" \
+  --namespace "${PROBE_NAMESPACE:?}" exec "${PROBE_POD:?}" --container probe -- \
+  sh -c "$script" codex-sandbox-probe 0.164.0 "$nonce"
+```
+
+Require exit status 0 and these stderr markers, each once and in order, with
+the value of `$nonce`.
+
+```text
+OCE_SANDBOX_PROBE_V1:<nonce>:START
+OCE_SANDBOX_PROBE_V1:<nonce>:ENTERED
+OCE_SANDBOX_PROBE_V1:<nonce>:END:DONE:0
+```
+
+The probe checks that `workspace-write` permits a workspace write and blocks
+a write to a file the container can modify outside the sandbox. It verifies
+that the outside file is unchanged. Sandbox network access is disabled. Check
+enabled access separately if your deployment requires it.
+
+If the command exits 1 and bubblewrap reports `Failed RTM_NEWADDR`, check
+the markers. Exactly `START` followed by `END:SANDBOX:1` for this nonce,
+without `ENTERED`, means sandbox setup failed. Use
+[node evidence](#identify-the-restriction) to identify the restriction.
+A timeout, lost connection, incomplete or duplicate markers, a different
+nonce, or a conflicting exit status leaves the result unknown.
+
+Repeat with a separate disposable Pod on the same node. Change only the
+`Localhost` profile path to one that does not exist. Require no container ID
+and a `CreateContainerError` that identifies that exact missing profile.
+Remove only probe-owned resources.
+
+After these checks pass, set the relative path in the Installation configuration
+for both API and Worker.
 
 ```yaml
 drivers:
@@ -136,21 +221,6 @@ gateway, embedded runtime, controller, and init containers retain
 `RuntimeDefault`. Reconcile a disposable Agent through the normal deployment
 workflow and inspect its effective OCI policy. Do not claim success from the
 rendered manifest or a Ready Pod alone.
-
-## Verify the sandbox boundary
-
-First use the restricted disposable Pod to verify the exact runtime image and
-profile. Bound each command with a timeout and remove only probe-owned resources.
-
-1. Outside the Codex sandbox, write a marker to a container-writable path outside
-   the workspace, such as a disposable file under the probe's writable home.
-   A read-only container root is not a meaningful negative sandbox test.
-2. Run the actual `codex sandbox` command with `workspace-write`. Require a
-   successful workspace write and a denied write to that same outside path;
-   verify the outside marker is unchanged. Check both enabled and disabled
-   sandbox network access if both are required by your deployment.
-3. Select a nonexistent Localhost profile for a separate disposable probe.
-   Require container creation to fail; do not introduce a fallback.
 
 Then verify the ordinary Agent workflow with `sandbox: workspace-write` and
 `approvalPolicy: never`. Request a native command that writes and reads a unique

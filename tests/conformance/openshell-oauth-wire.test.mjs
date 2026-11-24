@@ -11,7 +11,7 @@ import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
-import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));

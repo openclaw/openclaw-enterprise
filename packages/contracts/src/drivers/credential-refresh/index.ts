@@ -1,3 +1,4 @@
+import type { CredentialRefreshStatus } from "../token-service/index.ts";
 import type { CredentialSourceContext } from "../credential-gateway/index.ts";
 import type { Driver } from "../index.ts";
 
@@ -7,16 +8,6 @@ export interface CredentialRefreshInput {
   readonly secrets: Readonly<Record<string, string>>;
   /** A UUID, stable per source and configuration attempt, so a replay is not applied twice. */
   readonly requestId: string;
-}
-
-export interface CredentialRefreshStatus {
-  readonly state: "pending" | "ready" | "failed";
-  readonly expiresAt?: string;
-  readonly nextRefreshAt?: string;
-  readonly lastRefreshAt?: string;
-  /** Implementation-owned identifier, never provider-controlled text. */
-  readonly failureCode?: string;
-  readonly recoveryAction?: "retry" | "reauthorize" | "fix_configuration" | "investigate";
 }
 
 /**

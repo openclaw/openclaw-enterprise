@@ -222,10 +222,22 @@ export function createDriver({
         },
         removeRevision: outsideProfile,
       },
+      // This external package advertises staged delivery but refuses every operation. Startup
+      // selects that role only when OCC TokenService is actually configured.
+      credential_proxy_delivery: {
+        id,
+        implementation,
+        capability: "credential_proxy_delivery",
+        deployProxy: outsideProfile,
+        configureDeployment: outsideProfile,
+        getDeploymentStatus: outsideProfile,
+        removeDeployment: outsideProfile,
+      },
     },
-    computeLifecycleHooks: {
-      async afterNamespacePrepared() {
+    namespaceLifecycleHooks: {
+      async ensureNamespace({ namespace }) {
         calls.lifecycle++;
+        return { namespaceId: namespace.id, namespaceReady: true };
       },
     },
     close() {

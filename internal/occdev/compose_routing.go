@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// prepareComposeRoutingFiles keeps routing material private when the host UID
+// prepareComposePrivateFiles keeps mounted credentials private when the host UID
 // differs from the non-root users in the selected control-plane images.
-func (r *runner) prepareComposeRoutingFiles(ctx context.Context, state *developmentState) error {
+func (r *runner) prepareComposePrivateFiles(ctx context.Context, state *developmentState, gatewayRouting bool) error {
 	// Create without starting the readers, and inspect their actual images and
 	// Compose user overrides rather than assuming the image's default UID.
 	readers := []string{"controller", "worker-kubernetes"}
@@ -26,6 +26,9 @@ func (r *runner) prepareComposeRoutingFiles(ctx context.Context, state *developm
 	var owner [2]int
 	var readerImage string
 	for index, service := range readers {
+		if !gatewayRouting && service != "browser-proxy" {
+			continue
+		}
 		id, err := r.output(ctx, r.engine, "ps", "--all", "--quiet",
 			"--filter", "label=com.docker.compose.project="+state.ComposeProject,
 			"--filter", "label=com.docker.compose.service="+service)
@@ -71,7 +74,10 @@ func (r *runner) prepareComposeRoutingFiles(ctx context.Context, state *developm
 			}
 		}
 	}
-	return r.assignComposeFileOwner(ctx, state, readerImage, owner, []string{"gateway-api-key", "gateway-ca.crt"})
+	if gatewayRouting {
+		return r.assignComposeFileOwner(ctx, state, readerImage, owner, []string{"gateway-api-key", "gateway-ca.crt"})
+	}
+	return nil
 }
 
 func (r *runner) assignComposeFileOwner(ctx context.Context, state *developmentState, image string, owner [2]int, files []string) error {

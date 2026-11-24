@@ -20,7 +20,7 @@ process startup procedures.
 ## Requirements
 
 - Node.js 24 or newer and the repository's existing workspace dependencies.
-- For default Compose development, Docker Engine and `docker compose`. To deploy
+- For the Docker Compute development preview, Docker Engine and `docker compose`. To deploy
   Agents locally, follow [Local Setup](../guides/quickstart.md).
 - A migrated local PostgreSQL database and an API using the same application
   connection; the full Compose stack starts both. See the
@@ -119,6 +119,11 @@ The worker emits fixed operational event classes through the same logger:
 - `worker.started`: confirms the selected Compute Driver and optional
   SandboxDriver.
 - `worker.health`: reports readiness and pending work count at debug level.
+  A failed check logs code `HEALTH_UNAVAILABLE` with `dependency`, the failed
+  step (`work-queue`, `repository-credential-broker` or `readiness-report`), and
+  `cause`, the error class. The first check after start logs it as
+  `worker.health-warning`, because a sidecar can still be starting; every later
+  failure logs `worker.error`.
 - `worker.completed`: includes `namespaceId`, work identity, attempt, outcome
   and a stable result code; for an Agent stop, deletion or credential-source
   withdrawal, an exhausted retry is `outcome: permanent` while `result` stays
@@ -202,9 +207,11 @@ A prepared repository App key that cannot sign stops the worker with
   the worker and inspect the per-Namespace Docker network labels. Docker Agent
   container tooling is for contributor verification; it cannot deploy through
   the public API. Use [Docker Compute Driver troubleshooting](drivers/docker-compute.md#troubleshooting).
-- **Configuration creation returns `503`:** Confirm the API, not the worker,
-  has `OCC_DEVELOPMENT_CONFIGURATION_ROOT` set and can write the
-  `/app/.development/configurations` mount backed by `occ_configuration_data`.
+- **Configuration creation returns `503`:** For the Kubernetes Configuration Driver, check the
+  [tenant namespace and API RoleBinding](#startup-and-readiness-contract). For the filesystem
+  Driver in Compose development, confirm the API has `OCC_DEVELOPMENT_CONFIGURATION_ROOT` set
+  and can write to the `/app/.development/configurations` mount backed by
+  `occ_configuration_data`.
 - **AgentRevision does not activate:** Confirm its Namespace is `ready`, the
   original actor retains exact-Agent `deploy` permission and `read` on any
   account in its immutable version, and its pinned Harness descriptor and
@@ -230,14 +237,10 @@ A prepared repository App key that cannot sign stops the worker with
   Confirm the API and worker egress policy still allows that address (Helm
   `cluster.cidrs` and `cluster.port`) and that the server is running.
 - **`AUTH_SECRET_INVALID` or `AUTH_BASE_URL_INVALID` at startup:** The API
-  and the initialization Job refuse a missing `OCC_AUTH_SECRET` or one under 32
-  characters (`AUTH_SECRET_INVALID`), and an `OCC_AUTH_BASE_URL` that is not an
-  absolute HTTP(S) origin (`AUTH_BASE_URL_INVALID`). In production the Job also
-  requires HTTPS unless the host is loopback; in development the base URL host
-  must be loopback. With native admin enabled, the API also reports
-  `AUTH_BASE_URL_INVALID` for an `OCC_AUTH_COOKIE_DOMAIN` that is malformed, a
-  public suffix, does not contain the base URL host, or is used without HTTPS
-  session cookies.
+  and initialization Job require an auth secret of at least 32 characters,
+  an HTTPS Console origin, and an Agent DNS domain. The two hosts must share
+  a non-public DNS suffix. IP-based origins and the removed cookie-domain
+  settings are rejected. See [shared browser sessions](authentication.md#native-admin-shared-sessions).
 - **`GATEWAY_API_KEY_UNAVAILABLE` at startup:** The API refuses an
   `OCC_GATEWAY_API_KEY_PATH` that is blank or not absolute, and a key file that
   is missing, not a regular file, over 4 KiB, or not printable ASCII without
@@ -247,10 +250,9 @@ A prepared repository App key that cannot sign stops the worker with
 - **`WORKER_READINESS_PATH_INVALID` or `WORKER_LIVENESS_PATH_INVALID` at startup:**
   The worker refuses an `OCC_WORKER_READINESS_PATH` or `OCC_WORKER_LIVENESS_PATH`
   that is relative, names a directory, or cannot be written.
-- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** GitHub, Google
-  and OIDC sign-in support host-only cookies only, so the API refuses any of
-  them with native admin enabled, before it connects to the database. Turn off
-  native admin; the chart refuses it with these providers.
+- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** Google does not support
+  native access. OIDC supports shared cookies or the
+  [host-only exchange](agent-native-admin.md#host-only-session-exchange).
 - **Configuration operations fail:** Verify exact Namespace or Configuration
   authorization, tenant-local ConfigMap CRUD, and a native JSON configuration
   document;
@@ -264,8 +266,9 @@ A prepared repository App key that cannot sign stops the worker with
 - **`AUTHORIZATION_DENIED` or `ACTOR_REVOKED`:** Inspect the initiating actor's
   current role, binding, exact-Namespace Restrictions, and `read` permission on
   any service account captured in the immutable version; see [IAM](authorization.md).
-- **`CLAIM_LOST`:** Another valid claim recovered the operation. The stale
-  attempt cannot publish lifecycle state; inspect subsequent worker events.
+- **`CLAIM_LOST`:** The worker lost its claim or could not confirm renewal in time. The stale
+  attempt cannot publish lifecycle state. Check subsequent worker events for recovery. Verify
+  the outcome of any external operation already in progress.
 
 ## Related
 

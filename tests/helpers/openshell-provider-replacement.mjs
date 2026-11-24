@@ -1,0 +1,836 @@
+import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+  CredentialSourceId,
+  NamespaceId,
+  sandboxNetworkGrantsWithinCeiling,
+} from "../../packages/contracts/src/index.ts";
+import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  openShellProviderName,
+  openShellWorkspaceName,
+} from "../../apps/controller/src/backends/openshell.ts";
+import { protectedText } from "./qa-secrets.ts";
+import { validateExplicitK3dLoopbackContext } from "./kubernetes-real.ts";
+import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
+
+async function readInput(path) {
+  assert.ok(path, "Select the prepared installation input file");
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
+async function prepareInstallation(
+  context,
+  input,
+  { selection, cloneSources = false, gitReplacement = false },
+) {
+  // Validate file-supplied path segments before reading credentials or contacting the cluster.
+  assert.ok(
+    typeof input.namespaceId === "string" &&
+      new RegExp(NamespaceId.pattern, "u").test(input.namespaceId),
+    "Invalid replacement Namespace ID",
+  );
+  assert.ok(
+    typeof input.modelSourceId === "string" &&
+      new RegExp(CredentialSourceId.pattern, "u").test(input.modelSourceId),
+    "Invalid replacement Credential Source ID",
+  );
+  if (gitReplacement) {
+    assert.ok(input.git?.repositoryRef, "Select an enrolled repository reference");
+    assert.ok(input.git.additionalRepositoryRef, "Select a second enrolled repository reference");
+    assert.notEqual(input.git.repositoryRef, input.git.additionalRepositoryRef);
+    assert.equal(
+      input.git.profile ?? "github-repository",
+      "github-repository",
+      "Multiple repositories require the github-repository profile",
+    );
+    for (const address of [input.git.url, input.git.additionalUrl]) {
+      const url = new URL(address);
+      assert.equal(url.origin, "https://github.com");
+      assert.equal(url.username + url.password + url.search + url.hash, "");
+      assert.match(url.pathname, /^\/[a-z0-9_.-]+\/[a-z0-9_.-]+\.git$/);
+    }
+    assert.notEqual(input.git.url, input.git.additionalUrl);
+  }
+  const fixture = createOpenShellKubernetesFixture(selection);
+  if (input.existingCluster) {
+    // Existing-cluster runs require operator approval and pin both the endpoint
+    // and cluster identity before creating any API resources.
+    assert.ok(selection.kubeconfigPath, "Select an explicit kubeconfig");
+    assert.ok(input.existingCluster.context);
+    assert.equal(selection.kubernetesContext, input.existingCluster.context);
+    assert.equal(new URL(input.existingCluster.server).protocol, "https:");
+    assert.ok(input.existingCluster.kubeSystemUid);
+    const config = JSON.parse(await fixture.kubectl("config", "view", "--minify", "-o", "json"));
+    assert.equal(config.contexts?.length, 1);
+    assert.equal(config.contexts[0].name, input.existingCluster.context);
+    assert.equal(config.clusters?.length, 1);
+    assert.equal(config.clusters[0].cluster.server, input.existingCluster.server);
+    const system = JSON.parse(
+      await fixture.kubectl("get", "namespace", "kube-system", "-o", "json"),
+    );
+    assert.equal(system.metadata.uid, input.existingCluster.kubeSystemUid);
+  } else {
+    assert.equal(input.disposable, true, "Explicitly select a disposable installation");
+    await validateExplicitK3dLoopbackContext(selection);
+  }
+  const apiUrl = new URL(input.apiUrl);
+  assert.ok(!apiUrl.username && !apiUrl.password && !apiUrl.search && !apiUrl.hash);
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].find((host) => host === apiUrl.hostname);
+  assert.ok(apiUrl.protocol === "https:" || (loopback && apiUrl.protocol === "http:"));
+  // Construct the destination from a loopback host or the operator's independent selection.
+  const scheme = apiUrl.protocol === "https:" ? "https" : "http";
+  const origin = loopback
+    ? `${scheme}://${loopback}${apiUrl.port ? ":" + Number(apiUrl.port) : ""}`
+    : process.env.OCC_TEST_OPENSHELL_REPLACEMENT_API_ORIGIN;
+  assert.ok(
+    loopback || input.existingCluster,
+    "Remote API requires an explicitly selected cluster",
+  );
+  assert.ok(origin && apiUrl.origin === origin, "Select the approved replacement API origin");
+  const serviceKey = await protectedText(input.serviceKeyFile, "replacement service key");
+  const api = async (method, path, body, allowMissing = false) => {
+    const destination = new URL(origin);
+    destination.pathname = path;
+    assert.ok(destination.pathname.startsWith("/namespaces/"));
+    const response = await fetch(destination, {
+      method,
+      headers: {
+        "x-api-key": serviceKey,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(30_000),
+      redirect: "error",
+    });
+    if (allowMissing && response.status === 404) {
+      return undefined;
+    }
+    // Do not put credential source bodies or server diagnostics into failure output.
+    assert.ok(response.ok, `${method} ${path}: HTTP ${response.status}`);
+    return response.status === 204 ? undefined : (await response.json()).data;
+  };
+  const base = `/namespaces/${input.namespaceId}`;
+  const namespace = await api("GET", base);
+  assert.equal(namespace.status, "ready");
+  // Compute passes the mapped Kubernetes Namespace name to the OpenShell Drivers.
+  const workspace = openShellWorkspaceName({ ...namespace, name: input.gatewayNamespace });
+  const gateway = new GrpcOpenShellGatewayClient(input.gatewayClient);
+  context.after(() => gateway.close());
+  const signal = () => AbortSignal.timeout(30_000);
+  const wait = async (label, observe) => {
+    const deadline = Date.now() + 600_000;
+    while (Date.now() < deadline) {
+      const result = await observe();
+      if (result) {
+        return result;
+      }
+      await delay(1000);
+    }
+    throw new Error(`Timed out: ${label}`);
+  };
+  const agents = [];
+  const sources = [];
+  const createdSources = [];
+  const bindings = [];
+  let role;
+  context.after(async () => {
+    // Delete only resources created by this run. Wait for Agent cleanup before
+    // deleting its credential sources; the prepared source and Namespace survive.
+    for (const agent of agents) {
+      await api("DELETE", `${base}/agents/${agent.id}`, undefined, true);
+      await wait("Agent deletion", async () => {
+        const remaining = await api("GET", `${base}/agents`);
+        return !remaining.some((entry) => entry.id === agent.id);
+      });
+    }
+    const remainingBindings = await api("GET", `${base}/iam/access-bindings`);
+    for (const binding of bindings) {
+      if (remainingBindings.some((entry) => entry.id === binding.id)) {
+        await api("DELETE", `${base}/iam/access-bindings/${binding.id}`);
+      }
+    }
+    if (role) {
+      await api("DELETE", `${base}/iam/roles/${role.id}`, undefined, true);
+    }
+    for (const source of createdSources) {
+      await api("DELETE", `${base}/credential-sources/${source.id}`, undefined, true);
+    }
+  });
+  const seed = await api("GET", `${base}/credential-sources/${input.modelSourceId}`);
+  assert.ok(["openai", "codex-pat"].includes(seed.type));
+  if (gitReplacement) {
+    // The Git-only Proxy refuses new model source registration. Reuse the
+    // prepared Gateway source without acquiring ownership of it for cleanup.
+    assert.equal(seed.state, "ready", "The prepared model source must be ready");
+    assert.equal(seed.ownerCapability, "credential_gateway");
+    assert.equal(
+      seed.egress,
+      undefined,
+      "Use a model source registered before enabling the Git Proxy",
+    );
+  }
+  if (!cloneSources) {
+    sources.push(seed);
+  } else {
+    // Clone references to an authorized existing Secret, never its value. Distinct
+    // source identities produce different Providers with the same credential key.
+    for (const suffix of ["a", "b"]) {
+      const source = await api("POST", `${base}/credential-sources`, {
+        name: `replacement-${suffix}-${randomUUID()}`,
+        type: seed.type,
+        config: seed.config,
+        secrets: seed.secrets,
+      });
+      createdSources.push(source);
+      sources.push(source);
+    }
+  }
+  role = await api("POST", `${base}/iam/roles`, {
+    name: `Replacement sources ${randomUUID()}`,
+    permissions: [{ action: "operate", resourceKind: "credential_source" }],
+  });
+  const deploy = async (agent) => {
+    const revision = await api("POST", `${base}/agents/${agent.id}/deploy`);
+    await wait("revision activation", async () => {
+      const status = await api("GET", `${base}/agents/${agent.id}/deployments/${revision.id}`);
+      assert.ok(!["failed", "cancelled"].includes(status.status), `Deployment ${status.status}`);
+      return status.status === "succeeded";
+    });
+    return revision;
+  };
+  const turn = async (agent, revision) => {
+    const pods = await fixture.resources("pods", input.gatewayNamespace);
+    const pod = pods.find(
+      (entry) =>
+        !entry.metadata.deletionTimestamp &&
+        entry.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
+        entry.metadata.labels?.["openclaw.dev/revision"] === revision.id &&
+        entry.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+    );
+    assert.ok(pod, "The active revision must have a Gateway Pod");
+    // Git can recover before the launcher releases Codex. Wait for its authenticated
+    // transport without submitting a model turn that might then be retried.
+    await wait("Codex Harness WebSocket readiness", async () => {
+      try {
+        await fixture.kubectl(
+          "exec",
+          pod.metadata.name,
+          "--namespace",
+          input.gatewayNamespace,
+          "--",
+          "node",
+          "-e",
+          `
+            const WebSocket = require("ws");
+            const socket = new WebSocket(process.env.APP_SERVER_URL, {
+              headers: { authorization: "Bearer " + process.env.APP_SERVER_TOKEN },
+              handshakeTimeout: 5000,
+            });
+            socket.on("open", () => process.exit(0));
+            socket.on("error", () => process.exit(1));
+            socket.on("close", () => process.exit(1));
+          `,
+        );
+        return true;
+      } catch {
+        return undefined;
+      }
+    });
+    const nonce = `replacement-${randomUUID()}`;
+    const result = await fixture.requestCodexTurnFromGatewayPod({
+      namespace: input.gatewayNamespace,
+      gatewayPod: pod.metadata.name,
+      providerModel: input.model,
+      prompt: `Reply with exactly ${nonce}.`,
+    });
+    assert.ok(result.assistant.includes(nonce), "The real model turn must return its nonce");
+  };
+  const createAgent = async (repositoryBindings) => {
+    const agent = await api("POST", `${base}/agents`, {
+      name: `provider-replacement-${randomUUID()}`,
+      configurationId: input.configurationId,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: sources[0].id },
+      credentialSources: [{ sourceId: sources[0].id }],
+      ...(repositoryBindings ? { repositoryBindings } : {}),
+    });
+    agents.push(agent);
+    await api("POST", `${base}/agents/${agent.id}/runtime-credentials`, {});
+    for (const source of sources) {
+      bindings.push(
+        await api("POST", `${base}/iam/access-bindings`, {
+          subjectKind: "identity",
+          subjectId: agent.servicePrincipalId,
+          roleId: role.id,
+          resourceKind: "credential_source",
+          resourceId: source.id,
+        }),
+      );
+    }
+    return agent;
+  };
+  return {
+    api,
+    base,
+    fixture,
+    gateway,
+    workspace,
+    signal,
+    wait,
+    sources,
+    deploy,
+    turn,
+    createAgent,
+  };
+}
+
+export async function verifyOpenShellTemplateResources(context, inputFile, workspaceMode) {
+  const input = await readInput(inputFile);
+  assert.equal(input.disposable, true, "Resource proof requires a disposable installation");
+  assert.equal(input.existingCluster, undefined);
+  assert.ok(["operator", "managed"].includes(workspaceMode));
+  assert.ok(input.expectedResources, "Supply independently expected Agent container resources");
+  if (workspaceMode === "operator") {
+    assert.ok(input.expectedMounts?.length, "Select the approved operator mounts");
+    for (const mount of input.expectedMounts) {
+      assert.ok(mount.mountPath?.startsWith("/sandbox/"));
+      assert.ok(mount.subPath, "Select the approved PVC subpath, not just its mount path");
+    }
+  }
+
+  const { kubeconfigPath, kubernetesContext, harnessNamespace } = input;
+  assert.ok(
+    kubeconfigPath && kubernetesContext,
+    "Select this installation's kubeconfig and context",
+  );
+  assert.match(harnessNamespace, /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/);
+  const { fixture, gateway, workspace, signal, deploy, turn, createAgent } =
+    await prepareInstallation(context, input, { selection: { kubeconfigPath, kubernetesContext } });
+  const agent = await createAgent();
+  const revision = await deploy(agent);
+  const pods = await fixture.resources("pods", harnessNamespace);
+  const candidates = pods.filter(
+    (entry) =>
+      !entry.metadata.deletionTimestamp &&
+      entry.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
+      entry.spec.containers.some((container) => container.name === "agent"),
+  );
+  assert.equal(candidates.length, 1, "OpenShell must create one real Agent Pod");
+  const [pod] = candidates;
+  const owner = pod.metadata.ownerReferences?.find(
+    (ref) => ref.controller && ref.kind === "Sandbox",
+  );
+  assert.ok(owner?.uid);
+  const { metadata } = JSON.parse(
+    await fixture.kubectl(
+      "get",
+      "sandboxes.agents.x-k8s.io",
+      owner.name,
+      "--namespace",
+      harnessNamespace,
+      "-o",
+      "json",
+    ),
+  );
+  assert.equal(metadata.uid, owner.uid);
+  const name = metadata.annotations?.["openshell.ai/sandbox-name"];
+  assert.ok(name);
+  const current = await gateway.getSandbox({ workspace, name }, signal());
+  assert.ok(current?.id);
+  assert.equal(current.id, pod.metadata.annotations?.["openshell.ai/sandbox-id"]);
+  assert.equal(current.annotations["openclaw.dev/revision-id"], revision.id);
+  assert.ok(current.spec.template.resources, "OpenShell must retain template sizing");
+  const container = pod.spec.containers.find((entry) => entry.name === "agent");
+  assert.deepEqual(container.resources, input.expectedResources);
+  assert.equal(container.resources.requests["ephemeral-storage"], "256Mi");
+  assert.equal(container.resources.limits["ephemeral-storage"], "1Gi");
+  if (workspaceMode === "managed") {
+    assert.equal(current.spec.template.driver_config, undefined);
+    // A negative control distinguishes disabled caller config from merely omitting
+    // it in a permissive installation. Cleanup removes an unexpectedly accepted probe.
+    const probeName = `rp-${randomUUID().slice(0, 12)}`;
+    const probeId = randomUUID();
+    try {
+      await assert.rejects(
+        gateway.createSandbox(
+          {
+            name: probeName,
+            workspace,
+            requestId: randomUUID(),
+            labels: {},
+            annotations: { "openclaw.dev/probe-id": probeId },
+            serviceExposures: [],
+            spec: {
+              command: ["/bin/true"],
+              policy: current.spec.policy,
+              template: {
+                image: current.spec.template.image,
+                driver_config: {
+                  fields: {
+                    kubernetes: {
+                      structValue: {
+                        fields: { pod: { structValue: { fields: {} } } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          signal(),
+        ),
+        (error) => error.requestDiagnostic?.validationCategory === "CALLER_DRIVER_CONFIG_DISABLED",
+      );
+    } finally {
+      const probe = await gateway.getSandbox({ workspace, name: probeName }, signal());
+      if (probe) {
+        assert.equal(probe.annotations["openclaw.dev/probe-id"], probeId);
+        await gateway.deleteSandbox({ workspace, name: probeName }, signal());
+      }
+    }
+  } else {
+    assert.ok(current.spec.template.driver_config);
+    for (const expected of input.expectedMounts) {
+      assert.ok(
+        container.volumeMounts.some((mount) =>
+          Object.entries(expected).every(([key, value]) => mount[key] === value),
+        ),
+        "Operator mount must survive resource serialization",
+      );
+    }
+  }
+  const nonce = randomUUID();
+  const workspacePath = current.spec.environment.OPENCLAW_WORKSPACE_DIR;
+  assert.ok(workspacePath?.startsWith("/sandbox/"));
+  assert.equal(
+    await gateway.execSandbox(
+      {
+        workspace,
+        sandbox: current.name,
+        command: [
+          "/bin/sh",
+          "-ec",
+          'printf %s "$2" > "$1"; test "$(cat "$1")" = "$2"; rm "$1"',
+          "resources-proof",
+          `${workspacePath}/resources-${nonce}`,
+          nonce,
+        ],
+        stdin: "",
+        timeoutSeconds: 25,
+      },
+      signal(),
+    ),
+    0,
+    "The deployed Harness must retain workspace access",
+  );
+  await turn(agent, revision);
+  return {
+    workspaceMode,
+    agentId: agent.id,
+    revisionId: revision.id,
+    podUid: pod.metadata.uid,
+    resources: container.resources,
+  };
+}
+
+export async function verifyOpenShellProviderReplacement(context, { gitReplacement = false } = {}) {
+  const input = await readInput(process.env.OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE);
+  const selection = {
+    kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
+    kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
+  };
+  const { api, base, gateway, workspace, signal, wait, sources, deploy, turn, createAgent } =
+    await prepareInstallation(context, input, {
+      selection,
+      cloneSources: !gitReplacement,
+      gitReplacement,
+    });
+  const peerRepositories = gitReplacement
+    ? [
+        {
+          repositoryRef: input.git.repositoryRef,
+          profile: input.git.profile ?? "github-repository",
+        },
+      ]
+    : undefined;
+  const agents = [await createAgent(), await createAgent(peerRepositories)];
+  const sandbox = (agent) => {
+    const name = `oc-${createHash("sha256").update(agent.id).digest("hex").slice(0, 16)}`;
+    return gateway.getSandbox({ workspace, name }, signal());
+  };
+  if (gitReplacement) {
+    // Read-only Git against explicitly selected repositories. Exercise the regular
+    // API/worker revision lifecycle; no token is read or installed by the test.
+    let first = await deploy(agents[0]);
+    const peer = await deploy(agents[1]);
+    const before = await sandbox(agents[0]);
+    assert.ok(before?.id);
+    const path = `/sandbox/oce/workspace/git-replacement-${randomUUID()}`;
+    const nonce = randomUUID();
+    const execute = async (agent, command) =>
+      gateway.execSandbox(
+        {
+          workspace,
+          sandbox: (await sandbox(agent)).name,
+          command,
+          environment: { GIT_TERMINAL_PROMPT: "0" },
+          stdin: "",
+          timeoutSeconds: 25,
+        },
+        signal(),
+      );
+    const fetch = () =>
+      execute(agents[0], [
+        "/bin/sh",
+        "-ec",
+        'test "$(cat "$1/retained")" = "$3"; git -C "$1" init -q; git -C "$1" remote add origin "$2"; git -C "$1" fetch -q --depth=1 origin HEAD',
+        "git-replacement",
+        path,
+        input.git.url,
+        nonce,
+      ]);
+    const denied = (url) => execute(agents[0], ["/usr/bin/git", "ls-remote", url]);
+    const assertGitSettings = async (current, enabled) => {
+      assert.equal(Boolean(current.annotations["openclaw.dev/git-scope"]), enabled);
+      assert.equal(current.spec.environment.GIT_CONFIG_COUNT !== undefined, enabled);
+      const status = await gateway.getPolicyStatus({ workspace, sandbox: current.name }, signal());
+      assert.equal(status.state, "POLICY_STATUS_LOADED");
+      assert.equal(status.activeVersion, status.version);
+      assert.equal(Boolean(status.policy.network_middlewares?.["oce-prepared-git"]), enabled);
+      const providers = await Promise.all(
+        current.spec.providers.map((name) => gateway.getProvider(workspace, name, signal())),
+      );
+      assert.equal(
+        providers.filter((provider) => provider?.labels["openclaw.dev/git-revision-id"]).length,
+        enabled ? 1 : 0,
+      );
+      const runtime = providers.find((provider) => provider?.name.startsWith("oce-runtime-"));
+      assert.ok(runtime);
+      assert.equal(Boolean(JSON.parse(runtime.config.runtime_json).egressEnrollment), enabled);
+      return status;
+    };
+    // Start without Git so the Sandbox creation policy cannot supply an old Git
+    // binding. Enabling must prepare new authority while retaining the same files.
+    await assertGitSettings(before, false);
+    assert.notEqual(await denied(input.git.url), 0, "Git must be denied before enablement");
+    assert.equal(
+      await execute(agents[0], [
+        "/bin/sh",
+        "-ec",
+        'mkdir "$1"; printf %s "$2" > "$1/retained"',
+        "retained-workspace",
+        path,
+        nonce,
+      ]),
+      0,
+    );
+    await turn(agents[0], first);
+    await turn(agents[1], peer);
+    await api("PATCH", `${base}/agents/${agents[0].id}`, {
+      configurationId: input.configurationId,
+      repositoryBindings: [
+        { repositoryRef: input.git.repositoryRef, profile: "github-repository" },
+      ],
+    });
+    first = await deploy(agents[0]);
+    const enabled = await sandbox(agents[0]);
+    assert.equal(enabled.id, before.id, "Enabling Git retains the original Sandbox");
+    await assertGitSettings(enabled, true);
+    assert.equal(await fetch(), 0, "Enabled revision must fetch the admitted repository");
+    assert.notEqual(
+      await denied(input.git.additionalUrl),
+      0,
+      "Unselected repository must be denied",
+    );
+    await turn(agents[0], first);
+    await turn(agents[1], peer);
+    // Terminate only the run-owned Harness supervisor through OpenShell exec. This is
+    // automatic runtime recovery, not StopSandbox/StartSandbox or an OCE revision change.
+    const beforeRecovery = await sandbox(agents[0]);
+    assert.equal(beforeRecovery.spec.restart_policy, "SANDBOX_RESTART_POLICY_ALWAYS");
+    const terminate = String.raw`
+      const fs = require("node:fs");
+      // OpenShell exec cannot read the Harness's protected /proc/<pid>/exe links.
+      const argumentsFor = pid => fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").split("\0");
+      // Node names its main thread "MainThread", so /proc/<pid>/comm is unsuitable too.
+      const name = pid => argumentsFor(pid)[0].split("/").at(-1);
+      const serving = fs.readdirSync("/proc").filter(pid => /^\d+$/.test(pid)).filter(pid => {
+        try {
+          const args = argumentsFor(pid);
+          return name(pid) === "codex" &&
+            args.includes("app-server") && args.includes("--ws-token-sha256");
+        } catch { return false; }
+      });
+      if (serving.length !== 1) process.exit(2);
+      const parent = pid => Number(fs.readFileSync("/proc/" + pid + "/status", "utf8").match(/^PPid:\s+(\d+)$/m)[1]);
+      // Walk past the Codex CLI and startup wrappers to the supervisor under tini.
+      let supervisor = parent(serving[0]);
+      for (let depth = 0; ; depth++) {
+        if (depth >= 8 || supervisor <= 1 || name(supervisor) !== "node") process.exit(3);
+        const ancestor = parent(supervisor);
+        if (ancestor > 1 && name(ancestor) === "tini") break;
+        supervisor = ancestor;
+      }
+      process.kill(supervisor, "SIGTERM");
+    `;
+    // The exec channel can close as its Sandbox exits. Never resend the signal;
+    // the changed main-process identity below is the independent outcome check.
+    const termination = await execute(agents[0], ["node", "-e", terminate]).catch(() => undefined);
+    if (termination !== undefined) {
+      assert.equal(termination, 0, "The test must signal the Harness supervisor");
+    }
+    await wait("Git Harness automatic recovery", async () => {
+      const current = await sandbox(agents[0]);
+      assert.equal(current.id, beforeRecovery.id, "Recovery retains the Sandbox");
+      if (
+        !current.mainProcessInstanceId ||
+        current.mainProcessInstanceId === beforeRecovery.mainProcessInstanceId
+      ) {
+        return undefined;
+      }
+      try {
+        return (await execute(agents[0], ["/usr/bin/git", "ls-remote", input.git.url])) === 0
+          ? current
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    });
+    assert.equal((await api("GET", `${base}/agents/${agents[0].id}`)).activeRevisionId, first.id);
+    assert.notEqual(
+      await denied(input.git.additionalUrl),
+      0,
+      "Recovery must retain repository restrictions",
+    );
+    await turn(agents[0], first);
+    await turn(agents[1], peer);
+    let previous = first;
+    // Change scope, remove all Git access, then enable it again. Every revision
+    // keeps local files while replacing remote authority independently of the peer.
+    for (const repositories of [
+      [input.git.repositoryRef],
+      [input.git.repositoryRef, input.git.additionalRepositoryRef],
+      [input.git.additionalRepositoryRef],
+      [],
+      [input.git.repositoryRef],
+    ]) {
+      const current = await sandbox(agents[0]);
+      const oldPolicy = await gateway.getPolicyStatus(
+        { workspace, sandbox: current.name },
+        signal(),
+      );
+      const oldProviders = [];
+      for (const name of current.spec.providers) {
+        const provider = await gateway.getProvider(workspace, name, signal());
+        if (provider?.labels["openclaw.dev/git-revision-id"] === previous.id) {
+          oldProviders.push(provider);
+        }
+      }
+      assert.equal(oldProviders.length, current.annotations["openclaw.dev/git-scope"] ? 1 : 0);
+      await api("PATCH", `${base}/agents/${agents[0].id}`, {
+        configurationId: input.configurationId,
+        repositoryBindings: repositories.map((repositoryRef) => ({
+          repositoryRef,
+          profile: "github-repository",
+        })),
+      });
+      const successor = await deploy(agents[0]);
+      const after = await sandbox(agents[0]);
+      assert.equal(after.id, before.id, "Git replacement retains the Sandbox and workspace");
+      const policy = await assertGitSettings(after, repositories.length > 0);
+      assert.notDeepEqual(
+        policy.policy.network_middlewares?.["oce-prepared-git"],
+        oldPolicy.policy.network_middlewares?.["oce-prepared-git"],
+      );
+      for (const provider of oldProviders) {
+        assert.equal(after.spec.providers.includes(provider.name), false);
+        assert.equal(await gateway.getProvider(workspace, provider.name, signal()), undefined);
+        assert.equal(
+          await gateway.getProviderProfile(workspace, provider.type, signal()),
+          undefined,
+        );
+      }
+      // Revoking remote access does not erase data already fetched into the retained workspace.
+      assert.equal(
+        await execute(agents[0], [
+          "/bin/sh",
+          "-ec",
+          'test "$(cat "$1/retained")" = "$2"; git -C "$1" rev-parse --verify FETCH_HEAD',
+          "retained-git",
+          path,
+          nonce,
+        ]),
+        0,
+      );
+      for (const [repositoryRef, url] of [
+        [input.git.repositoryRef, input.git.url],
+        [input.git.additionalRepositoryRef, input.git.additionalUrl],
+      ]) {
+        if (repositories.includes(repositoryRef)) {
+          assert.equal(
+            await execute(agents[0], [
+              "/usr/bin/git",
+              "-C",
+              path,
+              "fetch",
+              "-q",
+              "--depth=1",
+              url,
+              "HEAD",
+            ]),
+            0,
+            "Selected repository must be fetchable",
+          );
+        } else {
+          assert.notEqual(await denied(url), 0, "Unselected or removed repository must be denied");
+        }
+      }
+      assert.equal(
+        await execute(agents[1], ["/usr/bin/git", "ls-remote", input.git.url]),
+        0,
+        "Peer Git access must survive replacement",
+      );
+      assert.notEqual(
+        await execute(agents[1], ["/usr/bin/git", "ls-remote", input.git.additionalUrl]),
+        0,
+        "Adding a repository must not broaden the peer's access",
+      );
+      await turn(agents[0], successor);
+      await turn(agents[1], peer);
+      previous = successor;
+    }
+    return {
+      outcome:
+        "Git enablement, unchanged redeployment, repository addition and removal, disablement and re-enablement, retained Sandbox/workspace, allowed fetches, denied removed/unselected repositories, retired Provider/profile and peer isolation",
+      limitation: "A successful public repository fetch does not prove credential delivery.",
+    };
+  }
+  const policyPath = `${base}/agents/${agents[0].id}/sandbox-policy/networking`;
+  const networkGrant = {
+    id: "replacement-probe",
+    binary: "/usr/bin/curl",
+    host: "example.org",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const policySetup = await api("GET", policyPath);
+  assert.ok(
+    sandboxNetworkGrantsWithinCeiling([networkGrant], policySetup.ceiling),
+    "The Installation sandboxNetworkPolicyCeiling must delegate /usr/bin/curl to example.org:443",
+  );
+  const first = await deploy(agents[0]);
+  const peer = await deploy(agents[1]);
+  const before = await sandbox(agents[0]);
+  assert.ok(before?.id, "The installation must use a stable managed Sandbox per Agent");
+  await turn(agents[0], first);
+  await turn(agents[1], peer);
+  const providerA = openShellProviderName(sources[0].id);
+  const providerB = openShellProviderName(sources[1].id);
+  await api("PATCH", `${base}/agents/${agents[0].id}`, {
+    configurationId: input.configurationId,
+    harnessAuth: { method: "credential_source", sourceId: sources[1].id },
+    credentialSources: [{ sourceId: sources[1].id }],
+  });
+  const successor = await deploy(agents[0]);
+  const after = await sandbox(agents[0]);
+  assert.equal(after.id, before.id, "Source replacement must retain the Sandbox");
+  assert.equal(after.spec.providers.includes(providerA), false);
+  assert.equal(after.spec.providers.includes(providerB), true);
+  await turn(agents[0], successor);
+  // The old source belongs to the Namespace, not the replacing Agent. Its
+  // Provider and the peer's attachment must remain usable after detachment.
+  assert.ok(await gateway.getProvider(workspace, providerA, signal()));
+  assert.ok((await sandbox(agents[1])).spec.providers.includes(providerA));
+  await turn(agents[1], peer);
+  const unchanged = await deploy(agents[0]);
+  assert.equal((await sandbox(agents[0])).id, before.id);
+  await turn(agents[0], unchanged);
+  // Save through the Agent policy API, then deploy. Do not use live apply:
+  // the worker must update the retained Sandbox's policy during replacement.
+  await api("PATCH", `${policyPath}/editing`, { enabled: true });
+  const probe = async (agent) => {
+    const current = await sandbox(agent);
+    return gateway.execSandbox(
+      {
+        workspace,
+        sandbox: current.name,
+        command: [
+          "/usr/bin/curl",
+          "--silent",
+          "--fail",
+          "--max-time",
+          "15",
+          "--output",
+          "/dev/null",
+          "https://example.org/",
+        ],
+        environment: {},
+        stdin: "",
+        timeoutSeconds: 20,
+      },
+      signal(),
+    );
+  };
+  const assertPolicy = async (present, provider = providerB) => {
+    const current = await sandbox(agents[0]);
+    assert.equal(current.id, before.id);
+    assert.deepEqual(
+      [...current.spec.providers].sort(),
+      [...after.spec.providers.filter((name) => name !== providerB), provider].sort(),
+    );
+    const status = await gateway.getPolicyStatus({ workspace, sandbox: current.name }, signal());
+    assert.equal(status.state, "POLICY_STATUS_LOADED");
+    assert.equal(status.activeVersion, status.version);
+    assert.equal(
+      Object.hasOwn(status.policy.network_policies, "oce-agent-replacement-probe"),
+      present,
+    );
+  };
+  assert.notEqual(await probe(agents[0]), 0, "The probe route must initially be denied");
+  const policy = (await api("GET", policyPath)).policy;
+  assert.deepEqual(policy.additions, []);
+  const granted = await api("PUT", policyPath, {
+    expectedVersion: policy.version,
+    additions: [networkGrant],
+  });
+  const allowed = await deploy(agents[0]);
+  await assertPolicy(true);
+  assert.equal(await probe(agents[0]), 0, "The new revision must permit the granted route");
+  assert.notEqual(await probe(agents[1]), 0, "The peer must not inherit the grant");
+  await turn(agents[0], allowed);
+  await api("PUT", policyPath, { expectedVersion: granted.version, additions: [] });
+  const removed = await deploy(agents[0]);
+  await assertPolicy(false);
+  assert.notEqual(await probe(agents[0]), 0, "The later revision must deny the removed route");
+  await turn(agents[0], removed);
+  // Change both inputs before deployment so the regular worker must reconcile
+  // policy and Provider membership together on the same retained Sandbox.
+  for (const [source, present] of [
+    [sources[0], true],
+    [sources[1], false],
+  ]) {
+    await api("PATCH", `${base}/agents/${agents[0].id}`, {
+      configurationId: input.configurationId,
+      harnessAuth: { method: "credential_source", sourceId: source.id },
+      credentialSources: [{ sourceId: source.id }],
+    });
+    const current = (await api("GET", policyPath)).policy;
+    await api("PUT", policyPath, {
+      expectedVersion: current.version,
+      additions: present ? [networkGrant] : [],
+    });
+    const combined = await deploy(agents[0]);
+    await assertPolicy(present, openShellProviderName(source.id));
+    assert.equal((await probe(agents[0])) === 0, present);
+    await turn(agents[0], combined);
+  }
+  assert.notEqual(await probe(agents[1]), 0, "Combined replacement must not alter the peer policy");
+  assert.ok((await sandbox(agents[1])).spec.providers.includes(providerA));
+  await turn(agents[1], peer);
+  return {
+    outcome:
+      "separate and combined model source and network grant replacement, stable Sandbox, unchanged redeploy and shared-source isolation",
+  };
+}

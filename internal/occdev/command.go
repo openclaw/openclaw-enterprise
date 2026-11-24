@@ -171,6 +171,9 @@ func (r *runner) selectContainerEngine(ctx context.Context, requested string, re
 		r.engine = engine
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if requireCompose {
 		return fmt.Errorf("a running %s container engine with its Compose provider is required", requested)
 	}

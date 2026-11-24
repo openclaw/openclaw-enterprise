@@ -4,6 +4,8 @@ Create an Agent with a dedicated Codex Harness, give its ServicePrincipal access
 to a model Secret, and request deployment. Use the [API explorer](../reference/api-explorer.md)
 to inspect complete request and response examples for each operation.
 
+After deployment, [submit work over HTTP](agent-http-chat.md).
+
 ## Before you start
 
 Use an existing Installation with Kubernetes Compute and the dedicated Codex
@@ -81,8 +83,8 @@ namespace_id="$(jq -er '.data.id' "$work/namespace-result.json")"
 
 ready=false
 for attempt in {1..30}; do
-  occ_request GET "/namespaces/$namespace_id" > "$work/namespace-result.json" || break
-  status="$(jq -r '.data.status' "$work/namespace-result.json")"
+  occ_request GET "/namespaces/$namespace_id" > "$work/namespace-status.json" || break
+  status="$(jq -r '.data.status' "$work/namespace-status.json")"
   if [[ "$status" == ready ]]; then ready=true; break; fi
   if [[ "$status" == failed || "$status" == deleting ]]; then break; fi
   sleep 2

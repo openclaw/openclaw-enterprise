@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { nativeTaskFailureSummary } from "./normal-agent-tools.mjs";
+import { nativeTaskFailureSummary } from "./normal-agent-native-diagnostics.ts";
 import { isAbsolute } from "node:path";
 
 export function createRepositoryObserver({ run, repository, binary = "gh" }) {
@@ -8,6 +8,12 @@ export function createRepositoryObserver({ run, repository, binary = "gh" }) {
     assert.ok(isAbsolute(binary), "the managed gh binary must be absolute");
   }
   const prefix = `repos/${repository}`;
+  /**
+   * @param {string} method
+   * @param {string} [suffix]
+   * @param {unknown} [body]
+   * @param {number | readonly number[]} [expected]
+   */
   const observe = async (method, suffix = "", body, expected = 200) => {
     assert.ok(!suffix.includes("..") && !suffix.startsWith("/"));
     const args = [
@@ -30,7 +36,8 @@ export function createRepositoryObserver({ run, repository, binary = "gh" }) {
     const separator = /\r?\n\r?\n/.exec(response);
     assert.ok(separator, "GitHub API must return a status and response");
     const status = Number(/^HTTP\/\S+ (\d+)/.exec(response)?.[1]);
-    assert.ok([].concat(expected).includes(status), `GitHub ${method} returned ${status}`);
+    const statuses = typeof expected === "number" ? [expected] : expected;
+    assert.ok(statuses.includes(status), `GitHub ${method} returned ${status}`);
     const payload = response.slice(separator.index + separator[0].length);
     return { status, data: payload.trim() ? JSON.parse(payload) : undefined };
   };

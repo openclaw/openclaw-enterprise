@@ -4,7 +4,7 @@ import { startCredentialService } from "./composition/repository-credentials/ser
 
 export { startCredentialService } from "./composition/repository-credentials/service.ts";
 export type { RunningService } from "./composition/repository-credentials/service.ts";
-export type { CredentialService } from "./drivers/repo/credentials/service-contracts.ts";
+export type { CredentialService } from "./drivers/repo/access/service-contracts.ts";
 
 /** Direct process composition; check-config loads no session or listener owner. */
 // Usage: --config FILE [--check-config] [--development-authority]; each flag at most once.

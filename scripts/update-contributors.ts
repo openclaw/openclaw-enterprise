@@ -16,10 +16,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function github(endpoint: string, paginated: true): unknown[];
+function github(endpoint: string, paginated: true, fields?: Record<string, string>): unknown[];
 function github(endpoint: string, paginated?: false): unknown;
-function github(endpoint: string, paginated = false): unknown {
+function github(endpoint: string, paginated = false, fields: Record<string, string> = {}): unknown {
   const args = ["api", "--hostname", "github.com", endpoint];
+  for (const [key, value] of Object.entries(fields)) {
+    args.push("-f", `${key}=${value}`);
+  }
   if (paginated) {
     args.push("--paginate", "--slurp");
   }
@@ -44,11 +47,26 @@ function github(endpoint: string, paginated = false): unknown {
     return value;
   }
   assert.ok(
-    Array.isArray(value) && value.length > 0 && value.every(Array.isArray),
+    Array.isArray(value) &&
+      value.length > 0 &&
+      (endpoint === "graphql" || value.every(Array.isArray)),
     "GitHub returned invalid pagination data. README unchanged.",
   );
   return value.flat();
 }
+
+type ContributorCorrection = {
+  include: boolean;
+  exclude: boolean;
+  aliasOf: string | undefined;
+  displayName: string | undefined;
+};
+
+type Contributor = {
+  id: string;
+  login: string;
+  display: string;
+};
 
 function readCorrections() {
   let corrections: unknown;
@@ -61,10 +79,7 @@ function readCorrections() {
     isRecord(corrections),
     "contributors.json must be an object keyed by numeric GitHub account ID.",
   );
-  const validated = new Map<
-    string,
-    { include: boolean; exclude: boolean; displayName: string | undefined }
-  >();
+  const validated = new Map<string, ContributorCorrection>();
   for (const [id, correction] of Object.entries(corrections)) {
     assert.ok(
       /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id)),
@@ -73,7 +88,7 @@ function readCorrections() {
     assert.ok(isRecord(correction), `Correction ${id} must be an object.`);
     assert.ok(
       Object.keys(correction).every((key) =>
-        ["include", "exclude", "displayName", "url", "reason"].includes(key),
+        ["include", "exclude", "aliasOf", "displayName", "url", "reason"].includes(key),
       ),
       `Correction ${id} contains an unknown field.`,
     );
@@ -87,14 +102,27 @@ function readCorrections() {
       !(correction.include && correction.exclude),
       `Correction ${id} cannot both include and exclude an account.`,
     );
+    if (correction.aliasOf !== undefined) {
+      assert.ok(
+        typeof correction.aliasOf === "string" &&
+          /^[1-9]\d*$/.test(correction.aliasOf) &&
+          Number.isSafeInteger(Number(correction.aliasOf)) &&
+          correction.aliasOf !== id,
+        `Correction ${id}: aliasOf must name a different numeric GitHub account ID.`,
+      );
+      assert.ok(
+        !correction.include && !correction.exclude && !correction.displayName,
+        `Correction ${id}: aliasOf cannot be combined with include, exclude, or displayName.`,
+      );
+    }
     assert.ok(
       correction.displayName === undefined ||
         (typeof correction.displayName === "string" && correction.displayName.trim()),
       `Correction ${id}: displayName must be a nonempty string.`,
     );
     assert.ok(
-      correction.include || correction.exclude || correction.displayName,
-      `Correction ${id} must include, exclude, or name an account.`,
+      correction.include || correction.exclude || correction.aliasOf || correction.displayName,
+      `Correction ${id} must include, exclude, alias, or name an account.`,
     );
     assert.ok(
       typeof correction.reason === "string" && correction.reason.trim(),
@@ -113,8 +141,18 @@ function readCorrections() {
     validated.set(id, {
       include: correction.include === true,
       exclude: correction.exclude === true,
+      aliasOf: typeof correction.aliasOf === "string" ? correction.aliasOf : undefined,
       displayName: typeof correction.displayName === "string" ? correction.displayName : undefined,
     });
+  }
+  for (const [id, correction] of validated) {
+    if (correction.aliasOf) {
+      const target = validated.get(correction.aliasOf);
+      assert.ok(
+        !target?.aliasOf && !target?.exclude,
+        `Correction ${id}: aliasOf must point directly to a non-excluded account.`,
+      );
+    }
   }
   return validated;
 }
@@ -141,8 +179,133 @@ function escapeAttribute(value: string) {
   });
 }
 
+function discoverContributorIds(
+  defaultBranch: string,
+  corrections: ReadonlyMap<string, ContributorCorrection>,
+) {
+  const ids = new Set<string>();
+  for (const user of github(`repos/${repository}/contributors?per_page=100`, true)) {
+    ids.add(accountId(user));
+  }
+  // Fetch only author IDs; full REST PR records exceed the collection limit.
+  const pages = github("graphql", true, {
+    base: defaultBranch,
+    query: `query($endCursor: String, $base: String!) {
+      repository(owner: "openclaw", name: "openclaw-enterprise") {
+        pullRequests(first: 100, after: $endCursor, states: MERGED, baseRefName: $base) {
+          nodes { number author { ... on User { id: databaseId } ... on Bot { id: databaseId } } }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }`,
+  });
+  for (const page of pages) {
+    assert.ok(
+      isRecord(page) && !page.errors && isRecord(page.data) && isRecord(page.data.repository),
+      "Invalid GitHub PR page.",
+    );
+    const pullRequests = page.data.repository.pullRequests;
+    assert.ok(
+      isRecord(pullRequests) && Array.isArray(pullRequests.nodes),
+      "Invalid GitHub PR data.",
+    );
+    for (const pr of pullRequests.nodes) {
+      assert.ok(isRecord(pr) && Object.hasOwn(pr, "author"), "Invalid GitHub PR author.");
+      // Deleted authors have no account ID to resolve; retain the prior-wall guard below.
+      if (pr.author === null) {
+        console.warn(`Skipping merged PR #${pr.number}: its author is unavailable.`);
+        continue;
+      }
+      ids.add(accountId(pr.author));
+    }
+  }
+  // Keep discovery IDs for the prior-wall guard, but render one account per person.
+  for (const id of [...ids]) {
+    const aliasOf = corrections.get(id)?.aliasOf;
+    if (aliasOf) {
+      ids.add(aliasOf);
+    }
+  }
+  for (const [id, correction] of corrections) {
+    if (correction.include) {
+      ids.add(id);
+    }
+    assert.ok(
+      !correction.displayName || ids.has(id) || correction.exclude,
+      `Display override ${id} has no contributor; use include with evidence if appropriate.`,
+    );
+  }
+  return ids;
+}
+
+function resolveContributors(
+  ids: ReadonlySet<string>,
+  corrections: ReadonlyMap<string, ContributorCorrection>,
+) {
+  const people: Contributor[] = [];
+  for (const id of ids) {
+    if (corrections.get(id)?.exclude || corrections.get(id)?.aliasOf) {
+      continue;
+    }
+    const user = github(`user/${id}`);
+    assert.ok(
+      isRecord(user),
+      "GitHub returned an unresolved contributor. Add an explicit correction before retrying.",
+    );
+    assert.equal(accountId(user), id, "GitHub returned a different account ID.");
+    if (user.type === "Bot") {
+      assert.ok(
+        ![...corrections.values()].some((correction) => correction.aliasOf === id),
+        `Alias target ${id} is a bot; choose a human account.`,
+      );
+      continue;
+    }
+    assert.ok(
+      user.type === "User" &&
+        typeof user.login === "string" &&
+        /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(user.login),
+      `Account ${id} is not a resolved human GitHub account; add an explicit exclusion if appropriate.`,
+    );
+    people.push({ id, login: user.login, display: corrections.get(id)?.displayName ?? user.login });
+  }
+  assert.ok(people.length > 0, "No human contributors found; refusing to empty the README wall.");
+  return people;
+}
+
+function renderContributorRows(people: Contributor[]) {
+  people.sort((left, right) => {
+    const a = left.login.toLowerCase();
+    const b = right.login.toLowerCase();
+    if (a === b) {
+      return Number(left.id) - Number(right.id);
+    }
+    return a < b ? -1 : 1;
+  });
+  const rows = [];
+  for (let index = 0; index < people.length; index += 10) {
+    rows.push(
+      people
+        .slice(index, index + 10)
+        .map(({ id, login, display }) => {
+          return `<a href="https://github.com/${login}"><img src="https://avatars.githubusercontent.com/u/${id}?s=48&amp;v=4" width="48" height="48" alt="${escapeAttribute(display)}"></a>`;
+        })
+        .join(" "),
+    );
+  }
+  return rows;
+}
+
 function updateContributors() {
-  assert.equal(process.argv.length, 2, "Usage: node scripts/update-contributors.ts");
+  const args = process.argv.slice(2);
+  assert.ok(
+    args.length === 0 ||
+      (args.length === 2 &&
+        args[0] === "--expected-base" &&
+        typeof args[1] === "string" &&
+        /^[0-9a-f]{40}$/.test(args[1])),
+    "Usage: node scripts/update-contributors.ts [--expected-base SHA]",
+  );
+  const expectedBase = args[1];
   const readme = readFileSync(readmePath, "utf8");
   assert.ok(
     readme.split(startMarker).length === 2 && readme.split(endMarker).length === 2,
@@ -167,33 +330,14 @@ function updateContributors() {
   );
   const baseline = branch.sha;
   assert.match(baseline, /^[0-9a-f]{40}$/, "GitHub returned an invalid default-branch SHA.");
-  const ids = new Set<string>();
-  for (const user of github(`repos/${repository}/contributors?per_page=100`, true)) {
-    ids.add(accountId(user));
-  }
-  for (const pr of github(`repos/${repository}/pulls?state=closed&per_page=100`, true)) {
-    assert.ok(
-      isRecord(pr) && Object.hasOwn(pr, "merged_at") && isRecord(pr.base),
-      "Invalid GitHub PR data.",
-    );
-    if (pr.merged_at && pr.base.ref === metadata.default_branch) {
-      // Deleted authors have no account ID to resolve; retain the prior-wall guard below.
-      if (pr.user === null) {
-        console.warn(`Skipping merged PR #${pr.number}: its author is unavailable.`);
-        continue;
-      }
-      ids.add(accountId(pr.user));
-    }
-  }
-  for (const [id, correction] of corrections) {
-    if (correction.include) {
-      ids.add(id);
-    }
-    assert.ok(
-      !correction.displayName || ids.has(id) || correction.exclude,
-      `Display override ${id} has no contributor; use include with evidence if appropriate.`,
+  if (expectedBase !== undefined) {
+    assert.equal(
+      baseline,
+      expectedBase,
+      "Default branch does not match the expected base; start a fresh run. README unchanged.",
     );
   }
+  const ids = discoverContributorIds(metadata.default_branch, corrections);
 
   // API omissions must not silently erase previously published recognition.
   for (const match of readme
@@ -206,48 +350,8 @@ function updateContributors() {
       `Previously credited account ${id} is missing. Retry later or add an explicit inclusion/exclusion with evidence.`,
     );
   }
-  const people = [];
-  for (const id of ids) {
-    if (corrections.get(id)?.exclude) {
-      continue;
-    }
-    const user = github(`user/${id}`);
-    assert.ok(
-      isRecord(user),
-      "GitHub returned an unresolved contributor. Add an explicit correction before retrying.",
-    );
-    assert.equal(accountId(user), id, "GitHub returned a different account ID.");
-    if (user.type === "Bot") {
-      continue;
-    }
-    assert.ok(
-      user.type === "User" &&
-        typeof user.login === "string" &&
-        /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(user.login),
-      `Account ${id} is not a resolved human GitHub account; add an explicit exclusion if appropriate.`,
-    );
-    people.push({ id, login: user.login, display: corrections.get(id)?.displayName ?? user.login });
-  }
-  assert.ok(people.length > 0, "No human contributors found; refusing to empty the README wall.");
-  people.sort((left, right) => {
-    const a = left.login.toLowerCase();
-    const b = right.login.toLowerCase();
-    if (a === b) {
-      return Number(left.id) - Number(right.id);
-    }
-    return a < b ? -1 : 1;
-  });
-  const rows = [];
-  for (let index = 0; index < people.length; index += 10) {
-    rows.push(
-      people
-        .slice(index, index + 10)
-        .map(({ id, login, display }) => {
-          return `<a href="https://github.com/${login}"><img src="https://avatars.githubusercontent.com/u/${id}?s=48&amp;v=4" width="48" height="48" alt="${escapeAttribute(display)}"></a>`;
-        })
-        .join(" "),
-    );
-  }
+  const people = resolveContributors(ids, corrections);
+  const rows = renderContributorRows(people);
   const finalBranch = github(branchEndpoint);
   assert.ok(isRecord(finalBranch), "Default branch changed during collection; retry.");
   assert.equal(finalBranch.sha, baseline, "Default branch changed during collection; retry.");

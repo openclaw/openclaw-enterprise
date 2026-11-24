@@ -74,7 +74,7 @@ An IdP outage looks different depending on when the IdP fails:
   audit row has reason `PROVIDER_UNAVAILABLE`, and the API logs
   `authentication.provider-unavailable-warning` at WARN with the failing `step` and
   `cause`, such as `timeout`, `connect_refused` or `client_rejected`; see the
-  [external sign-in reference](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+  [external sign-in reference](../../reference/authentication/external-sign-in.md#external-sign-in-profile).
 
 During an outage, existing sessions keep working, and so does password sign-in for the
 recovery administrator (and for everyone under `passwordSignIn: all`). Sign-in recovers
@@ -86,6 +86,24 @@ administrator to attach the identity, and the audit reason is
 `EXTERNAL_IDENTITY_REJECTED`. A disabled account returns `authReason=account-disabled`.
 If OCE's own database or audit store fails during the callback, the browser returns
 with `authReason=unavailable`.
+
+### First GitHub sign-in fails through Keycloak
+
+If returning users can sign in but new users see a 404, check where the browser
+goes after GitHub returns to Keycloak. In Keycloak 26.7.5, a path-filtering proxy
+can block `GET /realms/<realm>/broker/after-first-broker-login` after Keycloak
+creates the user but before it links GitHub. A retry can then fail with HTTP 409
+and “User with email … already exists.”
+
+Allow that exact GET under the issuer’s context path. Forward the query string
+and cookies without logging them. Keep administration routes private. Test first
+and repeat sign-in through the proxy with a fresh eligible account. Confirm both
+sign-ins return the same subject and the expected group claim if required.
+
+Fixing the route leaves existing account conflicts unresolved. Check the
+[Keycloak subject](oidc-keycloak.md#find-a-persons-subject), linked GitHub ID and
+OCE account before recovery. An email match alone is insufficient to link or
+delete an account.
 
 ## Offboard a person
 
@@ -101,11 +119,12 @@ session lives, one click signs the person in again.
 
 ## Check the audit record
 
-OCE has no API or Console view for audit events. Read `occ.audit_events` through your
-approved database access; see the [audit log](../topics/audit-log.md). Sign-in rows have
-the action `authentication.login`, an `outcome` of `success` or `denied`, the provider
-in `details.provider` (denials only) and the reason code in
-`details.__occAuditMetadata.reasonCode`:
+Use approved database access to read sign-in records in `occ.audit_events`.
+To find a specific attempt, see [Investigate an external sign-in](../topics/audit-log.md#investigate-an-external-sign-in).
+
+Sign-in rows have the action `authentication.login` and an `outcome` of `success`
+or `denied`. For external sign-ins, `details.provider` identifies the provider.
+A denial records its reason in `details.__occAuditMetadata.reasonCode`.
 
 ```sql
 SELECT occurred_at, outcome,

@@ -1,4 +1,4 @@
-import type { CredentialRefreshStatus } from "./drivers/credential-refresh/index.ts";
+import type { CredentialRefreshStatus } from "./drivers/token-service/index.ts";
 import type { Secret } from "./index.ts";
 import type {
   CredentialReadLifetime,

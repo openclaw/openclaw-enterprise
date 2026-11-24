@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { createServer, get, request, type ServerOptions } from "node:https";
+import type { IncomingMessage } from "node:http";
 import { json } from "node:stream/consumers";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -12,13 +13,17 @@ import type {
   ComputeRevisionContext,
   ComputeDriver,
   RepositoryGitDeliveryProfile,
+  RepositoryGitMaterialVersion,
   RepositoryGitSendPermit,
 } from "../../packages/contracts/src/index.ts";
 import {
+  installationDriverConfigurations,
   loadInstallationConfiguration,
+  loadStartupConfigurationSnapshot,
   readPublicCaBundle,
   type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import { repositoryGitAuthority } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
@@ -31,25 +36,37 @@ import {
   listen,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
-import { createBackendController } from "../helpers/postgres-backend-state.mjs";
+} from "../fixtures/repository-credentials/process.ts";
+import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
+import { injectJson } from "../helpers/inject-json.ts";
+import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
+  advanceCleanupRetries,
+  deferWork,
   expireStoppedClaims,
   nextMaintenancePass,
+  removeAccessBindings,
   settleRevisionMaintenance,
   waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { installationOrigin } from "../fixtures/driver-packages/protected-execution-driver/installation-origin.ts";
 
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
+import {
+  runAgentGrantRehearsal,
+  type AgentGrantRehearsal,
+} from "../helpers/agent-grant-rehearsal.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -62,7 +79,11 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
-import { PostgresPlatformState, ResourceStateConflictError } from "../../packages/occ/src/index.ts";
+import {
+  OpenClawController,
+  PostgresPlatformState,
+  ResourceStateConflictError,
+} from "../../packages/occ/src/index.ts";
 
 const conversationRequired = process.env.OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION === "1";
 const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
@@ -106,15 +127,51 @@ test(
 );
 
 test(
+  "an installed external Driver pushes only the granted ref and opens one draft pull request under git-write until withdrawal",
+  journeyOptions,
+  externalGitJourney("git-write"),
+);
+
+test(
+  "built-in repository policy admits authenticated native Git, survives worker restart, and denies withdrawn access",
+  journeyOptions,
+  externalGitJourney("built-in-installation"),
+);
+
+test(
   "a capable external Driver reduces Git on the original running execution through cleanup and worker replacement",
   journeyOptions,
   externalGitJourney("reducible-installation"),
 );
 
 test(
+  "a capable external Driver reduces finite Git binding removal on the original execution across worker replacement",
+  journeyOptions,
+  externalGitJourney("reducible-installation", false, true),
+);
+
+test(
+  "a capable external Driver settles committed finite removal while Stop remains pending",
+  journeyOptions,
+  externalGitJourney("reducible-installation", false, true, true),
+);
+
+test(
   "a capable registered Driver observes only the original lost rotation across worker replacement and withdrawal",
   journeyOptions,
   externalGitJourney("lost-rotation"),
+);
+
+test(
+  "a capable external Driver observes an earlier source reduction before finite removal after denied Stop",
+  journeyOptions,
+  externalGitJourney("reducible-installation", false, true, false, "stopped"),
+);
+
+test(
+  "finite removal preserves maintenance when running intent returns during stopped binding",
+  journeyOptions,
+  externalGitJourney("reducible-installation", false, true, false, "restore-during-bind"),
 );
 
 function repositoryConfiguration(input: {
@@ -216,10 +273,62 @@ test("production composition separates repository policy from protected and expl
       environment: { OCC_CONFIG_PATH: path },
     }))!;
   };
+  const unconfigured = await load({ ...configuration, backend: [], repository: undefined });
+  assert.equal(unconfigured.repositoryAdmission, undefined);
+  assert.equal(unconfigured.repositoryPolicy, undefined);
+  assert.equal(unconfigured.repositoryGitDriver, undefined);
+  assert.equal(unconfigured.nativeRepositorySender, undefined);
+  await assert.rejects(
+    load({ ...configuration, backend: [] }),
+    /repository requires an owning backend/,
+  );
+  await assert.rejects(
+    load({ ...configuration, repository: undefined }),
+    /drivers\.repo requires repository/,
+  );
+  await assert.rejects(
+    load({
+      ...configuration,
+      repository: { ...configuration.repository, policyMode: "custom-veto" },
+    }),
+    { name: "Error", message: 'repository.policyMode must be "built-in" when supplied.' },
+  );
+  await assert.rejects(
+    load({
+      ...configuration,
+      repository: { ...configuration.repository, policy: "custom-veto" },
+    }),
+    { name: "Error", message: /repository.*policy/ },
+  );
+  const legacy = await load({
+    ...configuration,
+    repository: { ...configuration.repository, policyMode: "built-in" },
+  });
   const protectedGit = await load(configuration);
-  const policy = protectedGit.repositoryPolicy!;
-  assert.equal((await policy.listOptions({ namespaceId })).options.length, 1);
-  const binding = policy.resolve({
+  assert.ok(protectedGit.protectedDriver);
+  assert.deepEqual(legacy.protectedDriver?.ref, protectedGit.protectedDriver.ref);
+  assert.deepEqual(legacy.installation.repository, protectedGit.installation.repository);
+  for (const loaded of [protectedGit, legacy]) {
+    assert.equal(Object.hasOwn(loaded, "repositoryPolicy"), false);
+    assert.equal(loaded.repositoryAdmission?.policyMode, "built-in");
+    assert.equal(
+      installationDriverConfigurations(loaded.installation).some(
+        (entry) => entry.capability === "repo",
+      ),
+      false,
+    );
+  }
+  const policy = protectedGit.repositoryAdmission!.policy;
+  assert.equal((await policy.listCatalog({ namespaceId })).options.length, 1);
+  assert.throws(
+    () =>
+      policy.resolveBindings({
+        namespaceId,
+        bindings: [{ repositoryRef: "not-authorized", profile: "git-write" }],
+      }),
+    { name: "ScopeViolationError", message: /not permitted/ },
+  );
+  const binding = policy.resolveBindings({
     namespaceId,
     bindings: [{ repositoryRef: "source", profile: "git-write" }],
   }).bindings[0]!;
@@ -227,27 +336,91 @@ test("production composition separates repository policy from protected and expl
   assert.deepEqual(scope.pushRefAllowlist, ["refs/heads/review"]);
   assert.equal(scope.pullRequestBase, "main");
   assert.equal(scope.draftPullLimit, "one-per-grant");
-  await assert.rejects(
-    load({
+  const startup = await loadStartupConfigurationSnapshot({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  const loadSnapshot = (value: typeof configuration) =>
+    loadInstallationConfiguration({
+      mode: "production",
+      packageRoot: directory,
+      startupConfiguration: { ...startup, configuration: value },
+    });
+  const unknownPolicyField = {
+    name: "ConfigurationValidationError",
+    error: {
+      details: [
+        {
+          path: "",
+          code: "UNKNOWN_FIELD",
+          message: "Configuration does not satisfy additionalProperties.",
+        },
+      ],
+    },
+  };
+  for (const misplaced of [
+    { controlSocket: "/unselected/control.sock" },
+    { publicCaPath: "/unselected/public-ca.pem" },
+  ]) {
+    const invalid = {
       ...configuration,
       repository: {
         ...configuration.repository,
-        configuration: { sessionDurationSeconds: 180, controlSocket: "/unselected/control.sock" },
+        configuration: { sessionDurationSeconds: 180, ...misplaced },
       },
-    }),
-    {
-      name: "ConfigurationValidationError",
-      error: {
-        details: [
-          {
-            path: "",
-            code: "UNKNOWN_FIELD",
-            message: "Configuration does not satisfy additionalProperties.",
-          },
-        ],
+    };
+    await assert.rejects(load(invalid), unknownPolicyField);
+  }
+  for (const replacePolicy of [false, true]) {
+    const mutable = {
+      ...configuration,
+      repository: {
+        ...configuration.repository,
+        configuration: { sessionDurationSeconds: 180 },
       },
-    },
-  );
+    };
+    let scheduled = false;
+    const validate = GitHubRepositoryPolicy.validateConfiguration;
+    const validation = t.mock.method(
+      GitHubRepositoryPolicy,
+      "validateConfiguration",
+      (value: unknown) => {
+        const errors = validate(value);
+        if (!scheduled && errors.length === 0) {
+          scheduled = true;
+          // Mutate at the next loader await, after genuine validation of the policy copy.
+          queueMicrotask(() => {
+            if (replacePolicy) {
+              mutable.repository.configuration = { sessionDurationSeconds: 90 };
+            } else {
+              Object.assign(mutable.repository.configuration, {
+                sessionDurationSeconds: 90,
+                note: "changed after validation",
+              });
+            }
+          });
+        }
+        return errors;
+      },
+    );
+    try {
+      const captured = (await loadSnapshot(mutable))!;
+      assert.equal(mutable.repository.configuration.sessionDurationSeconds, 90);
+      assert.equal(
+        captured.repositoryAdmission!.policy.resolveBindings({
+          namespaceId,
+          bindings: [{ repositoryRef: "source", profile: "git-write" }],
+        }).sessionDurationSeconds,
+        180,
+      );
+      assert.equal(
+        captured.repositoryGitDriver!.ref.configurationId,
+        protectedGit.repositoryGitDriver!.ref.configurationId,
+      );
+    } finally {
+      validation.mock.restore();
+    }
+  }
   await assert.rejects(
     load({
       ...configuration,
@@ -294,17 +467,19 @@ test("production composition separates repository policy from protected and expl
     },
   });
   assert.ok(native.nativeRepositorySender);
+  assert.equal(native.repositoryPolicy, undefined);
+  assert.equal(native.repositoryAdmission?.policyMode, "built-in");
   assert.equal(native.repositoryGitDriver, undefined);
   assert.equal(Object.hasOwn(native.installation.drivers, "repo"), false);
   assert.deepEqual(
-    native.repositoryPolicy!.resolve({
+    native.repositoryAdmission!.policy.resolveBindings({
       namespaceId,
       bindings: [{ repositoryRef: "source", profile: "git-write" }],
     }).bindings,
     [binding],
   );
   assert.deepEqual(
-    native.repositoryPolicy!.standingApprovalScope!({ namespaceId, binding }),
+    native.repositoryAdmission!.policy.standingApprovalScope!({ namespaceId, binding }),
     scope,
   );
   // Installation-wide authority is never available through a native session, even with a prepared provider.
@@ -359,14 +534,25 @@ function externalGitJourney(
     | "repository"
     | "installation"
     | "online-installation"
+    | "built-in-installation"
     | "reducible-installation"
-    | "lost-rotation",
+    | "lost-rotation"
+    | "git-write",
   artifactAdmissionOnly = false,
+  finiteRemoval = false,
+  stopDuringRemoval = false,
+  sourceBeforeStop?: "stopped" | "restore-during-bind",
 ) {
-  return async (t: TestContext) => {
+  const modelExecutable = scope === "reducible-installation" && !finiteRemoval ? codex : undefined;
+  const runJourney = async (t: TestContext, rehearsal?: AgentGrantRehearsal) => {
     let prepared: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> | undefined;
     let transport: Awaited<ReturnType<typeof bindRepositoryGitTransport>>;
     let releaseReduction: (() => void) | undefined;
+    let releaseTokenRetirement: (() => void) | undefined;
+    let releaseStoppedBind: (() => void) | undefined;
+    let releaseHiddenObservation: (() => void) | undefined;
+    let pauseStoppedBind = false;
+    let stoppedBindEntered = false;
     const workerOutcomes: object[] = [];
     let preparationStage = "not-started";
     let firstFailure: object | undefined;
@@ -435,7 +621,10 @@ function externalGitJourney(
         );
       }
       // Release test-owned holds before joining workers; close authority before its pool.
+      releaseTokenRetirement?.();
       releaseReduction?.();
+      releaseStoppedBind?.();
+      releaseHiddenObservation?.();
       try {
         await stopWorker();
       } finally {
@@ -455,20 +644,28 @@ function externalGitJourney(
     await f.controller.handleNamespaceLifecycle(f.actor.id, createdNamespace.id, "ready");
     const namespace = { ...createdNamespace, status: "ready" as const };
     const { id: namespaceId } = namespace;
-    const online = scope === "online-installation";
+    const coldFetch = scope === "repository" && !artifactAdmissionOnly;
+    const authenticatedJourney = scope === "built-in-installation";
+    // Repository write access with one draft pull request, authorized per request.
+    const writes = scope === "git-write";
+    const online = scope === "online-installation" || authenticatedJourney || writes;
     const lostRotation = scope === "lost-rotation";
     const reducible = scope === "reducible-installation" || lostRotation;
     const broad =
-      !lostRotation && scope !== "repository"
-        ? await installationOrigin(t, namespaceId)
+      !lostRotation && !writes && scope !== "repository"
+        ? await installationOrigin(
+            t,
+            namespaceId,
+            authenticatedJourney ? { tokenLifetimeMs: 300_000, maximumIssues: 2 } : undefined,
+          )
         : undefined;
     const { registry, backendId, origin, gh, tls, privateKeyPath, custodyKeyPath } =
-      broad ?? (await standingGitOrigin(t, namespaceId, 300_000));
+      broad ??
+      (await standingGitOrigin(t, namespaceId, 300_000, undefined, false, undefined, writes));
     const installationApiOrigin = broad?.gh.origin;
-    const conversation =
-      scope === "reducible-installation" && codex
-        ? await standingGitConversation(t, codex)
-        : undefined;
+    const conversation = modelExecutable
+      ? await standingGitConversation(t, modelExecutable)
+      : undefined;
     let askModel: Awaited<ReturnType<NonNullable<typeof conversation>["launch"]>> | undefined;
     let modelEnvironment: Record<string, string> | undefined;
     let modelCustody: ComputeRevisionContext | undefined;
@@ -478,7 +675,6 @@ function externalGitJourney(
     const modelGateway = conversation
       ? new OpenShellCredentialGatewayDriver(modelGatewayConfiguration, {
           id: "external-journey-model",
-          modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
           backend: {
             id: "external-journey-model",
             drivers: { credential_gateway: "external-journey-model" },
@@ -516,7 +712,8 @@ function externalGitJourney(
     const path = join(directory, "installation.json");
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const { certFile } = tls;
-    const peerOrigin = await listen(t, cedar.createCounterpart(tls));
+    const counterpart = cedar.createCounterpart(tls);
+    const peerOrigin = await listen(t, counterpart);
     const { capability, server } = createCapabilityPeer(
       tls,
       broad ? "github_installation" : "repository_git",
@@ -600,7 +797,10 @@ function externalGitJourney(
     assert.equal(repositoryOwner.controlSocket, undefined);
     assert.equal(Object.hasOwn(drivers.installation.drivers, "repo"), false);
     assert.equal(drivers.nativeRepositorySender, undefined);
-    assert.equal("open" in drivers.repositoryPolicy!, false);
+    assert.equal("open" in drivers.repositoryAdmission!.policy, false);
+    assert.equal(apiDrivers.repositoryPolicy, undefined);
+    assert.equal(drivers.repositoryPolicy, undefined);
+    assert.equal(drivers.repositoryAdmission?.policyMode, "built-in");
     assert.equal(drivers.repositoryTransport, undefined);
     const apiOwner = apiDrivers.repositoryGitDriver!;
     assert.notEqual(apiOwner, owner);
@@ -630,17 +830,27 @@ function externalGitJourney(
     // The short-lived local issuer makes rotation observable without changing stored deadlines.
     const { issuerCaPath, ...preparedConfig } = drivers.preparedRepositoryGit;
     const issuerCa = Buffer.from(await readPublicCaBundle(issuerCaPath!));
-    const startOwner = () =>
+    const startOwner = (startWorker = true) =>
       startPreparedGitHubGitOwner({
         ...repositoryOwner,
         ...preparedConfig,
+        startWorker,
         ca: issuerCa,
         pool: f.observerPool,
         registry: repositoryRegistry,
         ...repositoryGitAuthority(drivers),
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
-    prepared = await startOwner();
+    // Observe the installed Token Service's loop so the cold fetch can run before it starts.
+    const maintenanceAttachment = coldFetch
+      ? t.mock.method(repositoryGitAuthority(drivers).tokenService, "ownFamilies")
+      : undefined;
+    try {
+      prepared = await startOwner(!coldFetch);
+    } finally {
+      maintenanceAttachment?.mock.restore();
+    }
+    const scheduledMaintenance = maintenanceAttachment?.mock.calls[0]?.result;
     transport = await bindRepositoryGitTransport(
       drivers,
       prepared.protectedGit,
@@ -657,7 +867,7 @@ function externalGitJourney(
       installs: peer.delivery.installs,
     });
 
-    // The worker opens a real standing session. Workload placement is controlled locally;
+    // The worker opens a real repository session. Workload placement is controlled locally;
     // the optional conversation mode runs shipped Codex with the same admitted model source.
     let preparations = 0;
     let withdrawalStarted = false;
@@ -675,8 +885,32 @@ function externalGitJourney(
     });
     const compute: ComputeDriver = {
       ...f.compute,
-      ...(conversation && { admitRevision: kube.admitRevision.bind(kube) }),
+      ...(finiteRemoval && {
+        async retireExpiredRepositoryAccess() {
+          assert.fail("V2 policy reduction belongs to the external Driver, not Compute");
+        },
+      }),
+      ...(conversation && {
+        // Freeze the model destination through the same configuration path as admission.
+        normalizeHarnessOverrides: kube.normalizeHarnessOverrides.bind(kube),
+        resolveHarnessConfiguration: kube.resolveHarnessConfiguration.bind(kube),
+        validateHarnessCredentialSources: kube.validateHarnessCredentialSources.bind(kube),
+        admitRevision: kube.admitRevision.bind(kube),
+      }),
       capability: "compute",
+      async bindAgent(context) {
+        if (
+          pauseStoppedBind &&
+          context.agent.id === agentId &&
+          context.agent.desiredRuntimeState === "stopped"
+        ) {
+          pauseStoppedBind = false;
+          stoppedBindEntered = true;
+          await new Promise<void>((resolve) => {
+            releaseStoppedBind = resolve;
+          });
+        }
+      },
       async stopRevision(stopped) {
         // The cases share one database, so this worker can also claim an earlier case's due
         // retirement. Count only this case's Agent.
@@ -695,6 +929,7 @@ function externalGitJourney(
       validateHarnessAuth: kube.validateHarnessAuth!.bind(kube),
       validateExecutionAdmission: kube.validateExecutionAdmission!.bind(kube),
       validateRepositoryCredentials: kube.validateRepositoryCredentials!.bind(kube),
+      validateRepositoryCredentialSupport: kube.validateRepositoryCredentialSupport!.bind(kube),
       async prepareRevision(revision: AgentRevision, custody: ComputeRevisionContext) {
         preparationStage = "prepare-entered";
         preparations++;
@@ -707,6 +942,7 @@ function externalGitJourney(
           assert.equal(custody.harnessAuth?.method, "credential_source");
           const auth = custody.harnessAuth;
           assert.ok(auth && auth.method === "credential_source");
+          assert.ok(auth.source);
           await modelGateway.attachForRevision({
             revision,
             namespace,
@@ -784,6 +1020,7 @@ function externalGitJourney(
                 image: "fixture",
                 command: [],
                 workspaceMounts: [],
+                retainedDirectories: [],
                 files: [],
                 environment: [],
                 labels: {},
@@ -837,44 +1074,139 @@ function externalGitJourney(
     };
     const { actor, observerPool: pool } = f;
     const backends = apiDrivers.installation.backend;
-    const controller = createBackendController(f, { backends });
+    const controller = OpenClawController.forInstallation(
+      f.installation,
+      { state: f.state, backends },
+      apiDrivers.repositoryAdmission,
+    );
+    registerCoreDrivers(controller, f.state);
     const { id: who } = actor;
     if (modelGateway) {
       controller.registerDriver(modelGateway);
       controller.selectDriver("credential_gateway", modelGateway.id);
     }
     controller.installDriver(apiOwner, ["sandbox", "credential_proxy"]);
-    for (const d of [apiDrivers.repositoryPolicy!, compute]) {
-      controller.registerDriver(d);
-      controller.selectDriver(d.capability, d.id);
-    }
+    controller.registerDriver(compute);
+    controller.selectDriver(compute.capability, compute.id);
     const repositoryRef = broad?.installation.repositoryRef ?? "source";
+    let authenticated:
+      ((method: string, url: string, body?: unknown) => ReturnType<typeof injectJson>) | undefined;
+    if (authenticatedJourney) {
+      // Sign in a real persisted account with the fixture's administrator Role. Native IAM
+      // authorizes both Namespaces; repository policy alone denies the foreign selection.
+      const auth = await createPostgresControllerAuth({
+        pool,
+        installationId: f.installation.id,
+        mode: "development",
+        baseURL: "https://console.oce.localhost",
+        agentDomain: "agents.oce.localhost",
+        secret: "repository-policy-test-" + randomUUID(),
+      });
+      const app = createFastifyApp({
+        controller,
+        iamDriver: controller.selectedDriver("iam"),
+        computeDriver: compute,
+        configurationDriver: controller.selectedDriver("configuration"),
+        resolveHarness: resolveApprovedHarness,
+        auditSink: f.state.auditSink,
+        auth,
+        development: { enabled: false },
+      });
+      t.after(() => app.close());
+      const credentials = {
+        email: `repository-${randomUUID()}@example.test`,
+        password: randomUUID(),
+      };
+      const account = await auth.createAccount(credentials);
+      const seed = auth.principalSeed(account, { grant: "none" });
+      await f.state.appendNativeIAMPrincipal(seed);
+      // Give the login account the fixture operator's existing bootstrap grants. This
+      // seeds IAM state only; every request still runs the production verifier and IAM.
+      await pool.query(
+        `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+         SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id, resource_kind, resource_id
+         FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
+        [seed.principal.id, who],
+      );
+      const session = await signInToControllerApp(app, credentials);
+      authenticated = (method, url, body) => injectJson(app, method, url, { session, body });
+      const catalog = await authenticated(
+        "GET",
+        `/namespaces/${namespaceId}/agents/repository-options`,
+      );
+      assert.equal(catalog.statusCode, 200, catalog.body);
+      assert.equal(catalog.json().data[0].repositoryRef, repositoryRef);
+      assert.equal(
+        (await injectJson(app, "GET", `/namespaces/${namespaceId}/agents/repository-options`))
+          .statusCode,
+        401,
+      );
+      const foreign = await controller.createNamespace(who, {
+        name: "foreign-" + randomUUID().slice(0, 8),
+      });
+      await controller.handleNamespaceLifecycle(who, foreign.id, "ready");
+      const foreignConfig = await controller.createConfiguration(who, {
+        namespaceId: foreign.id,
+        kind: "agent",
+        values: createHarnessConfiguration("codex", "fixture"),
+      });
+      const foreignTraffic = () => ({
+        issues: gh.issuesOfTokens.length,
+        git: origin.traffic(),
+        api: broad!.installation.traffic(),
+      });
+      const before = foreignTraffic();
+      const foreignCatalog = await authenticated(
+        "GET",
+        `/namespaces/${foreign.id}/agents/repository-options`,
+      );
+      assert.equal(foreignCatalog.statusCode, 200, foreignCatalog.body);
+      assert.deepEqual(foreignCatalog.json().data, []);
+      const denied = await authenticated("POST", `/namespaces/${foreign.id}/agents`, {
+        configurationId: foreignConfig.id,
+        name: "Foreign policy",
+        executionMode: "dedicated",
+        harnessAuth: { method: "runtime" },
+        repositoryBindings: [{ repositoryRef, profile: "github-installation" }],
+      });
+      assert.equal(denied.statusCode, 400, denied.body);
+      assert.equal(denied.json().error.code, "INVALID_REQUEST");
+      assert.match(denied.json().error.message, /approved for this Namespace and profile/);
+      assert.deepEqual(await controller.listAgents(who, foreign.id), []);
+      assert.deepEqual(foreignTraffic(), before);
+    }
     const approvalId = randomUUID();
     const { id: configurationId } = await controller.createConfiguration(who, {
       namespaceId,
       kind: "agent",
       values: createHarnessConfiguration("codex", conversation ? "fixture-model" : "fixture"),
     });
-    const { id: agentId, servicePrincipalId } = await controller.createAgent(
-      who,
-      {
-        namespaceId,
-        configurationId,
-        name: "External Git",
-        executionMode: "dedicated",
-        harnessAuth: conversation
-          ? { method: "credential_source", sourceId: modelSourceId }
-          : { method: "runtime" },
-        ...(conversation && { credentialSources: [{ sourceId: modelSourceId }] }),
-        repositoryBindings: [
-          {
-            repositoryRef,
-            profile: broad ? "github-installation" : "git-write",
-          },
-        ],
-      },
-      resolveApprovedHarness,
-    );
+    const agentInput = {
+      namespaceId,
+      configurationId,
+      name: "External Git",
+      executionMode: "dedicated",
+      harnessAuth: conversation
+        ? { method: "credential_source", sourceId: modelSourceId }
+        : { method: "runtime" },
+      ...(conversation && { credentialSources: [{ sourceId: modelSourceId }] }),
+      repositoryBindings: [
+        {
+          repositoryRef,
+          profile: broad ? "github-installation" : "git-write",
+        },
+      ],
+    } satisfies Parameters<typeof controller.createAgent>[1];
+    const createdAgent = authenticated
+      ? await (async () => {
+          const { namespaceId: _namespaceId, ...body } = agentInput;
+          const response = await authenticated!("POST", `/namespaces/${namespaceId}/agents`, body);
+          assert.equal(response.statusCode, 201, response.body);
+          return response.json().data as Awaited<ReturnType<typeof controller.createAgent>>;
+        })()
+      : await controller.createAgent(who, agentInput, resolveApprovedHarness);
+    const { id: agentId, servicePrincipalId } = createdAgent;
     if (conversation) {
       // Model authority is independent of the external proxy's metadata route.
       const role = await controller.createIAMRole(who, {
@@ -976,26 +1308,40 @@ function externalGitJourney(
     };
     const awaitCa = await readFile(certFile);
     const key = { namespaceId, agentId, configurationId };
-    const [review] = await controller.listAgentStandingApprovalScopes(
-      who,
-      namespaceId,
-      key.agentId,
-    );
-    await controller.updateAgent(
-      who,
-      {
-        ...key,
-        repositoryStandingApproval: {
-          repositoryRef,
-          approvalId,
-          approved: true,
-          duration: "until-removed",
-          expectedScopeFingerprint: review!.scopeFingerprint,
+    if (!finiteRemoval) {
+      const [review] = await controller.listAgentStandingApprovalScopes(
+        who,
+        namespaceId,
+        key.agentId,
+      );
+      await controller.updateAgent(
+        who,
+        {
+          ...key,
+          repositoryStandingApproval: {
+            repositoryRef,
+            approvalId,
+            approved: true,
+            duration: "until-removed",
+            expectedScopeFingerprint: review!.scopeFingerprint,
+          },
         },
-      },
-      resolveApprovedHarness,
-    );
-    const deploy = () => controller.deployAgent(who, key, resolveApprovedHarness);
+        resolveApprovedHarness,
+      );
+    }
+    const deploy = async () => {
+      if (!authenticated) {
+        return controller.deployAgent(who, key, resolveApprovedHarness);
+      }
+      const response = await authenticated(
+        "POST",
+        `/namespaces/${namespaceId}/agents/${agentId}/deploy`,
+      );
+      assert.equal(response.statusCode, 202, response.body);
+      return (await f.state.read((view) =>
+        view.revisions.findRevision(namespaceId, agentId, response.json().data.id),
+      ))!;
+    };
     if (artifactAdmissionOnly) {
       // This controlled external Driver proves OCC admission and PostgreSQL freezing.
       // Native OpenShell artifact enforcement is qualified separately with shipped images.
@@ -1085,7 +1431,16 @@ function externalGitJourney(
     }
     if (broad) {
       capability.profile = "repository_git";
-      await assert.rejects(deploy, /did not confirm installation-wide repository access/);
+      if (authenticated) {
+        const refused = await authenticated(
+          "POST",
+          `/namespaces/${namespaceId}/agents/${agentId}/deploy`,
+        );
+        assert.equal(refused.statusCode, 503, refused.body);
+        assert.equal(refused.json().error.code, "DEPENDENCY_UNAVAILABLE");
+      } else {
+        await assert.rejects(deploy, /did not confirm installation-wide repository access/);
+      }
       assert.equal(gh.issuesOfTokens.length, 0);
       capability.profile = "github_installation";
     }
@@ -1097,7 +1452,10 @@ function externalGitJourney(
       mode: "protected",
     });
     assert.deepEqual(revision.egressPlan?.driver, owner.ref);
-    assert.equal(revision.repositoryCredentials?.standingApprovalId, approvalId);
+    assert.equal(
+      revision.repositoryCredentials?.standingApprovalId,
+      finiteRemoval ? undefined : approvalId,
+    );
     assert.equal(revision.harnessAuth.method, conversation ? "credential_source" : "runtime");
     if (conversation) {
       const model = openShellProviderName(modelSourceId);
@@ -1112,6 +1470,16 @@ function externalGitJourney(
       }));
     }
     const ref = { ...key, revisionId: revision.id };
+    const observeAgent = async () => {
+      const current = await f.state.read((view) => view.agents.findAgent(namespaceId, agentId));
+      assert.ok(current?.activeRevisionId);
+      const policy = await peer.observePolicy();
+      return {
+        agentId: current.id,
+        revisionId: current.activeRevisionId,
+        runtimeId: policy.sandboxId,
+      };
+    };
     t.diagnostic("journey revision " + revision.id);
     const startWorker = () =>
       f.start(compute, {
@@ -1126,20 +1494,52 @@ function externalGitJourney(
     // queued passes due.
     try {
       await startWorker();
-      await waitForRevisionPass(
-        "worker's standing execution",
+      const session = await waitForRevisionPass(
+        "worker's admitted repository session",
         f,
         revision,
-        () => f.state.read((v) => v.repositorySessions.findStandingExecution(ref)),
+        () =>
+          f.state.read(async (view) => {
+            if (finiteRemoval) {
+              return (await view.repositorySessions.listRevisionAttempts(ref)).find(
+                (attempt) => attempt.phase === "open",
+              );
+            }
+            const standing = await view.repositorySessions.findStandingExecution(ref);
+            if (!coldFetch) {
+              return standing;
+            }
+            if (!standing || standing.closed) {
+              return;
+            }
+            const agent = await view.agents.findAgent(namespaceId, agentId);
+            if (agent?.status !== "active" || agent.activeRevisionId !== revision.id) {
+              return;
+            }
+            const open = (await view.repositorySessions.listRevisionAttempts(ref)).filter(
+              (attempt) => attempt.phase === "open" && attempt.repositoryRef === repositoryRef,
+            );
+            assert.ok(open.length <= 1);
+            const [attempt] = open;
+            if (attempt?.sessionId) {
+              assert.equal(attempt.liveRevisionId, revision.id);
+              return attempt;
+            }
+          }),
         25_000,
       );
-      const first = await waitFor(
-        "worker installs first material",
-        () => peer.delivery.settled,
-        25_000,
-      );
-      assert.equal(peer.delivery.attempts, 1);
-      assert.equal(peer.delivery.installs, 1);
+      const waitForFirstMaterial = async () => {
+        const material = await waitFor(
+          "worker installs first material",
+          () => peer.delivery.settled,
+          25_000,
+        );
+        assert.equal(peer.delivery.attempts, 1);
+        assert.equal(peer.delivery.installs, 1);
+        return material;
+      };
+      const alreadyPrepared = coldFetch ? undefined : await waitForFirstMaterial();
+      const originalPolicy = finiteRemoval ? await peer.observePolicy() : undefined;
       if (lostRotation) {
         peer.delivery.loseReply = true;
         peer.delivery.hideObservation = true;
@@ -1186,7 +1586,8 @@ function externalGitJourney(
               ),
             revision.egressPlan!.routes.length + 1,
           );
-          await askModel("before");
+          const turn = await askModel("before");
+          rehearsal?.modelBefore({ ...(await observeAgent()), ...turn });
         }
       }
 
@@ -1212,23 +1613,406 @@ function externalGitJourney(
         : "http.extraHeader=" + peer.clientHeader;
       const fetch = (mayDeny = false) =>
         git(["-c", auth, "fetch", "--no-tags", remote, "refs/heads/main"], mayDeny);
-      const transfer = async (oid: string) => {
-        assert.notEqual(
-          (await git(["cat-file", "-e", oid], true)).code,
-          0,
-          "destination must lack this exact commit",
+      const hasObject = async (oid: string) => {
+        const result = await git(["cat-file", "-t", oid], true);
+        if (result.code === 128) {
+          assert.equal(result.stderr.trim(), "fatal: git cat-file: could not get object info");
+          return false;
+        }
+        assert.equal(result.code, 0);
+        assert.equal(result.stdout.trim(), "commit");
+        return true;
+      };
+      const cold = await (async () => {
+        if (!coldFetch) {
+          return;
+        }
+        assert.ok("trace" in gh);
+        const issuer = gh;
+        assert.ok("admissionId" in session && session.sessionId);
+        const { admissionId, sessionId } = session;
+        await waitFor(
+          "external recipient resolves its delivery fence and reads cold material",
+          () => peer.delivery.stage === "read-material" || undefined,
+          25_000,
         );
+        const observed = await peer.observePolicy();
+        assert.equal(observed.plan.execution.revisionId, revision.id);
+        assert.deepEqual(observed.plan.repositoryGit, revision.repositoryCredentials);
+        const familyId = "repository-git:" + admissionId;
+        const preparedMaterial = () =>
+          pool
+            .query<RepositoryGitMaterialVersion>(
+              `SELECT a.id AS "preparationAttemptId", a.material_version AS "materialVersion"
+             FROM occ.prepared_github_attempts a JOIN occ.prepared_github_families f USING (source_id)
+             JOIN occ.credential_deliveries d
+               ON (d.preparation_attempt_id,d.material_version)=(a.id,a.material_version)
+             WHERE f.source_id=$1 AND f.enabled AND f.source#>>'{session,sessionId}'=$2
+               AND a.admission=f.admission AND a.custody='current' AND a.state='committed'
+               AND d.revision_id=$3 AND d.live_revision_id=$3 AND d.binding_id=$4
+               AND d.target->'installation'=$5::jsonb AND d.settlement='witness'
+               AND d.fence IS NOT NULL AND d.write_pending IS NULL AND d.blocked IS NULL`,
+              [
+                familyId,
+                sessionId,
+                revision.id,
+                observed.plan.execution.executionId,
+                JSON.stringify(observed),
+              ],
+            )
+            .then(({ rows }) => rows);
+        const uses = () =>
+          pool
+            .query<RepositoryGitMaterialVersion & { exchangeId: string; operation: string }>(
+              `SELECT exchange_id AS "exchangeId", operation, attempt_id AS "preparationAttemptId",
+                      material_version AS "materialVersion"
+               FROM occ.prepared_repository_git_uses WHERE admission_id=$1
+               ORDER BY operation, exchange_id`,
+              [admissionId],
+            )
+            .then(({ rows }) => rows);
+        // Trace records parsed requests before authorization. Errors also catch rejected bodies.
+        const coldState = async () => ({
+          issuerRequests: issuer.trace.length,
+          issuerErrors: issuer.errors.length,
+          installs: peer.delivery.installs,
+          attempts: peer.delivery.attempts,
+          confirmations: peer.delivery.confirmations.length,
+          ...traffic(),
+          preparations: (
+            await pool.query("SELECT id FROM occ.prepared_github_attempts WHERE source_id=$1", [
+              familyId,
+            ])
+          ).rowCount,
+          uses: (await uses()).length,
+        });
+        const oid = await origin.ref("main");
+        assert.equal(await hasObject(oid), false);
+        const empty = {
+          issuerRequests: 0,
+          issuerErrors: 0,
+          installs: 0,
+          attempts: 0,
+          confirmations: 0,
+          connections: 0,
+          requests: 0,
+          preparations: 0,
+          uses: 0,
+        };
+        assert.deepEqual(await coldState(), empty);
+        // This sender can refuse missing material before checking the workload marker.
+        let senderRequests = 0;
+        const discovery = new URL(remote).pathname + "/info/refs?service=git-upload-pack";
+        const recordDiscovery = (req: IncomingMessage) => {
+          if (
+            req.method === "GET" &&
+            req.url === discovery &&
+            req.headers.host === peer.url.host &&
+            req.headers.authorization === peer.clientHeader.slice("Authorization: ".length)
+          ) {
+            senderRequests++;
+          }
+        };
+        counterpart.on("request", recordDiscovery);
+        const denied = await fetch(true).finally(() => counterpart.off("request", recordDiscovery));
+        assert.deepEqual(
+          await coldState(),
+          empty,
+          "cold fetch must not reach issuer, recipient installation or Git origin",
+        );
+        assert.equal(senderRequests, 1, "one Git discovery reached the admitted HTTPS sender");
+        assert.equal(denied.code, 128);
+        assert.match(denied.stderr, /The requested URL returned error: 403\b/);
+        assert.equal(await hasObject(oid), false);
+
+        assert.ok(prepared);
+        await prepared.maintain();
+        assert.equal(issuer.trace.length, 1);
+        assert.equal(issuer.errors.length, 0);
+        assert.equal(issuer.issuesOfTokens.length, 1);
+        return { oid, preparedMaterial, uses };
+      })();
+      const first = alreadyPrepared ?? (await waitForFirstMaterial());
+      const transfer = async (oid: string) => {
+        const beforePresent = await hasObject(oid);
+        assert.equal(beforePresent, false, "destination must lack this exact commit");
         const n = traffic().requests;
         await fetch();
+        const originRequests = traffic().requests - n;
         assert.equal(
-          traffic().requests,
-          n + (broad ? 3 : 2),
+          originRequests,
+          broad ? 3 : 2,
           "the real Git discovery and upload reached the private origin",
         );
-        assert.equal((await git(["rev-parse", "FETCH_HEAD"])).stdout.trim(), oid);
-        assert.equal((await git(["cat-file", "-t", oid])).stdout.trim(), "commit");
+        const afterSha = (await git(["rev-parse", "FETCH_HEAD"])).stdout.trim();
+        assert.equal(afterSha, oid, "Git fetch must resolve to the pinned origin commit");
+        assert.equal(await hasObject(oid), true);
+        return { expectedSha: oid, beforePresent, afterSha, originRequests };
       };
-      await transfer(await origin.ref("main"));
+      const [initialMaterial] = peer.delivery.confirmations;
+      if (cold) {
+        assert.ok(initialMaterial);
+        assert.equal(peer.delivery.confirmations.length, 1);
+        assert.equal(first.materialVersion, initialMaterial.materialVersion);
+        assert.deepEqual(await cold.preparedMaterial(), [initialMaterial]);
+        assert.deepEqual(await cold.uses(), []);
+      }
+      const firstDecision = peer.decisions.length;
+      const initialFetch = await transfer(cold?.oid ?? (await origin.ref("main")));
+      if (cold) {
+        assert.ok(initialMaterial);
+        const uses = await cold.uses();
+        assert.deepEqual(
+          uses.map(({ operation }) => operation),
+          ["advertise-upload-pack", "upload-pack"],
+        );
+        assert.equal(new Set(uses.map(({ exchangeId }) => exchangeId)).size, 2);
+        assert.deepEqual(
+          uses.map(({ preparationAttemptId, materialVersion }) => ({
+            preparationAttemptId,
+            materialVersion,
+          })),
+          [initialMaterial, initialMaterial],
+          "initial Git uses must name the committed recipient material",
+        );
+        const permits = peer.decisions.slice(firstDecision);
+        assert.equal(permits.length, uses.length);
+        assert.partialDeepStrictEqual(
+          permits,
+          uses.map(({ operation, ...use }) => ({
+            operation,
+            decision: { kind: "permit", ...use },
+          })),
+        );
+      }
+      rehearsal?.gitFetched(initialFetch);
+      if (writes) {
+        // The sender reports each request's ref and draft scope; the Worker's owner decides
+        // against the registry grant (push ref, base, one draft) and records every allow.
+        assert.ok("pulls" in gh);
+        const { pulls } = gh;
+        const start = peer.decisions.length;
+        const secret = peer.clientHeader.slice("Authorization: ".length);
+        const receivePacks = () =>
+          origin.trace.filter(
+            (entry) => entry.method === "POST" && entry.path.endsWith("/git-receive-pack"),
+          ).length;
+        // Draft POSTs at provider ingress, recorded before token validation.
+        const draftPosts = () =>
+          gh.trace.filter(
+            (entry) =>
+              entry.method === "POST" && entry.target === "/repos/" + origin.repository + "/pulls",
+          ).length;
+        const draft = (base: string, fields: Record<string, unknown> = { draft: true }) =>
+          new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
+            request(
+              peer.apiUrl,
+              {
+                ca: tls.ca,
+                agent: false,
+                family: 4,
+                signal: t.signal,
+                path: "/repos/" + origin.repository + "/pulls",
+                method: "POST",
+                headers: { authorization: secret, "content-type": "application/json" },
+              },
+              (res) => {
+                const status = res.statusCode!;
+                if (!res.headers["content-type"]?.startsWith("application/json")) {
+                  res.resume();
+                  resolve({ status, data: {} });
+                  return;
+                }
+                void json(res).then(
+                  (data) => resolve({ status, data: data as Record<string, unknown> }),
+                  reject,
+                );
+              },
+            )
+              .once("error", reject)
+              .end(JSON.stringify({ title: "Review", head: "review", base, ...fields }));
+          });
+        const outcomes = (from: number) =>
+          peer.decisions.slice(from).map(({ operation, decision }) => {
+            const { kind, reason } = decision as { kind: string; reason?: string };
+            return [operation, kind === "denied" ? reason : kind];
+          });
+        await git(["checkout", "--quiet", "-b", "review", "FETCH_HEAD"]);
+        await git([
+          "-c",
+          "user.name=Cedar",
+          "-c",
+          "user.email=cedar@example.test",
+          "commit",
+          "--quiet",
+          "--allow-empty",
+          "-m",
+          "Work for review",
+        ]);
+        const commit = (await git(["rev-parse", "HEAD"])).stdout.trim();
+        await git(["-c", auth, "push", "--quiet", remote, "HEAD:refs/heads/review"]);
+        assert.equal(await origin.ref("refs/heads/review"), commit, "the granted ref was updated");
+        assert.equal(receivePacks(), 1);
+        const elsewhere = await git(
+          ["-c", auth, "push", remote, "HEAD:refs/heads/elsewhere"],
+          true,
+        );
+        assert.deepEqual(
+          outcomes(start),
+          [
+            ["advertise-receive-pack", "allow"],
+            ["receive-pack", "allow"],
+            ["advertise-receive-pack", "allow"],
+            ["receive-pack", "unavailable"],
+          ],
+          JSON.stringify({ code: elsewhere.code, stderr: elsewhere.stderr }),
+        );
+        assert.notEqual(elsewhere.code, 0);
+        assert.match(elsewhere.stderr, /403/);
+        assert.equal(receivePacks(), 1, "a refused ref update never reaches the origin");
+        assert.notEqual(
+          (
+            await run("git", ["-C", origin.bare, "rev-parse", "--verify", "refs/heads/elsewhere"], {
+              env,
+              allowFailure: true,
+            })
+          ).code,
+          0,
+        );
+        assert.equal((await draft("elsewhere")).status, 403, "only the granted base");
+        assert.equal(pulls.size, 0, "a refused draft never reaches the provider");
+        // A regular pull request is refused by the sender before OCC or the provider sees it.
+        for (const regular of [{}, { draft: false }]) {
+          assert.equal((await draft("main", regular)).status, 403, "only a draft");
+        }
+        assert.equal(draftPosts(), 0, "no refused pull request reaches provider ingress");
+        assert.equal(outcomes(start).length, 5, "the sender asks OCC only for a draft");
+        const created = await draft("main");
+        assert.equal(created.status, 201);
+        assert.equal(created.data.draft, true);
+        assert.deepEqual(
+          [(created.data.head as { ref: string }).ref, (created.data.base as { ref: string }).ref],
+          ["review", "main"],
+        );
+        assert.equal((await draft("main")).status, 403, "the grant allows one draft");
+        assert.equal(pulls.size, 1, "the second draft never reaches the provider");
+        assert.equal(draftPosts(), 1, "only the allowed draft reaches provider ingress");
+        assert.deepEqual(outcomes(start), [
+          ["advertise-receive-pack", "allow"],
+          ["receive-pack", "allow"],
+          ["advertise-receive-pack", "allow"],
+          ["receive-pack", "unavailable"],
+          ["create-draft-pull", "unavailable"],
+          ["create-draft-pull", "allow"],
+          ["create-draft-pull", "draft_already_opened"],
+        ]);
+        // Evidence is OCC's own: one online use row per allow, each joined to the attempt the
+        // owner prepared with the App key, and the grant's spent draft allowance.
+        const allowed = peer.decisions
+          .slice(start)
+          .flatMap(({ operation, decision }) =>
+            (decision as { kind: string }).kind === "allow"
+              ? [{ operation, exchangeId: (decision as { exchangeId: string }).exchangeId }]
+              : [],
+          );
+        const { rows: uses } = await pool.query(
+          `SELECT u.exchange_id::text AS "exchangeId", u.operation,
+                  u.authorization_reply_by IS NOT NULL AS online, u.send_start_by IS NULL AS "noPermit"
+             FROM occ.prepared_repository_git_uses u
+             JOIN occ.prepared_github_attempts a
+               ON a.id = u.attempt_id AND a.material_version = u.material_version
+            WHERE u.exchange_id::text = ANY($1::text[])`,
+          [allowed.map((entry) => entry.exchangeId)],
+        );
+        assert.deepEqual(
+          uses.toSorted((a, b) => a.exchangeId.localeCompare(b.exchangeId)),
+          allowed
+            .map((entry) => ({ ...entry, online: true, noPermit: true }))
+            .toSorted((a, b) => a.exchangeId.localeCompare(b.exchangeId)),
+        );
+        const draftReceipt = allowed.find((entry) => entry.operation === "create-draft-pull")!;
+        const {
+          rows: [spent],
+        } = await pool.query(
+          `SELECT scope, outcome, authorization_reply_by IS NOT NULL AS online
+             FROM occ.prepared_repository_draft_pulls WHERE receipt_id::text = $1`,
+          [draftReceipt.exchangeId],
+        );
+        const { operationId, repositoryId, ...pullScope } = spent.scope;
+        assert.match(operationId, /^[0-9a-f-]{36}$/);
+        assert.equal(typeof repositoryId, "string");
+        assert.deepEqual(
+          { ...spent, scope: pullScope },
+          {
+            scope: {
+              apiOrigin: gh.origin,
+              repository: origin.repository,
+              head: "review",
+              base: "main",
+            },
+            outcome: "outcome_unknown",
+            online: true,
+          },
+        );
+        const {
+          rows: [delivered],
+        } = await pool.query(
+          "SELECT material_version FROM occ.credential_deliveries WHERE revision_id=$1",
+          [revision.id],
+        );
+        assert.ok(
+          peer.delivery.confirmations.some(
+            (entry) => entry.materialVersion === delivered.material_version,
+          ),
+          "the delivery record names material the recipient confirmed",
+        );
+
+        // Withdrawal: every fresh request is refused before the origin or provider.
+        await settleRevisionMaintenance(f, revision);
+        const writeTraffic = () => ({
+          git: traffic(),
+          pulls: pulls.size,
+          draftPosts: draftPosts(),
+          issues: gh.issuesOfTokens.length,
+        });
+        const before = writeTraffic();
+        const decisions = peer.decisions.length;
+        preparationsBeforeWithdrawal = preparations;
+        withdrawalStarted = true;
+        await controller.removeAgentStandingApproval(who, {
+          ...key,
+          approvalId,
+          expectedGeneration: 1,
+        });
+        const deniedFetch = await fetch(true);
+        assert.equal(deniedFetch.code, 128);
+        assert.match(deniedFetch.stderr.toString(), /403/);
+        const deniedPush = await git(["-c", auth, "push", remote, "HEAD:refs/heads/review"], true);
+        assert.notEqual(deniedPush.code, 0);
+        assert.equal((await draft("main")).status, 403);
+        assert.deepEqual(writeTraffic(), before, "no Git, API or issuance after withdrawal");
+        // OCC refuses each request itself: the sender asked for fetch, push and draft in turn.
+        const refusals = outcomes(decisions);
+        assert.deepEqual(refusals, [
+          ["advertise-upload-pack", "access_withdrawn"],
+          ["advertise-receive-pack", "access_withdrawn"],
+          ["create-draft-pull", "access_withdrawn"],
+        ]);
+        await nextMaintenancePass(f, revision, completions);
+        assertNoPreparationAfterWithdrawal();
+        assert.deepEqual(writeTraffic(), before, "maintenance after withdrawal prepares nothing");
+        t.diagnostic(
+          JSON.stringify({
+            allowed: uses.map((use) => use.operation),
+            draftAllowance: spent.outcome,
+            deliveredMaterial:
+              delivered.material_version === first.materialVersion ? "first" : "rotated",
+            refusedAfterWithdrawal: refusals.length,
+            tokensIssued: before.issues,
+          }),
+        );
+        return;
+      }
       if (broad) {
         const provider = broad.installation;
         const { repositories, apiRequests } = provider;
@@ -1551,6 +2335,20 @@ function externalGitJourney(
         );
       }
 
+      let hiddenObservationReached = false;
+      if (lostRotation) {
+        // Keep A's cached route until Git exercises the owner's refusal of pending B.
+        const hold = Promise.withResolvers<void>();
+        releaseHiddenObservation = hold.resolve;
+        peer.delivery.beforeRouteAssignment = async (hasRoute) => {
+          if (hasRoute || peer.delivery.installs !== 2) {
+            return;
+          }
+          delete peer.delivery.beforeRouteAssignment;
+          hiddenObservationReached = true;
+          await hold.promise;
+        };
+      }
       // Real owner deadlines: the 5-minute fixture token is inside the 10-minute renewal window.
       // Make the persisted next check due now for the owner's background loop, without
       // extending or editing a token or session deadline.
@@ -1561,6 +2359,10 @@ function externalGitJourney(
           [revision.id],
         );
         assert.equal(rowCount, 1);
+        if (coldFetch) {
+          assert.ok(scheduledMaintenance, "the installed Token Service attached Git maintenance");
+          scheduledMaintenance.start();
+        }
         if (!lostRotation) {
           second = await waitFor(
             "worker rotates material",
@@ -1668,14 +2470,23 @@ function externalGitJourney(
             assert.equal(denied.code, 128);
             assert.ok(/403/.test(denied.stderr.toString()), "sender refuses Git with HTTP 403");
           };
-          const decisions = peer.decisions.length;
-          await deniedFetch();
-          assert.deepEqual(peer.decisions.slice(decisions), [
-            {
-              operation: "advertise-upload-pack",
-              decision: { kind: "denied", reason: "unavailable" },
-            },
-          ]);
+          try {
+            await waitFor(
+              "reconciler observes no route while B is pending",
+              () => hiddenObservationReached || undefined,
+            );
+            const decisions = peer.decisions.length;
+            await deniedFetch();
+            assert.deepEqual(peer.decisions.slice(decisions), [
+              {
+                operation: "advertise-upload-pack",
+                decision: { kind: "denied", reason: "unavailable" },
+              },
+            ]);
+            assert.deepEqual(await readDelivery(), pending);
+          } finally {
+            releaseHiddenObservation?.();
+          }
           const pendingPasses = peer.delivery.reconciliations;
           await waitFor(
             "original lost B is observed without another installation attempt",
@@ -1683,6 +2494,11 @@ function externalGitJourney(
             10_000,
           );
           assertNoEffect();
+          // With the route cleared, the same sender must refuse before calling authority.
+          const decisions = peer.decisions.length;
+          await deniedFetch();
+          assert.equal(peer.decisions.length, decisions);
+          assert.deepEqual(await readDelivery(), pending);
           await f.stop();
           await transport!.close();
           await prepared.close();
@@ -1878,7 +2694,7 @@ function externalGitJourney(
             [second.materialVersion],
           )
           .then((r) => r.rows[0].n);
-      const committed = await receiptCount();
+      let committed = await receiptCount();
       if (broad) {
         assert.equal(
           committed,
@@ -1893,12 +2709,13 @@ function externalGitJourney(
 
       // Send another actual request to the same still-equipped sender. Check the transport and
       // HTTP boundaries before the client result, so an erroneous forward fails at the origin oracle.
+      let directProbeRequests = 0;
       const providerTraffic = () => ({
-        ...traffic(),
+        connections: traffic().connections - directProbeRequests,
+        requests: traffic().requests - directProbeRequests,
         // Token Service retirement is lifecycle traffic, not a workload send.
-        apiRequests: broad?.installation.apiRequests.filter(
-          ({ path }) => path !== "/installation/token",
-        ).length,
+        apiRequests: broad?.installation.traffic().workloadRequests,
+        issuerRequests: broad?.installation.traffic().issuerRequests,
         issues: gh.issuesOfTokens.length,
       });
       // Withdraw between worker passes, and snapshot the provider once none is running. A pass
@@ -1906,7 +2723,368 @@ function externalGitJourney(
       // Git is still denied per request and cleanup reduces after it. Every pass that starts
       // after the withdrawal must never prepare.
       await settleRevisionMaintenance(f, revision);
+      if (authenticatedJourney) {
+        const stored = await f.state.read((view) =>
+          view.revisions.findRevision(namespaceId, agentId, revision.id),
+        );
+        const identity = {
+          attempts: peer.delivery.attempts,
+          installs: peer.delivery.installs,
+          issues: gh.issuesOfTokens.length,
+        };
+        await f.stop();
+        await transport!.close();
+        await prepared.close();
+        drivers = await loadWorkerDrivers(owner);
+        assert.equal(drivers.repositoryPolicy, undefined);
+        // Drive the real owner's maintenance explicitly for the due-renewal comparison below.
+        prepared = await startOwner(false);
+        transport = await bindRepositoryGitTransport(
+          drivers,
+          prepared.protectedGit,
+          pool,
+          emit,
+          transportOptions,
+        );
+        await expireStoppedClaims(f, revision);
+        await startWorker();
+        await waitForRevisionPass(
+          "built-in policy recovers the existing revision",
+          f,
+          revision,
+          () =>
+            f.state.read(
+              async (view) =>
+                (await view.agents.findAgent(namespaceId, agentId))?.activeRevisionId ===
+                  revision.id || undefined,
+            ),
+        );
+        await transfer(await origin.addCommit());
+        assert.deepEqual(
+          {
+            attempts: peer.delivery.attempts,
+            installs: peer.delivery.installs,
+            issues: gh.issuesOfTokens.length,
+          },
+          identity,
+        );
+        assert.deepEqual(
+          await f.state.read((view) =>
+            view.revisions.findRevision(namespaceId, agentId, revision.id),
+          ),
+          stored,
+        );
+        await settleRevisionMaintenance(f, revision);
+        committed = await receiptCount();
+      }
+      // Only the scheduling timestamp changes. The provider's real five-minute expiry is
+      // already inside the production ten-minute renewal window; no authority or deadline is edited.
+      const makeRenewalDue = async () => {
+        const result = await pool.query(
+          "UPDATE occ.prepared_github_families SET next_check_at=clock_timestamp() WHERE enabled AND source #>> '{session,revisionId}'=$1",
+          [revision.id],
+        );
+        assert.equal(result.rowCount, 1);
+        assert.ok(Date.parse(second.expiresAt) > Date.now());
+        assert.ok(Date.parse(second.expiresAt) < Date.now() + 600_000);
+      };
+      const materialCounts = async () => ({
+        attempts: (
+          await pool.query(
+            `SELECT count(*)::int AS n FROM occ.prepared_github_attempts a
+             JOIN occ.prepared_github_families f USING (source_id)
+             WHERE f.source #>> '{session,revisionId}'=$1`,
+            [revision.id],
+          )
+        ).rows[0].n,
+        installs: peer.delivery.installs,
+      });
+      if (authenticatedJourney) {
+        const beforeRenewal = providerTraffic();
+        await makeRenewalDue();
+        await prepared.maintain();
+        second = await waitFor(
+          "authorized due renewal installs distinct material",
+          () => {
+            const settled = peer.delivery.settled;
+            return settled?.materialVersion !== first.materialVersion ? settled : undefined;
+          },
+          25_000,
+        );
+        assert.equal(
+          broad!.installation.traffic().issuerRequests,
+          beforeRenewal.issuerRequests! + 1,
+        );
+        assert.equal(gh.issuesOfTokens.length, beforeRenewal.issues + 1);
+        assert.deepEqual(await materialCounts(), { attempts: 2, installs: 2 });
+        await transfer(await origin.addCommit());
+        committed = await receiptCount();
+        await settleRevisionMaintenance(f, revision);
+        await makeRenewalDue();
+      }
+      if (sourceBeforeStop) {
+        // The supplier applies an optional-source withdrawal, but its reply and
+        // observation are lost. Only the stored operation may recover that effect.
+        peer.reduction.loseReply = true;
+        peer.reduction.hideObservation = true;
+        await controller.withdrawAgentCredentialSource(who, {
+          namespaceId,
+          agentId,
+          credentialSourceId: independentSourceId!,
+        });
+        await waitFor(
+          "source reduction applied without acknowledgment",
+          () => peer.reduction.applies === 1 || undefined,
+          25_000,
+        );
+        await f.stop();
+        const sourceReduction = await f.state.read(async (view) =>
+          (
+            await view.credentialSources.listCredentialPolicyReductions(namespaceId, revision.id)
+          ).find((item) => item.bindingId === `policy:source:${independentSourceId}`),
+        );
+        assert.ok(sourceReduction);
+        assert.equal(sourceReduction.observed, undefined);
+        assert.ok((await peer.observePolicy()).plan.repositoryGit);
+
+        // A distinct operator loses only Stop authority after admission. This
+        // cannot authorize shutdown or ordinary source use by the retained runtime.
+        const stopActor = `stop-actor-${randomUUID()}`;
+        await f.copyActorGrants(stopActor, { withoutActions: ["operate"] });
+        const role = await controller.createIAMRole(who, {
+          namespaceId,
+          name: "temporary-stop",
+          permissions: [{ action: "operate", resourceKind: "agent" }],
+        });
+        const grant = await controller.createIAMAccessBinding(who, {
+          namespaceId,
+          subjectKind: "identity",
+          subjectId: stopActor,
+          roleId: role.id,
+          resourceKind: "agent",
+          resourceId: agentId,
+        });
+        await controller.stopAgent(stopActor, namespaceId, agentId);
+        await controller.deleteIAMAccessBinding(who, namespaceId, grant.id);
+        const {
+          rows: [stop],
+        } = await pool.query(
+          "SELECT idempotency_key FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND actor_id=$3 AND agent_target='stopped'",
+          [namespaceId, agentId, stopActor],
+        );
+        assert.ok(stop);
+        await transport!.close();
+        await prepared.close();
+        drivers = await loadWorkerDrivers(owner);
+        prepared = await startOwner();
+        transport = await bindRepositoryGitTransport(
+          drivers,
+          prepared.protectedGit,
+          pool,
+          emit,
+          transportOptions,
+        );
+        await expireStoppedClaims(f, revision);
+        await startWorker();
+        await f.work({ id: agentId, idempotencyKey: stop.idempotency_key }, "failed_permanent");
+        assert.equal(stopAttempts, 0);
+        preparationsBeforeWithdrawal = preparations;
+        if (sourceBeforeStop === "restore-during-bind") {
+          // Pause the real Compute boundary after the stopped snapshot and first
+          // locked check. Removal and replacement then commit while it is awaited.
+          pauseStoppedBind = true;
+          assert.equal((await f.advanceMaintenance(revision)).rowCount, 1);
+          await waitFor("stopped maintenance binds Compute", () => stoppedBindEntered || undefined);
+        }
+        withdrawalStarted = true;
+        await controller.updateAgent(
+          who,
+          { ...key, repositoryBindings: [] },
+          resolveApprovedHarness,
+        );
+        assert.equal(await new f.PostgresWorkQueue(pool).repositoryExpiryState(ref), "removal");
+        const beforeRemoval = providerTraffic();
+        const denied = await fetch(true);
+        assert.equal(denied.code, 128);
+        assert.match(denied.stderr.toString(), /403/);
+        assert.deepEqual(providerTraffic(), beforeRemoval);
+        await independentRead(403);
+        assert.equal(independentRequests, 1);
+
+        const denyReplacement = async () => {
+          const actor = `replacement-actor-${randomUUID()}`;
+          await f.copyActorGrants(actor);
+          const replacement = await controller.deployAgent(actor, key, resolveApprovedHarness);
+          await removeAccessBindings(f, actor);
+          return { ...replacement, idempotencyKey: `agent_revision:${replacement.id}:reconcile` };
+        };
+        let replacementWork;
+        if (sourceBeforeStop === "restore-during-bind") {
+          replacementWork = await denyReplacement();
+          releaseStoppedBind!();
+        }
+
+        // Git cleanup must observe the predecessor without replaying its apply or
+        // completing the unrelated source withdrawal while stopped.
+        peer.reduction.loseReply = false;
+        peer.reduction.hideObservation = false;
+        await waitForRevisionPass(
+          "Git detaches after the earlier source receipt is recovered",
+          f,
+          revision,
+          async () =>
+            f.state.read(
+              async (view) =>
+                (
+                  await view.credentialSources.listCredentialPolicyReductions(
+                    namespaceId,
+                    revision.id,
+                  )
+                ).find((item) => item.bindingId === "policy:repository-git")?.observed || undefined,
+            ),
+          25_000,
+        );
+        const reductions = await f.state.read((view) =>
+          view.credentialSources.listCredentialPolicyReductions(namespaceId, revision.id),
+        );
+        const recoveredSource = reductions.find(
+          (item) => item.bindingId === sourceReduction.bindingId,
+        )!;
+        const gitReduction = reductions.find((item) => item.bindingId === "policy:repository-git")!;
+        assert.deepEqual(recoveredSource.request, sourceReduction.request);
+        assert.ok(recoveredSource.observed);
+        assert.notEqual(gitReduction.request.operationId, sourceReduction.request.operationId);
+        assert.equal(peer.reduction.applies, 2);
+        assert.equal(peer.reduction.attempts, 2, "one source apply and one distinct Git apply");
+        assert.ok(peer.reduction.observations.includes(sourceReduction.request.operationId));
+        assert.deepEqual(
+          peer.reduction.applied.map((item) => item.operationId),
+          [sourceReduction.request.operationId, gitReduction.request.operationId],
+        );
+        if (sourceBeforeStop === "stopped") {
+          assert.notEqual(
+            (
+              await f.state.read((view) =>
+                view.credentialSources.findCredentialWithdrawal(
+                  namespaceId,
+                  revision.id,
+                  independentSourceId!,
+                ),
+              )
+            )?.state,
+            "revoked",
+            "Git cleanup observes the effect but does not complete source withdrawal",
+          );
+        }
+        assert.equal(gitReduction.observed!.plan.repositoryGit, undefined);
+        assert.deepEqual(gitReduction.observed!.plan.routes, []);
+        const current = await f.state.read((view) => view.agents.findAgent(namespaceId, agentId));
+        assert.equal(current?.activeRevisionId, revision.id);
+        assert.equal(
+          current?.desiredRuntimeState,
+          sourceBeforeStop === "stopped" ? "stopped" : "running",
+        );
+        assert.equal(stopAttempts, 0);
+        assertNoPreparationAfterWithdrawal();
+        assert.deepEqual(providerTraffic(), beforeRemoval);
+        if (sourceBeforeStop === "stopped") {
+          const removal = await new f.PostgresWorkQueue(pool).findWork(
+            repositoryRemovalWorkKey(revision.id),
+          );
+          assert.ok(removal?.state === "queued" || removal?.state === "claimed");
+          // Keep the original pending supervisor even while stopped. A historical
+          // removal marker cannot prove another owner will restart this chain.
+          await waitFor("stopped maintenance is deferred", async () => {
+            const {
+              rows: [row],
+            } = await pool.query(
+              "SELECT count(*)::int pending FROM occ.controller_work WHERE revision_id=$1 AND idempotency_key LIKE $2 AND state IN ('queued','claimed')",
+              [revision.id, `agent_revision:${revision.id}:maintenance:%`],
+            );
+            return row.pending === 1 || undefined;
+          });
+        }
+        await f.stop();
+        const originalAttempts = await f.state.read((view) =>
+          view.repositorySessions.listRevisionAttempts(ref),
+        );
+        replacementWork ??= await denyReplacement();
+        await transport!.close();
+        await prepared.close();
+        drivers = await loadWorkerDrivers(owner);
+        prepared = await startOwner();
+        transport = await bindRepositoryGitTransport(
+          drivers,
+          prepared.protectedGit,
+          pool,
+          emit,
+          transportOptions,
+        );
+        // The stopped worker may have held cleanup; use the existing crash-recovery
+        // clock advancement before requiring the replacement worker to reclaim it.
+        await expireStoppedClaims(f, revision);
+        await startWorker();
+        await f.work(replacementWork, "failed_permanent");
+        assert.equal(
+          (await f.workResult(replacementWork)).rows[0]?.reason_code,
+          "AUTHORIZATION_DENIED",
+        );
+        await waitFor("original removal resumes after denied replacement", async () => {
+          await advanceCleanupRetries(f, revision);
+          return (
+            (await new f.PostgresWorkQueue(pool).findWork(repositoryRemovalWorkKey(revision.id)))
+              ?.state === "succeeded" || undefined
+          );
+        });
+        // Removal can finish while the worker has already claimed the ordinary observation.
+        // Count the pending chain, then advance queued work without replacing its selected key.
+        const resumed = await pool.query<{ idempotency_key: string; actor_id: string }>(
+          `SELECT idempotency_key, actor_id FROM occ.controller_work
+           WHERE revision_id = $1 AND state IN ('queued', 'claimed') AND idempotency_key LIKE $2`,
+          [revision.id, `agent_revision:${revision.id}:maintenance:%`],
+        );
+        assert.equal(resumed.rowCount, 1, "one ordinary maintenance chain resumes");
+        const [resumedWork] = resumed.rows;
+        assert.ok(resumedWork);
+        await pool.query(
+          `UPDATE occ.controller_work SET available_at = clock_timestamp()
+           WHERE idempotency_key = $1 AND state = 'queued'`,
+          [resumedWork.idempotency_key],
+        );
+        assert.equal(resumedWork.actor_id, who, "original deployment actor owns maintenance");
+        const maintenance = { id: agentId, idempotencyKey: resumedWork.idempotency_key };
+        await f.work(maintenance, "succeeded");
+        assert.equal(
+          (await f.workResult(maintenance)).rows[0]?.reason_code,
+          "REPOSITORY_ACCESS_WITHDRAWN",
+        );
+        await f.stop();
+        assert.equal((await f.advanceMaintenance(revision)).rowCount, 1, "one successor remains");
+        const after = await f.state.read((view) => view.agents.findAgent(namespaceId, agentId));
+        assert.equal(after?.desiredRuntimeState, "running");
+        assert.equal(after?.activeRevisionId, revision.id);
+        assert.deepEqual(
+          (await f.state.read((view) => view.repositorySessions.listRevisionAttempts(ref))).map(
+            (item) => item.admissionId,
+          ),
+          originalAttempts.map((item) => item.admissionId),
+        );
+        assert.equal(stopAttempts, 0);
+        assert.equal(
+          peer.reduction.applies,
+          2,
+          "running restoration never reapplies either reduction",
+        );
+        assertNoPreparationAfterWithdrawal();
+        assert.equal((await fetch(true)).code, 128);
+        assert.deepEqual(providerTraffic(), beforeRemoval);
+        t.diagnostic(
+          "source apply1 + Git apply1; denied Stop and replacement; same runtime/session; one original-actor maintenance chain",
+        );
+        return;
+      }
       const before = providerTraffic();
+      const materialBeforeWithdrawal = authenticatedJourney ? await materialCounts() : undefined;
       const decisions = peer.decisions.length;
       if (reducible) {
         peer.reduction.loseReply = true;
@@ -1916,13 +3094,64 @@ function externalGitJourney(
         });
         peer.reduction.beforeApply = () => hold;
       }
+      if (stopDuringRemoval) {
+        await f.stop();
+        await controller.stopAgent(who, namespaceId, agentId);
+        const {
+          rows: [stop],
+        } = await pool.query(
+          "SELECT idempotency_key FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND agent_target='stopped' AND state='queued'",
+          [namespaceId, agentId],
+        );
+        assert.ok(stop);
+        await deferWork(pool, { keyLike: stop.idempotency_key, state: "queued" }, "1 day");
+        await transport!.close();
+        await prepared.close();
+        drivers = await loadWorkerDrivers(owner);
+        prepared = await startOwner();
+        transport = await bindRepositoryGitTransport(
+          drivers,
+          prepared.protectedGit,
+          pool,
+          emit,
+          transportOptions,
+        );
+        await startWorker();
+      }
+      // Keep the exact token usable through the denial control; cleanup may otherwise retire it.
+      if (broad && !stopDuringRemoval) {
+        releaseTokenRetirement = broad.installation.holdCurrentTokenRetirement();
+      }
       preparationsBeforeWithdrawal = preparations;
       withdrawalStarted = true;
-      await controller.removeAgentStandingApproval(who, {
-        ...key,
-        approvalId,
-        expectedGeneration: 1,
-      });
+      if (finiteRemoval) {
+        // This is a binding edit while the immutable finite admission is still live.
+        // Its durable withdrawal must select the already admitted V2 reduction owner.
+        const attempts = await f.state.read((view) =>
+          view.repositorySessions.listRevisionAttempts(ref),
+        );
+        assert.equal(attempts.length, 1);
+        assert.ok(attempts.every((attempt) => attempt.deadlineWallMs > Date.now()));
+        await controller.updateAgent(
+          who,
+          { ...key, repositoryBindings: [] },
+          resolveApprovedHarness,
+        );
+        const queue = new f.PostgresWorkQueue(pool);
+        assert.equal(await queue.repositoryExpiryState(ref), "removal");
+      } else {
+        await controller.removeAgentStandingApproval(who, {
+          ...key,
+          approvalId,
+          expectedGeneration: 1,
+        });
+      }
+      // A fresh provider-side commit distinguishes refusal from a cached fetch.
+      const withdrawnSha = rehearsal && (await origin.addCommit());
+      if (withdrawnSha) {
+        assert.equal(await origin.ref("main"), withdrawnSha);
+      }
+      const withdrawnBeforePresent = withdrawnSha ? await hasObject(withdrawnSha) : false;
       const denied = await fetch(true);
       assert.deepEqual(
         providerTraffic(),
@@ -1937,6 +3166,15 @@ function externalGitJourney(
       ]);
       assert.equal(denied.code, 128);
       assert.match(denied.stderr.toString(), /403/);
+      if (rehearsal && withdrawnSha) {
+        rehearsal.gitRefused({
+          expectedSha: withdrawnSha,
+          beforePresent: withdrawnBeforePresent,
+          afterPresent: await hasObject(withdrawnSha),
+          exitCode: denied.code,
+          originRequests: providerTraffic().requests - before.requests,
+        });
+      }
       assert.ok(
         Date.now() < Date.parse(second.expiresAt),
         "withdrawal was tested while the installed credential was usable",
@@ -1955,6 +3193,22 @@ function externalGitJourney(
           "withdrawal denies Git writes before the origin",
         );
       }
+      if (broad && !stopDuringRemoval) {
+        try {
+          await broad.installation.verifyTokenStillWorks();
+          // These two known direct requests are the only exception to the continuous baseline.
+          directProbeRequests += 2;
+          assert.deepEqual(providerTraffic(), before, "only the direct token control reaches Git");
+          t.diagnostic("withdrawn token accepted before retirement; direct Git probe requests=2");
+        } finally {
+          releaseTokenRetirement!();
+        }
+      }
+      if (authenticatedJourney) {
+        // Let real retirement finish, then require the same due pass to refuse new issuance.
+        await prepared.maintain();
+        assert.deepEqual(await materialCounts(), materialBeforeWithdrawal);
+      }
       if (reducible) {
         releaseReduction!();
         await waitForRevisionPass(
@@ -1967,6 +3221,9 @@ function externalGitJourney(
         assert.equal(peer.reduction.attempts, 1);
         await f.stop();
         const reduced = await peer.observePolicy();
+        if (originalPolicy) {
+          assert.equal(reduced.sandboxId, originalPolicy.sandboxId);
+        }
         assert.equal(reduced.plan.repositoryGit, undefined);
         assert.deepEqual(reduced.plan.execution, revision.egressPlan!.execution);
         assert.equal(await fetch(true).then((result) => result.code), 128);
@@ -2017,10 +3274,30 @@ function externalGitJourney(
           before,
           "reduction and restart cannot send Git to the origin",
         );
+        if (stopDuringRemoval) {
+          // The Git-only exception never authorizes ordinary source use while stopped.
+          await independentRead(403);
+          assert.equal(independentRequests, 1);
+          assert.deepEqual(reduced.plan.routes, originalPolicy!.plan.routes);
+          const current = await f.state.read((view) => view.agents.findAgent(namespaceId, agentId));
+          assert.equal(current?.desiredRuntimeState, "stopped");
+          assert.equal(stopAttempts, 0);
+          const removal = await new f.PostgresWorkQueue(pool).findWork(
+            repositoryRemovalWorkKey(revision.id),
+          );
+          assert.ok(
+            removal?.state === "queued" || removal?.state === "claimed",
+            "observed Git effect leaves runtime disposition pending",
+          );
+          return;
+        }
         await independentRead(200);
         assert.equal(independentRequests, 2);
-        await askModel?.("after");
-        if (conversationRequired) {
+        if (askModel) {
+          const turn = await askModel("after");
+          rehearsal?.modelAfter({ ...(await observeAgent()), ...turn });
+        }
+        if (conversationRequired && !finiteRemoval) {
           assert.ok(askModel, "required same-conversation proof ran on v7");
         }
         peer.reduction.loseReply = false;
@@ -2064,38 +3341,48 @@ function externalGitJourney(
           revision.id,
         );
       }
-      if (broad) {
-        await broad.installation.verifyTokenStillWorks();
-      } else {
+      // The worker keeps running. A maintenance pass that starts after the withdrawal must
+      // neither prepare nor reach the provider.
+      await nextMaintenancePass(f, revision, completions);
+      assertNoPreparationAfterWithdrawal();
+      assert.deepEqual(
+        providerTraffic(),
+        before,
+        "withdrawal through maintenance reaches no issuer or workload provider endpoint",
+      );
+      if (authenticatedJourney) {
+        assert.deepEqual(await materialCounts(), materialBeforeWithdrawal);
+        t.diagnostic(
+          `due renewal: authorized issuance=1, withdrawn issuance=0; provider ingress ${JSON.stringify(before)} -> ${JSON.stringify(providerTraffic())}; lifecycle traffic ${JSON.stringify(broad!.installation.traffic())}`,
+        );
+      }
+      if (!broad) {
         assert.ok("tokenState" in gh);
         const [, live] = gh.tokenState();
         assert.equal(live?.uses, 2);
         assert.equal(live.revoked, false);
         assert.equal(await receiptCount(), 2);
       }
-      // The worker keeps running. A maintenance pass that starts after the withdrawal must
-      // neither prepare nor reach the provider.
-      const settledTraffic = providerTraffic();
-      await nextMaintenancePass(f, revision, completions);
-      assertNoPreparationAfterWithdrawal();
-      assert.deepEqual(
-        providerTraffic(),
-        settledTraffic,
-        "maintenance after withdrawal reaches no provider",
-      );
       t.diagnostic(
         broad
-          ? "one installation token, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal, zero provider connection or HTTP, then direct proof the same token was still accepted; a later maintenance pass did not prepare"
+          ? "installation tokens, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal with no issuer or workload-provider request through a later maintenance pass, with separately counted direct proof the same token was accepted before retirement"
           : "fetched two previously absent commits using distinct material; withdrawn request reached the same sender, with zero additional origin connections or HTTP requests; a later maintenance pass did not prepare",
       );
     } catch (error) {
       failed = true;
       throw error;
     } finally {
+      releaseTokenRetirement?.();
       releaseReduction?.();
+      releaseStoppedBind?.();
+      releaseHiddenObservation?.();
       await f.stop();
     }
   };
+  return (t: TestContext) =>
+    modelExecutable
+      ? runAgentGrantRehearsal(t, (rehearsal) => runJourney(t, rehearsal))
+      : runJourney(t);
 }
 
 // Loopback transport proof: the counterpart, not an apply acknowledgment, owns the policy.

@@ -27,10 +27,16 @@ the exact placeholder, account metadata, and an empty refresh token. Native Code
 does not own OAuth refresh. Restarts reconstruct this state from the admitted
 source attachment. Session and workspace persistence remain independent of auth.
 
-OCC's login-session Secret contains an opaque Refresh Driver handle and source identity,
-never the access/refresh-token pair. The credential source survives closing or
-expiry of that session. Plugin configuration requests a usable access token from the source; the token
-service may refresh before returning it. This does not consume the deployed
+OCC derives its device-login encryption key from `OCC_AUTH_SECRET`. In PostgreSQL,
+it encrypts the Refresh Driver's private handle separately from the user code
+and verification URL. When login completes, OCC clears the private handle.
+It retains the encrypted code and URL so the user can poll the completed login.
+Cancellation or expiry clears both encrypted values.
+
+OCC keeps the closed session row until Namespace deletion. The session has no
+IAM grant, and closing a login does not revoke its credential source.
+Plugin configuration requests a usable access
+token from the source. The token service may refresh it before returning it. This does not consume the deployed
 credential or require another login.
 
 ## OAuth launch limits
@@ -46,8 +52,7 @@ Account metadata changes require a new deployment version. Native checks that de
 real access-token claims remain unqualified with an opaque placeholder.
 
 Connection recovery and refresh are the external token service's responsibility.
-Deleting a login-session Secret does not revoke its credential source; remove an
-unused source through credential-source management. Active references block deletion.
+To revoke an unused source, remove it through credential-source management. Active references block deletion.
 
 ## Device-login verification
 

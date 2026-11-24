@@ -27,36 +27,45 @@ paths or app-server settings.
 
 ## Gateway storage
 
-Each real gateway, embedded or dedicated, receives one private `10Gi`
-`ReadWriteOnce` filesystem claim named `gateway-state-<agent-hash>`, where
-`agent-hash` is the first 12 hexadecimal characters of `sha256(agentId)`.
-Claims live in the tenant namespace in a single cluster; dedicated Gateway claims
-use the control-cluster Gateway namespace only with the two-cluster profile. The required
-Kubernetes DNS-subdomain `runtime.gatewayStorageClassName` selects an
-operator-provisioned StorageClass for a local or cloud block disk mounted as a
-filesystem.
+Each real Gateway has a private RWO filesystem claim named
+`gateway-state-<agent-hash>`, using the first 12 hexadecimal characters of
+`sha256(agentId)`. Claims live in the tenant namespace; two-cluster dedicated
+Gateways use the control-cluster Gateway namespace. Required
+`runtime.gatewayStorageClassName` selects an operator-provisioned local or cloud
+block StorageClass by DNS-subdomain name.
+
+Installation-wide `runtime.gatewayStorageSizeGiB` accepts 1–65536 whole GiB
+(default 10), subject to provider support. Reuse and final deletion require
+matching storage requests. The Driver never resizes, replaces or adopts mismatched
+claims. Preparation may detect mismatches after predecessor shutdown.
+Keep or restore the original size until normal Agent deletion removes every claim
+requesting it. Set the new size before creating claims.
+Mixed sizes are unsupported. Don’t edit or delete claims to bypass this check.
 
 The filesystem must support SQLite locking, durable `fsync`, and colocated
 database and WAL/SHM files. The Driver checks claim configuration, not filesystem
 guarantees. See [SQLite’s requirements](https://sqlite.org/useovernet.html).
 
-Do not use NFS or SMB/CIFS for gateway databases:
-[SQLite WAL does not support network filesystems](https://sqlite.org/wal.html).
-A network-attached cloud block disk is different: the node mounts its own
-filesystem on that disk.
+Never use NFS or SMB/CIFS for Gateway databases.
+[SQLite WAL requires a local filesystem](https://sqlite.org/wal.html).
+With network-attached block storage, the node mounts its own filesystem.
 
-`ReadWriteOnce` (RWO) means read-write access from one **node**, not one Pod;
-[multiple Pods on that node may still mount it](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes).
-It does not establish SQLite compatibility or single-gateway access. Normal
-gateway replacement uses one replica with `Recreate`; node partitions and
-forced replacements still require operator fencing before permitting another
-writer.
+`ReadWriteOnce` allows one writer **node**.
+[Multiple Pods on that node can mount the claim](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes).
+RWO guarantees neither SQLite compatibility nor exclusive Gateway access.
+Replacement uses one replica with `Recreate`. After a node partition or forced
+replacement, fence the old writer before allowing another.
 
-A stop deletes the Gateway and waits for its Pod to disappear before stopping the
-Harness, which finishes active work meanwhile; a refused candidate's stop deletes
-both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
-pinned runtime's drain and cleanup. Idle Gateways exit promptly. Forced
-termination can leave native Gateway locks and an owner lease on retained state.
+With a dedicated Harness, an ordinary stop deletes the Gateway and waits for
+its Pod to disappear before stopping the Harness. For a refused candidate,
+the Driver stops the dedicated Harness before waiting for the Gateway Pod to
+disappear. An embedded Harness stops with the Gateway. Shutdown can interrupt
+active work.
+
+Gateways get up to 330 seconds to drain and clean up. If OpenClaw
+exits non-zero, as when stopped during startup, its running container releases
+its locks; force-terminated or killed after that grace, the container leaves
+them and an owner lease, which the next Pod cannot verify.
 
 If the kubelet restarts an embedded Gateway container in the same Pod, OpenClaw
 can recover locks held by the **first container instance**. Before configurable
@@ -68,8 +77,7 @@ custom lifecycle environment, additional Secret bindings, or repository tooling.
 Replacing the Pod discards its keys. A later container's locks or a missing
 record also require [operator recovery](../../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 
-Only the Gateway Pod mounts these writable directories, including SQLite
-databases and their WAL/SHM siblings:
+Only the Gateway Pod mounts these writable directories:
 
 | Private subpath             | Gateway mount                               |
 | --------------------------- | ------------------------------------------- |
@@ -79,28 +87,33 @@ databases and their WAL/SHM siblings:
 | `media`                     | `/home/node/.openclaw/media`                |
 | `worktrees`                 | `/home/node/.openclaw/worktrees`            |
 | `worktree-sources`          | `/home/node/.openclaw/worktree-sources`     |
+| `skill-library`             | `/home/node/.openclaw/skill-library`        |
 | `sessions` (dedicated mode) | `/home/node/.openclaw/agents/main/sessions` |
 
-Linked worktrees and Git metadata in `worktree-sources` persist across Gateway replacement.
-The retained database requires the client store’s migration receipt; both persist.
+These directories persist across Gateway replacement.
 
-Embedded Gateways mount the claim's `workspace` subpath at
-`/home/node/.openclaw/workspace`, the default workspace under the configured
-`OPENCLAW_STATE_DIR`, retaining the workspace files attested by gateway
-SQLite so a continued turn after Pod replacement does not fail with
-`WorkspaceVanishedError`. Native workspace path overrides are outside this
-persistence contract. In dedicated mode,
-`/home/node/workspace` is a logical Gateway workspace key served by the paired
-node; Gateway does not mount the Harness workspace.
+If an earlier Pod lost a Skill Library bundle, follow
+[recover a missing Skill Library bundle](../../../guides/topics/remote-harness.md#recover-a-missing-skill-library-bundle).
 
-A nonroot init container prepares directories without credentials or extra privileges. The nested
-`agents/main/agent/codex-home` is overmounted from Pod-local `emptyDir` so
-Codex credentials remain ephemeral; the rest of the private runtime home is
-ephemeral.
-The init container creates a node-owned mode-`0700` subdirectory on the
-Pod-local temporary `emptyDir` and mounts it at `/tmp`, preserving private
-temp-workspace ancestry for Gateway and Harness processes; the fsGroup-writable
-volume root is never their runtime temp root.
+Back up `state/openclaw.sqlite` with its matching `client/credentials.sqlite`.
+Restore both at their original configured paths with private ownership and
+permissions. For OpenClaw backup archives, `openclaw backup restore` validates
+and rebinds the receipt; raw copies must retain a valid binding. The client
+store holds local identities, not model provider credentials. After migration, a missing client store or mismatched
+receipt prevents Gateway startup.
+
+Embedded Gateways mount `workspace` at `/home/node/.openclaw/workspace` under
+the configured `OPENCLAW_STATE_DIR`. This preserves the files Gateway SQLite
+attests and prevents `WorkspaceVanishedError` when a turn continues after Pod
+replacement. This covers only the default workspace. In dedicated mode, the
+paired node serves the logical workspace key `/home/node/workspace`. The
+Gateway does not mount the Harness workspace.
+
+A nonroot init container prepares directories without credentials or extra
+privileges. Pod-local `emptyDir` covers `agents/main/agent/codex-home`,
+keeping Codex credentials ephemeral. The remaining private home is ephemeral. Gateway and Harness mount a node-owned `0700` subdirectory of
+their Pod-local `emptyDir` at `/tmp` to keep temporary workspace ancestors
+private despite the fsGroup-writable volume root.
 
 OCE disables OpenClaw automatic package updates in the Gateway and workspace
 node; runtime upgrades use the operator-selected image and ordinary redeployment.
@@ -213,30 +226,27 @@ After OCC accepts a newer version that requires earlier workloads to stop, the
 worker stops their reconciliation and maintenance;
 see the [Compute replacement contract](../compute.md#production-revision-stages).
 
-RWX Harness or Gateway claims are rejected during reconciliation and final
-Agent deletion.
+Reconciliation and final Agent deletion refuse RWX workspace or Gateway claims.
+RWO cannot fence writers on a partitioned node. Terminate the Pod and allow safe
+provider detach/attach. The Driver never force-detaches disks. Local-path PVs retain
+node affinity; moving data across nodes requires a portable StorageClass.
 
-As with the Gateway claim, RWO does not fence writers on a partitioned node. Pod
-termination and the storage provider's safe detach/attach behavior remain
-required; the Driver never force detaches a disk. A local-path PV keeps its node
-affinity and cannot move its data to another node. Cross-node rescheduling needs
-an appropriate portable StorageClass, not RWX.
+Both claims retain Namespace and Agent ownership across replacements.
+Reconciliation leaves foreign, terminating or incompatible claims untouched and refuses reuse.
+Create claims before Pods. Waiting for binding would deadlock `WaitForFirstConsumer`.
+Workload readiness gates activation. Stop and retirement retain both claims.
+Agent deletion retires all revisions, then deletes owned claims by UID.
+On cleanup failure, deletion stays pending and the Agent keeps its database identity for retry.
 
-Both claims retain Namespace and Agent owners across version and Gateway Pod
-changes. Reconciliation rejects foreign, terminating, or incompatible claims
-without mutation. Claims precede consumers; readiness uses the Gateway workload.
-Waiting for `Bound` before creating Pods would deadlock `WaitForFirstConsumer`
-storage classes. Stopping or retiring an Agent revision retains
-both claims, including when the gateway has already stopped. Agent deletion
-retires every Agent revision before its final cleanup hook deletes the owned claims
-using their exact Kubernetes UIDs. A cleanup failure keeps deletion pending
-for retry and preserves the Agent's database identity.
+## Optional scratch storage
+
+For `/sandbox/scratch` storage, see [configuration](configuration.md#scratch-volumes)
+and [setup](../../../guides/topics/remote-harness.md#add-operator-owned-scratch-storage).
 
 ## Managed native configuration
 
-How runtime gateways read the managed native configuration, and when native
-admin editing uses a writable copy, is in
-[Managed native configuration](managed-native-configuration.md).
+See [Managed native configuration](managed-native-configuration.md) for Gateway
+configuration reads and writable native-admin copies.
 
 ## Runtime credentials
 
@@ -305,18 +315,15 @@ is rejected.
 The Agent's required [harnessAuth binding](../../agents.md#harness-authentication)
 selects the model credential. API keys use the selected OCC Secret Driver's
 exact reference; account tokens use an account-owned CP source. Compute selects
-the explicit login mode during workload rendering. The combined embedded workload
-or dedicated Harness receives the selected model credential; a dedicated Gateway does not. A
-[credential source](../../credential-sources.md) binding is the exception: Compute
-renders no model Secret and hands the Credential Gateway's attachments to the
-OpenShell Sandbox instead.
+the explicit login mode during workload rendering. The embedded workload
+or dedicated Harness receives a direct credential; a dedicated Gateway does not.
+With a [Credential Source](../../credential-sources.md), Compute renders no model
+Secret. The paired Credential Proxy or legacy Gateway supplies credential delivery
+through the Sandbox.
 
-If channels are enabled, set `runtime.channels.proxyUrl` to a literal-IP proxy
-URL, or to the Helm-managed proxy Service URL paired with
-`runtime.channels.managedProxy` so Compute limits gateway egress to that proxy's
-Pods by selector. Store the Agent's channel credentials as Namespace Secrets
-referenced by Configuration `secretBindings`; they are available only to the
-dedicated gateway, never to its Codex Harness.
+Enabled channels require [managed channel egress](channel-egress.md). Only the
+Gateway receives its assigned listener URL; Harness transport and model
+credential placement remain separate.
 
 Agent revisions with repository bindings support embedded OpenClaw or dedicated Codex,
 without a Sandbox Driver. Compute delivers each immutable repository-material

@@ -1,4 +1,4 @@
-import type { CredentialRefreshStatus } from "../credential-refresh/index.ts";
+import type { CredentialRefreshStatus } from "../token-service/index.ts";
 import type { Driver } from "../index.ts";
 import type {
   AgentRevision,

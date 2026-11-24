@@ -1,10 +1,16 @@
 import net from "node:net";
 import { once } from "node:events";
 import pg from "pg";
+import { waitFor } from "../helpers/wait-for.ts";
 
 // Real PostgreSQL transport faults: drop the server's COMMIT completion, or
 // pause the client's COMMIT request before forwarding it to the server.
-export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = false } = {}) {
+/**
+ * @param {string} databaseUrl
+ * @param {{port?: number, egressDispatch?: boolean, transactionStatement?: string}} [options]
+ */
+export async function commitAckProxy(databaseUrl, options = {}) {
+  const { port = 0, egressDispatch = false, transactionStatement } = options;
   const target = new URL(databaseUrl);
   // Resolve query-string and environment precedence with the same installed
   // driver as the caller. URL authority alone is not the effective destination.
@@ -25,10 +31,14 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
   let commits = 0;
   let pauseCommit = false;
   let heldCommit;
+  /** @type {number | undefined} */
+  let heldBackendPid;
   const sockets = new Set();
   let expectedInstance;
+  /** @type {ReturnType<typeof dispatch>} */
   let dropped;
   let authorizations = 0;
+  /** @param {string[]} params */
   const dispatch = (params) => {
     const [instanceId, useId, attemptId] = params;
     if (
@@ -52,10 +62,15 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
     let frontend = Buffer.alloc(0);
     let backend = Buffer.alloc(0);
     let startup = true;
+    /** @type {number | undefined} */
+    let backendPid;
     let dropping = false;
     let parsedDispatch = false;
+    /** @type {ReturnType<typeof dispatch>} */
     let selected;
+    /** @type {ReturnType<typeof dispatch>} */
     let updated;
+    let sawTransactionStatement = false;
     const close = () => {
       if (heldCommit?.upstream === upstream) {
         heldCommit = undefined;
@@ -81,6 +96,12 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
         }
         const frame = frontend.subarray(0, size);
         frontend = frontend.subarray(size);
+        if (!startup && transactionStatement !== undefined && frame[0] === 80) {
+          // Parse names a prepared statement without inspecting its Bind values.
+          const sqlOffset = frame.indexOf(0, 5) + 1;
+          const sql = frame.toString("utf8", sqlOffset, frame.indexOf(0, sqlOffset));
+          sawTransactionStatement ||= sql === transactionStatement;
+        }
         if (!startup && egressDispatch && frame[0] === 80) {
           // Parse. Match only the OCC authorization update, never a reservation or
           // an unrelated COMMIT. The product uses pg's unnamed extended query.
@@ -119,7 +140,8 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
           frame[0] === 81 &&
           frame.subarray(5, -1).toString().trim().toUpperCase() === "COMMIT" &&
           armed &&
-          (!egressDispatch || updated)
+          (!egressDispatch || updated) &&
+          (transactionStatement === undefined || sawTransactionStatement)
         ) {
           if (skipCommits > 0) {
             skipCommits -= 1;
@@ -130,6 +152,7 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
               // deferred constraints must decide whether the transaction can commit.
               observed = true;
               heldCommit = { upstream, frame };
+              heldBackendPid = backendPid;
               continue;
             }
             dropping = true;
@@ -151,6 +174,10 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
         }
         const frame = backend.subarray(0, size);
         backend = backend.subarray(size);
+        if (frame[0] === 75) {
+          // BackendKeyData names the server process that runs this connection's transactions.
+          backendPid = frame.readInt32BE(5);
+        }
         if (
           frame[0] === 67 &&
           selected &&
@@ -166,6 +193,9 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
             dropped = updated;
           }
           updated = undefined;
+        }
+        if (frame[0] === 90 && frame[5] === 73) {
+          sawTransactionStatement = false;
         }
         if (
           egressDispatch &&
@@ -193,6 +223,7 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
   proxyUrl.searchParams.delete("port");
   return {
     url: proxyUrl.toString(),
+    /** @param {{skipCommits?: number, pauseCommit?: boolean, instanceId?: string}} [options] */
     arm(options = {}) {
       const skip = options.skipCommits ?? 0;
       if (!Number.isSafeInteger(skip) || skip < 0) {
@@ -202,7 +233,12 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
         throw new Error("The single-use fault is already armed or consumed.");
       }
       if (egressDispatch) {
-        if (!/^[a-f0-9-]{36}$/.test(options.instanceId)) {
+        if (
+          typeof options.instanceId !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            options.instanceId,
+          )
+        ) {
           throw new Error("Expected supervisor instance UUID.");
         }
         expectedInstance = options.instanceId;
@@ -229,7 +265,26 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
       }
       const held = heldCommit;
       heldCommit = undefined;
+      // A forwarded COMMIT is no longer abandoned; its pooled session stays open.
+      heldBackendPid = undefined;
       held.upstream.write(held.frame);
+    },
+    /**
+     * After close(), wait until PostgreSQL has ended the session whose COMMIT was held. The
+     * server rolls that transaction back only when it notices the closed socket; until then it
+     * still holds its row locks, and a recovery that skips locked rows returns without them.
+     * @param {pg.Pool} pool a pool on the real server, not through this proxy
+     */
+    async waitForHeldSessionEnd(pool) {
+      const pid = heldBackendPid;
+      if (pid === undefined) {
+        throw new Error("No COMMIT request was held.");
+      }
+      await waitFor("the session whose COMMIT was held to end", async () =>
+        (await pool.query("SELECT 1 FROM pg_stat_activity WHERE pid=$1", [pid])).rowCount === 0
+          ? true
+          : undefined,
+      );
     },
     async close() {
       for (const socket of sockets) {

@@ -773,6 +773,10 @@ export function renderAgentLogs(
       ? chosen
       : (available?.id ?? description.sources[0]?.id ?? "");
     const source = selectedSource();
+    const hidePodPicker = (source?.pods.length ?? 0) <= 1;
+    if (hidePodPicker && document.activeElement === podSelect) {
+      sourceSelect.focus({ preventScroll: true });
+    }
     const chosenPod = podSelect.value;
     replaceChildrenIfChanged(
       podSelect,
@@ -784,9 +788,9 @@ export function renderAgentLogs(
         ),
       ),
     );
-    podSelect.hidden = (source?.pods.length ?? 0) <= 1;
-    podLabel.hidden = podSelect.hidden;
-    podPicker.hidden = podSelect.hidden;
+    podSelect.hidden = hidePodPicker;
+    podLabel.hidden = hidePodPicker;
+    podPicker.hidden = hidePodPicker;
     if (
       source?.pods.some(({ name, container }) => JSON.stringify([name, container]) === chosenPod)
     ) {
@@ -953,10 +957,27 @@ export function renderAgentLogs(
           return;
         }
         const selection = effectiveSelection();
+        // Stacked Pod cards can move the log controls out of view during a rollout.
+        // Anchor only a control the keyboard reader still has in view when the reply arrives.
+        const focused = section.querySelector(".log-controls :focus-visible");
+        const before = focused?.getBoundingClientRect();
         description = answer;
         statusDenied = false;
         renderStrip();
         renderPickers();
+        const active = document.activeElement;
+        if (
+          before &&
+          before.bottom > 0 &&
+          before.top < window.innerHeight &&
+          active &&
+          (active === focused || (focused === podSelect && active === sourceSelect))
+        ) {
+          const moved = active.getBoundingClientRect().top - before.top;
+          if (moved) {
+            window.scrollBy({ top: moved, behavior: "instant" });
+          }
+        }
         void showRunningVersion(answer.pods.length === 0);
         if (first && !logsDenied) {
           firstLogRead = readLogs({ restart: true });
@@ -1346,6 +1367,9 @@ export function renderAgentLogs(
   sourceSelect.addEventListener("change", () => {
     podSelect.value = "";
     renderPickers();
+    if (!logsDenied) {
+      showLogError(null);
+    }
     void readLogs({ restart: true });
   });
   podSelect.addEventListener("change", () => {

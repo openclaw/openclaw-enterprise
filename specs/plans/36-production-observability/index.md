@@ -123,7 +123,7 @@ logging:
 `tests/helpers/production-observability-k3d.mjs`. Extend
 `tests/helpers/production-helm-real.mjs`, `scripts/ci/prepare.mjs`,
 `scripts/ci/cleanup.mjs`, and `scripts/ci/test-suites.json`; reuse `tests/helpers/kubernetes-real.mjs`,
-`tests/helpers/logging-otel-observation.mjs`, and `scripts/ci/logging.mjs`.
+`tests/helpers/logging-otel-observation.mjs`, and `scripts/ci/logging.ts`.
 
 **Interfaces:** Add lane `k3d-observability`, selected by
 `OCC_TEST_PRODUCTION_OBSERVABILITY=1`, using existing explicit kubeconfig/context

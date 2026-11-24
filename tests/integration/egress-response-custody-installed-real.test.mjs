@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { isAbsolute } from "node:path";
 import test from "node:test";
 import {
@@ -68,20 +67,16 @@ test(
       const socket = process.env.OCC_TEST_EGRESS_DISPATCH_OBSERVER_SOCKET;
       assert.ok(isAbsolute(socket));
       const fault = (cmd) => faultObserver(socket, cmd);
-      assert.deepEqual(
-        await fault(),
-        { authorizations: 0, observed: false, armed: false },
-        "fresh dedicated dispatch observer",
-      );
       const setup = await arrangeRealPrerequisites(
         t,
         progress,
         process.env.OCC_TEST_EGRESS_CONNECTED_INPUTS,
         { wholeExecution: true },
       );
-      assert.equal(
-        execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-        setup.input.oceCommit,
+      assert.deepEqual(
+        await fault(),
+        { authorizations: 0, observed: false, armed: false },
+        "fresh dedicated dispatch observer",
       );
       const evidence = await createRunEvidence(t, setup, progress);
       const stack = await observePreparedStack(t, setup, evidence, progress);

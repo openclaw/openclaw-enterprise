@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import type {
   Driver,
   BackendDefinition,
+  BackendRef,
   DriverCapability,
   OpenShellBackendDefinition,
 } from "@openclaw-enterprise/contracts";
@@ -402,18 +403,25 @@ function validateOpenShellBackend(
       key !== "sandbox" &&
       key !== "credential_gateway" &&
       key !== "credential_refresh" &&
-      key !== "credential_proxy"
+      key !== "credential_proxy" &&
+      key !== "token_service"
     ) {
       throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
     }
   }
-  if (!isNonEmptyString(drivers.sandbox) || !isNonEmptyString(drivers.credential_gateway)) {
-    throw new ScopeViolationError(
-      path(id, "drivers") + " requires sandbox and credential_gateway members.",
-    );
+  if (!isNonEmptyString(drivers.sandbox)) {
+    throw new ScopeViolationError(path(id, "drivers") + " requires a sandbox member.");
+  }
+  if (drivers.credential_gateway !== undefined && !isNonEmptyString(drivers.credential_gateway)) {
+    throw new ScopeViolationError(path(id, "drivers.credential_gateway") + " must be a Driver ID.");
   }
   if (drivers.credential_refresh !== undefined && !isNonEmptyString(drivers.credential_refresh)) {
     throw new ScopeViolationError(path(id, "drivers.credential_refresh") + " must be a Driver ID.");
+  }
+  if (drivers.credential_refresh !== undefined && drivers.credential_gateway === undefined) {
+    throw new ScopeViolationError(
+      path(id, "drivers.credential_refresh") + " requires a credential_gateway member.",
+    );
   }
   return deepFreeze({
     id,
@@ -433,13 +441,18 @@ function validateOpenShellBackend(
     },
     drivers: {
       sandbox: drivers.sandbox,
-      credential_gateway: drivers.credential_gateway,
+      ...(drivers.credential_gateway === undefined
+        ? {}
+        : { credential_gateway: drivers.credential_gateway as string }),
       ...(drivers.credential_proxy === undefined
         ? {}
         : { credential_proxy: backendId(drivers.credential_proxy, "Egress Driver ID") }),
       ...(drivers.credential_refresh === undefined
         ? {}
         : { credential_refresh: drivers.credential_refresh as string }),
+      ...(drivers.token_service === undefined
+        ? {}
+        : { token_service: backendId(drivers.token_service, "TokenService Driver ID") }),
     },
   });
 }
@@ -453,13 +466,18 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
   }
   return [
     `sandbox:${backend.drivers.sandbox}`,
-    `credential_gateway:${backend.drivers.credential_gateway}`,
+    ...(backend.drivers.credential_gateway === undefined
+      ? []
+      : [`credential_gateway:${backend.drivers.credential_gateway}`]),
     ...(backend.drivers.credential_refresh === undefined
       ? []
       : [`credential_refresh:${backend.drivers.credential_refresh}`]),
     ...(backend.drivers.credential_proxy === undefined
       ? []
       : [`credential_proxy:${backend.drivers.credential_proxy}`]),
+    ...(backend.drivers.token_service === undefined
+      ? []
+      : [`token_service:${backend.drivers.token_service}`]),
   ];
 }
 
@@ -514,6 +532,19 @@ export function assertConfiguredBackend(
   return backend;
 }
 
+export function resolveAgentBackendId(
+  backends: BackendMap,
+  value: BackendRef | undefined,
+  preserve?: BackendRef,
+): BackendRef {
+  const backendId = value === undefined ? (preserve ?? null) : value;
+  const backend = assertConfiguredBackend(backends, backendId, "Backend");
+  if (backend !== undefined && backend.type !== "chatgpt") {
+    throw new ScopeViolationError("The Agent Backend must support its Harness association.");
+  }
+  return backendId;
+}
+
 export function validateSelectedBackendDrivers(
   backends: readonly BackendDefinition[],
   selected: Readonly<Partial<Record<DriverCapability, Driver>>>,
@@ -532,17 +563,22 @@ export function validateSelectedBackendDrivers(
       requires("service_account", backend.drivers.service_account, "ServiceAccount Driver");
     } else {
       requires("sandbox", backend.drivers.sandbox, "Sandbox Driver");
-      requires(
-        "credential_gateway",
-        backend.drivers.credential_gateway,
-        "Credential Gateway Driver",
-      );
+      if (backend.drivers.credential_gateway !== undefined) {
+        requires(
+          "credential_gateway",
+          backend.drivers.credential_gateway,
+          "Credential Gateway Driver",
+        );
+      }
       if (backend.drivers.credential_refresh !== undefined) {
         requires(
           "credential_refresh",
           backend.drivers.credential_refresh,
           "Credential Refresh Driver",
         );
+      }
+      if (backend.drivers.token_service !== undefined) {
+        requires("token_service", backend.drivers.token_service, "TokenService Driver");
       }
       if (backend.drivers.credential_proxy !== undefined) {
         requires("credential_proxy", backend.drivers.credential_proxy, "Credential Proxy Driver");

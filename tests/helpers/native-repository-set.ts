@@ -5,13 +5,13 @@ import { createServer } from "node:http";
 import { request } from "node:https";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import {
   cleanEnvironment,
   listen,
   run as runProcess,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 
 const run: (
   command: string,

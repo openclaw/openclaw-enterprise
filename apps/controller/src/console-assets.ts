@@ -91,6 +91,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/device-login.mts",
       "agents/credential-access.mts",
       "agents/secret-picker.mts",
+      "agents/network-proxy.mts",
       "agents/credentials.mts",
       "channels/slack.mts",
       "channels/shared-ui.mts",
@@ -120,7 +121,7 @@ const CONSOLE_ASSETS = new Map([
   [
     "/console/preset-variables.mjs",
     {
-      path: new URL("../../../packages/contracts/src/preset-variables.mjs", import.meta.url),
+      path: new URL("../../../packages/contracts/src/preset-variables.mts", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
   ],

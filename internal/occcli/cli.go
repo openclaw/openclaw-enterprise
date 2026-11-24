@@ -1,9 +1,11 @@
 package occcli
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -171,7 +173,7 @@ func (app *application) installationCommand() *cobra.Command {
 			})
 		},
 	}
-	command.AddCommand(get, deploymentInventory, app.installationInstallCommand(), app.installationHandoffCommand("doctor"), app.installationHandoffCommand("plan"))
+	command.AddCommand(get, deploymentInventory, app.installationInstallCommand(), app.installationMigrateValuesCommand(), app.installationHandoffCommand("doctor"), app.installationHandoffCommand("plan"), installationUpgradeCommand())
 	return command
 }
 
@@ -194,6 +196,12 @@ func (app *application) namespaceCommand() *cobra.Command {
 			}
 			namespace, err := client.CreateNamespace(args[0], existingNamespace)
 			if err != nil {
+				if lostMutationReply(err) {
+					notices := command.ErrOrStderr()
+					fmt.Fprintln(notices, "Namespace creation outcome is unconfirmed. Do not resend the create request.")
+					fmt.Fprintln(notices, "Keep the same connection options. Run occ namespace list, then use occ namespace get ID with the ID of a matching Namespace.")
+					fmt.Fprintln(notices, "The request may still commit, and permissions may hide the Namespace. If you cannot confirm the outcome, ask an Installation administrator to check the audit log.")
+				}
 				return err
 			}
 			return app.printNamespace(namespace, false)
@@ -781,6 +789,7 @@ func (app *application) agentCommand() *cobra.Command {
 	update.Flags().StringVar(&updateFile, "file", "", "JSON document path")
 	_ = update.MarkFlagRequired("file")
 
+	var harnessOverridesFile, retainedHarnessRevision string
 	deploy := &cobra.Command{
 		Use:   "deploy ID",
 		Short: "Deploy an Agent and create an immutable revision",
@@ -794,8 +803,33 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			revision, err := client.DeployAgent(namespace, args[0])
+			overrides := map[string]any{}
+			if harnessOverridesFile != "" {
+				value, err := readJSON(harnessOverridesFile)
+				if err != nil {
+					return err
+				}
+				if err := json.Unmarshal(value, &overrides); err != nil || overrides == nil {
+					return fmt.Errorf("Harness overrides must be a JSON object")
+				}
+			}
+			if retainedHarnessRevision != "" {
+				if err := revisionIDArg.check(retainedHarnessRevision, namespace); err != nil {
+					return err
+				}
+				overrides, err = readRetainedHarnessOverrides(client, namespace, args[0], retainedHarnessRevision, command.ErrOrStderr())
+				if err != nil {
+					return err
+				}
+			}
+			revision, err := client.DeployAgent(namespace, args[0], overrides)
 			if err != nil {
+				if lostMutationReply(err) {
+					notices := command.ErrOrStderr()
+					fmt.Fprintln(notices, "Deployment outcome is unconfirmed. Another deploy can create a second revision.")
+					fmt.Fprintf(notices, "Keep the same connection options and use these read-only commands, replacing REVISION_ID with the matching revision ID.\n  occ --namespace %s agent revisions %s\n  occ --namespace %s agent deployment-status %s REVISION_ID\n", namespace, args[0], namespace, args[0])
+					fmt.Fprintln(notices, "Your request may still commit, permissions may hide its revision, or another caller may deploy concurrently. Leave the outcome unresolved if you cannot identify your revision.")
+				}
 				return err
 			}
 			if err := app.printItems(revision, false, []column{
@@ -810,9 +844,13 @@ func (app *application) agentCommand() *cobra.Command {
 			return nil
 		},
 	}
+	deploy.Flags().StringVar(&harnessOverridesFile, "harness-overrides", "", "JSON file containing requested Harness overrides")
+	deploy.Flags().StringVar(&retainedHarnessRevision, "retain-harness-overrides", "", "Revision ID whose requested Harness overrides to submit")
+	deploy.MarkFlagsMutuallyExclusive("harness-overrides", "retain-harness-overrides")
 	firstDeploymentCommand := func(recoverOnly bool) *cobra.Command {
 		var intent occclient.FirstDeploymentIntent
 		var generation string
+		var overridesFile string
 		name, description := "deploy-first", "Deploy exactly the reviewed Configuration, only if never deployed"
 		if recoverOnly {
 			name, description = "recover-first-deployment", "Read an exact first-deployment receipt without deploying"
@@ -829,6 +867,15 @@ func (app *application) agentCommand() *cobra.Command {
 				parsed, err := strconv.ParseInt(generation, 10, 64)
 				if err != nil || strconv.FormatInt(parsed, 10) != generation {
 					return fmt.Errorf("--generation must be a canonical positive decimal integer")
+				}
+				if overridesFile != "" {
+					value, err := readJSON(overridesFile)
+					if err != nil {
+						return err
+					}
+					if err := json.Unmarshal(value, &intent.HarnessOverrides); err != nil || intent.HarnessOverrides == nil {
+						return fmt.Errorf("Harness overrides must be a JSON object")
+					}
 				}
 				intent.ExpectedGeneration = parsed
 				if err := intent.Validate(); err != nil {
@@ -847,13 +894,17 @@ func (app *application) agentCommand() *cobra.Command {
 				}
 				if err != nil {
 					if !recoverOnly {
-						app.firstDeploymentRecoveryNotice(command.ErrOrStderr(), namespace, args[0], intent, err)
+						app.firstDeploymentRecoveryNotice(command.ErrOrStderr(), namespace, args[0], intent, err, overridesFile)
 					}
 					return err
 				}
 				if receipt == nil {
-					fmt.Fprintln(command.ErrOrStderr(), "No matching admission found. An in-flight request may still commit; this does not prove failure.")
+					_, noticeErr := fmt.Fprintln(command.ErrOrStderr(), "No matching admission found. An in-flight request may still commit; this does not prove failure.")
 					if app.output == "table" {
+						// The notice is the entire result in table mode.
+						if noticeErr != nil {
+							return fmt.Errorf("write first-deployment recovery notice to stderr: %w; restore stderr and repeat this recover-first-deployment command", noticeErr)
+						}
 						return nil
 					}
 				}
@@ -863,6 +914,7 @@ func (app *application) agentCommand() *cobra.Command {
 				})
 			},
 		}
+		cmd.Flags().StringVar(&overridesFile, "harness-overrides", "", "JSON file containing the same requested Harness overrides for deployment and recovery")
 		cmd.Flags().StringVar(&intent.Key, "key", "", "Stable nonsecret intent key")
 		cmd.Flags().StringVar(&intent.ExpectedConfigurationID, "configuration", "", "Reviewed Configuration ID")
 		cmd.Flags().StringVar(&generation, "generation", "", "Reviewed Configuration generation (canonical positive decimal)")
@@ -871,6 +923,44 @@ func (app *application) agentCommand() *cobra.Command {
 		}
 		return cmd
 	}
+	var checkRetainedHarnessOverrides bool
+	revision := &cobra.Command{
+		Use:   "revision AGENT_ID REVISION_ID",
+		Short: "Read one exact Agent revision and its saved settings",
+		Args:  idArgs(agentIDArg, revisionIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if checkRetainedHarnessOverrides && app.output != "json" {
+				return fmt.Errorf("--check-retain-harness-overrides requires --output json")
+			}
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			if checkRetainedHarnessOverrides {
+				if _, err := readRetainedHarnessOverrides(client, namespace, args[0], args[1], io.Discard); err != nil {
+					return err
+				}
+				return app.printStructured(map[string]any{
+					"id":                        args[1],
+					"namespaceId":               namespace,
+					"agentId":                   args[0],
+					"canRetainHarnessOverrides": true,
+				})
+			}
+			value, err := client.GetAgentRevision(namespace, args[0], args[1])
+			if err != nil {
+				return err
+			}
+			return app.printBrowsingItems(value, false, []column{
+				{title: "ID", key: "id"},
+				{title: "REVISION", key: "revision"},
+				{title: "CONFIGURATION", key: "configurationId"},
+				{title: "GENERATION", key: "configurationGeneration"},
+			})
+		},
+	}
+	revision.Flags().BoolVar(&checkRetainedHarnessOverrides, "check-retain-harness-overrides", false, "Check whether the exact revision's requested Harness overrides can be retained")
+	_ = revision.Flags().MarkHidden("check-retain-harness-overrides")
 	var revisionLimit int
 	var revisionCursor string
 	revisions := &cobra.Command{
@@ -897,11 +987,16 @@ func (app *application) agentCommand() *cobra.Command {
 				return err
 			}
 			if page.NextCursor != "" {
+				flags := command.Flags()
+				if flags.Changed("url") || flags.Changed("service-key-file") || flags.Changed("ca-bundle") ||
+					flags.Changed("timeout-seconds") || flags.Changed("output") {
+					return noticef(command.ErrOrStderr(), "notice: older revisions may exist; repeat the same command and set --cursor %s", page.NextCursor)
+				}
 				limit := ""
-				if command.Flags().Changed("limit") {
+				if flags.Changed("limit") {
 					limit = fmt.Sprintf(" --limit %d", revisionLimit)
 				}
-				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ --namespace %s agent revisions %s%s --cursor %s\"", namespace, args[0], limit, page.NextCursor)
+				return noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ --namespace %s agent revisions %s%s --cursor %s\"", namespace, args[0], limit, page.NextCursor)
 			}
 			return nil
 		},
@@ -918,68 +1013,84 @@ func (app *application) agentCommand() *cobra.Command {
 				return err
 			}
 			var deploymentID string
+			var number float64
 			if len(args) == 2 {
 				deploymentID = args[1]
 			} else {
-				var number float64
 				if deploymentID, number, err = latestReadableRevision(client, namespace, args[0]); err != nil {
 					if errors.Is(err, errNoReadableRevisions) {
 						err = noReadableRevisionsError(client, namespace, args[0], fmt.Sprintf("agent %s has no revision you can read", args[0]), "")
 					}
 					return err
 				}
-				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number)
 			}
 			deployment, err := client.GetAgentDeployment(namespace, args[0], deploymentID)
 			if err != nil {
 				return err
 			}
-			return app.printDeploymentStatus(deployment)
+			agent, _ := client.GetAgent(namespace, args[0])
+			resource, _ := agent.(map[string]any)
+			if len(args) == 1 {
+				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number, resource)
+			}
+			return app.printDeploymentStatus(deployment, resource)
 		},
 	}
+	var expectedActiveRevisionID string
 	stop := &cobra.Command{
 		Use:   "stop ID",
 		Short: "Stop an Agent while retaining its revision history and persistent state",
 		Long: "Stop an Agent while retaining its revision history and persistent state.\n" +
 			"The stop is asynchronous: the Agent's runtime shuts down in the background.\n" +
+			"With --if-active-revision, OCC checks at admission that the Agent is set to run and the exact revision is active, newest, and successfully deployed.\n" +
 			"There is no start command; run \"occ agent deploy ID\" to start the Agent again with a new revision.",
 		Args: idArgs(agentIDArg),
 		RunE: func(command *cobra.Command, args []string) error {
+			if command.Flags().Changed("if-active-revision") {
+				if err := revisionIDArg.check(expectedActiveRevisionID, app.namespace); err != nil {
+					return fmt.Errorf("--if-active-revision: %w", err)
+				}
+			}
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
 			}
-			// Only an Agent the caller can already read tells whether anything ran:
-			// stopped with no active revision is a never-deployed or already
-			// stopped Agent (finding D746); stopped with an active revision is a
-			// stop requested earlier that has not finished, still running or
-			// failed (finding D765). A failed read keeps the plain notice.
 			idle, stopping := false, false
-			if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
-				resource, _ := before.(map[string]any)
-				active, _ := resource["activeRevisionId"].(string)
-				idle = resource["desiredRuntimeState"] == "stopped" && active == ""
-				stopping = resource["desiredRuntimeState"] == "stopped" && active != ""
+			if expectedActiveRevisionID == "" {
+				// A readable Agent can distinguish an idle Agent from an earlier
+				// stop with a still-active revision. A failed read keeps the plain notice.
+				if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
+					resource, _ := before.(map[string]any)
+					active, _ := resource["activeRevisionId"].(string)
+					idle = resource["desiredRuntimeState"] == "stopped" && active == ""
+					stopping = resource["desiredRuntimeState"] == "stopped" && active != ""
+				}
 			}
-			agent, err := client.StopAgent(namespace, args[0])
+			agent, err := client.StopAgent(namespace, args[0], expectedActiveRevisionID)
 			if err != nil {
 				return err
+			}
+			resource, _ := agent.(map[string]any)
+			if resource["id"] != args[0] || resource["namespaceId"] != namespace || resource["desiredRuntimeState"] != "stopped" ||
+				(expectedActiveRevisionID != "" && resource["activeRevisionId"] != expectedActiveRevisionID) {
+				return fmt.Errorf("OCC returned an invalid Agent stop response; the stop outcome is unknown. Run \"occ --namespace %s agent get %s\" to check the Agent's state", namespace, args[0])
 			}
 			if err := app.printAgent(agent, false); err != nil {
 				return err
 			}
 			if idle {
-				fmt.Fprintf(command.ErrOrStderr(), "notice: No version is running, so there is nothing to stop. Run \"occ --namespace %s agent deploy %s\" to start the Agent.\n", namespace, args[0])
-				return nil
+				_, err := fmt.Fprintf(command.ErrOrStderr(), "notice: No version is running, so there is nothing to stop. Run \"occ --namespace %s agent deploy %s\" to start the Agent.\n", namespace, args[0])
+				return err
 			}
 			if stopping {
-				fmt.Fprintf(command.ErrOrStderr(), "notice: a stop of Agent %s was already requested and has not finished; run \"occ --namespace %s agent get %s\" to see its state, or \"occ --namespace %s agent deploy %s\" to start it again\n", args[0], namespace, args[0], namespace, args[0])
-				return nil
+				_, err := fmt.Fprintf(command.ErrOrStderr(), "notice: a stop of Agent %s was already requested and has not finished; run \"occ --namespace %s agent get %s\" to see its state, or \"occ --namespace %s agent deploy %s\" to start it again\n", args[0], namespace, args[0], namespace, args[0])
+				return err
 			}
-			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
-			return nil
+			_, err = fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
+			return err
 		},
 	}
+	stop.Flags().StringVar(&expectedActiveRevisionID, "if-active-revision", "", "Request stop only for the exact active, newest, successfully deployed revision ID")
 	deleteAgent := &cobra.Command{
 		Use:   "delete ID",
 		Short: "Begin asynchronous Agent deletion",
@@ -1005,6 +1116,7 @@ func (app *application) agentCommand() *cobra.Command {
 		deploy,
 		firstDeploymentCommand(false),
 		firstDeploymentCommand(true),
+		revision,
 		revisions,
 		deploymentStatus,
 		stop,
@@ -1018,7 +1130,107 @@ func (app *application) agentCommand() *cobra.Command {
 	return command
 }
 
-func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error) {
+// readRetainedHarnessOverrides reads the Harness overrides that an exact revision
+// requested. OCC returns a revision whose saved settings it cannot decode with a
+// read error instead of its settings. That happens for a revision saved before
+// OCC recorded Harness settings, but also for other invalid or legacy saved
+// state, so the read error alone does not say what the revision requested. The
+// revision summary is not decoded as strictly and carries the overrides only
+// when OCC recorded them: retain those, and retain none only when none were
+// recorded.
+func readRetainedHarnessOverrides(client *occclient.Client, namespace, agentID, revisionID string, notices io.Writer) (map[string]any, error) {
+	previous, err := client.GetAgentRevision(namespace, agentID, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	record, ok := previous.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("the selected revision is unavailable")
+	}
+	if !matchesRevisionIdentity(record, namespace, agentID, revisionID) {
+		return nil, fmt.Errorf("OCC returned a revision that does not match the requested revision, Namespace, and Agent")
+	}
+	harness, ok := record["harness"].(map[string]any)
+	if ok {
+		overrides, ok := harness["overrides"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("the selected revision has no requested Harness overrides")
+		}
+		return overrides, nil
+	}
+	readError, unreadable := record["configurationReadError"].(map[string]any)
+	if !unreadable {
+		return nil, fmt.Errorf("the selected revision has no Harness settings")
+	}
+	code, _ := readError["code"].(string)
+	field, _ := readError["field"].(string)
+	number, _ := record["revision"].(float64)
+	summary, err := revisionSummary(client, namespace, agentID, revisionID, number)
+	if err != nil {
+		return nil, err
+	}
+	summaryHarness, _ := summary["harness"].(map[string]any)
+	if summaryHarness == nil {
+		return nil, fmt.Errorf("revision %s has unreadable saved settings (%s: %s) and the Agent's revision list has no Harness summary for it, so its requested Harness overrides are unknown; pass them with --harness-overrides instead", revisionID, code, field)
+	}
+	recorded, present := summaryHarness["overrides"]
+	if !present {
+		noticef(notices, "notice: revision %s has unreadable saved settings (%s: %s) and records no Harness overrides, so none are retained; the deployment uses current Installation defaults.", revisionID, code, field)
+		return map[string]any{}, nil
+	}
+	overrides, ok := recorded.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("revision %s has unreadable saved settings (%s: %s) and invalid recorded Harness overrides; pass them with --harness-overrides instead", revisionID, code, field)
+	}
+	noticef(notices, "notice: revision %s has unreadable saved settings (%s: %s); retaining the Harness overrides that its revision summary records.", revisionID, code, field)
+	return overrides, nil
+}
+
+func matchesRevisionIdentity(record map[string]any, namespace, agentID, revisionID string) bool {
+	return record["id"] == revisionID && record["namespaceId"] == namespace && record["agentId"] == agentID
+}
+
+// revisionSummary finds one revision in the Agent's revision list, newest first.
+// It stops below the revision's number, or returns nil when the list does not
+// include it.
+func revisionSummary(client *occclient.Client, namespace, agentID, revisionID string, number float64) (map[string]any, error) {
+	cursor := ""
+	for {
+		page, err := client.ListAgentRevisions(namespace, agentID, 100, cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range page.Revisions {
+			summary, _ := item.(map[string]any)
+			if summary["id"] == revisionID {
+				if !matchesRevisionIdentity(summary, namespace, agentID, revisionID) {
+					return nil, fmt.Errorf("OCC returned a revision summary that does not match the requested Namespace and Agent")
+				}
+				return summary, nil
+			}
+			if listed, ok := summary["revision"].(float64); ok && number > 0 && listed < number {
+				return nil, nil
+			}
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			return nil, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+// A lost connection or interrupted request can leave a mutation unconfirmed.
+// HTTP responses and certificate errors do not trigger recovery guidance.
+func lostMutationReply(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		return op.Op == "read" || op.Op == "write"
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
+func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error, overridesFile string) {
 	var dial *net.OpError
 	if errors.As(err, &dial) && dial.Op == "dial" {
 		return
@@ -1035,19 +1247,21 @@ func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespa
 	}
 	// Connection settings can contain shell metacharacters; the intent and IDs
 	// have already passed their restricted-ASCII validation. No key value is read.
-	fmt.Fprintf(notices, "  occ --url %s --service-key-file %s --ca-bundle %s --timeout-seconds %s --namespace %s agent recover-first-deployment %s --key %s --configuration %s --generation %d\n",
-		quote(app.url), quote(app.serviceKeyFile), quote(app.caBundle), quote(app.timeoutSeconds), namespace, agentID, intent.Key, intent.ExpectedConfigurationID, intent.ExpectedGeneration)
+	overridesOption := ""
+	if overridesFile != "" {
+		overridesOption = " --harness-overrides " + quote(overridesFile)
+	}
+	fmt.Fprintf(notices, "  occ --url %s --service-key-file %s --ca-bundle %s --timeout-seconds %s --namespace %s agent recover-first-deployment %s --key %s --configuration %s --generation %d%s\n",
+		quote(app.url), quote(app.serviceKeyFile), quote(app.caBundle), quote(app.timeoutSeconds), namespace, agentID, intent.Key, intent.ExpectedConfigurationID, intent.ExpectedGeneration, overridesOption)
 }
 
 // defaultDeploymentNotice says which revision deployment-status chose without
 // an ID. Revision lists are permission-filtered, so the latest revision the
 // caller can read may be an old failed one while the active revision is hidden.
-func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64) {
-	agent, err := client.GetAgent(namespace, agentID)
-	resource, _ := agent.(map[string]any)
+func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64, resource map[string]any) {
 	active, _ := resource["activeRevisionId"].(string)
 	switch {
-	case err != nil:
+	case resource == nil:
 		noticef(notices, "notice: showing revision %s, the latest revision you can read", latest)
 		return
 	case active == "":
@@ -1362,11 +1576,12 @@ func (app *application) validateOptions(command *cobra.Command) error {
 var emptyFlagValues = map[string]string{
 	"facet":                               "a sandbox policy facet such as networking",
 	"file":                                "a JSON document",
+	"if-active-revision":                  "a revision ID",
 	"key-output":                          "a key file path",
 	"sandbox-network-policy-ceiling-file": "a Sandbox network policy ceiling file",
 	"sandbox-network-policy-file":         "a Sandbox network policy file",
 	"level":                               "error, warn, info or debug",
-	"out":                                 "a key file path",
+	"out":                                 "an output file path",
 	"pod":                                 "a Pod",
 	"revision":                            "a revision ID",
 	"service-key-file":                    "a bootstrap or service-key response file",
@@ -1451,9 +1666,22 @@ func readJSON(path string) (jsontext.Value, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read JSON file %s: %w", path, err)
 	}
-	value := jsontext.Value(contents)
-	if !value.IsValid() {
+	decoder := jsontext.NewDecoder(bytes.NewBuffer(contents))
+	if _, err := decoder.ReadValue(); err != nil {
+		// Decoder errors can contain input fragments and object names.
+		var syntax *jsontext.SyntacticError
+		if errors.As(err, &syntax) {
+			switch syntax.Err {
+			case jsontext.ErrDuplicateName:
+				return nil, fmt.Errorf("invalid JSON file %s: duplicate object key at byte offset %d", path, syntax.ByteOffset)
+			case io.ErrUnexpectedEOF:
+				return nil, fmt.Errorf("invalid JSON file %s: incomplete JSON at byte offset %d", path, syntax.ByteOffset)
+			}
+		}
 		return nil, fmt.Errorf("invalid JSON file %s", path)
 	}
-	return value, nil
+	if _, err := decoder.ReadToken(); err != io.EOF {
+		return nil, fmt.Errorf("invalid JSON file %s", path)
+	}
+	return jsontext.Value(contents), nil
 }

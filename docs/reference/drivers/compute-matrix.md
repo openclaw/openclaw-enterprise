@@ -19,9 +19,12 @@ are in the [canonical matrix data](../../assets/compute-driver-matrix.json).
 | [SSH](ssh-compute.md)               | Supports embedded OpenClaw with `harnessAuth.method: runtime`; an operator must supply the model credential on the Linux host. No OCC-managed model credentials or dedicated Codex. |
 | [Docker/Podman](docker-compute.md)  | Runs the local control plane, but rejects all current model-authentication bindings. A newly admitted Agent cannot be deployed through this Driver.                                 |
 
-An optional [OpenShell Sandbox Driver](openshell-sandbox.md) can be selected
-with Kubernetes, but stock OpenShell lacks required credential and
-workload-identity projection. It is not a supported Agent deployment path.
+For development, Kubernetes Compute can use the [OpenShell Sandbox Driver](openshell-sandbox.md)
+with dedicated Codex or native OpenClaw in dedicated mode. Embedded OpenClaw is
+unsupported. Set `servicePrincipalCredentials.mode` to `disabled`.
+For model inference, check the [supported Credential Sources](../credential-sources.md#implementation-status).
+Production qualification remains open.
+
 The bundled Compute Drivers expose the current gateway authentication contracts:
 
 | Driver                                                                              | Gateway authentication                                                                                                                              |
@@ -75,7 +78,7 @@ with inferred support. Selection and preflight rules belong to
 
 <!-- compute-matrix:start -->
 
-<!-- Generated from docs/assets/compute-driver-matrix.json; run node scripts/generate-compute-matrix.mjs. -->
+<!-- Generated from docs/assets/compute-driver-matrix.json; run node scripts/generate-compute-matrix.ts. -->
 
 Reviewed 2026-09-16 at [23d490b93d59dc810f28430f31576209200ba9ba](https://github.com/openclaw/openclaw-enterprise/tree/23d490b93d59dc810f28430f31576209200ba9ba).
 
@@ -121,6 +124,6 @@ Reviewed 2026-09-16 at [23d490b93d59dc810f28430f31576209200ba9ba](https://github
 
 Edit `docs/assets/compute-driver-matrix.json` after reviewing the intended source
 revision. Keep implementation citations and test citations separate. Regenerate
-this table with `node scripts/generate-compute-matrix.mjs`; the docs build rejects
+this table with `node scripts/generate-compute-matrix.ts`; the docs build rejects
 a stale fallback. Follow [local preview validation](../../local-preview.md#build-and-check)
 and record executed proof separately from support judgments.

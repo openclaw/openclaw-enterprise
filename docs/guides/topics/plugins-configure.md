@@ -65,7 +65,9 @@ A hosted MCP package pins its server endpoint and declares a credential slot.
 OCE discovers available tools using the selected account. On a dedicated OpenClaw
 Agent, select an attached credential for that slot and the upstream tool names
 the Agent may call. The worker advertises those tools; the Sandbox enforces the
-selection for both worker and script calls.
+selection for both worker and script calls. See
+[Get started with managed OpenClaw plugins](openclaw-plugins.md) for a complete
+walkthrough.
 [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
 
 The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
@@ -86,6 +88,12 @@ Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
 Choose the tools to enable, then save and deploy. Loading tools again refreshes
 the inventory. Additional tools require selection and deployment before the Agent
 can use them. An empty selection leaves the worker server disabled.
+For an enabled tool, open **Tool policy** and set **Require approval for** to
+**Every action** to require human approval for each native call. Select
+**No additional approval** to run without a prompt. The request names the server and tool;
+it does not show arguments. Save and deploy the new version. A direct
+script using the same credential can call that enabled tool without Gateway approval.
+If the Slack channel is enabled, remove native Slack per-plugin approver overrides before deploying a managed MCP approval policy.
 Removing the plugin keeps its independently attached
 credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
 to revoke a running version's credential access.

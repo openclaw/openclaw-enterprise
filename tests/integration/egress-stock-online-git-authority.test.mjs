@@ -17,11 +17,11 @@ import {
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { signedLeaf } from "../helpers/certificates.mjs";
-import { listen } from "../helpers/listen.mjs";
-import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
-import { waitFor } from "../helpers/qa-utils.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
+import { signedLeaf } from "../helpers/certificates.ts";
+import { listen } from "../helpers/listen.ts";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
+import { waitFor } from "../helpers/qa-wait.ts";
 
 const binding = {
   sandboxId: "immutable-sandbox-id",
@@ -311,7 +311,7 @@ test(
 );
 
 test(
-  "stock draft preconditions require exact canonical body and give the durable owner fresh server identities",
+  "stock admits the shipped gh scoped draft and requires current owner authorization",
   { timeout: 10000 },
   async (t) => {
     const approvals = [];
@@ -336,12 +336,22 @@ test(
       draft: true,
       maintainer_can_modify: false,
     };
+    // gh 2.103.2 sent these visible headers in an offline capture of the draft POST
+    // with TZ=Etc/UTC and --input -. OpenShell omits credentials and wire framing.
+    const timeZone = { name: "time-zone", value: "Etc/UTC" };
     const draft = (value) => {
       const q = request(
         "/repos/example/project/pulls",
         "POST",
         Buffer.from(typeof value === "string" ? value : JSON.stringify(value)),
-        [{ name: "content-type", value: "application/json" }],
+        [
+          { name: "user-agent", value: "GitHub CLI 2.103.2" },
+          { name: "accept", value: "*/*" },
+          { name: "content-type", value: "application/json" },
+          timeZone,
+          { name: "x-github-api-version", value: "2026-03-10" },
+          { name: "accept-encoding", value: "gzip" },
+        ],
       );
       q.target.host = "api.github.com";
       return q;
@@ -365,13 +375,16 @@ test(
         reason_code: "request_not_allowed",
       });
     }
+    assert.equal(approvals.length, 0);
+    const q = draft(payload);
+    const admitted = await invoke(client, "EvaluateHttpRequest", q, bearer);
+    assert.equal(admitted.decision, 1, "the captured gh request must reach the owner");
+    assert.equal(admitted.has_body ?? false, false);
+    assert.deepEqual(admitted.header_mutations ?? [], []);
     assert.deepEqual(
       new Set(denials.map(({ reason, reasonCode }) => `${reason}:${reasonCode}`)),
       new Set(["draft_rejected:request_not_allowed"]),
     );
-    assert.equal(approvals.length, 0);
-    const q = draft(payload);
-    assert.equal(await evaluate(q), 1);
     const first = approvals[0];
     assert.equal(first.operation, "create-draft-pull");
     assert.deepEqual(
@@ -387,6 +400,27 @@ test(
     assert.match(
       first.pull.operationId,
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    const otherTimeZone = q.headers.map((header) =>
+      header === timeZone ? { ...header, value: "America/New_York" } : header,
+    );
+    for (const invalid of [
+      { ...q, headers: otherTimeZone },
+      { ...q, headers: [...q.headers, timeZone] },
+      { ...q, target: { ...q.target, path: "/repos/example/other/pulls" } },
+      { ...q, target: { ...q.target, method: "GET" } },
+      { ...q, target: { ...q.target, query: "page=1" } },
+      { ...q, target: { ...q.target, host: "github.com" } },
+    ]) {
+      assert.deepEqual(await invoke(client, "EvaluateHttpRequest", invalid, bearer), {
+        decision: 2,
+        reason_code: "request_not_allowed",
+      });
+    }
+    assert.equal(
+      approvals.length,
+      1,
+      "invalid requests must be refused before owner authorization",
     );
     // The durable owner's refusal is final; this RPC neither retries nor claims a PR outcome.
     allow = false;
@@ -568,9 +602,14 @@ test("Git authority cannot be constructed without both trusted owner callbacks",
 
 test("protected Git replies to this online decision before its authority deadline", async (t) => {
   let answer = "current";
+  let approvals = 0;
+  const lookupBinding = async () => binding;
   const { client, keys } = await openShellOnlineGitWire(t, {
-    lookupBinding: async () => binding,
-    authorizeOnlineRequest: async (q, installed) => {
+    lookupBinding,
+    async authorizeOnlineRequest(q, installed) {
+      approvals++;
+      // A durable owner method can depend on its original options receiver.
+      assert.equal(this.lookupBinding, lookupBinding);
       const { deadlineAt, exchangeId, requestDigestSha256 } = q;
       if (typeof answer === "object") {
         return answer;
@@ -578,13 +617,21 @@ test("protected Git replies to this online decision before its authority deadlin
       if (answer === "permit") {
         return { kind: "permit", sendStartBy: deadlineAt };
       }
+      // Each answer below differs from the current allow in exactly one checked field.
       return {
-        kind: "allow",
+        kind: answer === "permit with the allow's fields" ? "permit" : "allow",
         exchangeId: answer === "another request" ? randomUUID() : exchangeId,
-        requestDigestSha256,
-        preparationAttemptId: installed.preparationAttemptId,
-        materialVersion: installed.materialVersion,
-        replyBy: answer === "expired" ? new Date(0).toISOString() : deadlineAt,
+        requestDigestSha256: answer === "another digest" ? "0".repeat(64) : requestDigestSha256,
+        preparationAttemptId:
+          answer === "another attempt" ? "prepared-two" : installed.preparationAttemptId,
+        materialVersion: answer === "another version" ? "version-two" : installed.materialVersion,
+        replyBy:
+          answer === "expired"
+            ? new Date(0).toISOString()
+            : answer === "after the deadline"
+              ? new Date(Date.parse(deadlineAt) + 1000).toISOString()
+              : deadlineAt,
+        ...(answer === "permit with the allow's fields" && { sendStartBy: deadlineAt }),
       };
     },
   });
@@ -594,10 +641,18 @@ test("protected Git replies to this online decision before its authority deadlin
     ["expired", 2],
     ["permit", 2],
     ["another request", 2],
+    ["permit with the allow's fields", 2],
+    ["another digest", 2],
+    ["another version", 2],
+    ["another attempt", 2],
+    ["after the deadline", 2],
+    ["current", 1],
   ]) {
     answer = decision;
+    const priorApprovals = approvals;
     const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
     assert.equal(result.decision, expected, decision);
+    assert.equal(approvals, priorApprovals + 1);
   }
   // The trusted owner can return malformed runtime values despite its TypeScript contract.
   // A structured denial must never be treated as an allow, even with a truthy reason.
@@ -612,6 +667,40 @@ test("protected Git replies to this online decision before its authority deadlin
       const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
       assert.deepEqual(result, { decision: 2, reason_code: reasonCode });
     });
+  }
+});
+
+test("an allow or denial that settles after the call ends is not acted on", async (t) => {
+  let answer;
+  const returned = [];
+  const denials = [];
+  const { client, keys } = await openShellOnlineGitWire(t, {
+    budgetMs: 100,
+    lookupBinding: async () => binding,
+    authorizeOnlineRequest: async (q, installed, signal) => {
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      returned.push(answer);
+      return answer === "allow" ? onlineGitAllow(q, installed) : { kind: "denied", reason: answer };
+    },
+    onDeny: (denial) => denials.push(denial),
+  });
+  const auth = token(keys, "supervisor", binding.sandboxId);
+  // Once the call ends, neither an allow nor a structured denial describes why we refused.
+  for (const late of ["allow", "draft_already_opened", "access_withdrawn", "unavailable"]) {
+    answer = late;
+    const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
+    assert.equal(result.decision, 2, late);
+    // The hook's own answer for the late result, not the transport's timeout denial.
+    const denial = await waitFor(
+      `the late ${late} is recorded`,
+      () => returned.includes(late) && denials.length === returned.length && denials.at(-1),
+      5000,
+      { interval: 10 },
+    );
+    assert.deepEqual(
+      [denial.reason, denial.reasonCode, denial.operation],
+      ["aborted", "route_not_ready", "receive-pack"],
+    );
   }
 });
 
@@ -699,6 +788,25 @@ test("repository API credential issuance is refused while ordinary collaboration
     input.target.host = "api.github.com";
     return send(input);
   };
+  await t.test("gh authentication discovery uses the current API grant", async () => {
+    // gh auth status reads the API root after its viewer query. Refusing this discovery
+    // incorrectly reports a valid installation token as invalid and prevents later commands.
+    for (scope of ["github-repository", "github-installation"]) {
+      for (const method of ["GET", "HEAD"]) {
+        assert.equal((await evaluate("/", method)).decision, 1, `${scope}: ${method} /`);
+      }
+      current = false;
+      assert.equal((await evaluate("/", "GET")).reason_code, "access_withdrawn");
+      current = true;
+      for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+        assert.equal((await evaluate("/", method)).reason_code, "request_not_allowed");
+      }
+      assert.equal((await evaluate("/", "GET", {})).reason_code, "request_not_allowed");
+    }
+    // Git-only grants do not gain general API discovery.
+    scope = undefined;
+    assert.equal((await evaluate("/", "GET")).decision, 2);
+  });
   for (scope of ["github-repository", "github-installation"]) {
     for (const prefix of ["/repos/example/project", "/orgs/example"]) {
       for (const endpoint of ["registration-token", "remove-token", "generate-jitconfig"]) {

@@ -15,6 +15,8 @@ import {
   ChannelCredentialError,
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
+  NetworkProxyValidationError,
+  NetworkProxyEnforcementUnavailableError,
   ConfigurationSizeError,
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
@@ -24,6 +26,7 @@ import {
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalNotFoundError,
   DependencyUnavailableError,
+  CredentialDeliveryFailedError,
   DeviceAuthorizationStartError,
   BrowserAuthorizationError,
   IAMAccessBindingRoleError,
@@ -40,6 +43,7 @@ import {
   PluginPolicyValidationError,
   PostgresCommitOutcomeUnknownError,
   QualifiedAuthorizationDeniedError,
+  HiddenResourceAuthorizationDeniedError,
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
@@ -54,12 +58,13 @@ import {
   SecretDriverOwnershipError,
   SecretValueError,
   ServiceAccountDriverNotConfiguredError,
+  TokenServiceSourceInputError,
   type RuntimeLogsErrorCode,
 } from "@openclaw-enterprise/occ";
 import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
-} from "../drivers/configuration/kubernetes/index.ts";
+} from "../configuration-errors.ts";
 import { loggedErrorText, resemblesCredential } from "../logging.ts";
 import {
   agentPrincipalDenialMessage,
@@ -79,6 +84,7 @@ export class RequestFailure extends Error {
   readonly status: number;
   readonly code: string;
   readonly details?: readonly ErrorDetail[];
+  registrationRetryAfterSeconds?: number;
   remainingResources?: readonly {
     kind: string;
     count: number;
@@ -181,9 +187,15 @@ export function responseHeaders(reply: FastifyReply, requestId: string): void {
 
 export function canonicalFailure(reply: FastifyReply, error: RequestFailure): void {
   responseHeaders(reply, reply.request.id);
+  if (error.registrationRetryAfterSeconds !== undefined) {
+    reply.header("retry-after", String(error.registrationRetryAfterSeconds));
+  }
   reply.status(error.status).send({
     error: {
       code: error.code,
+      ...(error.registrationRetryAfterSeconds === undefined
+        ? {}
+        : { reason: "credential_registration_pending" }),
       // Some messages come from Drivers or name submitted values; none may break the cap.
       message: capped(error.message),
       ...(error.details === undefined ? {} : { details: error.details }),
@@ -408,25 +420,45 @@ export function unstorableTextFailure(
     readonly parent?: Node;
     readonly key?: string;
   }
-  const pending: Node[] = [{ value }];
+  function* children(parent: Node): Generator<Node> {
+    const value = parent.value;
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        yield { value: value[index], parent, key: String(index) };
+      }
+    } else if (value !== null && typeof value === "object") {
+      for (const key in value) {
+        if (Object.hasOwn(value, key)) {
+          yield { value: (value as Record<string, unknown>)[key], parent, key };
+        }
+      }
+    }
+  }
+  // Keep only the active ancestors, advancing one sibling at a time. A refusal in the first
+  // entry must not allocate pairs or pending nodes for the rest of a wide container.
+  const pending: Iterator<Node>[] = [];
+  let node: Node | undefined = { value };
   let found: { readonly node: Node; readonly problem: "nul" | "surrogate" } | undefined;
-  while (found === undefined && pending.length > 0) {
-    const node = pending.pop()!;
+  while (node !== undefined) {
     // A key is checked when its entry is visited, so keys and values share document order.
     const problem =
       (node.key === undefined ? undefined : unstorableText(node.key)) ??
       (typeof node.value === "string" ? unstorableText(node.value) : undefined);
     if (problem !== undefined) {
       found = { node, problem };
-    } else if (node.value !== null && typeof node.value === "object") {
-      const entries = Array.isArray(node.value)
-        ? node.value.map((entry, index) => [String(index), entry] as const)
-        : Object.entries(node.value);
-      // Reversed onto the stack, so the walk reports the first offender in document order.
-      // (A loop, not push(...entries): a large array would exceed the argument limit.)
-      for (let index = entries.length - 1; index >= 0; index -= 1) {
-        const [key, entry] = entries[index]!;
-        pending.push({ value: entry, parent: node, key });
+      break;
+    }
+    if (node.value !== null && typeof node.value === "object") {
+      pending.push(children(node));
+    }
+    node = undefined;
+    while (pending.length > 0) {
+      const next = pending[pending.length - 1]!.next();
+      if (next.done) {
+        pending.pop();
+      } else {
+        node = next.value;
+        break;
       }
     }
   }
@@ -834,6 +866,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
           : pointerDetail(destination.bindingsPath, destination.key, destination.code),
     );
   }
+  if (error instanceof NetworkProxyValidationError) {
+    return failure(400, "INVALID_REQUEST", error.message);
+  }
   if (error instanceof NativeWorkerSupportError) {
     return failure(400, "INVALID_REQUEST", error.message);
   }
@@ -864,7 +899,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.");
   }
   if (error instanceof ConfigurationOwnershipError) {
-    return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
+    return dependencyUnavailable();
   }
   if (error instanceof NamespaceNotReadyError) {
     return failure(409, "NAMESPACE_NOT_READY", "The requested Namespace is not ready.");
@@ -893,6 +928,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof NotImplementedError) {
     return failure(501, "NOT_IMPLEMENTED", error.message);
   }
+  if (error instanceof NetworkProxyEnforcementUnavailableError) {
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+  }
   if (error instanceof PostgresCommitOutcomeUnknownError) {
     return failure(
       503,
@@ -911,10 +949,17 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof RetryLaterError) {
     // A fixed message naming the wait or the restart; raised only after the caller's grant and
     // lookup (finding 2536).
+    const result = failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+    if (error.retryAfterSeconds !== undefined) {
+      result.registrationRetryAfterSeconds = error.retryAfterSeconds;
+    }
+    return result;
+  }
+  if (error instanceof CredentialDeliveryFailedError) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
   }
   if (isDependencyUnavailable(error)) {
-    return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
+    return dependencyUnavailable();
   }
   if (error instanceof ConfigurationGenerationConflictError) {
     // The detail marks a stale read, which a reread fixes, apart from other Configuration
@@ -943,7 +988,17 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof ResourceConflictError) {
     return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
   }
-  if (error instanceof ScopeViolationError) {
+  if (error instanceof TokenServiceSourceInputError) {
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      "Static sources accept only the optional provider_preset=openai configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
+    );
+  }
+  if (
+    error instanceof ScopeViolationError ||
+    error instanceof HiddenResourceAuthorizationDeniedError
+  ) {
     return failure(404, "NOT_FOUND", "The requested platform resource was not found.");
   }
   if (error instanceof CredentialWithdrawalNotFoundError) {
@@ -957,7 +1012,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof AgentPrincipalAuthorizationError) {
     // The Agent's own principal lacks the grant; the caller's denial is below. The text names a
     // stored resource only when the caller sent or may read it (finding 2592).
-    return failure(403, "FORBIDDEN", capped(agentPrincipalDenialMessage(error, denied?.requested)));
+    return failure(
+      403,
+      "FORBIDDEN",
+      capped(agentPrincipalDenialMessage(error, denied?.requested, denied?.agentPrincipalRecovery)),
+    );
   }
   if (error instanceof CallerStateDeniedError) {
     // Fixed text about the caller's own account, session or job, not about a grant.
@@ -1010,11 +1069,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       if (status === 403) {
         return failure(403, "FORBIDDEN", GENERIC_DENIAL);
       }
-      return failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      return dependencyUnavailable();
     }
     if (candidate.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
       return failure(413, "PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size.");

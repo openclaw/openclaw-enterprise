@@ -1,0 +1,24 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_PROVIDER_TENANT",
+    "OCC_TEST_PROVIDER_AGENT",
+    "OCC_TEST_OCC_BIN",
+    "OCC_NAMESPACE",
+    "OCC_URL",
+    "OCC_SERVICE_KEY_FILE"
+  ],
+  "env": {
+    "OCC_TEST_PROVIDER_CUTOVER": "1"
+  },
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/provider-cutover-real.test.ts",
+      "expectedTests": [
+        "dedicated provider routing withholds the candidate route until its Harness exists"
+      ]
+    }
+  ]
+}

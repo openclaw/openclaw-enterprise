@@ -6,6 +6,7 @@ import {
   ResourceConflictError,
   ResourceStateConflictError,
   ScopeViolationError,
+  RepositorySessionWithdrawnError,
 } from "../errors.ts";
 import type {
   RepositoryStandingApproval,
@@ -55,6 +56,8 @@ export function memoryRepositorySessions(
   findRevision: (owner: RepositoryRevisionOwner) => Readonly<AgentRevision> | undefined,
   ownerAcceptsAdmission: (owner: RepositoryRevisionOwner) => boolean,
   executionAcceptsAdmission: (owner: RepositoryRevisionOwner) => boolean,
+  recordFiniteWithdrawal: (owner: RepositoryRevisionOwner, at: string) => void,
+  admissionWithdrawn: (owner: RepositoryRevisionOwner) => boolean,
 ): RepositorySessionRepository {
   const list = (matches: (attempt: RepositorySessionAttempt) => boolean) =>
     Object.freeze(
@@ -143,33 +146,28 @@ export function memoryRepositorySessions(
       ) {
         return old;
       }
-      if (
-        old ||
-        [...approvals.values()].some(
-          (a) =>
-            !a.revokedAt &&
-            a.namespaceId === input.namespaceId &&
-            a.agentId === input.agentId &&
-            a.binding.repositoryRef === input.binding.repositoryRef,
-        )
-      ) {
+      if (old) {
         throw new ResourceConflictError(
           "Standing approval identity already used or binding already approved.",
         );
       }
-      const generation =
-        Math.max(
-          0,
-          ...[...approvals.values()]
-            .filter(
-              (a) =>
-                a.namespaceId === input.namespaceId &&
-                a.agentId === input.agentId &&
-                a.binding.repositoryRef === input.binding.repositoryRef,
-            )
-            .map((a) => a.generation),
-        ) + 1;
-      const approved = immutableCopy({ ...input, generation });
+      let generation = 0;
+      for (const approval of approvals.values()) {
+        if (
+          approval.namespaceId !== input.namespaceId ||
+          approval.agentId !== input.agentId ||
+          approval.binding.repositoryRef !== input.binding.repositoryRef
+        ) {
+          continue;
+        }
+        if (!approval.revokedAt) {
+          throw new ResourceConflictError(
+            "Standing approval identity already used or binding already approved.",
+          );
+        }
+        generation = Math.max(generation, approval.generation);
+      }
+      const approved = immutableCopy({ ...input, generation: generation + 1 });
       approvals.set(input.id, approved);
       return approved;
     },
@@ -191,6 +189,30 @@ export function memoryRepositorySessions(
         current.id,
         immutableCopy({ ...current, revokedAt, generation: current.generation + 1 }),
       );
+    },
+    async withdrawFinite(owner, at) {
+      const revision = findRevision(owner);
+      if (!revision?.repositoryCredentials || revision.repositoryCredentials.standingApprovalId) {
+        throw new ScopeViolationError("Finite withdrawal requires the exact active revision.");
+      }
+      recordFiniteWithdrawal(owner, timestamp(at));
+      for (const [id, attempt] of attempts) {
+        if (
+          sameOwner(attempt, owner) &&
+          (attempt.phase === "opening" || attempt.phase === "open")
+        ) {
+          attempts.set(
+            id,
+            immutableCopy({
+              ...attempt,
+              phase: "closing",
+              updatedAt: new Date(
+                Math.max(Date.parse(attempt.updatedAt), Date.parse(timestamp(at))),
+              ).toISOString(),
+            }),
+          );
+        }
+      }
     },
     lockAttempt: async (admissionId) => {
       const attempt = attempts.get(admissionId);
@@ -308,6 +330,9 @@ export function memoryRepositorySessions(
     listNamespaceAttempts: async (namespaceId) =>
       list((attempt) => attempt.namespaceId === namespaceId),
     createAttempt: async (input) => {
+      if (admissionWithdrawn(input)) {
+        throw new RepositorySessionWithdrawnError();
+      }
       const revision = findRevision(input);
       const admitted = revision?.repositoryCredentials;
       const binding = admitted?.bindings.find(

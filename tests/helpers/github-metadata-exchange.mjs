@@ -4,9 +4,20 @@ import { get } from "node:https";
 // The test plays the enrolled supervisor. OCE owns the genuine signed installation
 // exchange, private response acceptance and material/dispatch/response decisions.
 // `raceMaintenance` is the prepared GitHub owner race these tests share.
+/**
+ * @typedef {ReturnType<ReturnType<typeof import("./static-egress-exchange.ts").createStaticEgressExchange>["capture"]>} Capture
+ * @typedef {Pick<ReturnType<typeof import("./static-egress-exchange.ts").createStaticEgressExchange>, "capture"> & {
+ *   installation: import("../../packages/contracts/src/index.ts").EgressInstallation
+ * }} MetadataFixture
+ */
+/**
+ * @param {MetadataFixture} f
+ * @param {{target?: Partial<Capture["request"]["target"]>, headers?: Capture["request"]["headers"], body?: Buffer}} [changed]
+ */
 export function captureMetadata(f, changed = {}) {
   const captured = f.capture();
   const [route] = f.installation.plan.routes;
+  assert.ok(route, "the fixture has an installed metadata route");
   const origin = new URL(route.origin);
   Object.assign(captured.request, {
     target: {

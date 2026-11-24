@@ -24,13 +24,14 @@ permissions are set in the [workflow files](../../../.github/workflows);
 
 ## Environments
 
-Full Integration runs automatically after pushes to `main`. Manual dispatches
-also require `main` and approval by the dispatcher through
-`integration-main-approval`, which has no secrets or variables. Configure its
-sole required reviewer as `@openclaw/maintainers-oce`; allow self-review and
-disable administrator bypass. Both environments must have exactly one custom
-deployment rule: branch `main`. `integration-main` must have no required
-reviewers, so automatic pushes do not wait for approval.
+Full Integration runs on `main` when a scheduled tick passes
+[admission](full-integration.md#trigger), or when the dispatcher approves a
+manual run through `integration-main-approval`. The approval environment has
+no secrets or variables. Set its sole required reviewer to
+`@openclaw/maintainers-oce`, allow self-review, and disable administrator
+bypass. Both environments must have exactly one custom deployment rule for
+branch `main`. Keep `integration-main` free of required reviewers so admitted
+scheduled runs do not wait for approval.
 
 After a manual approval, preflight reads the environment policy and the run's
 review history with the workflow token. The approved review must name the exact
@@ -39,15 +40,14 @@ Missing, rejected, conflicting, or unverifiable reviews fail before
 `integration-main` jobs start. Repository write access alone does not authorize
 a manual dispatch.
 
-Main push jobs can retry at the original commit. A manual run requires a new
-approved dispatch for each attempt. Each credentialed job checks the event and
-attempt before it reads credentials. Preflight
-rejects extra branches, tags, incomplete policy metadata, and a missing or
-enabled bypass flag.
+To retry a scheduled or manual run, start a new approved manual dispatch on
+`main`. Each credentialed job checks the event and attempt before reading
+credentials. Preflight rejects extra branches, tags, incomplete policy metadata,
+and a missing or enabled bypass flag.
 
 The separate `integration-qa-pr` environment permits `main` and
-`refs/pull/*/merge`. Its `full-qa` and `qa-openshell-compose` labels select
-advisory runs. Keep its two secret values separate from `integration-main`.
+`refs/pull/*/merge`. Its [fixed coverage labels](qa-advisory.md#trigger) select full QA, Compose
+OpenShell, Keycloak installation, or OpenClaw model/browser advisory runs. Keep its two secret values separate from `integration-main`.
 Full Integration preflight does not govern this environment.
 
 Full Integration rejects tags and all branch dispatches outside `main`. Check
@@ -79,6 +79,11 @@ jobs; it is not an alias for `CONTAINER_NODE_BASE_IMAGE`. Model/image requiremen
 and defaults differ by lane: follow its linked suite guide. Missing required
 inputs fail selected lanes.
 
+OpenShell image overrides must retain the pinned release digest, or use the
+[complete candidate image and chart selection](openshell-execution.md#select-candidate-images-and-charts)
+during local preparation. Hosted jobs do not acquire candidate source checkouts
+or charts from image variables alone.
+
 QA model overrides default to `gpt-6-luna`.
 
 For hosted QA scenario exclusions, see [Full Integration](full-integration.md#scenarios).
@@ -86,6 +91,32 @@ For hosted QA scenario exclusions, see [Full Integration](full-integration.md#sc
 Every `integration-main` job can reference its combined secret set. Workflow
 steps pass only their selected inputs to tests. Preserve the old environments
 until credential migration and hosted verification are complete.
+
+### Verify PR source before labeling
+
+For a focused [QA Advisory run](qa-advisory.md#trigger), read the PR's base
+and head SHAs and GitHub's generated merge commit before adding the label.
+Replace `OWNER`, `REPO`, and `NUMBER` with the PR's repository and number.
+Use the reported base branch for `BASE` and the SHA of
+`refs/pull/NUMBER/merge` for `MERGE_SHA`.
+
+```sh
+gh api repos/OWNER/REPO/pulls/NUMBER --jq '{base: .base.ref, baseSha: .base.sha, headSha: .head.sha}'
+git ls-remote https://github.com/OWNER/REPO.git refs/heads/BASE refs/pull/NUMBER/merge
+gh api repos/OWNER/REPO/git/commits/MERGE_SHA --jq '.parents[].sha'
+```
+
+The merge commit must have two parents. Its first parent must match both
+the base branch SHA and the PR's base SHA. Its second parent must match both
+the PR's head SHA and the reviewed head. Add the label only when the checks
+agree.
+
+If **Select advisory QA** reports a parent mismatch, no runtime jobs start.
+Remove the focused label. If the PR still reports an older base than the merge
+commit, update the branch through the normal non-force workflow. Reapply the
+label only after the source checks agree. This creates a new label event.
+Check the parents and selected files or scenarios in **Advisory selection and
+source**, then confirm the expected jobs in the job list.
 
 <a id="cleanup-command-deadlines"></a>
 <a id="select-immutable-images-for-local-preparation"></a>
@@ -98,21 +129,26 @@ For lanes that accept optional Kubernetes runtime images, set both
 `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` to
 immutable references, or omit both to build from source. Supplying only one fails
 preparation before state or resources are created.
+Preparation also selects the verified Gateway image in the host container engine
+for `OCC_DOCKER_RUNTIME_IMAGE`, used by the loopback Gateway relay. Kubernetes
+selectors use the separately verified references imported into the cluster.
+
+Before a cold local source build, [check for an exact-source retained CI runtime](run-lanes.md#find-a-retained-runtime-before-building-locally). This discovers candidate artifacts; it does not import or qualify them.
 
 These process environment variables are optional. First Agent Smoke has its own
 [directories and slot settings](first-agent-smoke.md#local-isolation).
 
-| Setting                                     | Default                                   | Purpose                                                                            |
-| ------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| `CI_RUNNER_TEST_TIMEOUT_MS`                 | `3600000`                                 | Per-file test deadline; hosted lane/job deadlines still apply.                     |
-| `CI_RUNNER_CLEANUP_TIMEOUT_MS`              | `120000`                                  | Per-file cleanup allowance.                                                        |
-| `CI_RUNNER_FILE_CONCURRENCY`                | Lane limit capped by available CPUs       | `1`–`32` for lanes permitting parallel files; serial-only lanes stay serial.       |
-| `OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS`    | `300000`                                  | Container-engine/k3d cleanup command limit; database drops use at most 60 seconds. |
-| `OPENCLAW_CI_COMMAND_KILL_GRACE_MS`         | `5000`                                    | TERM-to-KILL and pipe-drain grace during preparation/cleanup.                      |
-| `OPENCLAW_CI_K3S_IMAGE`                     | Immutable pin in `scripts/ci/prepare.mjs` | Approved digest-pinned Kubernetes 1.35.x image; OpenShell has a separate pin.      |
-| `OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS` | `1200000`                                 | Maximum time for a hosted BuildKit cache export.                                   |
-| `OPENCLAW_CI_BROWSER_FAILURE_DIR`           | Unset                                     | Retain browser failure evidence locally.                                           |
-| `OPENCLAW_CI_BROWSER_FAILURE_TRACE`         | Unset                                     | Set `1` to include Playwright traces.                                              |
+| Setting                                     | Default                                  | Purpose                                                                            |
+| ------------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------- |
+| `CI_RUNNER_TEST_TIMEOUT_MS`                 | `3600000`                                | Per-file test deadline; hosted lane/job deadlines still apply.                     |
+| `CI_RUNNER_CLEANUP_TIMEOUT_MS`              | `120000`                                 | Per-file cleanup allowance.                                                        |
+| `CI_RUNNER_FILE_CONCURRENCY`                | Lane limit capped by available CPUs      | `1`–`32` for lanes permitting parallel files; serial-only lanes stay serial.       |
+| `OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS`    | `300000`                                 | Container-engine/k3d cleanup command limit; database drops use at most 60 seconds. |
+| `OPENCLAW_CI_COMMAND_KILL_GRACE_MS`         | `5000`                                   | TERM-to-KILL and pipe-drain grace during preparation/cleanup.                      |
+| `OPENCLAW_CI_K3S_IMAGE`                     | Immutable pin in `scripts/ci/prepare.ts` | Approved digest-pinned Kubernetes 1.35.x image; OpenShell has a separate pin.      |
+| `OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS` | `1200000`                                | Maximum time for a hosted BuildKit cache export.                                   |
+| `OPENCLAW_CI_BROWSER_FAILURE_DIR`           | Unset                                    | Retain browser failure evidence locally.                                           |
+| `OPENCLAW_CI_BROWSER_FAILURE_TRACE`         | Unset                                    | Set `1` to include Playwright traces.                                              |
 
 Cleanup timeout/grace overrides that are not positive numbers use defaults.
 Deadlines include pipe drain; a wait timeout does not prove deletion. Preparation

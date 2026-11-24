@@ -1,0 +1,21 @@
+import { registerAgentHandoff } from "./plugin-compute-agent-handoff.ts";
+import { registerGatewayBridge } from "./plugin-compute-gateway-bridge.ts";
+import { registerGatewayDiagnostics } from "./plugin-compute-gateway-diagnostics.ts";
+import { registerGatewayPeerState } from "./plugin-compute-gateway-peer-state.ts";
+import { registerGatewayReplacement } from "./plugin-compute-gateway-replacement.ts";
+import { registerHarnessRendering } from "./plugin-compute-harness-rendering.ts";
+import { registerKubernetesDeployment } from "./plugin-compute-kubernetes-deployment.ts";
+import { registerKubernetesDiagnostics } from "./plugin-compute-kubernetes-diagnostics.ts";
+import { registerKubernetesPreparation } from "./plugin-compute-kubernetes-preparation.ts";
+import { registerStartupAdmission } from "./plugin-compute-startup-admission.ts";
+
+registerHarnessRendering();
+registerStartupAdmission();
+registerKubernetesPreparation();
+registerGatewayDiagnostics();
+registerAgentHandoff();
+registerGatewayPeerState();
+registerKubernetesDiagnostics();
+registerGatewayReplacement();
+registerGatewayBridge();
+registerKubernetesDeployment();

@@ -27,24 +27,24 @@ const pluralKind = (kind: string) => (kind.endsWith("y") ? `${kind.slice(0, -1)}
 const SHOWN_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
 const ASK = "Ask an Installation administrator to grant it.";
+const CHECK_ACCESS = "Review this permission with whoever manages IAM.";
 
 // A native admin request the caller may not make. The Agent comes from the host name, not from
 // the caller, so the text names no Agent, and an unknown host gets it too.
-export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's native admin UI needs Agent administer on it. ${ASK}`;
+export const NATIVE_ADMIN_DENIAL = `${NAMED_DENIAL_PREFIX} opening this Agent's browser UI needs Agent operate or administer on it. ${ASK}`;
 
 /**
  * The text for the caller's own denial of `action` on `resource` (finding 2534). It names the
- * grant the request checked and who grants it. The disclosure rules:
+ * action the request checked and suggests a next step. The disclosure rules:
  * - It names a resource ID only when `requested` accepts it: the request itself carried it, or the
  *   caller may already read it and the record the route's path names, such as the Agent or
  *   Configuration that binds it (findings 2594, 2614). It never names any other ID read from stored
  *   state.
  * - It never names a binding, Role, Restriction or another principal, and it reads the same
  *   whether a Restriction denied the request or no grant allowed it. One exception: a create that
- *   a Restriction denies to a caller who administers the Installation says so
- *   (`administrator_restricted`, finding D769). That caller's own permission answer already shows
- *   administration without the create, which only a Restriction causes, and the console words it
- *   the same way (AGENT_CREATE_RESTRICTED). Every other caller gets the plain text.
+ *   a Restriction denies to a caller who administers the Installation says so when there is
+ *   evidence of that Restriction (`administrator_restricted`, finding D769). Every other caller
+ *   gets the ordinary denial.
  * - It depends only on the request and the checked grant, never on whether the resource exists,
  *   so an unknown ID and one the caller cannot read get the same answer.
  * - `qualifier` adds why the grant matters here: it is checked on the Agent's current Harness
@@ -76,22 +76,18 @@ export function callerDenialMessage(
       : `${NAMED_DENIAL_PREFIX} this needs Installation ${action}. ${ASK}`;
   }
   if (action === "create") {
-    // A collection create targets its parent: the Installation for a Namespace, otherwise the
-    // Namespace. No Role can hold a create permission, so no grant helps: only an Installation
-    // administrator creates one, as the console's AGENT_CREATE_DENIED says (finding 2581).
-    const kinds = pluralKind(kind);
+    // A collection create targets its parent: the Installation for a Namespace and the
+    // Namespace for other kinds.
     if (resource.kind === "namespace") {
-      return `${NAMED_DENIAL_PREFIX} this needs Namespace create. Only an Installation administrator can create ${kinds}: ask one to create it.`;
+      return `${NAMED_DENIAL_PREFIX} this needs Namespace create. ${CHECK_ACCESS}`;
     }
     const namespaceId = named(resource.namespaceId);
     if (qualifier === "administrator_restricted") {
-      // Administration cannot lift a Restriction, so the text sends the caller to whoever
-      // manages Restrictions, or to another Namespace.
       const namespace = namespaceId === undefined ? "this Namespace" : `Namespace ${namespaceId}`;
-      return `${NAMED_DENIAL_PREFIX} a Restriction in ${namespace} denies ${kind} create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the ${kind} in another Namespace.`;
+      return `${NAMED_DENIAL_PREFIX} a Restriction in ${namespace} denies ${kind} create, even for Installation administrators. Check your access and the applicable IAM Restriction.`;
     }
     const where = namespaceId === undefined ? " in this Namespace" : ` in Namespace ${namespaceId}`;
-    return `${NAMED_DENIAL_PREFIX} this needs ${kind} create${where}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
+    return `${NAMED_DENIAL_PREFIX} this needs ${kind} create${where}. ${CHECK_ACCESS}`;
   }
   const id = named(resource.id);
   const article = /^[AEIOU]/.test(kind) ? "an" : "a";
@@ -106,7 +102,8 @@ export function callerDenialMessage(
   if (qualifier === "native_admin_off") {
     return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${ASK} Native admin is also off on this Installation, so the grant alone would not open it.`;
   }
-  return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${ASK}`;
+  const advice = resource.kind === "namespace" && action === "delete" ? CHECK_ACCESS : ASK;
+  return `${NAMED_DENIAL_PREFIX} this needs ${grant} on ${target}. ${advice}`;
 }
 
 /** What a denial's text may use from the request that was denied. */
@@ -120,6 +117,8 @@ export interface DeniedRequest {
    * the Installation (finding D769).
    */
   readonly administratorRestricted?: boolean;
+  /** A retry can recover after a restored Agent grant without deploying a new revision. */
+  readonly agentPrincipalRecovery?: "retry_credential_delivery";
 }
 
 // A body or query field that names a resource: `id`, or a name ending in `Id` (one ID) or `Ids`
@@ -139,34 +138,68 @@ export function requestedValues(request: {
 }): (value: string) => boolean {
   const found = new Set<string>();
   let budget = 4096;
-  const reference = (value: unknown) => {
+  const remember = (value: unknown) => {
     if (typeof value === "string") {
       found.add(value);
-    } else if (Array.isArray(value)) {
-      for (const item of value.slice(0, 256)) {
-        if (typeof item === "string") {
-          found.add(item);
-        }
-      }
     }
   };
-  const visit = (value: unknown, depth: number) => {
-    if (budget <= 0 || depth > 24 || value === null || typeof value !== "object") {
+  const visit = (value: unknown, depth: number, referenceList = false) => {
+    if (
+      budget <= 0 ||
+      value === null ||
+      typeof value !== "object" ||
+      (depth > 24 && !referenceList)
+    ) {
       return;
     }
-    budget -= 1;
-    for (const [key, item] of Array.isArray(value)
-      ? value.map((entry) => ["", entry] as const)
-      : Object.entries(value)) {
-      if (key !== "" && REFERENCE_FIELD.test(key)) {
-        reference(item);
+    if (Array.isArray(value)) {
+      // A reference field at the depth bound still names its first 256 direct string IDs.
+      const length = depth > 24 ? Math.min(value.length, 256) : value.length;
+      for (let index = 0; index < length && budget > 0; index += 1) {
+        budget -= 1;
+        const item: unknown = value[index];
+        if (referenceList && index < 256) {
+          remember(item);
+        }
+        if (depth <= 24) {
+          visit(item, depth + 1);
+        }
       }
-      visit(item, depth + 1);
+      return;
+    }
+    if (depth > 24) {
+      return;
+    }
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) {
+        continue;
+      }
+      if (budget <= 0) {
+        return;
+      }
+      budget -= 1;
+      const item = (value as Record<string, unknown>)[key];
+      const reference = REFERENCE_FIELD.test(key);
+      if (reference) {
+        remember(item);
+      }
+      visit(item, depth + 1, reference);
     }
   };
   if (request.params !== null && typeof request.params === "object") {
-    for (const [key, value] of Object.entries(request.params)) {
-      reference(value);
+    for (const key in request.params) {
+      if (!Object.hasOwn(request.params, key)) {
+        continue;
+      }
+      if (budget <= 0) {
+        break;
+      }
+      budget -= 1;
+      const value = (request.params as Record<string, unknown>)[key];
+      remember(value);
+      if (Array.isArray(value)) {
+        visit(value, 25, true);
+      }
       // An Agent's SandboxPolicy ID is derived from the Agent's (`sbp_` plus its UUID), so a path
       // that carries the Agent ID carries its policy's too (finding 2594).
       if (key === "agentId" && typeof value === "string" && value.startsWith("agt_")) {
@@ -193,6 +226,7 @@ export function agentPrincipalDenialMessage(
     readonly authorization: { readonly action: PermissionAction; readonly resource: ResourceRef };
   },
   requested: (value: string) => boolean = () => false,
+  recovery?: DeniedRequest["agentPrincipalRecovery"],
 ): string {
   const { action, resource } = denial.authorization;
   const kind = KIND_LABELS[resource.kind] ?? resource.kind;
@@ -203,5 +237,8 @@ export function agentPrincipalDenialMessage(
   const agent = agentId === undefined ? "This Agent" : `Agent ${agentId}`;
   const target =
     resourceId === undefined ? `one of its bound ${pluralKind(kind)}` : `${kind} ${resourceId}`;
+  if (recovery === "retry_credential_delivery") {
+    return `${agent} cannot use ${target}. Ask an Installation administrator to grant its service principal ${resource.kind}:${action}, then retry credential delivery.`;
+  }
   return `${agent} cannot use ${target}: the Agent itself needs ${kind} ${action} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
 }

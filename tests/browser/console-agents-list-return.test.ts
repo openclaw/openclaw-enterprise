@@ -7,7 +7,7 @@ import {
   AgentRevisionListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 
-import type { DeploymentStatus } from "../../packages/occ/src/state/controller-work.ts";
+import type { DeploymentStatus } from "../../packages/occ/src/controller-work.ts";
 
 import {
   persistedDeploymentError,
@@ -23,9 +23,9 @@ import {
 
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
-import { refocus, tagView, viewTag } from "./console-refocus-helpers.ts";
+import { refocus, refocusHeld, tagView, viewTag } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 type ReadyNamespace = Awaited<ReturnType<typeof createReadyConsoleNamespace>>;
@@ -156,6 +156,15 @@ const deploymentCells = (page: Page) =>
       }),
     ),
   );
+
+async function assertCompletedDeployments(page: Page, agents: readonly { name: string }[]) {
+  const cells = await deploymentCells(page);
+  const names = agents.map((agent) => agent.name);
+  assert.deepEqual(Object.keys(cells).sort(), [...names].sort(), "expected Agent rows after reads");
+  for (const [name, text] of Object.entries(cells)) {
+    assert.match(text, /^v1 · Completed/, name);
+  }
+}
 
 // Records, after every DOM change, how many rows of the active (revealed) view show a deployment
 // other than "Reading deployment…", and every Agent it shows, so a stale value painted for even
@@ -330,15 +339,61 @@ void test("A return whose list read dropped an Agent never reveals that Agent, w
 });
 
 void test("A return rereads only the rows the search shows", async (t) => {
-  const { namespace, agents, page } = await openTeamList(t, "Team return search");
-  const [, , target] = agents;
-  assert.ok(target);
-  await page.getByRole("searchbox", { name: "Search Agents" }).fill(target.name);
+  const { fixture, namespace, agents, page } = await openTeamList(t, "Team return search");
+  const [first, second, target] = agents;
+  assert.ok(first && second && target);
+  const search = page.getByRole("searchbox", { name: "Search Agents" });
+  const name = (agent: Agent) => page.getByRole("link", { name: agent.name, exact: true });
+
+  // An ambiguous search must not open an arbitrary Agent. Arrows visit names,
+  // skipping version links and lifecycle controls without changing their Tab order.
+  await search.fill("Team Agent 0");
+  await page.keyboard.press("Enter");
+  assert.ok(await hasFocus(search));
+  await page.keyboard.press("ArrowDown");
+  assert.ok(await hasFocus(name(first)));
+  await page.keyboard.press("ArrowDown");
+  assert.ok(await hasFocus(name(second)));
+  await page.keyboard.press("ArrowUp");
+  assert.ok(await hasFocus(name(first)));
+  await page.keyboard.press("Escape");
+  assert.ok(await hasFocus(search));
+  assert.equal(await search.inputValue(), "Team Agent 0");
+  await search.fill("no match");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  assert.equal(await search.inputValue(), "");
+
+  // The list changed while away. Resume editing the selected text in the rebuilt search.
+  await search.fill(target.name);
+  await search.evaluate((input: HTMLInputElement) => input.setSelectionRange(1, 4, "backward"));
+  await tagView(page);
+  await fixture.createAgent(namespace.id, "Another", nativeValues("Another"));
+  await refocusHeld(t, page);
+  assert.equal(await viewTag(page), null);
+  assert.ok(await hasFocus(search));
+  assert.deepEqual(
+    await search.evaluate((input: HTMLInputElement) => [
+      input.selectionStart,
+      input.selectionEnd,
+      input.selectionDirection,
+    ]),
+    [1, 4, "backward"],
+  );
+  await page.keyboard.insertText("EAM");
+  assert.equal(await search.inputValue(), "TEAM Agent 03");
+
+  // Open the single match only on an Enter that does not confirm IME composition.
+  await search.dispatchEvent("keydown", { key: "Enter", isComposing: true });
   await page.locator(settledView).getByRole("row").nth(1).waitFor();
   assert.equal(await page.locator(activeView).locator(".agent-table tbody tr").count(), 1);
   await page.getByText(READING).first().waitFor({ state: "detached" });
   await tagView(page);
-  await openAgent(page, target);
+  await page.keyboard.press("Enter");
+  await page
+    .locator(settledView)
+    .getByRole("region", { name: "Agent state at a glance" })
+    .waitFor();
 
   const revisions: string[] = [];
   page.on("request", (request) => {
@@ -350,6 +405,7 @@ void test("A return rereads only the rows the search shows", async (t) => {
   await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
   assert.equal(await viewTag(page), "kept");
   await page.getByText(READING).first().waitFor({ state: "detached" });
+  assert.ok(await hasFocus(name(target)));
   // The Agent page may still read its own history as it closes; no other row is read.
   assert.deepEqual(
     [...new Set(revisions)],
@@ -605,9 +661,7 @@ for (const visit of ["a first visit", "a return"]) {
     });
     rows.release();
     await page.getByText(READING).first().waitFor({ state: "detached" });
-    for (const text of Object.values(await deploymentCells(page))) {
-      assert.match(text, /^v1 · Completed/);
-    }
+    await assertCompletedDeployments(page, agents);
   });
 }
 
@@ -659,6 +713,7 @@ async function returnWithHeldRows(t: TestContext, name: string) {
   return {
     namespace,
     page,
+    agents,
     readingCells,
     // Ends every row's delay animation `ms` after the last step, so "Reading deployment…" shows,
     // and waits until the page has handled the animations' end.
@@ -730,7 +785,7 @@ for (const [shownAt, landsAt, fillsAt] of [
   [280, 300, 430],
 ] as const) {
   void test(`Rows shown at ${shownAt ?? "no"} ms whose reread lands at ${landsAt} ms fill at ${fillsAt} ms`, async (t) => {
-    const { page, readingCells, reveal, land } = await returnWithHeldRows(
+    const { page, agents, readingCells, reveal, land } = await returnWithHeldRows(
       t,
       `Steady rows ${shownAt ?? "hidden"} ${landsAt}`,
     );
@@ -746,9 +801,7 @@ for (const [shownAt, landsAt, fillsAt] of [
       assert.equal(await readingCells(), 3, "the shown text stays 150 ms");
       await page.clock.runFor(1);
     }
-    for (const text of Object.values(await deploymentCells(page))) {
-      assert.match(text, /^v1 · Completed/);
-    }
+    await assertCompletedDeployments(page, agents);
     assert.equal(await viewTag(page), "kept");
   });
 }
@@ -864,9 +917,7 @@ void test("A list left again during its rows' rereads is reused on the next retu
   assert.equal((await revealed(page)).deployments, 0, "no stale deployment was revealed");
   rereads.release();
   await page.getByText(READING).first().waitFor({ state: "detached" });
-  for (const text of Object.values(await deploymentCells(page))) {
-    assert.match(text, /^v1 · Completed/);
-  }
+  await assertCompletedDeployments(page, agents);
 });
 
 // On a phone the Agents table scrolled sideways: 5 columns, the deployment one a fixed 14 rem, so

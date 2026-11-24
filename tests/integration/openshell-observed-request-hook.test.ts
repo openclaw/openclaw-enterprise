@@ -95,6 +95,21 @@ test("a per-start denial joins the authenticated request to the refusal actually
   );
   assert.equal(validRepositoryGitRecipient(recipient, "github_installation"), false);
   assert.equal(validRepositoryGitRecipient(recipient, "repository_git", mode), false);
+  const online = {
+    providerId: "provider",
+    attachmentEpoch: "attached",
+    authorization: "online-request" as const,
+  };
+  assert.equal(validRepositoryGitRecipient(online, "repository_git", "online-request"), true);
+  assert.equal(validRepositoryGitRecipient(online, "repository_git"), false);
+  assert.equal(
+    validRepositoryGitRecipient(
+      { ...online, processInstanceId: "partial" },
+      "repository_git",
+      "online-request",
+    ),
+    false,
+  );
   const { observedHook: _, ...incomplete } = recipient;
   assert.equal(
     validRepositoryGitRecipient(incomplete as RepositoryGitRecipient, "github_installation", mode),

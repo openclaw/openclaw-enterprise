@@ -1,7 +1,7 @@
 diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
 --- a/extensions/codex/src/app-server/client.ts
 +++ b/extensions/codex/src/app-server/client.ts
-@@ -352,7 +352,80 @@
+@@ -352,7 +352,103 @@
          ),
        );
      }
@@ -34,9 +34,32 @@ diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/ap
 +            result.sandbox.type === "dangerFullAccess"
 +          )
 +        ) {
++          let comparison = "nonobject-result";
++          if (isJsonObject(result)) {
++            const sandbox = result.sandbox;
++            if (!Object.hasOwn(result, "sandbox")) {
++              comparison = "field-absent";
++            } else if (sandbox === null) {
++              comparison = "field-null";
++            } else if (!isJsonObject(sandbox)) {
++              comparison = "field-not-object";
++            } else if (typeof sandbox.type !== "string") {
++              comparison = "type-not-string";
++            } else if (
++              sandbox.type === "readOnly" ||
++              sandbox.type === "workspaceWrite" ||
++              sandbox.type === "externalSandbox"
++            ) {
++              comparison = "sandbox-" + sandbox.type;
++            } else {
++              comparison = "type-unrecognized";
++            }
++          }
 +          throw new Error(
 +            method +
-+              ": Codex did not grant the requested :danger-full-access profile",
++              ": Codex did not grant the requested :danger-full-access profile" +
++              " (comparison=" + comparison + "). " +
++              "Check native permission requirements and runtime compatibility.",
 +          );
 +        }
 +      } else if (

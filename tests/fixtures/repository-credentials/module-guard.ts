@@ -33,7 +33,7 @@ registerHooks({
       recordForbidden(url);
       throw new Error(`unexpected development construction: ${url}`);
     }
-    const name = url.split("/drivers/repo/github/credentials/")[1];
+    const name = url.split("/drivers/repo/github/access/")[1];
     const development = ["factory.js", "driver.js", "static-token.js"];
     const worker = [
       "material.js",

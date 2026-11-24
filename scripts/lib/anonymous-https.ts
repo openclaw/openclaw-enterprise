@@ -15,7 +15,7 @@ export type HttpFailure =
 interface ReadOptions {
   signal: AbortSignal;
   timeout: number;
-  mediaType: "text/html" | "text/css";
+  mediaType: "text/html" | "text/css" | "text/javascript";
   maxBytes: number;
 }
 

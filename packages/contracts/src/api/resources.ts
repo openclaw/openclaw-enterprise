@@ -5,6 +5,7 @@ import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.
 import {
   AgentId,
   AgentProvisioningWorkId,
+  RepositoryNetworkGrantSchema,
   PresetId,
   PresetTemplateSchema,
   ConfigurationGeneration,
@@ -17,7 +18,10 @@ import {
   CredentialSourceSecrets,
   CredentialSourceType,
   GatewayManagedModeSchema,
+  AgentNetworkProxySchema,
   HarnessExecutionModeSchema,
+  RevisionHarnessSchema,
+  ModelProviderId,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
   InstallationId,
@@ -85,7 +89,13 @@ export const AgentDeviceAuthorizationResponse = Type.Object(
   {
     data: Type.Object(
       {
-        session: SecretReference,
+        session: Type.Object(
+          { id: SecretId, namespaceId: NamespaceId },
+          {
+            additionalProperties: false,
+            description: "Device-login handle for the poll and cancel operations.",
+          },
+        ),
         source: Type.Optional(CredentialSourceReference),
         status: Type.Union([Type.Literal("pending"), Type.Literal("ready")]),
         verificationUrl: Type.String({ format: "uri" }),
@@ -212,7 +222,12 @@ const RuntimeEvidenceTimestamp = Type.String({
 const PluginPolicyCapabilitiesSchema = Type.Object(
   {
     driver: Type.Ref("PluginDriverIdentity"),
-    policyScopeByPlugin: Type.Optional(Type.Record(Type.String(), Type.Literal("enablement_only"))),
+    policyScopeByPlugin: Type.Optional(
+      Type.Record(
+        Type.String(),
+        Type.Union([Type.Literal("enablement_only"), Type.Literal("tool_human_approval")]),
+      ),
+    ),
     approvers: Type.Optional(
       Type.Object(
         { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },
@@ -418,6 +433,7 @@ export const NamespaceSchema = Type.Object(
 
 export const AgentSchema = Type.Object(
   {
+    modelProviderId: Type.Optional(ModelProviderId),
     sandboxPolicyEditing: Type.Optional(Type.Boolean()),
     id: AgentId,
     namespaceId: NamespaceId,
@@ -429,6 +445,7 @@ export const AgentSchema = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
     gatewayManagedMode: GatewayManagedModeSchema,
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     pluginDriver: Type.Optional(Type.Ref("PluginDriverIdentity")),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -450,6 +467,7 @@ const ConfigurationReadErrorSchema = Type.Object(
       Type.Literal("pluginApprovers"),
       Type.Literal("repositoryBindings"),
       Type.Literal("repositoryAccess"),
+      Type.Literal("networkProxy"),
       Type.Literal("harnessAuth"),
       Type.Literal("credentialSources"),
       Type.Literal("secretBindings"),
@@ -461,7 +479,7 @@ const ConfigurationReadErrorSchema = Type.Object(
 );
 
 const agentReadDescription =
-  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.";
+  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources.";
 
 export const AgentReadSchema = Type.Union(
   [
@@ -474,6 +492,7 @@ export const AgentReadSchema = Type.Union(
           "pluginApprovers",
           "repositoryBindings",
           "repositoryAccess",
+          "networkProxy",
           "harnessAuth",
           "credentialSources",
         ]).properties,
@@ -656,7 +675,7 @@ export const CredentialRefreshStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+      "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
   },
 );
 
@@ -674,7 +693,7 @@ export const CredentialSourceStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+      "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
   },
 );
 
@@ -857,6 +876,25 @@ export const NamespaceSecretPermissionsResponse = Type.Object(
         operateDenied: Type.Array(Type.String({ minLength: 1 }), {
           description:
             "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Agent creation needs Secret operate on each Secret it binds or uses: its Harness authentication source, its Configuration's Secret bindings, and a directory search Secret. Empty when it is not reported: reported only to a caller who may create an Agent in this Namespace. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+// A member who may create Agents here cannot read the Installation; this answer gives that caller
+// the capabilities the Agent create form needs (RFC-0026).
+export const NamespaceAgentCapabilitiesResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        capabilities: Type.Omit(InstallationCapabilitiesSchema, ["agentProvisioning"], {
+          additionalProperties: false,
+          description:
+            "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration.",
         }),
       },
       { additionalProperties: false },
@@ -1053,6 +1091,13 @@ export const BackendSummarySchema = Type.Object(
 
 export const RepositoryOptionSchema = Type.Object(
   {
+    githubAccess: Type.Optional(
+      Type.Object(RepositoryNetworkGrantSchema.properties, {
+        additionalProperties: false,
+        description:
+          "Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions.",
+      }),
+    ),
     repositoryRef: RepositoryBindingSelectionSchema.properties.repositoryRef,
     displayName: Name,
     description: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
@@ -1087,6 +1132,14 @@ export const InstallationDeploymentInventorySchema = Type.Object(
                 executionMode: AgentSchema.properties.executionMode,
                 activeRevisionId: Type.Optional(RevisionId),
                 deploymentInProgress: Type.Boolean(),
+                repositoryWorkerRestart: Type.Optional(
+                  Type.Union([
+                    Type.Literal("original-worker-required"),
+                    Type.Literal("reverification-supported"),
+                    Type.Literal("not-applicable"),
+                    Type.Literal("unknown"),
+                  ]),
+                ),
               },
               { additionalProperties: false },
             ),
@@ -1301,7 +1354,7 @@ export const BackendListResponse = Type.Object(
 
 export const RepositoryOptionListResponse = Type.Object(
   {
-    data: Type.Array(RepositoryOptionSchema, { maxItems: 1000 }),
+    data: Type.Array(RepositoryOptionSchema, { maxItems: 1001 }),
     meta: Type.Object(
       {
         ...Meta.properties,
@@ -1360,14 +1413,8 @@ export const AgentRevisionSchema = Type.Object(
       description:
         "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
     }),
-    harness: Type.Object(
-      {
-        id: Type.String({ minLength: 1 }),
-        version: Type.String({ minLength: 1 }),
-        mode: HarnessExecutionModeSchema,
-      },
-      { additionalProperties: false },
-    ),
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
+    harness: RevisionHarnessSchema,
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
       { additionalProperties: false },
@@ -1458,9 +1505,9 @@ export const AgentRevisionReadResponse = Type.Object(
   { additionalProperties: false },
 );
 
-// A list item names a revision without its saved settings, so a page stays a few hundred bytes
-// per item whatever the admitted snapshots weigh (finding 1323). The fields beyond metadata are
-// the ones clients use to tell revisions apart; the database checks their shape on insert.
+// List items omit the native configuration document and other admitted snapshot payloads.
+// They retain the Harness descriptor and any recorded Harness settings; historical rows
+// may predate those settings. Detail reads report unreadable saved configuration.
 export const AgentRevisionSummarySchema = Type.Object(
   {
     ...Type.Pick(AgentRevisionSchema, [
@@ -1471,9 +1518,21 @@ export const AgentRevisionSummarySchema = Type.Object(
       "backendId",
       "configurationId",
       "configurationGeneration",
-      "harness",
+      "networkProxy",
       "createdAt",
     ]).properties,
+    harness: Type.Object(
+      {
+        ...RevisionHarnessSchema.properties,
+        overrides: Type.Optional(RevisionHarnessSchema.properties.overrides),
+        configuration: Type.Optional(RevisionHarnessSchema.properties.configuration),
+      },
+      {
+        additionalProperties: false,
+        description:
+          "Older revisions omit overrides and configuration when Harness settings were not recorded.",
+      },
+    ),
     // The outcome a Versions list marks beside each version (finding 2422).
     deploymentStatus: Type.Union(
       [
@@ -1495,7 +1554,7 @@ export const AgentRevisionSummarySchema = Type.Object(
   },
   {
     description:
-      "Agent revision summary without saved settings. Read this Agent revision for its configuration. If OCC cannot read the saved settings, the response contains `configurationReadError`.",
+      "Agent revision metadata with the Harness descriptor and any recorded Harness settings, without the native configuration document. Read this Agent revision for its full saved configuration or a `configurationReadError` when those settings are unreadable.",
   },
 );
 
@@ -1530,6 +1589,20 @@ export const AgentDeploymentStatusSchema = Type.Object(
       Type.Literal("succeeded"),
       Type.Literal("failed"),
     ]),
+    repositoryAccess: Type.Optional(
+      Type.Object(
+        {
+          state: Type.Literal("redeploy-required"),
+          code: Type.Literal("REPOSITORY_EXECUTION_REDEPLOY_REQUIRED"),
+          message: Type.String(),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Present when completed maintenance for this exact revision recorded that repository access requires a new revision. This condition does not change the original deployment result. Absence does not establish current repository access health.",
+        },
+      ),
+    ),
     cleanup: Type.Union(
       [
         Type.Null(),
@@ -1545,7 +1618,7 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "Saved cleanup status for this Agent revision, separate from its deployment result. `null` means no cleanup requirement was recorded. `succeeded` confirms that cleanup is complete.",
+          "Status of recorded runtime retirement and session disposal for retiring or nonserving Agent revisions. Session disposal reports its current queue state. `null` means there is no applicable work record. `succeeded` means the applicable records show completion at the time of the read.",
       },
     ),
     progress: Type.Union(
@@ -2038,6 +2111,9 @@ export type AgentRevisionWire = Type.Static<typeof AgentRevisionSchema>;
 export type AgentDeploymentStatusWire = Type.Static<typeof AgentDeploymentStatusSchema>;
 export type AgentDeploymentDiagnosticsWire = Type.Static<typeof AgentDeploymentDiagnosticsSchema>;
 export type InstallationResponse = Type.Static<typeof InstallationResponse>;
+export type NamespaceAgentCapabilitiesResponse = Type.Static<
+  typeof NamespaceAgentCapabilitiesResponse
+>;
 export type InstallationDeploymentInventoryResponse = Type.Static<
   typeof InstallationDeploymentInventoryResponse
 >;

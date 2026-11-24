@@ -13,9 +13,9 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -52,11 +52,7 @@ async function accountSession(
   email: string,
   password: string,
 ) {
-  const session = await signInToControllerApp(
-    app,
-    { email, password },
-    { origin: "http://127.0.0.1" },
-  );
+  const session = await signInToControllerApp(app, { email, password });
   return (
     method: "GET" | "POST" | "DELETE",
     url: string,
@@ -66,7 +62,7 @@ async function accountSession(
     target.inject({
       method,
       url,
-      headers: { host: "127.0.0.1", ...authenticatedHeaders(session) },
+      headers: { host: new URL(session.origin).host, ...authenticatedHeaders(session) },
       ...(body === undefined ? {} : { payload: body }),
     });
 }
@@ -232,7 +228,7 @@ test(
     const removed = await inject("DELETE", `${base}/credential-sources/${pendingId}`);
     assert.equal(removed.statusCode, 204, removed.body);
     const pendingSession = await pool.query(
-      "SELECT 1 FROM occ.connection_sessions WHERE credential_source_id=$1",
+      "SELECT 1 FROM occ.authentication_states WHERE kind='oauth_connection' AND credential_source_id=$1",
       [pendingId],
     );
     assert.equal(pendingSession.rowCount, 0);
@@ -578,6 +574,27 @@ test(
     const sourceDetails = await owner("GET", source);
     assert.equal(sourceDetails.statusCode, 200, sourceDetails.body);
     assert.equal(sourceDetails.json().data.ownerCapability, "token_service");
+    // The saved source and its authorization must retain the Namespace consumed by the callback.
+    const completedEvents = (await state.transact((unit) => unit.audit.list())).filter(
+      (event) =>
+        event.action === "openclaw.namespaces.connections.complete" &&
+        event.outcome === "success" &&
+        event.namespaceId === namespaceId &&
+        event.resource.id === id,
+    );
+    assert.equal(completedEvents.length, 1);
+    const [completedEvent] = completedEvents;
+    assert.ok(completedEvent);
+    assert.equal(completedEvent.kind, "mutation");
+    assert.equal(completedEvent.actorId, ownerId);
+    assert.equal(completedEvent.actor?.principalId, ownerId);
+    assert.ok(completedEvent.admissionDecisionId);
+    assert.deepEqual(completedEvent.resource, { kind: "credential_source", namespaceId, id });
+    assert.deepEqual(completedEvent.authorization, {
+      principalId: ownerId,
+      action: "create",
+      resource: { kind: "credential_source", id: namespaceId, namespaceId },
+    });
     const readerAccounts = await reader("GET", connections);
     assert.equal(readerAccounts.statusCode, 200, readerAccounts.body);
     assert.deepEqual(readerAccounts.json().data, []);
@@ -912,7 +929,7 @@ test(
     try {
       await lock.query("BEGIN");
       const held = await lock.query(
-        "DELETE FROM occ.connection_sessions WHERE credential_source_id=$1 RETURNING pg_backend_pid() AS pid, pkce_verifier",
+        "DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND credential_source_id=$1 RETURNING pg_backend_pid() AS pid, binding->>'pkceVerifier' AS pkce_verifier",
         [waiting.id],
       );
       verifier = held.rows[0].pkce_verifier;

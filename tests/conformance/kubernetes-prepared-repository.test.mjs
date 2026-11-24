@@ -43,10 +43,13 @@ test("Missing Sandbox repository capability refuses delivery before Worker sessi
   // Exercise the real lifecycle ordering, including an already admitted revision.
   // Public grant resolution is allowed; any session lookup or broker effect fails the test.
   const lifecycle = new RepositoryCredentialLifecycle({
-    driver: {
-      ...driver,
-      capability: "repo",
-      resolve: () => ({ bindings: [binding], sessionDurationSeconds: 600 }),
+    repository: {
+      kind: "registered",
+      policy: {
+        ...driver,
+        capability: "repo",
+        resolve: () => ({ bindings: [binding], sessionDurationSeconds: 600 }),
+      },
     },
     authorize: (_claim, { harness, sandboxDriverId }) =>
       compute.validateRepositoryCredentials(harness, sandboxDriverId),

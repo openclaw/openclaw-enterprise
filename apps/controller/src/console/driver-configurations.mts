@@ -251,6 +251,11 @@ export function renderInstallationConfigurations(context: ConfigurationContext) 
                   { className: "driver-configuration-id" },
                   `${descriptor.driverId} · ${descriptor.key}`,
                 ),
+                element(
+                  "span",
+                  { className: "driver-configuration-id" },
+                  `Implementation: ${descriptor.implementation}`,
+                ),
               ),
               element("span", { className: "driver-configuration-count" }, summary),
             ),

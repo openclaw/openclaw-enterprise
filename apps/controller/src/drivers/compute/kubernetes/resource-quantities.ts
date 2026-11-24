@@ -109,13 +109,60 @@ export function compareResourceQuantities(request: string, limit: string): numbe
   if (!a || !b) {
     return undefined;
   }
+  return compareAmounts(a, b);
+}
+
+function compareAmounts(a: Amount, b: Amount): number {
   if (a.sign !== b.sign) {
     return Math.sign(a.sign - b.sign);
   }
   return a.sign === 0 ? 0 : a.sign * magnitude(a, b);
 }
 
-/** Whether the API server can parse this JSON quantity string. */
-export function isResourceQuantity(value: string): boolean {
-  return parsed(value) !== undefined;
+type ResourceQuantityPairProblem =
+  "negative-request" | "negative-limit" | "malformed" | "request-exceeds-limit";
+
+export function resourceQuantityPairProblem(
+  request: string,
+  limit: string,
+): ResourceQuantityPairProblem | undefined {
+  const requested = parsed(request);
+  if (requested && requested.sign < 0) {
+    return "negative-request";
+  }
+  const limited = parsed(limit);
+  if (limited && limited.sign < 0) {
+    return "negative-limit";
+  }
+  // Report a negative operand before a malformed pair.
+  if (!requested || !limited) {
+    return "malformed";
+  }
+  return compareAmounts(requested, limited) > 0 ? "request-exceeds-limit" : undefined;
+}
+
+export function isNonNegativeResourceQuantity(value: string): boolean {
+  const amount = parsed(value);
+  return amount !== undefined && amount.sign >= 0;
+}
+
+/**
+ * The fractional precision check used for integer quota resources. Kubernetes checks
+ * MilliValue() modulo 1000, not the suffix spelling: 1000m and 1.5Ki pass, as do
+ * fractions such as 0.9999 that round up to a whole count at Milli precision.
+ * Integral magnitudes need no precision check; quantity validity is checked separately.
+ */
+export function hasIntegerQuotaPrecision(value: string): boolean {
+  const amount = parsed(value);
+  if (amount === undefined) {
+    return false;
+  }
+  if (amount.sign === 0 || amount.exponent >= 0) {
+    return true;
+  }
+  const digits = BigInt(amount.digits);
+  const shift = amount.exponent + 3;
+  const divisor = 10n ** BigInt(Math.max(0, -shift));
+  const milli = shift >= 0 ? digits * 10n ** BigInt(shift) : (digits + divisor - 1n) / divisor;
+  return BigInt.asIntN(64, milli) % 1000n === 0n;
 }

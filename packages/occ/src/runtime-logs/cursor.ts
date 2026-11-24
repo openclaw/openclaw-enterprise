@@ -139,6 +139,17 @@ export function runtimeLogTimeKey(value: string): string {
   return match === null ? value : `${match[1]}.${(match[2] ?? "").padEnd(9, "0")}Z`;
 }
 
+function validLineHash(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{16}$/.test(value);
+}
+
+function decodePackedHashes(value: unknown, limit: 16 | 48): string[] | undefined {
+  const pattern = limit === 16 ? /^(?:[A-Za-z0-9_-]{16}){0,16}$/ : /^(?:[A-Za-z0-9_-]{16}){0,48}$/;
+  return typeof value === "string" && pattern.test(value)
+    ? (value.match(/.{16}/g) ?? [])
+    : undefined;
+}
+
 function sandboxWindow(value: unknown): SandboxLogWindowCheckpoint | undefined {
   if (!Array.isArray(value) || value.length !== 6) {
     return undefined;
@@ -154,8 +165,7 @@ function sandboxWindow(value: unknown): SandboxLogWindowCheckpoint | undefined {
     !Number.isSafeInteger(seen) ||
     (seen as number) < (count as number) ||
     (seen as number) > (tailLines as number) ||
-    typeof hash !== "string" ||
-    !/^[A-Za-z0-9_-]{16}$/.test(hash) ||
+    !validLineHash(hash) ||
     !Number.isSafeInteger(total) ||
     (total as number) < (seen as number)
   ) {
@@ -185,10 +195,7 @@ function containerWindow(value: unknown): ContainerLogWindowCheckpoint | undefin
           hash: value[4],
           truncated: value[5],
           baseTime: value[6],
-          baseHashes:
-            typeof value[7] === "string" && /^(?:[A-Za-z0-9_-]{16}){0,16}$/.test(value[7])
-              ? (value[7].match(/.{16}/g) ?? [])
-              : undefined,
+          baseHashes: decodePackedHashes(value[7], 16),
           baseComplete: value[8],
           ...(value.length === 10
             ? {}
@@ -208,16 +215,13 @@ function containerWindow(value: unknown): ContainerLogWindowCheckpoint | undefin
     !Number.isSafeInteger(window.seen) ||
     (window.seen as number) < (window.count as number) ||
     (window.seen as number) > 1001 ||
-    typeof window.hash !== "string" ||
-    !/^[A-Za-z0-9_-]{16}$/.test(window.hash) ||
+    !validLineHash(window.hash) ||
     typeof window.truncated !== "boolean" ||
     typeof window.baseComplete !== "boolean" ||
     (window.basePositional !== undefined && typeof window.basePositional !== "boolean") ||
     !Array.isArray(window.baseHashes) ||
     window.baseHashes.length > 16 ||
-    !window.baseHashes.every(
-      (hash) => typeof hash === "string" && /^[A-Za-z0-9_-]{16}$/.test(hash),
-    ) ||
+    !window.baseHashes.every(validLineHash) ||
     (window.baseCount !== undefined &&
       (!Number.isSafeInteger(window.baseCount) ||
         (window.baseCount as number) < window.baseHashes.length ||
@@ -245,10 +249,10 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
     return undefined;
   }
   const record = value as Record<string, unknown>;
-  if (typeof record.h === "string" && !/^(?:[A-Za-z0-9_-]{16}){0,48}$/.test(record.h)) {
+  const hashes = typeof record.h === "string" ? decodePackedHashes(record.h, 48) : record.h;
+  if (typeof record.h === "string" && hashes === undefined) {
     return undefined;
   }
-  const hashes = typeof record.h === "string" ? (record.h.match(/.{16}/g) ?? []) : record.h;
   const window = record.w === undefined ? undefined : sandboxWindow(record.w);
   const container = record.cw === undefined ? undefined : containerWindow(record.cw);
   const hasPem = Object.hasOwn(record, "po") || Object.hasOwn(record, "pt");
@@ -266,7 +270,7 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
     (record.t !== null && typeof record.t !== "string") ||
     !Array.isArray(hashes) ||
     hashes.length > MAX_HASHES ||
-    !hashes.every((hash) => typeof hash === "string" && /^[A-Za-z0-9_-]{16}$/.test(hash)) ||
+    !hashes.every(validLineHash) ||
     !Number.isSafeInteger(record.i) ||
     (record.fc !== undefined && typeof record.fc !== "boolean") ||
     (record.fn !== undefined &&

@@ -1,0 +1,593 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  managedMcpCredentialBindings,
+  managedMcpInstalls,
+  type ManagedMcpInstall,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  codexOpenClawConfiguration,
+  openClawRuntimeArtifact,
+  validatePolicies,
+} from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
+import type {
+  CredentialSource,
+  PluginApprover,
+  PluginApprovers,
+  PluginDriver,
+} from "../../packages/contracts/src/index.ts";
+import { PluginPolicyValidationError } from "../../packages/occ/src/index.ts";
+import {
+  calendarPluginId,
+  codexSelection,
+  configurationObject,
+  context,
+  linearPluginId,
+  occSelection,
+  unvalidatedPluginSelections,
+} from "./plugin-driver-fixtures.ts";
+
+const OCC_DIFFS_DIGEST =
+  "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
+
+test("managed MCP policy asks once before dispatch and refuses unselected tools", async () => {
+  const { default: plugin } = await import(
+    new URL("../../deploy/runtime/managed-mcp-policy/index.mjs", import.meta.url).href
+  );
+  let policy:
+    | {
+        allowLocalMcpTool: (ctx: Record<string, unknown>) => boolean;
+        handle: (ctx: Record<string, unknown>) => Promise<{ ok: boolean; code?: string }>;
+      }
+    | undefined;
+  plugin.register({
+    registerNodeInvokePolicy(value: typeof policy) {
+      policy = value;
+    },
+  });
+  assert.ok(policy);
+  const pluginConfig = {
+    nodeId: "node-one",
+    servers: { oce_mcp_slack: { slack_search_public: "allow", slack_send_message: "ask" } },
+  };
+  const local = (tool: string) =>
+    policy!.allowLocalMcpTool({ nodeId: "node-one", server: "oce_mcp_slack", tool, pluginConfig });
+  assert.equal(local("slack_search_public"), true);
+  assert.equal(local("slack_send_message"), false);
+  assert.equal(local("disabled"), false);
+  let upstreamCalls = 0;
+  const prompts: Record<string, unknown>[] = [];
+  const run = (tool: string, decision: string) =>
+    policy!.handle({
+      nodeId: "node-one",
+      params: { server: "oce_mcp_slack", tool, arguments: { text: "example" } },
+      pluginConfig,
+      approvals: {
+        async request(request: Record<string, unknown>) {
+          prompts.push(request);
+          return { decision };
+        },
+      },
+      async invokeNode() {
+        upstreamCalls += 1;
+        return { ok: true };
+      },
+    });
+  assert.equal((await run("slack_send_message", "deny")).code, "APPROVAL_DENIED");
+  assert.equal(upstreamCalls, 0);
+  assert.equal((await run("disabled", "allow-once")).code, "MCP_TOOL_DISABLED");
+  assert.equal(upstreamCalls, 0);
+  assert.equal((await run("slack_send_message", "allow-once")).ok, true);
+  assert.equal(upstreamCalls, 1);
+  assert.match(String(prompts.at(-1)?.description), /oce_mcp_slack\/slack_send_message/);
+  assert.deepEqual(prompts.at(-1)?.allowedDecisions, ["allow-once", "deny"]);
+});
+
+test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => {
+  const driver = new OCCPluginDriver(
+    {},
+    { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+  );
+
+  const [catalogEntry] = await driver.listCatalog(context("embedded"));
+  assert.deepEqual(catalogEntry, {
+    id: "occ-plugin:diffs",
+    name: "Diffs",
+    tools: [{ id: "diffs", name: "diffs", ownerId: "diffs" }],
+  });
+});
+
+test("dedicated OpenClaw admits Google and Slack together and validates Slack's reviewed account binding", async () => {
+  const driver = new OCCPluginDriver();
+  const dedicated = context("dedicated");
+  const [google, slack] = await driver.listCatalog({
+    ...dedicated,
+    harness: { ...dedicated.harness, id: "openclaw" },
+  });
+  assert.ok(google);
+  assert.ok(slack);
+  assert.equal(google.id, "occ-plugin:google@1.0.0");
+  assert.equal(slack.id, "occ-plugin:slack@1.0.0");
+  assert.equal(driver.policyCapabilities.policyScopeByPlugin?.[slack.id], "tool_human_approval");
+  assert.deepEqual((await driver.discoverCatalog({ q: "SLACK" })).plugins, [slack]);
+  driver.validatePolicies({ [slack.id]: { enabled: false } });
+  const slackInstall = managedMcpInstalls.find(({ id }) => id === slack.id);
+  assert.ok(slackInstall);
+  const slackPolicy = {
+    releaseSha256: slackInstall.releaseSha256,
+    credentials: { account: "cs_slack" },
+  };
+  const selections = {
+    [google.id]: { enabled: true },
+    [slack.id]: { enabled: true, driverPolicy: slackPolicy },
+  };
+  driver.validatePolicies(selections);
+  assert.throws(
+    () =>
+      driver.validatePolicies({
+        [slack.id]: { enabled: true, driverPolicy: { credentials: { account: "cs_slack" } } },
+      }),
+    /Slack release has changed/,
+  );
+  driver.validatePolicies({
+    [slack.id]: {
+      enabled: true,
+      driverPolicy: { ...slackPolicy, toolNames: ["slack_search_public", "slack_send_message"] },
+      tools: { slack_send_message: { approval: "all_actions" } },
+    },
+  });
+  assert.throws(
+    () =>
+      driver.validatePolicies({
+        [slack.id]: {
+          enabled: true,
+          driverPolicy: { ...slackPolicy, toolNames: ["slack_search_public"] },
+          tools: { slack_send_message: { approval: "all_actions" } },
+        },
+      }),
+    /Select an enabled Slack tool/,
+  );
+  // Selections are literal upstream names. Globs and colliding aliases would broaden access.
+  for (const toolNames of [["slack_*"], ["Search", "search"], ["x".repeat(64)], null]) {
+    assert.throws(
+      () =>
+        driver.validatePolicies({
+          [slack.id]: { enabled: true, driverPolicy: { ...slackPolicy, toolNames } },
+        }),
+      /Select distinct literal Slack tool names/,
+    );
+  }
+  const source: CredentialSource = {
+    id: "cs_slack",
+    name: "Slack test account",
+    namespaceId: "ns_test",
+    type: "bearer-token",
+    ownerCapability: "credential_gateway",
+    driverId: "credential-gateway-openshell",
+    createdAt: "2026-09-08T00:00:00.000Z",
+    state: "ready",
+    secrets: { token: { kind: "secret", id: "sec_slack", namespaceId: "ns_test" } },
+    config: {
+      protocol: "mcp",
+      host: "mcp.slack.com",
+      port: "443",
+      path: "/mcp",
+      env_var: "SLACK_MCP_TOKEN",
+    },
+  };
+  const broaderRestSource = {
+    ...source,
+    id: "cs_rest",
+    config: { ...source.config, protocol: "rest" },
+  };
+  const credentials: NonNullable<PluginDriver["credentials"]> = driver.credentials;
+  const slots = credentials.choices([source, broaderRestSource]);
+  const slackSlot = slots.find(({ pluginId }) => pluginId === slack.id);
+  assert.ok(slackSlot);
+  assert.equal(slackSlot.id, "account");
+  assert.equal(slackSlot.label, "Slack user account");
+  assert.deepEqual(slackSlot.sources, [{ id: source.id, name: source.name }]);
+  await driver.credentials.validate(selections, [source]);
+  await assert.rejects(
+    async () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
+    /Select a ready Slack account/,
+  );
+  const mixedPlacement = { ...selections, ...occSelection() };
+  driver.validatePolicies(mixedPlacement);
+  assert.throws(
+    () =>
+      driver.validatePlacement(
+        mixedPlacement,
+        { id: "openclaw", mode: "dedicated" },
+        "occ/kubernetes",
+      ),
+    /Select occ-plugin:diffs on an embedded OpenClaw Agent. Use a dedicated OpenClaw Agent for Google Workspace, Slack/,
+  );
+  assert.throws(
+    () =>
+      driver.validatePolicies({
+        ...selections,
+        ...occSelection({ tools: { unknown: { enabled: true } } }),
+      }),
+    { name: "PluginPolicyValidationError" },
+  );
+  assert.throws(
+    () =>
+      driver.validatePolicies(
+        unvalidatedPluginSelections({
+          ...selections,
+          [slack.id]: { enabled: true, credentialSourceId: "src_personal" },
+        }),
+      ),
+    /Slack package supports enablement, a credential slot, and per-tool human approval/,
+  );
+});
+
+test("managed MCP bindings preserve both servers' credentials and require unambiguous runtime names", () => {
+  const [first] = managedMcpInstalls;
+  assert.ok(first);
+  const second = {
+    ...first,
+    id: "occ-plugin:team@1.0.0",
+    runtimeName: "team",
+    server: first.server + "_team",
+    url: "https://team.example.test/mcp",
+    endpoint: { ...first.endpoint, host: "team.example.test" },
+    credentialEnvironment: "TEAM_MCP_TOKEN",
+  };
+  const installs = [first, second];
+  const select = (install: ManagedMcpInstall, sourceId: string, tool: string) => ({
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: install.releaseSha256,
+      credentials: { [install.slotId]: sourceId },
+      toolNames: [tool],
+    },
+  });
+  const selections = {
+    [first.id]: select(first, "cs_first", "team_read"),
+    [second.id]: select(second, "cs_second", "write"),
+  };
+  assert.deepEqual(
+    managedMcpCredentialBindings(selections, installs).map(({ install, sourceId, toolNames }) => [
+      install.id,
+      sourceId,
+      toolNames,
+    ]),
+    [
+      [first.id, "cs_first", ["team_read"]],
+      [second.id, "cs_second", ["write"]],
+    ],
+  );
+  assert.throws(
+    () =>
+      managedMcpCredentialBindings(
+        {
+          ...selections,
+          [second.id]: select(second, "cs_second", "READ"),
+        },
+        installs,
+      ),
+    /same Gateway name/,
+  );
+  assert.throws(
+    () =>
+      managedMcpCredentialBindings(
+        {
+          [first.id]: { enabled: true },
+          [second.id]: { enabled: true },
+        },
+        [first, { ...second, server: first.server }],
+      ),
+    /same worker server name/,
+  );
+});
+
+test("OpenClaw plugin startup translation renders native install and enablement", () => {
+  const enabled = openClawRuntimeArtifact(occSelection());
+  assert.deepEqual(enabled.installs, [
+    {
+      pluginId: "occ-plugin:diffs",
+      nativeId: "diffs",
+      packageName: "@openclaw/diffs",
+      version: "2026.8.2",
+      integrity: OCC_DIFFS_DIGEST,
+    },
+  ]);
+  assert.deepEqual(configurationObject(enabled.configuration, "plugins", "entries").diffs, {
+    enabled: true,
+  });
+  assert.deepEqual(enabled.configuration.tools, { alsoAllow: ["diffs"] });
+
+  const blocked = openClawRuntimeArtifact(occSelection({ enabled: false }));
+  assert.deepEqual(configurationObject(blocked.configuration, "plugins", "entries").diffs, {
+    enabled: false,
+  });
+  assert.equal(Object.hasOwn(blocked.configuration, "tools"), false);
+});
+
+test("Plugin approver translation keeps Agent, plugin, and exact scoped tool overrides", () => {
+  const first = { channel: "slack", id: "team:T123:user:U123" };
+  const second = { channel: "slack", id: "U456" };
+  const toolId = "asdk_app_69a089a326dc8191b32a3f2553f5be2c/repos%2Fread";
+  const codex = codexOpenClawConfiguration(
+    codexSelection(linearPluginId, {
+      approvers: [],
+      tools: { [toolId]: { approvers: [second] } },
+    }),
+    [],
+    { pluginApprovers: [first] },
+  );
+  assert.deepEqual(configurationObject(codex, "approvals", "plugin").slack, {
+    approvers: [first.id],
+    plugins: {
+      linear: { approvers: [], tools: { [toolId]: { approvers: [second.id] } } },
+    },
+  });
+  assert.deepEqual(codexOpenClawConfiguration({}, [], { pluginApprovers: [] })?.approvals, {
+    plugin: { slack: { approvers: [] } },
+  });
+  assert.deepEqual(
+    configurationObject(
+      codexOpenClawConfiguration(codexSelection(linearPluginId, { approvers: [] })),
+      "approvals",
+      "plugin",
+    ).slack,
+    { plugins: { linear: { approvers: [] } } },
+  );
+
+  const native = openClawRuntimeArtifact(
+    occSelection({ approvers: [second], tools: { diffs: { approvers: [] } } }),
+    [],
+    [first],
+  );
+  assert.deepEqual(configurationObject(native.configuration, "approvals", "plugin").slack, {
+    approvers: [first.id],
+    plugins: { diffs: { approvers: [second.id], tools: { diffs: { approvers: [] } } } },
+  });
+  assert.throws(
+    () =>
+      validatePolicies(
+        "openclaw",
+        unvalidatedPluginSelections({
+          "occ-plugin:diffs": { enabled: true, toolDefaults: { approvers: [] } },
+        }),
+      ),
+    { message: "Plugin tool defaults contains unsupported policy fields." },
+  );
+  // Each input breaks one approver rule; Slack approvers are user IDs, never channels.
+  const approver = (id: string): PluginApprover => ({ channel: "slack", id });
+  const invalidApprovers: [PluginApprovers | PluginApprover, string][] = [
+    [[approver("team:X123:user:Y456")], "Plugin approver must identify a Slack user."],
+    [[approver("C123")], "Plugin approver must identify a Slack user."],
+    [approver("U123"), "Plugin approvers must be a bounded list."],
+    [
+      Array.from({ length: 65 }, (_, index) => approver(`U${index}`)),
+      "Plugin approvers must be a bounded list.",
+    ],
+    [[approver("U123"), approver("U123")], "Plugin approvers must be unique."],
+  ];
+  for (const [approvers, message] of invalidApprovers) {
+    // The persisted value can be one object where the contract requires a list.
+    assert.throws(() => validatePolicies("openclaw", {}, approvers as PluginApprovers), {
+      message,
+    });
+  }
+});
+
+test("Codex Plugin Driver admits only Agent-wide approvers; OpenClaw keeps plugin and tool overrides", () => {
+  const approver = { channel: "slack", id: "team:T123:user:U123" };
+  const toolId = "asdk_app_69a089a326dc8191b32a3f2553f5be2c/repos%2Fread";
+  const codex = new CodexPluginDriver();
+  const occ = new OCCPluginDriver();
+  // Codex approval requests carry no plugin or tool identity, so OpenClaw's Slack resolver
+  // denies every Codex request once any plugin list exists. Only the Agent default works.
+  assert.deepEqual(codex.policyCapabilities.approvers, {
+    agent: true,
+    plugin: false,
+    tools: false,
+  });
+  assert.deepEqual(occ.policyCapabilities.approvers, { agent: true, plugin: true, tools: true });
+  codex.validatePolicies(codexSelection(), [approver]);
+  for (const selection of [
+    codexSelection(linearPluginId, { approvers: [] }),
+    codexSelection(linearPluginId, { tools: { [toolId]: { approvers: [approver] } } }),
+    // A disabled plugin still renders its list into approvals.plugin.slack.plugins.
+    codexSelection(linearPluginId, { enabled: false, approvers: [approver] }),
+  ]) {
+    assert.throws(
+      () => codex.validatePolicies(selection, [approver]),
+      (error: unknown) =>
+        error instanceof PluginPolicyValidationError &&
+        /does not support plugin or tool approvers.*Agent-wide pluginApprovers/.test(error.message),
+    );
+  }
+  occ.validatePolicies(
+    occSelection({ approvers: [approver], tools: { diffs: { approvers: [] } } }),
+    [approver],
+  );
+});
+
+test("Plugin Drivers refuse two selection keys for the same native plugin", () => {
+  const aliased = (error: unknown) =>
+    error instanceof PluginPolicyValidationError &&
+    /same plugin.*Keep one selection per plugin/.test(error.message);
+  const occ = new OCCPluginDriver();
+  const codex = new CodexPluginDriver();
+  for (const enabled of [true, false]) {
+    assert.throws(
+      () => occ.validatePolicies({ diffs: { enabled: true }, "occ-plugin:diffs": { enabled } }),
+      aliased,
+    );
+    assert.throws(
+      () =>
+        codex.validatePolicies({
+          [linearPluginId]: { enabled: true },
+          "linear@openai-curated-remote": { enabled },
+        }),
+      aliased,
+    );
+  }
+  occ.validatePolicies({ diffs: { enabled: true } });
+  codex.validatePolicies({
+    ...codexSelection(linearPluginId),
+    ...codexSelection(calendarPluginId),
+  });
+  // Admission-only: revisions admitted before the check still render.
+  validatePolicies("openclaw", { diffs: { enabled: true }, "occ-plugin:diffs": { enabled: true } });
+});
+
+test("Plugin Drivers name themselves when a selection names a plugin they do not offer", () => {
+  const occ = new OCCPluginDriver();
+  const codex = new CodexPluginDriver();
+  // The error names the Driver and the rejected selection key, which HTTP reports as a
+  // /plugins/<id> detail.
+  const unknownFor = (driverId: string, pluginId: string) => (error: unknown) =>
+    error instanceof PluginPolicyValidationError &&
+    error.pluginId === pluginId &&
+    error.message.startsWith(
+      `A plugin selection names a plugin that the selected Plugin Driver (${driverId}) does not offer: ${pluginId}.`,
+    );
+  // The other Driver's plugin, as after an Installation switches its single Plugin Driver.
+  assert.throws(
+    () => codex.validatePolicies(occSelection()),
+    unknownFor("codex-plugin", "occ-plugin:diffs"),
+  );
+  assert.throws(
+    () => occ.validatePolicies(codexSelection(linearPluginId)),
+    unknownFor("occ-plugin", linearPluginId),
+  );
+  assert.throws(
+    () => occ.validatePolicies({ "occ-plugin:unknown": { enabled: true } }),
+    unknownFor("occ-plugin", "occ-plugin:unknown"),
+  );
+  assert.throws(
+    () => codex.validatePolicies({ "codex-plugin:linear": { enabled: true } }),
+    unknownFor("codex-plugin", "codex-plugin:linear"),
+  );
+  // With several selections, the error names the one the Driver does not offer.
+  assert.throws(
+    () => occ.validatePolicies({ ...occSelection(), ...codexSelection(linearPluginId) }),
+    unknownFor("occ-plugin", linearPluginId),
+  );
+  // The ID mismatch wins over a policy field the selected Driver does not support.
+  assert.throws(
+    () =>
+      occ.validatePolicies(codexSelection(linearPluginId, { toolDefaults: { reviewer: "human" } })),
+    unknownFor("occ-plugin", linearPluginId),
+  );
+  // Policy errors on an offered plugin keep their own message.
+  assert.throws(
+    () => occ.validatePolicies(occSelection({ toolDefaults: { approval: "all_actions" } })),
+    { name: "PluginPolicyValidationError", message: "The supplied plugin policies are invalid." },
+  );
+});
+
+test("OpenClaw plugin startup translation rejects unsupported policies", () => {
+  // Each selection breaks exactly one admission rule, named by its message.
+  const invalidPolicies: [unknown, string][] = [
+    [
+      occSelection({ toolDefaults: { approval: "all_actions" } }),
+      "OpenClaw plugin all_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ toolDefaults: { approval: "write_actions" } }),
+      "OpenClaw plugin write_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ toolDefaults: { reviewer: "auto" } }),
+      "This runtime does not support toolDefaults.reviewer; omit it to inherit.",
+    ],
+    [
+      occSelection({ tools: { unknown: { enabled: false } } }),
+      "Unknown OpenClaw plugin tool selection.",
+    ],
+    [
+      occSelection({ tools: { diffs: { approval: "all_actions" } } }),
+      "OpenClaw plugin all_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ tools: { diffs: { approval: "write_actions" } } }),
+      "OpenClaw plugin write_actions approval is unsupported.",
+    ],
+    [
+      {
+        "occ-plugin:diffs": {
+          enabled: true,
+          toolDefaults: { approval: "none" },
+          approvalMode: "never",
+        },
+      },
+      "Plugin selection contains unsupported policy fields.",
+    ],
+    [{ "occ-plugin:unknown": { enabled: true } }, "Unknown OpenClaw plugin selection."],
+    [null, "Plugin selections must be an object."],
+    [{ "occ-plugin:diffs": true }, "Plugin selection must be an object."],
+    [{ "occ-plugin:diffs": {} }, "Plugin enabled must be a boolean."],
+    [
+      { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "none" }, tools: [] } },
+      "Plugin tool policies must be an object.",
+    ],
+    [
+      {
+        "occ-plugin:diffs": {
+          enabled: true,
+          toolDefaults: { approval: "none" },
+          tools: { diffs: { enabled: "yes" } },
+        },
+      },
+      "Tool enabled must be a boolean.",
+    ],
+    [
+      {
+        "occ-plugin:diffs": {
+          enabled: true,
+          toolDefaults: { approval: "none" },
+          tools: { diffs: { approval: "sometimes" } },
+        },
+      },
+      "Tool approval policy is unsupported.",
+    ],
+    [
+      occSelection({ tools: { diffs: { reviewer: "human" } } }),
+      "Per-tool reviewer selection is unsupported; omit tools[id].reviewer.",
+    ],
+    [
+      occSelection({ driverPolicy: { any: true } }),
+      "OpenClaw driver policy contains unsupported policy fields.",
+    ],
+  ];
+  for (const [selection, message] of invalidPolicies) {
+    assert.throws(() => openClawRuntimeArtifact(unvalidatedPluginSelections(selection)), {
+      message,
+    });
+  }
+  // Admission refuses an unknown plugin on its own; translation repeats the check with the
+  // same message, so only a direct admission call shows the admission check exists.
+  assert.throws(() => validatePolicies("openclaw", { "occ-plugin:unknown": { enabled: true } }), {
+    message: "Unknown OpenClaw plugin selection.",
+  });
+});
+
+test("OpenClaw tool enablement overrides tool defaults without enabling a disabled plugin", () => {
+  const selections = occSelection({
+    toolDefaults: { enabled: false },
+    tools: { diffs: { enabled: true } },
+  });
+  assert.deepEqual(openClawRuntimeArtifact(selections).configuration, {
+    plugins: { entries: { diffs: { enabled: true } } },
+    tools: { alsoAllow: ["diffs"] },
+  });
+  const disabledTool = openClawRuntimeArtifact(
+    occSelection({ tools: { diffs: { enabled: false, approval: "none" } } }),
+  );
+  assert.deepEqual(disabledTool.configuration.tools, { alsoAllow: ["diffs"], deny: ["diffs"] });
+  selections["occ-plugin:diffs"].enabled = false;
+  assert.deepEqual(openClawRuntimeArtifact(selections).configuration, {
+    plugins: { entries: { diffs: { enabled: false } } },
+  });
+});

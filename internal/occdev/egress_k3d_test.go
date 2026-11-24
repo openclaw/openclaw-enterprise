@@ -42,7 +42,7 @@ func TestProtectedEgressSelectionFailsBeforeEffects(t *testing.T) {
 	r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"] = ""
 	for _, value := range []string{"true", "yes", "2"} {
 		r.env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = value
-		check("OCC_DEVELOPMENT_PROTECTED_EGRESS must be 0 or 1")
+		check("OCC_DEVELOPMENT_PROTECTED_EGRESS must be unset, empty, or set to 0")
 	}
 	delete(r.env, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP")
 	for _, value := range []string{"", "0"} {
@@ -134,6 +134,9 @@ func TestAuthenticatedPlatformInstallationOrder(t *testing.T) {
 			}
 			if len(gateway) != 1 || !slices.Contains(strings.Fields(log[gateway[0]]), "--wait") {
 				t.Fatalf("expected one Gateway Helm --wait: %v", log)
+			}
+			if !slices.Contains(strings.Fields(log[gateway[0]]), `--set=gatewayConfig.openshell\.gateway.mutation_admission_limit_per_caller=5000`) {
+				t.Fatalf("Gateway must raise the per-caller admission limit to 5000: %s", log[gateway[0]])
 			}
 			values := readJSONFile(t, filepath.Join(state.directory, "openshell-gateway-values.json"))
 			if field(t, values, "pkiInitJob", "enabled") != true ||

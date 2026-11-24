@@ -6,7 +6,7 @@ umask 077
 
 source "${RUN_DIR:?Missing quickstart run directory}/session.sh"
 guide=docs/guides/integrations/codex-plugins.md
-extractor=scripts/ci/k3d-quickstart/guide-bash.mjs
+extractor=scripts/ci/k3d-quickstart/guide-bash.ts
 team=${OCC_TEST_LINEAR_TEAM_ID:?Set the known team UUID for the connected Linear account}
 [[ $team =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]
 # Extract and check all steps before touching the Agent or sending a turn.
@@ -23,7 +23,7 @@ for stage in catalog deploy prompt send transcript; do
 done
 
 stage_file="$RUN_DIR/linear-stage"
-evidence=scripts/ci/k3d-quickstart/linear-evidence.mjs
+evidence=scripts/ci/k3d-quickstart/linear-evidence.ts
 printf '%s\n' before > "$stage_file"
 request GET "$base/agents/$agent" > "$RUN_DIR/linear-agent-before.json"
 jq -e --arg agent "$agent" --slurpfile onboard "$RUN_DIR/receipt-browser-onboard.json" '

@@ -37,6 +37,10 @@ export function grantRefusal(cause: unknown) {
   );
 }
 
+export function confirmationAgentId(id: string, agentId: string) {
+  return element("p", { id }, "Agent ID: ", element("span", { className: "resource-id" }, agentId));
+}
+
 // Agent list and detail use the same confirmation and explain which resources deletion keeps.
 export const STOP_CONFIRMATION =
   "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
@@ -113,6 +117,7 @@ export function keptResources(agent: AgentRead) {
       ? "The Configuration and model credential Secret stay in this Namespace."
       : "The Configuration stays in this Namespace.",
   );
+  const copyState: CleanupCopyState = { current: null };
   const commands = element(
     "details",
     { className: "disclosure agent-kept-resources" },
@@ -124,23 +129,81 @@ export function keptResources(agent: AgentRead) {
         ? "Delete these resources only after confirming that nothing else uses them."
         : "Delete this Configuration only after confirming that nothing else uses it.",
     ),
-    cleanupCommand("Configuration", agent.namespaceId, agent.configurationId),
-    secret ? cleanupCommand("Secret", secret.namespaceId, secret.id) : null,
+    cleanupCommand("Configuration", agent.namespaceId, agent.configurationId, copyState),
+    secret ? cleanupCommand("Secret", secret.namespaceId, secret.id, copyState) : null,
   );
   return { summary, commands };
 }
 
-function cleanupCommand(kind: "Configuration" | "Secret", namespaceId: string, id: string) {
+interface CleanupCopyAttempt {
+  feedback: HTMLElement;
+  observer: MutationObserver;
+}
+
+interface CleanupCopyState {
+  current: CleanupCopyAttempt | null;
+}
+
+function cleanupCommand(
+  kind: "Configuration" | "Secret",
+  namespaceId: string,
+  id: string,
+  copyState: CleanupCopyState,
+) {
   const text = `occ --namespace ${namespaceId} ${kind.toLowerCase()} delete ${id}`;
   const command = element("code", {}, text);
   const feedback = element("span", { className: "muted", role: "status" });
   const copy = button(
     `Copy ${kind} command`,
     async () => {
+      const disclosure = command.closest("details");
+      const dialog = command.closest("dialog");
+      if (!disclosure?.open || !dialog?.open || !command.isConnected) {
+        return;
+      }
+
+      // The two rows share one document selection and one current status.
+      if (copyState.current) {
+        copyState.current.feedback.textContent = "";
+        copyState.current.observer.disconnect();
+      }
+      function invalidateOnClose(records: MutationRecord[]) {
+        // Remember a close even if the disclosure or dialog reopens before the write settles.
+        if (copyState.current === attempt && records.some((record) => record.oldValue !== null)) {
+          feedback.textContent = "";
+          observer.disconnect();
+          copyState.current = null;
+        }
+      }
+      const observer = new MutationObserver(invalidateOnClose);
+      const attempt = { feedback, observer };
+      copyState.current = attempt;
+      const options = { attributes: true, attributeFilter: ["open"], attributeOldValue: true };
+      observer.observe(disclosure, options);
+      observer.observe(dialog, options);
+
+      let copied = false;
       try {
-        await navigator.clipboard.writeText(text);
-        feedback.textContent = "Command copied.";
+        if (typeof navigator.clipboard?.writeText === "function") {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        }
       } catch {
+        // Fall back to manual copying when the browser rejects the write.
+      }
+      // The write can settle before the observer delivers a close and reopen.
+      invalidateOnClose(observer.takeRecords());
+      if (
+        copyState.current !== attempt ||
+        !command.isConnected ||
+        !disclosure.open ||
+        !dialog.open
+      ) {
+        return;
+      }
+      if (copied) {
+        feedback.textContent = "Command copied.";
+      } else {
         document.getSelection()?.selectAllChildren(command);
         feedback.textContent = "Command selected. Use your copy shortcut to copy it.";
       }

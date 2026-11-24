@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentProvisioningStatusWire } from "../../packages/contracts/src/api/resources.ts";
-import { provisioningJob } from "../../apps/controller/src/console/agents/provisioning-job.mts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
+
+const { provisioningJob } = await importConsoleModule("agents/provisioning-job.mjs");
 
 test("the Console distinguishes the stored provisioning request from the HTTP request", () => {
   const path = "/namespaces/test/agents/provision";

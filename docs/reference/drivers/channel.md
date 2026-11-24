@@ -6,7 +6,8 @@ kind: reference/driver
 
 ## Overview
 
-`ChannelDriver` validates configured credentials and looks up provider identities for an authorized Namespace edit.
+`ChannelDriver` declares provider network destinations, validates configured
+credentials and looks up provider identities for an authorized Namespace edit.
 OpenClaw Control Plane (OCC) owns caller authorization, Secret access, and the
 saved Agent or Configuration. The Driver owns the provider request and returns
 display candidates with stable provider IDs. It does not send messages
@@ -14,6 +15,21 @@ or grant channel access. The current controller selects the bundled Slack
 implementation for directory lookup; see [Driver selection](selection.md).
 
 ## Interface
+
+The required `enableRouting(): readonly NetworkDestinationRule[]` method declares
+TCP destinations. It is deterministic, takes no credentials and has no
+infrastructure effects. Empty results grant no destinations; exceptions reject
+activation. Trusted composition must resolve each enabled provider to exactly
+one installed Driver. Compute owns enforcement and cleanup.
+
+The [shared schema and validator](../../../packages/contracts/src/network-destination.ts)
+accept DNS rules with `match: exact` or `subdomains`, canonical IPv4/IPv6 IPs,
+and canonical network CIDRs. DNS names normalize to lowercase ASCII labels;
+`subdomains` excludes the apex. Names cannot contain wildcards, URLs, paths or
+ports. Each rule has distinct integer TCP ports from 1 through 65535. Malformed
+or unsupported forms fail; implementations cannot ignore them. IP literals
+require an explicit matching IP or CIDR rule. Installation address restrictions
+still apply. See [Kubernetes enforcement limits](kubernetes-compute/channel-egress.md).
 
 The [shared interface](../../../packages/contracts/src/drivers/channel/index.ts) requires a
 Driver identity and `lookupDirectory({ token, kind, query?, cursor?, ids? })`. `kind`
@@ -26,21 +42,25 @@ The optional `validateCredentials(values, withSecret)` method checks configured
 channel credentials before API provisioning or deployment. `withSecret(binding,
 path, validate)` authorizes the exact same-Namespace Secret and supplies its value
 only inside the SecretDriver callback. Provider calls run before the write
-transaction. Validation does not pin Secret versions or revalidate queued work.
+transaction. Deployment admission retains the Configuration and selected Driver
+identities that were checked and rejects changes before recording a revision.
+Validation does not pin Secret versions or revalidate queued work.
 
 ## IAM
 
 OCC admits the caller, checks Agent creation or the exact Agent or Configuration
 edit, and requires `operate` on the caller-specified same-Namespace Secret. The
 Console supplies its selected bot Secret. OCC reads the value through the
-SecretDriver, then rechecks authority and Secret identity
-before giving that value to the ChannelDriver in-process. The Driver authenticates
+SecretDriver, then rechecks the required target authority, exact Secret/backend
+identity, and selected storage Driver before giving that value to the ChannelDriver in-process. The Driver authenticates
 to its provider with the token. No Secret value appears in an HTTP response,
 audit event, or Console script. Provider access does not grant OCC permissions.
 
 ## Lifecycle
 
-The controller selects one ChannelDriver at startup. Lookups are read-only and
+Composition binds installed Channel Drivers to provider IDs. The worker derives
+the enabled providers' current requirements from each saved Agent revision on
+every deployment attempt. It does not persist a separate rule snapshot. Lookups are read-only and
 make no platform state change. They use the current selected Secret and can be
 retried after a transient provider failure. Saving a selected ID remains the
 Agent or Configuration update's responsibility. A later Secret replacement may

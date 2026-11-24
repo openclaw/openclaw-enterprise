@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json/v2"
-	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -276,8 +275,9 @@ func (p *developmentNetworkProbe) check(ctx context.Context, namespace, pod, mod
 func (r *runner) verifyDevelopmentNetworkPolicy(ctx context.Context, state *developmentState, image, targetNamespace, envoyNamespace string, actual bool, timeout time.Duration) (result error) {
 	p := &developmentNetworkProbe{runner: r, state: state, id: strings.ToLower(rand.Text()[:12]), image: image}
 	defer func() {
+		result = startupError("network-verification", result)
 		if err := p.cleanup(); err != nil {
-			result = errors.Join(result, fmt.Errorf("network probe cleanup failed: %w", err))
+			result = joinStartupCleanup(result, startupError("network-cleanup", fmt.Errorf("network probe cleanup failed: %w", err)))
 		}
 	}()
 	otherNamespace := "occ-netcheck-other-" + p.id

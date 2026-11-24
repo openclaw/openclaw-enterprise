@@ -16,19 +16,17 @@ import {
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout } from "node:timers/promises";
+import { restartInventory } from "./production-upgrade-retained-fleet-preflight.ts";
+import { field, type RecoveryState } from "./production-upgrade-recovery-state.ts";
 
 type UpgradeFixture = {
   directory: string;
   evidence: string;
   commands: string[];
   deploy(namespaceId: string, agentId: string): Promise<{ stdout: string }>;
-  run(...args: string[]): Promise<unknown>;
+  run(...args: string[]): Promise<{ stderr: string }>;
   failNext(fault: string): Promise<void>;
-  state(): Promise<{
-    dispatches: number;
-    activeRevision?: string;
-    deployFailures?: Record<string, string>;
-  }>;
+  state(): Promise<RecoveryState>;
   events(): Promise<string[]>;
 };
 
@@ -40,8 +38,11 @@ type FixtureOptions = {
     status: string;
     agents: Record<string, string | boolean>[];
   }[];
+  inventoryResponses?: readonly ReturnType<typeof restartInventory>[];
   names?: Record<string, string>;
 };
+
+type UpgradeFixtureFactory = (t: TestContext, options: FixtureOptions) => Promise<UpgradeFixture>;
 
 async function quarantineContents(directory: string, quarantine: string): Promise<void> {
   await mkdir(quarantine, { mode: 0o700 });
@@ -51,7 +52,7 @@ async function quarantineContents(directory: string, quarantine: string): Promis
 }
 
 export function registerDispatchRestoreTests(
-  fixture: (t: TestContext, options: FixtureOptions) => Promise<UpgradeFixture>,
+  fixture: UpgradeFixtureFactory,
   injectedFault: { code: number },
 ): void {
   for (const outcome of ["succeeded", "failed"] as const) {
@@ -82,7 +83,7 @@ export function registerDispatchRestoreTests(
       const operatorDeploy = async (id: string, status: "succeeded" | "failed") => {
         await selectNextDeployment(id, status);
         const response = await f.deploy(namespaceId, agentId);
-        assert.equal(JSON.parse(response.stdout).id, id);
+        assert.equal(field(JSON.parse(response.stdout), "id"), id);
       };
       const recordReplacement = async (id: string, replacesDeploymentId: string) => {
         const temporary = receipt + ".replacement";
@@ -92,8 +93,11 @@ export function registerDispatchRestoreTests(
         await rename(temporary, receipt);
       };
       const projectedRevision = async () =>
-        JSON.parse(await readFile(join(f.evidence, "deployments.jsonl"), "utf8")).deploymentId;
-      const lastEntry = async () =>
+        field(
+          JSON.parse(await readFile(join(f.evidence, "deployments.jsonl"), "utf8")),
+          "deploymentId",
+        );
+      const lastEntry = async (): Promise<unknown> =>
         JSON.parse((await readFile(journal, "utf8")).trimEnd().split("\n").at(-1)!);
 
       await selectNextDeployment(revisionA, "failed");
@@ -362,9 +366,9 @@ export function registerDispatchRestoreTests(
   });
 
   test("a concurrent resume cannot take over while the native deploy is in flight", async (t) => {
-    const pause = new EventEmitter();
-    const entered = once(pause, "entered");
-    const release = once(pause, "release");
+    const pause = new EventEmitter<{ entered: []; release: [] }>();
+    const entered = once(pause, "entered").then(() => undefined);
+    const release = once(pause, "release").then(() => undefined);
     const f = await fixture(t, {
       agent: true,
       afterDeploy: async () => {
@@ -385,12 +389,66 @@ export function registerDispatchRestoreTests(
       assert.equal((await f.state()).dispatches, 1);
       await rmdir(join(f.evidence, ".upgrade-lock"));
       const calls = f.commands.length;
-      await assert.rejects(f.run("--resume"), /dispatch journal is locked/);
+      // Removing the marker does not release the live helper's directory lock.
+      await assert.rejects(f.run("--resume"), /evidence directory is locked/);
       assert.equal(f.commands.length, calls);
       assert.equal((await f.state()).dispatches, 1);
     } finally {
       pause.emit("release");
       await original;
     }
+  });
+}
+
+export function registerUnknownAgentDeploymentResumeTest(fixture: UpgradeFixtureFactory): void {
+  test("resume stops on an unknown Agent deployment until an accepted revision is confirmed", async (t) => {
+    // A normal runtime upgrade can replace a worker-bound revision, but a lost
+    // response must never turn that planned replacement into a second deployment.
+    const inventory = restartInventory("original-worker-required");
+    const f = await fixture(t, { agent: true, inventoryResponses: [inventory, inventory] });
+    await f.failNext("lost-agent-response");
+    await assert.rejects(f.run(), /deployment outcome is unknown/);
+    const calls = f.commands.length;
+    await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+    assert.equal(f.commands.length, calls);
+    assert.equal((await f.state()).dispatches, 1);
+    const receipt = join(f.evidence, "dispatch/ns_test--agt_test.json");
+    // An arbitrary or baseline revision cannot resolve the pending dispatch.
+    for (const id of ["rev_missing", "rev_old"]) {
+      await writeFile(receipt, JSON.stringify({ id }), { mode: 0o600 });
+      await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+      assert.equal((await f.state()).dispatches, 1);
+    }
+    // Simulate the operator confirming this revision in durable history and
+    // recording the accepted request before resuming the readiness checks.
+    await writeFile(receipt, JSON.stringify({ id: "rev_new" }), { mode: 0o600 });
+    await f.run("--resume");
+    assert.equal((await f.state()).dispatches, 1);
+    assert.equal((await f.state()).inventoryReadCount, 2);
+  });
+}
+
+export function registerAcceptedAgentDeployNoticeTest(fixture: UpgradeFixtureFactory): void {
+  // occ's notices about an accepted deploy, such as a revision with no Harness overrides to
+  // retain, must reach the operator in the run output and not only the evidence directory.
+  // A control character in a notice must not reach the terminal.
+  test("an accepted Agent deploy shows occ's notices in the run output", async (t) => {
+    const f = await fixture(t, { agent: true });
+    const notice =
+      "revision rev_old has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: configuration) and records no Harness overrides, so none are retained; the deployment uses current Installation defaults.";
+    const state = await f.state();
+    state.deployNotices = { agt_test: `notice: ${notice}\u001b[2J` };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const result = await f.run();
+    assert.ok(
+      result.stderr
+        .split("\n")
+        .includes(`upgrade-production-images: Agent agt_test in Namespace ns_test: ${notice}?[2J`),
+      result.stderr,
+    );
+    assert.equal(
+      await readFile(join(f.evidence, "dispatch/ns_test--agt_test.error"), "utf8"),
+      `notice: ${notice}\u001b[2J\n`,
+    );
   });
 }

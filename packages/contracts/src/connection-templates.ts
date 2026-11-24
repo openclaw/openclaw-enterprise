@@ -1,3 +1,5 @@
+import { validRequestPath } from "./request-path.ts";
+
 /** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
 export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
 export function isOAuthScopeToken(value: unknown): value is string {
@@ -11,9 +13,17 @@ export interface ConnectionEndpoint {
   readonly path: string;
 }
 
+/** An allowed HTTP request that can receive a static bearer credential. */
+export interface StaticKeyDestination extends ConnectionEndpoint {
+  readonly method: string;
+}
+
+/** Uppercase HTTP token syntax, bounded for credential request policy. */
+export const staticKeyHttpMethodPattern = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$/;
+
 export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
-/** A client may send its credentials only to its explicitly approved provider endpoints. */
+/** A client may send its credentials only to its configured provider endpoints. */
 export interface OAuthClient {
   readonly id: string;
   readonly namespaceId?: string;
@@ -26,7 +36,7 @@ export interface OAuthClient {
   readonly createdAt: string;
 }
 
-/** Public metadata observed during MCP discovery. The administrator approves a subset. */
+/** Public metadata observed during MCP discovery. The administrator selects a subset. */
 export interface McpAuthorizationMetadata {
   readonly serverUrl: string;
   readonly resource: string;
@@ -57,6 +67,18 @@ export interface ConnectionTemplateValues {
   readonly observed?: McpAuthorizationMetadata;
 }
 
+export interface StaticKeyTemplateValues {
+  readonly mode: "static_bearer";
+  readonly destinations: readonly StaticKeyDestination[];
+}
+export type ConnectionTemplateSettings = ConnectionTemplateValues | StaticKeyTemplateValues;
+export type ConnectionTemplateVersion =
+  | OAuthConnectionTemplateVersion
+  | (StaticKeyTemplateValues & {
+      readonly templateId: string;
+      readonly version: number;
+      readonly createdAt: string;
+    });
 export interface OAuthConnectionTemplateVersion extends ConnectionTemplateValues {
   readonly templateId: string;
   readonly version: number;
@@ -67,7 +89,7 @@ export interface ConnectionTemplate {
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
-  readonly current: Readonly<OAuthConnectionTemplateVersion>;
+  readonly current: Readonly<ConnectionTemplateVersion>;
   readonly createdAt: string;
 }
 
@@ -149,6 +171,41 @@ function compareEndpoint(left: ConnectionEndpoint, right: ConnectionEndpoint): n
   );
 }
 
+const dnsHostPattern =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const ipv4Pattern = /^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}$/;
+
+/** Accept an exact DNS name or canonical RFC 1918 IPv4 address. */
+export function isApprovedDestinationHost(host: string): boolean {
+  if (host.length > 253) {
+    return false;
+  }
+  if (dnsHostPattern.test(host)) {
+    return true;
+  }
+  if (!ipv4Pattern.test(host)) {
+    return false;
+  }
+  const octets = host.split(".").map(Number);
+  return (
+    octets.every((octet) => octet <= 255) &&
+    (octets[0] === 10 ||
+      (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) ||
+      (octets[0] === 192 && octets[1] === 168))
+  );
+}
+
+function validEndpoint(port: number, path: string): boolean {
+  return (
+    Number.isInteger(port) &&
+    port >= 1 &&
+    port <= 65535 &&
+    path.length <= 512 &&
+    /^\/[!-~]*$/.test(path) &&
+    !/[?#\\]/.test(path)
+  );
+}
+
 /** Save exact HTTPS routes in a stable order regardless of editor row order or omitted defaults. */
 export function normalizeConnectionDestinations(
   rows: readonly { readonly host: string; readonly port?: number; readonly path?: string }[],
@@ -162,18 +219,7 @@ export function normalizeConnectionDestinations(
   const destinations = rows
     .map(({ host, port = 443, path = "/**" }) => {
       host = host.toLowerCase();
-      if (
-        host.length > 253 ||
-        !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
-          host,
-        ) ||
-        !Number.isInteger(port) ||
-        port < 1 ||
-        port > 65535 ||
-        path.length > 512 ||
-        !/^\/[!-~]*$/.test(path) ||
-        /[?#\\]/.test(path)
-      ) {
+      if (host.length > 253 || !dnsHostPattern.test(host) || !validEndpoint(port, path)) {
         throw new ConnectionTemplateValidationError(
           "destinations",
           "Choose a DNS host, HTTPS port and request path for each destination.",
@@ -187,8 +233,59 @@ export function normalizeConnectionDestinations(
   );
 }
 
+function compareStaticDestination(left: StaticKeyDestination, right: StaticKeyDestination): number {
+  return compareEndpoint(left, right) || compareText(left.method, right.method);
+}
+
+/** Canonicalize the configured HTTP destination set, including each method. */
+export function normalizeStaticKeyDestinations(
+  rows: readonly StaticKeyDestination[],
+): StaticKeyDestination[] {
+  if (!rows.length || rows.length > 128) {
+    throw new ConnectionTemplateValidationError(
+      "destinations",
+      "Choose 1 to 128 HTTP destinations.",
+    );
+  }
+  const destinations = rows
+    .map(({ host, port, path, method }) => {
+      host = host.toLowerCase();
+      if (
+        !isApprovedDestinationHost(host) ||
+        !validEndpoint(port, path) ||
+        !validRequestPath(path, true) ||
+        !staticKeyHttpMethodPattern.test(method)
+      ) {
+        throw new ConnectionTemplateValidationError(
+          "destinations",
+          "Choose an exact DNS host or private IPv4 address, port, request path and uppercase HTTP method for each destination.",
+        );
+      }
+      return { host, port, path, method };
+    })
+    .sort(compareStaticDestination);
+  return destinations.filter(
+    (row, index) => index === 0 || compareStaticDestination(row, destinations[index - 1]!) !== 0,
+  );
+}
+
 /** The in-memory repository mirrors the persisted version's nonempty, canonical destination set. */
-export function validateConnectionTemplateDestinations(values: ConnectionTemplateValues): void {
+export function validateConnectionTemplateDestinations(values: ConnectionTemplateSettings): void {
+  if (values.mode === "static_bearer") {
+    const canonical = normalizeStaticKeyDestinations(values.destinations);
+    if (
+      values.destinations.length !== canonical.length ||
+      values.destinations.some(
+        (row, index) => compareStaticDestination(row, canonical[index]!) !== 0,
+      )
+    ) {
+      throw new ConnectionTemplateValidationError(
+        "destinations",
+        "The saved static destinations must be canonical.",
+      );
+    }
+    return;
+  }
   const canonical = normalizeConnectionDestinations(values.destinations);
   if (
     !sameDestinations(values.destinations, canonical) ||
@@ -211,11 +308,18 @@ function sameDestinations(
   );
 }
 
-/** True when `next` changes a value a person approved, so it needs a new version. */
+/** True when `next` changes settings that require a new template version. */
 export function connectionValuesChanged(
-  current: Readonly<ConnectionTemplateValues>,
-  next: Readonly<ConnectionTemplateValues>,
+  current: Readonly<ConnectionTemplateSettings>,
+  next: Readonly<ConnectionTemplateSettings>,
 ): boolean {
+  if (current.mode === "static_bearer" || next.mode === "static_bearer") {
+    return (
+      current.mode !== "static_bearer" ||
+      next.mode !== "static_bearer" ||
+      !sameStaticDestinations(current.destinations, next.destinations)
+    );
+  }
   return (
     current.mode !== next.mode ||
     current.mcp?.serverUrl !== next.mcp?.serverUrl ||
@@ -229,6 +333,18 @@ export function connectionValuesChanged(
     current.scopes.length !== next.scopes.length ||
     current.scopes.some((scope, index) => scope !== next.scopes[index]) ||
     !sameParameters(current.authorizationParameters, next.authorizationParameters)
+  );
+}
+
+function sameStaticDestinations(
+  left: readonly StaticKeyDestination[],
+  right: readonly StaticKeyDestination[],
+): boolean {
+  const canonicalLeft = normalizeStaticKeyDestinations(left);
+  const canonicalRight = normalizeStaticKeyDestinations(right);
+  return (
+    canonicalLeft.length === canonicalRight.length &&
+    canonicalLeft.every((row, index) => compareStaticDestination(row, canonicalRight[index]!) === 0)
   );
 }
 

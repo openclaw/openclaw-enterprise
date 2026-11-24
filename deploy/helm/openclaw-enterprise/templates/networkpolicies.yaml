@@ -100,75 +100,6 @@ spec:
           port: 443
 {{- end }}
 {{- end }}
-{{- $directoryProxyUrl := .Values.api.channelDirectoryProxyUrl }}
-{{- if not (kindIs "string" $directoryProxyUrl) }}
-{{- fail "api.channelDirectoryProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" }}
-{{- end }}
-{{- if $directoryProxyUrl }}
-{{- if not (regexMatch "^https?://(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$" $directoryProxyUrl) }}
-{{- fail "api.channelDirectoryProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" }}
-{{- end }}
-{{- $proxyParts := splitList ":" (regexReplaceAll "^https?://" $directoryProxyUrl "") }}
-{{- $proxyAddress := index $proxyParts 0 }}
-{{- $proxyPort := int (index $proxyParts 1) }}
-{{- range $octet := splitList "." $proxyAddress }}
-{{- if gt (int $octet) 255 }}
-{{- fail "api.channelDirectoryProxyUrl must contain valid IPv4 octets" }}
-{{- end }}
-{{- end }}
-{{- if gt $proxyPort 65535 }}
-{{- fail "api.channelDirectoryProxyUrl must contain a TCP port from 1 to 65535" }}
-{{- end }}
-{{- if eq $proxyAddress "0.0.0.0" }}
-{{- fail "api.channelDirectoryProxyUrl must not use host 0.0.0.0, which names no proxy address" }}
-{{- end }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-api-channel-directory-egress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: api
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - ipBlock:
-            cidr: {{ $proxyAddress }}/32
-      ports:
-        - protocol: TCP
-          port: {{ $proxyPort }}
-{{- end }}
-{{- if .Values.slackProxy.enabled }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-api-managed-slack-proxy-egress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: api
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: openclaw-enterprise
-              app.kubernetes.io/instance: {{ .Release.Name | quote }}
-              app.kubernetes.io/component: slack-proxy
-      ports:
-        - protocol: TCP
-          port: {{ .Values.slackProxy.port }}
-{{- end }}
 {{- if .Values.backend.chatgpt.enabled }}
 {{- $providerCidr := .Values.backend.chatgpt.providerCidr }}
 {{- if not (regexMatch (include "openclaw.ipv4Host32" .) $providerCidr) }}
@@ -190,28 +121,6 @@ spec:
     - to:
         - ipBlock:
             cidr: {{ $providerCidr }}
-      ports:
-        - protocol: TCP
-          port: 443
-{{- end }}
-{{- if and .Values.auth.github .Values.auth.github.enabled }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-api-github-login-egress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: api
-  policyTypes: [Egress]
-  egress:
-    # Empty egressCidrs permits HTTPS for github.com and api.github.com to any address
-    # except link-local (cloud metadata) 169.254.0.0/16.
-    - to:
-        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.github.egressCidrs | nindent 8 }}
       ports:
         - protocol: TCP
           port: 443

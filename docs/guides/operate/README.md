@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Deploy and operate OpenClaw Enterprise
 
 <a id="operate-openclaw-enterprise"></a>
@@ -8,6 +13,9 @@ Namespaces, networking, and runtime credentials. If you want to try the platform
 on your own machine, start with [Local Setup](../quickstart.md).
 
 ## Install the platform
+
+Start with [Control plane setup](../deploy/control-plane-setup.md) to choose
+Kubernetes or platform-specific preparation.
 
 For EKS, follow the [complete quickstart](../deploy/eks-openshell-setup.md) from
 AWS prerequisites through browser access and Agent onboarding.
@@ -31,7 +39,8 @@ which resources Helm leaves behind when you uninstall it.
 Start with the [upgrade checklist](../deploy/upgrade-checklist.md), then follow
 [production image upgrades](../deploy/production-upgrade.md) or
 [Installation configuration changes](../deploy/production-installation-changes.md).
-If an upgrade fails, use [upgrade recovery](../deploy/production-upgrade-recovery.md).
+If an upgrade fails, use [upgrade recovery](../deploy/production-upgrade-recovery.md),
+including [cleanup after an interrupted preflight](../deploy/production-preflight-cleanup.md).
 
 ## Run the platform
 

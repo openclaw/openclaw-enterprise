@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { ConnectionTemplate } from "../../packages/contracts/src/index.ts";
+import { ResourceConflictError } from "../../packages/occ/src/index.ts";
 import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
-import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { signedInHeaders } from "../helpers/production-sign-in.mjs";
 import {
   createBackendController,
@@ -27,7 +28,7 @@ const clientInput = (connectionTemplateId: string, connectionTemplateVersion = 1
   connectionTemplateVersion,
   displayName: "Example OAuth application",
   clientId: randomUUID(),
-  tokenEndpointAuthMethod: "client_secret_basic",
+  tokenEndpointAuthMethod: "client_secret_basic" as const,
   clientSecret: randomUUID(),
 });
 const manual = {
@@ -53,6 +54,176 @@ async function createManualDraft(
   assert.equal(draft.json().data.current.oauthClientId, undefined);
   return draft.json().data.id;
 }
+
+test(
+  "static Connection Templates preserve configured request destinations across scoped CRUD and immutable versions",
+  requiresPostgres,
+  async (t) => {
+    const { app, controller, inject, pool, state } = await createPostgresAgentApp(t, options);
+    const namespaces: string[] = [];
+    for (const name of ["Template owner", "Template peer"]) {
+      const created = await inject("POST", "/namespaces", { name: `${name} ${randomUUID()}` });
+      assert.equal(created.statusCode, 201, created.body);
+      namespaces.push(created.json().data.id);
+    }
+    const [namespaceId, peerId] = namespaces;
+    assert.ok(namespaceId && peerId);
+    const destinations = [
+      { method: "POST", host: "10.42.0.8", port: 8443, path: "/inference" },
+      { method: "GET", host: "api.example.test", port: 443, path: "/v1/**" },
+      { method: "POST", host: "api.example.test", port: 443, path: "/v1/**" },
+    ];
+    const settings = { mode: "static_bearer", destinations };
+    // The administrator configures whole request rows. Reordering, casing, and duplicate rows
+    // cannot change the canonical policy or erase the distinction between HTTP methods.
+    const installed = await inject("POST", "/connection-templates", {
+      displayName: "Shared API key",
+      ...settings,
+      destinations: [
+        destinations[2],
+        { ...destinations[1], host: "API.example.test" },
+        destinations[0],
+        destinations[2],
+      ],
+    });
+    assert.equal(installed.statusCode, 201, installed.body);
+    const shared = installed.json().data;
+    assert.equal(shared.current.mode, "static_bearer");
+    assert.equal(shared.current.version, 1);
+    assert.deepEqual(shared.current.destinations, destinations);
+    const scoped = await inject("POST", "/connection-templates", {
+      displayName: "Namespace API key",
+      namespaceId,
+      ...settings,
+    });
+    assert.equal(scoped.statusCode, 201, scoped.body);
+    const scopedId: string = scoped.json().data.id;
+    const catalog = await inject("GET", "/connection-templates");
+    assert.equal(catalog.statusCode, 200, catalog.body);
+    assert.ok(catalog.json().data.some((entry: { id: string }) => entry.id === scopedId));
+    const oauthDraft = catalog
+      .json()
+      .data.find((entry: ConnectionTemplate) => entry.displayName === "Google OAuth");
+    assert.ok(oauthDraft);
+    const oauthId = await createManualDraft(inject, namespaceId);
+    const registered = await inject("POST", "/oauth-clients", clientInput(oauthId));
+    assert.equal(registered.statusCode, 201, registered.body);
+    const usable = async (id: string) => {
+      const result = await inject("GET", `/namespaces/${id}/connection-templates`);
+      assert.equal(result.statusCode, 200, result.body);
+      return result.json().data.map((entry: { id: string }) => entry.id);
+    };
+    // Namespace consumers see eligible templates of both modes, but no unregistered OAuth draft.
+    const ownerTemplates = await usable(namespaceId);
+    const peerTemplates = await usable(peerId);
+    assert.ok(ownerTemplates.includes(shared.id));
+    assert.ok(ownerTemplates.includes(scopedId));
+    assert.ok(ownerTemplates.includes(oauthId));
+    assert.ok(!ownerTemplates.includes(oauthDraft.id));
+    assert.ok(peerTemplates.includes(shared.id));
+    assert.ok(!peerTemplates.includes(scopedId));
+    assert.ok(!peerTemplates.includes(oauthId));
+
+    const member = { email: `reader-${randomUUID()}@example.test`, password: randomUUID() };
+    const auth = await createPostgresControllerAuth({
+      mode: "development",
+      installationId: controller.installation.id,
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
+      secret: options.authSecret,
+      pool,
+    });
+    const reader = await auth.createAccount({ ...member, name: "Template reader" });
+    await state.appendNativeIAMPrincipal(auth.principalSeed(reader, { grant: "none" }));
+    const session = await signedInHeaders(app, "https://console.oce.localhost", member);
+    const denied = await app.inject({
+      method: "POST",
+      url: "/connection-templates",
+      headers: session,
+      payload: { displayName: "Unauthorized API key", ...settings },
+    });
+    assert.equal(denied.statusCode, 403, denied.body);
+    const deniedUse = await app.inject({
+      method: "GET",
+      url: `/namespaces/${namespaceId}/connection-templates`,
+      headers: session,
+    });
+    assert.equal(deniedUse.statusCode, 403, deniedUse.body);
+
+    const path = `/connection-templates/${shared.id}`;
+    const read = await inject("GET", path);
+    assert.equal(read.statusCode, 200, read.body);
+    assert.deepEqual(read.json().data.current.destinations, destinations);
+    // Configured paths must work with the exact/subtree matcher that checks credential policy.
+    const invalidPaths = ["/v1/*", "/v1/../models", "/v1/%EF%BC%8F"];
+    for (const invalidPath of invalidPaths) {
+      const refused = await inject("PATCH", path, {
+        ...settings,
+        destinations: [{ ...destinations[2], path: invalidPath }],
+      });
+      assert.equal(refused.statusCode, 400, refused.body);
+    }
+    const renamed = await inject("PATCH", path, { displayName: "Renamed API key" });
+    assert.equal(renamed.statusCode, 200, renamed.body);
+    assert.equal(renamed.json().data.current.version, 1);
+    const reordered = await inject("PATCH", path, {
+      ...settings,
+      destinations: [...destinations].reverse(),
+    });
+    assert.equal(reordered.statusCode, 200, reordered.body);
+    assert.equal(reordered.json().data.current.version, 1);
+    const next = [{ ...destinations[2], path: "/v2/%C3%A9" }];
+    const changed = await inject("PATCH", path, { ...settings, destinations: next });
+    assert.equal(changed.statusCode, 200, changed.body);
+    assert.equal(changed.json().data.current.version, 2);
+    assert.deepEqual(changed.json().data.current.destinations, next);
+    // An older saved version remains unchanged after the current configuration advances.
+    const history = await pool.query(
+      "SELECT version, destinations FROM occ.static_key_template_versions WHERE template_id=$1 ORDER BY version",
+      [shared.id],
+    );
+    assert.deepEqual(history.rows, [
+      { version: 1, destinations },
+      { version: 2, destinations: next },
+    ]);
+    // The database rejects invalid policy even when a caller bypasses public route validation.
+    for (const invalid of [
+      [next[0], next[0]],
+      ...invalidPaths.map((invalidPath) => [{ ...next[0], path: invalidPath }]),
+    ]) {
+      await assert.rejects(
+        pool.query(
+          "INSERT INTO occ.static_key_template_versions(template_id,version,destinations,created_at) VALUES($1,3,$2,now())",
+          [shared.id, JSON.stringify(invalid)],
+        ),
+        { code: "23514", constraint: "static_key_template_versions_destinations_valid" },
+      );
+    }
+    const oauthClient = await inject("POST", "/oauth-clients", clientInput(shared.id, 2));
+    assert.equal(oauthClient.statusCode, 409, oauthClient.body);
+    const wrongFamily = await inject("PATCH", path, manual);
+    assert.equal(wrongFamily.statusCode, 409, wrongFamily.body);
+    // Reject an immutable authentication change before attempting outbound MCP discovery.
+    const discoveredFamily = await inject("PATCH", path, {
+      mode: "mcp_discovery",
+      serverUrl: "https://127.0.0.1/metadata",
+      issuer: "https://issuer.example.test",
+      scopes: [],
+    });
+    assert.equal(discoveredFamily.statusCode, 409, discoveredFamily.body);
+    const removed = await inject("DELETE", path);
+    assert.equal(removed.statusCode, 204, removed.body);
+    assert.equal((await inject("GET", path)).statusCode, 404);
+    assert.equal(
+      (
+        await pool.query("SELECT 1 FROM occ.static_key_template_versions WHERE template_id=$1", [
+          shared.id,
+        ])
+      ).rowCount,
+      0,
+    );
+  },
+);
 
 test(
   "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
@@ -194,13 +365,14 @@ test(
     const auth = await createPostgresControllerAuth({
       mode: "development",
       installationId: controller.installation.id,
-      baseURL: "http://127.0.0.1",
+      baseURL: "https://console.oce.localhost",
+      agentDomain: "agents.oce.localhost",
       secret: options.authSecret,
       pool,
     });
     const reader = await auth.createAccount({ ...member, name: "Template reader" });
     await state.appendNativeIAMPrincipal(auth.principalSeed(reader, { grant: "none" }));
-    const session = await signedInHeaders(app, "http://127.0.0.1", member);
+    const session = await signedInHeaders(app, "https://console.oce.localhost", member);
     const denied = await app.inject({
       method: "POST",
       url: "/oauth-clients",
@@ -341,6 +513,99 @@ test(
       [globalId, scoped.json().data.id].sort(),
     );
     assert.equal(core.secrets.size, 2);
+  },
+);
+
+test(
+  "OAuth client secret mutations refuse an enclosing controller transaction",
+  requiresPostgres,
+  async (t) => {
+    for (const operation of ["create", "rotate"] as const) {
+      await t.test(operation, async (t) => {
+        const { controller, inject, pool, principal, state } = await createPostgresAgentApp(
+          t,
+          options,
+        );
+        const { core } = useInstallationSecretDriver(controller);
+        const templateId = await createManualDraft(inject);
+        const input = clientInput(templateId);
+        const original = await inject("POST", "/oauth-clients", input);
+        assert.equal(original.statusCode, 201, original.body);
+        const client = original.json().data;
+        const installation = await state.loadInstallation();
+        assert.ok(installation);
+        const probe = randomUUID();
+        const next = {
+          ...input,
+          connectionTemplateVersion: 2,
+          clientId: randomUUID(),
+          clientSecret: randomUUID(),
+        };
+        const privateNames = [...core.secrets.keys()];
+        const audit = (id: string) => ({
+          id: randomUUID(),
+          installationId: installation.id,
+          occurredAt: new Date().toISOString(),
+          kind: "mutation" as const,
+          actorId: principal.id,
+          action:
+            operation === "create"
+              ? "openclaw.oauth_clients.create"
+              : "openclaw.oauth_clients.rotate_secret",
+          resource: { kind: "installation" as const, id: installation.id },
+          outcome: "success" as const,
+          details: { oauthClientId: id, transactionProbe: probe },
+        });
+
+        // The public composition API must refuse before a private write. Otherwise an
+        // outer failure can discard the cleanup reservation or the rotation request audit.
+        const failure = await controller
+          .transact(async () => {
+            if (operation === "create") {
+              await controller.createOAuthClient(principal.id, next, audit);
+            } else {
+              await controller.rotateOAuthClientSecret(
+                principal.id,
+                client.id,
+                next.clientSecret,
+                audit(client.id),
+              );
+            }
+            throw new Error("The surrounding resource mutation failed.");
+          })
+          .catch((error: unknown) => error);
+
+        assert.deepEqual(
+          [...core.secrets.keys()],
+          privateNames,
+          "rollback must not leave an untracked private secret",
+        );
+        assert.equal(
+          await controller.withOAuthClientSecret(
+            client,
+            async (value) => value === input.clientSecret,
+          ),
+          true,
+          "rollback must not leave a rotated value without its request audit",
+        );
+        assert.equal(
+          (await pool.query("SELECT id FROM occ.oauth_clients WHERE client_id=$1", [next.clientId]))
+            .rowCount,
+          0,
+        );
+        assert.equal(
+          (
+            await pool.query(
+              "SELECT id FROM occ.audit_events WHERE details->>'transactionProbe'=$1",
+              [probe],
+            )
+          ).rowCount,
+          0,
+        );
+        assert.ok(failure instanceof ResourceConflictError);
+        assert.match(failure.message, /cannot run in a controller transaction/);
+      });
+    }
   },
 );
 

@@ -50,7 +50,9 @@ charts; use the [paired chart overrides](local-kubernetes-development.md#start-t
 when the reviewed candidate needs matching charts. A chart override alone does
 not select candidate images.
 
-## Select the protected profile
+<a id="select-the-protected-profile"></a>
+
+## Retired protected profile and optional database name
 
 New local launches of protected static inference are retired.
 `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` is rejected before engine, host or bootstrap
@@ -77,8 +79,8 @@ do not provide a local protected-launch procedure.
 
 ## Preload the Agent Sandbox controller from a verified cache
 
-Use this recovery when the local node cannot download the controller's image
-blobs. A local manifest override does not preload its images. Prepare an OCI
+Default startup imports this image automatically. Use this recovery for an
+explicit manifest override whose node cannot fetch image blobs. Prepare an OCI
 archive from a trusted cache, with an independent receipt for the upstream image,
 selected platform and archive checksum. Verify every archived blob against its
 content digest before import. Keep TLS and the installation's network policies.
@@ -157,13 +159,14 @@ already rolled back, wait for it to exit and repeat only on a new owned cluster.
 
 ## Verify imported identities
 
-Keep the launcher's three `OpenShell <component> image: source=… containerd=…`
+Keep the launcher's `OpenShell <component> image: source=… containerd=…`
 lines with the build receipt. The source digest identifies the selected engine
 image; containerd may record a different manifest representation after archive
 import. The launcher resolves and registers that containerd digest, then supplies
-it to exactly `gateway.image`, `sandboxRuntime.image`, and `supervisor.image`
-in Helm, with pull policy `Never`. Do not assume source and containerd digests
-are equal.
+it to `gateway.image`, `sandboxRuntime.image`, and `supervisor.image` in Helm,
+and to the default Agent Sandbox manifest, with pull policy `Never`. Agent Sandbox
+uses the pinned release child for the node's architecture. Source and containerd
+digests can differ; their native image config must match.
 
 Before runtime qualification, inspect the actual supervisor container's
 `imageID` in the Agent-owned Pod using the printed kubeconfig and context.
@@ -187,7 +190,7 @@ upstream TLS before relaying HTTP to request middleware, so missing upstream
 trust can also stop the held denial check before token issuance. Preserve the
 failed revision's closed route; use a new revision after correcting trust.
 
-Set `CA_BUNDLE` to a PEM file containing the usual public roots and the network's approved public root, without private keys. Use the generated kubeconfig, context, and release for this installation. Use the supervisor and chart from the selected release checkout. Run from its repository root:
+Set `CA_BUNDLE` to a PEM file containing the usual public roots and the network's approved public root, without private keys. Use the generated kubeconfig, context, and release for this installation. Use this procedure only if you launched with the released OpenShell images and default charts from this checkout. The upgrade replaces the installed supervisor with an image built from the release pin. Run from its repository root:
 
 ```bash
 set -euo pipefail

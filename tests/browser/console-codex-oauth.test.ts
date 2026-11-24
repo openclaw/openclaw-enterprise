@@ -14,11 +14,12 @@ import {
   createDeviceCredentialDrivers,
   DEVICE_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
-} from "../helpers/device-credential-gateway.mjs";
+} from "../helpers/device-credential-gateway.ts";
 import {
   MEMBER_WRITE,
   apiRequests,
   expectNoText,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -32,9 +33,9 @@ import {
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { within } from "../helpers/wait-for.ts";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
-  AGENT_DEVICE_LOGIN_POLL_DENIED,
   AGENT_DEVICE_LOGIN_START_DENIED,
   DEVICE_LOGIN_START_DENIED,
   DEVICE_LOGIN_NOT_CONFIGURED,
@@ -218,7 +219,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const checking = "Checking Codex login…";
   async function answerPoll(intervalSeconds: number) {
     await page.getByText(checking, { exact: true }).waitFor();
-    const route = await nextPoll.promise;
+    const route = await within(nextPoll.promise, "the Console's next poll");
     nextPoll = Promise.withResolvers<Route>();
     const response = await route.fetch();
     const body: unknown = await response.json();
@@ -313,7 +314,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   // A later version uses the same saved source. No second login, Secret grant, or
   // authentication mutation is needed merely to configure plugins.
   const loginsBeforeBrowse = gateway.calls.filter(
-    (call: unknown) => jsonObject(call).operation === "startDeviceAuthorization",
+    (call) => call.operation === "startDeviceAuthorization",
   ).length;
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   assert.equal(
@@ -334,9 +335,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     originalAuth,
   );
   assert.equal(
-    gateway.calls.filter(
-      (call: unknown) => jsonObject(call).operation === "startDeviceAuthorization",
-    ).length,
+    gateway.calls.filter((call) => call.operation === "startDeviceAuthorization").length,
     loginsBeforeBrowse,
   );
   const sourceGrants = requests.filter(
@@ -414,7 +413,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   );
   assert.equal(oldSource.status, 200);
   assert.equal(
-    gateway.calls.some((call: unknown) => jsonObject(call).operation === "removeSource"),
+    gateway.calls.some((call) => call.operation === "removeSource"),
     false,
   );
   const replacementGrants = requests.filter(
@@ -463,7 +462,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
   assert.equal((await racedSave).status(), 200);
   releaseDiscard.resolve();
-  assert.equal(await slowDiscard.promise, 204);
+  assert.equal(await within(slowDiscard.promise, "the server's answer to the held discard"), 204);
   const retainedAgent = jsonObject((await fixture.request("GET", agentPath)).data);
   assert.deepEqual(retainedAgent.harnessAuth, replaced);
   assert.deepEqual(retainedAgent.credentialSources, replacedAgent.credentialSources);
@@ -651,9 +650,10 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
     assert.equal(data.status, "pending");
     // The real start committed. Lose its session reference only in the reply reaching the page.
     const sessionId = jsonString(jsonObject(data.session).id);
-    const session = await fixture.request("GET", `${namespacePath}/secrets/${sessionId}`);
-    assert.equal(session.status, 200);
-    assert.equal(jsonObject(session.data).id, sessionId);
+    const stored = await fixture.controller.transact((state) =>
+      state.authenticationStates.findDevice(namespace.id, sessionId),
+    );
+    assert.equal(stored?.phase, "pending");
     delete data.session;
     await route.fulfill({ response, json: body });
   });
@@ -718,27 +718,25 @@ for (const savedAgent of [false, true]) {
     }
     const methodLabel = agent ? "Authentication source" : "Authentication method";
     await page.getByLabel(methodLabel).selectOption("credential_source");
-    const committed = Promise.withResolvers<string>();
-    const release = Promise.withResolvers<void>();
-    t.after(() => release.resolve());
     const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
-    await page.route(`**${beginPath}`, async (route) => {
-      const response = await route.fetch();
-      assert.equal(response.status(), 200);
-      committed.resolve(jsonString(jsonObject(responseData(await response.json()).session).id));
-      await release.promise;
-      await route.fulfill({ response }).catch(() => {});
+    const held = await holdRequests(t, page, `**${beginPath}`, {
+      once: true,
+      method: "POST",
+      afterServer: true,
     });
     await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
-    const sessionId = await committed.promise;
+    const committed = await held.requested;
+    assert.ok(committed, "the held start has its server answer");
+    assert.equal(committed.status(), 200);
+    const sessionId = jsonString(jsonObject(responseData(await committed.json()).session).id);
     assert.equal(gateway.sources.size, 1);
-    assert.equal(
-      (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${sessionId}`)).status,
-      200,
+    const stored = await fixture.controller.transact((state) =>
+      state.authenticationStates.findDevice(namespace.id, sessionId),
     );
+    assert.equal(stored?.phase, "pending");
     await page.getByRole("link", { name: "Credentials", exact: true }).click();
     await page.waitForURL("**/console/secrets?**");
-    release.resolve();
+    held.release();
     await waitForSettledFetches(page, beginPath, 1);
     await page.goBack();
     await page.getByLabel(methodLabel).waitFor();
@@ -808,25 +806,28 @@ async function openAgentOAuth(t: TestContext, name: string) {
   };
 }
 
-// Holds the next start's real API answer at the browser boundary until `release()`.
+// Holds the next start's real API answer at the browser boundary until `release()`. Awaiting
+// `answered` fails within 10 s if no start is held, and at once if its server answer is lost,
+// instead of waiting for the file timeout.
 async function holdNextStart(
   t: TestContext,
   { page, beginPath }: { page: Page; beginPath: string },
 ) {
-  const answered = Promise.withResolvers<{ status: number; body: unknown }>();
-  const release = Promise.withResolvers<void>();
-  t.after(() => release.resolve());
-  await page.route(
-    `**${beginPath}`,
-    async (route) => {
-      const response = await route.fetch();
-      answered.resolve({ status: response.status(), body: await response.json() });
-      await release.promise;
-      await route.fulfill({ response }).catch(() => {});
+  const held = await holdRequests(t, page, `**${beginPath}`, {
+    once: true,
+    method: "POST",
+    afterServer: true,
+  });
+  return {
+    get answered(): Promise<{ status: number; body: unknown }> {
+      return held.requested.then(async (response) => {
+        assert.ok(response, "the held start has its server answer");
+        const body: unknown = await response.json();
+        return { status: response.status(), body };
+      });
     },
-    { times: 1 },
-  );
-  return { answered: answered.promise, release: () => release.resolve() };
+    release: held.release,
+  };
 }
 
 async function showTab(page: Page, name: string) {
@@ -916,9 +917,9 @@ for (const refused of [false, true]) {
   test(`an OAuth start ${refused ? "refused" : "answered"} while another Agent tab shows lands in Credentials`, async (t) => {
     const oauth = await openAgentOAuth(t, "OAuth tab switch");
     const { page } = oauth;
-    // The real Native IAM Driver refuses the start without Secret create.
+    // The real Native IAM Driver refuses the start without credential source create.
     if (refused) {
-      revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+      revokeAdministratorGrant(oauth.fixture, ["create", "credential_source"]);
     }
     const held = await holdNextStart(t, oauth);
     await waitForIdleFetches(page);
@@ -977,15 +978,18 @@ for (const before of ["a refused start", "Cancel login"]) {
         // counting it in flight although the tab's request has settled.
         idle = { except: `${oauth.beginPath}/${session.id}` };
       } else {
-        // The real Native IAM Driver refuses the first start without Secret create.
-        const restoreCreate = revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+        // The real Native IAM Driver refuses the first start without credential source create.
+        const restoreCreate = revokeAdministratorGrant(oauth.fixture, [
+          "create",
+          "credential_source",
+        ]);
         await start.click();
         await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
         restoreCreate();
       }
       await waitForEnabled(start);
       if (refused) {
-        revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+        revokeAdministratorGrant(oauth.fixture, ["create", "credential_source"]);
       }
       const held = await holdNextStart(t, oauth);
       await waitForIdleFetches(page, idle);
@@ -1024,7 +1028,7 @@ for (const replyFirst of [true, false]) {
       const oauth = await openAgentOAuth(t, "OAuth save");
       const { page } = oauth;
       if (refused) {
-        revokeAdministratorGrant(oauth.fixture, ["create", "secret"]);
+        revokeAdministratorGrant(oauth.fixture, ["create", "credential_source"]);
       }
       const held = await holdNextStart(t, oauth);
       await waitForIdleFetches(page);
@@ -1083,7 +1087,7 @@ test("an OAuth start answered after a newer Credentials tab was built keeps that
 });
 
 // A refused device login names what the API checked for that request (finding 2577). Create
-// Agent's start checks Agent create, Secret create and credential source create in the Namespace,
+// Agent's start checks Agent create and credential source create in the Namespace,
 // which only an Installation administrator holds. The real Native IAM Driver refuses each request
 // below after the administrator's grant is removed from its Role.
 test("a refused device login start on Create Agent names the create grants it checks", async (t) => {
@@ -1095,7 +1099,7 @@ test("a refused device login start on Create Agent names the create grants it ch
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
-  revokeAdministratorGrant(fixture, ["create", "secret"]);
+  revokeAdministratorGrant(fixture, ["create", "credential_source"]);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -1143,10 +1147,9 @@ test("a member's refused Installation read leaves Sign in offered on Create Agen
   await page.getByText(DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
 });
 
-// From Agent detail, each request checks Agent read and update on that Agent. A start also
-// creates a Secret and a credential source; a poll or cancel checks Secret operate on the login's
-// Secret, which a Namespace Role can grant, so those name the grants to ask for instead.
-test("a refused device login on Agent detail names the grants its start, poll and cancel check", async (t) => {
+// From Agent detail, every request checks Agent read and update. Start also checks credential
+// source create; poll checks operate on that source. The login itself has no IAM grant.
+test("a refused device login on Agent detail allows the same login to finish after access is restored", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth Agent refused");
   const { gateway, refresh } = createDeviceCredentialDrivers();
   for (const driver of [gateway, refresh]) {
@@ -1181,28 +1184,75 @@ test("a refused device login on Agent detail names the grants its start, poll an
   await page.getByLabel("Authentication source").selectOption("credential_source");
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
 
-  // Without Secret create the start is refused before any login exists.
-  const restoreCreate = revokeAdministratorGrant(fixture, ["create", "secret"]);
+  // Without credential source create the start is refused before any login exists.
+  const restoreCreate = revokeAdministratorGrant(fixture, ["create", "credential_source"]);
   await start.click();
   await page.getByText(AGENT_DEVICE_LOGIN_START_DENIED, { exact: true }).waitFor();
   assert.deepEqual(answers, ["POST  403"]);
 
-  // With the grant back the login starts. Removing Secret operate then refuses its poll, which
-  // the Console sends after the login's 5 s interval, and its cancel.
+  // Start needs neither source read nor operate. The first poll is refused without naming the source.
   restoreCreate();
+  const restoreOperate = revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
+  const restoreRead = revokeAdministratorGrant(fixture, ["read", "credential_source"]);
   await waitForEnabled(start);
+  const started = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === loginsPath,
+  );
+  const firstPoll = page.waitForResponse(`**${loginsPath}/*/poll`);
   await start.click();
+  const pending = responseData(await (await started).json());
+  const sessionPath = `${loginsPath}/${jsonString(jsonObject(pending.session).id)}`;
+  const nextPoll = () =>
+    page.waitForResponse((response) => new URL(response.url()).pathname === `${sessionPath}/poll`);
+  const hidden = await firstPoll;
+  assert.equal(hidden.status(), 403);
+  const hiddenBody = jsonObject(await hidden.json());
+  const status = page.getByRole("status").filter({ hasText: "CredentialSource operate" });
+  await status.waitFor();
+  const hiddenText = await status.innerText();
+  assert.ok(hiddenText.includes("on a CredentialSource this request uses"));
+  assert.ok(
+    hiddenText.includes(`Request ID: ${jsonString(jsonObject(hiddenBody.meta).requestId)}`),
+  );
+  assert.doesNotMatch(hiddenText, /cs_[0-9a-f-]+/);
+
+  // A caller with read can give the administrator the exact source OCC named.
+  restoreRead();
+  const retry = page.getByRole("button", { name: "Retry login check" });
+  const readable = nextPoll();
+  await retry.click();
+  const readableReply = await readable;
+  assert.equal(readableReply.status(), 403);
+  const readableBody = jsonObject(await readableReply.json());
+  const reason = jsonString(jsonObject(readableBody.error).message);
+  const sourceId = /CredentialSource operate on CredentialSource (cs_[0-9a-f-]+)/.exec(reason)?.[1];
+  assert.ok(sourceId);
   await page
-    .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
+    .getByText(`${reason} Request ID: ${jsonString(jsonObject(readableBody.meta).requestId)}`, {
+      exact: true,
+    })
     .waitFor();
-  revokeAdministratorGrant(fixture, ["operate", "secret"]);
-  await page.getByText(AGENT_DEVICE_LOGIN_POLL_DENIED, { exact: true }).waitFor({
-    timeout: 20_000,
-  });
+
+  // Cancellation needs no source grant, but it still requires update on the saved Agent.
+  const restoreUpdate = revokeAdministratorGrant(fixture, ["update", "agent"]);
   await page.getByRole("button", { name: "Cancel login", exact: true }).click();
   await page.getByText(AGENT_DEVICE_LOGIN_CANCEL_DENIED, { exact: true }).waitFor();
-  assert.deepEqual(
-    answers.map((answer) => answer.replace(/\/[^/ ]+(\/poll)? /, "/{login}$1 ")),
-    ["POST  403", "POST  200", "POST /{login}/poll 403", "DELETE /{login} 403"],
-  );
+  restoreUpdate();
+  restoreOperate();
+  const completed = nextPoll();
+  await retry.click();
+  const ready = responseData(await (await completed).json());
+  assert.equal(ready.status, "ready");
+  assert.equal(jsonObject(ready.source).id, sourceId);
+  await page.getByText(/ChatGPT login ready/).waitFor();
+  assert.equal(await retry.isVisible(), false);
+  const handle = sessionPath.slice(loginsPath.length);
+  assert.deepEqual(answers, [
+    "POST  403",
+    "POST  200",
+    `POST ${handle}/poll 403`,
+    `POST ${handle}/poll 403`,
+    `DELETE ${handle} 403`,
+    `POST ${handle}/poll 200`,
+  ]);
 });

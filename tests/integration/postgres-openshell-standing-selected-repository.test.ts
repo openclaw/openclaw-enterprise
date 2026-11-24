@@ -3,17 +3,18 @@ import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { repositorySetJourney } from "../helpers/postgres-repository-set-journey.ts";
 
 // Real PostgreSQL, worker, prepared issuer and online authority; the OpenShell
-// supervisor and GitHub origin remain controlled protocol fixtures.
+// supervisor and GitHub origin remain controlled protocol fixtures. Cold-worker cases
+// use a separate file so their real expiry waits overlap in an isolated process.
 test(
   "one selected repository renews beyond its original session without replacing the execution and denies withdrawn approval",
   { ...requiresPostgres, timeout: 180_000 },
-  (t) => repositorySetJourney(t, true),
+  (t) => repositorySetJourney(t, import.meta.url, true),
 );
 
 for (const change of ["recipient", "approval"] as const) {
   test(
     `an expired acknowledged launch refuses a pending successor after ${change} changes`,
     { ...requiresPostgres, timeout: 180_000 },
-    (t) => repositorySetJourney(t, true, change),
+    (t) => repositorySetJourney(t, import.meta.url, true, change),
   );
 }

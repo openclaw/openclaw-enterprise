@@ -1,5 +1,5 @@
 import { asRecord } from "@openclaw-enterprise/utils";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../json-members.ts";
 import {
   isResponsesEvent,
   type ItemContentEvent,
@@ -197,6 +197,8 @@ interface TrackedItem {
   argumentBytes: number;
   completedArguments?: string;
   textTails: string[];
+  summaryTails: string[];
+  reasoningTails: string[];
 }
 
 interface AssistantConsumer {
@@ -326,6 +328,16 @@ class ResponsesStream {
           item.type === "message"
             ? item.content.map((part) => partText(part).slice(-this.policy.fragmentOverlap))
             : [],
+        // Summary and reasoning text are indexed like message parts. Seed whatever
+        // the added item already showed, then append only the next index.
+        summaryTails:
+          item.type === "reasoning"
+            ? item.summary.map((part) => part.text.slice(-this.policy.fragmentOverlap))
+            : [],
+        reasoningTails:
+          item.type === "reasoning"
+            ? (item.content ?? []).map((part) => part.text.slice(-this.policy.fragmentOverlap))
+            : [],
       });
       return (
         item.type !== "function_call" ||
@@ -380,7 +392,7 @@ class ResponsesStream {
       return item.type === "function_call" && acceptArguments(item, event, this.policy.scan);
     }
     if (event.type.startsWith("response.reasoning_")) {
-      return item.type === "reasoning";
+      return item.type === "reasoning" && this.acceptReasoning(item, event);
     }
     if (event.type.startsWith("response.custom_tool_call_input.")) {
       return item.type === "custom_tool_call";
@@ -397,21 +409,66 @@ class ResponsesStream {
       item.textTails.push(partText(event.part).slice(-this.policy.fragmentOverlap));
       return true;
     }
-    const previous = item.textTails[event.content_index];
+    // Completion events do not replace the SDK's accumulated snapshot.
+    return this.acceptIndexedTail(
+      item.textTails,
+      event.content_index,
+      assistantDelta ? event.delta : undefined,
+      false,
+    );
+  }
+
+  // Summary parts are opened by part events. Reasoning text has no part event;
+  // its next content index opens when the first delta for that part arrives.
+  private acceptReasoning(item: TrackedItem, event: ItemContentEvent): boolean {
+    if (event.type.startsWith("response.reasoning_summary")) {
+      const index = event.summary_index;
+      if (index === undefined) {
+        return false;
+      }
+      if (event.type === "response.reasoning_summary_part.added") {
+        if (index !== item.summaryTails.length || !event.part) {
+          return false;
+        }
+        item.summaryTails.push(event.part.text.slice(-this.policy.fragmentOverlap));
+        return true;
+      }
+      return this.acceptIndexedTail(item.summaryTails, index, event.delta, false);
+    }
+    if (!event.type.startsWith("response.reasoning_text")) {
+      return false;
+    }
+    return this.acceptIndexedTail(
+      item.reasoningTails,
+      event.content_index,
+      event.delta,
+      event.type === "response.reasoning_text.delta",
+    );
+  }
+
+  private acceptIndexedTail(
+    tails: string[],
+    index: number | undefined,
+    delta: string | undefined,
+    openNext: boolean,
+  ): boolean {
+    if (index === undefined || index > tails.length || (index === tails.length && !openNext)) {
+      return false;
+    }
+    if (index === tails.length) {
+      tails.push("");
+    }
+    const previous = tails[index];
     if (previous === undefined) {
       return false;
     }
-    if (
-      (event.type === "response.output_text.delta" || event.type === "response.refusal.delta") &&
-      event.delta !== undefined
-    ) {
-      const snapshot = previous + event.delta;
+    if (delta !== undefined) {
+      const snapshot = previous + delta;
       if (this.policy.leaked(snapshot)) {
         return false;
       }
-      item.textTails[event.content_index] = snapshot.slice(-this.policy.fragmentOverlap);
+      tails[index] = snapshot.slice(-this.policy.fragmentOverlap);
     }
-    // Completion events do not replace the SDK's accumulated snapshot.
     return true;
   }
 }

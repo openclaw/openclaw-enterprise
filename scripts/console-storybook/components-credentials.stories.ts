@@ -147,6 +147,8 @@ export const AuthRuntime = { ...story("authRuntime"), name: "Operator-managed au
 export const AuthService = { ...story("authService"), name: "ChatGPT service account" };
 export const AuthServiceEmpty = story("authServiceEmpty");
 export const AuthServiceDenied = story("authServiceDenied");
+export const AuthOAuthPollDenied = story("authOAuthPollDenied");
+
 export const AuthOAuthReconnect = story("authOAuthReconnect");
 
 export const AuthSecretReplacement = {

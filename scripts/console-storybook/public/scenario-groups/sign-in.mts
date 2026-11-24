@@ -50,10 +50,10 @@ type SignInScenario = {
   path?: `/console/${string}`;
   signedOut?: true;
   buildRevision?: string;
-  githubEnabled?: true;
+  oidcEnabled?: true;
   googleEnabled?: true;
   passwordRecoveryOnly?: true;
-  pendingGithubAttempt?: true;
+  pendingOidcAttempt?: true;
   pendingGoogleAttempt?: true;
   expiredSession?: true;
   steps?: readonly string[];
@@ -86,44 +86,43 @@ export function signInScenarios({
       description:
         "The email and password form, and a footer naming the build. Any nonempty demo email/password signs into this fixture.",
     },
-    githubLogin: {
+    oidcLogin: {
       group: "Pages/Sign in",
-      name: "GitHub enabled",
+      name: "OIDC enabled",
       path: "/console/login",
       signedOut: true,
-      githubEnabled: true,
+      oidcEnabled: true,
       rules: [
-        { path: "/api/auth/providers/github/start", method: "POST", delayMs: 5000, status: 403 },
+        { path: "/api/auth/providers/oidc/start", method: "POST", delayMs: 5000, status: 403 },
         { path: "/api/auth/sign-in/email", method: "POST", delayMs: 5000, status: 401 },
       ],
       description:
-        "Provider discovery adds Continue with GitHub beside the password form. Delayed refusals let you inspect keyboard focus during either sign-in request; this fixture never navigates to GitHub.",
+        "Provider discovery adds Continue with single sign-on beside the password form. Delayed refusals let you inspect keyboard focus during either sign-in request; this fixture never navigates to OIDC.",
       steps: [
         "Enter a demo email and password, then Tab to Sign in and press Enter. Focus stays on Sign in while the provider button is disabled.",
         "Press Enter and Space again while waiting. After the refusal, focus stays on Sign in and both buttons are available.",
         "Retry, then press Shift+Tab while waiting. Focus moves to Password and stays there after the refusal.",
-        "Tab to Continue with GitHub and press Enter. Repeat Enter and Space while waiting: focus stays on the provider button through the refusal.",
+        "Tab to Continue with single sign-on and press Enter. Repeat Enter and Space while waiting: focus stays on the provider button through the refusal.",
       ],
-      gap: "An administrator must attach the numeric GitHub identity to an existing account through the API. Enrollment, account creation, and recovery administration have no console controls. OAuth navigation and session issuance require backend verification.",
+      gap: "An administrator must attach the OIDC subject to an existing account through the API. Enrollment, account creation, and recovery administration have no console controls. OAuth navigation and session issuance require backend verification.",
     },
-    githubUnavailable: {
+    oidcUnavailable: {
       group: "Pages/Sign in",
-      name: "GitHub unavailable",
+      name: "OIDC unavailable",
       path: "/console/login",
       signedOut: true,
-      githubEnabled: true,
-      actions: [click("Continue with GitHub")],
-      description:
-        "A failed GitHub start leaves password sign-in and a deliberate retry available.",
+      oidcEnabled: true,
+      actions: [click("Continue with single sign-on")],
+      description: "A failed OIDC start leaves password sign-in and a deliberate retry available.",
     },
-    githubRateLimited: {
+    oidcRateLimited: {
       group: "Pages/Sign in",
-      name: "GitHub rate limited",
+      name: "OIDC rate limited",
       path: "/console/login",
       signedOut: true,
-      githubEnabled: true,
-      rules: [{ path: "/api/auth/providers/github/start", method: "POST", status: 429 }],
-      actions: [click("Continue with GitHub")],
+      oidcEnabled: true,
+      rules: [{ path: "/api/auth/providers/oidc/start", method: "POST", status: 429 }],
+      actions: [click("Continue with single sign-on")],
       description: "Admission refusal asks the user to wait without automatically retrying.",
     },
     recoveryOnlyLogin: {
@@ -131,16 +130,16 @@ export function signInScenarios({
       name: "Recovery-only password",
       path: "/console/login",
       signedOut: true,
-      githubEnabled: true,
+      oidcEnabled: true,
       googleEnabled: true,
       passwordRecoveryOnly: true,
       rules: [{ path: "/api/auth/providers", method: "GET", delayMs: 5000 }],
       description:
-        "With OCC_AUTH_PASSWORD_SIGN_IN=recovery-only, ordinary accounts continue with GitHub or Google. Delayed discovery keeps an empty password form visible if the user has already focused it.",
+        "With OCC_AUTH_PASSWORD_SIGN_IN=recovery-only, ordinary accounts continue with OIDC or Google. The password form stays behind Recovery sign-in while provider discovery is pending.",
       steps: [
-        "Open or reset the story and immediately Tab to Email without entering text. When providers appear, Email stays focused and the recovery hint appears.",
-        "Type a demo email: the form remains usable without submitting a password request.",
-        "Reset and wait without focusing the form. Discovery hides it behind Recovery sign-in; select that button to reveal it.",
+        "Open or reset the story. Checking sign-in methods and Recovery sign-in appear; Email and Password are hidden. When discovery finishes, the provider buttons appear and the form stays hidden.",
+        "Reset and immediately select Recovery sign-in. Email gains focus and remains focused when discovery finishes, with the recovery hint visible.",
+        "Type a demo email: the explicitly opened form remains usable without submitting a password request.",
       ],
     },
     recoveryOnlyForm: {
@@ -148,7 +147,7 @@ export function signInScenarios({
       name: "Recovery sign-in form",
       path: "/console/login",
       signedOut: true,
-      githubEnabled: true,
+      oidcEnabled: true,
       passwordRecoveryOnly: true,
       rules: [{ path: "/api/auth/sign-in/email", method: "POST", status: 401 }],
       actions: [
@@ -162,44 +161,44 @@ export function signInScenarios({
     },
     recoveryOnlyCallbackRejected: {
       group: "Pages/Sign in",
-      name: "Recovery-only GitHub callback rejected",
-      path: "/console/?authError=github",
+      name: "Recovery-only OIDC callback rejected",
+      path: "/console/?authError=oidc",
       signedOut: true,
-      githubEnabled: true,
+      oidcEnabled: true,
       passwordRecoveryOnly: true,
       description:
         "Without a password to fall back on, a rejected callback points the user to an administrator.",
     },
-    githubCallbackRejected: {
+    oidcCallbackRejected: {
       group: "Pages/Sign in",
-      name: "GitHub callback rejected",
-      path: "/console/?authError=github",
+      name: "OIDC callback rejected",
+      path: "/console/?authError=oidc",
       signedOut: true,
-      githubEnabled: true,
+      oidcEnabled: true,
       description:
         "A rejected callback shows the generic sign-in error and keeps password recovery available.",
     },
-    githubResultRejected: {
+    oidcResultRejected: {
       group: "Pages/Sign in",
-      name: "GitHub result not confirmed",
+      name: "OIDC result not confirmed",
       path: "/console/",
-      pendingGithubAttempt: true,
-      githubEnabled: true,
-      rules: [{ path: "/api/auth/providers/github/result", method: "POST", status: 401 }],
+      pendingOidcAttempt: true,
+      oidcEnabled: true,
+      rules: [{ path: "/api/auth/providers/oidc/result", method: "POST", status: 401 }],
       description:
-        "The tab that started GitHub sign-in could not confirm that the current session is the one its attempt created, so it shows the sign-in error instead of adopting that session.",
+        "The tab that started OIDC sign-in could not confirm that the current session is the one its attempt created, so it shows the sign-in error instead of adopting that session.",
     },
     googleLogin: {
       group: "Pages/Sign in",
       name: "Google enabled",
       path: "/console/login",
       signedOut: true,
-      githubEnabled: true,
+      oidcEnabled: true,
       googleEnabled: true,
       description:
         "Provider discovery adds Continue with Google beside the password form and any other configured provider. Clicking it demonstrates an unavailable provider; this fixture never navigates to Google.",
       steps: [
-        "Check the Google and GitHub icons and labels, then select either button to see the unavailable message.",
+        "Check the Google icon and both provider labels, then select either button to see the unavailable message.",
       ],
       gap: "An administrator must attach the Google subject identifier to an existing account through the API. Email addresses never match an account. OAuth navigation and session issuance require backend verification.",
     },
@@ -234,19 +233,19 @@ export function signInScenarios({
     recoveryOnlyAccountDisabled: {
       group: "Pages/Sign in",
       name: "Recovery-only account disabled",
-      path: "/console/?authError=github&authReason=account-disabled",
+      path: "/console/?authError=oidc&authReason=account-disabled",
       signedOut: true,
-      githubEnabled: true,
+      oidcEnabled: true,
       passwordRecoveryOnly: true,
       description:
-        "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
+        "With recovery-only password sign-in, a disabled account's OIDC sign-in gives the same administrator advice.",
     },
     recoveryOnlyProviderUnavailable: {
       group: "Pages/Sign in",
       name: "Recovery-only provider outage",
-      path: "/console/?authError=github&authReason=provider-unavailable",
+      path: "/console/?authError=oidc&authReason=provider-unavailable",
       signedOut: true,
-      githubEnabled: true,
+      oidcEnabled: true,
       passwordRecoveryOnly: true,
       description:
         "The provider could not answer or refused the client, so the page says sign-in is unavailable right now and points administrators to Recovery sign-in, not to an identity attach.",
@@ -266,9 +265,13 @@ export function signInScenarios({
       name: "Provider discovery unavailable",
       path: "/console/login",
       signedOut: true,
-      rules: [{ path: "/api/auth/providers", status: 503 }],
+      rules: [{ path: "/api/auth/providers", status: 503, delayMs: 5000 }],
       description:
         "Failed provider discovery leaves the password form usable without provider buttons.",
+      steps: [
+        "Immediately Tab to Recovery sign-in without activating it. When discovery fails, the password form appears and Email receives keyboard focus.",
+        "Type a demo email. If you move focus away while waiting instead, the form appears without taking focus back.",
+      ],
     },
     loginError: {
       group: "Pages/Sign in",

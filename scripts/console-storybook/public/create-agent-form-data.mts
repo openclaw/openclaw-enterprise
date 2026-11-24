@@ -28,7 +28,7 @@ export const modelCredentialSourceTypes: CredentialSourceType[] = [
         name: "authorized_base_url",
         required: false,
         description:
-          "Immutable destination authorization. Must match the Installation model provider; omission authorizes only the default OpenAI endpoint.",
+          "Immutable destination authorization. Must match the revision destination; omission authorizes only the default OpenAI endpoint.",
       },
     ],
     secrets: [{ name: "api_key", required: true }],

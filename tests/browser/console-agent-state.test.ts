@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Locator, Route } from "playwright";
-import type {
-  AuditEvent,
-  Permission,
-  ResourceKind,
-  SecretBinding,
+import {
+  serializeStartupConfiguration,
+  type AuditEvent,
+  type Permission,
+  type ResourceKind,
+  type SecretBinding,
 } from "../../packages/contracts/src/index.ts";
 
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, memberRole } from "../helpers/console-app.mjs";
 import {
@@ -28,6 +28,7 @@ import {
   grantMember,
   hasFocus,
   holdRequests,
+  inViewport,
   login,
   loginThroughForm,
   nativeValues,
@@ -58,33 +59,38 @@ import {
 import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
+  AGENT_CREATE_ACCESS_CHECK,
   ACCESS_TAB_UNAVAILABLE,
-  AGENT_CREATE_RESTRICTED,
   AGENT_DELETE_DENIED,
   AGENT_STOP_AND_DELETE_DENIED,
   AGENT_STOP_DENIED,
   askForGrant,
-  BACKENDS_DENIED,
-  BOUND_SECRET_METADATA,
-  BOUND_SECRET_READ_REFUSED,
   BOUND_SECRET_UNLISTED,
-  DIAGNOSTICS_RUNTIME_UNAVAILABLE,
-  diagnosticsRecordedFailure,
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
-  NAMESPACE_UNAVAILABLE,
-  NO_PERSISTED_STARTUP_FAILURE,
   RESOURCE_CONFLICT,
   requestedVersionUnavailable,
   stopRefused,
-  NEW_VERSIONS_READ,
-  PLUGINS_READ_ONLY,
   STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   VERSION_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import {
+  DIAGNOSTICS_RUNTIME_UNAVAILABLE,
+  diagnosticsRecordedFailure,
+  NO_PERSISTED_STARTUP_FAILURE,
+} from "../helpers/refusal-configuration-runtime.ts";
+import {
+  BACKENDS_DENIED,
+  BOUND_SECRET_METADATA,
+  BOUND_SECRET_READ_REFUSED,
+  NAMESPACE_UNAVAILABLE,
+  NEW_VERSIONS_READ,
+  PLUGINS_READ_ONLY,
+} from "../helpers/refusal-access.ts";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { responseTo } from "./console-action-helpers.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type NamespaceFixture = Awaited<ReturnType<ConsoleFixture["createNamespace"]>>;
@@ -95,13 +101,29 @@ type Requests = ReturnType<typeof apiRequests>;
 type DeploymentError = NonNullable<ReturnType<typeof persistedDeploymentError>>;
 
 declare global {
-  var summaryRewrites: (string | null)[];
+  var summaryRewrites: string[];
   var diagnosticsSeen: string[];
+}
+
+function deniedActionsSince(fixture: ConsoleFixture, audited: number): AuditEvent["action"][] {
+  return authorizationDenials(fixture.auditSink)
+    .slice(audited)
+    .map(({ action }: AuditEvent) => action);
 }
 
 function requiredText(value: string | null): string {
   assert.ok(typeof value === "string");
   return value;
+}
+
+async function expectConfirmationAgentId(dialog: Locator, agentId: string) {
+  const label = `Agent ID: ${agentId}`;
+  await dialog.getByText(label, { exact: true }).waitFor();
+  assert.equal(
+    (await accessibleDescription(dialog)).split(label).length - 1,
+    1,
+    `expected one "${label}" in the dialog description`,
+  );
 }
 
 function lookupSecretId(body: unknown): string {
@@ -164,9 +186,7 @@ const authenticationFailure = persistedDeploymentError("RUNTIME_AUTHENTICATION_F
 assert.ok(authenticationFailure);
 
 test("Refresh deployment also refreshes the viewed version's deployment record", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Record refresh", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Record refresh");
   const agent = await fixture.createAgent(namespace.id, "Record Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
@@ -214,9 +234,8 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
 });
 
 test("Deployment activity follows pending work until it records a result", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Activity follow", { ready: true });
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Activity follow");
   const agent = await fixture.createAgent(namespace.id, "Follow Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
@@ -261,9 +280,8 @@ test("Deployment activity follows pending work until it records a result", async
 });
 
 test("Deployment activity names retire cleanup as revision cleanup and follows it", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Cleanup follow", { ready: true });
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Cleanup follow");
   const agent = await fixture.createAgent(namespace.id, "Cleanup Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
@@ -320,15 +338,16 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
 
 // A pending deployment is reread every few seconds and its summary usually stays the same.
 // Rewriting the summary cards and status line with the same text repainted them on every
-// poll (finding 1424); only the changed attempt details in Deployment activity may change.
+// poll (finding 1424). Attempt timing belongs in Deployment activity; only a changed
+// wait message updates the deployment summary.
 test("Deployment polls leave an unchanged summary and status line untouched", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Quiet polls", { ready: true });
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Quiet polls");
   const agent = await fixture.createAgent(namespace.id, "Quiet Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  let attempt = 1;
+  let attemptAt = "2026-09-30T12:00:01.000Z";
+  let wait = "Waiting for the runtime to become ready.";
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
     route.fulfill({
       status: 200,
@@ -343,9 +362,9 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
           warnings: [],
           progress: {
             lastAttempt: {
-              at: `2026-09-30T12:00:0${attempt}.000Z`,
+              at: attemptAt,
               code: "REVISION_INCOMPLETE",
-              message: `Waiting for the runtime to become ready (attempt ${attempt}).`,
+              message: wait,
             },
             nextAttemptAt: null,
           },
@@ -362,16 +381,23 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
   );
   await waitForChosenVersion(page, 1);
   const activity = await expectDeploymentOutcome(page, "In progress");
-  await activity.getByText("Waiting for the runtime to become ready (attempt 1).").waitFor();
-  await page
-    .getByRole("region", { name: "Agent state at a glance" })
-    .getByText("v1 · In progress", { exact: true })
-    .waitFor();
-  await page.evaluate(() => {
+  await activity.getByText(wait, { exact: true }).waitFor();
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  await summary.getByText("v1 · In progress", { exact: true }).waitFor();
+  const summaryNote = summary
+    .getByText("Latest visible deployment", { exact: true })
+    .locator("..")
+    .locator("p");
+  assert.equal(await summaryNote.textContent(), wait);
+  await summaryNote.evaluate((note) => {
     globalThis.summaryRewrites = [];
     const observer = new globalThis.MutationObserver((records) => {
       for (const record of records) {
-        globalThis.summaryRewrites.push(record.target.textContent);
+        globalThis.summaryRewrites.push(
+          record.target === note && record.type === "childList"
+            ? "deployment summary note"
+            : `unexpected ${record.type} mutation: ${record.target.textContent}`,
+        );
       }
     });
     for (const selector of [".agent-current-summary", ".agent-status-line"]) {
@@ -387,17 +413,27 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
     }
   });
 
-  // The poll renders the new attempt and the summary in the same pass.
-  attempt = 2;
+  // A newer attempt with the same wording changes the recorded time without rewriting the summary.
+  attemptAt = "2026-09-30T12:00:02.000Z";
+  const recordedAt = await page.evaluate((time) => new Date(time).toLocaleString(), attemptAt);
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await activity.getByText("Waiting for the runtime to become ready (attempt 2).").waitFor();
+  await activity.getByText(recordedAt, { exact: true }).waitFor();
+  assert.equal(await summaryNote.textContent(), wait);
   assert.deepEqual(await page.evaluate(() => globalThis.summaryRewrites), []);
+
+  // A changed wait updates the summary note once and leaves the rest of the summary alone.
+  wait = "Waiting for the runtime to become ready after a retry.";
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await activity.getByText(wait, { exact: true }).waitFor();
+  await summary.getByText(wait, { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => globalThis.summaryRewrites), [
+    "deployment summary note",
+  ]);
 });
 
 test("Deployment activity keeps following after Back restores the cached Agent view", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Activity restore", { ready: true });
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Activity restore");
   const agent = await fixture.createAgent(namespace.id, "Restore Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
@@ -444,9 +480,7 @@ test("Deployment activity keeps following after Back restores the cached Agent v
 });
 
 test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Diagnostics explain", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Diagnostics explain");
   const agent = await fixture.createAgent(namespace.id, "Diagnostics Agent", nativeValues("v1"));
   // Diagnostics are offered for the current version: an Embedded version is selected before its
   // gateway is ready, so a failed record can belong to it (finding 2403).
@@ -502,9 +536,7 @@ test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure",
 // A fast answer painted "Waiting for diagnostic results…" for a frame and moved focus to it and
 // back (finding 1714). The waiting line, the disabled button and the focus move now wait 250 ms.
 test("A fast diagnostics answer neither shows the waiting line nor moves focus", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Diagnostics fast", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Diagnostics fast");
   const agent = await fixture.createAgent(namespace.id, "Fast Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
@@ -733,33 +765,132 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   assert.equal(await observations.getByText(DIAGNOSTICS_RUNTIME_UNAVAILABLE).count(), 0);
 });
 
-test("Agent detail returns to the Agents list once background deletion finishes", async (t) => {
+test("A missing deletion status returns to the Agents list with a notice and drops a queued repeat", async (t) => {
+  const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Delete finish", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Finish Candidate", nativeValues("go"));
+  const namespace = await fixture.createNamespace("Deletion status", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Retiring Agent", nativeValues("go"));
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const agentUrl = fixture.origin + agentPath;
   const { page } = await newPage(t, fixture);
-  let gone = false;
-  await page.route(`${fixture.origin}${agentPath}`, async (route, request) => {
-    if (gone && request.method() === "GET") {
-      await route.fulfill(apiErrorResponse(404, "NOT_FOUND", "Agent not found."));
-      return;
-    }
-    await route.continue();
-  });
+  await page.clock.install();
+  const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Finish Candidate" }).waitFor();
+  await page.getByRole("heading", { name: "Retiring Agent" }).waitFor();
 
   await page.getByRole("button", { name: "Delete Agent" }).click();
-  const dialog = page.getByRole("dialog", { name: "Delete Finish Candidate?" });
+  const dialog = page.getByRole("dialog", { name: "Delete Retiring Agent?" });
+  await expectConfirmationAgentId(dialog, agent.id);
+  const accepted = responseTo(page, "DELETE", agentUrl);
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
+  assert.equal((await accepted).status(), 202);
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
-  // The background cleanup finishes; no reader action follows.
-  gone = true;
-  await page.waitForURL((current) => current.pathname === "/console/agents", { timeout: 10_000 });
-  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  // A missing status response may arrive while a repeat waits for the quiet poll to finish.
+  const missingStatus = await holdRequests(t, page, agentUrl, {
+    method: "GET",
+    once: true,
+    fulfill: apiErrorResponse(404, "NOT_FOUND", "Agent not found."),
+  });
+  await Promise.all([missingStatus.requested, page.clock.runFor(DELETION_POLL_MS)]);
+  await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  const repeat = page.getByRole("dialog", { name: "Request deletion again for Retiring Agent?" });
+  await repeat.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  assert.equal(await repeat.getByRole("button", { name: "Deleting…" }).isDisabled(), true);
+  const statusResponse = responseTo(page, "GET", agentUrl);
+  missingStatus.release();
+  assert.equal((await statusResponse).status(), 404);
+
+  await page.waitForURL(
+    (current) =>
+      current.pathname === "/console/agents" &&
+      current.searchParams.get("namespace") === namespace.id,
+  );
+  const text =
+    "Deletion requested. The Agent’s status is no longer available, so cleanup is unconfirmed.";
+  const notice = page.getByRole("status").and(page.getByText(text, { exact: true }));
+  await notice.waitFor();
+  assert.equal(await notice.getAttribute("data-tone"), "info");
+  // The list still has the Agent because only the browser's status read reported it missing.
+  const row = page.getByRole("row").filter({ hasText: "Retiring Agent" });
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await repeat.isVisible(), false);
+  const statusReads = () =>
+    requests.filter(({ method, path }) => method === "GET" && path === agentPath).length;
+  const readsAtLanding = statusReads();
+  await page.clock.runFor(DELETION_POLL_MS * 2);
+  assert.equal(statusReads(), readsAtLanding, "the detail poll stopped");
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(await page.getByText(text, { exact: true }).count(), 0);
+  await page.goBack();
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await page.getByText(text, { exact: true }).count(), 0);
+});
+
+test("A missing deletion status brings the notice into view on return to a scrolled phone list", async (t) => {
+  const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deletion status", { ready: true });
+  for (let number = 1; number <= 6; number++) {
+    await fixture.createAgent(
+      namespace.id,
+      `Draft Agent ${number}`,
+      nativeValues(`draft-${number}`),
+    );
+  }
+  const agent = await fixture.createAgent(namespace.id, "Retiring Agent", nativeValues("retire"));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const agentUrl = fixture.origin + agentPath;
+  // A deletion accepted outside this browser leaves the previously opened list reusable.
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 664 } },
+  });
+  await page.clock.install();
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, listUrl(namespace.id));
+  const listHeading = page.getByRole("heading", { name: "Agents", exact: true });
+  const row = page.getByRole("row").filter({ hasText: agent.name });
+  const link = row.getByRole("link", { name: agent.name, exact: true });
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await inViewport(link), false, "the Agent starts below the fold");
+  await link.scrollIntoViewIfNeeded();
+  assert.equal(await inViewport(listHeading), false, "the list is scrolled past its heading");
+  await link.click();
+  await page.getByRole("heading", { name: agent.name, exact: true }).waitFor();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+
+  // Only the detail poll misses. The revalidated list still includes the deleting Agent.
+  const missingStatus = await holdRequests(t, page, agentUrl, {
+    method: "GET",
+    once: true,
+    fulfill: apiErrorResponse(404, "NOT_FOUND", "Agent not found."),
+  });
+  await Promise.all([missingStatus.requested, page.clock.runFor(DELETION_POLL_MS)]);
+  const statusResponse = responseTo(page, "GET", agentUrl);
+  missingStatus.release();
+  assert.equal((await statusResponse).status(), 404);
+  await page.waitForURL(
+    (current) =>
+      current.pathname === "/console/agents" &&
+      current.searchParams.get("namespace") === namespace.id,
+  );
+  const notice = page.getByRole("status").filter({ hasText: "cleanup is unconfirmed" });
+  await notice.waitFor();
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(
+    await inViewport(notice),
+    true,
+    "the returned list shows the notice without scrolling",
+  );
+  assert.equal(await inViewport(listHeading), true);
+  assert.equal(await hasFocus(listHeading), true);
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 0);
 });
 
 test("Agent detail hides sharing instead of showing an error to non-administrators", async (t) => {
@@ -865,9 +996,7 @@ test("Only an administrator's session probes Installation administration and rea
 // which the API audits as a denial nobody attempted. An administrator still reads it, without
 // the list read (finding 2623).
 test("A member's Agent detail reads no bound Secret her Secret list leaves out", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Bound Secrets", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Bound Secrets");
   const secret = await fixture.createSecret(namespace.id, "Bound model key", "hidden-model");
   const agent = await fixture.createAgent(namespace.id, "Bound Agent", nativeValues("x"), {
     harnessAuth: { method: "api_key", source: secret.ref },
@@ -909,9 +1038,7 @@ test("A member's Agent detail reads no bound Secret her Secret list leaves out",
 // gets no link, which would only open a refusal the API audits; the Credentials field says why
 // its name is unavailable, as the Configuration tab does.
 test("Credentials links a readable bound Secret to the Secrets page and explains an unreadable one", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Secret links", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Secret links");
   const secret = await fixture.createSecret(namespace.id, "Linked model key", "hidden-model");
   const agent = await fixture.createAgent(namespace.id, "Linked Agent", nativeValues("x"), {
     harnessAuth: { method: "api_key", source: secret.ref },
@@ -1027,9 +1154,7 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
 // refusal without reading Backends, which the API audits as a denial nobody attempted, on each
 // page load; an administrator still reads them.
 test("Only an administrator's Backends page reads Backends", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Backends access", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Backends access");
   const reader = await fixture.createNamespaceMember("backends-reader", namespace.id, AGENT_READ);
   const backendsPage = `/console/backends?namespace=${namespace.id}`;
   const backendsReads = (requests: Requests) => requests.filter(({ path }) => path === "/backends");
@@ -1098,19 +1223,18 @@ test("A Restriction on Agent create leaves an administrator's Installation pages
   await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")));
   await page.getByRole("heading", { name: "Restricted Agent" }).waitFor();
   await page.getByRole("tab", { name: "Access", exact: true }).waitFor();
-  // The Agents list and Create Agent name the Restriction and who lifts it, not an administrator
-  // to ask: she is one (finding D759).
+  // The advisory permission result tells the administrator which access to check.
   await page.goto(`${fixture.origin}/console/agents?namespace=${namespace.id}`);
   const create = page.getByRole("button", {
     name: "Create Agent",
     exact: true,
-    description: AGENT_CREATE_RESTRICTED,
+    description: AGENT_CREATE_ACCESS_CHECK,
   });
   await create.waitFor();
   assert.equal(await create.isDisabled(), true);
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
-  await page.getByRole("status").getByText(AGENT_CREATE_RESTRICTED, { exact: true }).waitFor();
+  await page.getByRole("status").getByText(AGENT_CREATE_ACCESS_CHECK, { exact: true }).waitFor();
   assert.deepEqual(
     authorizationDenials(fixture.auditSink, /^openclaw\.(observability|backends|iam)\./),
     [],
@@ -1123,9 +1247,7 @@ test("A Restriction on Agent create leaves an administrator's Installation pages
 // no permission answer to ask, so its one probe is refused and kept for the tab; Refresh probes
 // once more.
 test("Refresh and reload on the Backends refusal check Installation administration again", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Administered later", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Administered later");
   const memberGrants = [
     ["read", "namespace"],
     ["create", "agent"],
@@ -1250,8 +1372,8 @@ test("A Backends refusal after administration is revoked is read and audited onc
 });
 
 test("Settings inspects nested Driver fields and the same JSON without changing configuration", async (t) => {
-  // Startup integration tests establish projection ownership. This public controller fixture
-  // exercises generic values through the real API and browser without adding a product seam.
+  // Exercise the production startup projection before registering the selected Driver.
+  const writeOnlySentinel = "synthetic-operator-resource-that-must-stay-hidden";
   const accepted = {
     authentication: {
       mode: "kubeconfig",
@@ -1278,6 +1400,11 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
       description: index === 0 ? "<img src=x onerror=alert(1)>" : "Configured worker group",
     })),
   };
+  const startupConfiguration = serializeStartupConfiguration(
+    { type: "object", properties: { operatorResources: { writeOnly: true } } },
+    { ...accepted, operatorResources: writeOnlySentinel },
+  );
+  assert.ok(startupConfiguration);
   const fixture = await createConsoleAppFixture(t, {
     driverConfigurations: [
       {
@@ -1285,7 +1412,7 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
         driverId: "console-configuration",
         implementation: "kubernetes",
         definition: KubernetesConfigurationDriver,
-        startupConfiguration: accepted,
+        startupConfiguration,
       },
       {
         capability: "iam",
@@ -1306,10 +1433,19 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
   const namespace = await fixture.createNamespace("Driver inspection", { ready: true });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  const discovery = responseTo(page, "GET", `${fixture.origin}/installation/driver-configurations`);
   await login(page, fixture, `/console/settings?namespace=${namespace.id}`);
+  const response = await discovery;
+  assert.equal(response.status(), 200, "Driver configuration discovery succeeds");
+  assert.equal((await response.text()).includes(writeOnlySentinel), false);
   const configuration = page
     .locator("details.driver-configuration")
     .filter({ has: page.locator("summary", { hasText: "console-configuration" }) });
+  const summary = configuration.locator("summary");
+  await summary.getByText("console-configuration · startup", { exact: true }).waitFor();
+  assert.equal(await configuration.getAttribute("open"), null);
+  const implementation = summary.getByText("Implementation: kubernetes", { exact: true });
+  assert.equal(await implementation.isVisible(), true, "collapsed card shows the implementation");
   const fieldsButton = page.getByRole("button", { name: "Fields", exact: true });
   const jsonButton = page.getByRole("button", { name: "JSON", exact: true });
   assert.equal(await fieldsButton.getAttribute("aria-pressed"), "true");
@@ -1345,8 +1481,11 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
     accepted,
   );
   assert.equal(await fields.isVisible(), false);
+  assert.equal(await implementation.isVisible(), true);
   await fieldsButton.click();
   assert.equal(await fields.isVisible(), true);
+  assert.equal(await implementation.isVisible(), true);
+  assert.equal((await configuration.textContent())?.includes(writeOnlySentinel), false);
   assert.equal(
     await configuration.getAttribute("open"),
     "",
@@ -1655,9 +1794,7 @@ function iamReads(requests: Requests) {
 // one list at a time, so the revoke costs one audited refusal and the bindings are never sent,
 // also when the permission answer that would settle the refusal fails.
 test("A first Credentials open after a revoke reads the grant policy once, audited once", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Revoked credentials", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Revoked credentials");
   const secret = await fixture.createSecret(namespace.id, "Revoked model key", "hidden-model");
   const agent = await fixture.createAgent(namespace.id, "Credentials Agent", nativeValues("x"), {
     harnessAuth: { method: "api_key", source: secret.ref },
@@ -1684,12 +1821,7 @@ test("A first Credentials open after a revoke reads the grant policy once, audit
     await page.getByRole("tab", { name: "Credentials", selected: true }).waitFor();
     await page.locator("#harness-auth-method").waitFor();
     await waitForIdleFetches(page);
-    assert.deepEqual(
-      authorizationDenials(fixture.auditSink)
-        .slice(audited)
-        .map(({ action }: AuditEvent) => action),
-      ["openclaw.iam.roles.list"],
-    );
+    assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.iam.roles.list"]);
     assert.deepEqual(iamReads(requests.slice(sent)), ["GET /iam/roles"]);
   };
   await openCredentialsAfterRevoke(revoke);
@@ -1720,9 +1852,7 @@ test("A first Credentials open after a revoke reads the grant policy once, audit
 // grant from the same two lists. A revoke that lands while that read is in flight was refused,
 // and audited, twice; reading one list at a time costs one refusal and sends no bindings read.
 test("A bound Slack Secret grant read after a revoke is refused and audited once", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Revoked Slack grants", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Revoked Slack grants");
   const secretBindings: Record<string, SecretBinding> = {};
   for (const token of ["app", "bot"] as const) {
     const secret = await fixture.createSecret(
@@ -1892,12 +2022,7 @@ test("A first Channels open after a revoke reads one bound Secret, audited once"
   await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
   await page.getByText(BOUND_SECRET_UNLISTED, { exact: true }).nth(1).waitFor();
   await waitForIdleFetches(page);
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.secrets.read"],
-  );
+  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.secrets.read"]);
   assert.equal(secretReads(requests.slice(sent)).length, 1);
 });
 
@@ -1950,12 +2075,7 @@ test("Edit Slack after a revoke looks Slack names up once, audited once", async 
   );
   await refused.nth(1).waitFor();
   await waitForIdleFetches(page);
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.channel_directory.lookup"],
-  );
+  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.channel_directory.lookup"]);
   assert.equal(nameLookups(requests.slice(sent)).length, 1);
   const reasons = await refused.allTextContents();
   assert.equal(reasons.length, 2);
@@ -2015,12 +2135,7 @@ test("A Restriction on one bound Secret still reads the Slack card's other Secre
   await page.getByText(BOUND_SECRET_READ_REFUSED, { exact: true }).waitFor();
   await page.getByRole("link", { name: secrets.bot.name, exact: true }).first().waitFor();
   await waitForIdleFetches(page);
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.secrets.read"],
-  );
+  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.secrets.read"]);
   assert.equal(secretReads(requests.slice(sent)).length, 2);
 });
 
@@ -2062,12 +2177,7 @@ test("A lookup refusal for one Slack Secret does not answer another Secret's loo
   const lookups = nameLookups(requests.slice(sent));
   assert.equal(lookups.filter(({ body }) => lookupSecretId(body) === secrets.bot.id).length, 1);
   assert.ok(lookups.some(({ body }) => lookupSecretId(body) === other.id));
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.channel_directory.lookup"],
-  );
+  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.channel_directory.lookup"]);
   // Once no lookup waits, the refusal is forgotten: picking the bound Secret again asks again.
   liftRestriction(fixture.policy, restriction);
   await selectSecret(drawer, "Slack bot token", secrets.bot);
@@ -2181,12 +2291,10 @@ test("Each Slack Secret's first lookup waits alone after a refusal", async (t) =
   const lookups = nameLookups(requests.slice(sent));
   assert.equal(lookups.filter(({ body }) => lookupSecretId(body) === other.id).length, 1);
   assert.equal(lookups.filter(({ body }) => lookupSecretId(body) === secrets.bot.id).length, 1);
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.channel_directory.lookup", "openclaw.channel_directory.lookup"],
-  );
+  assert.deepEqual(deniedActionsSince(fixture, audited), [
+    "openclaw.channel_directory.lookup",
+    "openclaw.channel_directory.lookup",
+  ]);
 });
 
 // Finding 2637. A Restriction refuses an administrator's bound Secret read, and the permission
@@ -2338,19 +2446,14 @@ test("A return to the Access tab after a revoke shows the member notice, audited
     },
   });
   assert.equal(binding.status, 201);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
+  const { page, requests, revoke } = await loginAsRevocableAdministrator(t, fixture, account, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    version: "draft",
+  });
   const policyReads = (from: number) =>
     requests.slice(from).filter(({ path }) => path.includes("/iam/"));
   const iamDenials = () => authorizationDenials(fixture.auditSink, /^openclaw\.iam\./);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
-    account.credentials,
-  );
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
   const configurationTab = page.getByRole("tab", { name: "Configuration", exact: true });
   const loaded = page.getByText("Current policy loaded.", { exact: true });
@@ -2429,21 +2532,14 @@ test("A return to the Access tab after a revoke shows the member notice, audited
 // audited, twice. The tab reads one list at a time, so the revoke costs one audited refusal, as a
 // return to the tab does (D790), and the tab gives way to Configuration.
 test("A first Access open after a revoke shows the member notice, audited once", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Revoked first open", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Revoked first open");
   const agent = await fixture.createAgent(namespace.id, "First open Agent", nativeValues("x"));
   const account = await fixture.createNamespaceMember("revoked-opener", namespace.id, AGENT_READ);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
-    account.credentials,
-  );
+  const { page, requests, revoke } = await loginAsRevocableAdministrator(t, fixture, account, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    version: "draft",
+  });
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version", exact: true }));
   await waitForIdleFetches(page);
@@ -2458,12 +2554,7 @@ test("A first Access open after a revoke shows the member notice, audited once",
   await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await accessTab.count(), 0);
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.iam.roles.list"],
-  );
+  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.iam.roles.list"]);
   assert.deepEqual(
     requests
       .slice(sent)
@@ -2478,38 +2569,19 @@ test("A first Access open after a revoke shows the member notice, audited once",
 // she shared: that reread sent both lists at once. It reads one list at a time, so the revoke
 // costs one audited refusal, no write is sent, and the panel asks for Refresh sharing.
 test("A share after a revoke rereads the policy one list at a time, audited once", async (t) => {
-  const { fixture, page, requests, revoke } = await openAsRevocableAdministrator(
+  // No write is sent, so the Principal ID only has to pass the console's format check.
+  const { fixture, page, requests, panel, audited, sent } = await shareRefusedAfterRevoke(
     t,
     "Revoked share",
-    "draft",
+    "prn_revoked-share-target",
   );
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-  await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
-
-  revoke();
-  const audited = authorizationDenials(fixture.auditSink).length;
-  const sent = requests.length;
-  // No write is sent, so the Principal ID only has to pass the console's format check.
-  await panel.getByLabel("Existing person’s Principal ID").fill("prn_revoked-share-target");
-  await panel.getByRole("checkbox").check();
-  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-  await panel
-    .getByText("Sharing policy requires Installation administration.", { exact: false })
-    .waitFor();
-  await waitForIdleFetches(page);
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
       .map(({ action }: AuditEvent) => action),
     ["openclaw.iam.roles.list"],
   );
-  assert.deepEqual(
-    requests
-      .slice(sent)
-      .filter(({ path }) => path.includes("/iam/"))
-      .map(({ method, path }) => `${method} ${path.replace(/^\/namespaces\/[^/]+/, "")}`),
-    ["GET /iam/roles"],
-  );
+  assert.deepEqual(iamReads(requests.slice(sent)), ["GET /iam/roles"]);
   // The form waits for Refresh sharing. Its controls stay in the Tab order, described by the
   // refusal that says so, and send nothing (class of finding 2899).
   const refusal = (await panel.getByRole("alert").textContent())?.trim();
@@ -2535,21 +2607,26 @@ test("A share after a revoke rereads the policy one list at a time, audited once
 // read-only until the page's Refresh. Refresh sharing now rereads the Agent's permission answer
 // and the Namespace's, neither audited, and then the policy, one list at a time. Still revoked,
 // it sends no policy read and adds no audited refusal.
-async function shareRefusedAfterRevoke(t: TestContext, name: string) {
+async function shareRefusedAfterRevoke(
+  t: TestContext,
+  name: string,
+  principalId = "prn_regrant-share-target",
+) {
   const opened = await openAsRevocableAdministrator(t, name, "draft");
-  const { fixture, page, revoke } = opened;
+  const { fixture, page, requests, revoke } = opened;
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
   revoke();
   const audited = authorizationDenials(fixture.auditSink).length;
-  await panel.getByLabel("Existing person’s Principal ID").fill("prn_regrant-share-target");
+  const sent = requests.length;
+  await panel.getByLabel("Existing person’s Principal ID").fill(principalId);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await panel
     .getByText("Sharing policy requires Installation administration.", { exact: false })
     .waitFor();
   await waitForIdleFetches(page);
-  return { ...opened, panel, audited };
+  return { ...opened, panel, audited, sent };
 }
 
 function permissionReads(requests: Requests, namespaceId: string, permissionsPath: string) {
@@ -2593,12 +2670,7 @@ test("Refresh sharing after administration is granted again rereads access, then
   );
   assert.deepEqual(iamReads(after), ["GET /iam/roles", "GET /iam/access-bindings"]);
   // The share's refusal is the only audited one.
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.iam.roles.list"],
-  );
+  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.iam.roles.list"]);
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await waitForEnabled(stop);
   await waitForEnabled(remove);
@@ -2624,12 +2696,7 @@ test("Refresh sharing while still revoked sends no policy read and adds no audit
     [opened.permissionsPath, `/namespaces/${opened.namespaceId}/permissions`].sort(),
   );
   assert.deepEqual(iamReads(after), []);
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.iam.roles.list"],
-  );
+  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.iam.roles.list"]);
 });
 
 // Finding D795. Once the Access tab's recheck settled that a revoked administrator no longer
@@ -2649,16 +2716,11 @@ test("A revoke the Access tab settles takes away administrator controls without 
   );
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const account = await fixture.createNamespaceMember("revoked-controls", namespace.id, AGENT_READ);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
-    account.credentials,
-  );
+  const { page, requests, revoke } = await loginAsRevocableAdministrator(t, fixture, account, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    version: "draft",
+  });
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
   const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
   const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
@@ -2713,9 +2775,7 @@ test("A revoke the Access tab settles takes away administrator controls without 
 // which a member may do without an audited refusal: her own Namespace stays selected, with its
 // page, and the others go. If her own Namespace is gone too, the page says so, as a refocus does.
 test("A revoke the Access tab settles drops the Namespaces only administration could read", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Member team", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Member team");
   await fixture.createNamespace("Administered team", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Member team Agent", nativeValues("x"));
   const account = await fixture.createNamespaceMember("revoked-lister", namespace.id, AGENT_READ);
@@ -2757,12 +2817,7 @@ test("A revoke the Access tab settles drops the Namespaces only administration c
   assert.equal(await heading.isVisible(), true);
   assert.equal(listReads(sent).length, 1);
   // The Access tab's refused policy read is the only audited refusal; the list read adds none.
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.iam.roles.list"],
-  );
+  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.iam.roles.list"]);
 
   // Administration returns at Refresh, and then ends together with her own Namespace read
   // while the list read is in flight: the page gives way to the Namespace unavailable panel.
@@ -2805,9 +2860,7 @@ test("A revoke the Access tab settles drops the Namespaces only administration c
 // page load reads the list itself, and a grant that arrives before the old reread's answer
 // reaches only a later load.
 test("After a revoke the selector keeps its Namespace, and a reread the page left writes nothing", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Member team", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Member team");
   const other = await fixture.createNamespace("Alpha team", { ready: true });
   const administered = await fixture.createNamespace("Administered team", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Member team Agent", nativeValues("x"));
@@ -2906,24 +2959,17 @@ test("After a revoke the selector keeps its Namespace, and a reread the page lef
 // read that outlives its page, so the answer can settle after she left for another page. That
 // page's load reads the Namespace list itself; the settle adds no second read beside it.
 test("A revoke that settles during a page load leaves the Namespace list to that load", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Member team", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Member team");
   await fixture.createNamespace("Administered team", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Member team Agent", nativeValues("x"));
   const account = await fixture.createNamespaceMember("moving-lister", namespace.id, AGENT_READ);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
+  const { page, requests, revoke } = await loginAsRevocableAdministrator(t, fixture, account, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    version: "draft",
+  });
   const listReads = (from: number) =>
     requests.slice(from).filter(({ method, path }) => method === "GET" && path === "/namespaces");
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")),
-    account.credentials,
-  );
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
   await accessTab.click();
   await page.getByText("Current policy loaded.", { exact: true }).waitFor();
@@ -2968,6 +3014,32 @@ test("A revoke that settles during a page load leaves the Namespace list to that
 // it; the page learns of that only from a later read. Her own grant is Agent read, so her
 // permission answer changes from an administrator's to a reader's: no Stop, no Delete and a
 // read-only draft.
+async function loginAsRevocableAdministrator(
+  t: TestContext,
+  fixture: ConsoleFixture,
+  account: Pick<
+    Awaited<ReturnType<ConsoleFixture["createNamespaceMember"]>>,
+    "principal" | "credentials"
+  >,
+  target: {
+    namespaceId: NamespaceFixture["id"];
+    agentId: AgentFixture["id"];
+    version: Parameters<typeof detailUrl>[3];
+  },
+) {
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  await login(
+    page,
+    fixture,
+    String(detailUrl(fixture, target.namespaceId, target.agentId, target.version, "configuration")),
+    account.credentials,
+  );
+  return { page, requests, revoke };
+}
+
 async function openAsRevocableAdministrator(t: TestContext, name: string, version = "active") {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2975,17 +3047,11 @@ async function openAsRevocableAdministrator(t: TestContext, name: string, versio
   const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("x"));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const account = await fixture.createNamespaceMember("reread", namespace.id, AGENT_READ);
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
-  const revoke = grantInstallationAdministration(fixture, account.principal);
-  const shown = version === "draft" ? "draft" : revision.id;
-  await login(
-    page,
-    fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, shown, "configuration")),
-    account.credentials,
-  );
+  const { page, requests, revoke } = await loginAsRevocableAdministrator(t, fixture, account, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    version: version === "draft" ? "draft" : revision.id,
+  });
   const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
   const stop = stopAgentButton(page);
   await waitForEnabled(stop);
@@ -3146,12 +3212,7 @@ test("Plugins opened while a newer permission reread is in flight waits for it",
     0,
   );
   // The Access tab's refused policy read is the only audited refusal.
-  assert.deepEqual(
-    authorizationDenials(fixture.auditSink)
-      .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.iam.roles.list"],
-  );
+  assert.deepEqual(deniedActionsSince(fixture, audited), ["openclaw.iam.roles.list"]);
 });
 
 // Finding D792. A refusal after the page confirmed administration settles nothing until the
@@ -3233,9 +3294,7 @@ const FORBIDDEN = {
 // Access tab out, so an administrator keeps it. The tab is about the whole Agent, so the viewed
 // version's evidence steps aside while it is open.
 test("An unknown Installation access answer keeps the Access tab", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Access unknown", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Access unknown");
   const agent = await fixture.createAgent(namespace.id, "Unknown Agent", nativeValues("v1"));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
@@ -3262,9 +3321,7 @@ test("An unknown Installation access answer keeps the Access tab", async (t) => 
 // A refused policy read with focus on the Access tab hides the tab, moves focus to
 // Configuration's and replaces the Access entry in history, so Back does not return to it.
 test("A refused sharing read moves focus off the hidden Access tab", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Sharing refused", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Sharing refused");
   const agent = await fixture.createAgent(namespace.id, "Refused Agent", nativeValues("x"));
   const { page } = await newPage(t, fixture);
   const read = await holdRequests(
@@ -3338,9 +3395,7 @@ function routeDeploymentStatus(
 }
 
 test("Agent detail says when the current or requested version cannot be read", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Hidden versions", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Hidden versions");
   const agent = await fixture.createAgent(namespace.id, "Hidden Agent", nativeValues("v1"));
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
@@ -3419,9 +3474,7 @@ test("Agent detail says when the current or requested version cannot be read", a
 // After a stop request the Stop row names the current version. One the reader cannot read is
 // named in the page's words there too, not by its raw ID (finding D791).
 test("A requested stop names an unreadable current version in words", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Stopped hidden", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Stopped hidden");
   const agent = await fixture.createAgent(namespace.id, "Stopped hidden Agent", nativeValues("v1"));
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
@@ -3444,9 +3497,7 @@ test("A requested stop names an unreadable current version in words", async (t) 
 });
 
 test("Agent detail says an Agent's versions are hidden, not missing, when none is readable", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unreadable versions", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unreadable versions");
   const agent = await fixture.createAgent(namespace.id, "Hidden history", nativeValues("v1"));
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   denyRevisionRead(fixture, namespace, first.revision);
@@ -3478,6 +3529,8 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   await waitForEnabled(stop);
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  await dialog.getByText("Agent: Pending history", { exact: true }).waitFor();
+  await expectConfirmationAgentId(dialog, pending.id);
   await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
@@ -3504,9 +3557,7 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
 });
 
 test("Agent detail reports a failed dedicated replacement as probably not serving", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Failed replacement", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Failed replacement");
   const agent = await fixture.createAgent(
     namespace.id,
     "Dedicated Agent",
@@ -3541,9 +3592,7 @@ test("Agent detail reports a failed dedicated replacement as probably not servin
 // Embedded activation selects the new version before its gateway is ready, so a failed
 // embedded redeploy leaves the failed version selected and nothing else serving (D225).
 test("Agent detail reports a failed selected version as probably not serving", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Failed selection", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Failed selection");
   const agent = await fixture.createAgent(namespace.id, "Embedded Agent", nativeValues("v1"));
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const selected = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
@@ -3583,9 +3632,7 @@ test("Agent detail reports a failed selected version as probably not serving", a
 // The API's message carries the next step, so occ and HTTP clients get it too (finding 1393);
 // the console shows that message once and adds only the link to the page that holds the fix.
 test("Deployment activity guides a failed model check or an unauthorized gateway cli", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Model check", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Model check");
   const { page } = await newPage(t, fixture);
   const cases: {
     error: DeploymentError | null;
@@ -3743,9 +3790,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
 });
 
 test("Agent detail keeps an embedded Agent's failed redeploy separate from serving", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Embedded redeploy", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Embedded redeploy");
   const agent = await fixture.createAgent(namespace.id, "Embedded Agent", nativeValues("v1"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const replacement = await fixture.deployAgent(namespace.id, agent.id);
@@ -3818,9 +3863,7 @@ const neutralDeployments = [
 ];
 
 test("Agent detail and list show superseded and stopped deployments as neutral, not failed", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Neutral deploys", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Neutral deploys");
   const { page } = await newPage(t, fixture);
   // Each Agent's recorded deployment error and detail page, by Agent name.
   const errors = new Map<string, DeploymentError>();
@@ -3986,9 +4029,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
 });
 
 test("Agent detail reads the selected version's deployment record once on load", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Single record read", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Single record read");
   const agent = await fixture.createAgent(namespace.id, "Single read Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
@@ -4145,6 +4186,8 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   // Cancelling the confirmation sends nothing and returns focus to the row's icon.
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop Running Agent?" });
+  await expectConfirmationAgentId(dialog, running.id);
+  assert.equal(await dialog.getByText(draft.id, { exact: true }).count(), 0);
   await dialog
     .getByText(/Configuration, versions, Credentials, and workspace data are retained/)
     .waitFor();
@@ -4210,6 +4253,8 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   // Deletion names the kept Configuration and model Secret, then queues cleanup.
   await remove.click();
   dialog = page.getByRole("dialog", { name: "Delete Running Agent?" });
+  await expectConfirmationAgentId(dialog, running.id);
+  assert.equal(await dialog.getByText(draft.id, { exact: true }).count(), 0);
   await dialog
     .getByText("The Configuration and model credential Secret stay in this Namespace.")
     .waitFor();
@@ -4361,9 +4406,7 @@ for (const action of ["Stop", "Delete"]) {
 // typed 409 shows the API's sentence, and a conflict the API does not explain keeps the list's own
 // sentence (findings 2538, 2561).
 test("Agents list row Stop and Delete show the API's 400 and 409 reasons", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Row refusals", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Row refusals");
   const agent = await fixture.createAgent(namespace.id, "Refused Row", nativeValues("row"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -4487,6 +4530,7 @@ test("Agents list row actions explain missing access and still report a refused 
   await dialog.waitFor();
   advice.release();
   await dialog.getByText(AGENT_STOP_DENIED).waitFor();
+  await expectConfirmationAgentId(dialog, agent.id);
   const confirm = dialog.getByRole("button", { name: "Stop Agent" });
   assert.equal(await confirm.isDisabled(), true);
   const cancel = dialog.getByRole("button", { name: "Cancel" });
@@ -4519,18 +4563,23 @@ test("Agents list row actions explain missing access and still report a refused 
     "the row's note line fits",
   );
   assert.equal(await note.getAttribute("title"), bothDenied);
-  assert.equal(
-    await stop.evaluate((node) => {
-      const id = node.getAttribute("aria-describedby")?.split(" ")[0];
-      if (id === undefined) {
-        throw new Error("Missing description ID");
-      }
-      return globalThis.document.getElementById(id)?.textContent;
-    }),
-    bothDenied,
+
+  // On a narrow desktop the table scrolls to the icons. Their full descriptions
+  // must stay inside the table even when the actions column is off screen.
+  await page.setViewportSize({ width: 800, height: 844 });
+  await row.getByRole("link", { name: "Guarded Agent", exact: true }).focus();
+  assert.ok(
+    await page.evaluate(
+      () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    ),
+    "unavailable actions do not widen the page",
   );
-  assert.equal(await stop.isDisabled(), true);
-  assert.equal(await remove.isDisabled(), true);
+  for (const action of [stop, remove]) {
+    await expectReachableReason(page, action, bothDenied);
+    assert.equal(await page.getByRole("dialog").count(), 0);
+  }
+  assert.ok(await page.locator(".table-scroll").evaluate((node) => node.scrollLeft > 0));
+  assert.equal(await page.evaluate(() => globalThis.scrollX), 0);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 
   // An operate grant shows after Refresh: Stop becomes available while Delete stays explained.

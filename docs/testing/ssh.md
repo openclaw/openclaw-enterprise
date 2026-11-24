@@ -9,15 +9,17 @@ last_verified: "2026-11-04"
 ## Overview
 
 Verify the SSH Compute Driver against a disposable Linux host with real
-OpenClaw and systemd. The default real-host run checks readiness only; the model selector below adds provider execution.
+OpenClaw and systemd. The default real-host run with `OCC_TEST_SSH_REAL=1` alone
+creates and removes systemd units on the host without calling a model. Set
+`OCC_TEST_SSH_MODEL=1` to add provider calls.
 
 ## Local conformance and startup
 
 Run these checks without a disposable host:
 
 ```sh
-node --test tests/conformance/ssh-compute.test.mjs
-node --test tests/integration/ssh-compute-startup.test.mjs
+node --test tests/conformance/ssh-compute.test.ts
+node --test tests/integration/ssh-compute-startup.test.ts
 ```
 
 They execute the actual helper with transport, account-management, and systemd
@@ -36,8 +38,8 @@ skipped tests fail the lane.
 
 Use a disposable Linux systemd host. This suite verifies readiness, version
 cutover, state persistence, cleanup, and Unix account isolation over real SSH.
-It makes no model call. Without `OCC_TEST_SSH_REAL=1` it skips; a selected run
-fails when prerequisites are missing.
+The suite skips unless `OCC_TEST_SSH_REAL=1` or `OCC_TEST_SSH_MODEL=1` is set.
+A selected run fails if prerequisites are missing.
 
 The fixture image builds on the runtime image's `docker.io/library/node:24-bookworm` base and
 adds systemd as PID 1, sshd, an `openclaw` system user, and the pinned
