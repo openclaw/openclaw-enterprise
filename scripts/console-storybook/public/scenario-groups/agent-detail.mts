@@ -1750,8 +1750,8 @@ export function createAgentDetailScenarios({
           "The saved list includes all four actions. Namespace permissions currently block issue creation.",
         steps: [
           "Choose Edit repository permissions. Check that new actions stay off.",
-          "Open Advanced. Create issues remains selected and disabled. The reason explains why the Agent cannot create issues.",
-          "Clear Open pull requests and save. Verify the pending policy still uses a fixed list.",
+          "Open Advanced. Create issues is selected but blocked by current repository permissions.",
+          "Clear Create issues and save. Verify issue creation stays off and the pending policy still uses a fixed list.",
         ],
       },
       repositoryPermissionsDenied: {

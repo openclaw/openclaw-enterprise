@@ -18,7 +18,7 @@ import {
   configurationErrors,
   configurationAction,
 } from "../configuration-fields.mjs";
-import { button, dismissOnBackdrop, element, mayReturnFocus, setUnavailable } from "../dom.mjs";
+import { button, dismissOnBackdrop, element, mayReturnFocus } from "../dom.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import {
   askForGrant,
@@ -1743,10 +1743,10 @@ export function renderAgentSandboxPolicy(
                       "Blocked by current repository permissions.",
                     );
                 if (reason) {
-                  setUnavailable(checkbox, true, reason);
+                  checkbox.setAttribute("aria-describedby", reason.id);
                 }
                 checkbox.addEventListener("change", () => {
-                  if (formIsCurrent() && choice.value === "write" && permitted) {
+                  if (formIsCurrent() && choice.value === "write") {
                     apiActions = changeRepositoryApiAction(apiActions, action, checkbox.checked);
                     updateDraft();
                   }
@@ -1761,7 +1761,7 @@ export function renderAgentSandboxPolicy(
               element(
                 "p",
                 { className: "hint" },
-                "Checked actions take effect at the next deployment where they are eligible. Issue reads can include pull requests. Opening a pull request can convert an issue.",
+                "These choices control direct requests. If a checked action becomes eligible, the Agent can use it on redeployment. Issue reads can include pull requests. Opening a pull request can convert an issue.",
               ),
             )
           : null;
@@ -1817,7 +1817,7 @@ export function renderAgentSandboxPolicy(
         ? element(
             "p",
             { className: "hint" },
-            "Contributor can push code, create issues and open pull requests wherever permitted. Choose Read-only to prevent writes.",
+            "Contributor can push code, create issues and open pull requests wherever permitted. Read-only prevents direct writes.",
           )
         : null,
       ...fields.map(({ row }) => row),

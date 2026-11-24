@@ -1128,6 +1128,7 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
         namespaceId,
         profiles: ["github-repository"],
         nativeGit: "v1",
+        ...(repository === nativeRepo.repository && { apiActions: { deny: ["issues:create"] } }),
         permissions: {
           contents: "write",
           metadata: "read",
@@ -1930,6 +1931,13 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   await row.getByText("Advanced · Customize access").click();
   assert.equal(await issue.isChecked(), true);
   assert.equal(await pull.isChecked(), true);
+  // Preserve an opt-out even while the Namespace is blocking the same action.
+  await row.getByText("Blocked by current repository permissions.").waitFor();
+  assert.equal(
+    await issue.isEnabled(),
+    true,
+    "a Contributor can opt out before eligibility changes",
+  );
   await issue.uncheck();
   const restricted = [{ ...nativeRepo, apiActions: { deny: ["issues:create"] } }, peerRepo];
   const result = put(custom.base);
