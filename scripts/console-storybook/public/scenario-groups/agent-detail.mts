@@ -87,6 +87,7 @@ type AgentDetailScenario = {
   harnessId?: "openclaw";
   credentialSources?: AgentCredentialSourceBinding[];
   configurationChangedElsewhere?: { values: OpenClawConfigurationDocument };
+  policyState?: "repositoryPermissions" | "repositoryPermissionsLimited";
   repositoryBindings?: RepositoryBindingSelection[];
   repositoryAccess?: RepositoryAccess;
   repositoryOptions?: RepositoryOption[];
@@ -118,7 +119,13 @@ type AgentDetailScenario = {
   stopElsewhereOnReread?: true;
   diagnosticsState?: "noSlack" | "unknown";
   runtimePod?:
-    "startupWarnings" | "dedicatedPair" | "missingAgent" | "none" | "replaced" | "rollover";
+    | "startupWarnings"
+    | "dedicatedPair"
+    | "missingAgent"
+    | "none"
+    | "replaced"
+    | "rollover"
+    | "scaleDown";
   stopNoSelection?: true;
   failedRedeployOnReread?: true;
   runtimeLogDownloadNoPod?: true;
@@ -151,6 +158,47 @@ export function createAgentDetailScenarios({
     deploymentStatus: "queued",
     deploymentErrorCode: null,
   };
+
+  const repositoryPermissionsDraft = {
+    group: "Pages/Agent detail",
+    name: "Set permissions on a saved draft",
+    path: draft,
+    policyState: "repositoryPermissions",
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application", profile: "github-repository" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "github-repository" }],
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        allowedProfiles: ["github-repository"],
+      },
+    ],
+    description:
+      "The saved Agent has a selected repository and no deployment or repository policy.",
+    steps: [
+      "Before Deploy new version, read the conditional warning about deploying without a repository policy and the need for a new Agent to add Per-repository access later.",
+      "Choose Set repository permissions above Deploy new version. In Repositories, choose Manage permissions.",
+      "Choose Enable policy editing, then Add access. Contributor is selected and Advanced is closed.",
+      "Expand Advanced, set Issues to Read-only, and save. Reopen the policy and check that Pull requests still uses the role.",
+    ],
+    gap: "The policy and deployment records are simulated. This preview cannot confirm runtime access.",
+  } satisfies AgentDetailScenario;
+
+  const repositoryPermissions = {
+    ...repositoryPermissionsDraft,
+    name: "Edit repository permissions after deployment",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    description: "The deployed Agent has a saved Contributor policy for example/application.",
+    steps: [
+      "Choose Edit repository permissions. Check that the saved policy matches the active version. Expand Advanced and set Pull requests to No access.",
+      "Save the policy. Confirm the new policy is pending. Reopen Manage permissions and check that Issues still uses the role.",
+      "Change Contributor to Read-only and save. Reopen Manage permissions to check your choice.",
+    ],
+  } satisfies AgentDetailScenario;
 
   const configurationConflictDraft = {
     group: "Pages/Agent detail",
@@ -347,6 +395,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Resize through desktop, tablet, and phone widths. Prepare this version sits beside Versions on a desktop and above it below 1,100 px. Each step shows a check when done or an open ring, with its detail line under the step text; Deploy new version stays on the first screen at 1440x900.",
           "Focus the selected tab and press Left, Right, Home and End: focus moves between tabs without opening one. Enter opens the focused tab. Tab leaves the strip and Shift+Tab returns to the selected tab. At phone width the edge with more tabs past it fades.",
+          "At desktop width, focus the selected tab, then press End and Left to focus the tab before last. Narrow the window to 920 px, then 390 px. Confirm the label and focus ring stay clear of both faded edges and the selected panel stays open.",
         ],
         description:
           "An Agent without a version can edit saved settings and deploy its first immutable version.",
@@ -1693,6 +1742,40 @@ export function createAgentDetailScenarios({
         description:
           "The new version draft names Contributor and Read-only access and shows write limits.",
       },
+      repositoryPermissionsDraft,
+      repositoryPermissions,
+      repositoryPermissionsLimited: {
+        ...repositoryPermissions,
+        name: "Block unlisted API resources",
+        policyState: "repositoryPermissionsLimited",
+        description:
+          "The saved limits allow both listed resources. Namespace permissions currently block issue creation.",
+        steps: [
+          "Choose Edit repository permissions. Check that unlisted API resources are blocked.",
+          "Open Advanced. Issues allows Read and create, but current permissions limit it to Read-only.",
+          "Set Issues to Read-only and save. Reopen the pending policy. Select Reset to role defaults to remove all API limits.",
+        ],
+      },
+      repositoryPermissionsDenied: {
+        ...repositoryPermissions,
+        path: `${draft}&tab=repositories`,
+        name: "Repository policy read denied",
+        readOnlyPermissionSummary: true,
+        description: "The viewer can read this draft but cannot read the repository policy.",
+        steps: [
+          "Choose Manage permissions. Check the permission guidance. The Console shows no policy or save controls.",
+        ],
+      },
+      repositoryPermissionsLoading: {
+        ...repositoryPermissions,
+        path: `${draft}&tab=repositories`,
+        name: "Repository permissions loading",
+        rules: [{ suffix: "/sandbox-policy/networking", hold: true }],
+        description: "The policy read stays pending until the Console times out.",
+        steps: [
+          "Choose Manage permissions. Check the loading message and wait for the read error.",
+        ],
+      },
       repositoryEditor: {
         group: "Pages/Agent detail",
         name: "Edit inherited and custom repository access",
@@ -1824,6 +1907,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Fold Deployment details and Tab to Run diagnostics for this version. Routine queued polls keep the fold, focus and visible button position. Repeat expanded at desktop and phone widths; unchanged healthy Refresh deployment also keeps the fold.",
           'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+          "Open draft and check the hint beside the enabled Deploy new version button. It reads “v7 was queued at the last check.”",
         ],
       },
       deploymentRunning: {
@@ -1836,7 +1920,7 @@ export function createAgentDetailScenarios({
           "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
         steps: [
           'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
-          "Open draft and select the text “Ready to deploy.” beside Deploy new version. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
+          "Open draft and select the text “v7 was in progress at the last check.” beside the enabled Deploy new version button. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
         ],
       },
       deploymentRunningActivates: {
@@ -2869,6 +2953,7 @@ export function createAgentDetailScenarios({
         description:
           "The Logs tab shows the Gateway Pod, its OOMKilled restart and BackOff Event, then redacted operational output with a withheld-structured-output row. Previous instance is available after the restart.",
         steps: [
+          "At 1440 px, read the Gateway status. Phase and Ready share a row. Last termination has its own row, with the reason, exit code, and time visible before Age.",
           "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
           "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
           "Expand the runtime.startup_phase row to inspect its fields. Check the local date, time, and UTC offset in each timestamp. From 320px up, each timestamp stays on one line; below about 400px it takes a line of its own, with the level beside the origin under it. When the Logs card is narrower than 662px (at 1000px and below, and from 1101px to about 1280px, where the card sits beside the version list), the message moves under the time, level, and origin instead of shrinking.",
@@ -2899,7 +2984,8 @@ export function createAgentDetailScenarios({
         description:
           "The first runtime status takes 1.2 s after the Logs tab is selected. The Logs panel reserves space for the strip and output.",
         steps: [
-          "Scroll to the version tabs and select Logs. The area keeps its height. After 1.2 s the strip and output appear and the panel scrolls into view.",
+          "Focus Logs and press Enter. While runtime status is loading, press Shift+Tab until Viewing version has focus. When the output appears, focus stays on Viewing version and the page stays at the same scroll position.",
+          "Reset the story, open Logs again, and leave focus on the tab. When the output appears, Logs keeps focus and the panel scrolls into view if needed.",
         ],
       },
       runtimeLogsStartupWarnings: {
@@ -2912,6 +2998,7 @@ export function createAgentDetailScenarios({
         description:
           "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color. With no restart there is no previous instance, and a note under the log toolbar says so.",
         steps: [
+          "At 1440 px, read the Gateway status across three rows. Look for Phase and Ready, Container and Restarts, then State and Age.",
           "Tab through the log controls. Previous instance takes focus and looks unavailable, described by “This container has not restarted, so there is no previous instance.” Space or a click does not check it (finding 2944).",
         ],
       },
@@ -2922,8 +3009,8 @@ export function createAgentDetailScenarios({
         description:
           "The Agent (Harness) and Gateway Pod cards share the Logs panel's width, each with its long generated name and its init containers.",
         steps: [
-          "At 1440 the two cards sit side by side and together fill the panel; no blank column is left beside them.",
-          "At 390 each card spans the panel, one under the other.",
+          "At 1440 px, the cards sit side by side and fill the panel. Read each container name and its restart count on the same row, then its state and any termination details before the next container.",
+          "At 390 px, the cards stack. Read one label and its value per row, in the same order.",
         ],
       },
       runtimeLogsMissingAgentPod: {
@@ -3105,6 +3192,18 @@ export function createAgentDetailScenarios({
           "Tab through Source, Previous instance, Include debug, Follow, Refresh logs and Download. Each takes focus and looks unavailable, its description is the permission message, and Enter, Space, a click or an arrow key changes nothing.",
         ],
       },
+      runtimeLogOnePodRemains: {
+        ...runtimeLogsPage,
+        name: "One Pod remains while reading logs",
+        runtimePod: "scaleDown",
+        description:
+          "The selected Pod keeps serving logs when the other Pod disappears. The Pod / container picker is no longer needed.",
+        steps: [
+          "At 1440 px, note the status rows in the first Pod card. Tab from Source to Pod / container and leave the first Pod selected.",
+          "After the next status update, check that the remaining Pod widens and keeps the same status rows. The picker disappears, Source has focus, and the same output remains visible. Tab to Previous instance.",
+          "Reload and tab to Previous instance before the update. Focus should stay there.",
+        ],
+      },
       runtimeLogPodReplaced: {
         ...runtimeLogsPage,
         name: "Selected Pod disappears from runtime status",
@@ -3277,6 +3376,26 @@ export function createAgentDetailScenarios({
           "Use Tab to reach Retry and press Enter. Confirm the H1 becomes Research assistant and receives keyboard focus.",
         ],
       },
+      agentReadUnavailableOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Retry an Agent read on tab return",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+            status: 408,
+            skip: 1,
+            once: true,
+          },
+        ],
+        description: "A simulated Agent read timeout masks the Agent name and hides the draft.",
+        steps: [
+          "Open the preview in its own tab. Choose Edit Configuration, make an unsaved edit, and scroll the editor into view.",
+          "Switch to another browser tab and return. Confirm the heading is Agent details, the warning says Could not check Agent details, and the draft is hidden.",
+          "Focus Retry with Tab if needed, then press Enter. Confirm Research assistant and the unsaved edit return at the previous scroll position.",
+        ],
+      },
       configurationError: {
         group: "Pages/Agent detail",
         name: "Configuration unavailable",
@@ -3334,7 +3453,7 @@ export function createAgentDetailScenarios({
         description: "The Console retries one temporary Configuration read failure on tab return.",
         steps: [
           "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit, select text in the editor, and scroll until the page header is out of view.",
-          "Switch to another browser tab and return. When Still checking… appears at the bottom of the viewport and the draft is hidden, switch away again. Let the delayed retry finish while the preview tab is hidden.",
+          "Switch to another browser tab and return. When the draft hides for the automatic retry, confirm Still checking… appears immediately and only once at the bottom of the viewport, then switch away again. Let the delayed retry finish while the preview tab is hidden.",
           "Return to the preview. After the next access check succeeds, confirm the status disappears and the editor regains focus with the unsaved draft, selection, and scroll position intact. Type without clicking the editor to verify that only the selected text changes. Reset the story and repeat at 390 px wide. Confirm the status fits the viewport and navigation remains available.",
         ],
       },

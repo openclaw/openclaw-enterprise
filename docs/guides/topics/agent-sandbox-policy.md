@@ -1,5 +1,24 @@
 # Review policy denials and change one Agent's network access
 
+## Repository access
+
+To change one Agent's access, choose **Edit repository permissions** on its Configuration snapshot
+or open its version draft and choose **Repositories → Manage permissions**.
+Save the first repository policy before you deploy. An Agent previously deployed without one needs a new Agent ID to use these controls.
+
+1. Enable policy editing if prompted. Choose **Add access** beside the repository you want.
+2. **Contributor** is the default where Write is permitted. The Agent can push code, open pull requests and create issues within its approved GitHub permissions. Choose **Read-only** to prevent direct writes.
+3. For example, to keep push access and prevent direct issue creation, open **Advanced** and set **Issues** to **Read-only**. Leave **Pull requests** on **Use role**. A limit persists even when current permissions already block that operation.
+4. Choose **Save repository policy** and deploy the new version. Saving alone leaves the running version unchanged. Manage permissions compares the saved policy with the active version. When reducing access, verify retirement of the previous Sandbox.
+
+**No access** blocks direct requests for a resource. To block unlisted resources, including future ones,
+select **Allow only explicit API selections**. Choose which resources to allow. Git access stays the same.
+**Reset to role defaults** removes these limits for this Agent and repository.
+
+[Namespace limits and GitHub permissions](../../reference/repository-credentials/access-levels.md#native-git-delivery) apply to every Agent using the registration. If a bound repository has no grant, the Agent can't open PRs anywhere. Unbind an unused repository and redeploy.
+
+## Network denials
+
 Open an Agent in the OCE console, select its running version, and choose
 **Policy denials**. You need the Agent's existing Sandbox log permissions to see
 observed denials. A version that runs without a Sandbox records none, and the tab
@@ -144,3 +163,34 @@ JSON by default. Use `-o yaml` for YAML. Policy reads show saved Agent rules
 and admitted or Driver defaults. Generated model and Git rules can still apply
 when the arrays are empty. See [Local Setup policy files](../deploy/local-sandbox-network-policy.md)
 for defaults and operator ceiling inputs.
+
+## Set GitHub access before the first deployment
+
+In **Create Agent → Repository access**, check the repositories the Agent needs.
+For administrators who can read policies, a new empty picker defaults to
+**Per-repository access** when eligible GitHub repositories are available.
+Presets retain their selections. With no boxes checked, **Create Agent** saves
+no repository policy and can deploy immediately. To save an explicit deny-all
+list, use the policy editor on an undeployed draft. Once an Agent has deployed
+without a list, including with **Access profiles**, you need a new Agent to
+use per-repository access.
+
+Check each owner/name. Each selection starts at **Contributor** if
+the Installation and Namespace allow writes. Otherwise, it starts at **Read-only**.
+Read-only allows clone and fetch. Contributor adds push. Creating pull requests
+or issues also requires deployment support, GitHub permissions and applicable
+API rules. Choose Read-only wherever the Agent does not need write access.
+
+With one or more repositories selected, choose **Save Agent draft**. The Agent
+and its grants are saved together, with
+policy editing off. This requires Installation and Agent administration, permission
+to manage, read and update policy, and a supported Dedicated runtime and model
+Credential Source. If saving is refused, the Configuration and model credentials
+can remain saved. If the Console cannot confirm the grants, do not deploy.
+Select **Recheck saved GitHub access** to read the same draft again.
+
+Check the grants shown beside **Deploy new version**. Choose **Edit repository permissions** to adjust the saved grants.
+Close the dialog to change repository selections. The credential profiles listed
+in Configuration do not override the saved network policy. If the policy changes
+before deployment, the Console stops the request. Select **Review saved GitHub
+access** and check the current grants before you deploy again.

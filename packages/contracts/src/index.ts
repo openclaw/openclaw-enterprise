@@ -173,6 +173,11 @@ export {
 } from "./sandbox-policy.ts";
 export {
   maxRepositoryNetworkGrants,
+  parseRepositoryApiLimits,
+  type RepositoryApiLevel,
+  type RepositoryApiLimits,
+  type RepositoryApiMaximum,
+  isCanonicalRepositoryNetworkPolicy,
   repositoryNetworkGrantPattern,
   parseRepositoryNetworkPolicyCeiling,
   RepositoryNetworkPolicyAdmissionError,
@@ -1838,6 +1843,8 @@ export type {
   DeploymentPolicyValidationContext,
   NetworkPolicyCapabilities,
 } from "./deployment-policy.ts";
+export { pathCovered } from "./deployment-request-match.ts";
+export { validRequestPath } from "./request-path.ts";
 
 export type {
   BearerCredentialProjection,

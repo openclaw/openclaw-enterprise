@@ -1319,6 +1319,34 @@ exec "$0.fixture" "$@"
       },
     );
 
+    await t.test("busy migration names the lock while keeping the original Job", async (t) => {
+      const { f, statePath, stopped, attempt, assertHeld } = await prepare(t);
+      const marker = "private-job-marker";
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          ...stopped,
+          preflightResults: {
+            "--apply-for-installation": {
+              phase: "Failed",
+              log: marker + '\n{"event":"migration.failed","code":"MIGRATION_DATABASE_BUSY"}\n',
+            },
+          },
+        }),
+      );
+      await assert.rejects(attempt(), (error: Error & { stderr?: string }) => {
+        const message = error.stderr ?? "";
+        assert.match(message, /MIGRATION_DATABASE_BUSY/);
+        assert.match(message, /migration-deploy-apply\/preflight-migration\.log/);
+        assert.match(message, /Do not replay the Job/);
+        assert.equal(message.includes(marker), false);
+        return true;
+      });
+      assert.equal(field((await readMigrationStages(f)).apply, "state"), "creating");
+      await assert.rejects(attempt(), /evidence directory is locked/);
+      await assertHeld(1);
+    });
+
     await t.test("an older candidate rejecting guarded apply never advances", async (t) => {
       const { f, statePath, stopped, attempt, assertHeld } = await prepare(t);
 

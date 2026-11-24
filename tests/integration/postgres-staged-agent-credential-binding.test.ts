@@ -201,9 +201,21 @@ async function controlledRetirementTransport(
       const copy = copies.get(String(request.name));
       return copy?.provider && { provider: copy.provider };
     },
+    ListProviders: (request) => {
+      assert.equal((request.workspace_scope as Wire).workspace, workspace);
+      return {
+        providers: [...copies.values()].flatMap(({ provider }) => (provider ? [provider] : [])),
+      };
+    },
     GetProviderProfile: (request) => {
       const copy = copies.get(String(request.id));
       return copy?.profile && { profile: copy.profile };
+    },
+    ListProviderProfiles: (request) => {
+      assert.equal((request.workspace_scope as Wire).workspace, workspace);
+      return {
+        profiles: [...copies.values()].flatMap(({ profile }) => (profile ? [profile] : [])),
+      };
     },
     DeleteProvider: (request) => {
       if (refused) {

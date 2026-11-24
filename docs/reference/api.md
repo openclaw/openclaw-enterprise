@@ -4749,6 +4749,9 @@ Create a Namespace-owned Agent
 | `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
 | `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Save the initial GitHub grants on this draft atomically. Requires permission to enable editing, save and read the Agent networking policy. Omit for ordinary profile access. |
+| `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `workspaceDefaultsId` | `string` | No | pattern: `^[a-f0-9]{64}$` |
 
 Example request
@@ -5794,6 +5797,9 @@ List approved repository choices for Agent creation in one Namespace
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16; unique items: true |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data[].githubAccess` | `object` | No | Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions. |
+| `data[].githubAccess.access` | `"read" or "write"` | Yes | — |
+| `data[].githubAccess.repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `meta` | `object` | Yes | — |
 | `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
@@ -7064,6 +7070,7 @@ Save an Agent revision from the Agent's saved settings
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `expectedRepositoryPolicyVersion` | `integer or null` | No | Send the reviewed networking policy version to require a saved repository policy at that version. Send null to require no saved repository policy. Omit to skip this check. A version or a saved repository policy requires SandboxPolicy read. An authorized mismatch returns HTTP 409. |
 | `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 
 Example request
@@ -8656,6 +8663,9 @@ List approved repository choices for updating one Agent
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16; unique items: true |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data[].githubAccess` | `object` | No | Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions. |
+| `data[].githubAccess.access` | `"read" or "write"` | Yes | — |
+| `data[].githubAccess.repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `meta` | `object` | Yes | — |
 | `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
@@ -9054,9 +9064,18 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.policy.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.policy.repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Saved repository grants. An empty array denies all repositories. |
 | `data.policy.repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `data.policy.repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
+| `data.policy.repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |
+| `data.policy.repositoryNetworkPolicy[].apiLimits.issues` | `"none" or "read" or "write"` | No | — |
+| `data.policy.repositoryNetworkPolicy[].apiLimits.pull_requests` | `"none" or "read" or "write"` | No | — |
 | `data.policy.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.policy.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `data.protectedExecution` | `boolean or null` | Yes | Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone. |
+| `data.repositoryApiMaxima` | `array<object>` | No | max items: 32; Selected repositories eligible for API limits and the maximum Git and API levels permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy. |
+| `data.repositoryApiMaxima[].access` | `"read" or "write"` | Yes | — |
+| `data.repositoryApiMaxima[].issues` | `"none" or "read" or "write"` | Yes | — |
+| `data.repositoryApiMaxima[].pull_requests` | `"none" or "read" or "write"` | Yes | — |
+| `data.repositoryApiMaxima[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.repositoryNetworkPolicyCeiling` | `array<object>` | Yes | max items: 32; Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently. |
 | `data.repositoryNetworkPolicyCeiling[].access` | `"read" or "write"` | Yes | — |
 | `data.repositoryNetworkPolicyCeiling[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
@@ -9131,6 +9150,10 @@ Replace one Agent network policy additions
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Omit to preserve the saved grants. Sending an explicit empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported. |
 | `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
+| `repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |
+| `repositoryNetworkPolicy[].apiLimits.issues` | `"none" or "read" or "write"` | No | — |
+| `repositoryNetworkPolicy[].apiLimits.pull_requests` | `"none" or "read" or "write"` | No | — |
 | `repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 
 Example request
@@ -9187,6 +9210,10 @@ Example request
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Saved repository grants. An empty array denies all repositories. |
 | `data.repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `data.repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
+| `data.repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |
+| `data.repositoryNetworkPolicy[].apiLimits.issues` | `"none" or "read" or "write"` | No | — |
+| `data.repositoryNetworkPolicy[].apiLimits.pull_requests` | `"none" or "read" or "write"` | No | — |
 | `data.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `meta` | `object` | Yes | — |
@@ -9304,6 +9331,10 @@ Example request
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Saved repository grants. An empty array denies all repositories. |
 | `data.repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `data.repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
+| `data.repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |
+| `data.repositoryNetworkPolicy[].apiLimits.issues` | `"none" or "read" or "write"` | No | — |
+| `data.repositoryNetworkPolicy[].apiLimits.pull_requests` | `"none" or "read" or "write"` | No | — |
 | `data.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `meta` | `object` | Yes | — |
