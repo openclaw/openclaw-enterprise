@@ -359,6 +359,7 @@ export interface OpenShellBackendDefinition {
     readonly credential_proxy?: string;
     /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
     readonly credential_refresh?: string;
+    readonly token_service?: string;
   };
 }
 
@@ -622,6 +623,8 @@ type CredentialSourceOwner =
       readonly driverId?: never;
       /** Present for registrations owned by an Installation-selected credential store. */
       readonly tokenServiceInstanceId?: string;
+      /** Private, nonsecret reference interpreted by the selected TokenService. */
+      readonly backendRef?: Readonly<Record<string, string>>;
     };
 
 export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
@@ -1737,6 +1740,14 @@ export {
   PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
 } from "./api/agent-credential-push.ts";
+export {
+  AgentAutomationParams,
+  CreateAgentAutomationBody,
+  UpdateAgentAutomationBody,
+  DeleteAgentAutomationQuery,
+  AgentAutomationPageQuery,
+  AgentAutomationResponse,
+} from "./api/agent-automations.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 

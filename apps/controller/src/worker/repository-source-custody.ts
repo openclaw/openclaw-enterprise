@@ -10,8 +10,10 @@ import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
  * TokenService custody for registrations that name a Source. An install whose registry names
  * none builds nothing here: no lock pool, no platform state and no IAM driver.
  *
- * The installation configuration selects only the OCC TokenService (`drivers.token_service.id`
- * must be `occ`), so the custody read constructs that driver, as the API server does.
+ * Only the OCC TokenService holds a github Source, so the custody read constructs that driver,
+ * as the API server does. The OpenShell TokenService preview refuses the github preset at
+ * registration, and an Installation cannot change TokenService while a Source exists, so under
+ * the preview no github Source is owned by the selected driver and each loan is refused.
  */
 export async function startWorkerRepositorySourceCustody(options: {
   readonly registry: GitHubRepositoryRegistry | undefined;

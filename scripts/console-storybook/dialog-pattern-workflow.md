@@ -10,7 +10,8 @@ simulated data.
    and **Create Secret**. Each is a centred box with the same corners, edge,
    shadow and backdrop. Cancel is on the left and the confirming action on the
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
-   Create Secret).
+   Create Secret). In Stop and Delete, check the Agent name and ID before
+   confirming.
    In Delete, read what stays in the Namespace, then open **View separate cleanup
    commands**. Each command includes the Namespace ID. Press Enter on **Copy
    Configuration command**, then on **Copy Secret command** if it appears. Only

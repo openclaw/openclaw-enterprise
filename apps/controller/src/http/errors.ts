@@ -999,7 +999,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(
       400,
       "INVALID_REQUEST",
-      "Static sources accept only the optional provider_preset and, for github, repositories configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit. A github token must also fit native Git's limits.",
+      "Static sources accept only provider_preset and, for github, repositories config. Supply one nonempty UTF-8 credential without NUL within the Secret limit and, for github, native Git's limits. The OpenShell TokenService preview holds only openai Sources.",
     );
   }
   if (
