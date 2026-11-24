@@ -87,6 +87,10 @@
 {{- fail (printf "%s must be a Kubernetes resource name of at most 253 characters" .label) -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "openclaw.channelEgress.slotName" -}}
+{{- printf "channel-egress-%s-%d" (.gatewayName | sha256sum | trunc 12) (int .port) -}}
+{{- end -}}
 {{- /* Shared repository inputs. Only an explicit delivery selection, broker or OpenShell listener activates them. */ -}}
 {{- define "openclaw.repositoryCredentials.gitEnabled" -}}
 {{- $credentials := .Values.repositoryCredentials -}}
@@ -325,7 +329,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "installation.name must follow the Name rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators" -}}
 {{- end -}}
 {{- if .Release.IsInstall -}}
-{{- $secret := required "bootstrap.credentials.secretName must reference a precreated Secret" .Values.bootstrap.credentials.secretName -}}
+{{- $secret := required "Set bootstrap.credentials.secretName. Use an unused name with occ installation install. Direct Helm and --bootstrap-credentials=existing require a precreated Secret in the release namespace." .Values.bootstrap.credentials.secretName -}}
 {{- include "openclaw.requireString" (dict "label" "bootstrap.credentials.secretName" "value" $secret) -}}
 {{- if or (gt (len $secret) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $secret)) -}}
 {{- fail "bootstrap.credentials.secretName must be a DNS subdomain of at most 253 characters" -}}
@@ -538,6 +542,21 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.resourceRequirements" (dict "name" "channelEgress.resources" "requirements" $egress.resources) -}}
 {{- range $index, $cidr := $egress.excludedCidrs -}}
 {{- include "openclaw.networkPolicy.cidr" (dict "name" (printf "channelEgress.excludedCidrs[%d]" $index) "value" $cidr) -}}
+{{- end -}}
+{{- if gt (len $egress.upstreamProxies) 32 -}}{{- fail "channelEgress.upstreamProxies accepts at most 32 endpoints" -}}{{- end -}}
+{{- $seenProxies := dict -}}
+{{- range $index, $proxy := $egress.upstreamProxies -}}
+{{- if or (not (kindIs "map" $proxy)) (not (regexMatch "^https?://[^/@[:space:]]+$" (toString $proxy.url))) (hasKey $seenProxies (toString $proxy.url)) -}}{{- fail "channelEgress.upstreamProxies requires unique HTTP/HTTPS endpoints without credentials" -}}{{- end -}}
+{{- $_ := set $seenProxies (toString $proxy.url) true -}}
+{{- if or (not $proxy.addresses) (gt (len $proxy.addresses) 16) -}}{{- fail "each channel upstream proxy requires 1 to 16 IPv4 /32 addresses" -}}{{- end -}}
+{{- range $address := $proxy.addresses -}}
+{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" (toString $address)) -}}{{- fail "channel upstream proxy addresses must be IPv4 /32 CIDRs" -}}{{- end -}}
+{{- include "openclaw.networkPolicy.cidr" (dict "name" (printf "channelEgress.upstreamProxies[%d].addresses" $index) "value" $address) -}}
+{{- end -}}
+{{- end -}}
+{{- if $egress.proxyTrust.caSecretName -}}
+{{- include "openclaw.validateResourceName" (dict "label" "channelEgress.proxyTrust.caSecretName" "value" $egress.proxyTrust.caSecretName) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "channelEgress.proxyTrust.caKey" "value" $egress.proxyTrust.caKey) -}}
 {{- end -}}
 {{- if or (lt (int $egress.listenerPortStart) 1024) (gt (int $egress.listenerPortEnd) 65535) (lt (int $egress.listenerPortEnd) (int $egress.listenerPortStart)) (gt (sub (int $egress.listenerPortEnd) (int $egress.listenerPortStart)) 61) -}}
 {{- fail "channelEgress requires a range of at most 62 Agent listener ports" -}}

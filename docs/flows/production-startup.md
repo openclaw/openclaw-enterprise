@@ -209,11 +209,13 @@ secrets before Driver construction or PostgreSQL access. `composeProduction` and
 the auth factory repeat it. Endpoints include `/healthz` and `/readyz`.
 `apps/controller/src/composition/postgres-readiness.ts:createPostgresReadinessCheck`
 shares one application-pool `SELECT 1` per instance across overlapping `GET` and
-implicit `HEAD` probes. The query stays active when probes disconnect. Subsequent
-probes query again once PostgreSQL returns.
-API startup allows 120 one-second failures. API readiness times out after one
+implicit `HEAD` probes, even after disconnects; later probes query again once it
+returns. API startup allows 120 one-second failures; readiness times out after one
 second. [Worker startup](../../scripts/production-healthcheck.ts) allows 24
 five-second failures.
+
+`apps/controller/src/metrics/listener.ts:startMetricsListener`
+[bounds scrapes](../reference/metrics.md#configuration-and-access).
 
 `apps/controller/src/index.ts:createFastifyApp`
 
@@ -380,6 +382,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23: Bound scrapes.
 
 - 2026-11-23 12:51: Correct Job checks. (authoring-run/07352eb0-f0e9-4aa3-bbe2-6be9c96a1476 - 7ef4d08319f4ad8dfd1dd52473db764ccad53235)
 

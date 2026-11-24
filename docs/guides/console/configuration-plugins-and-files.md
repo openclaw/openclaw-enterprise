@@ -8,9 +8,9 @@ after **Deploy new version**; a workspace file save applies at once.
 
 The tab shows one card for each part of the Configuration: the **Configuration
 draft** or **Configuration snapshot** summary, then **Settings**, which holds the
-native document. The draft adds **Collaboration and safety** and **Gateway
-managed mode**. The help under each control states what the control does and
-what it risks.
+native document, and **Gateway channel proxy**. The draft adds **Collaboration
+and safety** and **Gateway managed mode**. The help under each control states
+what the control does and what it risks.
 
 | Field                                  | Meaning                                                                                                          |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
