@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-23"
-last_updated_session: "authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6"
+last_updated_session: "authoring-run/f51f99ed-c96c-4d33-b96b-5fcd4a39ca77"
 ---
 
 # Agent sandbox policy flow
@@ -90,8 +90,8 @@ uses selected Namespace permissions and saved grants. Admission passes saved or 
 `read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-binds rules to the credential-only Provider. OpenShell filters eligible REST routes through
-Namespace `apiActions`. Active filters require native policy. Git and PR safeguards persist. OCE skips body validation
+binds rules to the Provider. Namespace `apiLimits` narrow REST routes. Issuance and renewal
+require native enforcement for any explicit limit. OCE skips body validation
 ([limits](../reference/repository-credentials/access-levels.md#known-limits)).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
@@ -270,6 +270,8 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 20:25: Describe Namespace API limits. (authoring-run/f51f99ed-c96c-4d33-b96b-5fcd4a39ca77 - 7d6fb6a344)
 
 - 2026-11-23 19:42: Document API filters. (authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6 - d9b229e2ff)
 

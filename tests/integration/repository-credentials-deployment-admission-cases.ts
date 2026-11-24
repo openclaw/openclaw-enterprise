@@ -1392,7 +1392,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
                   namespaces: repo.namespaces.map((policy) => ({
                     ...policy,
                     permissions: { ...policy.permissions, issues: "write", pull_requests: "write" },
-                    apiLimits: { default: "none" as const },
+                    apiLimits: { issues: "read" as const },
                   })),
                 }
               : repo,
