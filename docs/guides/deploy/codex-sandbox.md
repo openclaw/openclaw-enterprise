@@ -231,8 +231,11 @@ Verify the ordinary Agent workflow with `sandbox: workspace-write` and
    cannot do this, the test is inconclusive.
 2. Request a native command that writes and reads a unique workspace file,
    reads the expected contents of the outside file and tries to replace them
-   with different text. Check the tool events. Model prose or approved
-   `require_escalated` execution cannot establish this result.
+   with different text. Match the command to its native tool result. Require
+   that result to confirm the original outside contents and report the
+   overwrite outcome. A missing, incomplete or interrupted result is
+   inconclusive. Model prose or approved `require_escalated` execution
+   cannot establish this result.
 3. Outside the sandbox in the same container, check that the workspace
    write persisted and the outside file is unchanged. A permission or
    read-only filesystem error on the attempted overwrite shows denial.
