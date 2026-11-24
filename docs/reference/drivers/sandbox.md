@@ -324,10 +324,10 @@ inputs as Sandbox startup fields.
 
 ## Limits
 
-- Sandbox selection is optional. Only dedicated execution with bundled Kubernetes Compute supports a Sandbox, including one from an installed package.
+- A Sandbox is optional for dedicated Codex and required for dedicated native OpenClaw. Bundled and installed Sandbox Drivers require dedicated execution with bundled Kubernetes Compute.
 - Supported facets are `networking`, `filesystem`, and `process`. The Sandbox
   does not authorize commands or create a Sandbox for each tool invocation.
-- Each Sandbox reports Harness status, including [Strands](strands-box.md). Compute activates traffic.
+- Some Sandbox Drivers, including [Strands](strands-box.md), report Harness status. Compute activates traffic.
 
 ## Troubleshooting
 

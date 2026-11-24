@@ -37,7 +37,7 @@ graph TD
   I -->|No| E["<b>Harness executes</b><br/>Inspect saved work"]
   I -->|Yes| J["Poll same thread<br/>Up to two minutes"]
   J -->|Idle| E
-  J -->|Still active or revoked| H
+  J -->|Still active or revoked| K["Report turn error<br/>Do not retry admission"]
   D -->|Undispatched workspace disconnect| F{"Safe retry within 60 seconds?"}
   F -->|Yes| G["Wait one second<br/>Keep same occurrence"]
   G --> D

@@ -51,7 +51,7 @@ graph TD
   K --> C1{"<b>Read Codex requirements</b><br/>Harness readiness"}
   C1 -- "refused" --> R
   C1 -- "compatible" --> M["<b>Wait for Harness</b><br/>Compute readiness"]
-  V -- "OpenClaw" --> T["<b>Sandbox ready</b><br/>No inbound exposure"]
+  V -- "OpenClaw" --> T["<b>Sandbox ready</b><br/>Harness port may remain exposed"]
   T --> M
   M --> Y{"<b>Workspace node</b><br/>Connected?"}
   Y -- "no" --> R1["<b>Retry node</b><br/>Relaunch after process exit"]
