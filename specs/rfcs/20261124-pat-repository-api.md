@@ -13,29 +13,23 @@ author: freeqaz-openai
 
 ## Summary
 
-An administrator should be able to give an Agent Git, Issues and Pull requests access through a managed GitHub personal access token (PAT), without putting the token in the Agent. This proposal adds an explicit `:api` ceiling to the proposed `github` managed static Source. The Namespace registration, saved Agent grant and existing `apiLimits` select the direct requests that stock OpenShell permits. Bare repository entries remain Git-only.
+Let an Agent use stock `gh api` to read and create issues and pull requests without receiving a GitHub personal access token (PAT). An operator opts in per repository with `:api`. An Agent editor chooses the repository and grants Read or Write. A routine upgrade cannot turn an existing Git-only grant into permission to open a pull request.
 
-This proposal builds on the [Source RFC #7149](https://github.com/openclaw/openclaw-enterprise/pull/7149), [enrollment #7152](https://github.com/openclaw/openclaw-enterprise/pull/7152) and [repository Worker delivery #7153](https://github.com/openclaw/openclaw-enterprise/pull/7153). These dependencies are still open. [#7247](https://github.com/openclaw/openclaw-enterprise/pull/7247) extends that Git-only stack and reuses the GitHub App route rules already on main.
+The GitHub App path is on main. The PAT path depends on the pending [Source proposal](https://github.com/openclaw/openclaw-enterprise/pull/7149), [enrollment](https://github.com/openclaw/openclaw-enterprise/pull/7152) and [Git delivery](https://github.com/openclaw/openclaw-enterprise/pull/7153). [The API implementation](https://github.com/openclaw/openclaw-enterprise/pull/7247) builds on that stack.
 
 ## Proposal
 
-### Enroll and adopt the Source
+### Enroll the token
 
-Enroll a dedicated fine-grained PAT with a `repositories` ceiling, as in this example.
+For example, enroll `acme/docs:read:api,acme/web:write:api`. A bare entry such as `acme/tools:write` stays Git-only. Adding API access, expanding it from Read to Write or changing the repository set while retaining API access requires a new Source.
 
-```text
-acme/docs:read:api,acme/web:write:api
-```
+Use a dedicated fine-grained PAT. At enrollment and replacement, check the resource owner, match GitHub's **selected repositories** to the declared set and grant the minimum permissions. Stop if you cannot verify them. [GitHub also grants read access to public repositories](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token). That does not open a direct route in the Sandbox. OCE cannot verify or reduce the token's upstream permissions.
 
-The `:api` suffix permits eligible Issues and Pull requests routes. The suffix alone grants no route. A bare entry such as `acme/tools:write` permits Git only.
+### Adopt the grant
 
-Before enrollment and every token replacement, the operator checks GitHub's selected repository list for the chosen resource owner against the declared set and checks the resource permissions. Stop if these cannot be confirmed. [GitHub fine-grained PATs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token) also have read access to public repositories. OpenShell still checks each direct route. OCE cannot attest the token's actual scope, detect extra rights or shrink it. TokenService keeps the real token outside the Agent workload.
+For a PAT registration with API routes, the catalog returns a repository reference tied to the grant identity, including the Source ID, repository, Namespace, permissions and API limits. If the registration changes that identity, an old selection fails even on the first deployment of a saved draft. Select the repository again and deploy. Git-only and App registrations keep their existing references. Replacing the token within the same scope preserves the selection.
 
-A Source update or token rotation cannot add `:api`, raise an enrolled API entry from Read to Write, or change the repository set while API access remains enabled. Enroll a new Source for those changes. This also prevents removing a declaration solely to enable PR creation without reducing the PAT's GitHub scope. A same-scope token replacement retains the ceiling and repeats the operator check.
-
-Changing a registration must not turn an old Git selection into permission to open a PR on the next deployment. For a PAT registration that permits API routes, the picker returns an opaque repository reference tied to the registration's grant identity. That identity includes the Source ID, repository, Namespace, permissions and API limits. Rotating the secret within the same scope keeps the reference valid.
-
-When the identity changes, a saved selection no longer matches. This applies even to a draft that has never deployed. Select the repository again from the catalog and deploy. If the Agent already has a saved repository policy, the person selecting the new API access needs the permissions required to review and apply that policy. They can keep the Agent Git-only with `apiLimits.default: "none"`. Removing access and stopping the Agent must remain possible. Git-only and App registrations keep their existing references.
+To keep an Agent Git-only, **replace** its grant’s entire `apiLimits` with `{"default":"none"}`. A resource-specific override takes precedence over the default.
 
 ### Select direct routes
 
@@ -47,13 +41,13 @@ For each repository and resource, intersect the enrolled Source ceiling, Namespa
 | Write            | The eligible GETs and POST `/issues` or `/pulls` where the resource has write permission              |
 | None             | No API routes                                                                                         |
 
-Set `permissions.issues` and `permissions.pull_requests` independently on the Namespace registration. A saved Write grant permits creation by default where the Source and Namespace allow it. Use `apiLimits.issues: read` to disable issue creation while retaining eligible PR creation, or restrict Pull requests independently. Limits cannot expand permissions. Git access retains its existing checks.
+Set `permissions.issues` and `permissions.pull_requests` independently. Write permits creation by default where the Source and Namespace allow it. Set `apiLimits.issues` to `read` to disable direct issue creation while keeping eligible PR creation. Repositories sharing a token need identical registration permission maps.
 
-Use the same token permission map across repositories that share a token. For example, grant the Agent Read on `acme/docs` and Write on `acme/web`, with matching Namespace permissions. After deployment, stock `gh api repos/acme/docs/issues` can list issues. With Pull requests Write on `acme/web`, `gh api --method POST repos/acme/web/pulls --input pr.json` can open a PR. A direct POST to `acme/docs` is denied. The Agent uses a placeholder. OpenShell injects the PAT only after allowing the route.
+For example, `gh api repos/acme/docs/issues` lists issues with Read. With Write on `acme/web`, `gh api --method POST repos/acme/web/pulls --input pr.json` can open a PR. A direct POST to the read-only repository is denied.
 
-Save, deploy and each locked Source loan must refuse operations outside the intersection. The Sandbox compiles exact repository routes and binds them to the revision's endpointless PAT Provider. The **repository Worker** owns that Provider for Git and REST together, using the same deployed-copy record, Source lock, loan expiry, replacement, retirement readback and `write_unknown` fence described in [#7153](https://github.com/openclaw/openclaw-enterprise/blob/a448eac9fdc6ac4040a37f89907432d5da8bf421/docs/reference/repository-credentials/repository-token-source.md#admission-and-renewal). A `github` Source has no Credential Proxy Provider. Stock OpenShell 0.1.9 inspects TLS, enforces the loaded rules and injects the token. OCE makes no request-time GitHub authorization callback. If it cannot verify the policy, recipient or lock, the Worker must withhold the credential. If a Provider write has an unknown result, do not retry it. Stop the Agent and verify Sandbox retirement before redeploying.
+The **repository Worker** owns one endpointless Provider per revision for Git and REST. It reuses [the copy record, Source lock, expiry and retirement checks](https://github.com/openclaw/openclaw-enterprise/blob/a448eac9fdc6ac4040a37f89907432d5da8bf421/docs/reference/repository-credentials/repository-token-source.md#L69-L101). There is no second Credential Proxy copy. The Sandbox binds exact routes to the Provider. Stock OpenShell 0.1.9 checks each request and replaces the placeholder only on an allowed route. No request-time OCE callback is needed.
 
-The proposed flow uses one Provider per revision.
+The proposed flow is shown below.
 
 ```mermaid
 ---
@@ -72,13 +66,11 @@ flowchart TB
 
 ### Preserve the PR safeguard
 
-Keep the merged GitHub App rule unchanged. A bound repository without an Agent grant suppresses PR creation everywhere while eligible issue creation remains available. For a PAT, also refuse a delivery that would create PRs if the Source declares a repository outside the Agent's grants, including an unbound repository. Restrict Pull requests to Read or enroll a matching Source. This adds no global issue veto.
+If a bound repository lacks a saved grant, suppress PR creation across the binding as on the App path. If PR creation remains enabled and the PAT Source declares an ungranted repository outside the binding, refuse admission and renewal. Limit PRs to reads or enroll a narrower Source. Eligible issue creation can continue when PR creation is disabled.
 
 ## Risks and limits
 
-OpenShell checks direct methods and paths. It does not restrict JSON fields or their query equivalents. A permitted B request can refer to read-only A or denied private C through a PR fork head, an issue parent, issue conversion or a workflow. A correctly selected PAT can still affect A because A is in its selected set. A mis-scoped token might expose or affect C. PR creation can convert an issue even when issue creation is disabled. GitHub's public repository read access also remains part of the token's upstream authority.
-
-Maintainers must hold broader rollout if read-only A changes, private C is exposed or changed, or those effects remain unverified. To lift the hold, obtain separately authorized live GitHub evidence with A Read, B Write and private C excluded from the PAT selection, bindings and grants. Inspect B and both protected repositories after each relevant parent-link, fork-head, issue-conversion and workflow case, using an independent authorized observer, and record what GitHub accepted or refused. A controlled fixture can prove direct enforcement and modeled effects. It cannot settle GitHub's live behavior. GraphQL, PATCH, DELETE, merge operations and strict body or query restrictions are outside this proposal.
+Suppose the Agent can read A, write B and has no grant on private C. OpenShell checks direct methods and paths. GitHub interprets the body and query. A request to B can name a fork head, convert an issue to a PR or link a parent issue. A correctly selected token may still let an issue on B change a relationship on read-only A. An overbroad token could expose commits from C through a PR on B. Workflows can also have indirect effects. Disabling direct issue creation does not prevent issue conversion. Strict field checks would require upstream OpenShell support. GraphQL, PATCH, DELETE and merge routes stay outside this proposal.
 
 ## Interface changes
 
@@ -104,13 +96,11 @@ Reuse the Git-only Source, TokenService, repository syntax, permission intersect
 
 ## Acceptance Criteria
 
-These are required outcomes for qualification.
-
-- **AC-1 · Enrollment and compatibility.** Enroll a bare Git-only Source, save and deploy an Agent, then upgrade and redeploy without changing the registration. Verify Git succeeds and REST is denied before the origin on both deployments. Reject malformed ceilings and API expansion through update or rotation. Point the same registration at a new API-enabled Source. Refuse first deploy and redeploy under the stale selection, and refuse re-selection by an editor who cannot manage the saved policy. Verify REST appears only after authorized selection and deployment. Restoring a registration must never restore a cleared grant. Check operator scope confirmation, withdrawal and cleanup.
-- **AC-2 · Direct authority.** Save and deploy one Agent with A Read, B Write and private C outside the PAT selection, bindings and grants. Through stock OpenShell and a controlled origin, verify A and B list/detail reads, B push and issue/PR creation, direct denials for A writes and C access, independent resource limits, placeholder use, no request-time OCE callback and absence of the PAT from the workload.
-- **AC-3 · Replacement and downgrade.** Replace the PAT with a distinguishable same-scope value. Independently observe the new value at the controlled origin without exposing it to the Agent. Confirm Worker delivery and verify that fresh requests use the new value after confirmation. Downgrade B, redeploy the same Agent and verify retirement of the old Sandbox. B reads continue. Fresh POSTs stop before the origin. Git follows the reduced grant. Refuse stale loans and unverifiable policy. After withdrawal, issue and renew nothing. Confirm the installed copy retires or expires. Exercise the unknown-write fence without replay.
-- **AC-4 · Indirect effects and rollout.** Verify both PR safeguards and eligible B issue creation while PR creation is disabled. In a controlled fixture, inspect A, B and C after modeled parent-link, fork-head, issue-conversion and workflow cases. Record direct denials separately from indirect effects. Keep broader rollout on hold until the separately authorized live GitHub evidence in **Risks and limits** establishes that A did not change and C was neither exposed nor changed.
+- **AC-1 · Adoption.** Verify an unchanged Git-only Source still fetches after upgrade and has no API access. Change the registration to an API-enabled Source under the same configured name. Reject first deploy and redeploy with the old selection. Require a policy editor to adopt the new selection. Restoring a registration must not restore a withdrawn grant.
+- **AC-2 · Direct access.** Use a controlled origin on stock OpenShell. Give one saved Agent Read on A and Write on B. Leave C outside the token, bindings and grants. Read issues and PRs, push to B and create one issue and one PR there. Independently verify both writes. Require zero forbidden requests at the origin for writes to A and direct access to C. Check resource limits, both PR safeguards, placeholder isolation and zero OCE callbacks.
+- **AC-3 · Rotation and withdrawal.** Keep the old synthetic value valid. Verify the origin receives the replacement on REST requests without logging either value. Downgrade B and redeploy. Verify old Sandbox retirement, successful reads and denied push and POST. After withdrawal, refuse new loans and confirm installed access ends. An uncertain Provider write must block retry until retirement.
+- **AC-4 · Indirect effects.** Exercise fork heads, parent issues, issue conversion and workflows. Inspect A, B and C after each case. A fixture establishes only the effects it models. Before broader rollout, require separately authorized GitHub evidence that read-only A did not change and private C was neither exposed nor changed. Keep the rollout restricted if either outcome is unknown.
 
 ## Delivery and verification
 
-This RFC needs human architectural review and manual human merge. The pending Git-only prerequisites must land before their API extension. The implementation proposal contains source and controlled conformance coverage. Neither that evidence nor hosted CI proves an installed PAT workflow or live GitHub effects. This RFC authorizes no deployment, live GitHub writes or broader rollout.
+Review and merge this RFC manually. Land the Git-only dependencies before the implementation. The installed PAT journey and live GitHub checks remain to be demonstrated.
