@@ -4,6 +4,10 @@ kind: reference/driver
 
 # CredentialRefreshDriver contract
 
+**Legacy, before the 1.0 cutover.** Main still supports this selection. The
+cutover candidate rejects it; TokenService owns renewal for newly enrolled
+Sources. See [credential implementation status](../credential-sources.md#implementation-status).
+
 ## Overview
 
 `CredentialRefreshDriver` is the legacy renewal contract for Gateway-owned

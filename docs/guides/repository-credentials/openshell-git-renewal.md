@@ -1,37 +1,35 @@
 # Verify Git token renewal
 
-Complete [the first push](openshell-git-push.md#4-verify-the-remote-ref) and keep the same shell, helpers, Agent revision, and write grant. Run this optional proof before restoring read-only access. Arrange an approved read-only PostgreSQL connection.
+For Source-backed Git, TokenService renews the GitHub installation token independently of the Agent revision's saved Repository grant. A request still needs a valid Source credential and must match that grant. Token expiry does not withdraw the grant.
 
-GitHub issues short-lived tokens. The worker prepares a replacement before expiry. Record the first push's Git authorization receipt using an approved read-only PostgreSQL connection. Set the psql variable `revision` to the active revision recorded in the Git setup guide. These queries return identifiers and expiry only.
-
-```sql
--- Run after each push. Save the result before performing the next push.
-SELECT u.exchange_id, u.material_version, a.provider_expires_at
-FROM occ.prepared_repository_git_uses u
-JOIN occ.repository_session_attempts s ON s.admission_id = u.admission_id
-JOIN occ.prepared_github_attempts a ON a.id = u.attempt_id
-WHERE s.revision_id = :'revision' AND u.operation = 'receive-pack';
-
--- Poll until this revision has a committed current version different from the first receipt.
-SELECT a.material_version, a.provider_expires_at
-FROM occ.prepared_github_attempts a
-JOIN occ.prepared_github_families f ON f.source_id = a.source_id
-WHERE f.source #>> '{session,revisionId}' = :'revision'
-  AND a.state = 'committed' AND a.custody = 'current';
-```
-
-Wait for normal worker renewal. The reference implementation starts renewal roughly ten minutes before the usable cutoff for an hour-long token. Do not rotate a key, edit the database, restart the worker or redeploy to force the transition. Confirm the same revision is active, then make one fast-forward push whose parent is the first commit:
+Use [Source-backed Git enrollment](openshell-enrollment.md) and the operator shell
+from [first Agent setup](../deploy/deploy-first-agent.md), which defines `request`
+and `base`. List the active revision's Source IDs:
 
 ```bash
-test "$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)" = "$revision"
-push_turn second "$first_sha"
-second_sha=$(verify_push second "$first_sha")
-test "$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)" = "$revision"
-printf 'Second commit: https://github.com/%s/commit/%s\n' "$repo" "$second_sha"
+revision=$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)
+request GET "$base/agents/$agent/revisions/$revision" |
+  jq -r '.data.credentialSources[].sourceId'
 ```
 
-A proxy receipt records authorization. Verify that GitHub accepted the commit using the remote ref, parent and tree.
+Read each Source with `GET $base/credential-sources/<id>` and set `gitSource`
+to the `github-app-installation` Source for the expected Client and repository
+scope. Before renewal, run an allowed Git read from the active Agent and confirm
+a read of an unselected repository is denied. Record those results. An operator
+with `credential_source:update` can then request renewal explicitly:
 
-Require a second `receive-pack` receipt using the replacement material version, plus both verified GitHub commits. Two pushes with one token do not prove renewal. If Linear is enabled, [repeat the Linear read](../integrations/codex-plugins.md#verify-a-linear-read-through-openclaw) on this revision. If the second push has an uncertain outcome, inspect the remote ref before any retry.
+```bash
+request POST "$base/credential-sources/${gitSource:?}/rotate"
+```
 
-Then [restore read-only access](openshell-read-only.md).
+Repeat both reads from the same active Agent after renewal. Confirm the allowed
+result at GitHub and that the unselected repository remains denied. This manual request does not prove scheduled renewal. To check
+the schedule, repeat the observation when maintenance renews a due Source
+without the manual request. A successful mint alone does not establish that the
+running Agent received the replacement token. Reads made while the original
+token is still valid could use that token. To prove replacement delivery,
+confirm a corresponding Source/Provider version advance through qualified
+evidence, or repeat the allowed read after the original token expires. Source
+GET does not expose the material version.
+
+The earlier Worker/prepared-session SQL exercise is a [historical verification procedure](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/guides/repository-credentials/openshell-git-renewal.md) for pre-cutover releases.

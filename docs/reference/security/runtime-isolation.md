@@ -131,7 +131,7 @@ provisions the Harness and declares networking, filesystem, and process
 containment. The bundled OpenShell provider supports dedicated Codex and native
 OpenClaw, and delegates containment outside the inner Harness sandbox.
 On managed [Credential Proxy paths](../credential-sources.md#implementation-status)
-and existing Gateway delivery paths, the Harness receives a placeholder for
+and pre-cutover Gateway delivery on main, the Harness receives a placeholder for
 the model credential. OpenShell still requires upstream support for the
 app-server token Secret reference and projected identity. Stock gateway incompatibilities fail
 explicitly, and test-only bridges are not production support. Do not infer a

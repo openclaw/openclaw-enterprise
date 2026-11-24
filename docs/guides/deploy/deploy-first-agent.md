@@ -1,10 +1,23 @@
 # Deploy your first Agent
 
-Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace and browser origin from setup.
+Deploy a dedicated Codex Agent with TokenService and the native OpenShell Credential Proxy. Use the [pre-cutover quickstart](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/guides/deploy/deploy-first-agent.md) for older installations that use Credential Gateway.
 
-Use this OpenShell workflow to evaluate Agent deployment and model execution.
-A successful run does not complete the
-[remaining OpenShell production qualification](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
+<a id="evaluate-the-tokenservice-and-credential-proxy-cutover"></a>
+<a id="deploy-on-a-pre-cutover-release"></a>
+
+## Prepare the Installation
+
+Use a matching cutover checkout, controller, runtime, CLI, and Helm artifacts before following the setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Stable or latest artifacts from main do not provide this candidate workflow. Continue in the setup's operator Bash session. Select bundled Kubernetes Compute, OCC TokenService and the OpenShell Sandbox that provides native Credential Proxy delivery. Add the TokenService selection under `drivers` in the Installation YAML before provisioning Agents:
+
+```yaml
+token_service:
+  id: occ
+  configuration: {}
+```
+
+The selected Sandbox registration supplies `credential_proxy_delivery`. Use the [supported Driver selections](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/drivers/selection.md#supported-selections) and apply the Installation with the [operator session's Installation update procedure](quickstart-session.md#update-and-recover-the-installation) if setup has already started OCE. The credential policy uses native delivery. Leave the separate legacy `credential_proxy` selection unset for this workflow.
+
+Before selecting a model credential, confirm that its account policy allows the [OpenShell permission profile](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
 
 ## Prepare an existing OpenShell Gateway
 
@@ -26,101 +39,63 @@ The Kubernetes network helper defaults to `oce-system`. If you use an existing G
 3. Check that the API and worker Pods can reach that Gateway. The quickstart's installation block grants this egress when `OPENSHELL_NAMESPACE` is set before it runs. Otherwise, add scoped egress from those Pods to the `openshell-gateway` Service on TCP 8080 and to its selected Pods on the target port.
 4. Ask the Gateway owner to check ingress for every existing client of the management Pods, including any ingress controller or proxy that connects to them. Verify that each required client has a scoped allow on its destination port before the helper applies its rules. On a cluster that enforces NetworkPolicy, the first ingress policy selecting those Pods can isolate them for ingress.
 
-If repository credentials are already enabled, also [check Gateway egress](#check-gateway-egress-before-adding-git) before deployment.
-
-Create an Agent called `fred` in the Console below, or [start with the API](#1-select-or-register-the-model-credential). Both paths lead to the same onboarding steps. Choose a fresh setup where the name `fred` is available.
-
-## Create and deploy fred in the Console
-
-For a Gateway in another namespace, [complete the Gateway prerequisites](#prepare-an-existing-openshell-gateway) first.
-
-Run `deployment_preflight` in your operator shell before creating the Agent. Open `$CONSOLE_ORIGIN/console/` and sign in with the administrator account from setup. Keep any required browser port-forward running.
-
-<Snippet file="../../snippets/openshell-quickstart/console-agent.md" />
-
-While provisioning runs, open **Agents → fred** in a second tab. Under **Viewing version**, select the first saved version. Copy the Agent ID after `/agents/` and the deployment ID from `revision=` in that tab’s URL.
-
-In the operator shell, enter those IDs to prepare the network rules and wait for that deployment. Record the Agent and its model credential for the Git and Linear walkthroughs.
-
-```bash
-agent='<Agent ID from the Console URL>'
-revision='<deployment ID from the same URL>'
-wait_deployment "$revision"
-request GET "$base/agents/$agent" > "$RUN_DIR/agent"
-name=$(jq -er .data.name "$RUN_DIR/agent")
-principal=$(jq -er .data.servicePrincipalId "$RUN_DIR/agent")
-modelSource=$(jq -er '.data.harnessAuth | select(.method=="credential_source") | .sourceId' "$RUN_DIR/agent")
-```
-
-Continue to [onboarding in the Control UI](#4-complete-onboarding-in-the-control-ui).
-
 ## 1. Select or register the model credential
 
-For a Gateway in another namespace, [complete the Gateway prerequisites](#prepare-an-existing-openshell-gateway) first.
-
-Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
-
-Before selecting either credential, confirm its account policy meets the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
-
-### Option A. ChatGPT service account token
-
-To use Codex plugins, choose a [ChatGPT service account](https://learn.chatgpt.com/docs/enterprise/service-accounts) with the plugins you need enabled. For a new source, save its Codex access token in a private file outside the checkout.
-
-```bash
-source_type=codex-pat
-secret_field=access_token
-credential_file=/secure/oce/codex-token
-```
-
-### Option B. OpenAI API key
-
-> **Warning:** An Agent that uses an OpenAI API key cannot access Codex plugins, including Linear. Choose the service account token if you need plugins.
-
-Use your OpenAI project’s API key. For a new source, save the key in a private file outside the checkout.
-
-```bash
-source_type=openai
-secret_field=api_key
-credential_file=/secure/oce/openai-api-key
-```
-
-### Select or register the source
-
-Set the Agent name and a unique prefix for the credential and role created by this run:
+Choose one method below. Set `modelSource` to the ready TokenService Source in your Namespace. When the Agent runs, the Harness sends a placeholder and Credential Proxy injects the credential into permitted requests.
 
 ```bash
 name=fred
 resource_prefix="$name-$(date +%s)"
 ```
 
-If the credential is already registered, set `MODEL_SOURCE_NAME` to its registered name. Select the ready source and continue to step 2:
+### Sign in with Codex OAuth
+
+Start device login using your operator session. Open the returned verification URL and enter the code there. Keep the code and saved response private.
 
 ```bash
-modelSource=$(request GET "$base/credential-sources" |
-  jq -er --arg n "${MODEL_SOURCE_NAME:?Set the registered source name}" --arg t "$source_type" \
-    '[.data[]|select(.name==$n and .type==$t and .state=="ready" and .ownerCapability=="credential_gateway")]|select(length==1)|first.id')
+device_login="$base/agents/device-authorizations"
+request POST "$device_login" --data '{"harnessId":"codex"}' > "$RUN_DIR/device-login.json"
+jq '.data | {verificationUrl, userCode, expiresAt, intervalSeconds}' "$RUN_DIR/device-login.json"
+device_session=$(jq -er .data.session.id "$RUN_DIR/device-login.json")
 ```
 
-Otherwise, store the credential in a Namespace Secret and register its reference with Credential Gateway. This works with or without the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
+After signing in, poll the same login. If the status is `pending`, wait the indicated interval before requesting another check.
 
 ```bash
-# POST $base/secrets: read the credential from its file.
-jq -n --arg name "$resource_prefix-model" --rawfile token "$credential_file" \
-  '{name:$name,value:($token|rtrimstr("\n"))}' |
-  request POST "$base/secrets" --data-binary @- > "$RUN_DIR/model-secret"
-
-# POST $base/credential-sources: register the Secret reference for the selected login method.
-jq --arg name "$resource_prefix-model" --arg t "$source_type" --arg field "$secret_field" \
-  '{name:$name,type:$t,secrets:{($field):.data.ref}}' "$RUN_DIR/model-secret" |
-  request POST "$base/credential-sources" --data-binary @- > "$RUN_DIR/model-source"
-modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source")
+request POST "$device_login/$device_session/poll" --data '{}' > "$RUN_DIR/device-login-status.json"
+jq -r .data.status "$RUN_DIR/device-login-status.json"
 ```
+
+When the status is `ready`, save the Source ID and continue.
+
+```bash
+modelSource=$(jq -er '.data | select(.status=="ready") | .source.id' "$RUN_DIR/device-login-status.json")
+```
+
+<a id="option-b-openai-api-key"></a>
+<a id="select-or-register-the-source"></a>
+
+### Use an OpenAI API key
+
+Set `credential_file` to the path of your private API-key file. Send the value directly to TokenService through the Source API. The response contains Source metadata.
+
+```bash
+credential_file=/secure/oce/openai-api-key
+jq -n --arg name "$resource_prefix-model" --rawfile key "$credential_file" \
+  '{name:$name,type:"static",config:{provider_preset:"openai"},secret:($key|rtrimstr("\n"))}' |
+  request POST "$base/credential-sources" --data-binary @- > "$RUN_DIR/model-source.json"
+modelSource=$(jq -er '.data | select(.state=="ready") | .id' "$RUN_DIR/model-source.json")
+```
+
+<a id="option-a-chatgpt-service-account-token"></a>
+
+For a Codex PAT, register the token through the same Source request with `config.provider_preset: "codex-pat"` and the token as the `secret` string. A live PAT turn remains unverified. [Register the key](openshell-credential-sources.md#register-the-key) · [Cutover verification](https://github.com/openclaw/openclaw-enterprise/pull/7224)
+
+<a id="create-and-deploy-fred-in-the-console"></a>
 
 ## 2. Create the Configuration and Agent
 
-Register the model with a fail-closed loopback URL. The Gateway uses authenticated WebSocket transport to the dedicated Codex Harness inside OpenShell.
-
-Set `MODEL` to a [Codex model ID available to your credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex), without the `codex/` prefix.
+Use the Agent API to create a draft with the managed Source. Guided Create Agent with a managed Source returns `409`. Choose a [Codex model ID available to your credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex), without the `codex/` prefix.
 
 ```bash
 read -r -p "Codex model ID: " MODEL
@@ -128,12 +103,12 @@ read -r -p "Codex model ID: " MODEL
 
 <Snippet file="../../snippets/openshell-quickstart/codex-configuration.jq" lang="jq" />
 
+The Configuration uses a fail-closed loopback URL. The OpenClaw Gateway reaches the dedicated Codex Harness through authenticated WebSocket transport.
+
 ```bash
-# POST $base/configurations: save the model, sandbox and Gateway settings.
-jq -n --arg model "${MODEL:?Set an authorized model ID}" -f "$RUN_DIR/codex-configuration.jq" |
+jq -n --arg model "$MODEL" -f "$RUN_DIR/codex-configuration.jq" |
   request POST "$base/configurations" --data-binary @- > "$RUN_DIR/configuration"
 
-# POST $base/agents: bind the model source to one dedicated Agent.
 jq -n --arg name "$name" --arg cfg "$(jq -er .data.id "$RUN_DIR/configuration")" \
   --arg m "$modelSource" '{
     name:$name,configurationId:$cfg,executionMode:"dedicated",gatewayManagedMode:true,
@@ -141,7 +116,6 @@ jq -n --arg name "$name" --arg cfg "$(jq -er .data.id "$RUN_DIR/configuration")"
   request POST "$base/agents" --data-binary @- > "$RUN_DIR/agent"
 agent=$(jq -er .data.id "$RUN_DIR/agent")
 principal=$(jq -er .data.servicePrincipalId "$RUN_DIR/agent")
-printf 'Agent: %s\nPrincipal: %s\n' "$agent" "$principal"
 ```
 
 ### Bind the origin before deployment
@@ -188,38 +162,31 @@ jq -n --arg p "$principal" --arg r "$role" --arg s "$modelSource" \
 
 # Provision transport once, before the first revision.
 request POST "$base/agents/$agent/runtime-credentials" --data '{}' > "$RUN_DIR/transport"
-
 ```
 
-<AccordionGroup>
-<Accordion title="Console">
+OCC can derive the first-deployment network grants for Codex OAuth and Codex PAT if the Installation ceiling permits the required requests for one stock Codex executable. [Codex OAuth requests](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/credential-sources.md#codex-account-model-requests) · [Codex PAT requests](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/credential-sources/managed-static.md#codex-pat)
 
-Open `$CONSOLE_ORIGIN/console/` and sign in with the administrator account from installation setup. Keep any required private browser port-forward running.
-
-Run `deployment_preflight` in the operator shell. Open **Agents → fred** and select **Draft · Editable Configuration** under **Viewing version**. In **Prepare this version**, check the saved configuration and credentials, then click **Deploy new version** to start version 1.
-
-<Snippet file="../../snippets/openshell-quickstart/console-first-deploy.md" />
-
-Copy the deployment ID from the Console URL and wait for that deployment in the operator shell:
+If you chose an OpenAI API key, save the network grant on this new Agent. Set `codex_binary` to the absolute path of the stock Codex executable allowed by the Installation. [Network policy authorization](../../reference/sandbox-policies.md#authority-and-admission)
 
 ```bash
-revision='<deployment ID from the Console URL revision parameter>'
-wait_deployment "$revision"
+read -r -p "Approved Codex executable path: " codex_binary
+networking="$base/agents/$agent/sandbox-policy/networking"
+request PATCH "$networking/editing" --data '{"enabled":true}' > "$RUN_DIR/networking-editing.json"
+policy_version=$(request GET "$networking" | jq -er .data.policy.version)
+jq -n --arg binary "$codex_binary" --argjson version "$policy_version" \
+  '{expectedVersion:$version,additions:[
+    {id:"model-egress",binary:$binary,host:"api.openai.com",ports:[{from:443,to:443}]}
+  ]}' |
+  request PUT "$networking" --data-binary @- > "$RUN_DIR/model-networking.json"
 ```
 
-</Accordion>
-<Accordion title="CLI">
-
-Run the [deployment helper](quickstart-session.md#files-and-helpers) loaded during installation setup.
+Deploy with the helper loaded during installation:
 
 ```bash
 deploy_and_wait
 ```
 
-</Accordion>
-</AccordionGroup>
-
-Continue when the deployment reports `succeeded` and the Agent's `activeRevisionId` matches the new revision. If the Console says the model is unavailable, see [Recover from an unavailable model](../topics/agent-troubleshoot.md#the-configured-model-is-unavailable).
+Continue after the deployment reports `succeeded` and the Agent's `activeRevisionId` matches it. If the Console says the model is unavailable, see [Recover from an unavailable model](../topics/agent-troubleshoot.md#the-configured-model-is-unavailable).
 
 <a id="7-verify-a-turn-through-openclaw"></a>
 
@@ -259,6 +226,7 @@ A successful check prints `true`. Each `turn` starts a new conversation. Use the
 </AccordionGroup>
 
 <a id="keep-the-session-for-the-next-stage"></a>
+<a id="check-gateway-egress-before-adding-git"></a>
 
 ## Resume the operator session
 
@@ -266,13 +234,7 @@ A successful check prints `true`. Each `turn` starts a new conversation. Use the
 save_session
 ```
 
-Run the two commands printed by `save_session` to resume in a fresh Bash shell. The private session saves IDs and paths; the service key stays in its protected file. Keep this Agent running. You can add Git with either credential. To add plugins, use the service account token.
-
-### Check Gateway egress before adding Git
-
-If you use an existing Gateway, ask its owner to verify that the management Pods can still reach required outbound services, such as external PostgreSQL. Use scoped egress rules for those services. The helper adds egress for the repository credential hook, DNS, and the Kubernetes API. On a cluster that enforces NetworkPolicy, the first egress policy selecting those Pods can isolate them for egress. Check these allows before Add Git applies the policy.
-
-On Amazon EKS, [verify workspace routing](eks-openshell-installation.md#verify-workspace-routing). To extend this Agent, continue to [Git](../repository-credentials/openshell-git-push.md) or [Plugins](../integrations/codex-plugins.md).
+Run the two commands printed by `save_session` to resume the private operator session in a fresh Bash shell. The service key stays in its protected file. Keep the Agent running. To extend it, follow [Configure GitHub repository access](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/guides/repository-credentials.md) or [Add Codex apps](../integrations/codex-plugins.md).
 
 ## Clean up a separately managed Gateway
 

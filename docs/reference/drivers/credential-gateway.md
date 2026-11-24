@@ -4,6 +4,12 @@ kind: reference/driver
 
 # CredentialGatewayDriver contract
 
+**Legacy, before the 1.0 cutover.** Main still supports this selection. The
+cutover candidate rejects Gateway and Refresh selection and drops old
+Gateway-owned Sources after its safety checks. Use TokenService and Credential
+Proxy for new cutover deployments. See
+[credential implementation status](../credential-sources.md#implementation-status).
+
 ## Overview
 
 `CredentialGatewayDriver` is the legacy delivery contract. It holds credentials

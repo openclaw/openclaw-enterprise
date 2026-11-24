@@ -1,6 +1,9 @@
 # Other credential delivery modes
 
-This reference covers the existing credential delivery paths. See [credential implementation status](../credential-sources.md#implementation-status) for the intended TokenService and Credential Proxy design.
+This reference covers delivery on main before the 1.0 cutover. The cutover
+retires Gateway-owned Sources and selection; it retains some other paths,
+including Channel Secrets and qualified legacy protected egress. See
+[credential implementation status](../credential-sources.md#implementation-status).
 
 For a dedicated Agent, the **OpenClaw Gateway Pod** reads its admitted channel credentials and any configured Gateway password from Kubernetes Secrets. It does not receive the Harness model credential. Embedded execution combines Gateway and Harness in one workload. See [runtime credential placement](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
 

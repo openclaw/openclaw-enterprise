@@ -13,7 +13,20 @@ The same flow applies to guided Agent creation. See [Credential Design 1.0](../.
 
 ## Implementation status
 
-This table separates implemented behavior from work remaining in the proposed design. Existing delivery paths are documented under [other delivery modes](credential-sources/other-delivery-modes.md).
+The table describes **main before the 1.0 cutover**. The submitted
+[cutover candidate](https://github.com/openclaw/openclaw-enterprise/pull/7224)
+retires Credential Gateway and Credential Refresh selection: Installation or
+Backend settings for either Driver are rejected. The database cutover refuses
+active Gateway delivery, related unsettled work, or an unexpired pending device login. Once
+its checks pass, it drops all old Gateway Source records and
+their draft bindings. It does not transfer credentials to TokenService or clean
+up external Workspace Providers or profiles. Operators must enroll replacement
+Sources through TokenService and use the selected Credential Proxy and Sandbox
+for delivery. Plugin OAuth serving remains deferred to
+[#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673).
+
+Other delivery modes and their cutover limits are documented under
+[other delivery modes](credential-sources/other-delivery-modes.md).
 
 | Capability                      | Current implementation                                                                                                                                                                                                         | Remaining work                                                                                                                                                                     |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -15,25 +15,22 @@ whose selections belonged to the Codex Driver.
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
-OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
-**Google Workspace** and add it. Leave **Install without an account** selected
-to verify the installation with `gog --version`. To make Google API calls, choose a ready
-**Google account**, save the selection and deploy. The worker receives an
-OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
-
-The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
-`read` and `operate` on the source, and the Agent needs `operate`. If the
-package digest changes, select the account again. Clearing the slot or removing
-the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, add
+**Google Workspace** with **Install without an account** to check `gog --version`.
+Google OAuth delivery is deferred to [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673).
+For a credentialed static MCP integration, select a compatible TokenService
+Source in its slot and load the tools. See [managed OpenClaw plugins](openclaw-plugins.md).
+The operator and Agent need Source `operate` permission. Clearing a slot or
+removing a Plugin applies on the next deployment; to end access sooner,
+[withdraw the binding](../../reference/credential-sources/withdrawal.md).
 
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
 The CLI example below uses Diffs.
-For dedicated Codex browsing, the curated catalog needs no Secret. Hosted
-discovery requires a bound Service Accounts token Secret under **Credentials**
-and uses it server-side; other authentication methods cannot browse the hosted
-catalog. Select **Save plugin selections**, then
-**Deploy new version**. The prior version keeps its
+For dedicated Codex browsing, the curated catalog needs no account credential.
+Hosted discovery uses a ready Codex account Source through TokenService; see
+[Codex Apps](../integrations/codex-plugins.md). Select **Save plugin selections**, then
+follow [Deploy the change](#deploy-the-change). The prior version keeps its
 original selections. On its **Plugins** tab, you can inspect that immutable
 snapshot. See the [Plugins tab guide](../console/configuration-plugins-and-files.md#plugins-tab)
 for the controls and [deployment status](../../reference/agents.md#deployment-status)
@@ -70,28 +67,26 @@ selection for both worker and script calls. See
 walkthrough.
 [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
 
-The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
-Drivers. Configure `/usr/local/bin/node` in `toolBinaries`, then register a
-`bearer-token` source with the package's MCP host, port, path and placeholder name.
-Reference the saved access token as its `token` Secret and set `protocol: mcp`.
-Attach the source to the Agent draft and grant the operator and Agent service
-principal `credential_source:operate` on it.
-[OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
-· [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
+For static HTTP or MCP credentials, register a TokenService Source using a
+Static Bearer Connection Template restricted to the endpoint and method. Select
+that Source in the Plugin slot, grant the operator and Agent service principal
+`credential_source:operate`, and deploy with the paired Credential Proxy and
+Sandbox. Follow [managed OpenClaw plugins](openclaw-plugins.md) for the commands.
+Plugin OAuth serving remains deferred to [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673).
 
 Allow the OCE API to reach the MCP endpoint for **Load tools**. For HTTPS port 443,
 set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refresh
 them when DNS changes. Other ports need the Installation's managed egress policy.
 This setting is separate from model discovery. Worker calls use the Sandbox policy.
 
-Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
-Choose the tools to enable, then save and deploy. Loading tools again refreshes
+Open **Plugins**, add the plugin, choose the Source, and choose **Load tools**.
+Choose the tools to enable, then save and [deploy the change](#deploy-the-change). Loading tools again refreshes
 the inventory. Additional tools require selection and deployment before the Agent
 can use them. An empty selection leaves the worker server disabled.
 For an enabled tool, open **Tool policy** and set **Require approval for** to
 **Every action** to require human approval for each native call. Select
 **No additional approval** to run without a prompt. The request names the server and tool;
-it does not show arguments. Save and deploy the new version. A direct
+it does not show arguments. Save and [deploy the change](#deploy-the-change). A direct
 script using the same credential can call that enabled tool without Gateway approval.
 If the Slack channel is enabled, remove native Slack per-plugin approver overrides before deploying a managed MCP approval policy.
 Removing the plugin keeps its independently attached
@@ -201,6 +196,11 @@ If other people are updating the same Agent, coordinate before submitting:
 a newer plugin map can be overwritten by the one you read.
 
 ## Deploy the change
+
+If the Agent is running and either its active revision or its draft uses managed
+credential delivery, stop it and wait until its desired runtime state is
+`stopped` and `activeRevisionId` is empty. The cutover rejects replacement from
+or to managed delivery over an active revision with `409`.
 
 Deploy the Agent and keep the returned version ID:
 

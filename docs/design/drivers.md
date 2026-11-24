@@ -8,8 +8,8 @@ current behavior from remaining design work.
 
 Compute, IAM, Configuration, Secret, ServiceAccount, Plugin, Repo, Channel,
 optional Sandbox, TokenService, and Credential Proxy integrations have current
-contracts. Credential Gateway and Credential Refresh still serve existing delivery
-paths. The `InferenceDriver` and general `SandboxPolicy` enforcement described
+contracts. Credential Gateway and Credential Refresh still serve legacy delivery
+on main; the 1.0 cutover retires both selections. The `InferenceDriver` and general `SandboxPolicy` enforcement described
 below remain planned. Current Channel operations validate credentials and look up provider
 directories; runtime messaging is not a general OCC dispatch contract. Current
 Sandbox is optional, can provision the dedicated Harness, and
@@ -116,8 +116,7 @@ without acquiring platform-resource ownership or permission to select itself.
 | `CredentialRefreshDriver` | **Legacy.** Obtain and renew tokens for existing Gateway refresh Sources.                                                                                                                                            |
 | `ChannelDriver`           | Realize authorized Namespace-local messaging operations while the messaging provider retains independent authorization and credentials.                                                                              |
 
-The credential cutover is in progress. The two legacy contracts still serve
-existing Sources; Credential Design 1.0 replaces their custody and renewal with
+The two legacy contracts serve pre-cutover main. Credential Design 1.0 replaces their custody and renewal with
 `TokenServiceDriver` and their delivery with `CredentialProxyDriver`. See the
 [credential implementation status](../reference/credential-sources.md#implementation-status).
 

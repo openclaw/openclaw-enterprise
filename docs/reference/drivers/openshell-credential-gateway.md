@@ -1,14 +1,14 @@
 # OpenShell Credential Gateway
 
-The [Credential Gateway](credential-gateway.md) stores OCC [credential sources](../credential-sources.md)
-as OpenShell providers. The Harness uses placeholders; the trusted supervisor
-adds credentials to matching upstream requests.
-Select it with the [OpenShell SandboxDriver](openshell-sandbox.md) on one `openshell`
-[Backend](../backends.md#openshell-gateway).
+**Legacy setup on main.** The cutover rejects Gateway and Refresh; use
+TokenService and Credential Proxy instead. See [implementation status](../credential-sources.md#implementation-status).
 
-**OpenShell remains unsupported for production.** Workload identity, writable state,
-authentication, admission, and provider-file proof follow the
-[OpenShell qualification contract](openshell-sandbox.md#qualification-contract).
+The [Credential Gateway](credential-gateway.md) stores Sources as OpenShell
+Providers; the supervisor substitutes credentials for Harness placeholders.
+Select it with [OpenShell Sandbox](openshell-sandbox.md) on one
+[`openshell` Backend](../backends.md#openshell-gateway).
+
+**Unsupported for production.** See [qualification](openshell-sandbox.md#qualification-contract).
 
 [Follow a Codex request from placeholder to upstream header](#follow-a-codex-request-through-openshell).
 

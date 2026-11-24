@@ -502,7 +502,7 @@
                     ]
                   },
                   {
-                    "group": "Credential Gateway",
+                    "group": "Legacy Credential Gateway",
                     "pages": [
                       {
                         "page": "reference/drivers/openshell-credential-gateway",
@@ -1146,7 +1146,7 @@
                       },
                       {
                         "page": "reference/drivers/credential-gateway",
-                        "label": "Credential Gateway"
+                        "label": "Legacy Credential Gateway"
                       },
                       {
                         "page": "reference/drivers/credential-proxy",
@@ -1154,7 +1154,7 @@
                       },
                       {
                         "page": "reference/drivers/credential-refresh",
-                        "label": "Credential Refresh"
+                        "label": "Legacy Credential Refresh"
                       },
                       {
                         "page": "reference/drivers/iam",

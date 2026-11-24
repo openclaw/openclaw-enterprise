@@ -1,6 +1,6 @@
 # OpenShell SandboxDriver
 
-Development requires [OpenShell v0.1.9](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.9), the pinned OCE runtime, [Kubernetes Compute](kubernetes-compute.md), and dedicated Codex or native OpenClaw. Embedded OpenClaw is unsupported. OCC owns Agents, revisions, Namespaces, routing, credentials, and authorization. A [Credential Gateway](openshell-credential-gateway.md) or [Credential Proxy](credential-proxy.md) delivers model credentials; see [implementation status](../credential-sources.md#implementation-status). Revision Providers supply enrollment and Codex files. [Production qualification](#qualification-contract) remains open.
+Development requires [OpenShell v0.1.9](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.9), the pinned runtime, [Kubernetes Compute](kubernetes-compute.md), and dedicated Codex or native OpenClaw. Embedded execution is unsupported. OCC owns Agents, revisions, Namespaces, routing, credentials, and authorization. Managed delivery uses [Credential Proxy](credential-proxy.md); pre-cutover main also supports legacy [Credential Gateway](openshell-credential-gateway.md). See [implementation status](../credential-sources.md#implementation-status). Revision Providers supply enrollment and Codex files. [Production qualification](#qualification-contract) remains open.
 
 See [setup](openshell-sandbox/namespace-gateway.md) for Namespace-owned gateways. Settings below cover operator-owned gateways.
 
@@ -38,7 +38,7 @@ and per-tool sandboxes are deferred.
 
 ## Configuration
 
-Select `drivers.sandbox` with Kubernetes Compute. The [`openshell` Backend](../backends.md#openshell-gateway) must list the Sandbox ID and, if selected, the [Credential Gateway](openshell-credential-gateway.md#configure-the-driver) ID. For managed delivery, OCC registers Sandbox and Credential Proxy together; Proxy exposes `credential_proxy_delivery`. Configure the Gateway connection and WSS CA (`rootCertificatePath`) on the Backend.
+Select `drivers.sandbox` with Kubernetes Compute. The [`openshell` Backend](../backends.md#openshell-gateway) must list the Sandbox ID. Main may also list the legacy Credential Gateway before the 1.0 cutover; the cutover rejects that member. Managed delivery registers Sandbox and Proxy together; Proxy exposes `credential_proxy_delivery`. Configure the OpenShell gateway service connection and WSS CA (`rootCertificatePath`) on the Backend.
 
 ```yaml
 drivers:

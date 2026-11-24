@@ -6,13 +6,20 @@ last_verified: "2026-11-02"
 
 # Add Codex plugins to an OpenShell Agent
 
+This procedure uses the Credential Design 1.0 TokenService Source. Earlier
+Gateway-owned PAT Sources and Secret-based catalog lookup are retired in 1.0;
+use the [historical procedure](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/guides/integrations/codex-plugins.md)
+for an older release. The recorded human verification applies to that historical
+procedure. A real PAT-backed model turn and hosted App tool call on the cutover
+remain unqualified.
+
 Enable Linear on the Codex Agent you created during setup (`fred` in this example), then ask it to list teams. You can [add Git](../repository-credentials/openshell-git-push.md) to the same Agent before or after Linear. For dedicated OpenClaw Agents using managed CLI or hosted MCP plugins, see [Get started with managed OpenClaw plugins](../topics/openclaw-plugins.md).
 
 ## Before you start
 
 Use a ChatGPT service account with Codex plugins enabled and an authorized Linear connection. Deploy the Agent with that account’s token. An OpenAI API key cannot access plugins.
 
-Complete [Deploy your first Agent](../deploy/deploy-first-agent.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of the guide. Use the same Agent and model Secret. Selecting a plugin does not authorize a new connection.
+Complete [Deploy your first Agent](../deploy/deploy-first-agent.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of the guide. Use the same Agent and ready TokenService account Source. Selecting a plugin does not authorize a new connection.
 
 ## 1. Enable Linear and redeploy
 
@@ -21,27 +28,23 @@ Complete [Deploy your first Agent](../deploy/deploy-first-agent.md), including b
 
 <Snippet file="../../snippets/openshell-quickstart/linear-console-selections.md" />
 
-In the operator shell, run `deployment_preflight` before you deploy the saved draft.
-
-<Snippet file="../../snippets/openshell-quickstart/console-deployment-actions.md" />
-
-Copy the deployment ID from the Console URL’s `revision` parameter. Run `wait_deployment <deployment-id>` in the same shell to apply the network rules and wait for fred’s new version.
+Save the plugin selections, then continue below to stop and redeploy the Agent.
 
 </Accordion>
 <Accordion title="CLI">
 
 ### Discover Linear in the account catalog
 
-Use the ready Credential Gateway source for the connected service account. The saved session supplies its Namespace source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
+Use the ready TokenService account Source for Codex. The saved session supplies its Namespace Source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
 
 ```bash
-# POST $base/agents/plugins: use the model Secret reference to search this account.
+# POST $base/agents/plugins: authorize catalog discovery with the account Source.
 request GET "$base/credential-sources/${modelSource:?}" |
-  jq -e --arg ns "$namespace" '.data|select(.type=="codex-pat" and .state=="ready" and .ownerCapability=="credential_gateway")|.secrets.access_token|select(.kind=="secret" and .namespaceId==$ns)' > "$RUN_DIR/catalog-secret-ref"
+  jq -e --arg ns "$namespace" '.data|select(.state=="ready" and ((.type=="static" and .config.provider_preset=="codex-pat") or (.type=="oauth2-refresh-token" and .consent.kind=="builtin_codex")))|{kind:"credential_source",namespaceId:$ns,id:.id}' > "$RUN_DIR/catalog-source-ref"
 cursor=""
 while true; do
-  jq --arg cursor "$cursor" '{harnessId:"codex",secretRef:.,q:"linear"} +
-    (if $cursor=="" then {} else {cursor:$cursor} end)' "$RUN_DIR/catalog-secret-ref" |
+  jq --arg cursor "$cursor" '{harnessId:"codex",credentialSource:.,q:"linear"} +
+    (if $cursor=="" then {} else {cursor:$cursor} end)' "$RUN_DIR/catalog-source-ref" |
     request POST "$base/agents/plugins" --data-binary @- > "$RUN_DIR/plugins"
   plugin=$(jq -r 'first(.data.plugins[]|select((.name|ascii_downcase)=="linear" and .available!=false)|.id) // empty' "$RUN_DIR/plugins")
   if [[ -n $plugin ]]; then break; fi
@@ -63,12 +66,24 @@ request GET "$base/agents/$agent" |
       toolDefaults:{enabled:true,approval:"write_actions",reviewer:"human"}}})}' |
   request PATCH "$base/agents/$agent" --data-binary @- > "$RUN_DIR/plugin-agent"
 
-# POST $base/agents/$agent/deploy and wait until this revision becomes active.
-deploy_and_wait
 ```
 
 </Accordion>
 </AccordionGroup>
+
+Managed credential delivery cannot replace an active revision directly. Stop
+the Agent in the operator session:
+
+```bash
+request POST "$base/agents/$agent/stop" > "$RUN_DIR/plugin-stop"
+```
+
+Repeat this check until it succeeds, then run `deploy_and_wait` to deploy the saved draft:
+
+```bash
+request GET "$base/agents/$agent" |
+  jq -e '.data.desiredRuntimeState=="stopped" and .data.activeRevisionId==null'
+```
 
 <a id="verify-a-linear-read-through-openclaw"></a>
 

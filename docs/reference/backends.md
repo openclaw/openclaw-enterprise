@@ -10,7 +10,8 @@ accounts. Its nullable Agent `backendId` association neither grants permissions
 nor changes model or Harness selection. The GitHub Backend owns repository
 credential configuration for the built-in GitHub policy and uses the separate
 Agent `repositoryBindings` selection. The OpenShell Backend owns the gateway
-connection shared by the OpenShell Sandbox and Credential Gateway Drivers.
+connection used by OpenShell Sandbox and credential delivery. Main can also
+select the legacy Credential Gateway on that Backend before the 1.0 cutover.
 Backends have no OCC resource or write API. Installation administrators can
 discover nonsecret configured IDs and types through `GET /backends`.
 
@@ -137,7 +138,7 @@ The OpenShell Backend holds the connection to one OpenShell gateway deployment.
 These paths are the files Helm `backend.openshell.clientSecretName` projects
 (`ca.crt`, `tls.crt`, `tls.key` under `/etc/openclaw/openshell`). The chart
 mounts no bearer token file or separate `operatorTls` pair, so chart installs
-cannot retrieve Codex OAuth access tokens; other packaging must mount those files
+cannot export legacy Gateway OAuth tokens; other packaging must mount those files
 itself.
 
 ```yaml
@@ -153,8 +154,6 @@ backend:
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
     drivers:
       sandbox: openshell-sandbox
-      credential_gateway: openshell-credentials
-      credential_refresh: openshell-refresh
 ```
 
 Its closed `configuration` accepts:
@@ -188,7 +187,7 @@ Its closed `configuration` accepts:
   `endpoint` at an IP address sends no TLS server name, so the gateway
   certificate must carry that IP address.
 - `operatorTls`: optional `{ certificatePath, privateKeyPath }`, both absolute
-  paths. Required for OAuth access-token retrieval; requires HTTPS. It opens a
+  paths. Required for legacy Gateway OAuth token export; requires HTTPS. It opens a
   separate certificate-only channel to the same gateway, using the same server
   CA and no bearer header. Ordinary RPCs keep the configured `auth` identity.
 - `insecureTransport: network-policy`: required when the connection lacks TLS or
@@ -199,13 +198,12 @@ Its closed `configuration` accepts:
   connection, and OCC cannot verify the NetworkPolicy itself.
 
 Either `endpoint` or `serviceName` is required. `drivers.sandbox` must match the selected bundled
-[OpenShell SandboxDriver](drivers/openshell-sandbox.md). Optional `drivers.credential_gateway`
-must match the selected legacy [Credential Gateway Driver](drivers/openshell-credential-gateway.md).
-The Gateway service transport does not require that legacy Driver. The
-optional `drivers.credential_refresh` member requires that Gateway Driver and must match the selected
-[Credential Refresh Driver](drivers/credential-refresh.md); OpenShell keeps
-refresh state on the gateway's provider records, so the two roles share this
-Backend. One
+[OpenShell SandboxDriver](drivers/openshell-sandbox.md). Before the 1.0 cutover,
+main also accepts optional `credential_gateway` and `credential_refresh` Backend
+members, matching their selected Drivers; Refresh requires Gateway. The cutover
+rejects both. OpenShell's gateway service transport does not require either
+legacy Driver. The OpenShell TokenService development preview requires a matching
+`token_service` Backend member. See [credential implementation status](credential-sources.md#implementation-status). One
 OpenShell Backend is supported. Composition builds one gateway client object
 and injects it into all members. It caches ordinary and credential-export
 clients separately per resolved endpoint. The API and worker each construct it,

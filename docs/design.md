@@ -176,8 +176,9 @@ the proxy owns final destination resolution and address enforcement.
 
 Installation configuration selects compute, configuration, IAM, and Secret
 implementations, plus channel and optional service-account, plugin, repository, Sandbox,
-TokenService, and Credential Proxy integrations. Existing Credential Gateway
-and Credential Refresh paths have separate selections. [Driver development](contributing/driver-development.md)
+TokenService, and Credential Proxy integrations. Main still allows separate
+legacy Credential Gateway and Credential Refresh selections; the 1.0 cutover
+retires both. [Driver development](contributing/driver-development.md)
 links to contracts; [selection](reference/drivers/selection.md) defines trusted
 package loading. [Backends](reference/backends.md) supply authenticated clients
 to related Drivers within their documented experimental scope. Driver-owned
@@ -197,8 +198,9 @@ delivery path, OCC admits Source access and separate network and credential
 injection policies. Credential Proxy and Sandbox prepare and enforce delivery
 before activation. See [credential design status](reference/credential-sources.md#implementation-status)
 for the available paths and [Credential Design 1.0](../specs/rfcs/20261124-credential-design-1-0/index.md)
-for the target. Existing Credential Gateway Sources continue to use attachments
-that their paired Sandbox must apply before activation.
+for the target. Before the cutover, Gateway-owned Sources use attachments that
+their paired Sandbox must apply before activation. The cutover drops these
+Sources rather than transferring custody.
 
 The OpenShell development profile implements a plugin-free dedicated Codex path through experimental provider files and bearer passthrough.
 Real activation remains conditional on the documented identity, storage,
