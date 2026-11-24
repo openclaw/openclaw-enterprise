@@ -77,15 +77,17 @@ To block **all unlisted resources, including future ones**, set `"default": "non
 
 **Indirect effects.** OpenShell checks direct routes without inspecting the request body. Issue reads can return PRs. Opening a PR can [convert an issue](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request) even with issue creation off. GitHub can label a new issue and [link it to a parent](https://docs.github.com/en/rest/issues/issues#create-an-issue) in another repository. Wider rollout depends on AC-4.
 
-### Per-Agent controls (separate follow-up)
+<a id="per-agent-controls-separate-follow-up"></a>
 
-New eligible [Create Agent](https://github.com/openclaw/openclaw-enterprise/pull/7178) forms default to **Per-repository access**. Check a repository to grant Contributor where Write is permitted, otherwise Read-only. Unselected repositories receive no grant. In the [proposed editor](https://github.com/openclaw/openclaw-enterprise/pull/7180), save the draft and customize exceptions in **Repositories → Manage permissions → Advanced**. Set Issues or Pull requests to Read-only to turn off creation independently. Show exceptions beside the role before deployment. A saved opt-out persists if the Namespace later permits that action.
+### Per-Agent controls
+
+New eligible [Create Agent](https://github.com/openclaw/openclaw-enterprise/pull/7178) forms default to **Per-repository access**. Check a repository to grant Contributor where Write is permitted, otherwise Read-only. Unselected repositories receive no grant. Save the draft and customize exceptions in **Repositories → Manage permissions → Advanced**. Set Issues or Pull requests to Read-only to turn off creation independently. Show exceptions beside the role before deployment. A saved opt-out persists if the Namespace later permits that action.
 
 For a running Agent, **Configuration → Edit repository permissions** opens the same editor. Preserve untouched grants and limits, including `default`. Show whether the saved policy version matches the deployed revision, differs or is unknown. Redeploy to apply changes. An Agent first deployed without a repository policy needs a new Agent ID to adopt one.
 
 ### Request lifecycle
 
-This proposed flow shows first deployment from the Console on stock OpenShell. The Controller rechecks Namespace limits at deploy. The version check covers only the Agent policy. Expanding Namespace permissions can enable new actions at deployment even if the Agent policy version stays the same.
+The flow shows first deployment from the Console on stock OpenShell. The Controller rechecks Namespace limits at deploy. The version check covers only the Agent policy. Expanding Namespace permissions can enable new actions at deployment even if the Agent policy version stays the same.
 
 ```mermaid
 sequenceDiagram

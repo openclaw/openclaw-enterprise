@@ -18,7 +18,7 @@ author: freeqaz-openai
 
 OpenClaw Enterprise (OCE) installs per-Agent repository grants at deployment and renews the credential. OpenShell checks each native request. GitHub applies the credential’s permissions.
 
-Native GitHub App v1 supports pull requests (PRs). [REST Write grants](#planned-rest-write-grants) now include issue creation where permitted.
+Native GitHub App delivery supports pull requests (PRs). [REST Write grants](#planned-rest-write-grants) now include issue creation where permitted.
 
 ## Motivation
 
@@ -114,16 +114,18 @@ sequenceDiagram
 
 ### What can the Agent do on GitHub?
 
-**Current GitHub App v1.** Repositories sharing an App token [require identical permission maps](../../apps/controller/src/drivers/repo/github/access/registry.ts). Here A and B have Contents write, Issues read and Pull requests write. C is unbound.
+**Native GitHub App.** Repositories sharing an App token [require identical permission maps](../../apps/controller/src/drivers/repo/github/access/registry.ts). Here GitHub and the Namespace allow Contents, Issues and Pull requests write on A and B. C is unbound.
 
 | Agent action                          | A (read) | B (write) | C (no grant) |
 | ------------------------------------- | -------- | --------- | ------------ |
 | Clone or fetch code                   | Yes      | Yes       | No           |
 | List issues or read one issue         | Yes      | Yes       | No           |
-| Create an issue (Issues read)         | No       | No        | No           |
+| Create an issue                       | No       | Yes       | No           |
 | List PRs or read one PR               | Yes      | Yes       | No           |
 | Push a branch                         | No       | Yes       | No           |
 | Open a PR (draft or ready for review) | No       | Yes       | No           |
+
+With only Issues read, B can still push and open PRs, but cannot create issues.
 
 **If C is bound without a saved grant, the Agent cannot open a PR anywhere.** Permitted Git operations and REST reads continue. To restore PR creation on B, unbind C or grant it Read if needed, then redeploy. An upgraded Worker refuses renewal for a Sandbox that still allows forbidden PR creation. Its token expires within an hour. Redeploy to restore access.
 
@@ -144,7 +146,7 @@ The [bundled Codex skill](https://github.com/openclaw/openclaw-enterprise/pull/6
 
 **One permission model.** [Issue creation with repository Write access](20261123-repository-issue-creation.md) removes `scopedRest`. For native App delivery, derive routes from the approved Namespace permissions and saved Agent grant. Metadata and Contents alone keep Git-only access. Existing agents with broader permissions can gain eligible routes on their next deployment. There is no separate REST version or Agent upgrade approval.
 
-**Issue creation.** Issues write plus saved Write allows the [full issue POST](https://docs.github.com/en/rest/issues/issues#create-an-issue). [API limits](20261123-repository-issue-creation.md#optional-api-restrictions) narrow direct requests per repository in the Namespace. Per-Agent limits are a separate follow-up. Set `apiLimits.issues` to `read` to turn off issue creation. Other bindings do not veto issue creation. The existing PR safeguard still applies. Eligible PRs can still convert issues.
+**Issue creation.** Issues write plus saved Write allows the [full issue POST](https://docs.github.com/en/rest/issues/issues#create-an-issue). [API limits](20261123-repository-issue-creation.md#optional-api-restrictions) narrow direct requests for every Agent using a Namespace registration or for one Agent on its saved grant. Set `apiLimits.issues` to `read` to turn off issue creation. Other bindings do not veto issue creation. The existing PR safeguard still applies. Eligible PRs can still convert issues.
 
 **Outside this proposal.** [#7149](https://github.com/openclaw/openclaw-enterprise/pull/7149) proposes Git-only personal access tokens. PRs backed by personal or shared installation tokens need a separate decision because those credentials can cover repositories beyond the Agent’s bindings.
 
