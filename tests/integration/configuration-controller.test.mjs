@@ -320,6 +320,12 @@ async function request(
   };
 }
 
+async function readData(context, pathname, label = pathname) {
+  const { status, body } = await request(context.app, "GET", pathname);
+  assert.equal(status, 200, label);
+  return body.data;
+}
+
 async function createAgentConfiguration(context, values, label) {
   const created = await request(context.app, "POST", context.collection, {
     body: { kind: "agent", values },
@@ -615,7 +621,7 @@ async function acceptedOnSave(context, values, { variables, presetValues = value
 
 // No refused save stored a Preset or, on the Filesystem Driver, a Configuration beyond `kept`.
 async function assertNothingStored(context, kept = []) {
-  assert.deepEqual((await request(context.app, "GET", context.presets)).body.data, []);
+  assert.deepEqual(await readData(context, context.presets), []);
   assert.deepEqual(await context.stored(), kept);
 }
 
@@ -626,12 +632,9 @@ async function refusedAtSaveAndDeploy(context, agent, values, message, deploy = 
   const { status = 400, message: deployMessage = message } = deploy;
   const label = JSON.stringify(values);
   await refusedOnSave(context, values, message, { item: agent.item, preset: false });
-  const unchanged = await request(context.app, "GET", agent.item);
-  assert.deepEqual(unchanged.body.data, agent.created.body.data, label);
+  assert.deepEqual(await readData(context, agent.item, label), agent.created.body.data, label);
   await writePastOcc(agent.configurationDriver, agent.configurationId, values);
-  const read = await request(context.app, "GET", agent.item);
-  assert.equal(read.status, 200, label);
-  assert.deepEqual(read.body.data.values, values, label);
+  assert.deepEqual((await readData(context, agent.item, label)).values, values, label);
   const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
   assert.equal(deployed.status, status, `${label}: ${JSON.stringify(deployed.body)}`);
   if (status === 400) {
@@ -681,8 +684,7 @@ test("Configuration HTTP names a model provider baseUrl or api the runtime canno
   ]) {
     await refusedOnSave(context, at("/models/providers/openai", settings), message, { item });
   }
-  const unchanged = await request(context.app, "GET", item);
-  assert.deepEqual(unchanged.body.data, created.body.data);
+  assert.deepEqual(await readData(context, item), created.body.data);
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
   // Any API id the pinned runtime accepts, on a provider or a model, still saves, as do a
   // blank provider baseUrl (the runtime's built-in default) and `${VAR}` references the
@@ -754,8 +756,7 @@ test("Deployment refuses a stored model provider baseUrl or api that saves refus
     }
     assert.equal(configurationDriver.storedConfigurations().length, 1, label);
     // No refused deployment admitted a revision; the restored row deploys.
-    const revisions = await request(context.app, "GET", `${agent.agentPath}/revisions`);
-    assert.deepEqual(revisions.body.data, [], label);
+    assert.deepEqual(await readData(context, `${agent.agentPath}/revisions`, label), [], label);
     await deployAccepted(context, agent.agentPath, label);
   }
 });
@@ -781,8 +782,7 @@ test("Configuration HTTP refuses a model provider models setting that is not a l
     const message = setting(`${key}.models`, "must be an array of model entries");
     await refusedOnSave(context, { models: { providers } }, message, { item, sentinel });
   }
-  const unchanged = await request(context.app, "GET", item);
-  assert.deepEqual(unchanged.body.data, created.body.data);
+  assert.deepEqual(await readData(context, item), created.body.data);
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
   // A list, an empty one, or no models setting still saves.
   const listed = { models: { providers: { gateway: { models: [] }, openai: {} } } };
@@ -821,8 +821,7 @@ test("Configuration save checks the shared content rules before a Compute Driver
   ]) {
     await refusedOnSave(context, values, message, { item, preset: false });
   }
-  const unchanged = await request(context.app, "GET", item);
-  assert.deepEqual(unchanged.body.data, created.body.data);
+  assert.deepEqual(await readData(context, item), created.body.data);
 });
 
 // One shape per rule. Every topology's OpenClaw Gateway rejects each (finding 874).
@@ -1219,12 +1218,11 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
     ),
   );
   assert.deepEqual(context.controller.pendingOperations(), operations);
-  const revisions = await request(context.app, "GET", `${agent.agentPath}/revisions`);
-  assert.deepEqual(revisions.body.data, []);
-  const read = await request(context.app, "GET", agent.item);
-  assert.deepEqual(read.body.data.values, legacy);
+  assert.deepEqual(await readData(context, `${agent.agentPath}/revisions`), []);
+  const read = await readData(context, agent.item);
+  assert.deepEqual(read.values, legacy);
   const saved = await request(context.app, "PATCH", agent.item, {
-    body: { values: corrected, expectedGeneration: read.body.data.generation },
+    body: { values: corrected, expectedGeneration: read.generation },
   });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const deployed = await deployAccepted(context, agent.agentPath);
@@ -1542,9 +1540,7 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
   const heldStore = join(await temporaryDirectory(t, "occ-store-backup-"), "original");
   await rename(context.root, heldStore);
   try {
-    const presets = await request(context.app, "GET", context.presets);
-    assert.equal(presets.status, 200);
-    assert.deepEqual(presets.body.data, []);
+    assert.deepEqual(await readData(context, context.presets), []);
     await assert.rejects(assertNothingStored(context), { code: "ENOENT" });
   } finally {
     await rename(heldStore, context.root);
@@ -2023,9 +2019,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     assert.equal(deployed.body.error.message, deployMessage, label);
   }
   // No refused deployment admitted a revision, so none stopped a running one.
-  const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
-  assert.equal(revisions.status, 200);
-  assert.deepEqual(revisions.body.data, []);
+  assert.deepEqual(await readData(context, `${agentPath}/revisions`), []);
 
   // A Dedicated Codex Gateway keeps the caller's plugin entries and receives the same bindings, so
   // it exits the same way and its deployment refuses the unbound reference too (finding 3042),
@@ -2045,8 +2039,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     unboundSearchHeader("X-Key"),
     { label: "Dedicated Codex" },
   );
-  const codexRevisions = await request(context.app, "GET", `${codexAgent.agentPath}/revisions`);
-  assert.deepEqual(codexRevisions.body.data, []);
+  assert.deepEqual(await readData(context, `${codexAgent.agentPath}/revisions`), []);
   // A Dedicated Codex Agent whose env provider allowlist omits APP_SERVER_TOKEN (it keeps the
   // Gateway password read on that alias) saves and deploys: OpenClaw substitutes its own entry's
   // `${APP_SERVER_TOKEN}`, which Kubernetes Compute sets, before it reads SecretRefs, so the
@@ -2112,12 +2105,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     unboundSearchHeader("X-Key"),
     { label: "GOOGLE after google" },
   );
-  const shadowedRevisions = await request(
-    context.app,
-    "GET",
-    `${shadowedAgent.agentPath}/revisions`,
-  );
-  assert.deepEqual(shadowedRevisions.body.data, []);
+  assert.deepEqual(await readData(context, `${shadowedAgent.agentPath}/revisions`), []);
   // A longer key comes after google in both orders, so it still turns google off.
   await updateSaved(
     context,
@@ -2185,10 +2173,7 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
     await agentSave(context, agent, other.body.data.id),
     codexPluginRefusal(...storedRefusal),
   );
-  assert.deepEqual(
-    (await request(context.app, "GET", `${agent.agentPath}/revisions`)).body.data,
-    [],
-  );
+  assert.deepEqual(await readData(context, `${agent.agentPath}/revisions`), []);
   // An OpenClaw Configuration does not run the codex plugin, so it saves.
   await createAgentConfiguration(context, { ...runtimeSelected, plugins: { enabled: false } });
   // Settings the entrypoint starts with save and deploy: the codex plugin's overlay turns a
@@ -2270,6 +2255,7 @@ test("Configuration save and Kubernetes deployment refuse a Dedicated Codex Conf
   );
   // Only the first, accepted deployment admitted a revision.
   const revisions = await request(context.app, "GET", `${agent.agentPath}/revisions`);
+  assert.equal(revisions.status, 200);
   assert.equal(revisions.body.data.length, 1, JSON.stringify(revisions.body));
   // An OpenClaw Agent never hosts that runtime node check, so it saves and deploys without one.
   const { auth: _openclawAuth, ...openclawGateway } = createHarnessConfiguration(
@@ -2442,8 +2428,8 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
   for (const [values, message] of offProvider) {
     await t.test(message, async () => {
       await refusedOnSave(context, values, message, { item, sentinel: "claude-opus-4" });
-      const unchanged = await request(context.app, "GET", item);
-      assert.deepEqual(unchanged.body.data, created.body.data, JSON.stringify(values));
+      const label = JSON.stringify(values);
+      assert.deepEqual(await readData(context, item, label), created.body.data, label);
     });
   }
 
@@ -2467,8 +2453,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       assertRefused(agentSaved, message, { label });
       assertRefused(await request(context.app, "POST", `${agentPath}/deploy`), message, { label });
       // Refused before a revision exists.
-      const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
-      assert.deepEqual(revisions.body.data, [], label);
+      assert.deepEqual(await readData(context, `${agentPath}/revisions`, label), [], label);
       await writePastOcc(configurationDriver, configurationId, valid);
     }
   });
@@ -2482,8 +2467,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     const message = setting("agents.defaults.heartbeat.model", openaiOnly);
     await writePastOcc(configurationDriver, configurationId, values);
     assertRefused(await request(context.app, "POST", `${agentPath}/deploy`), message);
-    const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
-    assert.deepEqual(revisions.body.data, []);
+    assert.deepEqual(await readData(context, `${agentPath}/revisions`), []);
     await writePastOcc(configurationDriver, configurationId, valid);
   });
 
@@ -4201,8 +4185,7 @@ test("A stored Configuration with request credentials an older release accepted 
     assertRefused(resaved, message, { label, sentinel });
     const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
     assertRefused(deployed, message, { label, sentinel });
-    const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
-    assert.deepEqual(revisions.body.data, [], label);
+    assert.deepEqual(await readData(context, `${agentPath}/revisions`, label), [], label);
 
     // An edit that removes the credential repairs it.
     await updateSaved(context, item, valid, label);
@@ -4250,8 +4233,7 @@ test("A stored Configuration with a literal Gateway password an older release ac
     assertRefused(resaved, gatewayPassword, { label, sentinel });
     const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
     assertRefused(deployed, gatewayPassword, { label, sentinel });
-    const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
-    assert.deepEqual(revisions.body.data, [], label);
+    assert.deepEqual(await readData(context, `${agentPath}/revisions`, label), [], label);
   }
 });
 
@@ -4288,8 +4270,7 @@ test("embedded custom provider deploys through the existing Secret binding workf
   assert.equal(revisions.status, 200);
   assert.equal(revisions.body.data.length, 1);
   assert.equal(revisions.body.data[0].harness.mode, "embedded");
-  const bound = await request(context.app, "GET", agentPath);
-  assert.equal(bound.body.data.harnessAuth.method, "api_key");
+  assert.equal((await readData(context, agentPath)).harnessAuth.method, "api_key");
   for (const apiKey of [
     "${OPENAI_API_KEY}",
     { source: "env", provider: "default", id: "OTHER_KEY" },
