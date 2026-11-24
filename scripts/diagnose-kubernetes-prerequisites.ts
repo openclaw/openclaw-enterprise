@@ -1176,10 +1176,10 @@ function mountedClientSecret(
   workload: ClientWorkload,
 ): (SecretVolumeMapping & { name: string }) | undefined {
   const { spec } = workload;
-  const pod = isObject(spec) && isObject(spec.template) ? spec.template.spec : undefined;
-  if (!isObject(pod) || !isObject(spec)) {
+  if (!isObject(spec) || !isObject(spec.template) || !isObject(spec.template.spec)) {
     throw new DiagnosticError("The selected workload response lacks its Pod template.");
   }
+  const pod = spec.template.spec;
   const containers = objectList(pod.containers);
   const init = objectList(pod.initContainers ?? []);
   if (!containers || !init) {
@@ -1615,12 +1615,15 @@ async function diagnose(
     };
   }
   let readNumber = 0;
-  const kube = <T>(path: string, optional = false) => {
+  function nextSocket() {
     if (blocker) {
       throw new DiagnosticError(blocker.summary);
     }
+    return join(directory, String(++readNumber));
+  }
+  const kube = <T>(path: string, optional = false) => {
     return kubernetesGet<T>(
-      join(directory, String(++readNumber)),
+      nextSocket(),
       kubeconfig,
       config.context,
       path,
@@ -1634,14 +1637,11 @@ async function diagnose(
   const getNamed = <T>(api: string, plural: string, { namespace, name }: DeploymentSelection) =>
     kube<T>(`${namespaced(api, namespace)}/${plural}/${name}`, true);
   async function project(check: ProjectedCheck): Promise<CheckResult> {
-    if (blocker) {
-      throw new DiagnosticError(blocker.summary);
-    }
     const request: ProjectionRequest = {
       check,
       kubeconfig,
       context: config.context,
-      socketPrefix: join(directory, String(++readNumber)),
+      socketPrefix: nextSocket(),
       timeout: Math.floor(Math.min(projectionTimeout, deadline - performance.now())),
     };
     return parseJson<CheckResult>(

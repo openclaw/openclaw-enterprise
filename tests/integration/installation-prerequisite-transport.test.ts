@@ -681,24 +681,10 @@ test(
         };
         httpsRequests.length = 0;
         httpRequests.length = 0;
-        const direct = spawn(
-          process.execPath,
-          [
-            "scripts/diagnose-kubernetes-prerequisites.ts",
-            "--inspect-prerequisite-resource",
-            JSON.stringify(request),
-          ],
-          {
-            env: { ...process.env, HOME: operatorHome, TMPDIR: scratch },
-            stdio: ["pipe", "pipe", "ignore"],
-            signal: t.signal,
-          },
-        );
-        let stdout = "";
-        direct.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-          stdout += chunk;
-        });
-        const [code] = await once(direct, "close");
+        const { code, stdout } = await collect({}, true, [
+          "--inspect-prerequisite-resource",
+          JSON.stringify(request),
+        ]).result;
         assert.equal(code, 2);
         assert.equal(stdout, "");
         assert.equal(httpsRequests.length + httpRequests.length, 0);
@@ -706,31 +692,28 @@ test(
       },
     );
     await t.test("mounted certificates use pinned reads and reconcile each workload", async () => {
-      const namespaced = "/api/v1/namespaces/default";
-      const deployments = "/apis/apps/v1/namespaces/default/deployments";
-      const workloadPath = `${deployments}/client`;
-      const mountedSecretPath = `${namespaced}/secrets/mounted-client`;
-      const controllerPath = `${deployments}/controller`;
+      const workloadPath = "/apis/apps/v1/namespaces/default/deployments/client";
+      const mountedSecretPath = "/api/v1/namespaces/default/secrets/mounted-client";
       const mount = "/etc/openclaw/client";
       const unrelated = randomUUID();
       const companion = "companion-key";
       const clientData = Buffer.from(client.cert).toString("base64");
       const clientKey = Buffer.from(client.key).toString("base64");
-      const workloadIdentity = {
-        kind: "Deployment",
+      const workloadMetadata = {
         namespace: "default",
         name: "client",
         uid: randomUUID(),
         resourceVersion: "1",
       };
-      const secretIdentity = {
-        kind: "Secret",
+      const workloadIdentity = { kind: "Deployment", ...workloadMetadata };
+      const secretMetadata = {
         namespace: "default",
         name: "mounted-client",
         uid: randomUUID(),
         resourceVersion: "1",
       };
-      let current = workloadIdentity;
+      const servingMetadata = { ...secretMetadata, name: "leaf", uid: randomUUID() };
+      let current = workloadMetadata;
       let observeSecret: (() => void) | undefined;
       let optional = false;
       let mapped = true;
@@ -738,7 +721,7 @@ test(
       const publicItem = { key: "tls.crt", path: "client.pem" };
       const companionItem = { key: companion, path: "companion.txt" };
       clientFixture = (path) => {
-        if (path === workloadPath || path === controllerPath) {
+        if (path === workloadPath || path === rolloutPath) {
           return {
             status: 200,
             body: {
@@ -747,6 +730,7 @@ test(
               metadata: {
                 ...current,
                 name: path === workloadPath ? "client" : "controller",
+                uid: path === workloadPath ? current.uid : rolloutUid,
                 generation: 1,
                 annotations: { "example.test/unrelated": unrelated },
               },
@@ -773,7 +757,7 @@ test(
                       {
                         name: "client",
                         secret: {
-                          secretName: secretIdentity.name,
+                          secretName: secretMetadata.name,
                           optional,
                           ...(mapped ? { items: [publicItem, companionItem] } : {}),
                         },
@@ -792,7 +776,7 @@ test(
             body: {
               kind: "Secret",
               apiVersion: "v1",
-              metadata: secretIdentity,
+              metadata: secretMetadata,
               data: {
                 "tls.crt": clientData,
                 "tls.key": clientKey,
@@ -803,8 +787,9 @@ test(
           };
         }
       };
+      const { serviceDependency, ...basePlan } = planInput;
       const planWithClient = (filename = publicItem.path) => ({
-        ...planInput,
+        ...basePlan,
         clientCertificate: {
           workload: { kind: "Deployment", namespace: "default", name: "client" },
           container: "admin",
@@ -859,9 +844,12 @@ syncBuiltinESMExports();
 
         // Change the original kubeconfig during collection. All three client
         // reads still use the original verified API and exact resource names.
-        await writeFile(plan, JSON.stringify(planWithClient()));
+        await writeFile(plan, JSON.stringify({ ...planWithClient(), serviceDependency }));
         firstServiceRead = () => writeFileSync(path, plaintextConfig);
-        serveValidLeaf = true;
+        secretReply = object("Secret", "leaf", {
+          metadata: servingMetadata,
+          data: { "tls.crt": certData, "tls.key": keyData },
+        });
         const checks = await observations(verifiedConfig, null, {
           NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
         });
@@ -875,13 +863,21 @@ syncBuiltinESMExports();
           [workloadPath, mountedSecretPath, workloadPath],
         );
         assert.ok(selectedReads.every(({ hasClientCertificate }) => hasClientCertificate));
+        // Check for leaked values before a detailed assertion can print them.
+        const report = JSON.stringify([...checks.values()]);
+        assert.equal(
+          [unrelated, companion, clientData, clientKey, certData, keyData].some((value) =>
+            report.includes(value),
+          ),
+          false,
+        );
         const expected = [
           {
             kind: "controller",
             check: {
               status: "passed",
               summary: "All intended controller replicas are updated and available.",
-              resource: `default/controller@${workloadIdentity.uid}`,
+              resource: `default/controller@${rolloutUid}`,
             },
           },
           {
@@ -890,7 +886,7 @@ syncBuiltinESMExports();
               status: "passed",
               summary:
                 "The selected TLS leaf is within its validity window and has a matching DNS SAN.",
-              resources: checks.get("service-tls")?.resources,
+              resources: [{ kind: "Secret", ...servingMetadata }],
             },
           },
           {
@@ -899,7 +895,7 @@ syncBuiltinESMExports();
               status: "passed",
               summary:
                 "The mounted TLS leaf is within its validity window and its extended key usage permits client use.",
-              resources: [workloadIdentity, secretIdentity],
+              resources: [workloadIdentity, { kind: "Secret", ...secretMetadata }],
             },
           },
         ];
@@ -922,12 +918,6 @@ syncBuiltinESMExports();
             stderrDiscarded: true,
           })),
         );
-        assert.equal(
-          [unrelated, companion, clientData, clientKey].some((value) =>
-            JSON.stringify([...checks.values()]).includes(value),
-          ),
-          false,
-        );
 
         // Kubernetes measures UTF-8 bytes before it cleans the item paths.
         // A present companion can block the mount even when the leaf fits.
@@ -948,9 +938,9 @@ syncBuiltinESMExports();
             status: "passed",
           },
         ];
-        const statuses = [];
         for (const {
           name,
+          status,
           leaf = "client.pem",
           sibling = "companion.txt",
           omitCompanion,
@@ -961,12 +951,8 @@ syncBuiltinESMExports();
           companionPresent = !omitCompanion;
           await writeFile(plan, JSON.stringify(planWithClient()));
           const observed = await observations(verifiedConfig, null);
-          statuses.push({ name, status: observed.get("client-certificate")?.status });
+          assert.equal(observed.get("client-certificate")?.status, status, name);
         }
-        assert.deepEqual(
-          statuses,
-          projections.map(({ name, status }) => ({ name, status })),
-        );
         publicItem.path = "client.pem";
         companionItem.path = "companion.txt";
         companionPresent = true;
@@ -974,7 +960,7 @@ syncBuiltinESMExports();
         // Change only the follow-up workload observation at the HTTPS API.
         // A healthy public leaf cannot make any of these races pass.
         for (const mode of ["required", "optional", "default", "replacement"] as const) {
-          current = workloadIdentity;
+          current = workloadMetadata;
           optional = mode === "optional";
           mapped = mode !== "default";
           await writeFile(
@@ -984,8 +970,8 @@ syncBuiltinESMExports();
           observeSecret = () => {
             current =
               mode === "replacement"
-                ? { ...workloadIdentity, uid: randomUUID() }
-                : { ...workloadIdentity, resourceVersion: "2" };
+                ? { ...workloadMetadata, uid: randomUUID() }
+                : { ...workloadMetadata, resourceVersion: "2" };
           };
           const raced = await observations(verifiedConfig, null);
           assert.equal(raced.get("client-certificate")?.status, "unknown", mode);
@@ -993,7 +979,7 @@ syncBuiltinESMExports();
           assert.deepEqual(raced.get("client-certificate")?.resources, [workloadIdentity], mode);
         }
         observeSecret = undefined;
-        current = workloadIdentity;
+        current = workloadMetadata;
         mapped = true;
         await writeFile(plan, JSON.stringify(planWithClient()));
         for (const redirectedPath of [workloadPath, mountedSecretPath]) {
@@ -1008,7 +994,7 @@ syncBuiltinESMExports();
         firstServiceRead = undefined;
         observeSecret = undefined;
         clientFixture = undefined;
-        serveValidLeaf = false;
+        secretReply = undefined;
         redirect = undefined;
         await writeFile(plan, JSON.stringify(planInput));
       }

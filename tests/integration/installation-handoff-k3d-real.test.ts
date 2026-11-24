@@ -453,32 +453,32 @@ test(
         patch,
       );
     }
-    const readVersions = () =>
-      Promise.all(
-        (
-          [
-            ["Service", "service", serviceName],
-            ["NetworkPolicy", "networkpolicy", policyName],
-            ["Secret", "secret", secretName],
-          ] as const
-        ).map(async ([kind, resourceKind, name]) => {
-          const output = String(
-            await kubectl(
-              "-n",
-              namespace,
-              "get",
-              resourceKind,
-              name,
-              "--no-headers",
-              "-o",
-              "custom-columns=UID:.metadata.uid,RV:.metadata.resourceVersion",
-            ),
-          );
-          const [uid, resourceVersion] = output.trim().split(/\s+/u);
-          assert.ok(uid && resourceVersion);
-          return { kind, namespace, name, uid, resourceVersion };
-        }),
+    const identity = async (
+      kind: "Service" | "NetworkPolicy" | "Secret" | "Deployment" | "StatefulSet",
+      name: string,
+    ) => {
+      const output = String(
+        await kubectl(
+          "-n",
+          namespace,
+          "get",
+          kind.toLowerCase(),
+          name,
+          "--no-headers",
+          "-o",
+          "custom-columns=UID:.metadata.uid,RV:.metadata.resourceVersion",
+        ),
       );
+      const [uid, resourceVersion] = output.trim().split(/\s+/u);
+      assert.ok(uid && resourceVersion);
+      return { kind, namespace, name, uid, resourceVersion };
+    };
+    const readVersions = () =>
+      Promise.all([
+        identity("Service", serviceName),
+        identity("NetworkPolicy", policyName),
+        identity("Secret", secretName),
+      ]);
     const dependency = {
       service: { namespace, name: serviceName, port: servicePort },
       policy: { namespace, name: policyName },
@@ -747,16 +747,12 @@ test(
 
     const clientCheck = async (plan: Plan = clientPlan) =>
       (await diagnose(plan, protectedValues)).checks.get("client-certificate");
-    const identity = async (kind: string, resourceKind: string, name: string) => {
-      const { uid, resourceVersion } = (await resource(resourceKind, name)).metadata;
-      return { kind, namespace, name, uid, resourceVersion };
-    };
     await waitFor("client Deployment generation observation", async () => {
       const deployment = await resource("deployment", clientName);
       return deployment.status?.observedGeneration === deployment.metadata.generation;
     });
-    const workloadIdentity = await identity("Deployment", "deployment", clientName);
-    const secretIdentity = await identity("Secret", "secret", clientSecret);
+    const workloadIdentity = await identity("Deployment", clientName);
+    const secretIdentity = await identity("Secret", clientSecret);
     const { checks: observedChecks } = await diagnose(overlapPlan, [
       ...protectedValues,
       excludedValue,
@@ -771,8 +767,8 @@ test(
     assert.equal(rollout?.resource, `${namespace}/${clientName}@${workloadIdentity.uid}`);
     assert.equal(bound?.status, "passed");
     assert.deepEqual(bound?.resources, [workloadIdentity, secretIdentity]);
-    assert.deepEqual(await identity("Deployment", "deployment", clientName), workloadIdentity);
-    assert.deepEqual(await identity("Secret", "secret", clientSecret), secretIdentity);
+    assert.deepEqual(await identity("Deployment", clientName), workloadIdentity);
+    assert.deepEqual(await identity("Secret", clientSecret), secretIdentity);
 
     await setLeaf(expired.cert, clientSecret);
     const expiredClient = await clientCheck();
@@ -812,7 +808,7 @@ test(
       assert.match(result?.summary ?? "", /current.*does not establish client authentication/u);
       assert.deepEqual(result?.resources, [
         workloadIdentity,
-        await identity("Secret", "secret", clientSecret),
+        await identity("Secret", clientSecret),
       ]);
     }
     await setLeaf(clientLeaf.cert, clientSecret);
@@ -875,8 +871,8 @@ test(
     const peer = await clientCheck(peerClientPlan(peerName));
     assert.equal(peer?.status, "passed");
     assert.deepEqual(peer?.resources, [
-      await identity("StatefulSet", "statefulset", peerName),
-      await identity("Secret", "secret", clientSecret),
+      await identity("StatefulSet", peerName),
+      await identity("Secret", clientSecret),
     ]);
     const claimed = await resource("statefulset", claimName);
     assert.equal(claimed.spec.volumeClaimTemplates[0].metadata.name, clientVolume.name);
@@ -1016,7 +1012,7 @@ test(
     const shadowed = overlap.checks.get("client-certificate");
     assert.equal(shadowed?.status, "failed");
     assert.match(shadowed?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
-    assert.deepEqual(shadowed?.resources, [await identity("Deployment", "deployment", clientName)]);
+    assert.deepEqual(shadowed?.resources, [await identity("Deployment", clientName)]);
     await patchWorkerMounts([
       { op: "test", path: `${workerMounts}/2/mountPath`, value: shadow.mountPath },
       { op: "remove", path: `${workerMounts}/2` },
@@ -1032,7 +1028,7 @@ test(
       const result = invalid.checks.get("client-certificate");
       assert.equal(result?.status, "failed");
       assert.match(result?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
-      assert.deepEqual(result?.resources, [await identity("StatefulSet", "statefulset", name)]);
+      assert.deepEqual(result?.resources, [await identity("StatefulSet", name)]);
     }
 
     // Grant only the missing Secret read. The same identity can now check
@@ -1183,9 +1179,7 @@ test(
     const missingClient = await clientCheck();
     assert.equal(missingClient?.status, "failed");
     assert.match(missingClient?.summary ?? "", /TLS Secret does not exist/u);
-    assert.deepEqual(missingClient?.resources, [
-      await identity("Deployment", "deployment", clientName),
-    ]);
+    assert.deepEqual(missingClient?.resources, [await identity("Deployment", clientName)]);
 
     const missingService = "missing-middleware";
     const role = "missing-service-reader";
