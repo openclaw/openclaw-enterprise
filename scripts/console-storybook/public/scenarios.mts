@@ -732,6 +732,8 @@ const authoredScenarios = {
       "Tab to Research assistant. Switch to another window, then return to start the list refresh.",
       "While the list refreshes, Tab to the Namespace selector. Wait for the list to return and check that the selector still has focus.",
       "Press Tab to continue from the selector, then Shift+Tab to return to it.",
+      "Reset the story. Type Research in Search Agents and press Shift+Left Arrow three times to select rch backwards. Switch away and back, then switch away again while the simulated list refresh is pending. Stay away for 6.5 seconds.",
+      "Return and wait for the next successful check. Search Agents has focus with rch still selected. Type X and check that the query becomes ReseaX. Repeat at desktop and phone widths.",
     ],
   } satisfies LocalScenario,
   agentsRowRefocusStopped: {
@@ -797,6 +799,26 @@ const authoredScenarios = {
       "Press Enter. Stay on No matching Agents. Press Escape to restore the list.",
       "Press Down twice to focus the second name, then Up to focus the first. Escape returns to search.",
       "Type Research and press Enter to open Research assistant. Use browser Back. The query remains and the focused Agent name is visible.",
+    ],
+  } satisfies LocalScenario,
+  agentsSearchRetry: {
+    group: "Pages/Agents",
+    name: "Resume a search after Retry",
+    rules: [
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        skip: 1,
+        once: true,
+        status: 503,
+      },
+    ],
+    description: "The first Agents list refresh after returning to the tab fails once.",
+    steps: [
+      "Open the preview in its own tab and wait for the Agents list. Type Research in Search Agents, then press Shift+Left three times to select rch.",
+      "Switch to another browser tab and return. When Request unavailable appears, confirm Retry has focus.",
+      "Press Enter. Check that Search Agents has focus, Research assistant is visible, and Research still has its final three letters selected.",
+      "Type X without moving focus. Check that the query becomes ReseaX and the list shows No matching Agents.",
     ],
   } satisfies LocalScenario,
   noNamespaces: {
