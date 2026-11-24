@@ -327,6 +327,14 @@ export const PolicyRepositoryRecovery = story("policyRepositoryRecovery");
 export const PolicyRepositoryLimits = story("policyRepositoryLimits");
 export const PolicyRepositoryEditor = story("policyRepositoryEditor");
 export const PolicyRepositoryEditorConcurrent = story("policyRepositoryEditorConcurrent");
+export const PolicyRepositoryCredentialApp = story("policyRepositoryCredentialApp");
+export const PolicyRepositoryCredentialUnreadable = story("policyRepositoryCredentialUnreadable");
+export const PolicyRepositoryCredentialConfirmed = story("policyRepositoryCredentialConfirmed");
+export const PolicyRepositoryCredentialPending = story("policyRepositoryCredentialPending");
+export const PolicyRepositoryCredentialUnreconciled = story(
+  "policyRepositoryCredentialUnreconciled",
+);
+export const PolicyRepositoryCredentialUnavailable = story("policyRepositoryCredentialUnavailable");
 export const PolicyUnicodeExecutable = story("policyUnicodeExecutable");
 export const PolicyDenialsMany = story("policyDenialsMany");
 export const PolicyRulesPopulated = story("policyRulesPopulated");

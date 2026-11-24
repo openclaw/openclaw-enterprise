@@ -6,6 +6,7 @@ import type {
   SandboxPolicyApplication,
   OpenClawConfigurationValue,
   SandboxPolicyRecommendation,
+  SandboxPolicyViewWire,
 } from "@openclaw-enterprise/contracts";
 import networkPolicySchema from "./network-policy-schema.mts";
 import { fixtureError as error, fixtureResponse as response } from "./preview-rules.mts";
@@ -22,6 +23,7 @@ type NetworkPolicyScenario = {
   policyKeepPending?: boolean;
   policyNoSandboxDriver?: boolean;
   policyAdminDenied?: boolean;
+  policyRepositoryCredential?: SandboxPolicyViewWire["repositoryCredential"];
 };
 
 function isFixtureRepositoryGrant(value: unknown, choice: RepositoryNetworkGrant) {
@@ -171,7 +173,11 @@ export function createNetworkPolicyFixture(
   let simulateRepositoryConflict = scenario.policyState === "repositoryEditorConcurrent";
   const canEditRepositoryGrants = repositoryEditor || simulateRepositoryConflict;
   const unreadableRevision = scenario.policyState === "repositoryRecovery";
-  const repositoryLimits = scenario.policyState === "repositoryLimits" || canEditRepositoryGrants;
+  const repositoryCredential = scenario.policyRepositoryCredential;
+  const repositoryLimits =
+    scenario.policyState === "repositoryLimits" ||
+    canEditRepositoryGrants ||
+    repositoryCredential !== undefined;
   const protectedExecution = scenario.policyState === "protected" || repositoryLimits;
   const repositoryCeiling: readonly RepositoryNetworkGrant[] = repositoryLimits
     ? [
@@ -198,6 +204,14 @@ export function createNetworkPolicyFixture(
     additions: initialAdditions,
     ...(scenario.policyState === "protected" || unreadableRevision
       ? { repositoryNetworkPolicy: [{ repository: "example/application", access: "read" }] }
+      : {}),
+    ...(repositoryCredential
+      ? {
+          repositoryNetworkPolicy: [
+            { repository: "example/application", access: "read" },
+            { repository: "example/tooling", access: "write" },
+          ],
+        }
       : {}),
   };
   if (scenario.policyRuleCount) {
@@ -386,6 +400,7 @@ export function createNetworkPolicyFixture(
                 canEditRepositoryGrants || sandboxPolicy.repositoryNetworkPolicy !== undefined,
             }
           : {}),
+        ...(repositoryCredential ? { repositoryCredential } : {}),
         ceiling: policyCeiling,
         defaults:
           scenario.policyState === "unsupported" || unreadableRevision
