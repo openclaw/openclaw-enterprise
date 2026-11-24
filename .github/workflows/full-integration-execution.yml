@@ -242,7 +242,7 @@ jobs:
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: ${{ matrix.lane }}
-          profile: ${{ matrix.profile }}
+          profile: ${{ matrix.lane == 'images-runtime-startup-2' && needs.runtime-artifact.outputs.artifact-id != '' && 'docker-only' || matrix.profile }}
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
           job-timeout-minutes: ${{ matrix.timeout }}
