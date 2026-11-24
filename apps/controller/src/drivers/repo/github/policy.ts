@@ -13,6 +13,7 @@ import type {
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   allowsGitHubRepositoryNetworkGrant,
+  listRepositorySelections,
   githubInstallationProfile,
   resolveGitHubRepositoryBinding,
   resolveSelectedRepositoryScope,
@@ -108,22 +109,19 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   /** Provider catalog shared by the Installation picker and the legacy Driver adapter. */
   async listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
     const options: RepositoryOption[] = [];
-    this.#registry.repositories.forEach((repository) => {
-      const policy = repository.namespaces.find(
-        (candidate) => candidate.namespaceId === input.namespaceId,
-      );
-      if (policy === undefined) {
-        return;
-      }
+    for (const { repositoryRef, repository, policy } of listRepositorySelections(
+      this.#registry,
+      input.namespaceId,
+    )) {
       options.push(
         Object.freeze({
-          repositoryRef: repository.repositoryRef,
+          repositoryRef,
           displayName: repository.repository,
           ...(policy.nativeGit === "v1" ? { githubRepository: repository.repository } : {}),
           allowedProfiles: Object.freeze([...policy.profiles]),
         }),
       );
-    });
+    }
     const installation = this.#registry.installationAccess;
     if (installation?.namespaces.some((policy) => policy.namespaceId === input.namespaceId)) {
       options.push(

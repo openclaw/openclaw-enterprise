@@ -11396,7 +11396,7 @@ Register a managed static Source. OCC allocates its identity and selects the Tok
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries. |
+| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries. Append :api at enrollment to permit issue and pull request routes within that entry. API expansion requires a new Source. |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `secret` | `object<string, string>` | Yes | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
 | `type` | `"static"` | Yes | — |
@@ -11668,7 +11668,7 @@ Update a managed static Source through its persisted owner. Supply at least one 
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries. |
+| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries. Append :api at enrollment to permit issue and pull request routes within that entry. API expansion requires a new Source. |
 | `secret` | `object<string, string>` | No | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
 
 Example request

@@ -9,7 +9,7 @@ Registry validation refuses:
 
 - a value that is not a Source ID (`cs_…`);
 - the field without `nativeGit: "v1"` and the `github-repository` profile, with
-  `scopedRest`, or with a `permissions` key other than `metadata` and `contents`;
+  `scopedRest`, or with a `permissions` key outside `metadata`, `contents`, `issues` and `pull_requests`;
 - without the App's `appId` and `githubInstallationId`: a registration without
   `credentialSource`, standing approvals, and `installationAccess`.
 
@@ -22,6 +22,57 @@ does not start and logs `PREPARED_GITHUB_APP_KEY_INVALID`.
 
 An Agent's bindings must resolve to one credential: the App, or one Source.
 Naming another Source changes the grant, so earlier revisions go stale.
+
+Catalog references of the form `pat-api-` followed by 64 lowercase hexadecimal
+digits are reserved for API grants. Use the reference returned by the catalog,
+and avoid this pattern in configured `repositoryRef` values.
+
+## Issues and pull requests
+
+At enrollment, append `:api` to each Source entry that may use GitHub REST, for
+example `octo/app:write:api,octo/docs:read:api`. Bare entries remain Git-only.
+Use a new Source to expand API access or change the set of repositories while API access is enabled. Upgrade all Workers and
+controllers before using this syntax. Older readers reject it.
+
+Use a dedicated fine-grained token. At enrollment and replacement, verify the
+resource owner, match GitHub's selected repositories to the declared set and
+check the minimum required permissions. Stop if you cannot verify them. GitHub
+also grants read access to public repositories. That access does not create a
+direct Sandbox route. OCE cannot verify or reduce the token's GitHub rights.
+
+Set the Namespace registration's `permissions.issues` and
+`permissions.pull_requests` to `read` or `write` as needed. Omission grants
+no direct routes for that resource. Select the repository from the Agent's
+repository catalog, review [API limits and stock gh api examples](access-levels.md#api-limits),
+and deploy. For a PAT registration with effective API routes, the catalog
+reference identifies the Source, repository, Namespace, permissions and API
+limits. A registration change that changes this identity invalidates the old
+selection, including on the first deployment of a saved draft. Select the
+repository again. If a saved repository policy exists, the editor also needs
+Agent `manage_policy` and SandboxPolicy `read` and `update`. Replacing the token
+within the same scope preserves the selection. Git-only and App references do
+not change. Read-only permits eligible list and detail requests. Contributor
+also permits eligible issue and PR creation. An unenrolled API route refuses
+save, deploy and loans. Disable the APIs on that registration or enroll a
+matching Source. To keep a grant Git-only, replace its entire `apiLimits` object
+with `{"default":"none"}`. An explicit resource override takes precedence over
+the default.
+
+An ungranted bound repository disables PR creation. If PR creation is otherwise
+enabled and the Source declares another repository outside the Agent's grants,
+OCE refuses the policy. Turn off **Open pull requests** or narrow the Source.
+Issue creation stays available with PR creation disabled.
+
+GitHub processes fields in allowed requests. A PR head can expose commits from
+another private repository in the same fork network if the PAT can read it.
+Issue parents can link to another repository where the token has triage access.
+Turning off **Create issues** does not prevent PRs from converting issues.
+Before broader rollout, obtain separately authorized GitHub evidence that
+read-only repositories did not change and excluded private repositories were
+neither exposed nor changed. Keep rollout restricted while either outcome is
+unknown. See [known limits](access-levels.md#known-limits).
+
+## Admission and renewal
 
 Saving the repository policy and deploying check the Source again:
 
@@ -36,11 +87,11 @@ Saving the repository policy and deploying check the Source again:
 
 The Worker lends the value for at most 15 minutes and renews it every 7.5 minutes.
 At each loan it checks the Source's state, owner, preset and ceiling, the Agent
-principal's `operate` and the token class. The ceiling check compares the
-revision's saved grants, not every bound repository. A ceiling lowered since
+principal's `operate` and the token class. The Git check compares the
+revision's saved grants. API checks also apply the PR safeguard above. A ceiling lowered since
 deploy refuses the loan with reason `source_ceiling_exceeded` (a granted
-repository left out) or `source_access_exceeded` (write lowered to read);
-redeploy within it. A refused loan logs
+repository left out) or `source_access_exceeded` (including withdrawn API authority).
+Deploy again within the new ceiling. A refused loan logs
 `REPOSITORY_SOURCE_LOAN_REFUSED` once per revision, Source version and reason, with the
 `reason`, `credentialSourceId` and `credentialSourceVersion` and never the value. The current loan stays in the
 Sandbox until it ends.

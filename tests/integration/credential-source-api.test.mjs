@@ -610,6 +610,8 @@ test("a github Source holds only a fine-grained token and an explicit repository
     [FINE_GRAINED, "token pasted as an entry"],
     ["octo/app", "no access"],
     ["octo/app:admin", "unknown access"],
+    ["octo/app:write:rest", "unknown permission"],
+    ["octo/app:read:api,octo/app:write", "duplicate API repository"],
     ["octo/App:write", "not canonical"],
     ["octo/app.git:read", ".git suffix"],
     ["octo/app:read,octo/app:write", "duplicate"],
@@ -1804,4 +1806,30 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
   });
   assert.equal(unavailable.status, 409, JSON.stringify(unavailable.body));
   await f.assertNothingSaved();
+});
+
+test("a GitHub Source can opt into repository APIs only at enrollment", async (t) => {
+  const f = await fixture(t, { tokenService: true });
+  const repositories = "octo/app:read:api,octo/docs:write";
+  const created = await f.request("POST", f.path, {
+    body: githubSourceBody(FINE_GRAINED, { repositories }),
+  });
+  assert.equal(created.status, 201);
+  const path = `${f.path}/${created.data.id}`;
+  const rotated = await f.request("PATCH", path, {
+    body: { secret: { token: fakeToken("github", "pat", "replaced") } },
+  });
+  assert.equal(rotated.status, 200);
+  assert.equal(rotated.data.config.repositories, repositories);
+  for (const value of [
+    "octo/app:write:api,octo/docs:write",
+    "octo/app:read:api,octo/docs:write:api",
+    "octo/app:read:api",
+  ]) {
+    const reply = await f.request("PATCH", path, {
+      body: { config: { provider_preset: "github", repositories: value } },
+    });
+    assert.equal(reply.status, 409);
+    assert.match(reply.body.error.message, /new Source/);
+  }
 });

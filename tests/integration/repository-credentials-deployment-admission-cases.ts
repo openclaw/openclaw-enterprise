@@ -65,7 +65,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { grantRole } from "../helpers/iam-grants.ts";
+import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   BROKER_PROXY_DISABLED,
@@ -1133,7 +1133,13 @@ type ProtectedPolicyFixture = Pick<
 
   readonly namespace: Pick<Namespace, "id">;
   readonly protectedDriver: InstalledDriver;
-  readonly iamState: Parameters<typeof grantRole>[0] & { readonly identities: Identity[] };
+  readonly iamState: Parameters<typeof grantRole>[0] &
+    Parameters<typeof restrict>[0] & { readonly identities: Identity[] };
+  compose(registry: GitHubRepositoryRegistry): Promise<
+    Composition & {
+      readonly controller: OpenClawController;
+    }
+  >;
   createAgent(fields: Partial<CreateAgentBody>): Promise<AgentWire>;
 };
 
@@ -1281,11 +1287,14 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       201,
     );
     const sourceId = model.id;
-    async function createSelectedAgent(gatewayManagedMode?: boolean) {
+    async function createSelectedAgent(
+      gatewayManagedMode?: boolean,
+      repositoryBindings = bindings,
+    ) {
       const agent = await f.createAgent({
         executionMode: "dedicated",
         ...(gatewayManagedMode === undefined ? {} : { gatewayManagedMode }),
-        repositoryBindings: [...bindings],
+        repositoryBindings: [...repositoryBindings],
         harnessAuth: { method: "credential_source", sourceId },
         credentialSources: [{ sourceId }],
       });
@@ -1420,19 +1429,56 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     }
   });
 
-  test("a registry-selected Source is checked at policy save, deploy and retirement", async (t) => {
+  function enableSelectedRepositoryApi(
+    registry: GitHubRepositoryRegistry,
+    repositoryRefs: readonly string[] = ["selected"],
+  ): GitHubRepositoryRegistry {
+    return {
+      ...registry,
+      repositories: registry.repositories.map((repo) =>
+        repositoryRefs.includes(repo.repositoryRef)
+          ? {
+              ...repo,
+              namespaces: repo.namespaces.map((policy) => ({
+                ...policy,
+                permissions: { ...policy.permissions, issues: "write", pull_requests: "write" },
+              })),
+            }
+          : repo,
+      ),
+    };
+  }
+
+  async function selectRepositoryFromCatalog(request: Request, path: string, repository: string) {
+    const { data } = checkedEnvelope(
+      await request("GET", `${path}/repository-options`),
+      RepositoryOptionListResponse,
+      200,
+    );
+    const option = data.find(({ displayName }) => displayName === repository);
+    const profile = "github-repository";
+    assert.ok(option && option.allowedProfiles.includes(profile));
+    return { repositoryRef: option.repositoryRef, profile };
+  }
+
+  async function sourcePolicyFixture(
+    t: TestContext,
+    repositorySourceCeiling: string,
+    { rest = false, bindProject = false } = {},
+  ) {
     selectFixtureRelease(t);
+    const sourceRepositoryRefs = bindProject ? ["selected", "project"] : ["selected"];
     const fixture = await scopedFixture(t, {
       nativeGit: "v1",
-      repositorySourceCeiling: "example/selected:read",
-      // The selected repository's registration names the Source; the others stay on the App.
+      repositorySourceCeiling,
+      // The Agent's bindings name one Source; the other registrations stay on the App.
       configureRegistry: (registry, repositorySourceId) => {
         assert.ok(repositorySourceId);
         const withGit = selectedRepositoryRegistry("write", { nativeGit: "v1" })(registry);
-        return {
+        const registered = {
           ...withGit,
           repositories: withGit.repositories.map((repo) =>
-            repo.repositoryRef === "selected"
+            sourceRepositoryRefs.includes(repo.repositoryRef)
               ? {
                   ...repo,
                   namespaces: repo.namespaces.map((policy) => ({
@@ -1443,12 +1489,20 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
               : repo,
           ),
         };
+        return rest ? enableSelectedRepositoryApi(registered, sourceRepositoryRefs) : registered;
       },
     });
     const { f, selected, writeGrant, createSelectedAgent, fixtureCompute, sandbox } = fixture;
     const repositorySourceId = fixture.repositorySourceId;
     assert.ok(repositorySourceId);
-    const agent = await createSelectedAgent();
+    const binding = await selectRepositoryFromCatalog(f.request, f.collection, selected.repository);
+    const bindings = [binding];
+    if (bindProject) {
+      bindings.push(
+        await selectRepositoryFromCatalog(f.request, f.collection, fixture.unselected.repository),
+      );
+    }
+    const agent = await createSelectedAgent(undefined, bindings);
     const path = `${f.collection}/${agent.id}`;
     const policyPath = `${path}/sandbox-policy/networking`;
     const sourcesPath = `/namespaces/${f.namespace.id}/credential-sources`;
@@ -1469,19 +1523,181 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       });
     };
 
+    const authorize = async (expected: RepositoryNetworkGrant = selected) => {
+      const principal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
+      grantRole(f.iamState, principal.servicePrincipalId, {
+        id: `repository-token-for-${agent.id}`,
+        namespaceId: f.namespace.id,
+        permissions: { credential_source: ["operate"] },
+        resource: { kind: "credential_source", id: repositorySourceId },
+      });
+
+      // Placement is stubbed as in the other admission cases.
+      stubAdmissionCompute(t, fixtureCompute, expected);
+      sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
+    };
+    const deployAndReadRoutes = async (request = f.request, registry = f.registry) => {
+      const { data } = checkedEnvelope(
+        await request("POST", `${path}/deploy`),
+        AgentRevisionResponse,
+        202,
+      );
+      const revision = await f.state.read((view) =>
+        view.revisions.findRevision(f.namespace.id, agent.id, data.id),
+      );
+      assert.ok(revision?.sandboxPolicy?.repositoryNetworkPolicy);
+      const resolve = createGitHubRepositoryDeliveryResolver(
+        validateGitHubRepositoryRegistry(registry, registry.backendId),
+      );
+      const { delivery } = resolve(revision);
+      assert.ok("scope" in delivery && delivery.scope === "github-repository");
+      return compiledRepositoryApiRoutes(
+        revision.sandboxPolicy.repositoryNetworkPolicy.grants,
+        delivery.scopedRest,
+      );
+    };
+    return {
+      f,
+      binding,
+      deployAndReadRoutes,
+      selected,
+      writeGrant,
+      agent,
+      path,
+      sourcesPath,
+      repositorySourceId,
+      save,
+      authorize,
+    };
+  }
+
+  test("An existing PAT binding needs explicit reselection by a policy editor to add API access", async (t) => {
+    const { f, agent, binding, path, writeGrant, save, authorize, deployAndReadRoutes } =
+      await sourcePolicyFixture(t, "example/selected:write:api");
+    assert.equal(binding.repositoryRef, "selected");
+    await authorize(writeGrant);
+    checkedEnvelope(await save([writeGrant]), SandboxPolicyResponse, 200);
+
+    // An operator changed only the repository registration. The draft and saved Git grant
+    // still come from the previous configuration, and the PAT was already enrolled for API.
+    const expanded = enableSelectedRepositoryApi(f.registry);
+    const { controller, request } = await f.compose(expanded);
+    controller.installDriver(f.protectedDriver, ["sandbox", "credential_proxy"]);
+    for (const driver of [
+      f.controller.selectedDriver("compute"),
+      f.controller.selectedDriver("credential_gateway"),
+    ]) {
+      controller.registerDriver(driver);
+      controller.selectDriver(driver.capability, driver.id);
+    }
+    const deploy = () => request("POST", `${path}/deploy`);
+    const { error } = checkedEnvelope(await deploy(), ErrorResponse, 409);
+    assert.equal(error.code, "RESOURCE_CONFLICT");
+    assert.equal(error.message, SAVED_REPOSITORY_SELECTION_NOT_APPROVED);
+    assert.deepEqual(
+      checkedEnvelope(await request("GET", `${path}/revisions`), AgentRevisionListResponse, 200)
+        .data,
+      [],
+    );
+
+    const current = await selectRepositoryFromCatalog(request, path, writeGrant.repository);
+    assert.notEqual(current.repositoryRef, binding.repositoryRef);
+    const reselect = () =>
+      request("PATCH", path, {
+        configurationId: f.configuration.id,
+        repositoryBindings: [current],
+      });
+    const denied = restrict(f.iamState, "manage_policy", "agent", {
+      namespaceId: f.namespace.id,
+      resourceId: agent.id,
+    });
+    try {
+      checkedEnvelope(await reselect(), ErrorResponse, 403);
+    } finally {
+      liftRestriction(f.iamState, denied);
+    }
+    const { data: selected } = checkedEnvelope(await reselect(), AgentResponse, 200);
+    assert.deepEqual(selected.repositoryBindings, [current]);
+    const routes = await deployAndReadRoutes(request, expanded);
+    assert.ok(routes.includes("GET /repos/example/selected/issues"));
+    assert.ok(routes.includes("POST /repos/example/selected/pulls"));
+
+    // Returning to the original registration also invalidates the new draft selection.
+    const rollback = checkedEnvelope(await f.request("POST", `${path}/deploy`), ErrorResponse, 409);
+    assert.equal(rollback.error.message, SAVED_REPOSITORY_SELECTION_NOT_APPROVED);
+  });
+
+  test("PAT API save and deploy require enrollment and bound PR heads", async (t) => {
+    for (const [ceiling, limits] of [
+      ["example/selected:write", { default: "none" }],
+      ["example/selected:write:api,example/other:read", { pull_requests: "read" }],
+      ["example/selected:write:api", undefined],
+    ] as const) {
+      await t.test(ceiling, async (t) => {
+        const { f, path, writeGrant, save, authorize } = await sourcePolicyFixture(t, ceiling, {
+          rest: true,
+        });
+        const grant = limits ? { ...writeGrant, apiLimits: limits } : writeGrant;
+        await authorize(grant);
+        if (limits) {
+          checkedEnvelope(await save([writeGrant]), ErrorResponse, 409);
+        }
+        const grants = [grant];
+        checkedEnvelope(await save(grants), SandboxPolicyResponse, 200);
+        checkedEnvelope(await f.request("POST", path + "/deploy"), AgentRevisionResponse, 202);
+      });
+    }
+  });
+
+  test("Removing an ungranted PAT binding needs policy authority when PR creation can expand", async (t) => {
+    const { f, agent, binding, path, writeGrant, save, authorize, deployAndReadRoutes } =
+      await sourcePolicyFixture(t, "example/selected:write:api", { rest: true, bindProject: true });
+    const originalBindings = agent.repositoryBindings;
+    assert.ok(originalBindings);
+    assert.equal(originalBindings.length, 2);
+    await authorize(writeGrant);
+    checkedEnvelope(await save([writeGrant]), SandboxPolicyResponse, 200);
+
+    // The ungranted project binding suppresses PR creation on the granted repository.
+    const initialRoutes = await deployAndReadRoutes();
+    assert.ok(initialRoutes.includes("GET /repos/example/selected/pulls"));
+    assert.ok(!initialRoutes.includes("POST /repos/example/selected/pulls"));
+
+    const updateBindings = (repositoryBindings: readonly RepositoryBindingSelection[]) =>
+      f.request("PATCH", path, { configurationId: f.configuration.id, repositoryBindings });
+    const denied = restrict(f.iamState, "manage_policy", "agent", {
+      namespaceId: f.namespace.id,
+      resourceId: agent.id,
+    });
+    try {
+      checkedEnvelope(await updateBindings([binding]), ErrorResponse, 403);
+      const { data: cleared } = checkedEnvelope(await updateBindings([]), AgentResponse, 200);
+      assert.deepEqual(cleared.repositoryBindings ?? [], []);
+    } finally {
+      liftRestriction(f.iamState, denied);
+    }
+
+    checkedEnvelope(await updateBindings(originalBindings), AgentResponse, 200);
+    const { data: updated } = checkedEnvelope(await updateBindings([binding]), AgentResponse, 200);
+    assert.deepEqual(updated.repositoryBindings, [binding]);
+    assert.ok((await deployAndReadRoutes()).includes("POST /repos/example/selected/pulls"));
+  });
+
+  test("a registry-selected Source is checked at policy save, deploy and retirement", async (t) => {
+    const {
+      f,
+      selected,
+      writeGrant,
+      agent,
+      path,
+      sourcesPath,
+      repositorySourceId,
+      save,
+      authorize,
+    } = await sourcePolicyFixture(t, "example/selected:read");
     // The Agent principal has operate only on its model Source, so the save is forbidden.
     checkedEnvelope(await save([selected]), ErrorResponse, 403);
-    const principal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
-    grantRole(f.iamState, principal.servicePrincipalId, {
-      id: `repository-token-for-${agent.id}`,
-      namespaceId: f.namespace.id,
-      permissions: { credential_source: ["operate"] },
-      resource: { kind: "credential_source", id: repositorySourceId },
-    });
-
-    // Placement is stubbed as in the other admission cases.
-    stubAdmissionCompute(t, fixtureCompute, selected);
-    sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
+    await authorize();
     // A Source is scoped only by the saved network policy. Without one, deploy refuses with a
     // named reason; it never falls back to the App's route.
     const unsaved = checkedEnvelope(await f.request("POST", path + "/deploy"), ErrorResponse, 409);

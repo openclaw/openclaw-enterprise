@@ -952,6 +952,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           lockedAgent,
           repositorySourceId,
           policy.repositoryNetworkPolicy,
+          admittedRepository?.resolution.repositoryApiMaxima,
         );
       }
       const resolvedRepositoryCredentials = admittedRepository?.credentials;

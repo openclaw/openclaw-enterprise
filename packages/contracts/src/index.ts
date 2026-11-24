@@ -473,6 +473,7 @@ export {
   isGitHubFineGrainedToken,
   isRepositoryTokenSource,
   readSourceRepositoryCeiling,
+  sourceRepositoryApiRefusal,
   SOURCE_REPOSITORIES_CONFIG_KEY,
   SourceRepositoryCeilingError,
 } from "./repository-token-source.ts";

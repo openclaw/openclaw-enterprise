@@ -547,28 +547,37 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       readonly repositoryBindings?: readonly RepositoryBindingRequest[];
       readonly repositoryAccess?: RepositoryAccess;
     },
-  ): {
-    repositoryBindings: readonly RepositoryBindingSelection[] | undefined;
-    repositoryAccess?: RepositoryAccess;
-  } {
-    const resolve = (bindings: readonly RepositoryBindingRequest[] | undefined) =>
-      repositoryBindingSelections(namespaceId, bindings, "request");
-    if (input.repositoryAccess === undefined) {
-      return {
-        repositoryBindings: resolve(input.repositoryBindings),
-      };
+    previous?: readonly RepositoryBindingSelection[],
+  ) {
+    const access = input.repositoryAccess;
+    let requested = input.repositoryBindings;
+    if (access !== undefined) {
+      if (requested !== undefined || !validRepositoryAccess(access)) {
+        throw new RepositoryBindingSelectionError(RepositoryBindingSelectionError.accessOrBindings);
+      }
+      requested = access.repositories.map((entry) => ({
+        repositoryRef: entry.repositoryRef,
+        profile: entry.profile ?? access.defaultProfile,
+      }));
     }
-    if (input.repositoryBindings !== undefined || !validRepositoryAccess(input.repositoryAccess)) {
-      throw new RepositoryBindingSelectionError(RepositoryBindingSelectionError.accessOrBindings);
-    }
-    const requested = input.repositoryAccess.repositories.map((entry) => ({
-      repositoryRef: entry.repositoryRef,
-      profile: entry.profile ?? input.repositoryAccess!.defaultProfile,
-    }));
-    const repositoryBindings = resolve(requested);
+    const { repositoryBindings, usesSourceApi } = resolveSelections(
+      namespaceId,
+      requested,
+      "request",
+    );
+    // Adding a binding can enable API access. Removing an ungranted binding can
+    // also enable PR creation on a remaining repository. Reordering cannot.
+    const requiresPolicyReview =
+      usesSourceApi &&
+      repositoryBindings !== undefined &&
+      (repositoryBindings.length !== previous?.length ||
+        repositoryBindings.some((binding) => !includesBinding(previous, binding)));
     return {
       repositoryBindings,
-      repositoryAccess: normalizedRepositoryAccess(input.repositoryAccess, repositoryBindings)!,
+      ...(access !== undefined && {
+        repositoryAccess: normalizedRepositoryAccess(access, repositoryBindings)!,
+      }),
+      requiresPolicyReview,
     };
   }
 
@@ -669,6 +678,14 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     bindings: readonly RepositoryBindingRequest[] | undefined,
     origin: "request" | "saved",
   ): readonly RepositoryBindingSelection[] | undefined {
+    return resolveSelections(namespaceId, bindings, origin).repositoryBindings;
+  }
+
+  function resolveSelections(
+    namespaceId: string,
+    bindings: readonly RepositoryBindingRequest[] | undefined,
+    origin: "request" | "saved",
+  ) {
     const resolved = resolveRepositoryBindings(
       namespaceId,
       bindings,
@@ -676,15 +693,25 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       installationRepositoryAdmission,
     );
     if (resolved === undefined || bindings === undefined) {
-      return undefined;
+      return { repositoryBindings: undefined, usesSourceApi: false };
     }
+    const { resolution } = resolved;
     const selections = new Map(
-      resolved.resolution.bindings.map(({ repositoryRef, profile }) => [
+      resolution.bindings.map(({ repositoryRef, profile }) => [
         repositoryRef,
         { repositoryRef, profile },
       ]),
     );
-    return immutableCopy(bindings.map(({ repositoryRef }) => selections.get(repositoryRef)!));
+    return {
+      repositoryBindings: immutableCopy(
+        bindings.map(({ repositoryRef }) => selections.get(repositoryRef)!),
+      ),
+      usesSourceApi:
+        resolution.credentialSource !== undefined &&
+        !!resolution.repositoryApiMaxima?.some(
+          ({ issues, pull_requests }) => issues !== "none" || pull_requests !== "none",
+        ),
+    };
   }
 
   function admitRepositoryCredentials(
@@ -1018,7 +1045,13 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         ownersCurrent,
       );
       const { credentialSource } = repository.resolution;
-      return credentialSource === undefined ? edit : { ...edit, credentialSource };
+      return credentialSource === undefined
+        ? edit
+        : {
+            ...edit,
+            credentialSource,
+            repositoryApiMaxima: repository.resolution.repositoryApiMaxima ?? [],
+          };
     } catch {
       // Driver refusals can contain protected configuration and binding details.
       return undefined;

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { readSourceRepositoryCeiling } from "@openclaw-enterprise/contracts";
+import {
+  readSourceRepositoryCeiling,
+  sourceRepositoryApiRefusal,
+  type RepositoryNetworkGrant,
+} from "@openclaw-enterprise/contracts";
 import { classifyGitHubToken } from "./static-token.ts";
 import type { GitHubTokenClass } from "./types.ts";
 import type { GitHubRepositorySourceGrant } from "./repository-grant.ts";
@@ -104,7 +108,7 @@ export interface RepositorySourceCustody {
    */
   admitted(
     session: Readonly<{ namespaceId: string; agentId: string; revisionId: string }>,
-  ): Promise<readonly Readonly<{ repository: string; access: "read" | "write" }>[] | undefined>;
+  ): Promise<readonly RepositoryNetworkGrant[] | undefined>;
 }
 
 const reasons = {
@@ -156,7 +160,7 @@ function loanUuid(...parts: readonly string[]): string {
 type LentSource = {
   readonly key: { readonly source: { readonly id: string } };
   readonly session: Readonly<{ namespaceId: string; agentId: string; revisionId: string }>;
-  readonly grant: Pick<GitHubRepositorySourceGrant, "credentialSource">;
+  readonly grant: Pick<GitHubRepositorySourceGrant, "credentialSource" | "repositoryApiMaxima">;
 };
 
 /**
@@ -235,14 +239,9 @@ export function createRepositorySourceMaterialReader<
       if (row.preset !== "github") {
         throw new RepositorySourceLoanRefusal(sourceId, "source_preset_refused");
       }
-      let ceiling: ReadonlyMap<string, "read" | "write">;
+      let ceiling: ReturnType<typeof readSourceRepositoryCeiling>;
       try {
-        ceiling = new Map(
-          readSourceRepositoryCeiling(row.repositories ?? "").map(({ repository, access }) => [
-            repository,
-            access,
-          ]),
-        );
+        ceiling = readSourceRepositoryCeiling(row.repositories ?? "");
       } catch {
         throw new RepositorySourceLoanRefusal(sourceId, "source_ceiling_exceeded");
       }
@@ -255,12 +254,17 @@ export function createRepositorySourceMaterialReader<
       if (!admitted?.length) {
         throw new RepositorySourceLoanRefusal(sourceId, "source_access_exceeded");
       }
-      if (admitted.some(({ repository }) => !ceiling.has(repository))) {
+      if (
+        admitted.some(({ repository }) => !ceiling.some((entry) => entry.repository === repository))
+      ) {
         throw new RepositorySourceLoanRefusal(sourceId, "source_ceiling_exceeded");
       }
       if (
+        sourceRepositoryApiRefusal(admitted, ceiling, source.grant.repositoryApiMaxima) ||
         admitted.some(
-          ({ repository, access }) => access !== "read" && ceiling.get(repository) === "read",
+          ({ repository, access }) =>
+            access !== "read" &&
+            !ceiling.some((entry) => entry.repository === repository && entry.access === "write"),
         )
       ) {
         throw new RepositorySourceLoanRefusal(sourceId, "source_access_exceeded");

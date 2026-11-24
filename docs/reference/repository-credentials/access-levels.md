@@ -61,10 +61,9 @@ Sandbox is the Provider's sole recipient and the workspace has no additional
 members. Operators must retain exclusive control of workspace, Sandbox and
 Provider writes for this delivery mode.
 
-Native GitHub App REST access on stock OpenShell 0.1.9 follows the selected
+Native GitHub REST access on stock OpenShell 0.1.9 follows the selected
 repository's Namespace `permissions` and the Agent's saved repository grant.
-GitHub App permissions that are not configured on the Namespace registration do
-not grant Agent access.
+A [repository token Source](repository-token-source.md#issues-and-pull-requests) also requires API enrollment for the repository. Permissions missing from the registration grant no direct routes.
 
 | Operation                              | Namespace `permissions` entry      | Saved grant   |
 | -------------------------------------- | ---------------------------------- | ------------- |
@@ -113,8 +112,9 @@ requires read access to the same resource.
 | `{ default: "none", issues: "write" }` | Keep only issue reads and creation           |
 | `{ default: "none" }`                  | Git only                                     |
 
-An omitted resource inherits eligible access. Set `default: "none"` to block
-all unlisted resources, including future ones. OCE rejects any other default,
+An omitted resource inherits eligible access. To make a grant Git-only, replace
+its entire `apiLimits` object with `{"default":"none"}`. A resource override
+takes precedence over the default. OCE rejects any other default,
 an empty object, unknown keys and invalid values.
 
 Any explicit limit requires a saved repository network policy and native
@@ -156,8 +156,10 @@ Inspect the repository before retrying an uncertain creation result.
 
 Remove the retired `scopedRest`, `createIssues` and `apiActions` fields. Review each
 Namespace's Issues and Pull requests permissions and any `apiLimits`
-before deployment. An existing Agent draft can gain eligible REST routes at its
-next deployment. Changed grant identities can interrupt an older revision's
+before deployment. An existing App Agent draft can gain eligible REST routes at
+its next deployment. A PAT registration with effective API routes requires a
+current [catalog selection](repository-token-source.md#issues-and-pull-requests).
+Changed grant identities can interrupt an older revision's
 credential preparation or renewal, affecting Git and REST until recovery. Edit
 the normal draft and redeploy, then verify retirement of the old Sandbox. A
 registration edit does not immediately revoke a running Sandbox's loaded policy
@@ -211,9 +213,9 @@ repository can also do the following in that repository:
   `head_repo`. Commits of that repository become readable through the target's
   pull request ref and diff. GitHub refuses a head repository that the
   credential does not cover, with 422 "not all refs are readable" (verified
-  against github.com). The credential covers every repository bound to the
+  against github.com with an App token). An App installation token covers the repositories bound to the
   Agent, and creation is only available while each of them has a saved grant,
-  so the head can only be a repository the Agent can already read.
+  limiting private heads to granted repositories. With a PAT, OCE checks the declared set. GitHub may accept a head from an undeclared private repository if the PAT can read it.
 - Convert an existing issue into a pull request, with `issue: NUMBER`, which
   changes that issue.
 
