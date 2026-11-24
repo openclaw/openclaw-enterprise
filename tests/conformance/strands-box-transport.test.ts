@@ -549,6 +549,40 @@ test(
   },
 );
 
+test("Strands preserves promisified execFile results and routing with a reduced environment", async () => {
+  const preload = new URL("../../deploy/runtime/strands-box/proxy-preload.mjs", import.meta.url);
+  const script = `
+    import assert from "node:assert/strict";
+    import { execFile } from "node:child_process";
+    import { promisify } from "node:util";
+    const run = promisify(execFile);
+    const print = 'printf "%s" "$HTTPS_PROXY"; printf diagnostic >&2';
+    const pending = run("/bin/sh", ["-c", print], { env: {} });
+    const result = await pending;
+    assert.deepEqual(result, { stdout: process.env.HTTPS_PROXY, stderr: "diagnostic" });
+    assert.equal(typeof pending.child.pid, "number");
+    for (const args of [[{ env: {} }], [undefined, { env: {} }]]) {
+      const { stdout } = await run("/usr/bin/env", ...args);
+      assert.ok(stdout.split("\\n").includes("HTTPS_PROXY=" + process.env.HTTPS_PROXY));
+      assert.ok(!stdout.includes("UNRELATED_PARENT_VALUE="));
+    }
+    await assert.rejects(run("/bin/sh", ["-c", print + "; exit 7"], { env: {} }), (error) => {
+      assert.equal(error.code, 7);
+      assert.equal(error.stdout, process.env.HTTPS_PROXY);
+      assert.equal(error.stderr, "diagnostic");
+      return true;
+    });
+  `;
+  await promisify(execFile)(
+    process.execPath,
+    ["--jitless", "--import", preload.href, "--input-type=module", "-e", script],
+    {
+      env: { HTTPS_PROXY: "http://127.0.0.1:18790", UNRELATED_PARENT_VALUE: "parent-only" },
+      timeout: 10_000,
+    },
+  );
+});
+
 test("Strands routing keeps explicit connection factories on the provider proxy", async (t) => {
   const observed: Array<string | undefined> = [];
   const proxy = createServer((request, response) => {
