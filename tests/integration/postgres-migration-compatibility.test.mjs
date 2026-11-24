@@ -1499,6 +1499,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preTokenServiceSourceBackendRef"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1770,6 +1772,10 @@ test(
     assert.equal(staticMetadata.sources[0].token_service_instance_id, instance);
     assert.equal(staticMetadata.sources[0].owner_capability, "token_service");
     assert.equal(staticMetadata.sources[0].driver_id, null);
+    const upgradedStaticMetadata = {
+      ...staticMetadata,
+      sources: [{ ...staticMetadata.sources[0], backend_ref: null }],
+    };
     const before = await historySnapshot(db);
     const stockArchive = await dumpHistoryArchive(fixture, db);
     assert.deepEqual(
@@ -1792,7 +1798,7 @@ test(
     await assertCompletedHistory(db, before.receipts);
     assert.deepEqual(await readEgress(), egress);
     assert.deepEqual(await readPolicy(), policy);
-    assert.deepEqual(await readStatic(), staticMetadata);
+    assert.deepEqual(await readStatic(), upgradedStaticMetadata);
 
     // The archived 0086 database has the same official receipts and qualified restore catalog.
     const upgraded = await restoreHistoryArchive(context, fixture, stockArchive);
@@ -1811,7 +1817,7 @@ test(
       history: "completed",
     });
     assert.deepEqual(await historyReceipts(upgraded.migrator), await historyReceipts(db.migrator));
-    assert.deepEqual(await readStatic(upgraded), staticMetadata);
+    assert.deepEqual(await readStatic(upgraded), upgradedStaticMetadata);
     assert.deepEqual(await readEgress(upgraded), egress);
     assert.deepEqual(await readPolicy(upgraded), policy);
 
@@ -1834,7 +1840,7 @@ test(
     assert.deepEqual(await historySnapshot(db), after);
     assert.deepEqual(await readEgress(), egress);
     assert.deepEqual(await readPolicy(), saved);
-    assert.deepEqual(await readStatic(), staticMetadata);
+    assert.deepEqual(await readStatic(), upgradedStaticMetadata);
 
     const restored = await restoreHistoryArchive(
       context,
@@ -1846,7 +1852,7 @@ test(
       history: "completed",
     });
     assert.deepEqual(await historyReceipts(restored.migrator), after.receipts);
-    assert.deepEqual(await readStatic(restored), staticMetadata);
+    assert.deepEqual(await readStatic(restored), upgradedStaticMetadata);
     assert.deepEqual(await readEgress(restored), egress);
     assert.deepEqual(await readPolicy(restored), saved);
   },
@@ -1956,6 +1962,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preTokenServiceSourceBackendRef"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2520,6 +2528,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preTokenServiceSourceBackendRef"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2652,6 +2662,8 @@ test(
     for (const [prefix, history] of [
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preTokenServiceSourceBackendRef"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2819,6 +2831,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preTokenServiceSourceBackendRef"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2847,6 +2861,8 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [93, "CREATE TRIGGER"],
+                [92, "CREATE FUNCTION"],
                 [91, "ALTER TABLE"],
                 [90, "ALTER TABLE"],
                 [89, "CREATE FUNCTION"],
@@ -2882,6 +2898,16 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 93) {
+          // Abort the immutability trigger after 0094 installs the reference constraint.
+          failAt = `IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conrelid='occ.credential_sources'::regclass
+            AND conname='credential_sources_backend_ref_valid'
+          ) THEN RETURN; END IF;`;
+        } else if (prefix === 92) {
+          // Fail replacement of the policy validator after the action check and grants exist.
+          failAt =
+            "IF to_regprocedure('occ.repository_api_limits_are_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 89) {
           // Abort 0090 after replacing the execution check, while installing the session guard.
           failAt =

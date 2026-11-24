@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -1032,27 +1042,72 @@ export async function checkInitializationHookNames(t: TestContext): Promise<void
 }
 
 export async function checkRetiredBootstrapOutputs(): Promise<void> {
-  // Earlier charts refused to render without bootstrap.password.claimName, so an existing
-  // installation's own values still carry these keys when it upgrades.
-  const retired = {
-    "bootstrap.credentials.secretName": "",
-    "bootstrap.password.claimName": "bootstrap-password",
-    "bootstrap.serviceKey.fileName": "initial-admin-service-key.json",
-  };
-  const objects = await renderObjects(retired, { isUpgrade: true });
+  const claimName = "bootstrap-password";
+  const fileName = "initial-admin-service-key.json";
+  const credentials = { "bootstrap.credentials.secretName": "bootstrap-install-input" };
+  const noCredentials = { "bootstrap.credentials.secretName": "" };
+  const password = { "bootstrap.password.claimName": claimName };
+  const serviceKey = { "bootstrap.serviceKey.fileName": fileName };
+  const retired = { ...password, ...serviceKey };
+
+  // A valid Secret lets operators reuse earlier values without changing resources or hooks.
+  const install = (await render(credentials)).stdout;
+  for (const settings of [
+    password,
+    serviceKey,
+    retired,
+    { "bootstrap.password": "", "bootstrap.serviceKey": "" },
+  ]) {
+    const mixedInstall = (await render({ ...credentials, ...settings })).stdout;
+    assert.ok(mixedInstall === install, "Retired settings must not affect install manifests");
+  }
+  await assert.rejects(render({ ...noCredentials, ...retired }), {
+    stderr: /bootstrap\.credentials\.secretName.*unused name.*--bootstrap-credentials=existing/,
+  });
+
+  // Helm template hides NOTES.txt. Render the real notes as a field in a disposable chart.
+  const chartDirectory = await mkdtemp(join(tmpdir(), "oce-bootstrap-notes-"));
+  try {
+    await cp(join(repository, "deploy/helm/openclaw-enterprise"), chartDirectory, {
+      recursive: true,
+    });
+    await writeFile(
+      join(chartDirectory, "templates/notes-probe.yaml"),
+      'apiVersion: v1\nkind: ConfigMap\nmetadata: {name: notes-probe}\ndata:\n  notes: {{ include (print .Template.BasePath "/NOTES.txt") . | quote }}\n',
+    );
+    const notice = /occ installation migrate-values/;
+    const mixed = await render({ ...credentials, ...retired }, { chartDirectory });
+    assert.match(mixed.stdout, notice);
+    assert.ok(!mixed.stdout.includes(claimName));
+    assert.doesNotMatch((await render(credentials, { chartDirectory })).stdout, notice);
+    assert.doesNotMatch(
+      (await render(retired, { chartDirectory, isUpgrade: true })).stdout,
+      notice,
+    );
+  } finally {
+    await rm(chartDirectory, { recursive: true, force: true });
+  }
+
+  // Upgrades need neither a bootstrap Secret input nor the retired outputs.
+  const upgrade = { isUpgrade: true };
+  const cleanUpgrade = (await render(noCredentials, upgrade)).stdout;
+  for (const settings of [noCredentials, credentials]) {
+    const legacyUpgrade = (await render({ ...settings, ...retired }, upgrade)).stdout;
+    assert.ok(legacyUpgrade === cleanUpgrade, "Bootstrap settings must not affect an upgrade");
+  }
+
+  // The legacy credential PVC belongs to the operator. The upgrade Job must not mount it.
+  const upgradeObjects = await renderObjects({ ...noCredentials, ...retired }, upgrade);
   const initializerPod = resourceSpec(
-    objects.find(({ kind }) => kind === "Job"),
+    upgradeObjects.find(({ kind }) => kind === "Job"),
     jobVolumesSpec,
   ).template.spec;
   assert.ok(!initializerPod.volumes.some(({ persistentVolumeClaim }) => persistentVolumeClaim));
-  // A fresh install still has to name the precreated credentials Secret.
-  await assert.rejects(render(retired), (error: unknown) => {
-    const stderr = asRecord(error)?.stderr;
-    return (
-      typeof stderr === "string" &&
-      /bootstrap\.credentials\.secretName must reference a precreated Secret/.test(stderr)
-    );
-  });
+
+  for (const manifests of [install, cleanUpgrade]) {
+    assert.ok(!manifests.includes(claimName), "Chart uses the legacy PVC");
+    assert.ok(!manifests.includes(fileName), "Chart uses the legacy service key file");
+  }
 }
 
 export async function checkPackagedProductionChart(): Promise<void> {

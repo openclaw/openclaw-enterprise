@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-22
-last_updated_session: authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967
+updated: 2026-11-24
+last_updated_session: authoring-run/02daa2dc-277c-444c-bb4d-5589ee0579e9
 ---
 
 # Console Agent creation
@@ -28,9 +28,11 @@ user-visible behavior.
 graph TD
   A["Create Agent form"] --> B["Plugins, model, and repository choices"]
   B -->|repository access required and missing| H["Explain the requirement before provisioning"]
-  B -->|supported Dedicated| C["Queue provisioning with inline Configuration"]
+  B -->|supported Dedicated with profile access| C["Queue provisioning with inline Configuration"]
   C --> D["Worker creates resources, grants and first deployment"]
   B -->|ordinary draft| E["Validate, then POST Configuration and Agent"]
+  B -->|GitHub access per repository| I["Save draft with policy and verify grants"]
+  I --> F
   E --> F["Grant Agent use of selected Secrets"]
   F -->|failed| G["Retry credential access"]
 ```
@@ -125,29 +127,41 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 ### 3. Load repository options
 
 `agents/repositories.mts:createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
-which authorizes Agent create. Create Agent holds this read until the permission answer allows
-Agent create, or the Installation read succeeds without an answer; after a known refusal it
-reads none and says so, without a retry. After the read it requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
-submitted `repositoryAccess`. Retained drafts keep selections through failed
-discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
-or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
-failures block submission.
+which authorizes Agent create. The form waits for permission to allow Agent create,
+or a successful Installation read without an answer. A known refusal prevents the read
+and offers no retry. Discovery requests optional descriptions for visible refs.
+[Repository admission](../agent-repository-credentials.md) resolves submitted
+`repositoryAccess`. Failed discovery retains draft selections; retries recheck current
+policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` or `meta.notConfigured` (no
+`repository` settings), with no retained selections, permits creation without bindings.
+Other failures block submission.
 
-The credential catalog includes ordinary Gateway sources even when a Git Proxy
-is selected. Repository access remains optional in the form. An ordinary Gateway
-source without protected sources or repository bindings needs no Proxy admission.
-Source-free deployment follows the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
+The credential catalog includes ordinary Gateway sources with a Git Proxy selected.
+Repository access remains optional. Without protected sources or repository bindings,
+an ordinary Gateway source needs no Proxy admission. Source-free deployment follows the
+[protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
 
 ### 4. Submit provisioning or an ordinary draft
 
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
-Supported Dedicated runtimes submit inline Configuration, optional repository
+[Per-repository access](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
+defaults selected repositories to their delegated limits. With a selection,
+the API saves the draft and grants atomically. Console confirms them before
+granting credentials. Deployment checks the reviewed version under the Namespace lock
+and refuses stale grants with HTTP 409.
+
+With eligible scoped choices but none selected, **Create Agent** warns before requesting
+deployment without a repository policy. A selection changes the action to **Save Agent
+draft**, which does not deploy.
+
+Otherwise supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
-a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. Before it saves a model Secret or registers a
-Credential Source for the request, the form runs the preflight below with the planned method.
-The worker reauthorizes, creates resources and exact Secret grants, and deploys; Console polls and opens the saved version. Where the form cannot follow a placement
-refusal's advice to select Embedded OpenClaw, it shows only the missing setting.
+`503 REPOSITORY_OPTIONS_UNAVAILABLE`. Before saving a model Secret or registering a
+Credential Source, the form preflights the planned method. The worker reauthorizes,
+creates resources and exact Secret grants, and deploys. Console polls and opens the saved
+version. When Embedded OpenClaw cannot be selected, a placement refusal shows only
+the missing setting.
 
 The Installation capabilities do not show whether the Compute Driver supplies a Preset's
 operator-managed (`runtime`) binding. When the capabilities are read, `checkRuntimeBinding` sends
@@ -256,6 +270,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-24 04:58: Trace the first-deployment repository warning and draft action. (authoring-run/02daa2dc-277c-444c-bb4d-5589ee0579e9 - 840798ada6c310271e26b3004c25bd7b253d042c)
 - 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)
 - 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

@@ -617,6 +617,7 @@ function writeBrowserModule(name: string) {
 
 writeBrowserModule("site");
 writeBrowserModule("compute-matrix-browser");
+writeBrowserModule("repository-limits");
 if (pages.has("reference/api-explorer.md")) {
   writeBrowserModule("api-explorer");
   const scalar = path.dirname(fileURLToPath(import.meta.resolve("@scalar/api-reference")));
@@ -740,6 +741,9 @@ for (const page of pages.values()) {
     '<!doctype html><html lang="en" data-theme="dark" data-oc-theme="product"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
     (page.searchable ? "" : '<meta name="robots" content="noindex">') +
     themeBootstrap +
+    (page.html.includes("data-repository-limits")
+      ? '<script type="module" src="/assets/repository-limits.mjs"></script>'
+      : "") +
     (page.source === "reference/api-explorer.md"
       ? '<script src="/assets/scalar.js" defer></script><script type="module" src="/assets/api-explorer.mjs"></script>'
       : "") +
