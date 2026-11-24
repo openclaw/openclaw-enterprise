@@ -47,8 +47,10 @@ a conflict. A stopped or unavailable Agent cannot serve these requests.
 
 If you lose the response or OCC returns `UNKNOWN_OUTCOME`, the change may
 have taken effect. After POST, if you have no job ID, list the Agent's jobs,
-check all pages, and inspect possible matches. After PATCH or DELETE, read
-the job by ID to check its current settings or whether it still exists.
+check all pages, and inspect possible matches. If none match, the create
+outcome remains unknown. An enabled one-time `at` job can run successfully
+and be removed before you list jobs. After PATCH or DELETE, read the job by
+ID to check its current settings or whether it still exists.
 These reads cannot prove which request made a change. Do not repeat the
 mutation while its outcome is unclear.
 
