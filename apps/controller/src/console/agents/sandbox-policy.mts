@@ -162,14 +162,17 @@ export function repositoryRestrictionText({ access, apiActions }: RepositoryNetw
   if (!apiActions) {
     return "";
   }
-  return (Object.keys(REPOSITORY_API_ACTION_NAMES) as RepositoryApiAction[])
+  const limits = (Object.keys(REPOSITORY_API_ACTION_NAMES) as RepositoryApiAction[])
     .filter(
       (action) =>
         (access === "write" || action.endsWith(":read")) &&
         !repositoryApiActionAllowed(apiActions, action),
     )
-    .map((action) => `${REPOSITORY_API_ACTION_NAMES[action]} off`)
-    .join(" · ");
+    .map((action) => `${REPOSITORY_API_ACTION_NAMES[action]} off`);
+  if ("allow" in apiActions) {
+    limits.push("Fixed list · New actions stay off");
+  }
+  return limits.join(" · ");
 }
 
 function repositoryPolicySummary({
@@ -1730,14 +1733,14 @@ export function renderAgentSandboxPolicy(
                 const checkbox = element("input", {
                   type: "checkbox",
                   "aria-labelledby": id,
-                  checked: permitted && repositoryApiActionAllowed(apiActions, action),
+                  checked: repositoryApiActionAllowed(apiActions, action),
                 });
                 const reason = permitted
                   ? null
                   : element(
                       "span",
                       { className: "hint", id: `${id}-reason` },
-                      "Unavailable within approved repository access.",
+                      "Blocked by current repository permissions.",
                     );
                 if (reason) {
                   setUnavailable(checkbox, true, reason);
@@ -1755,6 +1758,11 @@ export function renderAgentSandboxPolicy(
                   element("span", {}, element("span", { id }, label), reason),
                 );
               }),
+              element(
+                "p",
+                { className: "hint" },
+                "Checked actions take effect at the next deployment where they are eligible. Issue reads can include pull requests. Opening a pull request can convert an issue.",
+              ),
             )
           : null;
       const row = element(
@@ -2803,7 +2811,13 @@ export function renderAgentSandboxPolicy(
       } else {
         repositoryStatus.textContent = repositoryDraft
           ? "Unsaved changes. Open Manage permissions to save or discard them."
-          : feedback.textContent;
+          : (view &&
+              !policyReadUnavailable &&
+              !policyReadDenied &&
+              !unknownOutcome &&
+              feedback.getAttribute("role") !== "alert" &&
+              repositoryDeploymentStatus(view)) ||
+            feedback.textContent;
       }
       return;
     }
@@ -3091,6 +3105,29 @@ export function renderAgentSandboxPolicy(
     }
   }
 
+  function repositoryDeploymentStatus(loaded: SandboxPolicyViewWire) {
+    const { policy, defaultsRevisionId, deployedPolicyVersion } = loaded;
+    if (!policy.repositoryNetworkPolicy) return "";
+    const saved = `Saved policy v${policy.version}`;
+    const next = policy.repositoryNetworkPolicy.length
+      ? "Deploy a new version to apply changes."
+      : "Native Git cannot deploy with an empty grant list.";
+    if (!agent.activeRevisionId && !defaultsRevisionId && agent.desiredRuntimeState === "stopped") {
+      return `Draft · ${saved}. ${next}`;
+    }
+    if (
+      !agent.activeRevisionId ||
+      defaultsRevisionId !== agent.activeRevisionId ||
+      !Number.isSafeInteger(deployedPolicyVersion) ||
+      loaded.protectedExecution === null
+    ) {
+      return `${saved}. Deployed policy unknown. Refresh the Agent to check its active version.`;
+    }
+    return deployedPolicyVersion === policy.version
+      ? `${saved} matches the active version.`
+      : `${saved} is pending. The active version uses policy v${deployedPolicyVersion}. ${next}`;
+  }
+
   // Both entry points use the same draft, save confirmation and withdrawal checks.
   // The Repositories tab never requests Sandbox logs or recommendations.
   function renderRepositoryDialog() {
@@ -3126,6 +3163,10 @@ export function renderAgentSandboxPolicy(
       );
       return;
     }
+    const deploymentStatus = repositoryDeploymentStatus(view);
+    if (deploymentStatus) {
+      policyPanel.append(element("p", { role: "status", className: "hint" }, deploymentStatus));
+    }
     if (!view.editingEnabled) {
       policyPanel.append(
         element(
@@ -3151,12 +3192,17 @@ export function renderAgentSandboxPolicy(
         ),
       );
     }
-    if (view.policy.repositoryNetworkPolicy !== undefined) {
+    if (deploymentStatus && agent.desiredRuntimeState === "running") {
       policyPanel.append(
         element(
-          "p",
-          { className: "hint" },
-          `Deploy a new version to apply saved permissions. ${agent.desiredRuntimeState === "running" ? repositoryStopGuidance(view) : ""}`,
+          "details",
+          {},
+          element("summary", {}, "Reducing or ending access"),
+          element(
+            "p",
+            { className: "hint" },
+            `After reducing access, confirm the previous Sandbox has stopped. ${repositoryStopGuidance(view)}`,
+          ),
         ),
       );
     }
@@ -3190,7 +3236,7 @@ export function renderAgentSandboxPolicy(
           await loadPolicy();
         }
       },
-      { "aria-haspopup": "dialog" },
+      { id: "manage-repository-permissions", "aria-haspopup": "dialog" },
     );
     section.append(
       element(

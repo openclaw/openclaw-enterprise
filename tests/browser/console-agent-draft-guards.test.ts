@@ -1409,6 +1409,13 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   // A second editor widens only the policy after the Console's final Agent reread.
   // The bindings and the editing setting seen by the first editor stay identical.
   const base = `${path}/sandbox-policy/networking`;
+  const fixed = {
+    ...app,
+    apiActions: {
+      allow: ["issues:read", "issues:create", "pull_requests:read", "pull_requests:create"],
+    },
+  };
+  const widenedGrants = [fixed, tooling];
   const version = record(record(saved.data).policy).version;
   await page.route(
     fixture.origin + path + "/deploy",
@@ -1418,7 +1425,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
         200,
       );
       const widened = await fixture.request("PUT", base, {
-        body: { expectedVersion: version, additions: [], repositoryNetworkPolicy: grants },
+        body: { expectedVersion: version, additions: [], repositoryNetworkPolicy: widenedGrants },
       });
       assert.equal(widened.status, 200, JSON.stringify(widened.body));
       assert.equal(
@@ -1453,7 +1460,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   });
   await review.click();
   await delayed.requested;
-  await page.getByRole("link", { name: "Open draft repositories" }).click();
+  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const lateRead = responseTo(page, "GET", fixture.origin + base);
   delayed.release();
@@ -1461,7 +1468,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   assert.equal(lateResponse.status(), 200);
   assert.deepEqual(
     record(record(record(await lateResponse.json()).data).policy).repositoryNetworkPolicy,
-    grants,
+    widenedGrants,
   );
   await nextFrames(page);
   assert.equal(await deploy.isDisabled(), true, "a pre-editor policy read cannot unlock Deploy");
@@ -1469,11 +1476,11 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   await review.click();
   await page
     .getByText(
-      "Saved GitHub access: example/application (Read-only), example/tooling (Contributor)",
+      "Saved GitHub access: example/application (Read-only · Fixed list · New actions stay off), example/tooling (Contributor)",
     )
     .waitFor();
   await waitForEnabled(deploy);
-  await page.getByRole("link", { name: "Open draft repositories" }).click();
+  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await review.waitFor();
   assert.equal(await deploy.isDisabled(), true);
@@ -1486,7 +1493,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
       assert.equal(response.status(), 200);
       const json = record(await response.json());
       const policy = record(record(json.data).policy);
-      assert.deepEqual(policy.repositoryNetworkPolicy, grants);
+      assert.deepEqual(policy.repositoryNetworkPolicy, widenedGrants);
       policy.repositoryNetworkPolicy = [app, { ...tooling, futureRule: true }];
       await route.fulfill({ response, json });
     },
@@ -1498,10 +1505,10 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   await review.click();
   await waitForEnabled(deploy);
   // Customize one action in Repositories before admitting the reviewed first revision.
-  await page.getByRole("link", { name: "Open draft repositories" }).click();
-  await page.getByRole("button", { name: "Manage permissions", exact: true }).click();
+  await page.getByRole("link", { name: "Edit repository permissions" }).click();
   const permissions = page.getByRole("dialog", { name: "Repository permissions" });
   await permissions.getByRole("button", { name: "Enable policy editing" }).click();
+  await permissions.getByText("Fixed list · New actions stay off", { exact: true }).waitFor();
   const row = permissions.getByRole("group", { name: tooling.repository, exact: true });
   await row.getByText("Advanced · Customize access").click();
   await row.getByRole("checkbox", { name: "Create issues" }).uncheck();
@@ -1527,9 +1534,28 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
     revision?.sandboxPolicy?.version,
   );
   assert.deepEqual(revision?.sandboxPolicy?.repositoryNetworkPolicy?.grants, [
-    app,
+    fixed,
     { ...tooling, apiActions: { deny: ["issues:create"] } },
   ]);
+
+  // Select the admitted revision as a Worker would. Saving a tighter policy
+  // must show the active version until another deployment replaces it.
+  assert.ok(revision);
+  assert.ok(
+    await controller.transact((unit) =>
+      unit.agents.compareAndSetActiveRevision(namespaceId, agent.id, undefined, revision.id),
+    ),
+  );
+  await page.goto(detailUrl(fixture, namespaceId, agent.id, "draft", "repositories").href);
+  await page.getByRole("button", { name: "Manage permissions", exact: true }).click();
+  await permissions.getByText(/matches the active version/).waitFor();
+  await row.getByRole("combobox").selectOption("read");
+  await permissions.getByRole("button", { name: "Save repository policy" }).click();
+  await permissions.waitFor({ state: "hidden" });
+  await page
+    .getByText(/is pending. The active version uses policy/)
+    .first()
+    .waitFor();
 
   // Create authority alone permits profile discovery, never policy limit disclosure.
   const noRead = restrict(fixture.policy, "read", "sandbox_policy", { namespaceId });
@@ -1651,7 +1677,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, grants);
 
   await page
-    .getByText(/Repository policy v\d+ saved\./)
+    .getByText(/Draft · Saved policy v\d+/)
     .first()
     .waitFor();
   await page.getByRole("tab", { name: "Policy denials" }).click();
@@ -1822,6 +1848,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   await page.getByRole("link", { name: "Edit repository permissions" }).click();
   const dialog = page.getByRole("dialog", { name: "Repository permissions" });
   await dialog.getByText("Saved repository policy: Deny all repositories").waitFor();
+  await dialog.getByText(/Deployed policy unknown/).waitFor();
   assert.equal(await dialog.evaluate((node) => node.matches(":modal")), true);
   await dialog.getByRole("button", { name: "Done" }).click();
 

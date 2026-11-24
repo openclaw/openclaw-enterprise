@@ -107,7 +107,8 @@ and settles the application as `applied` or `failed`. Deleting the Agent
 removes its policy and exact IAM access.
 
 The [editor](../reference/sandbox-policies.md#repository-network-policy) shows grants
-and the Namespace ceiling. Save before deploy. Initial `[]` denies all. Omission
+and the Namespace ceiling. Repositories compares the saved and deployed policy
+versions. Review changes before deployment. Initial `[]` denies all. Omission
 retains grants without returning them. For `[]`, OCC checks SandboxPolicy read
 before lookup. A reader can withdraw after Driver loss with both lists empty.
 

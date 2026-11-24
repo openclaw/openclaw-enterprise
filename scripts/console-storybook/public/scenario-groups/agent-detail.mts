@@ -87,7 +87,7 @@ type AgentDetailScenario = {
   harnessId?: "openclaw";
   credentialSources?: AgentCredentialSourceBinding[];
   configurationChangedElsewhere?: { values: OpenClawConfigurationDocument };
-  policyState?: "repositoryPermissions";
+  policyState?: "repositoryPermissions" | "repositoryPermissionsFixed";
   repositoryBindings?: RepositoryBindingSelection[];
   repositoryAccess?: RepositoryAccess;
   repositoryOptions?: RepositoryOption[];
@@ -193,8 +193,8 @@ export function createAgentDetailScenarios({
     deployed: true,
     description: "The deployed Agent has a saved Contributor policy for example/application.",
     steps: [
-      "Beside Configuration snapshot, choose Edit repository permissions. Expand Advanced · Customize access and clear Open pull requests.",
-      "Save the policy. On Repositories, choose Manage permissions and check that Create issues is still selected.",
+      "Choose Edit repository permissions. Check that the saved policy matches the active version. Expand Advanced · Customize access and clear Open pull requests.",
+      "Save the policy. Confirm the new policy is pending. Reopen Manage permissions and check that Create issues is still selected.",
       "Change Contributor to Read-only and save. Reopen Manage permissions to check your choice.",
     ],
   } satisfies AgentDetailScenario;
@@ -1742,6 +1742,18 @@ export function createAgentDetailScenarios({
       },
       repositoryPermissionsDraft,
       repositoryPermissions,
+      repositoryPermissionsFixed: {
+        ...repositoryPermissions,
+        name: "Fixed API actions with a blocked permission",
+        policyState: "repositoryPermissionsFixed",
+        description:
+          "The saved list includes all four actions. Namespace permissions currently block issue creation.",
+        steps: [
+          "Choose Edit repository permissions. Check that new actions stay off.",
+          "Open Advanced. Create issues remains selected and disabled. The reason explains why the Agent cannot create issues.",
+          "Clear Open pull requests and save. Verify the pending policy still uses a fixed list.",
+        ],
+      },
       repositoryPermissionsDenied: {
         ...repositoryPermissions,
         path: `${draft}&tab=repositories`,

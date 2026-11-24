@@ -169,7 +169,14 @@ export function createNetworkPolicyFixture(
   let policyReads = 0;
   const repositoryEditor = scenario.policyState === "repositoryEditor";
   let simulateRepositoryConflict = scenario.policyState === "repositoryEditorConcurrent";
-  const permissions = scenario.policyState === "repositoryPermissions";
+  const fixedActions = scenario.policyState === "repositoryPermissionsFixed";
+  const permissions = scenario.policyState === "repositoryPermissions" || fixedActions;
+  const actions = [
+    "issues:read",
+    "issues:create",
+    "pull_requests:read",
+    "pull_requests:create",
+  ] as const;
   const deployedPermissions = permissions && scenario.deployed === true;
   let policyEditing = permissions ? deployedPermissions : scenario.policyState !== "disabled";
   const canEditRepositoryGrants = repositoryEditor || simulateRepositoryConflict || permissions;
@@ -205,7 +212,13 @@ export function createNetworkPolicyFixture(
     agentId: seedAgent().id,
     version: 1,
     additions: initialAdditions,
-    ...(deployedPermissions ? { repositoryNetworkPolicy: repositoryCeiling } : {}),
+    ...(deployedPermissions
+      ? {
+          repositoryNetworkPolicy: fixedActions
+            ? repositoryCeiling.map((grant) => ({ ...grant, apiActions: { allow: actions } }))
+            : repositoryCeiling,
+        }
+      : {}),
     ...(scenario.policyState === "protected" || unreadableRevision
       ? { repositoryNetworkPolicy: [{ repository: "example/application", access: "read" }] }
       : {}),
@@ -398,12 +411,9 @@ export function createNetworkPolicyFixture(
                       {
                         repository: "example/application",
                         access: "write",
-                        available: [
-                          "issues:read",
-                          "issues:create",
-                          "pull_requests:read",
-                          "pull_requests:create",
-                        ],
+                        available: fixedActions
+                          ? actions.filter((action) => action !== "issues:create")
+                          : actions,
                       },
                     ],
                   }

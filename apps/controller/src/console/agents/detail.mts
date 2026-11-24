@@ -4240,7 +4240,9 @@ export async function renderAgentDetail(
       ...checklistSteps.map((step) => step.item),
     );
     const confirmation = element("p", { className: "hint", role: "status" });
-    const adjustRepositories = versionLink("Open draft repositories", "draft", "repositories");
+    const adjustRepositories = hasRepositoryPermissions(values)
+      ? versionLink("Edit repository permissions", "draft", "repositories", { permissions: true })
+      : versionLink("Open draft repositories", "draft", "repositories");
     const reviewAccess = button("Review saved GitHub access", async () => {
       const generation = repositoryReviewGeneration;
       const current = () =>
@@ -5214,6 +5216,10 @@ export async function renderAgentDetail(
       // The deployment may have settled while this tab was parked.
       renderVersionNotice();
       retained.resumeDrafts?.();
+      if (configureRepositories && tab === "repositories") {
+        configureRepositories = false;
+        content.querySelector<HTMLButtonElement>("#manage-repository-permissions")?.click();
+      }
       // So may a permission answer that changes Configuration access (finding 2421).
       redrawConfigurationAccessViews();
       return;
@@ -7299,6 +7305,8 @@ export async function renderAgentDetail(
       repositoryReviewGeneration += 1;
       repositoryReview = undefined;
     }
+    configureRepositories =
+      nextTab === "repositories" && next.searchParams.get("repositoryAccess") === "1";
     selectedTab = nextTab;
     showTabNotice(unavailableTabNotice(requestedTab));
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.
