@@ -1120,7 +1120,6 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           assert.equal(fileArg("--output"), "jsonpath={.spec.replicas}");
           assert.equal(state[component], 1);
           if (component === "worker") {
-            assert.equal(state.worker, 1);
             appendFileSync(join(root, "worker-patch-previews"), "worker\n");
           }
         } else if (state.channelStopCase && args.includes("patch")) {
