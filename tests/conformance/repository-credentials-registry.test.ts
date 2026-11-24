@@ -1110,7 +1110,9 @@ test("a Source with repository API access requires the catalog selection for the
       () => resolve(currentPolicy, "namespace-a", apiRef),
       /not permitted for this Namespace/,
     );
-    assert.throws(() => createGitHubRepositoryDeliveryResolver(current)(revision));
+    assert.throws(() => createGitHubRepositoryDeliveryResolver(current)(revision), {
+      message: "selected-repository-grant-changed",
+    });
     const currentRef = await select(currentPolicy, "namespace-a");
     assert.notEqual(currentRef, apiRef);
     assert.doesNotThrow(() => resolve(currentPolicy, "namespace-a", currentRef));
