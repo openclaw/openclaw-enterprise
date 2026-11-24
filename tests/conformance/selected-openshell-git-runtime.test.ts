@@ -4784,27 +4784,41 @@ function lentSourceHolds(f: Awaited<ReturnType<typeof heldGit>>["f"]) {
   };
 }
 
-test("a native Source Provider cannot bind an App REST grant", () => {
-  const repository = "example/application";
-  const grants = [{ repository, access: "read" }] as const;
-  const binaries = ["/usr/bin/git"];
-  const rest = [{ repository, version: "v1", readIssues: true }] as const;
-  const app = "oce-github-installation-" + "a".repeat(32);
-  const source = "oce-github-token-" + "a".repeat(32);
-  const hosts = (rule: ReturnType<typeof compileOpenShellBoundGitRule>) =>
-    rule.endpoints.map(({ host }) => host);
-  assert.deepEqual(hosts(compileOpenShellBoundGitRule(grants, app, binaries, rest)), [
-    "github.com",
-    "api.github.com",
-  ]);
-  assert.deepEqual(
-    hosts(compileOpenShellBoundGitRule(grants, source, binaries, undefined, "source")),
-    ["github.com"],
+test("a Source API route must bind its own Provider before the Worker releases material", async (t) => {
+  const held = await heldGit(
+    t,
+    true,
+    undefined,
+    {
+      permissions: { issues: "write", pull_requests: "write" },
+      outside: "unbound",
+    },
+    "cs_fixture_token",
   );
-  assert.throws(
-    () => compileOpenShellBoundGitRule(grants, source, binaries, rest, "source"),
-    /Git-only/,
-  );
+  lentSourceHolds(held.f);
+  const api = held.loadedGitRule.endpoints.filter(({ host }) => host === "api.github.com");
+  assert.ok(api.length > 0);
+  const posts = api.flatMap((endpoint) => {
+    assert.ok("rules" in endpoint);
+    return endpoint.rules
+      .filter(({ allow }) => allow.method === "POST")
+      .map(({ allow }) => allow.path);
+  });
+  assert.equal(posts.length, 2);
+  assert.ok(posts.some((path) => path?.endsWith("/issues")));
+  assert.ok(posts.some((path) => path?.endsWith("/pulls")));
+
+  const endpoint = api[0]!;
+  const original = structuredClone(endpoint);
+  Object.assign(endpoint, {
+    credential_binding: { provider: "oce-github-installation-" + "a".repeat(32) },
+  });
+  await held.reconcile();
+  assert.equal(held.f.calls.material, 0);
+  assert.equal(held.activity.updates, 0);
+  Object.assign(endpoint, original);
+  await held.reconcile();
+  assert.equal(held.activity.updates, 1);
 });
 
 test("native Git refuses Source material without the custody hold", async (t) => {

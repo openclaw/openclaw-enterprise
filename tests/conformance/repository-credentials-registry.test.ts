@@ -958,6 +958,11 @@ test("a changed Source selection is a changed grant, so earlier revisions go sta
   const registry = validateGitHubRepositoryRegistry(sourceRegistryInput());
   const [binding] = sourceBindings(registry, ["token"]);
   assert.ok(binding);
+  // Captured from the Git-only Source registration before API enrollment existed.
+  assert.equal(
+    binding.grant.grantId,
+    "sha256:d5a129f0e2b56b0a36022250d384cb53235f058c3738ea1d01c6f5ee5926cf96",
+  );
   const changed = sourceRegistryInput();
   changed.repositories[0]!.namespaces[0]!.credentialSource = "cs_replacement_token";
   const [rebound] = sourceBindings(validateGitHubRepositoryRegistry(changed), ["token"]);

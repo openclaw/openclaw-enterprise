@@ -234,10 +234,10 @@ const reviewedImports: ReviewedModules = {
     "node:util": ["isDeepStrictEqual"],
   },
   // A Source loan derives its ids from nonsecret loan metadata and reads the stored ceiling with
-  // the shared parser; the value comes only through the custody port the Worker injects.
+  // the shared parser and pure API check. Neither can read material or issue credentials.
   "drivers/repo/github/access/source-loan.ts": {
     "node:crypto": ["createHash"],
-    "@openclaw-enterprise/contracts": ["readSourceRepositoryCeiling"],
+    "@openclaw-enterprise/contracts": ["readSourceRepositoryCeiling", "sourceRepositoryApiRefusal"],
   },
   // The Source row's config keys only; its TokenService read is injected by the Worker.
   "backends/repository-credentials/source-custody.ts": {

@@ -226,6 +226,18 @@ test("credential source boundary rejects new raw capabilities in the real source
 
   const cases: readonly RejectedMutation[] = [
     [
+      "the loan reader cannot import adjacent contract functions",
+      'import { requireConfiguration } from "@openclaw-enterprise/contracts";',
+      /unreviewed runtime import/,
+      "drivers/repo/github/access/source-loan.ts",
+    ],
+    [
+      "the PAT ceiling check cannot be imported by another credential owner",
+      'import { sourceRepositoryApiRefusal } from "@openclaw-enterprise/contracts";',
+      /unreviewed runtime import/,
+      "drivers/repo/github/access/static-token.ts",
+    ],
+    [
       "the shared JSON parser cannot read files",
       'import { readFile } from "node:fs/promises";',
       /unreviewed runtime import from node:fs\/promises \(readFile\)/,
