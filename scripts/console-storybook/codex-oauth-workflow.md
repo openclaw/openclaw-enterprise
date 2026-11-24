@@ -48,10 +48,10 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
 
 Open **Components/Credentials → ChatGPT login poll denied (Experimental)** and choose
 **Sign in with OAuth**. The simulated API starts the login, then refuses the first poll.
-Confirm the refusal names the missing CredentialSource operate permission and shows a
-request ID. The fixture withholds the source ID from a caller who lacks read access.
-Choose **Retry login check**. The fixture simulates restored access and the login becomes
-ready. The request log shows two polls for the same login and one start.
+Confirm the refusal names the missing CredentialSource create permission and shows a
+request ID. The failed attempt is cancelled and has no Source. Choose **Cancel login**,
+then start a new login after access is restored. The new login becomes ready. The request
+log shows separate starts for the failed attempt and the successful login.
 
 ## Return after an interrupted start
 
