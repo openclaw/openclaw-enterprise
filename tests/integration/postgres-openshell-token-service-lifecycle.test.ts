@@ -269,7 +269,15 @@ test(
     const read = await requestAsReader("GET", sourcePath);
     assert.equal(read.status, 200);
     assert.equal(read.data.id, sourceRef.id);
-    assert.deepEqual(read.data.secrets, {});
+    assert.equal(read.data.type, "static");
+    assert.equal(read.data.state, "ready");
+    assert.equal(read.data.config.provider_preset, "openai");
+    assert.ok(
+      ["secret", "secrets", "ownerCapability", "backendRef"].every(
+        (field) => !Object.hasOwn(read.data, field),
+      ),
+      "A reader receives public Source metadata without custody fields.",
+    );
     const denied = await requestAsReader("PATCH", sourcePath, { secret: { opaque: deniedValue } });
     assert.equal(denied.status, 403);
     assert.ok(
