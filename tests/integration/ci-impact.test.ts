@@ -307,8 +307,8 @@ const reasons = [
 // processes run concurrently, about one per CPU (each spawns more of its own).
 const limit = concurrencyLimit();
 type ChildResult<T extends string | Buffer> = {
-  status: number | null;
-  signal: string | null;
+  status: number;
+  signal: null;
   stdout: T;
   stderr: T;
 };
@@ -327,8 +327,9 @@ async function run(
   const capture = (): unknown => Reflect.apply(captureChild, undefined, [program, args, options]);
   const value: unknown = await limit(capture);
   assert.ok(value !== null && typeof value === "object");
-  assert.ok("status" in value && (value.status === null || typeof value.status === "number"));
-  assert.ok("signal" in value && (value.signal === null || typeof value.signal === "string"));
+  assert.ok("signal" in value);
+  assert.ok(value.signal === null, `${program} terminated by ${String(value.signal)}`);
+  assert.ok("status" in value && typeof value.status === "number");
   assert.ok(
     "stdout" in value && (typeof value.stdout === "string" || Buffer.isBuffer(value.stdout)),
   );
@@ -4194,7 +4195,9 @@ test("full integration selects images and gates runtime artifact consumers", (t)
       encoding: "utf8",
     });
     if (present(gateway).includes("\n")) {
-      assert.notEqual(result.status, 0);
+      assert.ifError(result.error);
+      assert.equal(result.signal, null);
+      assert.ok(result.status !== null && result.status > 0);
       assert.equal(existsSync(output), false);
       continue;
     }

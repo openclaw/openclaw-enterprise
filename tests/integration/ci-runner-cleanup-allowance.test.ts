@@ -43,15 +43,18 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
     const root = await createRunnerFixture(t);
     const { statePath, resultsPath } = runnerArtifactPaths(root, "hung-cleanup");
     const cleaned = join(root, "state/later-cleaned");
+    const prepared = join(root, "prepared");
     // The command forks a second descendant after the runner lists /proc but before it kills.
     const processTree = await createCleanupProcessTree(t, root);
     await writeFile(
       join(root, "scripts/ci/prepare.ts"),
       [
         'import { spawn } from "node:child_process";',
+        'import { appendFileSync } from "node:fs";',
         'import { readFile, writeFile } from "node:fs/promises";',
         'import { setTimeout as delay } from "node:timers/promises";',
         "export async function prepareFile({ file }) {",
+        `  appendFileSync(${JSON.stringify(prepared)}, file.path + "\\n");`,
         "  if (file.path.endsWith('hung.test.mjs')) {",
         "    return {",
         "      cleanup: async () => {",
@@ -109,6 +112,7 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
       [{ code: "setup-abandoned", file: "tests/integration/later.test.mjs" }],
     );
     assert.equal(later.counts.total, 0);
+    assert.equal(await readFile(prepared, "utf8"), "tests/integration/hung.test.mjs\n");
     await assert.rejects(readFile(cleaned), { code: "ENOENT" });
     // The runner ended the abandoned cleanup's command and its descendants before it exited, so
     // none is left running as an orphan (finding 1225), not even the one the command started
@@ -122,9 +126,20 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
     const files = ["one", "two", "three", "four"].map(
       (name) => `tests/integration/${name}.test.mjs`,
     );
+    const cleanups = join(root, "cleanups");
+    await writeFile(cleanups, "");
     await writeFile(
       join(root, "scripts/ci/prepare.ts"),
-      `export async function prepareFile() {\n  return { cleanup: () => ${hangForever} };\n}\n`,
+      [
+        'import { appendFileSync } from "node:fs";',
+        "export async function prepareFile({ file }) {",
+        "  return { cleanup: () => {",
+        `    appendFileSync(${JSON.stringify(cleanups)}, file.path + "\\n");`,
+        `    return ${hangForever};`,
+        "  } };",
+        "}",
+        "",
+      ].join("\n"),
     );
     const hung = files.map((file) => join(root, `state/${file.split("/").at(-1)}-hung`));
     for (const [index, file] of files.entries()) {
@@ -177,11 +192,13 @@ describe("runner cleanup allowances", { concurrency: true }, () => {
     // and is still running when it closes, so the queued ones never start. (On a busy host the
     // window can close before the first one starts too.)
     const timeouts = summary.issues.filter((entry) => entry.code === "cleanup-timeout");
-    assert.equal(timeouts.length, files.length);
+    const timedOutFiles = timeouts.map(({ file }) => file);
+    assert.deepEqual(timedOutFiles.sort(), [...files].sort());
     const ran = timeouts.filter(
       (entry) => !/window after the lane deadline closed/.test(entry.message),
     );
     assert(ran.length <= 1, JSON.stringify(timeouts));
+    assert.equal(await readFile(cleanups, "utf8"), ran.map(({ file }) => `${file}\n`).join(""));
     // It starts after its file stops, past the deadline, so it gets less than a full allowance.
     for (const entry of ran) {
       assert(
