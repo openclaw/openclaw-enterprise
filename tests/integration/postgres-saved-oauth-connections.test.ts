@@ -23,6 +23,7 @@ import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { installDeviceTokenService } from "../helpers/device-token-service.ts";
 
 const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
 const tokenOrigin = process.env.OCC_TEST_KEYCLOAK_TOKEN_ORIGIN;
@@ -62,14 +63,126 @@ async function accountSession(
     url: string,
     body?: Record<string, unknown>,
     target = app,
+    headers: Record<string, string> = {},
   ) =>
     target.inject({
       method,
       url,
-      headers: { host: new URL(session.origin).host, ...authenticatedHeaders(session) },
+      headers: { host: new URL(session.origin).host, ...authenticatedHeaders(session), ...headers },
       ...(body === undefined ? {} : { payload: body }),
     });
 }
+
+test(
+  "OAuth callback persists issuer-granted initial scopes and refuses refresh escalation",
+  requiresPostgres,
+  async (t) => {
+    const localIssuer = "https://issuer.scope.test";
+    const tokenUrl = `${localIssuer}/token`;
+    const destinations = [{ host: "api.scope.test", port: 443, path: "/resource" }];
+    const secrets = {
+      ...createTestSecretDriver({ id: "scope-pg-secret" }),
+      capability: "secret" as const,
+    };
+    const { controller, state, principal, inject, pool } = await createPostgresAgentApp(t, {
+      label: "scope-grant",
+      authSecret: "scope-grant-test-auth-secret-minimum-32-bytes",
+      secretDriver: secrets,
+      appOptions: { publicOrigin },
+    });
+    await installDeviceTokenService(controller, state, secrets, "scope-token-service");
+    const namespace = await inject("POST", "/namespaces", { name: `Scopes ${randomUUID()}` });
+    assert.equal(namespace.statusCode, 201, namespace.body);
+    const namespaceId = namespace.json().data.id;
+    await controller.handleNamespaceLifecycle(principal.id, namespaceId, "ready");
+    const template = await inject("POST", "/connection-templates", {
+      mode: "manual",
+      namespaceId,
+      displayName: "Issuer scope grant",
+      issuer: localIssuer,
+      authorizationUrl: `${localIssuer}/authorize`,
+      tokenUrl,
+      destinations,
+      scopes: ["read"],
+    });
+    assert.equal(template.statusCode, 201, template.body);
+    const client = await inject("POST", "/oauth-clients", {
+      connectionTemplateId: template.json().data.id,
+      connectionTemplateVersion: template.json().data.current.version,
+      displayName: "Scope client",
+      clientId: "scope-client",
+      tokenEndpointAuthMethod: "none",
+    });
+    assert.equal(client.statusCode, 201, client.body);
+    const started = await inject("POST", `/namespaces/${namespaceId}/connections`, {
+      connectionTemplateId: template.json().data.id,
+    });
+    assert.equal(started.statusCode, 201, started.body);
+    const stateValue = new URL(started.json().data.authorizationUrl).searchParams.get("state");
+    assert.ok(stateValue);
+    let grantType: string | null = null;
+    // Only the issuer response is controlled; Fastify, IAM, TokenService custody and PostgreSQL are real.
+    t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+      assert.equal(String(url), tokenUrl);
+      const body = init?.body as URLSearchParams;
+      grantType = body.get("grant_type");
+      return Response.json({
+        access_token: randomUUID(),
+        token_type: "Bearer",
+        expires_in: 120,
+        refresh_token: randomUUID(),
+        scope:
+          grantType === "authorization_code"
+            ? "read issuer.default"
+            : "read issuer.default later.addition",
+      });
+    });
+    const callback = await inject(
+      "GET",
+      `/oauth/callback?${new URLSearchParams({ state: stateValue, code: "controlled-code", iss: localIssuer })}`,
+    );
+    assert.match(String(callback.headers.location), /connection=connected/);
+    assert.equal(grantType, "authorization_code");
+    const sources = `/namespaces/${namespaceId}/credential-sources`;
+    const listed = await inject("GET", sources);
+    assert.equal(listed.statusCode, 200, listed.body);
+    const source = listed
+      .json()
+      .data.find(
+        (entry: { connectionTemplateId?: string }) =>
+          entry.connectionTemplateId === template.json().data.id,
+      );
+    assert.ok(source);
+    assert.deepEqual(source.consent.requestedScopes, ["read"]);
+    assert.deepEqual(source.consent.grantedScopes, ["read", "issuer.default"]);
+    assert.deepEqual(source.consent.destinations, destinations);
+    const receipt = await pool.query(
+      "SELECT oauth_requested_scopes, oauth_granted_scopes FROM occ.credential_sources WHERE id=$1",
+      [source.id],
+    );
+    assert.deepEqual(receipt.rows[0], {
+      oauth_requested_scopes: ["read"],
+      oauth_granted_scopes: ["read", "issuer.default"],
+    });
+    const refreshed = await inject("POST", `${sources}/${source.id}/rotate`);
+    assert.equal(refreshed.statusCode, 503, refreshed.body);
+    assert.equal(refreshed.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(grantType, "refresh_token");
+    const afterRefresh = await inject("GET", `${sources}/${source.id}`);
+    assert.equal(afterRefresh.statusCode, 200, afterRefresh.body);
+    assert.equal(afterRefresh.json().data.status.refresh.failureCode, "grant_scope_mismatch");
+    assert.deepEqual(afterRefresh.json().data.consent.grantedScopes, ["read", "issuer.default"]);
+    await assert.rejects(
+      pool.query(
+        "UPDATE occ.credential_sources SET oauth_granted_scopes=array_append(oauth_granted_scopes,$2) WHERE id=$1",
+        [source.id, "later.addition"],
+      ),
+      { code: "55000" },
+    );
+    const retired = await inject("DELETE", `${sources}/${source.id}`);
+    assert.equal(retired.statusCode, 204, retired.body);
+  },
+);
 
 test(
   "OAuth consent creates an owner-bound Source and refreshes it through the TokenService",
@@ -278,6 +391,11 @@ test(
     try {
       const failedCallback = await inject("GET", failedCallbackPath);
       assert.match(String(failedCallback.headers.location), /connection=failed/);
+      assert.equal(
+        new URL(String(failedCallback.headers.location), publicOrigin).searchParams.has("sourceId"),
+        false,
+        "failed consent cannot advertise an account for the editor to attach",
+      );
       const failedSources = await inject("GET", sources);
       assert.equal(failedSources.statusCode, 200, failedSources.body);
       assert.equal(
@@ -515,7 +633,7 @@ test(
       };
     }
     // The same user in a second browser cannot spend the first browser's state or code.
-    const { callback } = await begin();
+    const { callback, stateId } = await begin();
 
     // Only Keycloak can start a flow. The built-in Google template still has no OAuth client.
     assert.equal(new URL(callback, publicOrigin).searchParams.has("iss"), false);
@@ -534,12 +652,21 @@ test(
       clientSecret: callbackSecret,
     });
     assert.equal(beforeCallback.statusCode, 200, beforeCallback.body);
-    const completed = await owner("GET", callback);
-    assert.equal(completed.statusCode, 303, completed.body);
-    assert.match(String(completed.headers.location), /connection=connected/);
+    const completed = await owner("GET", callback, undefined, app, { accept: "text/html" });
+    assert.equal(completed.statusCode, 200, completed.body);
+    assert.match(String(completed.headers["content-type"]), /^text\/html/);
+    assert.match(
+      String(completed.headers["content-security-policy"]),
+      /default-src 'none'; script-src 'nonce-/,
+    );
     assert.match(String((await owner("GET", callback)).headers.location), /reason=unknown_session/);
     const savedSource = await oauthSource(input.connectionTemplateId);
     const id = savedSource.id;
+    assert.ok(completed.body.includes(id), "the verified callback confirms the newly saved Source");
+    assert.ok(completed.body.includes(stateId), "the callback confirms the initiating attempt");
+    const callbackQuery = new URL(callback, publicOrigin).searchParams;
+    assert.equal(completed.body.includes(callbackQuery.get("state")!), false);
+    assert.equal(completed.body.includes(callbackQuery.get("code")!), false);
     const policy = await state.loadNativeIAMState(controller.installation.id);
     const exactOwnerGrant = policy.bindings.find(
       (grant) =>

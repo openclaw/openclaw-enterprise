@@ -163,12 +163,52 @@ const PluginCatalogEntrySchema = Type.Object(
   { additionalProperties: false },
 );
 
+const PluginCredentialSlotSchema = Type.Object(
+  {
+    pluginId: Type.String(),
+    releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    id: Type.String(),
+    label: Type.String(),
+    toolDiscovery: Type.Optional(Type.Literal(true)),
+    issuers: Type.Optional(Type.Array(Type.String())),
+    recipient: Type.Optional(
+      Type.Union([
+        Type.Object(
+          { mode: Type.Literal("manual"), tokenUrl: Type.String() },
+          { additionalProperties: false },
+        ),
+        Type.Object(
+          {
+            mode: Type.Literal("mcp_discovery"),
+            serverUrl: Type.String(),
+            resource: Type.String(),
+          },
+          { additionalProperties: false },
+        ),
+      ]),
+    ),
+    sources: Type.Array(
+      Type.Object({ id: CredentialSourceId, name: Type.String() }, { additionalProperties: false }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const SavedPluginCredentialSlotSchema = Type.Object(
+  {
+    ...PluginCredentialSlotSchema.properties,
+    boundSourceId: Type.Optional(CredentialSourceId),
+  },
+  { additionalProperties: false },
+);
+
 export const AgentPluginCatalogResponse = Type.Object(
   {
     data: Type.Object(
       {
         plugins: Type.Array(PluginCatalogEntrySchema),
         nextCursor: Type.Union([Type.String(), Type.Null()]),
+        credentialSlots: Type.Optional(Type.Array(PluginCredentialSlotSchema)),
         setup: Type.Optional(
           Type.Object(
             { message: Type.String(), links: Type.Array(PluginCatalogLinkSchema) },
@@ -268,26 +308,7 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
       {
         ...PluginPolicyCapabilitiesSchema.properties,
         discoveryCredential: PluginDiscoveryCredentialSchema,
-        credentialSlots: Type.Optional(
-          Type.Array(
-            Type.Object(
-              {
-                pluginId: Type.String(),
-                releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
-                id: Type.String(),
-                label: Type.String(),
-                toolDiscovery: Type.Optional(Type.Literal(true)),
-                sources: Type.Array(
-                  Type.Object(
-                    { id: CredentialSourceId, name: Type.String() },
-                    { additionalProperties: false },
-                  ),
-                ),
-              },
-              { additionalProperties: false },
-            ),
-          ),
-        ),
+        credentialSlots: Type.Optional(Type.Array(SavedPluginCredentialSlotSchema)),
       },
       { additionalProperties: false },
     ),

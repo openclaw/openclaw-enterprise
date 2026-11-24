@@ -8,6 +8,7 @@ import type {
   PluginDesiredSelection,
   PluginPolicyCapabilities,
   PluginReviewer,
+  SavedAgentPluginCredentialSlot,
   PluginToolCatalogEntry,
   PluginToolPolicy,
 } from "@openclaw-enterprise/contracts";
@@ -21,6 +22,7 @@ import {
   setText,
   setUnavailable,
 } from "../dom.mjs";
+import type { PluginAccountSlot } from "./plugin-connection.mjs";
 
 export type CatalogDirection = "search" | "refresh" | "next" | "previous";
 export type ManagedToolConnection = { slot: string; sourceId: string };
@@ -67,13 +69,18 @@ export interface PluginFieldsOptions {
   catalog?: PluginFieldCatalog | null;
   capabilities?:
     | (NonNullable<InstallationCapabilities["pluginCatalogs"]>[number]["pluginPolicies"] & {
-        credentialSlots?: readonly AgentPluginCredentialSlot[];
+        credentialSlots?: readonly (AgentPluginCredentialSlot | SavedAgentPluginCredentialSlot)[];
       })
     | null;
   onLoadPlugins?: ((direction: CatalogDirection, query: string) => void) | null;
   onCancelDiscovery?: (() => void) | null;
   onRecheckAccess?: ((slot?: AgentPluginCredentialSlot) => void) | null;
   onLoadTools?: ((id: string, managedConnection?: ManagedToolConnection) => void) | null;
+  savedAgent?: boolean;
+  renderAccountConnection?: (
+    slot: PluginAccountSlot,
+    stage: (sourceId: string) => boolean,
+  ) => HTMLElement | null;
   saveHint?: string;
   createApproverField?: (options: ApproverFieldOptions) => HTMLElement & {
     refreshNames?(): void;
@@ -102,6 +109,7 @@ type Choice<Value extends string = string> = readonly [
   value: Value,
   label: string,
   disabled?: boolean,
+  unsupportedSuffix?: boolean,
 ];
 
 interface PluginTabState {
@@ -219,6 +227,8 @@ export function createPluginFields({
   onCancelDiscovery = null,
   onRecheckAccess = null,
   onLoadTools = null,
+  savedAgent = false,
+  renderAccountConnection,
   saveHint = "Changes are saved when you create the Agent.",
   createApproverField,
 }: PluginFieldsOptions) {
@@ -637,8 +647,12 @@ export function createPluginFields({
     const control = element(
       "select",
       { "aria-label": label },
-      ...choices.map(([key, text, disabled = false]) =>
-        element("option", { value: key, disabled }, disabled ? `${text} (unsupported)` : text),
+      ...choices.map(([key, text, disabled = false, unsupportedSuffix = true]) =>
+        element(
+          "option",
+          { value: key, disabled },
+          disabled && unsupportedSuffix ? `${text} (unsupported)` : text,
+        ),
       ),
     );
     if (!choices.some(([key]) => key === value)) {
@@ -1282,42 +1296,101 @@ export function createPluginFields({
             typeof current === "string" &&
             selected.driverPolicy?.releaseSha256 !== slot.releaseSha256;
           const sources = catalog?.access ? [] : slot.sources;
+          const boundOnly =
+            savedAgent &&
+            !stale &&
+            typeof current === "string" &&
+            "boundSourceId" in slot &&
+            current === slot.boundSourceId &&
+            !sources.some(({ id }) => id === current);
           const options: Choice[] = [
             ["", "Install without an account"],
             ...sources.map(({ id, name }) => [id, name] as const),
           ];
+          if (boundOnly) {
+            options.push([current, "Current account (Agent access only)", true, false]);
+          }
           if (stale) {
             options.push(["stale", "Release changed — select an account again", true]);
           }
+          const setAccount = (sourceId: string) => {
+            const active = selections()?.[entry.id];
+            const credentials = active?.driverPolicy?.credentials;
+            const activeSource = isObject(credentials) ? credentials[slot.id] : undefined;
+            if (
+              !active?.enabled ||
+              activeSource !== current ||
+              (active.driverPolicy?.releaseSha256 !== undefined &&
+                active.driverPolicy.releaseSha256 !== slot.releaseSha256)
+            ) {
+              return false;
+            }
+            updateSelection(entry.id, (selection) => {
+              if (slot.toolDiscovery) {
+                delete selection.tools;
+              }
+              const policy = { ...selection.driverPolicy };
+              if (slot.toolDiscovery && sourceId !== current) {
+                delete policy.toolNames;
+              }
+              const bindings = isObject(policy.credentials) ? { ...policy.credentials } : {};
+              if (sourceId) {
+                bindings[slot.id] = sourceId;
+                selection.driverPolicy = {
+                  ...policy,
+                  releaseSha256: slot.releaseSha256,
+                  credentials: bindings,
+                };
+              } else {
+                delete bindings[slot.id];
+                const { credentials: _credentials, releaseSha256: _release, ...other } = policy;
+                if (Object.keys(bindings).length) {
+                  selection.driverPolicy = {
+                    ...other,
+                    releaseSha256: slot.releaseSha256,
+                    credentials: bindings,
+                  };
+                } else if (Object.keys(other).length) {
+                  selection.driverPolicy = other;
+                } else {
+                  delete selection.driverPolicy;
+                }
+              }
+            });
+            return true;
+          };
           details.append(
             select(
               slot.label,
               stale ? "stale" : typeof current === "string" ? current : "",
               options,
-              (sourceId) =>
-                updateSelection(entry.id, (selection) => {
-                  if (slot.toolDiscovery) {
-                    delete selection.tools;
-                  }
-                  if (sourceId) {
-                    selection.driverPolicy = {
-                      releaseSha256: slot.releaseSha256,
-                      credentials: { [slot.id]: sourceId },
-                    };
-                  } else {
-                    delete selection.driverPolicy;
-                  }
-                }),
+              setAccount,
               !catalog?.access,
             ),
           );
-          if (!catalog?.access && !sources.length) {
+          if (!catalog?.access && !stale && renderAccountConnection) {
+            const connection = renderAccountConnection(slot, setAccount);
+            if (connection) {
+              details.append(connection);
+            }
+          }
+          if (boundOnly) {
+            details.append(
+              element(
+                "p",
+                { className: "hint" },
+                `This Agent retains access to its bound account.${slot.toolDiscovery ? " It can use that grant to load tools." : ""} You need credential access to select this account for another binding.`,
+              ),
+            );
+          } else if (!catalog?.access && !sources.length) {
             const canRecheck = catalog?.canRecheck && slot.toolDiscovery && onRecheckAccess;
             details.append(
               element(
                 "p",
                 { className: "hint" },
-                "No compatible, ready credential is available to both you and this Agent.",
+                savedAgent
+                  ? "No compatible, ready credential is available to both you and this Agent."
+                  : "No compatible, ready credential is available to you.",
               ),
             );
             if (canRecheck) {
@@ -1346,7 +1419,7 @@ export function createPluginFields({
           }
           if (slot.toolDiscovery && typeof current === "string") {
             const canDiscover =
-              !reloadRequired && !stale && sources.some(({ id }) => id === current);
+              !reloadRequired && !stale && (boundOnly || sources.some(({ id }) => id === current));
             const discovery = managedToolPicker(entry, slot, current, selected, canDiscover);
             details.append(discovery.picker);
             managedTools = discovery.managed;
@@ -1698,6 +1771,30 @@ export function createPluginFields({
   render();
   return {
     section,
+    refresh: () => render(),
+    enableDiscoveredTools(
+      id: string,
+      connection: ManagedToolConnection,
+      tools: readonly PluginToolCatalogEntry[],
+    ) {
+      const selection = selections()?.[id];
+      const policy = selection?.driverPolicy;
+      if (
+        !selection?.enabled ||
+        !policy ||
+        Array.isArray(policy.toolNames) ||
+        !isObject(policy.credentials) ||
+        policy.credentials[connection.slot] !== connection.sourceId
+      ) {
+        return;
+      }
+      updateSelection(id, (current) => {
+        current.driverPolicy = {
+          ...current.driverPolicy,
+          toolNames: tools.filter((tool) => tool.available !== false).map((tool) => tool.id),
+        };
+      });
+    },
     setDisabled(value: boolean) {
       disabled = value;
       // The selections JSON stays readable, focusable and copyable; the rest goes inert.

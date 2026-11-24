@@ -3,6 +3,8 @@ import { story } from "./story.ts";
 export default { title: "Pages/Credentials" };
 
 export const ConnectionTemplates = story("credentialsTemplateCatalog");
+export const PluginTemplatePrefill = story("credentialsPluginTemplatePrefill");
+export const PluginTemplateEdit = story("credentialsPluginTemplateEdit");
 export const ConnectionTemplatesMobile = story("credentialsTemplateCatalog", {
   name: "Connection templates on mobile",
   frameWidth: "390px",

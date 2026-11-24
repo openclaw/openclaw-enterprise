@@ -17,6 +17,9 @@ export interface RequiredPermission {
     | "gateway_managed_mode_changed"
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
+    | "selected_plugin_source"
+    | "managed_plugin_discovery"
+    | "plugin_source_choices"
     | "read_logs_alternative"
     | "bound_credential_source"
     | "unless_consent_owner"
@@ -93,10 +96,17 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       ];
     }
     case "discoverAgentPlugins":
+      return [
+        primary("namespace"),
+        requirement("operate", "secret", "request_body", "selected_secret"),
+        requirement("operate", "credential_source", "request_body", "selected_plugin_source"),
+        requirement("read", "credential_source", "each_returned", "plugin_source_choices"),
+      ];
     case "discoverAgentPluginDetails":
       return [
         primary("namespace"),
         requirement("operate", "secret", "request_body", "selected_secret"),
+        requirement("operate", "credential_source", "request_body", "selected_plugin_source"),
       ];
     case "createSecret":
       return [primary("namespace")];
@@ -146,14 +156,27 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         requirement("operate", "secret", "requested", "bound_secret"),
       ];
     case "provisionAgentRuntimeCredentials":
-    case "getSavedAgentPluginPolicyCapabilities":
       return [primary(), requirement("read", "agent")];
+    case "getSavedAgentPluginPolicyCapabilities":
+      return [
+        primary(),
+        requirement("read", "agent"),
+        requirement("read", "credential_source", "each_returned", "plugin_source_choices"),
+      ];
     case "discoverSavedAgentPlugins":
+      return [
+        primary(),
+        requirement("read", "agent"),
+        requirement("operate", "secret", "requested", "authenticated_plugin_discovery"),
+        requirement("operate", "credential_source", "requested", "authenticated_plugin_discovery"),
+      ];
     case "discoverSavedAgentPluginDetails":
       return [
         primary(),
         requirement("read", "agent"),
         requirement("operate", "secret", "requested", "authenticated_plugin_discovery"),
+        requirement("operate", "credential_source", "requested", "authenticated_plugin_discovery"),
+        requirement("operate", "credential_source", "request_body", "managed_plugin_discovery"),
       ];
     case "diagnoseAgentDeployment":
     case "getAgentDeploymentRuntime":
@@ -382,7 +405,20 @@ function permissionDescription(
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
       }
       if (condition === "authenticated_plugin_discovery") {
-        return `Requires ${action} permission on the Agent's bound ${name} when the selected Plugin Driver requires a discovery credential.`;
+        return `Requires caller and Agent ${action} permission on the bound ${name} when the selected Plugin Driver requires a discovery credential.`;
+      }
+      if (condition === "plugin_source_choices") {
+        const saved =
+          operationId === "getSavedAgentPluginPolicyCapabilities"
+            ? " A verified saved binding can identify its Source independently of those choices."
+            : "";
+        return `Credential choices include only ${name} resources with caller ${action} permission.${saved}`;
+      }
+      if (condition === "selected_plugin_source") {
+        return `Requires ${action} permission on the exact ${name} supplied for catalog or managed MCP discovery.`;
+      }
+      if (condition === "managed_plugin_discovery") {
+        return `Managed MCP discovery requires caller ${action} permission on the selected ${name}, or a currently validated saved Plugin binding with the Agent's ${action} grant.`;
       }
       if (condition === "read_logs_alternative") {
         return `Without read_logs, ${action} permission on the requested ${name} also admits the read.`;

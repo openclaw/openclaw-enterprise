@@ -26,7 +26,7 @@ For a static Bearer template, set **Authentication method** to **Static Bearer**
 
 Each Installation starts with a **Google OAuth** template and no registered client. Choose **Edit Google OAuth** and expand **API destinations** to review the Google Workspace plugin’s default hosts, ports and paths. For example, Calendar and Drive both use `www.googleapis.com:443`, with paths `/calendar/**` and `/drive/**`. Save edits to change these destinations or set a scope limit. Google connections request offline access for refresh after consent.
 
-A new OAuth template starts with **No template limit** (`scopes: []`). Select **Limit to approved scopes** to restrict which scopes callers may request. There is no scope-count limit. Required MCP scopes still apply at consent.
+A new OAuth template starts with **No template limit** (`scopes: []`). Select **Limit to approved scopes** to restrict which scopes callers may request. The issuer can grant additional scopes; the Source records the actual grant. Refresh cannot add scopes. There is no scope-count limit. Required MCP scopes still apply at consent.
 
 Use `POST /connection-templates` with one of these setup methods.
 

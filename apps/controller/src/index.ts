@@ -1958,8 +1958,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           : await controller.discoverAgentPluginDetails(
               context.actorId,
               namespaceId,
-              { ...input, pluginId: body?.pluginId as string },
+              {
+                ...input,
+                pluginId: body?.pluginId as string,
+                ...(body?.managedConnection === undefined
+                  ? {}
+                  : {
+                      managedConnection: body.managedConnection as {
+                        slot: string;
+                        sourceId: string;
+                      },
+                    }),
+              },
               pluginDiscoveryRequestSignal(reply),
+              options.readManagedMcpToolNames ?? listManagedMcpToolNames,
             );
       reply.header("cache-control", "no-store");
       reply.send({ data: result, meta: { requestId: request.id } });

@@ -31,7 +31,8 @@
     {
       "path": "tests/integration/postgres-saved-oauth-connections.test.ts",
       "expectedTests": [
-        "OAuth consent creates an owner-bound Source and refreshes it through the TokenService"
+        "OAuth consent creates an owner-bound Source and refreshes it through the TokenService",
+        "OAuth callback persists issuer-granted initial scopes and refuses refresh escalation"
       ]
     }
   ]

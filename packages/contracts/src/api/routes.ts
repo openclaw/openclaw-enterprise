@@ -1556,7 +1556,8 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
-    summary: "List or search available plugins for Agent creation using the selected Driver",
+    summary:
+      "List or search available plugins for Agent creation using the selected Driver; credential choices include only readable Sources",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1578,7 +1579,8 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
-    summary: "Read plugin details using the selected Driver",
+    summary:
+      "Read plugin details using the selected Driver; managed MCP discovery requires operate access to the selected Source",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1622,7 +1624,7 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "agent",
     summary:
-      "List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants",
+      "List or search plugins for an active Agent; caller needs Agent read/update. Hosted discovery uses the Agent's bound Secret or Source with the corresponding caller and Agent operate grants",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1645,7 +1647,7 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "agent",
     summary:
-      "Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential",
+      "Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller Source operate access or a valid saved Plugin binding with the Agent's Source operate grant",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,

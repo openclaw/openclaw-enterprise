@@ -18,6 +18,7 @@ import { describeFailure, namespacePath } from "./list.mjs";
 
 export interface PluginDiscoveryContext {
   namespaceId: string;
+  installationAdmin?: boolean | null;
   // Discovery is a read-only POST. The view owner uses this flag when deciding whether to retain it.
   request(path: string, options?: RequestOptions & { readOnly?: true }): Promise<unknown>;
   isCurrent(): boolean;
@@ -34,7 +35,7 @@ type DiscoveryEntry = CatalogEntry & { retryAfterConflict?: true | undefined };
 
 interface PluginDiscoveryOptions extends Pick<
   PluginFieldsOptions,
-  "input" | "saveHint" | "createApproverField"
+  "input" | "saveHint" | "createApproverField" | "renderAccountConnection" | "savedAgent"
 > {
   context: PluginDiscoveryContext;
   canDiscover(): boolean;
@@ -44,6 +45,7 @@ interface PluginDiscoveryOptions extends Pick<
   catalogPath?: string;
   // Create Agent adds the discovery credential. An existing Agent's path identifies its saved one.
   requestBody(body: CatalogRequest): unknown;
+  onCatalogPage?(page: PluginCatalogPage): void;
   applyRecheckedCapabilities?(response: unknown): boolean;
   deniedMessage?: Message;
   unsupportedMessage?: string;
@@ -101,11 +103,14 @@ export function createPluginDiscovery({
   saveHint,
   catalogPath = `${namespacePath(context.namespaceId)}/agents/plugins`,
   requestBody,
+  onCatalogPage,
   applyRecheckedCapabilities,
   deniedMessage = "Plugin discovery requires Agent create permission in this Namespace. Saved selections can still be edited.",
   unsupportedMessage = "This Installation's Plugin Driver does not offer catalog browsing. You can edit configured selections or JSON, or ask an operator to select a catalog-capable Driver.",
   availableMessage = "Load plugins available to this credential. Your plugin selections stay unchanged.",
   createApproverField,
+  renderAccountConnection,
+  savedAgent,
 }: PluginDiscoveryOptions) {
   let generation = 0;
   let prefetched = false;
@@ -132,6 +137,8 @@ export function createPluginDiscovery({
     input,
     ...(saveHint !== undefined ? { saveHint } : {}),
     ...(createApproverField ? { createApproverField } : {}),
+    ...(renderAccountConnection ? { renderAccountConnection } : {}),
+    ...(savedAgent ? { savedAgent: true } : {}),
     onLoadPlugins: (direction, q) => {
       if (direction === "search") {
         scheduleSearch(q);
@@ -415,6 +422,7 @@ export function createPluginDiscovery({
       for (const entry of page.plugins) {
         entries.set(entry.id, entry);
       }
+      onCatalogPage?.(page);
       pageIds = page.plugins.map((entry) => entry.id);
       cursors = [...cursors.slice(0, nextPageIndex), cursor ?? null];
       pageIndex = nextPageIndex;
@@ -490,7 +498,7 @@ export function createPluginDiscovery({
         readOnly: true,
         signal: requests.signal,
         body: connection
-          ? { pluginId: id, managedConnection: connection }
+          ? { ...(requestBody({ pluginId: id }) as object), managedConnection: connection }
           : requestBody({ pluginId: entry.remoteId! }),
       })) as PluginCatalogEntry | null | undefined;
       const current = currentEntry();
@@ -517,6 +525,9 @@ export function createPluginDiscovery({
               retryAfterConflict: undefined,
             },
       );
+      if (connection) {
+        fields.enableDiscoveredTools(id, connection, detail.tools ?? []);
+      }
     } catch (cause) {
       if (!context.isCurrent() || active !== generation) {
         return;
@@ -562,5 +573,5 @@ export function createPluginDiscovery({
   }
 
   render();
-  return { fields, reset, update };
+  return { fields, reset, update, refreshCatalog: () => loadCatalog("refresh") };
 }

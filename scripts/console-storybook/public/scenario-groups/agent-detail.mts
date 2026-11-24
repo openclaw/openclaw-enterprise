@@ -54,6 +54,7 @@ type AgentDetailScenario = {
   extraSecrets?: readonly Pick<SecretDetailResponse["data"], "id" | "name">[];
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
   pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
+  oauthCatalog?: string;
   pluginDiscoveryCredential?: "none";
   firstDeploymentFailed?: true;
   scrollToTabs?: false;
@@ -324,6 +325,30 @@ export function createAgentDetailScenarios({
       pages: { initial: { plugins: [slackEntry], nextCursor: null } },
       details: { [slackPluginId]: { ...slackEntry, tools: [slackTool, slackSendTool] } },
     },
+  } satisfies Partial<AgentDetailScenario>;
+  const accountConsent = {
+    ...slackMcpBase,
+    oauthCatalog: "plugin-consent",
+    agentPlugins: { [slackPluginId]: { enabled: true } },
+    pluginCapabilities: {
+      ...slackMcpBase.pluginCapabilities,
+      credentialSlots: [
+        {
+          ...slackMcpBase.pluginCapabilities.credentialSlots[0]!,
+          issuers: ["https://identity.example.com"],
+          recipient: {
+            mode: "mcp_discovery",
+            serverUrl: "https://mcp.example.com/mcp",
+            resource: "https://mcp.example.com/mcp",
+          },
+        },
+      ],
+    },
+    actions: [
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Slack"]', click: true },
+      click("Connect account"),
+    ],
   } satisfies Partial<AgentDetailScenario>;
 
   const shareExistingPerson = [
@@ -1468,11 +1493,114 @@ export function createAgentDetailScenarios({
         steps: [
           "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
           "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
-          "Enable slack_search_public and slack_send_message with their tool switches. Open Tool policy for slack_send_message and set Require approval for to Every action. Unsupported approval modes, reviewer selection, and plugin defaults are disabled. Review the note that direct scripts bypass Gateway approval.",
+          "After loading tools, both tools start enabled. Open Tool policy for slack_send_message and set Require approval for to Every action. Unsupported approval modes, reviewer selection, and plugin defaults are disabled.",
           "Choose Done and Save plugin selections. Open the picker: saved tools and approval choices remain visible as Unavailable until discovery succeeds. Load tools again to confirm the choices.",
           "Disable slack_send_message to remove its approval override, or turn off Enable plugin to clear its managed account and tool policies before saving.",
         ],
         gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
+      },
+      slackMcpBoundAgentDiscovery: {
+        ...slackMcpBase,
+        name: "Load tools with the Agent's existing account grant",
+        credentialSources: [],
+        agentPlugins: {
+          [slackPluginId]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: "a".repeat(64),
+              credentials: { account: slackSourceId },
+            },
+          },
+        },
+        pluginCapabilities: {
+          ...slackMcpBase.pluginCapabilities,
+          credentialSlots: [
+            {
+              ...slackMcpBase.pluginCapabilities.credentialSlots[0]!,
+              sources: [],
+              boundSourceId: slackSourceId,
+            },
+          ],
+        },
+        actions: [
+          click("Configure plugins"),
+          { selector: 'button[aria-label="Slack"]', click: true },
+        ],
+        description:
+          "The caller cannot select the Source, but the saved Agent retains its verified bound grant. The current account is read-only and Load tools can use the Agent's grant.",
+        steps: [
+          "Check that Current account (Agent access only) is selected but cannot be chosen as a new binding.",
+          "Choose Load tools. The simulated MCP tools appear and start enabled.",
+          "Choose Install without an account. The Agent-only account is no longer selectable; restoring it requires credential access.",
+        ],
+        gap: "The saved grant and MCP response are Storybook fixtures. This does not prove IAM authorization or a live server request.",
+      },
+      pluginAccountConsent: {
+        ...accountConsent,
+        name: "Connect an account from a saved Plugin slot",
+        description:
+          "Review the compatible simulated MCP Template and its preselected scopes in the same account consent dialog used by Create Agent.",
+        gap: "Storybook supplies Template and Plugin metadata. It does not complete OAuth, create a Source, or grant an Agent access.",
+      },
+      pluginAccountConsentStartFailed: {
+        ...accountConsent,
+        name: "Retry when Plugin account sign-in cannot start",
+        rules: [{ suffix: "/connections", method: "POST", status: 503 }],
+        actions: [...accountConsent.actions, click("Connect and attach")],
+        description:
+          "A simulated start failure keeps the account dialog and selected scopes usable and offers Try again.",
+        gap: "The API refusal is simulated. This preview does not verify provider consent or Source creation.",
+      },
+      pluginAccountConsentStartDelayed: {
+        ...accountConsent,
+        name: "Cancel while Plugin account sign-in is starting",
+        rules: [{ suffix: "/connections", method: "POST", delayMs: 4000, status: 503 }],
+        description:
+          "The simulated connection start remains pending long enough to cancel the dialog. Cancellation aborts the request and closes its temporary sign-in tab.",
+        steps: [
+          "Choose Connect and attach, then Cancel while the start request is pending.",
+          "Check that the Plugin editor remains usable and no account was attached.",
+        ],
+        gap: "The delayed start is a Storybook fixture. It does not contact an OAuth provider.",
+      },
+      pluginAccountTemplateNeedsClient: {
+        ...slackMcpBase,
+        name: "Configure an existing OAuth Template before connecting",
+        oauthCatalog: "plugin-consent",
+        credentialSources: [],
+        agentPlugins: { "occ-plugin:google@1.0.0": { enabled: true } },
+        pluginCapabilities: {
+          ...slackMcpBase.pluginCapabilities,
+          policyScopeByPlugin: { "occ-plugin:google@1.0.0": "enablement_only" },
+          credentialSlots: [
+            {
+              pluginId: "occ-plugin:google@1.0.0",
+              releaseSha256: "a".repeat(64),
+              id: "account",
+              label: "Google account",
+              issuers: ["https://accounts.google.com"],
+              recipient: { mode: "manual", tokenUrl: "https://oauth2.googleapis.com/token" },
+              sources: [],
+            },
+          ],
+        },
+        pluginDiscovery: {
+          pages: {
+            initial: {
+              plugins: [{ id: "occ-plugin:google@1.0.0", name: "Google Workspace", tools: [] }],
+              nextCursor: null,
+            },
+          },
+          details: {},
+        },
+        actions: [
+          click("Configure plugins"),
+          { selector: 'button[aria-label="Google Workspace"]', click: true },
+          click("Connect account"),
+        ],
+        description:
+          "An Installation admin sees the existing Google OAuth Template that needs a client and can configure it instead of creating a duplicate. Connect stays unavailable until a client is assigned.",
+        gap: "Template and permission responses are simulated. This does not register an OAuth client or start consent.",
       },
       slackMcpSavedToolsUnavailable: {
         ...slackMcpBase,

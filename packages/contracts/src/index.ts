@@ -977,7 +977,16 @@ export interface AgentPluginCredentialSlot {
   readonly id: string;
   readonly label: string;
   readonly toolDiscovery?: true;
+  readonly issuers?: readonly string[];
+  readonly recipient?:
+    | { readonly mode: "manual"; readonly tokenUrl: string }
+    | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly resource: string };
   readonly sources: readonly { readonly id: string; readonly name: string }[];
+}
+
+/** OCC verifies an existing Agent binding independently of caller-selectable Sources. */
+export interface SavedAgentPluginCredentialSlot extends AgentPluginCredentialSlot {
+  readonly boundSourceId?: string;
 }
 
 export interface PluginCatalogLink {
@@ -1006,6 +1015,8 @@ export interface PluginCatalogPage {
   readonly plugins: readonly PluginCatalogEntry[];
   readonly nextCursor: string | null;
   readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
+  /** OCC adds caller-visible credential choices when browsing a Namespace catalog. */
+  readonly credentialSlots?: readonly AgentPluginCredentialSlot[];
 }
 
 export interface PluginRevisionState {

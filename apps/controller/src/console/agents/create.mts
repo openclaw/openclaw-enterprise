@@ -8,6 +8,7 @@ import type {
   Namespace,
   NamespaceCallerPermissionsResponse,
   PluginApprovers,
+  AgentPluginCredentialSlot,
   PresetLaunchSettings,
   SecretBindings,
   SecretMetadata,
@@ -67,6 +68,11 @@ import {
 } from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
+import {
+  pluginConnectionControl,
+  type PluginAccountSlot,
+  type SlotConnection,
+} from "./plugin-connection.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
@@ -1875,18 +1881,20 @@ function renderAgentForm(
   const plugins = element("textarea", { id: "agent-plugins", rows: "4", spellcheck: "false" });
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryCredential: "none" | "required" | null = null;
-  let savedOpenClawCatalog = false;
   let catalogUnavailable = false;
+  let pluginSlots: readonly AgentPluginCredentialSlot[] = [];
+  let pluginConnectionNotice:
+    { pluginId: string; slotId: string; message: string; retry?: boolean } | undefined;
   let pluginHarness = harness.value;
   let installationCapabilities: InstallationCapabilities | undefined;
   // Codex serves curated plugins only to ChatGPT logins; API-key Agents get them disabled.
   const apiKeyCodex = () =>
     harness.value === "codex" && (binding?.method ?? authMethod.value) === "api_key";
   function discoveryCredential() {
-    if (catalogUnavailable || savedOpenClawCatalog || apiKeyCodex()) {
+    if (catalogUnavailable || apiKeyCodex()) {
       return null;
     }
-    if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
+    if (mode.value === "dedicated" && pluginDiscoveryCredential === "none") {
       return {};
     }
     if (
@@ -1921,31 +1929,77 @@ function renderAgentForm(
     const source = getDirectorySecretSource();
     return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
   };
+  const draftConnection: SlotConnection = {
+    grantOnCreate: true,
+    feedback: (slot) =>
+      pluginConnectionNotice?.pluginId === slot.pluginId &&
+      pluginConnectionNotice.slotId === slot.id
+        ? pluginConnectionNotice
+        : undefined,
+    report(slot, message, retry) {
+      pluginConnectionNotice = {
+        pluginId: slot.pluginId,
+        slotId: slot.id,
+        message,
+        ...(retry ? { retry } : {}),
+      };
+      pluginDiscovery.fields.refresh();
+    },
+    async refreshSlot(slot) {
+      await pluginDiscovery.refreshCatalog();
+      return pluginSlots.find(
+        (candidate) =>
+          candidate.pluginId === slot.pluginId &&
+          candidate.id === slot.id &&
+          candidate.releaseSha256 === slot.releaseSha256,
+      ) as PluginAccountSlot | undefined;
+    },
+    async attach(slot, sourceId, stage) {
+      pluginConnectionNotice = {
+        pluginId: slot.pluginId,
+        slotId: slot.id,
+        message: "Account connected. Creating the Agent grants it access to this account.",
+      };
+      if (!stage(sourceId)) {
+        pluginConnectionNotice = undefined;
+        return "The account was saved, but this plugin selection changed. Choose the account again.";
+      }
+      return pluginConnectionNotice.message;
+    },
+  };
   const pluginDiscovery = createPluginDiscovery({
     context,
     input: plugins,
     canDiscover: () => Boolean(discoveryCredential()),
     canPrefetch: () =>
-      pluginDiscoveryCredential !== null &&
-      ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
-      Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim()),
+      pluginDiscoveryCredential === "none" ||
+      (pluginDiscoveryCredential !== null &&
+        ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
+        Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim())),
     isPending: () => pending,
     requestBody: (body) => ({
       ...discoveryCredential(),
       harnessId: harness.value,
       ...body,
     }),
+    onCatalogPage(page) {
+      pluginSlots = page.credentialSlots ?? [];
+      const policies = installationCapabilities?.pluginCatalogs?.find(
+        (candidate) => candidate.harnessId === harness.value,
+      )?.pluginPolicies;
+      pluginFields.setCapabilities(policies ? { ...policies, credentialSlots: pluginSlots } : null);
+    },
+    renderAccountConnection: (slot, stage) =>
+      pluginConnectionControl(context, slot, draftConnection, stage),
     unavailableMessage: () => {
       if (catalogUnavailable) {
         return "This Installation has no plugin catalog for the selected Harness.";
       }
-      return savedOpenClawCatalog
-        ? "To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent using Kubernetes Compute."
-        : apiKeyCodex()
-          ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
-          : pluginDiscoveryCredential === "none"
-            ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
-            : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.";
+      return apiKeyCodex()
+        ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
+        : pluginDiscoveryCredential === "none"
+          ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
+          : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.";
     },
     availableMessage: () =>
       pluginDiscoveryCredential === "none"
@@ -1966,10 +2020,9 @@ function renderAgentForm(
     );
     const policies = catalog?.pluginPolicies;
     const discovery = catalog?.pluginDiscovery;
-    savedOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
     catalogUnavailable = capabilities !== undefined && discovery === undefined;
     pluginDiscoveryCredential = discovery?.credential ?? (catalogUnavailable ? null : "required");
-    pluginFields.setCapabilities(policies ?? null);
+    pluginFields.setCapabilities(policies ? { ...policies, credentialSlots: pluginSlots } : null);
     defaultApprovers.hidden = policies?.approvers?.agent !== true;
     if (!defaultApprovers.hidden) {
       defaultApprovers.refreshNames();
@@ -1982,6 +2035,8 @@ function renderAgentForm(
     if (pluginHarness !== harness.value) {
       pluginHarness = harness.value;
       plugins.value = "{}";
+      pluginSlots = [];
+      pluginConnectionNotice = undefined;
       applyPluginCapabilities();
     }
     pluginDiscovery.reset();

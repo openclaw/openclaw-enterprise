@@ -18847,7 +18847,7 @@
     },
     "/namespaces/{namespaceId}/agents/plugins": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied. Requires operate permission on the exact CredentialSource supplied for catalog or managed MCP discovery. Credential choices include only CredentialSource resources with caller read permission.",
         "operationId": "discoverAgentPlugins",
         "parameters": [
           {
@@ -19020,6 +19020,60 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "credentialSlots": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": { "type": "string" },
+                              "issuers": { "items": { "type": "string" }, "type": "array" },
+                              "label": { "type": "string" },
+                              "pluginId": { "type": "string" },
+                              "recipient": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "mode": { "const": "manual", "type": "string" },
+                                      "tokenUrl": { "type": "string" }
+                                    },
+                                    "required": ["mode", "tokenUrl"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "mode": { "const": "mcp_discovery", "type": "string" },
+                                      "resource": { "type": "string" },
+                                      "serverUrl": { "type": "string" }
+                                    },
+                                    "required": ["mode", "serverUrl", "resource"],
+                                    "type": "object"
+                                  }
+                                ]
+                              },
+                              "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                              "sources": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "name": { "type": "string" }
+                                  },
+                                  "required": ["id", "name"],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "toolDiscovery": { "const": true, "type": "boolean" }
+                            },
+                            "required": ["pluginId", "releaseSha256", "id", "label", "sources"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "nextCursor": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
                         "plugins": {
                           "items": {
@@ -19223,7 +19277,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List or search available plugins for Agent creation using the selected Driver",
+        "summary": "List or search available plugins for Agent creation using the selected Driver; credential choices include only readable Sources",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
@@ -19232,13 +19286,25 @@
             "condition": "selected_secret",
             "resourceKind": "secret",
             "scope": "request_body"
+          },
+          {
+            "action": "operate",
+            "condition": "selected_plugin_source",
+            "resourceKind": "credential_source",
+            "scope": "request_body"
+          },
+          {
+            "action": "read",
+            "condition": "plugin_source_choices",
+            "resourceKind": "credential_source",
+            "scope": "each_returned"
           }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/plugins/details": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied. Requires operate permission on the exact CredentialSource supplied for catalog or managed MCP discovery.",
         "operationId": "discoverAgentPluginDetails",
         "parameters": [
           {
@@ -19276,6 +19342,32 @@
               },
               "schema": {
                 "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "harnessId": {
+                        "anyOf": [
+                          { "const": "openclaw", "type": "string" },
+                          { "const": "codex", "type": "string" }
+                        ]
+                      },
+                      "managedConnection": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "slot": { "maxLength": 64, "minLength": 1, "type": "string" },
+                          "sourceId": {
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": ["slot", "sourceId"],
+                        "type": "object"
+                      },
+                      "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
+                    },
+                    "required": ["harnessId", "pluginId", "managedConnection"],
+                    "type": "object"
+                  },
                   {
                     "additionalProperties": false,
                     "properties": {
@@ -19575,7 +19667,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Read plugin details using the selected Driver",
+        "summary": "Read plugin details using the selected Driver; managed MCP discovery requires operate access to the selected Source",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
@@ -19583,6 +19675,12 @@
             "action": "operate",
             "condition": "selected_secret",
             "resourceKind": "secret",
+            "scope": "request_body"
+          },
+          {
+            "action": "operate",
+            "condition": "selected_plugin_source",
+            "resourceKind": "credential_source",
             "scope": "request_body"
           }
         ]
@@ -29701,7 +29799,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/plugins": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires caller and Agent operate permission on the bound Secret when the selected Plugin Driver requires a discovery credential. Requires caller and Agent operate permission on the bound CredentialSource when the selected Plugin Driver requires a discovery credential.",
         "operationId": "discoverSavedAgentPlugins",
         "parameters": [
           {
@@ -29797,6 +29895,60 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "credentialSlots": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": { "type": "string" },
+                              "issuers": { "items": { "type": "string" }, "type": "array" },
+                              "label": { "type": "string" },
+                              "pluginId": { "type": "string" },
+                              "recipient": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "mode": { "const": "manual", "type": "string" },
+                                      "tokenUrl": { "type": "string" }
+                                    },
+                                    "required": ["mode", "tokenUrl"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "mode": { "const": "mcp_discovery", "type": "string" },
+                                      "resource": { "type": "string" },
+                                      "serverUrl": { "type": "string" }
+                                    },
+                                    "required": ["mode", "serverUrl", "resource"],
+                                    "type": "object"
+                                  }
+                                ]
+                              },
+                              "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                              "sources": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "name": { "type": "string" }
+                                  },
+                                  "required": ["id", "name"],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "toolDiscovery": { "const": true, "type": "boolean" }
+                            },
+                            "required": ["pluginId", "releaseSha256", "id", "label", "sources"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "nextCursor": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
                         "plugins": {
                           "items": {
@@ -30000,7 +30152,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants",
+        "summary": "List or search plugins for an active Agent; caller needs Agent read/update. Hosted discovery uses the Agent's bound Secret or Source with the corresponding caller and Agent operate grants",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
@@ -30010,13 +30162,19 @@
             "condition": "authenticated_plugin_discovery",
             "resourceKind": "secret",
             "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "authenticated_plugin_discovery",
+            "resourceKind": "credential_source",
+            "scope": "requested"
           }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities": {
       "get": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Credential choices include only CredentialSource resources with caller read permission. A verified saved binding can identify its Source independently of those choices.",
         "operationId": "getSavedAgentPluginPolicyCapabilities",
         "parameters": [
           {
@@ -30097,9 +30255,37 @@
                           "items": {
                             "additionalProperties": false,
                             "properties": {
+                              "boundSourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
                               "id": { "type": "string" },
+                              "issuers": { "items": { "type": "string" }, "type": "array" },
                               "label": { "type": "string" },
                               "pluginId": { "type": "string" },
+                              "recipient": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "mode": { "const": "manual", "type": "string" },
+                                      "tokenUrl": { "type": "string" }
+                                    },
+                                    "required": ["mode", "tokenUrl"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "mode": { "const": "mcp_discovery", "type": "string" },
+                                      "resource": { "type": "string" },
+                                      "serverUrl": { "type": "string" }
+                                    },
+                                    "required": ["mode", "serverUrl", "resource"],
+                                    "type": "object"
+                                  }
+                                ]
+                              },
                               "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
                               "sources": {
                                 "items": {
@@ -30304,13 +30490,19 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
-          { "action": "read", "resourceKind": "agent", "scope": "requested" }
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "plugin_source_choices",
+            "resourceKind": "credential_source",
+            "scope": "each_returned"
+          }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/{agentId}/plugins/details": {
       "post": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires caller and Agent operate permission on the bound Secret when the selected Plugin Driver requires a discovery credential. Requires caller and Agent operate permission on the bound CredentialSource when the selected Plugin Driver requires a discovery credential. Managed MCP discovery requires caller operate permission on the selected CredentialSource, or a currently validated saved Plugin binding with the Agent's operate grant.",
         "operationId": "discoverSavedAgentPluginDetails",
         "parameters": [
           {
@@ -30602,7 +30794,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential",
+        "summary": "Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller Source operate access or a valid saved Plugin binding with the Agent's Source operate grant",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
@@ -30612,6 +30804,18 @@
             "condition": "authenticated_plugin_discovery",
             "resourceKind": "secret",
             "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "authenticated_plugin_discovery",
+            "resourceKind": "credential_source",
+            "scope": "requested"
+          },
+          {
+            "action": "operate",
+            "condition": "managed_plugin_discovery",
+            "resourceKind": "credential_source",
+            "scope": "request_body"
           }
         ]
       }
@@ -47110,7 +47314,7 @@
     },
     "/oauth/callback": {
       "get": {
-        "description": "Requires the signed-in human session that started the connection, permission to create a credential source in the starting Namespace, and a template available there. The provider redirects here with `state` and `code`, or with `error`. The response is a 303 redirect to the console without the query string.",
+        "description": "Requires the signed-in human session that started the connection, permission to create a credential source in the starting Namespace, and a template available there. The provider redirects here with `state` and `code`, or with `error`. Browser success returns a small HTML page that confirms the saved Source to the initiating Console tab; other requests redirect to the console without the provider query.",
         "operationId": "completeNamespaceConnection",
         "parameters": [
           {
@@ -47164,6 +47368,20 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "examples": {
+                  "example": {
+                    "summary": "Browser consent completion page",
+                    "value": "<!doctype html><html>Account connected</html>"
+                  }
+                },
+                "schema": { "type": "string" }
+              }
+            },
+            "description": "Browser consent completion page"
+          },
           "303": {
             "content": {
               "application/json": {

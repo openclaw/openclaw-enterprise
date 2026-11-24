@@ -2806,7 +2806,7 @@ Complete a browser connection for the signed-in person who started it
 
 **Operation ID:** `completeNamespaceConnection`
 
-**Permissions:** Requires the signed-in human session that started the connection, permission to create a credential source in the starting Namespace, and a template available there. The provider redirects here with `state` and `code`, or with `error`. The response is a 303 redirect to the console without the query string.
+**Permissions:** Requires the signed-in human session that started the connection, permission to create a credential source in the starting Namespace, and a template available there. The provider redirects here with `state` and `code`, or with `error`. Browser success returns a small HTML page that confirms the saved Source to the initiating Console tab; other requests redirect to the console without the provider query.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -2825,8 +2825,18 @@ Complete a browser connection for the signed-in person who started it
 
 | Status | Meaning |
 | --- | --- |
+| `200` | Browser consent completion page |
 | `303` | Redirect to the console with the connection outcome |
 | `429` | Too many requests; wait for Retry-After |
+
+**`200` response body:** `text/html`
+
+Schema: `string`.
+
+Browser consent completion page
+```json
+"<!doctype html><html>Account connected</html>"
+```
 
 <span id="installation"></span>
 
@@ -4308,8 +4318,8 @@ Example response
 | [`DELETE /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}`](#delete-namespacesnamespaceidagentsdeviceauthorizationssessionid) | Experimental: Discard a local device login without upstream revocation |
 | [`POST /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll`](#post-namespacesnamespaceidagentsdeviceauthorizationssessionidpoll) | Experimental: Complete device login without returning credential material |
 | [`POST /namespaces/{namespaceId}/agents/models`](#post-namespacesnamespaceidagentsmodels) | List provider models for Agent creation without storing the supplied credential |
-| [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | List or search available plugins for Agent creation using the selected Driver |
-| [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read plugin details using the selected Driver |
+| [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | List or search available plugins for Agent creation using the selected Driver; credential choices include only readable Sources |
+| [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read plugin details using the selected Driver; managed MCP discovery requires operate access to the selected Source |
 | [`POST /namespaces/{namespaceId}/agents/provision`](#post-namespacesnamespaceidagentsprovision) | Create a new Agent and queue first-time provisioning |
 | [`GET /namespaces/{namespaceId}/agents/provision/{workId}`](#get-namespacesnamespaceidagentsprovisionworkid) | Get first-time provisioning status for one exact work item |
 | [`POST /namespaces/{namespaceId}/agents/provision/{workId}/retry`](#post-namespacesnamespaceidagentsprovisionworkidretry) | Retry failed first-time provisioning for one exact work item |
@@ -4335,9 +4345,9 @@ Example response
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`](#post-namespacesnamespaceidagentsagentidnativeadminlaunch) | Create a browser-bound native Agent launch |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions`](#get-namespacesnamespaceidagentsagentidpermissions) | Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions/secrets`](#get-namespacesnamespaceidagentsagentidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Hosted discovery uses the Agent's bound Secret or Source with the corresponding caller and Agent operate grants |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities`](#get-namespacesnamespaceidagentsagentidpluginscapabilities) | Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller Source operate access or a valid saved Plugin binding with the Agent's Source operate grant |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approval-scopes`](#get-namespacesnamespaceidagentsagentidrepositoryapprovalscopes) | Review resolved repository scope before explicitly approving it |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approvals`](#get-namespacesnamespaceidagentsagentidrepositoryapprovals) | Read attributable repository approvals and removed generations for one Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/repository-approvals/{approvalId}/remove`](#post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove) | Remove repository approval independently of configuration or runtime cleanup |
@@ -5024,16 +5034,18 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsplugins"></span>
 
-List or search available plugins for Agent creation using the selected Driver
+List or search available plugins for Agent creation using the selected Driver; credential choices include only readable Sources
 
 **Operation ID:** `discoverAgentPlugins`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied. Requires operate permission on the exact CredentialSource supplied for catalog or managed MCP discovery. Credential choices include only CredentialSource resources with caller read permission.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
 | `operate` | `secret` | `request_body` |
+| `operate` | `credential_source` | `request_body` |
+| `read` | `credential_source` | `each_returned` |
 
 ##### Parameters
 
@@ -5083,6 +5095,17 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
+| `data.credentialSlots` | `array<object>` | No | — |
+| `data.credentialSlots[].id` | `string` | Yes | — |
+| `data.credentialSlots[].issuers` | `array<string>` | No | — |
+| `data.credentialSlots[].label` | `string` | Yes | — |
+| `data.credentialSlots[].pluginId` | `string` | Yes | — |
+| `data.credentialSlots[].recipient` | `object or object` | No | — |
+| `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.credentialSlots[].sources` | `array<object>` | Yes | — |
+| `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.nextCursor` | `string or null` | Yes | — |
 | `data.plugins` | `array<object>` | Yes | — |
 | `data.plugins[].available` | `boolean` | No | — |
@@ -5132,16 +5155,17 @@ Example response
 
 <span id="post-namespacesnamespaceidagentspluginsdetails"></span>
 
-Read plugin details using the selected Driver
+Read plugin details using the selected Driver; managed MCP discovery requires operate access to the selected Source
 
 **Operation ID:** `discoverAgentPluginDetails`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied. Requires operate permission on the exact CredentialSource supplied for catalog or managed MCP discovery.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
 | `operate` | `secret` | `request_body` |
+| `operate` | `credential_source` | `request_body` |
 
 ##### Parameters
 
@@ -5155,7 +5179,7 @@ Read plugin details using the selected Driver
 
 **Content type:** `application/json`
 
-Schema: `object or object or object or object`.
+Schema: `object or object or object or object or object`.
 
 Example request
 ```json
@@ -7611,17 +7635,18 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsagentidplugins"></span>
 
-List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants
+List or search plugins for an active Agent; caller needs Agent read/update. Hosted discovery uses the Agent's bound Secret or Source with the corresponding caller and Agent operate grants
 
 **Operation ID:** `discoverSavedAgentPlugins`
 
-**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires caller and Agent operate permission on the bound Secret when the selected Plugin Driver requires a discovery credential. Requires caller and Agent operate permission on the bound CredentialSource when the selected Plugin Driver requires a discovery credential.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `read` | `agent` | `requested` |
 | `operate` | `secret` | `requested` |
+| `operate` | `credential_source` | `requested` |
 
 ##### Parameters
 
@@ -7672,6 +7697,17 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
+| `data.credentialSlots` | `array<object>` | No | — |
+| `data.credentialSlots[].id` | `string` | Yes | — |
+| `data.credentialSlots[].issuers` | `array<string>` | No | — |
+| `data.credentialSlots[].label` | `string` | Yes | — |
+| `data.credentialSlots[].pluginId` | `string` | Yes | — |
+| `data.credentialSlots[].recipient` | `object or object` | No | — |
+| `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.credentialSlots[].sources` | `array<object>` | Yes | — |
+| `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.nextCursor` | `string or null` | Yes | — |
 | `data.plugins` | `array<object>` | Yes | — |
 | `data.plugins[].available` | `boolean` | No | — |
@@ -7725,12 +7761,13 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 
 **Operation ID:** `getSavedAgentPluginPolicyCapabilities`
 
-**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Credential choices include only CredentialSource resources with caller read permission. A verified saved binding can identify its Source independently of those choices.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `read` | `agent` | `requested` |
+| `read` | `credential_source` | `each_returned` |
 
 ##### Parameters
 
@@ -7763,9 +7800,12 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.approvers.plugin` | `boolean` | Yes | — |
 | `data.approvers.tools` | `boolean` | Yes | — |
 | `data.credentialSlots` | `array<object>` | No | — |
+| `data.credentialSlots[].boundSourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].id` | `string` | Yes | — |
+| `data.credentialSlots[].issuers` | `array<string>` | No | — |
 | `data.credentialSlots[].label` | `string` | Yes | — |
 | `data.credentialSlots[].pluginId` | `string` | Yes | — |
+| `data.credentialSlots[].recipient` | `object or object` | No | — |
 | `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `data.credentialSlots[].sources` | `array<object>` | Yes | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -7827,17 +7867,19 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsagentidpluginsdetails"></span>
 
-Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential
+Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller Source operate access or a valid saved Plugin binding with the Agent's Source operate grant
 
 **Operation ID:** `discoverSavedAgentPluginDetails`
 
-**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires caller and Agent operate permission on the bound Secret when the selected Plugin Driver requires a discovery credential. Requires caller and Agent operate permission on the bound CredentialSource when the selected Plugin Driver requires a discovery credential. Managed MCP discovery requires caller operate permission on the selected CredentialSource, or a currently validated saved Plugin binding with the Agent's operate grant.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `read` | `agent` | `requested` |
 | `operate` | `secret` | `requested` |
+| `operate` | `credential_source` | `requested` |
+| `operate` | `credential_source` | `request_body` |
 
 ##### Parameters
 

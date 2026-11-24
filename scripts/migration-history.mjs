@@ -165,6 +165,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 95 && completedCount > 95) {
     return "prePluginCredentialDeployment";
   }
+  if (count === 96 && completedCount > 96) {
+    return "preOAuthInitialGrantedScopes";
+  }
   if (count === completedCount) {
     return "completed";
   }

@@ -136,9 +136,14 @@ export async function requestOAuthTokens(
   if (refreshToken !== undefined && !isNonEmptyString(refreshToken)) {
     throw new BrowserAuthorizationError("invalid_refresh_token", "fix_configuration");
   }
-  // Only the first exchange with no explicit scopes can accept issuer-chosen defaults.
-  // On refresh, even an empty list is a ceiling: no reported scopes can gain authority.
-  const grantedScopes = parseOAuthGrantedScopes(body.scope, scopeLimit);
+  // The issuer determines the initial grant; an omitted scope response uses the request.
+  // A refresh must not expand the grant already held in custody.
+  const grantedScopes = parseOAuthGrantedScopes(
+    body.scope,
+    parameters.get("grant_type") === "authorization_code" && body.scope !== undefined
+      ? undefined
+      : scopeLimit,
+  );
   return {
     accessToken: body.access_token,
     ...(refreshToken === undefined ? {} : { refreshToken }),

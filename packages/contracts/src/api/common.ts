@@ -584,6 +584,16 @@ export const DiscoverAgentPluginsBody = Type.Union([
 
 export const DiscoverAgentPluginDetailsBody = Type.Union([
   Type.Object(
+    {
+      ...PluginCatalogDetailsFields,
+      managedConnection: Type.Object(
+        { slot: Type.String({ minLength: 1, maxLength: 64 }), sourceId: CredentialSourceId },
+        { additionalProperties: false },
+      ),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
     { ...PluginCatalogDetailsFields, credentialSource: CredentialSourceReference },
     { additionalProperties: false },
   ),

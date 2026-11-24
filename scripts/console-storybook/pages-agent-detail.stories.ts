@@ -86,7 +86,12 @@ export const SlackMcpAccountRecovery = {
   ...story("slackMcpAccountRecovery"),
   name: "Recover a Slack account after access is restored",
 };
+export const SlackMcpBoundAgentDiscovery = story("slackMcpBoundAgentDiscovery");
 export const SlackMcpSavedToolsUnavailable = story("slackMcpSavedToolsUnavailable");
+export const PluginAccountConsent = story("pluginAccountConsent");
+export const PluginAccountConsentStartFailed = story("pluginAccountConsentStartFailed");
+export const PluginAccountConsentStartDelayed = story("pluginAccountConsentStartDelayed");
+export const PluginAccountTemplateNeedsClient = story("pluginAccountTemplateNeedsClient");
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const DraftReader = story("draftReader");

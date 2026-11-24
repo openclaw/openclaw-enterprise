@@ -49,6 +49,7 @@ export const PluginsConfigured = {
   name: "Edit existing plugin policies",
 };
 export const PluginsCurated = story("createPluginsCurated");
+export const PluginAccountConsent = story("createPluginAccountConsent");
 export const PluginsDiscovered = story("createPluginsDiscovered");
 export const PluginsShortWindow = {
   ...story("createPluginsDiscovered", {

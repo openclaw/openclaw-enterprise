@@ -1459,14 +1459,20 @@ export class OpenClawController {
   async discoverAgentPluginDetails(
     principalId: string,
     namespaceId: string,
-    input: PluginDiscoveryCredential & { readonly harnessId: string; readonly pluginId: string },
+    input: PluginDiscoveryCredential & {
+      readonly harnessId: string;
+      readonly pluginId: string;
+      readonly managedConnection?: ManagedMcpConnection;
+    },
     signal?: AbortSignal,
+    readMcpTools?: ManagedMcpToolReader,
   ): Promise<PluginCatalogEntry> {
     return this.composition.pluginDiscovery.discoverAgentPluginDetails(
       principalId,
       namespaceId,
       input,
       signal,
+      readMcpTools,
     );
   }
 

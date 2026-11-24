@@ -59,15 +59,18 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
   metadata that OCC authorized, never credential values.
-  For a dedicated Agent, OCC passes `choices(sources)` the ready Sources in
-  `Agent.credentialSources` that the caller can read and operate and the Agent
-  service principal can operate. OCC returns matching choices in `credentialSlots`.
-  A caller needs exact Source `operate` when saving a selection.
+  OCC passes `choices(sources, templates)` qualified ready Namespace Sources whose
+  metadata the caller can read; the Driver filters them for slot compatibility. Namespace
+  catalog discovery and saved-Agent capabilities return these choices in
+  `credentialSlots`. A saved slot can separately report `boundSourceId` after OCC
+  validates the current Driver release, selection, Source, Template and Agent grant;
+  this does not make that Source caller-selectable. A caller needs exact Source
+  `operate` when saving a new selection or discovering tools for a new connection.
   `selectedBindings({pluginId, selection})` reports Source IDs keyed by requirement
   and connection. The OpenClaw Driver uses the `default` connection for each
   selected slot. OCC uses these IDs to authorize and resolve each Source before
   it asks the Driver to validate the selection or describe deployment.
-  `validate(selections, sources, modelSourceId)` checks the reviewed release and
+  `validate(selections, sources, modelSourceId, templates)` checks the reviewed release and
   slot and refuses the Source that authenticates the model. OCC checks the
   [Template and consent](../credential-sources.md#bind-a-source-to-an-agent) for
   credential-bearing requests.
@@ -121,18 +124,19 @@ OCC resolves the catalog before it reads a credential. The selected Driver repor
 in Installation capabilities as `required` or `none`. When required, supply
 exactly one of `accessToken`, `secretRef`, or `credentialSource`. Stored references
 use `{kind, namespaceId, id}` with kind `secret` or `credential_source`.
-For credential-free discovery, omit all three.
+For credential-free discovery, omit all three. For managed MCP details, instead
+provide `managedConnection: {slot, sourceId}`; OCC checks caller Source `operate`
+or, for saved discovery, the verified saved binding and Agent grant before using it.
 For details also provide `pluginId`; for discovery you can provide `q` (up to
 1,024 characters) and `cursor`. The Driver searches the complete catalog; an
 empty query lists it. Keep the same query while paging and omit the cursor when
 changing the query.
 Both routes require Agent `create` in the Namespace. Stored references must
 belong to that Namespace and require caller `operate` on the exact source.
-OCC uses SecretDriver `withValue` for Secrets. For CredentialSources, the trusted
-bundled OpenShell Backend reader performs ordinary metadata lookup and
-operator-mTLS export; an external Credential Gateway retains its optional
-`withSourceToken` callback. Both paths require the same exact Gateway owner
-match and Namespace checks, with no fallback to another Gateway or tenant.
+OCC uses SecretDriver `withValue` for Secrets and the selected Source owner's
+TokenService `resolveCredential` for managed Sources. Legacy Gateway Sources use
+their exact owner's trusted reader or optional `withSourceToken` callback. All
+paths enforce exact owner and Namespace checks.
 OCC checks authorization, source readiness, attachment where required, and the
 selected catalog before retrieval, then rechecks before catalog dispatch.
 Credentials pass to the PluginDriver in server memory; refresh remains with

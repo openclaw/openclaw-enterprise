@@ -673,6 +673,13 @@
       "when": 1787000000096,
       "tag": "0096_plugin_credential_deployment",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1787000000097,
+      "tag": "0097_oauth_initial_granted_scopes",
+      "breakpoints": true
     }
   ]
 }

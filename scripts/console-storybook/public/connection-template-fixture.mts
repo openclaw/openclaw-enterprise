@@ -11,59 +11,62 @@ export function createConnectionTemplateFixture(
   nextId: (prefix: string) => string,
 ) {
   const issuer = "https://identity.example.com";
+  const populated = mode === "ready" || mode === "plugin-consent";
   const templateId = "ctp_00000000-0000-4000-8000-000000000004";
-  const templates: Record<string, unknown>[] =
-    mode === "ready"
-      ? [
-          {
-            id: templateId,
-            displayName: "Support MCP",
-            namespaceId,
-            createdAt,
-            current: {
-              templateId,
-              version: 1,
-              mode: "mcp_discovery",
+  const templates: Record<string, unknown>[] = populated
+    ? [
+        {
+          id: templateId,
+          displayName: "Support MCP",
+          namespaceId,
+          createdAt,
+          current: {
+            templateId,
+            version: 1,
+            mode: "mcp_discovery",
+            issuer,
+            authorizationUrl: issuer + "/authorize",
+            tokenUrl: issuer + "/token",
+            scopes: mode === "plugin-consent" ? [] : ["messages.read"],
+            authorizationParameters: {},
+            destinations: [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
+            mcp: {
+              serverUrl: "https://mcp.example.com/mcp",
+              resource: "https://mcp.example.com/mcp",
+            },
+            observed: {
               issuer,
+              issuers: [issuer],
               authorizationUrl: issuer + "/authorize",
               tokenUrl: issuer + "/token",
-              scopes: ["messages.read"],
-              authorizationParameters: {},
-              destinations: [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
-              mcp: {
-                serverUrl: "https://mcp.example.com/mcp",
-                resource: "https://mcp.example.com/mcp",
-              },
-              observed: {
-                issuer,
-                issuers: [issuer],
-                authorizationUrl: issuer + "/authorize",
-                tokenUrl: issuer + "/token",
-                requestedScopes: ["messages.read"],
-                serverUrl: "https://mcp.example.com/mcp",
-                resource: "https://mcp.example.com/mcp",
-                tokenEndpointAuthMethods: ["none", "client_secret_basic"],
-              },
-              oauthClientId: "ccr_00000000-0000-4000-8000-000000000006",
-              createdAt,
+              requestedScopes: ["messages.read"],
+              ...(mode === "plugin-consent" && {
+                supportedScopes: ["messages.read", "messages.write"],
+              }),
+              serverUrl: "https://mcp.example.com/mcp",
+              resource: "https://mcp.example.com/mcp",
+              tokenEndpointAuthMethods: ["none", "client_secret_basic"],
             },
-          },
-          {
-            id: "ctp_00000000-0000-4000-8000-000000000005",
-            displayName: "Reporting API",
+            oauthClientId: "ccr_00000000-0000-4000-8000-000000000006",
             createdAt,
-            current: {
-              templateId: "ctp_00000000-0000-4000-8000-000000000005",
-              version: 1,
-              mode: "static_bearer",
-              destinations: [
-                { host: "reports.example.com", port: 443, path: "/reports/**", method: "GET" },
-              ],
-              createdAt,
-            },
           },
-        ]
-      : [];
+        },
+        {
+          id: "ctp_00000000-0000-4000-8000-000000000005",
+          displayName: "Reporting API",
+          createdAt,
+          current: {
+            templateId: "ctp_00000000-0000-4000-8000-000000000005",
+            version: 1,
+            mode: "static_bearer",
+            destinations: [
+              { host: "reports.example.com", port: 443, path: "/reports/**", method: "GET" },
+            ],
+            createdAt,
+          },
+        },
+      ]
+    : [];
   const googleTemplateId = "ctp_00000000-0000-4000-8000-000000000003";
   templates.unshift({
     id: googleTemplateId,
@@ -87,34 +90,44 @@ export function createConnectionTemplateFixture(
       createdAt,
     },
   });
-  const oauthClients: Record<string, unknown>[] =
-    mode === "ready"
-      ? [
-          {
-            id: "ccr_00000000-0000-4000-8000-000000000006",
-            displayName: "Support service",
-            namespaceId,
-            issuer: "https://identity.example.com",
-            tokenUrl: "https://identity.example.com/token",
-            clientId: "support-demo",
-            tokenEndpointAuthMethod: "none",
-            createdAt,
-          },
-          {
-            id: "ccr_00000000-0000-4000-8000-000000000007",
-            displayName: "Customer operations reporting",
-            issuer: "https://identity.example.com/organizations/customer-operations",
-            tokenUrl: "https://identity.example.com/organizations/customer-operations/token",
-            clientId: "customer-reporting-demo",
-            tokenEndpointAuthMethod: "client_secret_basic",
-            createdAt,
-          },
-        ]
-      : [];
+  const oauthClients: Record<string, unknown>[] = populated
+    ? [
+        {
+          id: "ccr_00000000-0000-4000-8000-000000000006",
+          displayName: "Support service",
+          namespaceId,
+          issuer: "https://identity.example.com",
+          tokenUrl: "https://identity.example.com/token",
+          clientId: "support-demo",
+          tokenEndpointAuthMethod: "none",
+          createdAt,
+        },
+        {
+          id: "ccr_00000000-0000-4000-8000-000000000007",
+          displayName: "Customer operations reporting",
+          issuer: "https://identity.example.com/organizations/customer-operations",
+          tokenUrl: "https://identity.example.com/organizations/customer-operations/token",
+          clientId: "customer-reporting-demo",
+          tokenEndpointAuthMethod: "client_secret_basic",
+          createdAt,
+        },
+      ]
+    : [];
   const previousVersions: Record<string, unknown>[] = [];
   return (path: string, method: string, body: unknown): Response | undefined => {
     if (path === "/connection-templates" && method === "GET") {
       return response(templates);
+    }
+    if (path === `/namespaces/${namespaceId}/connection-templates` && method === "GET") {
+      return response(
+        templates.filter(
+          (template) =>
+            (!template.namespaceId || template.namespaceId === namespaceId) &&
+            isRecord(template.current) &&
+            (template.current.mode === "static_bearer" ||
+              template.current.oauthClientId !== undefined),
+        ),
+      );
     }
     if (path === "/oauth-clients" && method === "GET") {
       return response(oauthClients, 200, undefined, {

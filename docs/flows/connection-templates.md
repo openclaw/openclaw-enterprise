@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
 updated: 2026-11-24
-last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
+last_updated_session: authoring-run/7f8ae4d2-1a92-4690-b4a9-d6e3f0ceb3d8
 ---
 
 # How OCC saves a connection template
@@ -83,7 +83,7 @@ OCC verifies the person's Namespace permission and selected TokenService, then p
 
 On callback, OCC consumes the matching attempt once, checks the person's session and authority, and selects the active TokenService before exchanging the code. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. OCC sends the code and verifier to the pinned token endpoint, includes the MCP resource when applicable, and reads the current client secret if the registration requires one. If the exchange times out, the person starts a new attempt.
 
-After exchange, OCC sends the grant and consent details to the selected TokenService. TokenService allocates the Source ID and writes the access token and refresh grant to private storage. It then saves the ready OAuth Source, its custody reference, and its renewal schedule in one transaction. OCC grants the creator access and records completion against the Source and the authorized Namespace create operation. When the provider omits scopes after a provider-default request, the Source records an empty granted-scope list.
+After exchange, OCC sends the grant and consent details to the selected TokenService. TokenService allocates the Source ID and writes the access token and refresh grant to private storage. It then saves the ready OAuth Source, its custody reference, and its renewal schedule in one transaction. OCC grants the creator access and records completion against the Source and the authorized Namespace create operation. OCC records the requested scopes and the issuer’s valid initial granted scopes separately, even when the issuer grants more than requested. If the issuer omits `scope`, OCC records the requested scopes as granted. The refresh parser refuses any scope outside the prior grant.
 
 ### 5. Renew the grant
 
@@ -112,6 +112,8 @@ Built-in Codex device login uses no Connection Template. See the [Credential sou
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 05:38: Explain initial issuer-granted scopes and the refresh ceiling. (authoring-run/7f8ae4d2-1a92-4690-b4a9-d6e3f0ceb3d8 - d6403c2401e338964f5486f8db2fcb40a3758448)
 
 - 2026-11-24 10:41: Link built-in Codex device login to its Source lifecycle owner. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 

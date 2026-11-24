@@ -24,6 +24,7 @@ import { oauthDeleteButton } from "./oauth-deletion.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
+type TemplatePrefill = { issuer?: string; tokenUrl?: string; mcpServerUrl?: string };
 function option(value: string, label: string) {
   return element("option", { value }, label);
 }
@@ -290,13 +291,14 @@ export function renderConnectionTemplates(
     }
   }
 
-  function edit(template?: ConnectionTemplate) {
+  function edit(template?: ConnectionTemplate, prefill?: TemplatePrefill) {
     openConnectionTemplateEditor(context, {
       parent: section,
       namespaces,
       currentNamespace,
       clients,
       template,
+      ...(prefill && { prefill }),
       onSaved(saved) {
         void refresh(`Saved ${saved.displayName}, version ${saved.current.version}.`);
       },
@@ -321,7 +323,40 @@ export function renderConnectionTemplates(
       },
     });
   }
-  void refresh();
+  void refresh().then((loaded) => {
+    const url = new URL(location.href);
+    const requestedEdit = url.searchParams.get("edit");
+    if (
+      !loaded ||
+      !context.isCurrent() ||
+      !section.isConnected ||
+      (!requestedEdit && url.searchParams.get("create") !== "1")
+    ) {
+      return;
+    }
+    if (requestedEdit) {
+      url.searchParams.delete("edit");
+      history.replaceState(history.state, "", url);
+      const template = savedTemplates.find((item) => item.id === requestedEdit);
+      if (template) {
+        edit(template);
+      } else {
+        notice.textContent = "This connection template is unavailable for the selected Namespace.";
+      }
+      return;
+    }
+    const prefill: TemplatePrefill = {};
+    for (const key of ["issuer", "tokenUrl", "mcpServerUrl"] as const) {
+      const value = url.searchParams.get(key);
+      if (value && value.length <= 2048) {
+        prefill[key] = value;
+      }
+      url.searchParams.delete(key);
+    }
+    url.searchParams.delete("create");
+    history.replaceState(history.state, "", url);
+    edit(undefined, prefill);
+  });
   return section;
 }
 
@@ -334,6 +369,7 @@ export function openConnectionTemplateEditor(
     clients: readonly OAuthClient[];
     template?: ConnectionTemplate | undefined;
     oauthOnly?: boolean;
+    prefill?: TemplatePrefill;
     onSaved: (saved: ConnectionTemplate) => void;
     onUnconfirmed: () => void;
     onRegister?: (saved: OAuthTemplate) => void;
@@ -365,11 +401,11 @@ export function openConnectionTemplateEditor(
     option("manual", "Enter OAuth details manually"),
     option("mcp_discovery", "Discover from an MCP server URL"),
   );
-  mode.value = oauthVersion?.mode ?? "manual";
+  mode.value = oauthVersion?.mode ?? (options.prefill?.mcpServerUrl ? "mcp_discovery" : "manual");
   const issuer = element("input", {
     type: "url",
     required: true,
-    value: oauthVersion?.issuer ?? "",
+    value: oauthVersion?.issuer ?? options.prefill?.issuer ?? "",
   });
   const authorizationUrl = element("input", {
     type: "url",
@@ -379,7 +415,7 @@ export function openConnectionTemplateEditor(
   const tokenUrl = element("input", {
     type: "url",
     required: true,
-    value: oauthVersion?.tokenUrl ?? "",
+    value: oauthVersion?.tokenUrl ?? options.prefill?.tokenUrl ?? "",
   });
   const revocationUrl = element("input", {
     type: "url",
@@ -413,7 +449,7 @@ export function openConnectionTemplateEditor(
     id: "connection-template-server",
     type: "url",
     required: true,
-    value: oauthVersion?.mcp?.serverUrl ?? "",
+    value: oauthVersion?.mcp?.serverUrl ?? options.prefill?.mcpServerUrl ?? "",
   });
   const authority = element("select");
   const authorityField = field({ label: "Authorization server", control: authority });

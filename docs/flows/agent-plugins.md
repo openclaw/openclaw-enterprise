@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-24
-last_updated_session: authoring-run/3020b1e1-86c1-4a99-bb6b-890205dab49b
+last_updated_session: authoring-run/b4223689-a451-496c-b340-82c77ada247b
 ---
 
 # Agent Plugin Deployment Flow
@@ -28,9 +28,9 @@ graph TD
   D0 -->|Saved| E0["Authorize Agent read/update"]
   E0 -->|no credential| D6
   E0 -->|bound| E1["Caller and Agent operate"] --> D6
-  E0 -->|managed MCP| M0["Check credential and discover server tools"] --> D5
+  E0 -->|managed MCP| M0["Check current Source or verified Agent binding"] --> D5
   E0 -->|credentialSource| E1
-  D1 -->|stored source| D2["Caller source operate"] --> D6["Select Harness catalog"]
+  D1 -->|stored source or managed connection| D2["Caller Source operate"] --> D6["Select Harness catalog"]
   D1 -->|token or none| D6
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|token or none| D4["Call PluginDriver"]
@@ -71,11 +71,13 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) rejects cross-Namespace requests (`400`), missing Secrets (`404`) and unavailable explicit Sources (`409`). Saved discovery requires dedicated Agents and returns `404` for unavailable bound Sources. Only hosted catalogs need credentials.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires Agent `create`; catalog `credentialSlots` expose eligible readable Sources. Managed MCP details use `managedConnection` and require caller Source `operate`. Saved discovery requires Agent `read`/`update`; delegation requires a Driver-validated saved release, slot, Source and Template plus Agent Source `operate`.
 
 `plugin-discovery.ts:withPluginDiscoveryCredential` checks caller and saved-Agent Source access. OCC resolves the bearer through TokenService and passes it and consent account metadata to PluginDriver. Gateway Sources use their reader. OCC rechecks authority before dispatch; cancellation discards late credentials.
 
-Managed MCP discovery rechecks the target and grants around `tools/list` with Secret Driver credentials. `driverPolicy.toolNames` pins upstream names. Account changes clear results. Harness changes clear selections and approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) limit size and time, refuse redirects and credential echoes, and send `Cache-Control: no-store`. Canonical duplicates return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`. Missing or mismatched detail IDs prompt retry.
+For managed MCP, OCC resolves the Source through its TokenService and rechecks the target and authorization before each server request. `driverPolicy.toolNames` pins upstream names; changing accounts clears names and overrides. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) limit size and time, refuse redirects and credential echoes, and send `Cache-Control: no-store`. Canonical duplicates return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`.
+
+Console connects accounts before creation or reconnects saved Plugins. The verified callback reports the Source through a nonce-bound popup; Console stages it or PATCHes the Agent and confirms by GET. If confirmation fails, reload: the attachment may have changed.
 
 On `409 RESOURCE_CONFLICT`, [Console](../../apps/controller/src/console/agents/plugin-discovery.mts) removes stale **Add**, preserves drafts and offers **Load plugins** (catalog), **Load tools** (connection) or **Retry tools** (details).
 
@@ -100,7 +102,7 @@ MCP/scheduled tasks. Invalid `plugin/list` stops optional stdio
 
 Out-of-range **Plugin selections JSON** blocks [Save](../../apps/controller/src/console/agents/plugins.mts#L396), Agent `GET`/`PATCH` and [picker edits](../../apps/controller/src/console/agents/plugin-fields.mts#L414). The draft and [catalogs](../guides/console/configuration-plugins-and-files.md#plugins-tab) remain available.
 
-`GET .../plugins/capabilities` requires Agent `read`/`update`. [Slot choices](../reference/drivers/plugin.md#selection-and-catalogs) use eligible attached Sources.
+`GET .../plugins/capabilities` requires Agent `read`/`update`. [Slot choices](../reference/drivers/plugin.md#selection-and-catalogs) require Source `read`; `boundSourceId` reports only a validated saved selection and Agent grant.
 
 ### 2. Admit an immutable plugin deployment
 
@@ -302,16 +304,9 @@ OpenClaw model probes cap CPU-based deadlines at 600 s. CPU wait is max(PSI, thr
 
 ## Changelog
 
+- 2026-11-24 05:34: Trace Plugin account connection, Source-scoped discovery, and saved binding recovery. (authoring-run/b4223689-a451-496c-b340-82c77ada247b - d6403c2401e338964f5486f8db2fcb40a3758448)
 - 2026-11-24 02:32: Trace Codex and Gateway discovery. (authoring-run/3020b1e1-86c1-4a99-bb6b-890205dab49b - 1f256635c37842e2d94846259303fa17cfe83be2)
 - 2026-11-23 09:56: Clarify current Template destinations. (authoring-run/dd61beab-f923-4970-a46a-5bfc34f8a38b - c0f1cf9e9)
 - 2026-11-23 08:39: Resolve current Plugin Templates. (authoring-run/82130fc5-2b62-4e13-b10f-9521fbd7b536 - 5dcfdf664)
-- 2026-11-23 08:12: Qualify complete policies. (authoring-run/338bac1c-8735-4511-bc75-825589e83705 - 0d46243a3)
-- 2026-11-22 22:57: Clarify preflight outcomes and qualification limits; restore contributor history. (authoring-run/0c5f10a7-019b-4ee0-b082-146bbde6d768 - 428f5fedbb16ec1be835dee171fc6b0b824af9b3)
-- 2026-11-22 22:35: Bound WebSocket preflights independently of HTTP. (authoring-run/032774b9-7075-41b5-b108-59a16c9d3d8e - fdf309517b43823b722df9d068ba95495dcbbde6)
-- 2026-11-22 16:16: Trace Plugin Source selection and pinned admission. (authoring-run/9c1cc37f-afd5-4b33-9600-8498ec28a156 - 31fb3e9a80f31eaf63f2813bad960ed99e73eb21)
-- 2026-11-22 10:23: Distinguish existing Plugin delivery from the credential-design policy path. (authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e - 6747afc21)
-- 2026-11-21 22:12: Document saved-Agent access recovery. (authoring-run/dfd37ee2-8f11-43a2-812e-455e2951d356 - e9abd3462452c20c0919e8b96ae1db2f5cd79507)
-- 2026-11-21 21:19: Conflicts. (authoring-run/187efa80-5ecc-4bff-97f1-1898033f5a60 - 7ce0780b5f15899d0899a399460bc2b7ad3d6ed4)
-- 2026-11-21 15:08: Detail-ID refusal. (authoring-run/9fa66906-eefe-4497-818f-876448b9d7fa - b0da800df32dc5311524ef462b5c94a3cbe0264e)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

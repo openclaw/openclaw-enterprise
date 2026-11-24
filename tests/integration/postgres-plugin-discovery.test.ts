@@ -472,6 +472,73 @@ test(
     });
     assert.equal(config.statusCode, 201, config.body);
     const configurationId = config.json().data.id;
+    // A prospective Agent can inspect readable account metadata and discover tools through
+    // its Namespace before there is an Agent or an Agent-owned Source grant.
+    const prospectiveCatalog = await inject(
+      "POST",
+      `${path}/agents/plugins`,
+      { harnessId: "openclaw" },
+      app,
+    );
+    assert.equal(prospectiveCatalog.statusCode, 200, prospectiveCatalog.body);
+    assert.ok(
+      prospectiveCatalog
+        .json()
+        .data.credentialSlots.some(
+          (item: { pluginId: string; id: string; sources: { id: string }[] }) =>
+            item.pluginId === slack.id &&
+            item.id === slack.slotId &&
+            item.sources.some(({ id }) => id === sourceId),
+        ),
+    );
+    // A configured TokenService that does not own the persisted instance makes that account
+    // ineligible, but must not erase the otherwise available Plugin catalog.
+    const unavailableOwner = new OCCTokenServiceDriver(
+      "unavailable-owner",
+      native.installation.id,
+      driver.installationSecrets,
+      instanceId,
+      state,
+    );
+    native.registerDriver(unavailableOwner);
+    native.selectDriver("token_service", unavailableOwner.id);
+    try {
+      const unavailableCatalog = await inject(
+        "POST",
+        `${path}/agents/plugins`,
+        { harnessId: "openclaw" },
+        app,
+      );
+      assert.equal(unavailableCatalog.statusCode, 200, unavailableCatalog.body);
+      assert.ok(unavailableCatalog.json().data.plugins.length > 0);
+      assert.ok(
+        unavailableCatalog
+          .json()
+          .data.credentialSlots.every(
+            (item: { sources: { id: string }[] }) =>
+              !item.sources.some(({ id }) => id === sourceId),
+          ),
+      );
+    } finally {
+      native.selectDriver("token_service", owner.id);
+    }
+    peerMethods.length = 0;
+    const prospectiveDiscovery = await inject(
+      "POST",
+      `${path}/agents/plugins/details`,
+      {
+        harnessId: "openclaw",
+        pluginId: slack.id,
+        managedConnection: { slot: slack.slotId, sourceId },
+      },
+      app,
+    );
+    assert.equal(prospectiveDiscovery.statusCode, 200, prospectiveDiscovery.body);
+    assert.deepEqual(
+      prospectiveDiscovery.json().data.tools.map((tool: { name: string }) => tool.name),
+      ["slack_search_public"],
+    );
+    assert.ok(peerMethods.length > 0, "the controlled MCP peer received authenticated requests");
     const explicit = [{ sourceId: modelId }];
     const agent = await inject(
       "POST",
@@ -757,6 +824,45 @@ test(
     assert.equal(revoked.statusCode, 204, revoked.body);
     const delegatedTools = await discoverSlack(sourceId);
     assert.equal(delegatedTools.statusCode, 200, delegatedTools.body);
+    const delegatedCapabilities = await memberRequest("GET", "/plugins/capabilities");
+    assert.equal(delegatedCapabilities.statusCode, 200, delegatedCapabilities.body);
+    const delegatedSlot = delegatedCapabilities
+      .json()
+      .data.credentialSlots.find(
+        (item: { pluginId: string; id: string }) =>
+          item.pluginId === slack.id && item.id === slack.slotId,
+      );
+    assert.equal(delegatedSlot.boundSourceId, sourceId);
+    assert.ok(
+      !delegatedSlot.sources.some((item: { id: string }) => item.id === sourceId),
+      "a verified saved binding does not make its Source caller-selectable",
+    );
+    // A saved selection may become stale when its Driver release changes. Simulate that
+    // persisted prior release and require capabilities to stop claiming a verified binding.
+    const setSavedRelease = (release: string) =>
+      pool.query(
+        `UPDATE occ.agents SET plugins=jsonb_set(plugins, ARRAY[$1, 'driverPolicy', 'releaseSha256'], to_jsonb($2::text), false)
+       WHERE namespace_id=$3 AND id=$4`,
+        [slack.id, release, namespaceId, agentId],
+      );
+    await setSavedRelease("0".repeat(64));
+    const staleCapabilities = await memberRequest("GET", "/plugins/capabilities");
+    assert.equal(staleCapabilities.statusCode, 200, staleCapabilities.body);
+    assert.equal(
+      staleCapabilities
+        .json()
+        .data.credentialSlots.find(
+          (item: { pluginId: string; id: string }) =>
+            item.pluginId === slack.id && item.id === slack.slotId,
+        ).boundSourceId,
+      undefined,
+    );
+    // A stale saved release cannot delegate the Agent's Source grant for authenticated discovery.
+    peerMethods.length = 0;
+    const staleTools = await discoverSlack(sourceId);
+    assert.equal(staleTools.statusCode, 403);
+    assert.deepEqual(peerMethods, [], "a stale saved binding cannot reach the MCP peer");
+    await setSavedRelease(slack.releaseSha256);
     assert.deepEqual(
       delegatedTools.json().data.tools.map((tool: { name: string }) => tool.name),
       ["slack_search_public"],

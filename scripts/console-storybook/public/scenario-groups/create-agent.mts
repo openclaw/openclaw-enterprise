@@ -52,6 +52,7 @@ type CreateAgentScenario = {
   pluginDiscoveryCredential?: "none";
   pluginCatalogs?: InstallationCapabilities["pluginCatalogs"];
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
+  oauthCatalog?: string;
   // Deliberately unsupported input for the Preset validation scenario.
   presetAgent?: { executionMode: "turbo" };
   presetAuth?: "codex_pat";
@@ -642,9 +643,64 @@ export const createAgentFormScenarios = {
       "Both plugin catalogs are enabled. The Codex Harness offers Linear without a discovery token.",
     steps: [
       "Choose Linear, add it, and set a default policy. Close the modal and inspect Plugin selections JSON.",
-      "Change Harness to OpenClaw and reopen Configure plugins. The form clears the Codex selections and directs you to the saved Agent to install Google Workspace.",
+      "Change Harness to OpenClaw and select Dedicated mode. The form clears the Codex selections and can browse the selected Driver's curated catalog before the Agent exists.",
     ],
     gap: "The catalog and provider responses are simulated. This preview does not invoke Linear or verify runtime authentication.",
+  },
+  createPluginAccountConsent: {
+    group: "Pages/Create Agent",
+    name: "Connect an account before creating the Agent",
+    path: create,
+    oauthCatalog: "plugin-consent",
+    pluginCatalogs: [
+      {
+        harnessId: "openclaw",
+        pluginPolicies: {
+          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+          toolDefaults: { enabled: false, approval: [], reviewer: [] },
+          tools: { enabled: false, approval: [], reviewer: [] },
+          driverPolicySchema: {},
+        },
+        pluginDiscovery: { credential: "none" },
+      },
+    ],
+    pluginDiscovery: {
+      pages: {
+        initial: {
+          plugins: [{ id: "occ-plugin:support@1.0.0", name: "Support MCP", tools: [] }],
+          nextCursor: null,
+          credentialSlots: [
+            {
+              pluginId: "occ-plugin:support@1.0.0",
+              releaseSha256: "a".repeat(64),
+              id: "account",
+              label: "Support account",
+              toolDiscovery: true,
+              issuers: ["https://identity.example.com"],
+              recipient: {
+                mode: "mcp_discovery",
+                serverUrl: "https://mcp.example.com/mcp",
+                resource: "https://mcp.example.com/mcp",
+              },
+              sources: [],
+            },
+          ],
+        },
+      },
+      details: {},
+    },
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: "#execution-mode", value: "dedicated" },
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Support MCP"]', click: true },
+      click("Add Support MCP"),
+      click("Connect account"),
+    ],
+    description:
+      "The Create Agent Plugin editor uses the same compatible account Template and scope dialog as a saved Agent. Consent will save a user-owned Source; the draft only stages its ID.",
+    gap: "Displayed Template and Plugin metadata are simulated. This preview does not complete OAuth, create a Source, or create an Agent.",
   },
   createPluginsDiscovered: {
     group: "Pages/Create Agent",

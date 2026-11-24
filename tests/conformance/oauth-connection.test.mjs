@@ -57,14 +57,18 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   assert.deepEqual((await exchange()).grantedScopes, ["read", "write"]);
   responseScope = "read";
   assert.deepEqual((await exchange()).grantedScopes, ["read"]);
-  for (responseScope of ["read admin", ["read"], ""]) {
+  responseScope = "read admin";
+  const expanded = await exchange();
+  assert.deepEqual(expanded.requestedScopes, ["read", "write"]);
+  assert.deepEqual(expanded.grantedScopes, ["read", "admin"]);
+  for (responseScope of [["read"], ""]) {
     await assert.rejects(exchange(), {
       name: "BrowserAuthorizationError",
       code: "grant_scope_mismatch",
       recoveryAction: "fix_configuration",
     });
   }
-  // Only a default-scope request may adopt a provider-reported initial grant.
+  // An initial grant reflects the issuer's response, including provider defaults.
   responseScope = "provider.default";
   const defaults = await exchange([]);
   assert.deepEqual(defaults.grantedScopes, ["provider.default"]);

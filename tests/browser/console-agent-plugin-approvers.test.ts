@@ -10,7 +10,7 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page, Response } from "playwright";
 import { responseTo } from "./console-action-helpers.ts";
 import type { PluginFieldCatalog } from "../../apps/controller/src/console/agents/plugin-fields.mjs";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
 import type {
   CredentialGatewayDriver,
   PluginApprovers,
@@ -26,6 +26,8 @@ import {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   apiRequests,
@@ -2042,6 +2044,146 @@ test("Managed MCP tool approval is saved per selected tool and removed when the 
   const pluginDisabled = record(JSON.parse(await page.locator("#agent-plugins").inputValue()));
   assert.deepEqual(pluginDisabled["occ-plugin:slack@1.0.0"], { enabled: false });
   await save(pluginDisabled);
+});
+
+test("reconnecting a saved MCP account clears the prior account's tool approvals before attaching", async (t) => {
+  let state: PlatformStateStore | undefined;
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "MCP reconnect", {
+      wrapState(current: PlatformStateStore) {
+        state = current;
+        return current;
+      },
+    });
+  const namespace = entity(namespaceValue);
+  const native = controller(fixture);
+  const { core, driver } = useInstallationSecretDriver(native);
+  core.addNamespace(namespace.id);
+  assert.ok(driver.installationSecrets);
+  assert.ok(state);
+  const instance = await native.activateTokenServiceInstance(
+    "console-mcp-tokens",
+    crypto.randomUUID(),
+  );
+  const tokens = new OCCTokenServiceDriver(
+    "console-mcp-tokens",
+    native.installation.id,
+    driver.installationSecrets,
+    instance,
+    state,
+  );
+  native.registerDriver(tokens);
+  native.selectDriver("token_service", tokens.id);
+  const plugin = new OCCPluginDriver();
+  native.registerDriver(plugin);
+  native.selectDriver("plugin", plugin.id);
+  const compute = createTestKubernetesComputeDriver("compute-mcp-reconnect");
+  native.registerDriver(compute);
+  native.selectDriver("compute", compute.id);
+
+  // Both accounts are real TokenService Sources admitted against an exact Slack destination.
+  // The external OAuth handoff below is controlled; this case proves the Console-to-Agent save.
+  const template = await fixture.request("POST", "/connection-templates", {
+    body: {
+      namespaceId: namespace.id,
+      displayName: "Slack bearer",
+      mode: "static_bearer",
+      destinations: [{ method: "POST", host: "mcp.slack.com", port: 443, path: "/mcp" }],
+    },
+  });
+  assert.equal(template.status, 201);
+  const templateId = entity(template.data).id;
+  async function enroll(name: string) {
+    const result = await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+      body: {
+        name,
+        type: "static",
+        connectionTemplateId: templateId,
+        secret: { opaque: crypto.randomUUID() },
+      },
+    });
+    assert.equal(result.status, 201);
+    return entity(result.data).id;
+  }
+  const oldSource = await enroll("Old Slack account");
+  const newSource = await enroll("New Slack account");
+  const agent = agentEntity(
+    await fixture.createAgent(namespace.id, "Reconnect Agent", nativeValues("reconnect"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+    }),
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const capabilities = accountSlot(await fixture.request("GET", `${path}/plugins/capabilities`));
+  const releaseSha256 = text(capabilities.slot.releaseSha256);
+  const initial = {
+    [slackPluginId]: {
+      enabled: true,
+      driverPolicy: {
+        releaseSha256,
+        credentials: { account: oldSource },
+        toolNames: ["slack_search_public"],
+      },
+      tools: { slack_search_public: { approval: "all_actions" } },
+    },
+  };
+  const saved = await fixture.request("PATCH", path, {
+    body: { configurationId: agent.configurationId, plugins: initial },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+
+  const { page } = await newPage(t, fixture, { browser });
+  const recipient = record(capabilities.slot.recipient);
+  const issuers: unknown = capabilities.slot.issuers;
+  assert.ok(Array.isArray(issuers) && typeof issuers[0] === "string");
+  const fakeTemplate = {
+    id: `ct_${crypto.randomUUID()}`,
+    namespaceId: namespace.id,
+    displayName: "Controlled OAuth template",
+    current: {
+      mode: "mcp_discovery",
+      issuer: issuers[0],
+      oauthClientId: `oc_${crypto.randomUUID()}`,
+      mcp: { serverUrl: recipient.serverUrl, resource: recipient.resource },
+      scopes: [],
+    },
+  };
+  await page.route(`**/namespaces/${namespace.id}/connection-templates`, (route) =>
+    route.fulfill({ json: { data: [fakeTemplate], meta: {} } }),
+  );
+  await page.route(`**/namespaces/${namespace.id}/connections`, (route) =>
+    route.fulfill({
+      json: {
+        data: {
+          authorizationUrl: `${fixture.origin}/controlled-provider?state=reconnect`,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        meta: {},
+      },
+    }),
+  );
+  await page.context().route("**/controlled-provider?state=reconnect", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: `<script>const channel = new BroadcastChannel(sessionStorage.getItem("oce.pluginAccountConsent")); channel.postMessage({outcome:"saved",sourceId:${JSON.stringify(newSource)}}); channel.close();</script>`,
+    }),
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByRole("button", { name: "Slack", exact: true }).click();
+  await dialog.getByRole("button", { name: "Connect account", exact: true }).click();
+  const consent = page.getByRole("dialog", { name: "Connect an account", exact: true });
+  const patch = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
+  await consent.getByRole("button", { name: "Connect and attach", exact: true }).click();
+  const attached = await patch;
+  assert.equal(attached.status(), 200, await attached.text());
+  await dialog.getByText("Account attached.", { exact: true }).waitFor();
+  const confirmed = record(responseData(await fixture.request("GET", path)).plugins);
+  assert.deepEqual(confirmed[slackPluginId], {
+    enabled: true,
+    driverPolicy: { releaseSha256, credentials: { account: newSource } },
+  });
 });
 
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {

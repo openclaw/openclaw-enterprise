@@ -10,6 +10,22 @@ const discoverMcp = [
   click("Discover OAuth settings"),
 ];
 export const connectionTemplateScenarios = {
+  credentialsPluginTemplatePrefill: {
+    group: "Pages/Credentials",
+    name: "Create an OAuth Template from a Plugin slot",
+    path: "/console/credentials/connection-templates?namespace=ns_00000000-0000-4000-8000-000000000001&create=1&mcpServerUrl=https%3A%2F%2Fmcp.example.com%2Fmcp&issuer=https%3A%2F%2Fidentity.example.com",
+    oauthCatalog: "ready",
+    description:
+      "An Installation admin arrives from a Plugin slot in a separate tab. The editor preselects this Namespace and the slot's MCP server URL without saving or discovering anything automatically.",
+  },
+  credentialsPluginTemplateEdit: {
+    group: "Pages/Credentials",
+    name: "Configure an existing OAuth Template from a Plugin slot",
+    path: "/console/credentials/connection-templates?namespace=ns_00000000-0000-4000-8000-000000000001&edit=ctp_00000000-0000-4000-8000-000000000003",
+    oauthCatalog: "ready",
+    description:
+      "An Installation admin follows the Plugin slot link to edit the existing installation-wide Google OAuth Template and can register or select a client without creating a duplicate.",
+  },
   credentialsTemplateCatalog: {
     group: "Pages/Credentials",
     name: "Connection templates",
@@ -202,6 +218,7 @@ export const connectionTemplateScenarios = {
     path:
       | "/console/secrets"
       | "/console/credentials/connection-templates"
+      | `/console/credentials/connection-templates?${string}`
       | "/console/credentials/oauth-clients";
     actions?: StoryAction[];
     emptyNamespaces?: true;

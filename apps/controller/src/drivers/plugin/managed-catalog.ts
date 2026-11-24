@@ -562,6 +562,15 @@ export function managedPluginCredentials(
           id,
           label: slot.label,
           ...(install.kind === "mcp" && { toolDiscovery: true as const }),
+          issuers: [slot.issuer],
+          recipient:
+            install.kind === "mcp"
+              ? {
+                  mode: "mcp_discovery" as const,
+                  serverUrl: install.url,
+                  resource: slot.mcp.resource,
+                }
+              : { mode: "manual" as const, tokenUrl: slot.tokenEndpoint },
           sources: sources
             .filter((source) =>
               acceptsManagedSource(install, id, source, templates?.get(source.id)),
@@ -578,6 +587,33 @@ export function managedPluginCredentials(
           new ConfigurationHarnessError(
             `Select a ready ${install?.entry.name ?? pluginId} account that matches the reviewed credential slot.`,
           );
+        if (install) {
+          const selected = { [pluginId]: selection };
+          const binding =
+            install.kind === "cli"
+              ? managedCredentialBinding(selected, install)
+              : managedMcpCredentialBinding(selected, install);
+          if (binding) {
+            const slot = Object.keys(asRecord(selection.driverPolicy?.credentials) ?? {})[0];
+            const source = sourcesById.get(binding.sourceId);
+            if (
+              !slot ||
+              !source ||
+              source.id === modelSourceId ||
+              !acceptsManagedSource(install, slot, source, templates?.get(source.id))
+            ) {
+              throw unavailable();
+            }
+            const conflict =
+              install.kind === "cli"
+                ? cliCredentialPolicy(install)?.conflict(source, sources)
+                : undefined;
+            if (conflict) {
+              throw new ConfigurationHarnessError(conflict);
+            }
+            continue;
+          }
+        }
         // Existing Agent selections name one source per slot. Only OCC's authorized
         // source records can supply the Namespace and identity for its default connection.
         const connections = Object.fromEntries(
@@ -605,26 +641,10 @@ export function managedPluginCredentials(
           selection,
           connections,
         });
-        for (const [requirement, accounts] of Object.entries(deployment.credentials)) {
-          for (const { sourceRef } of Object.values(accounts)) {
-            const source = sourcesById.get(sourceRef.id);
-            if (
-              !install ||
-              !source ||
-              source.id === modelSourceId ||
-              source.namespaceId !== sourceRef.namespaceId ||
-              !acceptsManagedSource(install, requirement, source, templates?.get(source.id))
-            ) {
-              throw unavailable();
-            }
-            const conflict =
-              install.kind === "cli"
-                ? cliCredentialPolicy(install)?.conflict(source, sources)
-                : undefined;
-            if (conflict) {
-              throw new ConfigurationHarnessError(conflict);
-            }
-          }
+        if (
+          Object.values(deployment.credentials).some((accounts) => Object.keys(accounts).length)
+        ) {
+          throw unavailable();
         }
       }
     },

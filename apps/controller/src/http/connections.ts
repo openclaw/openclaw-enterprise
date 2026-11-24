@@ -1,4 +1,5 @@
 import type { AuditEvent, ResourceRef } from "@openclaw-enterprise/contracts";
+import { createHash, randomBytes } from "node:crypto";
 import {
   BrowserAuthorizationError,
   CallerStateDeniedError,
@@ -78,13 +79,17 @@ export const connectionCallbackSchema = {
   operationId: connectionCallbackOperation.operationId,
   summary: connectionCallbackOperation.summary,
   description:
-    "Requires the signed-in human session that started the connection, permission to create a credential source in the starting Namespace, and a template available there. The provider redirects here with `state` and `code`, or with `error`. The response is a 303 redirect to the console without the query string.",
+    "Requires the signed-in human session that started the connection, permission to create a credential source in the starting Namespace, and a template available there. The provider redirects here with `state` and `code`, or with `error`. Browser success returns a small HTML page that confirms the saved Source to the initiating Console tab; other requests redirect to the console without the provider query.",
   tags: [...connectionCallbackOperation.tags],
   security: [{ sessionCookie: [] }],
   "x-openclaw-permissions": [
     { action: "create", resourceKind: "credential_source", scope: "namespace" },
   ],
   response: {
+    200: {
+      description: "Browser consent completion page",
+      content: { "text/html": { schema: { type: "string" } } },
+    },
     303: { description: "Redirect to the console with the connection outcome" },
     429: { description: "Too many requests; wait for Retry-After" },
   },
@@ -126,8 +131,8 @@ export interface ConnectionCallbackDependencies {
 }
 
 /**
- * Completes the connection, then redirects to the console without the query string, so the
- * the landing page and callback audit receive no OAuth code or state.
+ * Only the successfully verified callback can confirm a Source to the initiating tab.
+ * A URL that the provider can construct is not proof that consent completed.
  */
 export function createConnectionCallback(dependencies: ConnectionCallbackDependencies) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
@@ -137,6 +142,7 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
     const context = dependencies.getContext(request);
     const sessionId = context?.sessionId;
     const query = request.query as Record<string, unknown>;
+    const state = typeof query.state === "string" ? query.state : "";
     const fail = (reason: string) =>
       reply.redirect(`/console/?connection=failed&reason=${encodeURIComponent(reason)}`, 303);
     if (controller === undefined || !context || sessionId === undefined) {
@@ -148,7 +154,7 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
         controller.completeNamespaceConnection(
           context.actorId,
           {
-            state: typeof query.state === "string" ? query.state : "",
+            state,
             sessionId,
             ...(typeof query.iss === "string" ? { iss: query.iss } : {}),
             ...(typeof query.code === "string" ? { code: query.code } : {}),
@@ -163,10 +169,21 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
           holdSession,
         ),
       );
-      reply.redirect(
-        `/console/?namespace=${encodeURIComponent(connection.namespaceId)}&connection=connected`,
-        303,
-      );
+      const cleanUrl = `/console/?namespace=${encodeURIComponent(connection.namespaceId)}&connection=connected&sourceId=${encodeURIComponent(connection.id)}`;
+      if (acceptsHtml(request.headers.accept)) {
+        const nonce = randomBytes(18).toString("base64");
+        const stateHash = createHash("sha256").update(state).digest("hex");
+        reply
+          .header(
+            "content-security-policy",
+            `default-src 'none'; script-src 'nonce-${nonce}'; base-uri 'none'; frame-ancestors 'none'`,
+          )
+          .header("x-content-type-options", "nosniff")
+          .type("text/html; charset=utf-8")
+          .send(consentCompletionPage(nonce, cleanUrl, stateHash, connection.id));
+        return;
+      }
+      reply.redirect(cleanUrl, 303);
     } catch (error) {
       let reason = "unavailable";
       if (error instanceof CallerStateDeniedError) {
@@ -181,4 +198,42 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
       fail(reason);
     }
   };
+}
+
+function acceptsHtml(accept: string | undefined): boolean {
+  return (accept ?? "")
+    .split(",")
+    .some((part) => part.trim().split(";", 1)[0]?.toLowerCase() === "text/html");
+}
+
+function scriptString(value: string): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function consentCompletionPage(
+  nonce: string,
+  cleanUrl: string,
+  stateHash: string,
+  sourceId: string,
+): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Account connected</title></head><body><script nonce="${nonce}">(() => {
+    const clean = ${scriptString(cleanUrl)};
+    history.replaceState(null, "", clean);
+    try {
+      const key = "oce.pluginAccountConsent";
+      const name = sessionStorage.getItem(key);
+      const expected = sessionStorage.getItem(key + ".stateHash");
+      if (name && expected === ${scriptString(stateHash)} && typeof BroadcastChannel !== "undefined") {
+        sessionStorage.removeItem(key);
+        sessionStorage.removeItem(key + ".stateHash");
+        const channel = new BroadcastChannel(name);
+        channel.postMessage({ outcome: "saved", sourceId: ${scriptString(sourceId)} });
+        channel.close();
+        document.body.textContent = "Return to the Agent tab to check your connection.";
+        window.close();
+        return;
+      }
+    } catch {}
+    location.replace(clean);
+  })();</script></body></html>`;
 }
