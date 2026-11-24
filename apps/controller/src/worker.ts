@@ -5,8 +5,6 @@ import {
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
-  isSourceProviderPresetId,
-  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
 import type {
   CredentialDeploymentContext,
@@ -6209,16 +6207,19 @@ export class ControllerWorker {
     const owner = this.provisioningController.selectedDriver("token_service");
     const instanceId = this.provisioningController.currentTokenServiceInstanceId();
     const sources = new Map<string, Readonly<CredentialSource>>();
-    for (const binding of policy.bindings) {
+    for (const { sourceRef } of policy.bindings) {
       if (
-        binding.sourceRef.namespaceId !== revision.namespaceId ||
-        binding.sourceRef.kind !== "credential_source"
+        sourceRef.namespaceId !== revision.namespaceId ||
+        sourceRef.kind !== "credential_source"
       ) {
         throw new DependencyUnavailableError(
           "The staged source does not belong to the Agent Namespace.",
         );
       }
-      const snapshot = revisionCredentialSourceSnapshot(revision, binding.sourceRef.id);
+      if (sources.has(sourceRef.id)) {
+        continue;
+      }
+      const snapshot = revisionCredentialSourceSnapshot(revision, sourceRef.id);
       if (!snapshot || snapshot.tokenServiceInstanceId !== instanceId) {
         throw new DependencyUnavailableError(
           "The staged source does not belong to the selected TokenService instance.",
@@ -6233,11 +6234,7 @@ export class ControllerWorker {
         withdrawal ||
         !source ||
         source.ownerCapability !== "token_service" ||
-        source.tokenServiceInstanceId !== instanceId ||
-        source.type !== "static" ||
-        binding.consumer.kind !== "model" ||
-        !isSourceProviderPresetId(source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY]) ||
-        source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== binding.consumer.providerId
+        source.tokenServiceInstanceId !== instanceId
       ) {
         throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
       }

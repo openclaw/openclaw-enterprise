@@ -1132,7 +1132,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             // "replaced" only the version selected for service still runs.
             pods.length = 0;
           }
-          if (scenario.runtimePod === "rollover") {
+          if (
+            scenario.runtimePod === "rollover" ||
+            (scenario.runtimePod === "scaleDown" && podRolloverStatusReads === 0)
+          ) {
             const retiring = podRolloverStatusReads++ === 0;
             pods.push({
               ...pod,

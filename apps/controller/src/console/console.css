@@ -5010,6 +5010,25 @@ html:has(#create-agent-form) {
   grid-template-columns: 120px minmax(0, 1fr);
   margin: var(--space-2) 0 0;
 }
+@media (width > 1100px) {
+  .runtime-pod {
+    container: runtime-pod / inline-size;
+  }
+  @container runtime-pod (min-width: 21rem) {
+    .runtime-pod .credential-status-list {
+      grid-template-columns: min(23%, 120px) minmax(0, 3fr) max-content minmax(3.25rem, 2fr);
+      row-gap: var(--space-2);
+    }
+    /* Start each container on its own row and give termination details the remaining width. */
+    .runtime-container-label,
+    .runtime-termination-label {
+      grid-column: 1;
+    }
+    .runtime-termination-label + dd {
+      grid-column: 2 / -1;
+    }
+  }
+}
 .runtime-events {
   margin: var(--space-3) 0 0;
   padding-left: var(--space-5);

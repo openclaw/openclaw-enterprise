@@ -26,11 +26,13 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { workerEnvironmentSettings } from "../../apps/controller/src/worker/timer-settings.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { injectJson } from "../helpers/inject-json.ts";
 import { jsonLines as parseJsonLines } from "../helpers/json-lines.mjs";
 import { withPool } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   admittedLoggingLevel,
   type ComputeDriver,
@@ -1063,6 +1065,121 @@ async function bootstrapExistingInstallation(
   const fresh = await run(environment);
   assert.equal(fresh.ok, true, fresh.stderr);
   return { environment, fresh };
+}
+
+const reconciledBootstrapNamespace = { outcome: "success", code: "NAMESPACE_RECONCILED" };
+
+for (const { name, initiallyReady, extendTimeout = false, firstPass } of [
+  {
+    name: "fails on its first incomplete observation after the deadline",
+    initiallyReady: false,
+    firstPass: { outcome: "permanent", code: "CONVERGENCE_DEADLINE_EXCEEDED" },
+  },
+  {
+    name: "reaches ready when its first observation is complete after the deadline",
+    initiallyReady: true,
+    firstPass: reconciledBootstrapNamespace,
+  },
+  {
+    name: "reaches ready after deferral when the timeout covers its queue age",
+    initiallyReady: false,
+    extendTimeout: true,
+    firstPass: { outcome: "pending", code: "NAMESPACE_INCOMPLETE" },
+  },
+]) {
+  test(`the bootstrap Namespace ${name}`, requiresFailurePostgres, async (context) => {
+    const { environment, fresh } = await bootstrapExistingInstallation(context, "namespace-age");
+    const actorId = stringField(
+      jsonEvent(fresh.stdout, "installation.bootstrapped"),
+      "principalId",
+    );
+    const database = environment.OCC_DATABASE_URL;
+    const drivers = await passiveDrivers();
+    const { convergenceTimeoutMs } = workerEnvironmentSettings({});
+    const parkedAgeMs = convergenceTimeoutMs + 60_000;
+
+    // Age only the original, unclaimed bootstrap work on PostgreSQL's clock.
+    const { rows } = await withPool(migratorDatabaseUrl(), (pool) =>
+      pool.query<{ namespace_id: string; idempotency_key: string }>(
+        `UPDATE occ.controller_work
+         SET created_at = clock_timestamp() - $1::double precision * interval '1 millisecond'
+         WHERE actor_id = $2 AND namespace_target = 'ready'
+           AND state = 'queued' AND attempt_count = 0 AND claim_token IS NULL
+           AND namespace_id = (
+             SELECT details ->> 'defaultNamespaceId' FROM occ.audit_events
+             WHERE kind = 'bootstrap' AND outcome = 'success' AND actor_id = $2
+           )
+         RETURNING namespace_id, idempotency_key`,
+        [parkedAgeMs, actorId],
+      ),
+    );
+    assert.equal(rows.length, 1);
+    const [work] = rows;
+    assert.ok(work);
+
+    let ready = initiallyReady;
+    const observations: string[] = [];
+    const passes: Array<{ outcome: unknown; code: unknown }> = [];
+    const worker = createControllerWorker({
+      mode: "production",
+      pool: new Pool({ connectionString: database, max: 2 }),
+      pollIntervalMs: 20,
+      convergenceTimeoutMs: extendTimeout ? parkedAgeMs + 60_000 : convergenceTimeoutMs,
+      drivers: {
+        ...drivers,
+        computeDriver: {
+          ...drivers.computeDriver,
+          async ensureNamespace(namespace) {
+            observations.push(namespace.id);
+            return { namespaceId: namespace.id, namespaceReady: ready };
+          },
+        },
+      },
+      emit({ event, workId, outcome, code }) {
+        if (event === "worker.completed" && workId === work.idempotency_key) {
+          passes.push({ outcome, code });
+          // The pending pass has committed its deferral before the Driver becomes ready.
+          if (extendTimeout && outcome === "pending") {
+            ready = true;
+          }
+        }
+      },
+    });
+    try {
+      await worker.start();
+      assert.deepEqual(await waitFor("first bootstrap Namespace pass", () => passes[0]), firstPass);
+      if (extendTimeout) {
+        assert.deepEqual(
+          await waitFor("bootstrap Namespace pass after deferral", () => passes[1]),
+          reconciledBootstrapNamespace,
+        );
+      }
+    } finally {
+      await worker.stop();
+    }
+
+    assert.deepEqual(
+      observations,
+      extendTimeout ? [work.namespace_id, work.namespace_id] : [work.namespace_id],
+    );
+    const failed = firstPass.outcome === "permanent";
+    const saved = await withPool(database, (pool) =>
+      pool.query(
+        `SELECT n.status, w.state, w.attempt_count, w.reason_code
+         FROM occ.namespaces n JOIN occ.controller_work w ON w.namespace_id = n.id
+         WHERE w.idempotency_key = $1 AND w.actor_id = $2 AND n.id = $3`,
+        [work.idempotency_key, actorId, work.namespace_id],
+      ),
+    );
+    assert.deepEqual(saved.rows, [
+      {
+        status: failed ? "failed" : "ready",
+        state: failed ? "failed_permanent" : "succeeded",
+        attempt_count: 1,
+        reason_code: failed ? firstPass.code : "RECONCILE_SUCCEEDED",
+      },
+    ]);
+  });
 }
 
 test(
