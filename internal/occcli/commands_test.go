@@ -1603,17 +1603,19 @@ func TestDeleteReportsTheSelectedNamespaceResource(t *testing.T) {
 	}
 }
 
-// OCC answers a delete with a bodyless 204; any other success is malformed.
+// These Namespace resources require a bodyless 204 even if a 200 carries a data envelope.
 func TestDeleteRefusesASuccessOtherThanNoContent(t *testing.T) {
 	const id = "cfg_00000000-0000-4000-8000-000000000001"
 	request := "DELETE /namespaces/" + testNamespaceID + "/configurations/" + id
 	args := []string{"--namespace", testNamespaceID, "configuration", "delete", id}
-	out, _, err := runOCC(t, map[string]string{request: "raw:200 "}, args...)
-	if out != "" || err == nil || err.Error() != "OCC returned an invalid empty response (HTTP 200)" {
-		t.Fatalf("empty 200 printed %q, error = %v", out, err)
+	for _, reply := range []string{"raw:200 ", "{}"} {
+		out, requested, err := runOCC(t, map[string]string{request: reply}, args...)
+		if out != "" || err == nil || err.Error() != "OCC returned an invalid empty response (HTTP 200)" || !slices.Equal(requested, []string{request}) {
+			t.Fatalf("delete with reply %q printed %q after %v, error = %v", reply, out, requested, err)
+		}
 	}
 
-	out, _, err = runOCCAgainst(t, &fakeOCC{refuse: "delete denied"}, args...)
+	out, _, err := runOCCAgainst(t, &fakeOCC{refuse: "delete denied"}, args...)
 	var apiErr *occclient.APIError
 	if out != "" || !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
 		t.Fatalf("denied delete printed %q, error = %v", out, err)
@@ -2162,6 +2164,7 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 		revision map[string]any
 		// summaries is the final revision list page; nil means the CLI must not list.
 		summaries []any
+		truncated bool
 		// body is the deploy request body; nil means none. OCC treats a missing
 		// body as no overrides, and servers older than Harness overrides refuse a body.
 		body   map[string]any
@@ -2186,6 +2189,10 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 			summaries: []any{summary(map[string]any{"id": "codex", "version": "fixture", "mode": "dedicated", "overrides": provider})},
 			body:      map[string]any{"harnessOverrides": provider},
 			notice:    "notice: revision " + testRevision1ID + " has unreadable saved settings (SAVED_CONFIGURATION_UNREADABLE: harnessAuth); retaining the Harness overrides that its revision summary records.\n",
+		},
+		{
+			name: "truncated continuation", revision: unreadable, summaries: []any{}, truncated: true,
+			refusal: "OCC returned an invalid response (HTTP 200)",
 		},
 		{
 			name: "empty summary cycle", revision: unreadable, summaries: []any{},
@@ -2219,25 +2226,25 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 					data = test.revision
 				case "GET " + base + "/revisions":
 					page++
+					if test.truncated && page == 3 {
+						w.WriteHeader(http.StatusOK)
+						return
+					}
 					serveRevisionCycle(t, w, page, []string{"A", "B", "A"}, test.summaries)
 					return
 				case "POST " + base + "/deploy":
 					raw, err := io.ReadAll(r.Body)
+					var body map[string]any
 					if err != nil {
-						t.Fatal(err)
-					}
-					if test.body == nil {
+						t.Error(err)
+					} else if test.body == nil {
 						if len(raw) != 0 || r.Header.Get("Content-Type") != "" {
 							t.Errorf("expected no deploy body, got %q (%q)", raw, r.Header.Get("Content-Type"))
 						}
-					} else {
-						var body map[string]any
-						if err := json.Unmarshal(raw, &body); err != nil {
-							t.Fatal(err)
-						}
-						if !reflect.DeepEqual(body, test.body) {
-							t.Errorf("deploy body = %#v, want %#v", body, test.body)
-						}
+					} else if err := json.Unmarshal(raw, &body); err != nil {
+						t.Error(err)
+					} else if !reflect.DeepEqual(body, test.body) {
+						t.Errorf("deploy body = %#v, want %#v", body, test.body)
 					}
 					w.WriteHeader(http.StatusAccepted)
 					data = map[string]any{"id": testRevision2ID, "revision": 2, "agentId": testAgentID, "configurationId": "cfg_55555555-5555-4555-8555-555555555555"}
@@ -2249,7 +2256,7 @@ func TestDeployRetainsRequestedOverridesInsteadOfResolvedDefaults(t *testing.T) 
 					return
 				}
 				if err := json.MarshalWrite(w, map[string]any{"data": data, "meta": meta}); err != nil {
-					t.Fatal(err)
+					t.Error(err)
 				}
 			})
 			out, notices, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "deploy", testAgentID, "--retain-harness-overrides", testRevision1ID)
