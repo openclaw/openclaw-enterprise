@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-24
-last_updated_session: authoring-run/ba9ea959-8a2b-4cab-830f-387425ba3574
+last_updated_session: authoring-run/a0be62f9-adfa-426c-865d-043a3e34121f
 ---
 
 # Console Agent creation
@@ -156,18 +156,17 @@ Source-free deployment follows the [protected admission flow](../credential-sour
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
 [Per-repository access](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
-defaults to delegated limits. Selecting repositories in this mode forces **Save Agent draft**,
-even on Dedicated runtimes. The Agent POST saves the draft and
-`repositoryNetworkPolicy` atomically. Before credential checks, Console verifies
-the saved grants. If unconfirmed, do not deploy. **Recheck saved GitHub access**
-rereads the draft without repeating creation. Deployment checks the reviewed
-version under the Namespace lock. Stale grants return HTTP 409.
+defaults to delegated limits. Selections require **Save Agent draft**,
+even on Dedicated runtimes. The POST saves the Agent and `repositoryNetworkPolicy`
+atomically. Console confirms grants before checking credentials. If unconfirmed,
+do not deploy. **Recheck saved GitHub access** rereads the draft without repeating
+creation. Under the Namespace lock, OCC rejects stale reviewed policy versions (HTTP 409).
 
 Without per-repository grants, Console omits the policy. Eligible Dedicated runtimes submit
 inline Configuration, optional repository access and Secret references for
 [provisioning](../agent-provisioning.md), even after `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
-The worker reauthorizes, creates resources and exact grants, then deploys.
-Console polls and opens the saved version. When Embedded OpenClaw is unavailable,
+The worker reauthorizes, creates resources and exact grants, then requests deployment.
+When repository restrictions require native enforcement, deployment needs a saved policy. Console polls and opens the saved version. When Embedded OpenClaw is unavailable,
 placement refusals show only the missing setting.
 
 Installation capabilities omit Compute support for operator-managed Preset `runtime` bindings.
@@ -286,6 +285,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-24 03:41: Clarify deployment admission. (authoring-run/a0be62f9-adfa-426c-865d-043a3e34121f - b6555dada1415cff47cdfec9b5af33222ce4f387)
 - 2026-11-24 02:29: Show the repository grant check on the saved draft. (authoring-run/ba9ea959-8a2b-4cab-830f-387425ba3574 - e2d257fbd92637a19042477ef2ad8c6ecf3f9fdf)
 - 2026-11-23 14:21: Clarify creation locks and bindings. (authoring-run/c19f29e8-5721-43ff-bada-5264ccb9b4ea - 54922275aed4dd2c5d6c23901fb0a2ff42a54136)
 - 2026-11-23 13:25: Clarify grants and recovery. (authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036 - 0844df38c9838ec25596b96b70ba76440c5be22d)
