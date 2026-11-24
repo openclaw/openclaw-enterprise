@@ -1,7 +1,7 @@
 ---
 created: 2026-10-07
-updated: 2026-11-16
-last_updated_session: authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70
+updated: "2026-11-24 23:32"
+last_updated_session: "authoring-run/b64d1ba0-cd47-4cf2-a42e-74d6fdf1c2db"
 ---
 
 # Local Keycloak startup and teardown
@@ -29,9 +29,12 @@ graph TD
   E --> F["Second Helm pass: OIDC and recovery-only passwords"]
   F --> G["Recovery sign-in and versioned Alice attachment"]
   G --> H["Print browser setup and credential paths"]
-  D -- "Failure" --> X["Delete realm namespace and cluster"]
-  F -- "Failure" --> X
-  G -- "Failure" --> X
+  D -- "Failure" --> K{"Keep failed stack?"}
+  F -- "Failure" --> K
+  G -- "Failure" --> K
+  K -- "Yes" --> S["Retain stack and private state"]
+  K -- "No" --> X["Delete realm namespace and cluster"]
+  S -- "occ dev down" --> X
   H -- "occ dev down" --> X
   X -- "Complete" --> Y["Remove private state"]
   X -- "Cluster deletion fails" --> Z["Retain state for explicit cleanup retry"]
@@ -99,7 +102,11 @@ the Console URL, credential paths, both CAs and hosts instructions. See the
 
 `internal/occdev/down.go:Down`, `internal/occdev/down.go:cleanup`.
 
-Startup failure and `occ dev down` use the recorded engine endpoint, private
+If [`OCC_DEVELOPMENT_KEEP_ON_FAILURE`](../../reference/settings/development.md)
+is nonempty, a failed startup keeps the stack and private state for inspection.
+Run `occ dev down` with the same state directory to clean up.
+
+Startup rollback and `occ dev down` use the recorded engine endpoint, private
 kubeconfig and exact context. Cleanup deletes the Keycloak namespace and realm
 volume first, then the cluster. Namespace deletion failure warns; cluster
 deletion failure preserves private state for `occ dev down` recovery. Successful
@@ -129,6 +136,8 @@ repair access to its recorded engine and cluster before retrying cleanup.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 23:32: Show when failed startup retains the stack for inspection. (authoring-run/b64d1ba0-cd47-4cf2-a42e-74d6fdf1c2db - 6db04e3f96928c3ef990712fb53a5bdda596c2ff)
 
 - 2026-11-16 16:16: Persist the initializer's normalized password for both Keycloak setup sign-ins. (authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70 - ecbcd544cb7e6eebb97ff293676af2f437fb6444)
 
