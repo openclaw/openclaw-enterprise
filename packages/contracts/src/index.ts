@@ -173,6 +173,11 @@ export {
 } from "./sandbox-policy.ts";
 export {
   maxRepositoryNetworkGrants,
+  parseRepositoryApiLimits,
+  type RepositoryApiLevel,
+  type RepositoryApiLimits,
+  type RepositoryApiMaximum,
+  isCanonicalRepositoryNetworkPolicy,
   repositoryNetworkGrantPattern,
   parseRepositoryNetworkPolicyCeiling,
   RepositoryNetworkPolicyAdmissionError,

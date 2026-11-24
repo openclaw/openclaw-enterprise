@@ -1,5 +1,5 @@
 import {
-  admitRepositoryNetworkPolicy,
+  isCanonicalRepositoryNetworkPolicy,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
 import type {
@@ -3561,7 +3561,8 @@ function repositories(
       const grants = policy?.repositoryNetworkPolicy;
       const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
       if (
-        !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
+        !isDeepStrictEqual(grants, admittedPolicy?.grants) ||
+        (admittedPolicy !== undefined && !isCanonicalRepositoryNetworkPolicy(admittedPolicy)) ||
         (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
       ) {
         throw new ScopeViolationError(
