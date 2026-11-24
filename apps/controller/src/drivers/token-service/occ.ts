@@ -709,10 +709,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       if (!this.oauth) {
         throw new ResourceStateConflictError("OAuth custody is unavailable.");
       }
-      await this.state.transact((unit) =>
-        unit.oauthCredentials.recordTokenSchedule(ref.namespaceId, ref.id, "due"),
-      );
-      await this.oauth.maintain(
+      await this.oauth.refresh(
         { kind: "oauth_refresh_token", namespaceId: ref.namespaceId, sourceId: ref.id },
         signal,
       );

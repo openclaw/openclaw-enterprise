@@ -81,6 +81,7 @@ export async function installDeviceTokenService(
   state: PlatformStateStore,
   secrets: SecretDriver,
   driverId = "device-token-service",
+  notifyRenewed?: ConstructorParameters<typeof OAuthAccountTokens>[4],
 ) {
   assert.ok(secrets.installationSecrets);
   const instanceId = await controller.activateTokenServiceInstance(driverId, randomUUID());
@@ -96,6 +97,7 @@ export async function installDeviceTokenService(
       secrets,
       controller.resolveConnectionClient.bind(controller),
       refreshCodexOAuthGrant,
+      notifyRenewed,
     ),
   );
   controller.registerDriver(owner);

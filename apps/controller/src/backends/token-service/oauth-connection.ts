@@ -13,6 +13,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   BrowserAuthorizationError,
+  CredentialDeliveryFailedError,
   ResourceStateConflictError,
   refreshPinnedOAuthGrant,
   type PlatformStateStore,
@@ -263,7 +264,7 @@ export class OAuthGrantStore {
     signal: AbortSignal,
     resolveClient: () => Promise<OAuthIssuerClient>,
     scheduledVersion?: string,
-  ): Promise<OAuthConnectionStatus> {
+  ): Promise<OAuthConnectionStatus & { readonly credentialUpdated?: true }> {
     const driver = this.driver(custody.secret.driverId, signal);
     const previous = await driver.withValue!(custody.secret, async (value) => value);
     const current = material(previous);
@@ -382,7 +383,11 @@ export class OAuthGrantStore {
     if (!(await driver.compareAndSwap!(custody.secret, intent, JSON.stringify(next)))) {
       return { state: "pending" };
     }
-    return status(next);
+    return {
+      ...status(next),
+      ...(next.phase === "ready" &&
+        next.version !== current.version && { credentialUpdated: true }),
+    };
   }
 
   async delete(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<void> {
@@ -564,13 +569,17 @@ export class OAuthAccountTokens {
     const key = `${ref.namespaceId}/${ref.sourceId}`;
     const current = this.renewing.get(key);
     if (current) {
-      return current;
+      return current.catch((error: unknown) => {
+        throw error instanceof CredentialDeliveryFailedError
+          ? new CredentialDeliveryFailedError(false)
+          : error;
+      });
     }
     // After sending a rotating grant, this owner must finish publishing even if one waiter leaves.
     const signal = AbortSignal.timeout(RENEWAL_BUDGET_MS);
     const attempt = this.grants
       .renew(custody, signal, () => this.resolveClient(ref), expectedVersion)
-      .then(async (outcome) => {
+      .then(async ({ credentialUpdated, ...outcome }) => {
         if (outcome.state === "pending" && !outcome.schedule) {
           return outcome;
         }
@@ -580,9 +589,34 @@ export class OAuthAccountTokens {
           outcome.schedule.version !== expectedVersion &&
           this.notifyRenewed !== undefined
         ) {
-          // If delivery fails, custody keeps the committed token and rotated grant, and the
-          // old schedule stays due so the same version can be pushed without another exchange.
-          await this.notifyRenewed(ref, outcome.schedule.version, signal);
+          try {
+            await this.notifyRenewed(ref, outcome.schedule.version, signal);
+          } catch (error) {
+            // Keep the old scheduled version due for redelivery of the committed grant.
+            // Mark it only after a failed push, so a manual refresh does not wake a second sender.
+            await this.state
+              .transact(async ({ credentialSources, oauthCredentials }) => {
+                const source = await credentialSources.lockCredentialSource(
+                  ref.namespaceId,
+                  ref.sourceId,
+                );
+                const schedule = await oauthCredentials.findTokenCustody(
+                  ref.namespaceId,
+                  ref.sourceId,
+                );
+                if (
+                  source?.state === "ready" &&
+                  schedule?.due === false &&
+                  schedule.scheduledVersion === expectedVersion
+                ) {
+                  await oauthCredentials.recordTokenSchedule(ref.namespaceId, ref.sourceId, "due");
+                }
+              })
+              .catch(() => undefined);
+            throw error instanceof CredentialDeliveryFailedError
+              ? new CredentialDeliveryFailedError(credentialUpdated === true)
+              : error;
+          }
         }
         await this.state.transact(async (unit) => {
           const source = await unit.credentialSources.lockCredentialSource(
@@ -615,15 +649,13 @@ export class OAuthAccountTokens {
     return attempt;
   }
 
-  async maintain(ref: OAuthAccountRef, signal: AbortSignal) {
+  async refresh(ref: OAuthAccountRef, signal: AbortSignal) {
     const custody = await this.activeCustody(ref);
     signal.throwIfAborted();
     if (!custody) {
       return undefined;
     }
-    return custody.due
-      ? this.renew(ref, custody, custody.scheduledVersion)
-      : (await this.grants.observe(custody, signal)).status;
+    return this.renew(ref, custody, custody.scheduledVersion);
   }
 
   async resolve(ref: OAuthAccountRef, options: TokenResolveOptions) {

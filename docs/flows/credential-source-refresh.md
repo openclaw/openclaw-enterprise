@@ -156,9 +156,12 @@ redeploy.
 OCC requires a ready OAuth or GitHub App installation Source, then calls the
 selected TokenService's `forceRefresh`. TokenService commits the replacement
 before notifying Credential Proxy. The API's scheduled and manual Git renewals
-share one attempt per Source through delivery acknowledgement. A failed delivery
-can retry the committed version. OCC returns Source metadata after successful renewal. Static Sources
-use `PATCH` for replacement and return `409` from `/rotate`.
+share one attempt per Source through delivery acknowledgement. Manual OAuth
+rotation keeps its future schedule while the initial push runs. A failed push
+makes the old scheduled version due so maintenance can deliver the committed
+version without contacting the issuer again. OCC returns Source metadata after
+successful renewal. For a static Source, `/rotate` returns `409`. Use `PATCH` to
+replace it.
 
 ### 5. Deletion
 

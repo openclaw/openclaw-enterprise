@@ -10,6 +10,7 @@ import { managedCliInstalls } from "../../apps/controller/src/drivers/plugin/man
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
+  CredentialDeliveryFailedError,
   DependencyUnavailableError,
   PostgresHumanAuthentication,
   ResourceStateConflictError,
@@ -91,7 +92,23 @@ test(
         secretDriver: secrets,
         appOptions: { publicOrigin },
       });
-    await installDeviceTokenService(controller, state, secrets, "scope-token-service");
+    const deliveries: { version: string; due: boolean }[] = [];
+    await installDeviceTokenService(
+      controller,
+      state,
+      secrets,
+      "scope-token-service",
+      async (ref, version) => {
+        const custody = await state.read(({ oauthCredentials }) =>
+          oauthCredentials.findTokenCustody(ref.namespaceId, ref.sourceId),
+        );
+        assert.ok(custody);
+        deliveries.push({ version, due: custody.due });
+        if (deliveries.length < 3) {
+          throw new CredentialDeliveryFailedError();
+        }
+      },
+    );
     const namespace = await inject("POST", "/namespaces", { name: `Scopes ${randomUUID()}` });
     assert.equal(namespace.statusCode, 201, namespace.body);
     const namespaceId = namespace.json().data.id;
@@ -173,6 +190,8 @@ test(
     const stateValue = new URL(started.json().data.authorizationUrl).searchParams.get("state");
     assert.ok(stateValue);
     let grantType: string | null = null;
+    let refreshCalls = 0;
+    let refreshScopes = "read issuer.default";
     const exchangeReached = Promise.withResolvers<void>();
     const resumeExchange = Promise.withResolvers<void>();
     t.after(() => resumeExchange.resolve());
@@ -185,15 +204,15 @@ test(
         exchangeReached.resolve();
         await resumeExchange.promise;
       }
+      if (grantType === "refresh_token") {
+        refreshCalls++;
+      }
       return Response.json({
         access_token: randomUUID(),
         token_type: "Bearer",
         expires_in: 120,
         refresh_token: randomUUID(),
-        scope:
-          grantType === "authorization_code"
-            ? "read issuer.default"
-            : "read issuer.default later.addition",
+        scope: grantType === "authorization_code" ? "read issuer.default" : refreshScopes,
       });
     });
     const callbackPromise = inject(
@@ -242,7 +261,44 @@ test(
       oauth_requested_scopes: ["read"],
       oauth_granted_scopes: ["read", "issuer.default"],
     });
-    const refreshed = await inject("POST", `${sources}/${source.id}/rotate`);
+    const rotate = () => inject("POST", `${sources}/${source.id}/rotate`);
+    const schedule = () =>
+      state.read(({ oauthCredentials }) =>
+        oauthCredentials.findTokenCustody(namespaceId, source.id),
+      );
+    // A manual renewal leaves a fresh schedule out of the Worker's scan until delivery fails.
+    assert.equal((await schedule())?.due, false);
+    const failedDelivery = await rotate();
+    assert.equal(failedDelivery.statusCode, 503, failedDelivery.body);
+    assert.match(failedDelivery.json().error.message, /source was updated/);
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0]?.due, false);
+    assert.equal((await schedule())?.due, true);
+    // Retry enters the same owner with the committed grant and the old scheduled version.
+    const failedRetry = await rotate();
+    assert.equal(failedRetry.statusCode, 503, failedRetry.body);
+    assert.match(failedRetry.json().error.message, /already held by the source/);
+    const failedRetryId = failedRetry.headers["x-request-id"];
+    assert.equal(typeof failedRetryId, "string");
+    const retryAudit = await pool.query(
+      `SELECT outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason
+       FROM occ.audit_events WHERE resource_id=$1 AND action='openclaw.credential_sources.rotate'
+         AND details->'__occAuditMetadata'->>'requestId'=$2`,
+      [source.id, failedRetryId],
+    );
+    assert.deepEqual(retryAudit.rows, [
+      { outcome: "failure", reason: "CREDENTIAL_DELIVERY_FAILED" },
+    ]);
+    const retried = await rotate();
+    assert.equal(retried.statusCode, 200, retried.body);
+    assert.equal(refreshCalls, 1, "redeliver without a second rotating issuer exchange");
+    assert.equal(deliveries.length, 3);
+    assert.equal(deliveries[1]?.version, deliveries[0]?.version);
+    assert.equal(deliveries[2]?.version, deliveries[0]?.version);
+    assert.equal((await schedule())?.due, false);
+
+    refreshScopes = "read issuer.default later.addition";
+    const refreshed = await rotate();
     assert.equal(refreshed.statusCode, 503, refreshed.body);
     assert.equal(refreshed.json().error.code, "DEPENDENCY_UNAVAILABLE");
     assert.equal(grantType, "refresh_token");
