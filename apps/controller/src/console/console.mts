@@ -2230,7 +2230,6 @@ async function loadPage({
         ? `${namespacePath}/agents/${encodeURIComponent(current.agentId)}`
         : null;
     const agentPermissionsPath = agentPath === null ? null : `${agentPath}/permissions`;
-    const confirmDetailPermissions = confirmAgentPermissions && agentPermissionsPath !== null;
     const itemsPath = collectionPath(current.feature, namespacePath);
     const permissionsRead =
       !scopedNamespaceUnavailable &&
@@ -2282,6 +2281,15 @@ async function loadPage({
         replaceUrl(pageUrl(current.target, selectedNamespace));
       }
     }
+    // Draft Channels directs readers to Refresh when the permission check is unavailable.
+    const refreshingChannelsDraft =
+      fromRefresh &&
+      firstAgent !== null &&
+      current.url.searchParams.get("tab") === "channels" &&
+      (current.url.searchParams.get("revision") ?? firstAgent.activeRevisionId ?? "draft") ===
+        "draft";
+    const confirmDetailPermissions =
+      agentPermissionsPath !== null && (confirmAgentPermissions || refreshingChannelsDraft);
     if (permissionsRead) {
       firstPermissions = await permissionsRead;
       if (!lifetime.isCurrent(active)) {

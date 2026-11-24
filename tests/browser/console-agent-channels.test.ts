@@ -918,6 +918,11 @@ describe("Agent channels", { concurrency: 3 }, () => {
       const permissionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
       const permissionsUrl = fixture.origin + permissionsPath;
       const requests = apiRequests(page, fixture.origin);
+      const unavailableResponse = apiErrorResponse(
+        503,
+        "INTERNAL_ERROR",
+        "Permission read unavailable.",
+      );
       let unavailable = false;
       await page.route(permissionsUrl, async (route) => {
         if (!unavailable || route.request().method() !== "GET") {
@@ -925,13 +930,15 @@ describe("Agent channels", { concurrency: 3 }, () => {
           return;
         }
         unavailable = false;
-        await route.fulfill(
-          apiErrorResponse(503, "INTERNAL_ERROR", "Permission read unavailable."),
-        );
+        await route.fulfill(unavailableResponse);
       });
-      const recheck = async (status: number, configurationUpdate?: boolean) => {
+      const checkPermissions = async (
+        trigger: () => Promise<unknown>,
+        status: number,
+        configurationUpdate?: boolean,
+      ) => {
         const checked = responseTo(page, "GET", permissionsUrl);
-        await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+        await trigger();
         const response = await checked;
         assert.equal(response.status(), status, "permission check HTTP response");
         if (configurationUpdate !== undefined) {
@@ -943,6 +950,12 @@ describe("Agent channels", { concurrency: 3 }, () => {
         await waitForIdleFetches(page);
         await nextFrames(page);
       };
+      const recheck = (status: number, configurationUpdate?: boolean) =>
+        checkPermissions(
+          () => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange"))),
+          status,
+          configurationUpdate,
+        );
 
       // Start away from the scroll limits so the tab can stay in the same part of the viewport
       // even when the permission-gated checklist and harness controls above it disappear.
@@ -1019,6 +1032,37 @@ describe("Agent channels", { concurrency: 3 }, () => {
       assert.equal(await draftEntry.textContent(), "Draft · Read-only Configuration");
       assert.equal(await edit.count(), 0);
       assert.equal(pathRequests(requests, "GET", permissionsPath).length, 5);
+
+      // Refresh must wait for a current answer, even when the account really has edit access.
+      restore();
+      unavailable = true;
+      await recheck(503);
+      await expectUnconfirmed();
+      assert.equal(pathRequests(requests, "GET", permissionsPath).length, 6);
+
+      const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+      const failedRefresh = await holdRequests(t, page, permissionsUrl, {
+        once: true,
+        method: "GET",
+        fulfill: unavailableResponse,
+      });
+      await checkPermissions(async () => {
+        await refresh.click();
+        await failedRefresh.requested;
+        assert.equal(await edit.count(), 0, "Edit Slack stays unavailable during Refresh");
+        failedRefresh.release();
+      }, 503);
+      await waitForEnabled(refresh);
+      await expectUnconfirmed();
+      assert.equal(pathRequests(requests, "GET", permissionsPath).length, 7);
+
+      await checkPermissions(() => refresh.click(), 200, true);
+      await waitForEnabled(refresh);
+      await waitForEnabled(edit);
+      assert.doesNotMatch(await panel.innerText(), unconfirmed);
+      assert.doesNotMatch(await panel.innerText(), denial);
+      assert.equal(await draftEntry.textContent(), "Draft · Editable Configuration");
+      assert.equal(pathRequests(requests, "GET", permissionsPath).length, 8);
       assert.deepEqual(nonAuthWriteRequests(requests), []);
     });
   }
