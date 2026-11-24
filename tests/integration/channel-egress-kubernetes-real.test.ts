@@ -941,8 +941,9 @@ test(
       }),
       { mode: 0o600 },
     );
-    let caUid: string | undefined;
+    const caSecret: { uid?: string } = {};
     context.after(async () => {
+      const caUid = caSecret.uid;
       assert.ok(caUid, "CA Secret creation was not acknowledged");
       const currentUid = await kubectl(
         "get",
@@ -983,7 +984,7 @@ test(
         uid === uid.trim(),
       "CA Secret create response did not identify the created Secret",
     );
-    caUid = uid;
+    caSecret.uid = uid;
     const proxy = await createControlledChannelProxy(context);
     const peerProxy = await createControlledChannelProxy(context, {
       tls: (address) =>
