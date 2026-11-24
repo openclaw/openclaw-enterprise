@@ -43,8 +43,8 @@ Kubernetes process restarts do not reauthorize delivered env values. Immediate
 loss of access requires stopping the workload or revoking the upstream credential.
 
 Managed Credential Sources store material through the selected TokenService.
-The Credential Proxy configures injection and provides a placeholder to the
-Harness. The paired Sandbox enforces network access and containment. See
+The Credential Proxy configures injection. The runtime starts the Harness with
+a placeholder, and the Sandbox enforces network access and containment. See
 [Credential Sources](../reference/credential-sources.md#implementation-status)
 for managed delivery, updates, withdrawal, and existing Gateway delivery paths.
 

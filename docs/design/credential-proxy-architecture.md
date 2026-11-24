@@ -38,4 +38,4 @@ For a GitHub metadata read, OCC asks Token Service for a token after it authoriz
 <a id="proposed-git-credential-pull"></a>
 <a id="what-changes-for-git"></a>
 
-The [Git credential pull discussion](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/git-credential-pull.md) explores request-time delivery. [Credential Design 1.0](../../specs/rfcs/20261124-credential-design-1-0/index.md#10-boundaries) describes the shared-token push design.
+The [Git credential pull discussion](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/git-credential-pull.md) explores request-time delivery. [Credential Design 1.0](../../specs/rfcs/20261124-credential-design-1-0/index.md#10-scope-and-tradeoffs) describes the shared-token push design.

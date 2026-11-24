@@ -6,6 +6,8 @@ rfc: index.md
 
 This page preserves the client registration and custody proposal from [#7223](https://github.com/openclaw/openclaw-enterprise/pull/7223), submitted on 2026-11-24.
 
+Add GitHub App clients to the existing client catalog and define how TokenService stores private client material. This proposal covers client registration and custody.
+
 ## Client registration
 
 Installation administrators use the existing Console catalog and `/oauth-clients` operations. The catalog returns `oauth2` and `github-app` variants. GitHub App create sets `kind: "github-app"`. Rotation uses the stored client kind. The untagged OAuth create request supplies its own scope, issuer, approved endpoints, and authentication method independently of Connection Templates. GitHub App clients have an immutable App ID and Installation scope.
