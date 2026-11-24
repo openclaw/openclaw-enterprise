@@ -4682,9 +4682,11 @@ test("native Git confirms a Source delivery only once the Sandbox activates the 
   client.getSandboxProviderStatus = async (...args) => {
     const read = await status(...args);
     // Before the write the supervisor holds its bootstrap credential, which stays as observed.
-    return args[2] === "openai" || activity.updates === 0 || activated
-      ? read
-      : { ...read, observed: { ...read.observed, credentialsInstalled: false } };
+    if (args[2] === "openai" || activity.updates === 0 || activated) {
+      return read;
+    }
+    assert.ok(read.observed);
+    return { ...read, observed: { ...read.observed, credentialsInstalled: false } };
   };
   await reconcile();
   assert.equal(activity.updates, 1);
