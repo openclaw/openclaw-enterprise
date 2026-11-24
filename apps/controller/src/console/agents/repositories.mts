@@ -1405,8 +1405,10 @@ export function createRepositoryFields(
   return {
     section,
     scoped: hasPolicy,
+    // An empty list retains the picker mode when a draft is rebuilt. Submission
+    // requires a selection, since an explicit empty API policy would deny all.
     scopedGrants: () =>
-      hasPolicy() ? [...grants].filter(([ref]) => state.selected.has(ref)) : undefined,
+      scoped() ? [...grants].filter(([ref]) => state.selected.has(ref)) : undefined,
     bindings,
     access: accessIntent,
     recordSuccessfulSave,

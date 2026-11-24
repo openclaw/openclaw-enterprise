@@ -1310,6 +1310,20 @@ test("Create Agent requests ordinary provisioning when eligible GitHub repositor
 test("Create Agent saves GitHub grants before the first deployment and rolls back a refused draft", async (t) => {
   const { fixture, controller, namespaceId, app, tooling, grants, page, requests, agents, mode } =
     await openRepositoryCreate(t);
+  // Return to a retained draft before the first selection. Its empty policy
+  // picker must not become an access-profile picker that provisions immediately.
+  const originalMode = await mode.elementHandle();
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.waitForURL(/\/console\/agents(\?|$)/);
+  // Change a real form dependency so Console rebuilds instead of reusing the DOM.
+  await fixture.createSecret(namespaceId, "additional-model", "synthetic-additional-model");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await mode.waitFor();
+  assert.equal(await originalMode!.evaluate((node) => node.isConnected), false);
+  assert.equal(
+    await page.getByLabel("Agent name", { exact: true }).inputValue(),
+    "Scoped assistant",
+  );
   // Discovery alone grants nothing. One click must select Contributor without
   // a separate mode decision. Removing the last selection restores ordinary create.
   const create = page.getByRole("button", { name: "Create Agent", exact: true });
@@ -1319,6 +1333,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   assert.equal(await mode.inputValue(), "scoped");
   assert.deepEqual(await access.locator("option").allTextContents(), ["Read-only", "Contributor"]);
   assert.equal(await access.inputValue(), "write");
+  await waitForEnabled(page.getByRole("button", { name: "Save Agent draft" }));
   await access.selectOption("read");
   const remove = page.getByRole("button", { name: `Remove ${tooling.repository}`, exact: true });
   await remove.press("Enter");
