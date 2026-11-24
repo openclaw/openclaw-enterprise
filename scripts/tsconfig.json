@@ -57,6 +57,7 @@
     "migration-history.mjs",
     "ci/**/*.ts",
     "lib/**/*.ts",
+    "../deploy/examples/opensandbox/docker/*.mts",
     "../deploy/helm/src/*.ts",
     "../deploy/runtime/native-tools/fetch.ts",
     "../deploy/runtime/with-pinned-matrix-sdk-crypto.mts",

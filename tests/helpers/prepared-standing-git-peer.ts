@@ -47,12 +47,19 @@ export async function standingGitOrigin(
   selection?: SelectedRepositories,
   draftPull = false,
   pushRef = "refs/heads/review",
+  observeToken?: (token: string) => void,
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
   const gh = await startGitHubFixture(t, {
     clock,
     tokenLifetimeMs,
+    ...(observeToken && {
+      tokenResponse(packet) {
+        observeToken(packet.token);
+        return packet;
+      },
+    }),
     beforeIssue,
     installationAccess,
     ...(draftPull && {

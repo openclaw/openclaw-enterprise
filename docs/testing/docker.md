@@ -13,6 +13,10 @@ for an authenticated Agent journey: the Docker Compute Driver rejects Agent
 harness authentication bindings, so no Docker test deploys an Agent or makes a
 model call.
 
+The optional [OpenSandbox startup probe](../../deploy/examples/opensandbox/docker/README.md)
+checks the packaged Codex app-server. The [Git check](../../deploy/examples/opensandbox/git/README.md)
+exercises repository grants against a local origin. Both require a disposable Docker daemon.
+
 ## Verify Compose startup
 
 Compose supports control-plane startup and Namespace operations.
