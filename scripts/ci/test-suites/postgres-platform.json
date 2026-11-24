@@ -1,7 +1,11 @@
 {
   "prepare": {
     "postgres": true,
-    "requiresPreparedStateForFile": true
+    "requiresPreparedStateForFile": true,
+    "selfProvisionedFiles": [
+      "tests/integration/postgres-bootstrap-failures.test.ts",
+      "tests/integration/postgres-production-wireup.test.ts"
+    ]
   },
   "optionalEnv": ["OCC_TEST_STANDING_GIT_CODEX", "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION"],
   "fileConcurrency": 4,
