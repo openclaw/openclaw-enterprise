@@ -155,7 +155,7 @@ test("an installed delivery-only Driver owns the staged Sandbox without legacy e
     options: {
       tokenService?: boolean;
       legacyProxy?: boolean;
-      contract?: "complete" | "missing-method" | "foreign-identity";
+      contract?: "complete" | "missing-method" | "foreign-identity" | "raw-no-cleanup";
     } = {},
   ) => {
     await writeFile(
@@ -278,11 +278,12 @@ test("an installed delivery-only Driver owns the staged Sandbox without legacy e
     load({ contract: "foreign-identity" }),
     /exact selected capability contracts/,
   );
-  assert.equal(
-    observations.closed,
-    5,
-    "each refused package closes before startup reports failure",
-  );
+  assert.equal(observations.closed, 5, "each refused registration closes");
+  // Valid nested capabilities cannot rescue a malformed raw Sandbox. Its close also throws.
+  await assert.rejects(load({ contract: "raw-no-cleanup" }), {
+    message: "drivers.sandbox factory returned an invalid Driver contract.",
+  });
+  assert.equal(observations.closed, 6);
 });
 
 test("one installed Driver owns both protected capabilities, lifecycle and verified release", async (t) => {

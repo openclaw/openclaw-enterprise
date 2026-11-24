@@ -5,11 +5,9 @@ import { findPackageJSON } from "node:module";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
-  ComputeDriver,
-  ConfigurationDriver,
+  DriverByCapability,
   DriverImplementation,
   DriverRegistration,
-  IAMDriver,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import type { NativeIAMStateStore } from "@openclaw-enterprise/iam";
@@ -18,6 +16,7 @@ import type { SelectedDriverConfiguration } from "./installation-config.ts";
 import { withoutByteOrderMark } from "./startup-file.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
+type ExternalDriverCapability = "configuration" | "iam" | "compute";
 
 interface ExternalDriverModule extends DriverImplementation {
   createDriver(options: {
@@ -389,12 +388,12 @@ export async function loadDriverPackage(
   });
 }
 
-export function createExternalDriver(
+export function createExternalDriver<Capability extends ExternalDriverCapability>(
   implementation: ExternalDriverModule,
   selection: SelectedDriverConfiguration,
-  capability: "configuration" | "iam" | "compute" | "sandbox",
+  capability: Capability,
   platformState?: NativeIAMStateStore,
-): ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver {
+): DriverByCapability[Capability] {
   if (capability === "iam" && typeof platformState?.loadNativeIAMState !== "function") {
     throw new Error("drivers.iam factory requires platform state.");
   }
@@ -410,11 +409,11 @@ export function createExternalDriver(
   return validateExternalDriver(created, selection, capability);
 }
 
-function validateExternalDriver(
+function validateExternalDriver<Capability extends ExternalDriverCapability | "sandbox">(
   created: ConfigurationRecord | undefined,
   selection: SelectedDriverConfiguration,
-  capability: "configuration" | "iam" | "compute" | "sandbox",
-): ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver {
+  capability: Capability,
+): DriverByCapability[Capability] {
   if (created === undefined) {
     throw new Error(`drivers.${capability} factory result must be one object.`);
   }
@@ -456,7 +455,7 @@ function validateExternalDriver(
   ) {
     throw new Error("drivers.compute factory returned invalid lifecycle Driver wiring.");
   }
-  return created as unknown as ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver;
+  return created as unknown as DriverByCapability[Capability];
 }
 
 /** Load one package instance for the selected capabilities; the sandbox selection owns its configuration.
@@ -476,13 +475,13 @@ export async function createExternalSandboxDriver(
     implementation.createDriver({ id, configuration, implementation: selection.implementation }),
   );
   const { legacyProxySelected, tokenServiceSelected, repositoryAuthorityIdentity } = options;
-  if (
-    !legacyProxySelected &&
-    (!registration || registration.capability === "sandbox" || !("capabilities" in registration))
-  ) {
-    return validateExternalDriver(registration, selection, "sandbox") as SandboxDriver;
-  }
   try {
+    if (
+      !legacyProxySelected &&
+      (!registration || registration.capability === "sandbox" || !("capabilities" in registration))
+    ) {
+      return validateExternalDriver(registration, selection, "sandbox");
+    }
     if (!registration || !asRecord(registration.capabilities)) {
       throw new Error(
         "The selected package must return one Driver registration for Sandbox and Credential Proxy.",

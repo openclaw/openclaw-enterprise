@@ -1493,11 +1493,7 @@ async function composeInstallationConfiguration(
           configured.configuration as unknown as KubernetesConfigurationDriverOptions,
           { id: configured.id, implementation: configured.implementation, preprovisionedNamespace },
         )
-      : (createExternalDriver(
-          configurationPackage.module,
-          configured,
-          "configuration",
-        ) as ConfigurationDriver);
+      : createExternalDriver(configurationPackage.module, configured, "configuration");
   // One gateway object serves both member Drivers, so they share clients and naming.
   const openShell =
     openShellBackend === undefined
@@ -1592,10 +1588,10 @@ async function composeInstallationConfiguration(
       tokenService,
     );
   }
-  const createCredentialDeliveryProxy = async (
+  const createCredentialDeliveryProxy = (
     pairedSandbox: SandboxDriver,
     tokenServiceImplementation: string,
-  ): Promise<CredentialProxyDriver> => {
+  ): CredentialProxyDriver => {
     const sandbox = pairedSandbox as SandboxDriver &
       Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
     if (typeof sandbox.withdrawStagedCredentialRoute !== "function") {
@@ -1691,10 +1687,7 @@ async function composeInstallationConfiguration(
     const deliveryProxy =
       tokenServiceSelection === undefined
         ? undefined
-        : await createCredentialDeliveryProxy(
-            capabilities.sandbox,
-            tokenServiceSelection.implementation,
-          );
+        : createCredentialDeliveryProxy(capabilities.sandbox, tokenServiceSelection.implementation);
     const owner = new InstalledDriver(
       {
         ...sandbox,
@@ -1742,7 +1735,7 @@ async function composeInstallationConfiguration(
     !boxPackage &&
     options.createSandboxDriver === undefined
   ) {
-    const deliveryProxy = await createCredentialDeliveryProxy(
+    const deliveryProxy = createCredentialDeliveryProxy(
       sandboxDriver,
       tokenServiceSelection.implementation,
     );
@@ -1787,11 +1780,7 @@ async function composeInstallationConfiguration(
   ]);
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
-    computeDriver = createExternalDriver(
-      computePackage.module,
-      compute,
-      "compute",
-    ) as ComputeDriver;
+    computeDriver = createExternalDriver(computePackage.module, compute, "compute");
   } else if (sshCompute) {
     computeDriver = new SshComputeDriver(
       compute.configuration as unknown as SshComputeDriverOptions,
@@ -1850,7 +1839,7 @@ async function composeInstallationConfiguration(
   const createIAMDriver = (state: NativeIAMStateStore): IAMDriver => {
     return iamPackage === undefined
       ? new NativeIAMDriver(state, { id: iam.id, implementation: iam.implementation })
-      : (createExternalDriver(iamPackage.module, iam, "iam", state) as IAMDriver);
+      : createExternalDriver(iamPackage.module, iam, "iam", state);
   };
   if (
     options.mode === "production" &&

@@ -4,12 +4,12 @@ import type {
   DriverRegistration,
 } from "@openclaw-enterprise/contracts";
 
-type Contract = "complete" | "missing-method" | "foreign-identity";
+const contracts = ["complete", "missing-method", "foreign-identity", "raw-no-cleanup"] as const;
 
 export const configurationSchema = {
   type: "object",
   additionalProperties: false,
-  properties: { contract: { enum: ["complete", "missing-method", "foreign-identity"] } },
+  properties: { contract: { enum: contracts } },
 };
 
 export function validateConfiguration() {
@@ -34,8 +34,9 @@ export function createDriver({
 }: {
   id: string;
   implementation: string;
-  configuration: { contract?: Contract };
+  configuration: { contract?: (typeof contracts)[number] };
 }): DriverRegistration {
+  const malformedRaw = configuration.contract === "raw-no-cleanup";
   function unavailable(): never {
     throw new Error("This package fixture has no running Harness or credential material.");
   }
@@ -53,6 +54,7 @@ export function createDriver({
     Reflect.deleteProperty(delivery, "getDeploymentStatus");
   }
   return {
+    ...(malformedRaw && { id, implementation, capability: "sandbox" }),
     capabilities: {
       sandbox: {
         id,
@@ -86,6 +88,9 @@ export function createDriver({
     },
     close() {
       observations.closed++;
+      if (malformedRaw) {
+        throw new Error("Raw Sandbox close failed.");
+      }
     },
   };
 }

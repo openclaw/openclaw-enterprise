@@ -220,7 +220,9 @@ export async function composePostgresDevelopment(
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    installSelectedSandboxDrivers(controller, drivers ?? { sandboxDriver, protectedDriver });
+    if (drivers) {
+      installSelectedSandboxDrivers(controller, drivers);
+    }
     if (credentialGatewayDriver !== undefined) {
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
