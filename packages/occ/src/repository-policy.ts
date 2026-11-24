@@ -100,6 +100,13 @@ export type SupportsStagedRepositoryRecipient = (input: {
   readonly harness: RevisionHarnessDescriptor;
 }) => boolean;
 
+export type StagedRepositoryCeiling = (input: {
+  readonly namespaceId: string;
+  readonly source: Readonly<GitHubAppInstallationCredentialSource>;
+  readonly bindings: readonly AdmittedRepositoryBinding[];
+  readonly ceiling: RepositoryNetworkPolicyCeiling;
+}) => RepositoryNetworkPolicyCeiling;
+
 interface RepositoryPolicyDependencies {
   readonly installationId: string;
   readonly configurationDriver: () => ConfigurationDriver;
@@ -118,6 +125,7 @@ interface RepositoryPolicyDependencies {
         readonly grants: readonly RepositoryNetworkGrant[];
       }) => readonly DeploymentRequestMatch[] | undefined)
     | undefined;
+  readonly stagedRepositoryCeiling: StagedRepositoryCeiling | undefined;
   readonly repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling;
   readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
   readonly selectedRepository: () => RepositoryPolicyDriver;
@@ -445,11 +453,40 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         namespaceId,
         id: namespaceId,
       }));
-    const limits = new Map(
-      (showLimits ? namespaceRepositoryNetworkPolicyCeiling(namespaceId) : []).map(
-        (grant) => [grant.repository, grant] as const,
-      ),
-    );
+    const grantAuthority = showLimits
+      ? repositoryGrantAuthority(namespaceId, admission?.policy, owner.unchanged)
+      : undefined;
+    const optionLimit = (repository: string) => {
+      if (!grantAuthority) {
+        return undefined;
+      }
+      const shortName = repository.slice(repository.indexOf("/") + 1);
+      const configured = dependencies.repositoryNetworkPolicyCeiling.filter(
+        ({ repository: limit }) =>
+          limit === repository ||
+          (dependencies.stagedRepositoryCeiling !== undefined &&
+            !(repository.includes("/") && limit.includes("/")) &&
+            limit.slice(limit.indexOf("/") + 1) === shortName),
+      );
+      const qualified = repository.includes("/")
+        ? [repository]
+        : configured.flatMap(({ repository: limit }) => (limit.includes("/") ? [limit] : []));
+      if (!configured.length || qualified.length > 1) {
+        return undefined;
+      }
+      // Catalog metadata may include the owner from a configured limit. Save and
+      // deploy independently qualify it using the selected Source's verified owner.
+      const [allowed] = delegatedRepositoryCeiling(
+        [
+          {
+            repository,
+            access: configured.every(({ access }) => access === "write") ? "write" : "read",
+          },
+        ],
+        grantAuthority,
+      );
+      return allowed && { ...allowed, repository: qualified[0] ?? repository };
+    };
     if (!owner.unchanged()) {
       throw new DependencyUnavailableError("The repository policy changed while listing options.");
     }
@@ -461,7 +498,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
             "githubRepository" in provider &&
             typeof provider.githubRepository === "string" &&
             allowedProfiles.includes("github-repository")
-              ? limits.get(provider.githubRepository)
+              ? optionLimit(provider.githubRepository)
               : undefined;
           return {
             repositoryRef,
@@ -739,6 +776,36 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
   }
 
+  function stagedRepositoryAuthority(
+    namespaceId: string,
+    source: Readonly<GitHubAppInstallationCredentialSource>,
+    repository: NonNullable<ReturnType<typeof resolveRepositoryBindings>>,
+  ) {
+    const approve = dependencies.repositoryCredentialAdmission;
+    if (!approve) {
+      return undefined;
+    }
+    const selection = { namespaceId, source, bindings: repository.resolution.bindings };
+    const configured = dependencies.repositoryNetworkPolicyCeiling;
+    const projectCeiling = dependencies.stagedRepositoryCeiling;
+    const requests = (grants: readonly RepositoryNetworkGrant[]) =>
+      approve({ ...selection, grants });
+    const approvesAll = (grants: readonly RepositoryNetworkGrant[]) =>
+      (requests(grants)?.length ?? 0) > 0;
+    return {
+      ceiling: projectCeiling ? projectCeiling({ ...selection, ceiling: configured }) : configured,
+      requests,
+      authority: projectCeiling
+        ? {
+            allows: (grant: RepositoryNetworkGrant) => approvesAll([grant]),
+            approvesAll,
+            unchanged: () =>
+              repository.unchanged() && dependencies.repositoryCredentialAdmission === approve,
+          }
+        : readGrantAuthority(namespaceId),
+    };
+  }
+
   function admitRepositoryCredentials(
     agent: Readonly<Agent>,
     compute: ComputeDriver,
@@ -760,6 +827,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       return undefined;
     }
     let requests: readonly DeploymentRequestMatch[] | undefined;
+    const stagedPolicy =
+      staged && stagedRepositoryAuthority(agent.namespaceId, staged.source, resolved);
     if (staged) {
       if (
         staged.source.namespaceId !== agent.namespaceId ||
@@ -770,13 +839,10 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       ) {
         throw new ResourceStateConflictError("The staged repository recipient is unavailable.");
       }
-      assertSelectedRepositoryGrants(staged.grants, resolved.resolution);
-      requests = dependencies.repositoryCredentialAdmission?.({
-        namespaceId: agent.namespaceId,
-        source: staged.source,
-        bindings: resolved.resolution.bindings,
-        grants: staged.grants,
-      });
+      if (dependencies.stagedRepositoryCeiling === undefined) {
+        assertSelectedRepositoryGrants(staged.grants, resolved.resolution);
+      }
+      requests = stagedPolicy?.requests(staged.grants);
       if (!requests?.length || !resolved.unchanged()) {
         throw new ResourceStateConflictError(
           "The staged repository Source and saved grants cannot be admitted.",
@@ -801,6 +867,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       nativeGit: resolved.resolution.nativeGit,
       requiresNetworkPolicy: resolved.resolution.requiresNetworkPolicy,
       requests,
+      stagedPolicy,
     };
   }
 
@@ -1000,7 +1067,10 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   function namespaceRepositoryNetworkPolicyCeiling(
     namespaceId: string,
   ): RepositoryNetworkPolicyCeiling {
-    const ceiling = dependencies.repositoryNetworkPolicyCeiling;
+    // Only the repository picker can expose installation-relative names.
+    const ceiling = dependencies.repositoryNetworkPolicyCeiling.filter(({ repository }) =>
+      repository.includes("/"),
+    );
     if (ceiling.length === 0) {
       return [];
     }
@@ -1038,6 +1108,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   ): Promise<
     | (ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> & {
         readonly allowsStandaloneModelHistory: true;
+        readonly ceiling?: RepositoryNetworkPolicyCeiling;
       })
     | undefined
   > {
@@ -1130,13 +1201,17 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       return undefined;
     }
     const admitNetwork = sandbox.admitNetworkPolicy;
-    const authority = readGrantAuthority(namespaceId, admission);
     const resolve = () =>
       resolveRepositoryBindings(namespaceId, agent.repositoryBindings, "saved", admission);
     const repository = resolve();
-    if (!authority || !repository || repository.resolution.nativeGit !== "v1") {
+    if (!repository || repository.resolution.nativeGit !== "v1") {
       return undefined;
     }
+    const policyScope = stagedRepositoryAuthority(namespaceId, source, repository);
+    if (!policyScope?.authority) {
+      return undefined;
+    }
+    const { authority, ceiling } = policyScope;
     const current = (approved?: () => boolean) => {
       if (
         !repository.unchanged() ||
@@ -1164,7 +1239,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
             Reflect.apply(admitNetwork, sandbox, [additions, version]),
           ),
         grants,
-        dependencies.repositoryNetworkPolicyCeiling,
+        ceiling,
         sandbox,
         () => authority,
         "save",
@@ -1173,17 +1248,11 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       if (!policy) {
         return undefined;
       }
-      assertSelectedRepositoryGrants(policy.grants, repository.resolution);
-      if (
-        policy.grants.length > 0 &&
-        !approve({
-          namespaceId,
-          source,
-          bindings: repository.resolution.bindings,
-          grants: policy.grants,
-        })?.length
-      ) {
-        return undefined;
+      if (dependencies.stagedRepositoryCeiling === undefined) {
+        assertSelectedRepositoryGrants(policy.grants, repository.resolution);
+        if (policy.grants.length > 0 && !policyScope.requests(policy.grants)?.length) {
+          return undefined;
+        }
       }
       const assertCurrent = () => current(ownerUnchanged);
       assertCurrent();
@@ -1201,6 +1270,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       },
       apiMaxima: () => undefined,
       admit,
+      ...(dependencies.stagedRepositoryCeiling === undefined ? {} : { ceiling }),
       allowsStandaloneModelHistory: true,
     };
   }

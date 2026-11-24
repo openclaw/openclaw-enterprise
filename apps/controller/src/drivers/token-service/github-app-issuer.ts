@@ -1,6 +1,7 @@
 import { createPrivateKey } from "node:crypto";
 
 import type { GitHubAppInstallationScope } from "@openclaw-enterprise/contracts";
+import { asRecord } from "@openclaw-enterprise/utils";
 
 import type { Clock } from "../repo/access/backend-contracts.ts";
 import { createSystemClock } from "../repo/access/clock.ts";
@@ -10,10 +11,14 @@ import {
 } from "../repo/github/access/installation-token-response.ts";
 import { createGitHubKeyOwner } from "../repo/github/access/material.ts";
 import { githubProviderOrigin } from "../repo/github/access/origin.ts";
-import { prepareFiniteGitHubProviderScope } from "../repo/github/access/provider-transport/request-options.ts";
+import { prepareGitHubAppProviderScope } from "../repo/github/access/provider-transport/request-options.ts";
 import { createProviderTransport } from "../repo/github/access/provider-transport.ts";
 import { sendProviderRequest } from "../repo/github/access/provider-transport/request.ts";
-import { parseGitHubNumericId } from "../repo/github/access/repository-grant.ts";
+import {
+  createRepositorySlugPattern,
+  parseGitHubNumericId,
+  type GitHubAppRepositorySelection,
+} from "../repo/github/access/repository-grant.ts";
 import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
 
 const providerTimeoutMs = 10_000;
@@ -97,23 +102,74 @@ export function createGitHubAppSourceIssuer(options: GitHubAppIssuerOptions = {}
         throw new Error("The GitHub App identity could not be verified.");
       }
     },
-    async issue(scope: GitHubAppInstallationScope, privateKey: string, signal: AbortSignal) {
+    async issue(scope: GitHubAppRepositorySelection, privateKey: string, signal: AbortSignal) {
       signal.throwIfAborted();
-      const providerScope = prepareFiniteGitHubProviderScope(origin, scope);
-      const exchange = createProviderTransport(ca, clock, providerScope);
       const key = signingKey(privateKey, scope.appId, clock);
       const attempt = providerAttempt(clock, signal, providerTimeoutMs);
+      let exchange: ReturnType<typeof createProviderTransport> | undefined;
       let candidate: string | undefined;
       let issued:
         | {
             readonly credential: string;
             readonly expiresAt: string;
             readonly providerExpiresAt: string;
+            readonly repositories: GitHubAppInstallationScope["repositories"];
           }
         | undefined;
       try {
-        await key.withJwt((jwt, assertCurrent) =>
-          exchange.issue(jwt, attempt, assertCurrent, ({ status, body }) => {
+        await key.withJwt(async (jwt, assertCurrent) => {
+          let selection = scope;
+          if (scope.repositories.some(({ repositoryId }) => repositoryId === undefined)) {
+            const installationId = parseGitHubNumericId(scope.installationId);
+            const appId = parseGitHubNumericId(scope.appId);
+            if (installationId === undefined || appId === undefined) {
+              throw new Error("The GitHub App installation identity is invalid.");
+            }
+            let owner: string | undefined;
+            await sendProviderRequest({
+              endpoint: origin,
+              operation: "verify-installation",
+              installationId,
+              ca,
+              clock,
+              authorization: jwt,
+              attempt,
+              assertMaterialCurrent: assertCurrent,
+              consumeResponse: ({ status, body }) => {
+                if (status !== 200) {
+                  return;
+                }
+                const response = asRecord(JSON.parse(body.toString("utf8")));
+                const login = asRecord(response?.account)?.login;
+                if (
+                  response?.id === installationId &&
+                  response.app_id === appId &&
+                  typeof login === "string" &&
+                  createRepositorySlugPattern().test(`${login}/repository`)
+                ) {
+                  owner = login.toLowerCase();
+                }
+              },
+            });
+            if (!owner) {
+              throw new Error("The GitHub App installation could not be verified.");
+            }
+            selection = {
+              ...scope,
+              repositories: scope.repositories.map(({ repository, repositoryId }) => ({
+                ...(repositoryId === undefined ? {} : { repositoryId }),
+                repository: repository.includes("/") ? repository : `${owner}/${repository}`,
+              })),
+            };
+            if (
+              selection.repositories.some(({ repository }) => !repository.startsWith(owner + "/"))
+            ) {
+              throw new Error("The repository owner differs from the GitHub App installation.");
+            }
+          }
+          const providerScope = prepareGitHubAppProviderScope(origin, selection);
+          exchange = createProviderTransport(ca, clock, providerScope);
+          await exchange.issue(jwt, attempt, assertCurrent, ({ status, body }) => {
             const { packet, token } = parseInstallationTokenResponse(body);
             candidate = token;
             const result = validateInstallationTokenResponse(
@@ -124,15 +180,16 @@ export function createGitHubAppSourceIssuer(options: GitHubAppIssuerOptions = {}
               providerScope,
               minimumValidityMs,
             );
-            if (result.kind === "validated") {
+            if (result.kind === "validated" && result.repositories) {
               issued = {
                 credential: result.credential,
                 expiresAt: new Date(result.usableUntil).toISOString(),
                 providerExpiresAt: new Date(result.providerExpiresAt).toISOString(),
+                repositories: result.repositories,
               };
             }
-          }),
-        );
+          });
+        });
         signal.throwIfAborted();
         if (issued !== undefined) {
           return issued;
@@ -143,7 +200,7 @@ export function createGitHubAppSourceIssuer(options: GitHubAppIssuerOptions = {}
         key.close();
       }
 
-      if (isGitHubWireCredential(candidate)) {
+      if (exchange && isGitHubWireCredential(candidate)) {
         // A rejected response can still identify a live token. Use a separate short
         // budget to revoke the exact candidate even if the issuance caller has left.
         const cleanup = providerAttempt(
@@ -157,7 +214,7 @@ export function createGitHubAppSourceIssuer(options: GitHubAppIssuerOptions = {}
     },
     async revoke(scope: GitHubAppInstallationScope, credential: string, signal: AbortSignal) {
       signal.throwIfAborted();
-      const providerScope = prepareFiniteGitHubProviderScope(origin, scope);
+      const providerScope = prepareGitHubAppProviderScope(origin, scope);
       const exchange = createProviderTransport(ca, clock, providerScope);
       return exchange.revoke(credential, providerAttempt(clock, signal, providerTimeoutMs));
     },

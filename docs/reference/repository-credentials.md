@@ -133,15 +133,14 @@ repository and one writable ref on one App installation.
 }
 ```
 
-Use platform Namespace IDs. Supply App, installation and repository IDs as
-positive decimal safe integer strings. Repository references, IDs and lowercased
-names must each be unique. Registry limits are 1,000 repositories, 128 Namespace
-policies per repository and 4,096 policies total.
+Use platform Namespace IDs and positive decimal App and installation IDs.
+TokenService mode accepts short names for `github-repository` with
+`nativeGit: "v1"`. Other modes require `owner/repo` and numeric repository IDs.
+References, names, and supplied IDs must be unique. Limits are 1,000 repositories,
+128 Namespace policies per repository, and 4,096 policies total.
 
-Before admission, the service independently checks the grant fingerprint.
-It covers provider, App, installation, repository, maximum duration, Namespace,
-allowed and selected profiles, push-ref policy and permissions. Reusing a
-reference after its policy changes cannot retain the old grant.
+The service checks a grant fingerprint over provider, App, installation, repository,
+duration, Namespace, profiles, push-ref rules, and permissions.
 The [push-ref guardrail](repository-credentials/push-ref-guardrail.md)
 covers the client hook and the prepared broker's separate ref check.
 

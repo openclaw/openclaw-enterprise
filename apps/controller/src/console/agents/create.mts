@@ -10,6 +10,7 @@ import type {
   PluginApprovers,
   AgentPluginCredentialSlot,
   PresetLaunchSettings,
+  RepositoryNetworkGrant,
   SecretBindings,
   SecretMetadata,
   SecretReference,
@@ -4037,12 +4038,23 @@ function renderAgentForm(
       return;
     }
     const repositoryBindings = repositories.bindings();
-    const repositoryNetworkPolicy = repositories.scoped()
-      ? repositories
-          .scopedGrants()
-          ?.map(([, grant]) => grant)
-          .sort((a, b) => (a.repository < b.repository ? -1 : 1))
-      : undefined;
+    let repositoryNetworkPolicy: RepositoryNetworkGrant[] | undefined;
+    const scopedGrants = repositories.scopedGrants();
+    if (repositories.scoped() && scopedGrants !== undefined) {
+      repositoryNetworkPolicy = [];
+      for (const [, grant] of scopedGrants) {
+        const repository = grant.repository.includes("/")
+          ? grant.repository
+          : gitSourceFields.qualifiedRepository(grant.repository);
+        if (!repository) {
+          feedback.textContent =
+            "Select a GitHub Source that covers the selected repositories before saving the Agent draft.";
+          return;
+        }
+        repositoryNetworkPolicy.push({ ...grant, repository });
+      }
+      repositoryNetworkPolicy.sort((a, b) => (a.repository < b.repository ? -1 : 1));
+    }
     const body = {
       name: name.value.trim(),
       executionMode: mode.value,

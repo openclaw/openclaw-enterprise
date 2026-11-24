@@ -1258,11 +1258,19 @@ export const BackendSummarySchema = Type.Object(
 export const RepositoryOptionSchema = Type.Object(
   {
     githubAccess: Type.Optional(
-      Type.Object(RepositoryNetworkGrantSchema.properties, {
-        additionalProperties: false,
-        description:
-          "Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions.",
-      }),
+      Type.Object(
+        {
+          ...RepositoryNetworkGrantSchema.properties,
+          repository: Type.String({
+            pattern: "^(?!.*\\.git$)(?:[a-z0-9][a-z0-9-]{0,38}/)?[a-z0-9][a-z0-9._-]{0,99}$",
+          }),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Maximum repository grant for a native GitHub selection. An installation-relative name is qualified from the selected GitHub Source before saving a network policy.",
+        },
+      ),
     ),
     repositoryRef: RepositoryBindingSelectionSchema.properties.repositoryRef,
     displayName: Name,

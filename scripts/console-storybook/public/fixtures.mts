@@ -831,7 +831,9 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
                 installationId: "456",
                 repositories: selected.map((option, index) => ({
                   repositoryId: String(789 + index),
-                  repository: option!.githubAccess!.repository,
+                  repository: option!.githubAccess!.repository.includes("/")
+                    ? option!.githubAccess!.repository
+                    : `example/${option!.githubAccess!.repository}`,
                 })),
                 permissions: { contents: "write", metadata: "read" },
               },

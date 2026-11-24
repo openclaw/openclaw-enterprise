@@ -101,8 +101,9 @@ test(
         appId: fixtureAppId,
         githubInstallationId: fixtureInstallationId,
         maximumDurationSeconds: 600,
-        repositories: registryRepositories.map((repository) => ({
-          ...repository,
+        repositories: registryRepositories.map(({ repository, repositoryRef }) => ({
+          repository: repository.split("/")[1]!.toUpperCase(),
+          repositoryRef,
           namespaces: [
             {
               namespaceId,
@@ -119,15 +120,27 @@ test(
     // invented Source credential. Both Agent admissions must reuse this single finite token.
     const clock = createControlledClock();
     const tls = await createTlsMaterial(t);
-    let issuances = 0;
+    let corruptedReply: "owner" | "id" | undefined = "owner";
     const github = createGitHubProtocol({
       clock,
       expectedRepositoryIds: repositories.map(({ repositoryId }) => repositoryId),
       additionalRepositories: [repositories[1]!],
       additionalPermissions: [permissions],
       tokenResponse(packet) {
-        issuances++;
-        return packet;
+        if (corruptedReply === undefined) {
+          return packet;
+        }
+        const [first, ...rest] = packet.repositories;
+        assert.ok(first);
+        return {
+          ...packet,
+          repositories: [
+            corruptedReply === "owner"
+              ? { ...first, full_name: first.full_name.replace(/^[^/]+/, "other-owner") }
+              : { ...first, id: first.id + 10_000 },
+            ...rest,
+          ],
+        };
       },
     });
     const apiOrigin = await listen(t, createServer(tls, github.handleRequest));
@@ -141,9 +154,9 @@ test(
     const installation = {
       ...buildSandboxInstallation(),
       sandboxNetworkPolicyCeiling: [modelGrant],
-      repositoryNetworkPolicyCeiling: registryRepositories.map(({ repository }) => ({
-        repository,
-        access: "write" as const,
+      repositoryNetworkPolicyCeiling: registryRepositories.map(({ repository }, index) => ({
+        repository: index === 2 ? repository : repository.split("/")[1]!.toUpperCase(),
+        access: index === 0 ? ("read" as const) : ("write" as const),
       })),
       runtime: { nativeWorkerSupport: "custom-image" },
     };
@@ -264,6 +277,27 @@ test(
     const app = createApp(nativeController);
     const request = (method: "GET" | "POST" | "PATCH" | "PUT", url: string, body?: unknown) =>
       inject(method, url, body, app);
+    // Controlled metadata exercises the image-pin checks without qualifying a real runtime.
+    selectFixtureRelease(t);
+    const catalog = await request("GET", `${base}/agents/repository-options`);
+    assert.equal(catalog.statusCode, 200, catalog.body);
+    assert.deepEqual(
+      catalog
+        .json()
+        .data.map(
+          ({ repositoryRef, githubAccess }: { repositoryRef: string; githubAccess: unknown }) => ({
+            repositoryRef,
+            githubAccess,
+          }),
+        ),
+      registryRepositories.map(({ repository, repositoryRef }, index) => ({
+        repositoryRef,
+        githubAccess: {
+          repository: index === 2 ? repository : repository.split("/")[1],
+          access: index === 0 ? "read" : "write",
+        },
+      })),
+    );
     const appKey = github.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const client = await request("POST", "/oauth-clients", {
       kind: "github-app",
@@ -274,17 +308,50 @@ test(
     assert.equal(client.statusCode, 201);
     assert.equal(client.body.includes("PRIVATE KEY"), false);
     const clientId = client.json().data.id;
-    const enrolled = await request("POST", `${base}/credential-sources`, {
+    const sourceInput = {
       name: "Shared GitHub",
       type: "github-app-installation",
       clientId,
       repositoryRefs: repositories.map(({ repositoryRef }) => repositoryRef),
+    };
+    const unavailable = await request("POST", `${base}/credential-sources`, {
+      ...sourceInput,
+      repositoryRefs: ["not-approved"],
     });
+    assert.equal(unavailable.statusCode, 400, unavailable.body);
+    assert.equal(github.issuesOfTokens.length, 0);
+    github.setAppIdentityId(Number(fixtureAppId) + 1);
+    const wrongInstallation = await request("POST", `${base}/credential-sources`, sourceInput);
+    assert.equal(wrongInstallation.statusCode, 503, wrongInstallation.body);
+    assert.equal(github.issuesOfTokens.length, 0);
+    github.setAppIdentityId(Number(fixtureAppId));
+    // The reply lists the right short names but a different owner. No Source can gain custody.
+    const wrongOwner = await request("POST", `${base}/credential-sources`, sourceInput);
+    assert.equal(wrongOwner.statusCode, 503, wrongOwner.body);
+    assert.equal(
+      github.trace.filter(
+        ({ method, target }) => method === "DELETE" && target === "/installation/token",
+      ).length,
+      1,
+    );
+    const sourcesAfterRejection = await request("GET", `${base}/credential-sources`);
+    assert.equal(sourcesAfterRejection.statusCode, 200, sourcesAfterRejection.body);
+    assert.deepEqual(sourcesAfterRejection.json().data, []);
+    corruptedReply = undefined;
+    const enrolled = await request("POST", `${base}/credential-sources`, sourceInput);
     assert.equal(enrolled.statusCode, 201, enrolled.body);
     const gitSource = enrolled.json().data;
     assert.equal(gitSource.type, "github-app-installation");
-    assert.equal(issuances, 1);
     assert.equal(gitSource.clientId, clientId);
+    const allowedShortNames = repositories.map(({ repository }) => repository.split("/")[1]).sort();
+    assert.deepEqual(
+      github.issuesOfTokens.map(({ requestedNames }) => requestedNames),
+      [allowedShortNames, allowedShortNames],
+    );
+    assert.deepEqual(
+      gitSource.scope.repositories,
+      repositories.map(({ repositoryId, repository }) => ({ repositoryId, repository })),
+    );
     // The provider grant is synthetic; custody and the Agent admission path are real.
     const modelSource = await owner.createSource(
       {
@@ -315,8 +382,20 @@ test(
       values: createHarnessConfiguration("codex", "gpt-4.1"),
     });
     assert.equal(config.statusCode, 201, config.body);
-    // Controlled metadata exercises the image-pin checks without qualifying a real runtime.
-    selectFixtureRelease(t);
+    // The Source may write, but the mounted Installation ceiling allows only reads on the first repo.
+    const broaderAgent = await request("POST", `${base}/agents`, {
+      name: `Broader Git ${randomUUID()}`,
+      configurationId: config.json().data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+      credentialSources: [{ sourceId: modelSource.id }, { sourceId: gitSource.id }],
+      repositoryBindings: [
+        { repositoryRef: repositories[0]!.repositoryRef, profile: "github-repository" },
+      ],
+      repositoryNetworkPolicy: [{ repository: repositories[0]!.repository, access: "write" }],
+    });
+    assert.equal(broaderAgent.statusCode, 409, broaderAgent.body);
+    assert.match(broaderAgent.body, /ceiling/i);
     const agents = [];
     for (const grants of [
       [
@@ -478,6 +557,7 @@ test(
     assert.equal(editing.statusCode, 200, editing.body);
     const initialPolicy = await request("GET", existingPolicyPath);
     assert.equal(initialPolicy.statusCode, 200, initialPolicy.body);
+    assert.deepEqual(initialPolicy.json().data.repositoryNetworkPolicyCeiling, []);
     const savedModelPolicy = await request("PUT", existingPolicyPath, {
       expectedVersion: initialPolicy.json().data.policy.version,
       additions: [modelGrant],
@@ -546,9 +626,46 @@ test(
     assert.deepEqual(history[1].sandboxPolicy?.repositoryNetworkPolicy?.grants, newGrants);
 
     assert.equal(
-      issuances,
-      1,
+      github.issuesOfTokens.length,
+      2,
       "admitting peer Agents must reuse the Source token instead of minting Agent variants",
+    );
+
+    // Renewing an enrolled Source uses the verified IDs. A mismatched reply cannot
+    // replace the active credential or turn the Source back into a name selector.
+    const installedSource = {
+      sourceRef: { kind: "credential_source" as const, namespaceId, id: gitSource.id },
+      tokenServiceInstanceId: nativeController.currentTokenServiceInstanceId(),
+    };
+    const beforeRenewal = await owner.resolveCredential(installedSource, t.signal);
+    corruptedReply = "id";
+    await assert.rejects(
+      () => owner.forceRefresh(installedSource, t.signal),
+      /usable installation token/,
+    );
+    assert.equal(
+      (await owner.resolveCredential(installedSource, t.signal)).version,
+      beforeRenewal.version,
+    );
+    assert.equal(
+      github.trace.filter(
+        ({ method, target }) => method === "DELETE" && target === "/installation/token",
+      ).length,
+      2,
+    );
+    corruptedReply = undefined;
+    await owner.forceRefresh(installedSource, t.signal);
+    const renewed = await owner.resolveCredential(installedSource, t.signal);
+    assert.notEqual(renewed.version, beforeRenewal.version);
+    assert.deepEqual(
+      github.issuesOfTokens.slice(2).map(({ repositoryIds, requestedNames }) => ({
+        repositoryIds,
+        requestedNames,
+      })),
+      Array.from({ length: 2 }, () => ({
+        repositoryIds: repositories.map(({ repositoryId }) => Number(repositoryId)),
+        requestedNames: undefined,
+      })),
     );
   },
 );

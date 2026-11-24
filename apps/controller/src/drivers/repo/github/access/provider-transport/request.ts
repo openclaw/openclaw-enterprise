@@ -22,6 +22,11 @@ type ProviderRequestDependencies = {
 } & (
   | { readonly endpoint: ProviderScope; readonly operation: "issue" | "revoke" }
   | { readonly endpoint: string; readonly operation: "verify-app" }
+  | {
+      readonly endpoint: string;
+      readonly operation: "verify-installation";
+      readonly installationId: number;
+    }
 );
 
 export function sendProviderRequest(input: ProviderRequestDependencies): Promise<void> {
@@ -143,7 +148,9 @@ export function sendProviderRequest(input: ProviderRequestDependencies): Promise
       const prepared =
         input.operation === "verify-app"
           ? appIdentityRequestOptions(input.endpoint, authorization, ca)
-          : providerRequestOptions(input.endpoint, input.operation, authorization, ca);
+          : input.operation === "verify-installation"
+            ? appIdentityRequestOptions(input.endpoint, authorization, ca, input.installationId)
+            : providerRequestOptions(input.endpoint, input.operation, authorization, ca);
       attempt.assertAdmitted();
       assertMaterialCurrent();
       const remaining = attempt.deadlineMonoMs - clock.monotonicNow();

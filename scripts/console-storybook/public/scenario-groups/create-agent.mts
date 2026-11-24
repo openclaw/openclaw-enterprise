@@ -1774,11 +1774,19 @@ export const createAgentProvisioningScenarios = {
     ...gitSourcePreview,
     name: "Create a GitHub Source from a registered App",
     oauthCatalog: "ready",
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "application",
+        allowedProfiles: ["github-repository"],
+        githubAccess: { repository: "application", access: "read" },
+      },
+    ],
     description:
-      "An Installation administrator selects an existing GitHub App Client and creates a finite Source from the approved repository selection. The Agent must still save its own repository grant.",
+      "An Installation administrator selects an approved short repository name and creates a finite Source with a registered GitHub App Client. The Source response supplies its verified owner/repository name for the saved Agent policy.",
     steps: [
-      "Choose Create a GitHub Source…, choose Repository automation in GitHub App Client, and create the Source.",
-      "Confirm the created Source is selected. Save Agent draft and inspect its selected Source and saved repository policy.",
+      "Confirm application is selected before an owner is known. Choose Create a GitHub Source…, choose Repository automation in GitHub App Client, and create the Source.",
+      "Confirm the created Source is selected. Save Agent draft and inspect its selected Source and example/application repository policy.",
     ],
     gap: "Simulated Console proof. No GitHub mint, PostgreSQL, IAM, or OpenShell runtime is exercised.",
   },

@@ -3,6 +3,7 @@ import type {
   DeploymentRequestMatch,
   GitHubAppInstallationCredentialSource,
   RepositoryNetworkGrant,
+  RepositoryNetworkPolicyCeiling,
 } from "@openclaw-enterprise/contracts";
 import type { ControllerOptions } from "@openclaw-enterprise/occ";
 
@@ -12,6 +13,7 @@ import { compileOpenShellCredentialPolicy } from "../drivers/sandbox/openshell-c
 
 import { openShellRepositoryCredentialRequests } from "../drivers/credential-proxy/openshell-repository-policy.ts";
 import {
+  matchesConfiguredGitHubRepository,
   resolveSelectedRepositoryScope,
   type GitHubRepositoryRegistry,
 } from "../drivers/repo/github/access/registry.ts";
@@ -43,47 +45,85 @@ export const supportsOpenShellCredentialDeployment: NonNullable<
   }
 };
 
+type OpenShellRepositorySourceSelection = {
+  readonly namespaceId: string;
+  readonly source: Readonly<GitHubAppInstallationCredentialSource>;
+  readonly bindings: readonly AdmittedRepositoryBinding[];
+};
+
+function selectedSourceRepositories(
+  registry: GitHubRepositoryRegistry,
+  { namespaceId, source, bindings }: OpenShellRepositorySourceSelection,
+): RepositoryNetworkPolicyCeiling {
+  if (
+    source.namespaceId !== namespaceId ||
+    source.state !== "ready" ||
+    !isGitHubAppSourceScopeCurrent(source, registry)
+  ) {
+    return [];
+  }
+  const selected = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
+  const access = source.scope.permissions.contents;
+  if (selected.nativeGit !== "v1" || (access !== "read" && access !== "write")) {
+    return [];
+  }
+  return source.scope.repositories
+    .filter((verified) =>
+      selected.repositories.some((configured) =>
+        matchesConfiguredGitHubRepository(configured, verified),
+      ),
+    )
+    .map(({ repository }) => ({ repository, access }));
+}
+
+/** Qualify Installation limits using only GitHub identities in this authorized Source. */
+export function openShellRepositorySourceCeiling(
+  registry: GitHubRepositoryRegistry,
+  input: OpenShellRepositorySourceSelection & { readonly ceiling: RepositoryNetworkPolicyCeiling },
+): RepositoryNetworkPolicyCeiling {
+  try {
+    return selectedSourceRepositories(registry, input).flatMap((selected) => {
+      const configured = input.ceiling.filter((limit) =>
+        matchesConfiguredGitHubRepository(limit, selected),
+      );
+      if (!configured.length) {
+        return [];
+      }
+      return [
+        {
+          repository: selected.repository,
+          access: configured.every(({ access }) => access === "write") ? selected.access : "read",
+        },
+      ];
+    });
+  } catch {
+    return [];
+  }
+}
+
 /** Revalidate the Source and saved Agent grants against the currently selected Namespace registry. */
 export function admitOpenShellRepositoryCredentials(
   registry: GitHubRepositoryRegistry | undefined,
-  input: {
-    readonly namespaceId: string;
-    readonly source: Readonly<GitHubAppInstallationCredentialSource>;
-    readonly bindings: readonly AdmittedRepositoryBinding[];
+  input: OpenShellRepositorySourceSelection & {
     readonly grants: readonly RepositoryNetworkGrant[];
   },
 ): readonly DeploymentRequestMatch[] | undefined {
-  const { namespaceId, source, bindings, grants } = input;
+  if (!registry || !input.grants.length) {
+    return undefined;
+  }
   try {
+    const selected = selectedSourceRepositories(registry, input);
     if (
-      !registry ||
-      source.namespaceId !== namespaceId ||
-      source.state !== "ready" ||
-      !isGitHubAppSourceScopeCurrent(source, registry) ||
-      !grants.length
-    ) {
-      return undefined;
-    }
-    const selected = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
-    if (
-      selected.nativeGit !== "v1" ||
-      !grants.every(
-        ({ repository, access }) =>
-          selected.repositories.some(
-            (candidate) =>
-              candidate.repository === repository &&
-              source.scope.repositories.some(
-                ({ repositoryId, repository: name }) =>
-                  repositoryId === candidate.repositoryId && name === repository,
-              ),
-          ) &&
-          (source.scope.permissions.contents === "write" ||
-            (access === "read" && source.scope.permissions.contents === "read")),
+      !input.grants.every((grant) =>
+        selected.some(
+          ({ repository, access }) =>
+            repository === grant.repository && (access === "write" || grant.access === "read"),
+        ),
       )
     ) {
       return undefined;
     }
-    return openShellRepositoryCredentialRequests(grants);
+    return openShellRepositoryCredentialRequests(input.grants);
   } catch {
     return undefined;
   }

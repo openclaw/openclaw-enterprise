@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from "node:util";
 
 import type {
   GitHubAppInstallationCredentialSource,
-  GitHubAppInstallationScope,
   InstallationSecretRef,
   ResolvedCredential,
 } from "@openclaw-enterprise/contracts";
@@ -10,10 +9,12 @@ import { ResourceStateConflictError, TokenServiceSourceInputError } from "@openc
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
+  matchesConfiguredGitHubRepository,
   resolveGitHubRepositoryBinding,
   resolveSelectedRepositoryScope,
   type GitHubRepositoryRegistry,
 } from "../repo/github/access/registry.ts";
+import type { GitHubAppRepositorySelection } from "../repo/github/access/repository-grant.ts";
 
 interface GitHubAppSourceReceipt extends Required<
   Pick<ResolvedCredential, "credential" | "version" | "expiresAt">
@@ -55,7 +56,7 @@ export function admitGitHubAppSourceScope(
     repositoryRefs,
   }: { readonly namespaceId: string; readonly repositoryRefs: readonly string[] },
   registry: GitHubRepositoryRegistry,
-): GitHubAppInstallationScope {
+): GitHubAppRepositorySelection {
   try {
     const bindings = repositoryRefs.map((repositoryRef) =>
       resolveGitHubRepositoryBinding(registry, {
@@ -87,17 +88,20 @@ export function isGitHubAppSourceScopeCurrent(
   registry: GitHubRepositoryRegistry,
 ): boolean {
   const repositoryRefs = scope.repositories.map(
-    ({ repositoryId, repository }) =>
-      registry.repositories.find(
-        (entry) => entry.repositoryId === repositoryId && entry.repository === repository,
-      )?.repositoryRef,
+    (verified) =>
+      registry.repositories.find((entry) => matchesConfiguredGitHubRepository(entry, verified))
+        ?.repositoryRef,
   );
   if (!repositoryRefs.every((ref) => ref !== undefined)) {
     return false;
   }
   try {
     const current = admitGitHubAppSourceScope({ namespaceId, repositoryRefs }, registry);
-    return isDeepStrictEqual(current, scope);
+    return (
+      current.appId === scope.appId &&
+      current.installationId === scope.installationId &&
+      isDeepStrictEqual(current.permissions, scope.permissions)
+    );
   } catch {
     return false;
   }

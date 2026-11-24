@@ -1,5 +1,10 @@
 import type { GitHubAppInstallationScope } from "@openclaw-enterprise/contracts";
 
+/** Registry policy can select a repository by name before GitHub verifies its ID. */
+export type GitHubAppRepositorySelection = Omit<GitHubAppInstallationScope, "repositories"> & {
+  readonly repositories: readonly Readonly<{ repository: string; repositoryId?: string }>[];
+};
+
 /** Repository set explicitly approved for one Agent revision. */
 export interface GitHubRepositoryGrant extends GitHubAppInstallationScope {
   readonly id: string;

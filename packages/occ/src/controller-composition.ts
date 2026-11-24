@@ -201,6 +201,7 @@ export interface ControllerOptions {
     readonly policy: DeploymentPolicy;
   }) => boolean;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
+  readonly stagedRepositoryCeiling?: import("./repository-policy.ts").StagedRepositoryCeiling;
   readonly repositoryNetworkPolicyCeiling?: RepositoryNetworkPolicyCeiling;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
@@ -876,12 +877,14 @@ export function createControllerComposition(
     selectedProxyOwner: () => drivers.selectedProxyOwner(),
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     repositoryCredentialAdmission: options.repositoryCredentialAdmission,
+    stagedRepositoryCeiling: options.stagedRepositoryCeiling,
     supportsStagedRepositoryRecipient: options.supportsStagedRepositoryRecipient,
     ownedTokenServiceDriver: (instanceId) =>
       managedCredentialSources.ownedTokenServiceDriver(instanceId),
     credentialSourceOwner: credentialSourceDrivers.credentialSourceOwner,
     repositoryNetworkPolicyCeiling: parseRepositoryNetworkPolicyCeiling(
       options.repositoryNetworkPolicyCeiling ?? [],
+      options.stagedRepositoryCeiling !== undefined,
     ),
     drivers,
     selectedRepository: () => publicController.selectedDriver("repo"),

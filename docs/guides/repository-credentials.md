@@ -55,8 +55,12 @@ This path requires the selected TokenService, the paired OpenShell Sandbox and
 Credential Proxy, and qualified runtime images. Dedicated Codex can use the
 operator-managed or service-mode Sandbox. Select the GitHub Backend and its
 approved registry with `repository.id` and
-`repository.configuration.sessionDurationSeconds`. The Client registration
-supplies the signing key for this path.
+`repository.configuration.sessionDurationSeconds`. In each registry entry, use
+the short GitHub name, such as `project`, and grant its Namespace access.
+Use that short name in `repositoryNetworkPolicyCeiling`. The selected Client
+supplies the signing key. TokenService verifies the installation owner and saves
+the repository IDs returned by GitHub.
+
 In Helm, set `repositoryCredentials.registryConfigMapName` to the approved
 registry ConfigMap. Set the GitHub Backend's `registryPath` to
 `/etc/openclaw/repository-registry/registry.json`.

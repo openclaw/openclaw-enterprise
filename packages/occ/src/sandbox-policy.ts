@@ -83,6 +83,7 @@ interface SandboxPolicyDependencies {
   ) => Promise<
     | (ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> & {
         readonly allowsStandaloneModelHistory?: true;
+        readonly ceiling?: RepositoryNetworkPolicyCeiling;
       })
     | undefined
   >;
@@ -391,7 +392,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
                 (await authorizationDecision(principalId, "operate", ref)).decision.allowed,
             )
           : undefined;
-      const repositoryNetworkPolicyCeiling = dependencies.repositoryCeiling(namespaceId);
+      const repositoryNetworkPolicyCeiling =
+        edit?.ceiling ?? dependencies.repositoryCeiling(namespaceId);
       const supported =
         edit !== undefined &&
         (canWithdraw ||

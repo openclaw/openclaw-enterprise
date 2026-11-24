@@ -105,20 +105,23 @@ export function createGitHubProtocol({
 }: GitHubProtocolOptions) {
   let issueBody: string | Buffer | undefined;
   const { privateKey, publicKey } = keyPair;
+  const resources = createRepositoryResources({ repository, repositoryId, description });
+  const repositoryResources = [
+    resources,
+    ...additionalRepositories.map((entry) => createRepositoryResources(entry)),
+  ];
   const authority = createTokenAuthority({
     clock,
     publicKey,
     lifetimeMs: tokenLifetimeMs,
     repositoryId,
     expectedRepositoryIds,
+    repositoriesByName: new Map(
+      repositoryResources.map(({ repo }) => [repo.full_name.split("/")[1]!, repo.id]),
+    ),
     additionalPermissions,
     installationAccess,
   });
-  const resources = createRepositoryResources({ repository, repositoryId, description });
-  const repositoryResources = [
-    resources,
-    ...additionalRepositories.map((entry) => createRepositoryResources(entry)),
-  ];
   const trace: RequestTrace[] = [];
   const errors: string[] = [];
   let appIdentityId = Number(fixtureAppId);
@@ -170,6 +173,22 @@ export function createGitHubProtocol({
         try {
           authority.verifyAppJwt(request.headers.authorization);
           json(200, { id: appIdentityId });
+        } catch {
+          json(401, { message: "Unauthorized" });
+        }
+        return;
+      }
+      if (
+        request.method === "GET" &&
+        url.pathname === `/app/installations/${fixtureInstallationId}`
+      ) {
+        try {
+          authority.verifyAppJwt(request.headers.authorization);
+          json(200, {
+            id: Number(fixtureInstallationId),
+            app_id: appIdentityId,
+            account: { login: repository.split("/")[0] },
+          });
         } catch {
           json(401, { message: "Unauthorized" });
         }

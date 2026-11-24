@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-24
-last_updated_session: authoring-run/cb980faf-dd8e-4334-bc01-d795ff83eaeb
+last_updated_session: authoring-run/2fff43ca-53a8-4cd9-a462-25f833fec902
 ---
 
 # Credential source lifecycle flow
@@ -69,7 +69,7 @@ After [Template consent](connection-templates.md#3-authorize-the-account-in-the-
 
 For Codex device login, `packages/occ/src/device-authorization-flow.ts` checks Agent and Source creation permissions and saves the challenge and issuer handle. TokenService exchanges the grant. OCC rechecks the session, caller, and selected owner before TokenService creates the Source. Cancelling an ungranted login creates no Source.
 
-For a GitHub App installation Source, `apps/controller/src/drivers/token-service/occ.ts:createGitHubAppSource` reads the registered Client's current signing key, checks the selected Repository registry, and requests one finite installation token. TokenService saves the token privately before the Source becomes ready. Each Agent still requires its own saved Repository grants. At deploy, OCC includes the model and Git bindings in one revision. Worker rechecks the Source scope and the exact Repository routes before Credential Proxy configures OpenShell.
+`apps/controller/src/drivers/token-service/occ.ts:createGitHubAppSource` checks Namespace registry grants. If the registry supplies only names, TokenService reads the installation account with the Client's signed App request, then mints one finite token. It verifies the owner, repositories, IDs, and permissions before saving custody. Renewals use the verified IDs. Worker rechecks the Source and Agent grants before configuring OpenShell.
 
 <a id="3-bind-and-admit-an-agent-revision"></a>
 
@@ -168,6 +168,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 15:22: Verify GitHub installation and mint by name. (authoring-run/2fff43ca-53a8-4cd9-a462-25f833fec902 - 83575ae57607ec1302aa119523df6e3b39a53c50)
 
 - 2026-11-24 12:24: Trace PAT adoption and its failure boundary. (authoring-run/cb980faf-dd8e-4334-bc01-d795ff83eaeb - eefcbef7958ee233386b3172384d1777ebbb693d)
 - 2026-11-24 10:41: Trace grant-only Codex login, native account delivery, renewal notification, and referenced Source refusal before revocation. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)

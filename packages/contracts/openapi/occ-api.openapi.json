@@ -21149,7 +21149,7 @@
                           },
                           "githubAccess": {
                             "additionalProperties": false,
-                            "description": "Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions.",
+                            "description": "Maximum repository grant for a native GitHub selection. An installation-relative name is qualified from the selected GitHub Source before saving a network policy.",
                             "properties": {
                               "access": {
                                 "anyOf": [
@@ -21158,9 +21158,7 @@
                                 ]
                               },
                               "repository": {
-                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
-                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
-                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "pattern": "^(?!.*\\.git$)(?:[a-z0-9][a-z0-9-]{0,38}/)?[a-z0-9][a-z0-9._-]{0,99}$",
                                 "type": "string"
                               }
                             },
@@ -31536,7 +31534,7 @@
                           },
                           "githubAccess": {
                             "additionalProperties": false,
-                            "description": "Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions.",
+                            "description": "Maximum repository grant for a native GitHub selection. An installation-relative name is qualified from the selected GitHub Source before saving a network policy.",
                             "properties": {
                               "access": {
                                 "anyOf": [
@@ -31545,9 +31543,7 @@
                                 ]
                               },
                               "repository": {
-                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
-                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
-                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "pattern": "^(?!.*\\.git$)(?:[a-z0-9][a-z0-9-]{0,38}/)?[a-z0-9][a-z0-9._-]{0,99}$",
                                 "type": "string"
                               }
                             },

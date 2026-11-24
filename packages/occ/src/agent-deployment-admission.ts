@@ -1272,9 +1272,12 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       const { sandboxPolicy, ownerUnchanged } = admitDeploymentRepositoryPolicy(
         () => sandboxSnapshot,
         repositoryGrants,
-        dependencies.repositoryPolicy.repositoryNetworkPolicyCeiling,
+        admittedRepository?.stagedPolicy?.ceiling ??
+          dependencies.repositoryPolicy.repositoryNetworkPolicyCeiling,
         protectedSandbox?.driver ?? sandbox,
-        () => dependencies.repositoryPolicy.repositoryGrantAuthority(namespace.id),
+        () =>
+          admittedRepository?.stagedPolicy?.authority ??
+          dependencies.repositoryPolicy.repositoryGrantAuthority(namespace.id),
       );
       const gatewayProxyAdmission = await admitNetworkProxy(
         compute,

@@ -52,7 +52,10 @@ import {
   type GitHubAppIssuerOptions,
   type GitHubAppSourceIssuer,
 } from "./github-app-issuer.ts";
-import { parseGitHubNumericId } from "../repo/github/access/repository-grant.ts";
+import {
+  parseGitHubNumericId,
+  type GitHubAppRepositorySelection,
+} from "../repo/github/access/repository-grant.ts";
 import { providerClockSkewMs } from "../repo/github/access/driver/lifetime.ts";
 import type { GitHubRepositoryRegistry } from "../repo/github/access/registry.ts";
 import {
@@ -388,7 +391,10 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   }
 
   private issueGitHubAppCredential(
-    { clientId, scope }: Pick<GitHubAppInstallationCredentialSource, "clientId" | "scope">,
+    {
+      clientId,
+      scope,
+    }: { readonly clientId: string; readonly scope: GitHubAppRepositorySelection },
     signal: AbortSignal,
   ) {
     const keyRef = githubAppClientSigningKeyRef(
@@ -406,7 +412,10 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
 
   private assertGitHubAppClient(
     candidate: unknown,
-    { clientId, scope }: Pick<GitHubAppInstallationCredentialSource, "clientId" | "scope">,
+    {
+      clientId,
+      scope,
+    }: { readonly clientId: string; readonly scope: Pick<GitHubAppRepositorySelection, "appId"> },
   ): void {
     const client = asRecord(candidate);
     if (
@@ -459,6 +468,15 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       if (namespace?.status !== "ready") {
         throw new ResourceStateConflictError("The credential source Namespace is not ready.");
       }
+      // Serialize enrollment with client retirement before issuing against its signing key.
+      this.assertGitHubAppClient(await connectionTemplates.lockCredentialClient(input.clientId), {
+        clientId: input.clientId,
+        scope,
+      });
+      const issued = await this.issueGitHubAppCredential(
+        { clientId: input.clientId, scope },
+        signal,
+      );
       const source: GitHubAppInstallationCredentialSource = {
         id: ref.id,
         namespaceId: ref.namespaceId,
@@ -468,24 +486,18 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         ownerCapability: "token_service",
         tokenServiceInstanceId: this.tokenServiceInstanceId,
         state: "ready",
-        scope,
+        scope: { ...scope, repositories: issued.repositories },
         createdAt: new Date().toISOString(),
       };
-      // Serialize enrollment with client retirement before pinning a reference.
-      this.assertGitHubAppClient(
-        await connectionTemplates.lockCredentialClient(input.clientId),
-        source,
-      );
-      await credentialSources.createCredentialSource(source);
-      const issued = await this.issueGitHubAppCredential(source, signal);
       try {
+        await credentialSources.createCredentialSource(source);
         const { stored } = encodeGitHubAppCredential(issued);
         await withComputeAbortSignal(signal, () => this.store.create(this.storageRef(ref), stored));
         signal.throwIfAborted();
       } catch (error) {
         // The Source cannot commit after a custody failure. Try to retire its token.
         await this.githubAppIssuer
-          .revoke(scope, issued.credential, AbortSignal.timeout(3_000))
+          .revoke(source.scope, issued.credential, AbortSignal.timeout(3_000))
           .catch(() => false);
         throw error;
       }

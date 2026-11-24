@@ -1473,6 +1473,22 @@ type GitSource = {
   unavailable?: boolean;
 };
 
+const githubRepository = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
+const githubRepositoryName = /^[a-z0-9][a-z0-9._-]{0,99}$/;
+
+function qualifiedRepository(source: GitSource, configured: string): string | undefined {
+  if (githubRepository.test(configured)) {
+    return source.repositories.includes(configured) ? configured : undefined;
+  }
+  if (!githubRepositoryName.test(configured)) {
+    return undefined;
+  }
+  const matches = source.repositories.filter(
+    (repository) => githubRepository.test(repository) && repository.endsWith(`/${configured}`),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 function githubSource(value: unknown, namespaceId: string): GitSource | undefined {
   const source = responseFields(value);
   const scope = responseFields(source.scope);
@@ -1567,7 +1583,7 @@ export function createGitSourceFields(
         created.name !== name ||
         created.clientId !== client.value ||
         created.repositories.length !== refs.length ||
-        (names.length && !names.every((repository) => created.repositories.includes(repository)))
+        (names.length && !names.every((repository) => qualifiedRepository(created, repository)))
       ) {
         throw new Error("The response did not confirm the requested GitHub Source.");
       }
@@ -1779,16 +1795,20 @@ export function createGitSourceFields(
     onChange();
   });
   render();
+  const selectedSource = () =>
+    choices.find(({ id, unavailable }) => id === selected && !unavailable);
   return {
     section,
-    sourceId: () =>
-      enabled &&
-      choices.some(
-        ({ id, unavailable, repositories }) =>
-          id === selected && !unavailable && names.every((name) => repositories.includes(name)),
-      )
-        ? selected
-        : undefined,
+    sourceId: () => {
+      const source = enabled ? selectedSource() : undefined;
+      return source && names.every((name) => qualifiedRepository(source, name))
+        ? source.id
+        : undefined;
+    },
+    qualifiedRepository: (configured: string) => {
+      const source = enabled ? selectedSource() : undefined;
+      return source ? qualifiedRepository(source, configured) : undefined;
+    },
     selectedId: () => (selected && selected !== "new" ? selected : undefined),
     pending: () => selected === "new" || loading,
     dirty: () => selected !== "new" && selected !== original,

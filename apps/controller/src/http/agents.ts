@@ -1,3 +1,5 @@
+import { Check } from "typebox/value";
+
 import {
   WORKSPACE_DEFAULTS_ID,
   harnessAuthBindingFromSnapshot,
@@ -10,7 +12,7 @@ import {
   type AgentStopQuery,
   type FirstDeploymentIntent,
   type RepositoryNetworkGrant,
-  isCanonicalRepositoryGrantList,
+  RepositoryOptionSchema,
 } from "@openclaw-enterprise/contracts";
 import {
   accessBindingsRemovedWithAgent,
@@ -164,7 +166,8 @@ async function listRepositoryOptions({
   reply.send({
     data: result.options.map(
       ({ repositoryRef, displayName, allowedProfiles, description, ...catalog }) => ({
-        ...("githubAccess" in catalog && isCanonicalRepositoryGrantList([catalog.githubAccess])
+        ...("githubAccess" in catalog &&
+        Check(RepositoryOptionSchema.properties.githubAccess, catalog.githubAccess)
           ? { githubAccess: catalog.githubAccess }
           : {}),
         repositoryRef,

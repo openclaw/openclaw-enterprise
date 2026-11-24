@@ -4,6 +4,7 @@ import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
 import {
   admitOpenShellRepositoryCredentials,
+  openShellRepositorySourceCeiling,
   supportsOpenShellCredentialDeployment,
 } from "./openshell-credential-admission.ts";
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
@@ -239,6 +240,7 @@ export function installationControllerOptions(
   | "credentialProxyCapacity"
   | "modelCredentialPreset"
   | "repositoryCredentialAdmission"
+  | "stagedRepositoryCeiling"
   | "supportsStagedRepositoryRecipient"
   | "supportsCredentialDeployment"
 > {
@@ -246,6 +248,10 @@ export function installationControllerOptions(
     modelCredentialPreset: resolveModelCredentialPreset,
     repositoryCredentialAdmission: (input) =>
       admitOpenShellRepositoryCredentials(repositoryRegistry, input),
+    ...(repositoryRegistry && {
+      stagedRepositoryCeiling: (input) =>
+        openShellRepositorySourceCeiling(repositoryRegistry, input),
+    }),
     supportsStagedRepositoryRecipient: ({ compute, sandbox, proxy, harness }) => {
       if (
         !(compute instanceof KubernetesComputeDriver) ||
@@ -939,12 +945,13 @@ export async function loadInstallationConfiguration(options: {
 
 function loadRepositoryNetworkPolicyCeiling(
   value: unknown,
+  allowRepositoryNames: boolean,
 ): RepositoryNetworkPolicyCeiling | undefined {
   if (value === undefined) {
     return undefined;
   }
   try {
-    return parseRepositoryNetworkPolicyCeiling(value);
+    return parseRepositoryNetworkPolicyCeiling(value, allowRepositoryNames);
   } catch (error) {
     if (!(error instanceof RepositoryNetworkPolicyAdmissionError)) {
       throw error;
@@ -999,9 +1006,6 @@ async function composeInstallationConfiguration(
   if (sandboxNetworkPolicyCeiling !== undefined) {
     validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
   }
-  const repositoryNetworkPolicyCeiling = loadRepositoryNetworkPolicyCeiling(
-    configuration.repositoryNetworkPolicyCeiling,
-  );
   const observability = observabilityConfiguration(configuration.observability);
   const iamSettings = iamConfiguration(configuration.iam);
   const runtime = runtimeConfiguration(configuration.runtime);
@@ -1261,6 +1265,10 @@ async function composeInstallationConfiguration(
       sandboxSelection.id !== "strands-box-sandbox" &&
       options.createSandboxDriver === undefined,
   });
+  const repositoryNetworkPolicyCeiling = loadRepositoryNetworkPolicyCeiling(
+    configuration.repositoryNetworkPolicyCeiling,
+    repositoryDeliveryMode === "token-service",
+  );
   if (sshCompute && sandboxSelection !== undefined) {
     throw new Error(
       "drivers.sandbox is unsupported with compute-ssh; it requires the bundled Kubernetes Compute Driver.",
@@ -1561,10 +1569,10 @@ async function composeInstallationConfiguration(
         nativeRepositorySelection,
       );
     } else {
-      const policy = await loadRepositoryPolicy({
-        backend: repositoryBackend,
-        selection: repoSelection,
-      });
+      const policy = await loadRepositoryPolicy(
+        { backend: repositoryBackend, selection: repoSelection },
+        { allowNameOnlyNativeRepositories: repositoryDeliveryMode === "token-service" },
+      );
       repositoryRuntime = Object.freeze({
         ...policy,
         authorityIdentity: githubRepositoryAuthorityIdentity(
