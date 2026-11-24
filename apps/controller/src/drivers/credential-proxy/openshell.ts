@@ -216,7 +216,13 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       sourceRef,
       await client.listProviders(workspace, signal),
     );
-    let resolved: Promise<ResolvedCredential> | undefined;
+    let expectedVersion = notification.version;
+    const resolveCurrentCredential = async () => {
+      const resolved = await resolveCredential();
+      // Manual retries name no version. Keep their first resolved version for later copies.
+      expectedVersion ??= resolved.version;
+      return resolved;
+    };
     // A Sandbox can attach several projections of this Source. Observe each update before the next
     // changes the Sandbox's Provider environment revision.
     for (const name of names) {
@@ -225,8 +231,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         workspace,
         sourceRef,
         name,
-        ...(notification.version === undefined ? {} : { version: notification.version }),
-        resolveCredential: () => (resolved ??= resolveCredential()),
+        ...(expectedVersion === undefined ? {} : { version: expectedVersion }),
+        // Resolve after reading this Provider's resource version so a later copy cannot
+        // be overwritten using material resolved before a concurrent update.
+        resolveCredential: resolveCurrentCredential,
         signal,
       });
     }
