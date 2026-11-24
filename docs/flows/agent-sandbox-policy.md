@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-23"
-last_updated_session: "authoring-run/0fa0ac1a-8ca1-46b3-896e-de8b1a400b39"
+last_updated_session: "authoring-run/834fd8d9-74c1-4639-91e3-d87ff63bc9ef"
 ---
 
 # Agent sandbox policy flow
@@ -90,9 +90,8 @@ uses selected Namespace permissions and saved grants. Admission passes saved or 
 `read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-binds rules to the credential-only Provider. OpenShell filters eligible REST routes through
-both Namespace and frozen Agent `apiActions`. Active filters require native policy. Git and PR safeguards persist. OCE skips body validation
-([limits](../reference/repository-credentials/access-levels.md#known-limits)).
+applies Namespace and frozen Agent `apiLimits` to REST routes. Limits require native enforcement
+at issuance and renewal. [Bodies remain unchecked](../reference/repository-credentials/access-levels.md#known-limits).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
 and version in the save transaction. The only facet is `networking`.
@@ -124,7 +123,7 @@ controller and Worker must stop an unreadable revision.
 
 Deployment rechecks Repo scope, proxy and Driver identities before credential
 access and revision insertion. PostgreSQL binds version, grants and identity,
-including filters. Workers recheck before dispatch. Older Workers refuse the
+including API limits. Workers recheck before dispatch. Older Workers refuse the
 reader marker. Explicit lists block live application.
 
 ### 2. Freeze deployment or enqueue live application
@@ -270,7 +269,11 @@ counters, controls and empty rows.
 
 ## Changelog
 
+- 2026-11-23 20:29: Trace Agent API limits. (authoring-run/834fd8d9-74c1-4639-91e3-d87ff63bc9ef - 9c5e29d947)
+
 - 2026-11-23 22:52: Trace Agent action filters. (authoring-run/0fa0ac1a-8ca1-46b3-896e-de8b1a400b39 - e01544b5df)
+
+- 2026-11-23 20:25: Describe Namespace API limits. (authoring-run/f51f99ed-c96c-4d33-b96b-5fcd4a39ca77 - 7d6fb6a344)
 
 - 2026-11-23 19:42: Document API filters. (authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6 - d9b229e2ff)
 

@@ -3742,9 +3742,12 @@ test("native scoped REST intersects the selected permissions, API limits and fro
       "example/delivery": { issues: "write" },
     },
   };
-  const deliveryRules = mixed.filter(({path}) => path?.startsWith("/repos/example/delivery/"));
+  const deliveryRules = mixed.filter(({ path }) => path?.startsWith("/repos/example/delivery/"));
   assert.deepEqual(await apiRules({ ...limited, outside: "unbound" }, true), deliveryRules);
-  assert.deepEqual(await apiRules(limited, true), deliveryRules.filter(({method}) => method === "GET"));
+  assert.deepEqual(
+    await apiRules(limited, true),
+    deliveryRules.filter(({ method }) => method === "GET"),
+  );
   const limitBoth = (limits: ApiLimits) => ({
     "example/application": limits,
     "example/delivery": limits,

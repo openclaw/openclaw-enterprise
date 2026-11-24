@@ -51,7 +51,7 @@ export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
   readonly requiresNetworkPolicy?: boolean;
   /** The selected registry permits deployment-scoped Git when the Agent saves an ACL. */
   readonly nativeGit?: "v1";
-  /** Native filter support on selected repositories, before the Agent narrows access. */
+  /** Eligible native API levels, before the Agent narrows access. */
   readonly repositoryApiMaxima?: readonly RepositoryApiMaximum[];
   /** The network access of these resolved bindings. The Namespace ceiling is independent. */
   readonly selectedRepositoryNetworkGrants?: RepositoryNetworkPolicyCeiling;
@@ -363,12 +363,14 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
           const write = access === "write" && fitsSelected({ repository, access });
           const cap = (level: RepositoryApiLevel): RepositoryApiLevel =>
             level === "write" && !write ? "read" : level;
-          return [{
-            repository,
-            access: write ? ("write" as const) : ("read" as const),
-            issues: cap(option.issues),
-            pull_requests: cap(option.pull_requests),
-          }];
+          return [
+            {
+              repository,
+              access: write ? ("write" as const) : ("read" as const),
+              issues: cap(option.issues),
+              pull_requests: cap(option.pull_requests),
+            },
+          ];
         });
       },
       admit: admitEdit,
@@ -383,9 +385,8 @@ function selectedRepositoryGrantAllows(
   return (
     (!grant.apiLimits ||
       (selected?.nativeGit === "v1" &&
-        selected.repositoryApiMaxima?.some(
-          (option) => option.repository === grant.repository,
-        ) === true)) &&
+        selected.repositoryApiMaxima?.some((option) => option.repository === grant.repository) ===
+          true)) &&
     selected?.selectedRepositoryNetworkGrants?.some(
       ({ repository, access }) =>
         repository === grant.repository && (access === grant.access || access === "write"),

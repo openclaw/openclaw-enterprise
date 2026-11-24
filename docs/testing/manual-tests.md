@@ -30,11 +30,12 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
     --file tests/integration/openshell-saved-agent-git-policy-real.test.ts
   ```
 
-  The suite selects `issues` for native Issues write. For the deny control, run
-  the file directly with `issue-controls`. B's Agent grant denies `issues:create`
-  despite Issues write. C's Namespace denies all API routes despite an
-  Agent allow for that action. Replace
-  it with `reads` for Issues read only. Keep legacy callback calibration on an unfiltered Namespace.
+  The suite selects `issues` for native Issues write. Run the file directly
+  with `issue-controls` to keep Issues write on the token, cap B's Agent grant at
+  `apiLimits: { issues: "read" }` and restrict C to Git through its Namespace
+  despite the Agent's Issues Write limit. Use `reads` to check
+  that B's explicit write limit cannot exceed the token's Issues read permission.
+  Calibrate the legacy callback in a Namespace without limits.
 
   ```bash
   env -u OCC_DEVELOPMENT_STATE_DIRECTORY -u CODEX_ACCESS_TOKEN \

@@ -46,10 +46,7 @@ export class RepositoryNetworkPolicyAdmissionError extends Error {
 export const repositoryNetworkGrantPattern = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
 export const maxRepositoryNetworkGrants = 32;
 
-export function parseRepositoryApiLimits(
-  input: unknown,
-  path = "/apiLimits",
-): RepositoryApiLimits {
+export function parseRepositoryApiLimits(input: unknown, path = "/apiLimits"): RepositoryApiLimits {
   const invalid = () =>
     new RepositoryNetworkPolicyAdmissionError(
       "INVALID_VALUE",
@@ -62,7 +59,9 @@ export function parseRepositoryApiLimits(
   const limits = input as Record<string, unknown>;
   if (
     !Object.keys(limits).length ||
-    Reflect.ownKeys(limits).some((key) => key !== "default" && key !== "issues" && key !== "pull_requests") ||
+    Reflect.ownKeys(limits).some(
+      (key) => key !== "default" && key !== "issues" && key !== "pull_requests",
+    ) ||
     (Object.hasOwn(limits, "default") && limits.default !== "none")
   ) {
     throw invalid();
