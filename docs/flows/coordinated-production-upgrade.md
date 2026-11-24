@@ -169,9 +169,9 @@ Log reads check Job and Pod identities, refuse NUL and report up to 32 fields.
 Kubernetes Compute uses the Pod service account and refuses single-cluster
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
 Some images and inputs over 1 MiB defer draft checks. `checkHarnessDestinations`
-binds the active revision, Configuration generation and Harness source. It checks
-all draft OpenAI sources against the candidate destination. Invalid bindings,
-refused or incomplete forecasts, and oversized source-backed drafts block shutdown.
+binds the active revision and Configuration generation. For source-authenticated
+Harnesses, it checks all attached OpenAI sources. Invalid bindings, denied or
+incomplete forecasts and oversized source-backed drafts block shutdown.
 Deployment rechecks authorization.
 
 Two-cluster Jobs check API Pod, proxy and optional log/Event access and worker
