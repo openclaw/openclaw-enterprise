@@ -3740,7 +3740,7 @@ incomplete_agents() {
 
 pending=$target_count
 if ((target_count > 0)); then
-  progress "Checking Agent readiness and OpenClaw Doctor."
+  progress "Waiting for Agent revisions and Pods to become ready."
 fi
 incomplete=()
 while IFS= read -r deployment; do
@@ -4017,7 +4017,10 @@ revision_pod_change_since_ready() {
 doctor_failed=0
 doctor_timeout=
 if ((target_count > 0)); then
+  doctor_index=0
   while IFS= read -r target; do
+    doctor_index=$((doctor_index + 1))
+    progress "Starting OpenClaw Doctor checks for Agent $doctor_index of $target_count."
     json_fields "$target" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId \
       gateway_namespace=gatewayNamespace gateway_name=gatewayName
     doctor_prefix="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").doctor"
