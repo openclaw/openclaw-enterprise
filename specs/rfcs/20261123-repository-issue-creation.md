@@ -17,7 +17,7 @@ author: freeqaz-openai
 
 ## Summary
 
-An Agent needs to push fixes and open pull requests (PRs) in `acme/web`, but the team wants people to file issues. **Contributor** permits push, issue creation and PR creation by default where GitHub and the Namespace allow them. Choose Contributor and set **Advanced → Issues → Read-only** for this Agent.
+An Agent should push fixes and open pull requests (PRs) in `acme/web` while leaving issue creation to people. **Contributor** permits push, issue creation and PR creation by default where GitHub and the Namespace allow them. Choose Contributor and set **Advanced → Issues → Read-only** for this Agent.
 
 ## Motivation
 
@@ -79,7 +79,7 @@ To block **all unlisted resources, including future ones**, set `"default": "non
 
 ### Per-Agent controls (separate follow-up)
 
-In **Create Agent → Per-repository access**, selected repositories default to Contributor where Write is permitted. Unselected repositories receive no grant. Save the draft, then customize exceptions in **Repositories → Manage permissions → Advanced**. Set Issues or Pull requests to Read-only to turn off creation independently. Show exceptions beside the role before deployment. A saved opt-out persists if the Namespace later permits that action.
+New eligible [Create Agent](https://github.com/openclaw/openclaw-enterprise/pull/7178) forms default to **Per-repository access**. Check a repository to grant Contributor where Write is permitted, otherwise Read-only. Unselected repositories receive no grant. In the [proposed editor](https://github.com/openclaw/openclaw-enterprise/pull/7180), save the draft and customize exceptions in **Repositories → Manage permissions → Advanced**. Set Issues or Pull requests to Read-only to turn off creation independently. Show exceptions beside the role before deployment. A saved opt-out persists if the Namespace later permits that action.
 
 For a running Agent, **Configuration → Edit repository permissions** opens the same editor. Preserve untouched grants and limits, including `default`. Show whether the saved policy version matches the deployed revision, differs or is unknown. Redeploy to apply changes. An Agent first deployed without a repository policy needs a new Agent ID to adopt one.
 

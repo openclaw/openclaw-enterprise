@@ -13,7 +13,7 @@ rfc: ../rfcs/20261123-repository-issue-creation.md
 ## Implementation
 
 1. Review [GitHub App delivery #6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) in parallel with the RFC. Merge the RFC first. Remove `scopedRest`, `apiActions`, `createIssues` and bare `deny` from registrations. Recheck [permissions](../../docs/reference/repository-credentials/access-levels.md), set `apiLimits` and coordinate redeployment before upgrading. Ship the [Namespace guide #7165](https://github.com/openclaw/openclaw-enterprise/pull/7165) with the new configuration.
-2. [Create Agent #7178](https://github.com/openclaw/openclaw-enterprise/pull/7178) can land separately. Keep the catalog and creation schemas limited to repository and access. If draft creation fails, check for a saved Configuration or model credential before retrying.
+2. [Create Agent #7178](https://github.com/openclaw/openclaw-enterprise/pull/7178) landed independently at [`d4149427`](https://github.com/openclaw/openclaw-enterprise/commit/d41494271000c79831532a2ee77ed74ddf1bac0a). Keep the catalog and creation schemas limited to repository and access. If draft creation fails, check for a saved Configuration or model credential before retrying.
 3. After #6864, add [per-Agent grants #7179](https://github.com/openclaw/openclaw-enterprise/pull/7179). Review the SQL validator and immutable revision checks before upgrading. Integrate [Console editing #7180](https://github.com/openclaw/openclaw-enterprise/pull/7180) with both #7178 and #7179. Exercise the complete journey before wider rollout.
 
 ## Verification
