@@ -3,11 +3,13 @@
 ## Overview
 
 Configure access once before you publish images, a Helm chart, or the OCC CLI.
-Repository writers can dispatch the release workflows. Protect `main`, require
-`CI Required`, and review workflow changes. Each publication requires a
-successful conclusion for the entire `main` push CI workflow and a successful
-`CI Required` job for its exact source commit. First Agent Smoke must succeed
-when selected. There is no second-person approval or approval-comment requirement.
+Protect `main`, require `CI Required` for merge, and review workflow changes.
+**Release OCE** runs Full Integration for the selected source and requires the
+dispatcher's approval through [`integration-main-approval`](../testing/ci/configuration.md#environments).
+Keep provider credentials in the integration environments. The standalone image
+and CLI workflows instead require a successful entire `main` push CI conclusion
+and successful `CI Required` job for the exact source. First Agent Smoke must
+succeed when selected.
 
 Create a separate `container-publish` environment with no required reviewers or
 wait timer, administrator bypass disabled, and exactly one deployment rule:

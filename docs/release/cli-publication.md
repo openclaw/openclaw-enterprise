@@ -1,6 +1,8 @@
 # Publish the OCC CLI
 
-Publish four standalone `occ` binaries and `SHA256SUMS` as a GitHub Release.
+For a complete release with images and chart, use [Release OCE](README.md).
+Use **Release OCC CLI** to publish four standalone `occ` binaries and
+`SHA256SUMS` as a GitHub Release.
 Complete [release configuration](configuration.md) once.
 
 ## Publish
@@ -11,8 +13,7 @@ Complete [release configuration](configuration.md) once.
    code to `main`. Wait for its entire exact push CI run to succeed.
 2. Dispatch [Release OCC CLI](../../.github/workflows/cli-release.yml) on
    `main` with the full `source_sha` and successful `ci_run_id`. The source
-   must match the selected workflow commit. For a complete OCE release, use the
-   same source for images and chart; this workflow does not verify GHCR publication.
+   must match the selected workflow commit. This workflow does not verify GHCR publication.
    The build cross-compiles with pinned Go 1.27.3, checks each binary’s source
    and platform metadata, runs the runner-platform binary, and retains the exact
    binaries and checksums before publication.

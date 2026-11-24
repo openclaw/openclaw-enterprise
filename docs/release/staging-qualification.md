@@ -10,7 +10,11 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Use **Staging Release Qualification** after publishing images and before you
+This workflow accepts only standalone **Enterprise Containers** publications,
+not **Release OCE** runs. Release OCE already performs Full Integration and
+native image checks before publication.
+
+Use **Staging Release Qualification** after publishing standalone images and before you
 attempt an upgrade. CI checks the source commit. This manual workflow pulls the
 published image digests and checks those bytes. It can also rehearse a controller
 upgrade and return while checking human sign-in.
@@ -70,8 +74,11 @@ source, receipt, and recipe checks.
 
 Add `previous_source_sha`, `previous_publication_run_id`, and
 `previous_publication_attempt` for the earlier release. Supply all three.
-The workflow checks two ordered publications against a reviewed controller
-compatibility profile and migration tree. It keeps the previous runtime fixed.
+Before pulling images, the workflow checks two distinct, ordered publications
+against a reviewed controller build-input profile and migration tree. Changes
+outside those inputs are allowed. If the comparison fails, review the changes
+and test expectations before approving a matching profile. The workflow keeps
+the previous runtime fixed.
 
 Require `staging-pair-images.json` and `staging-signin-plan.json`. These files
 prepare the next check; they do not prove sign-in works. Publish the earlier

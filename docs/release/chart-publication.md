@@ -1,7 +1,8 @@
 # Publish the OCE Helm chart
 
-Publish a versioned OpenClaw Control Plane (OCC) Helm chart and matching image
-tags through **Enterprise Containers**. Complete [release configuration](configuration.md)
+For a complete release with matching CLI binaries, use [Release OCE](README.md).
+Use standalone **Enterprise Containers** to publish a versioned OpenClaw Control
+Plane (OCC) Helm chart and matching image tags. Complete [release configuration](configuration.md)
 once. The receipt records the immutable chart and image digests.
 
 ## Publish

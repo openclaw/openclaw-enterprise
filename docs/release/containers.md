@@ -1,7 +1,8 @@
 # Enterprise container publication
 
-Use **Enterprise Containers** to prepare or publish controller and runtime
-images for Linux amd64 and arm64.
+For a complete release, use [Release OCE](README.md). Use standalone
+**Enterprise Containers** to prepare or independently publish controller and
+runtime images for Linux amd64 and arm64.
 
 ## Prepare and publish
 
@@ -116,6 +117,9 @@ The command prints platform, build root, manifest, and config digests. A ZIP
 checksum is not an OCI image digest.
 
 ## Recover a partial publication
+
+For Release OCE, use [complete-release recovery](README.md#recover-a-partial-release).
+The following steps apply only to standalone Enterprise Containers runs.
 
 Preserve the original seven-day OCI artifacts. Do not rerun their producer:
 recovery requires its unchanged attempt. If artifacts expired, this path cannot

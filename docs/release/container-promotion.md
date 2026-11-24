@@ -12,9 +12,11 @@ before transfer. Missing or inaccessible metadata fails closed.
 
 ## Promote
 
-1. Record the full source SHA, publication run ID, and exact attempt from an
-   ordinary successful Enterprise Containers publication. Its receipt must still
-   be retained; preparation and recovery receipts are ineligible.
+1. Record the full source SHA, publication run ID, and exact attempt from a
+   successful Release OCE or standalone Enterprise Containers publication. Its
+   receipt must still be retained. For a completed Release OCE recovery, select
+   the successful recovery run; its final alias job and original preparation
+   evidence must remain available. Standalone image recovery receipts are ineligible.
 2. Under an explicit publication request, dispatch
    [Promote Enterprise Containers to Docker Hub](../../.github/workflows/container-promote.yml)
    on `main` with `source_sha`, `publication_run_id`, and `publication_attempt`.
@@ -22,8 +24,9 @@ before transfer. Missing or inaccessible metadata fails closed.
 3. Compare both Docker Hub digests with the job summary and original GHCR
    digests. Existing identical tags remain unchanged; conflicting tags are refused.
 
-The source must remain in the workflow's `main` history with successful exact
-CI, and the receipt's base digest must match `CONTAINER_NODE_BASE_IMAGE`.
+The source must remain in the workflow's `main` history. Release OCE promotion
+checks the qualification record and full-suite aggregate; standalone promotion
+checks exact push CI. The receipt's base digest must match `CONTAINER_NODE_BASE_IMAGE`.
 The two copies are not atomic. After partial failure, inspect both remote
 digests before retrying; do not remove or replace tags automatically.
 
