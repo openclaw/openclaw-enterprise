@@ -31,7 +31,9 @@ import { OpenShellSandboxConfigurationFailure } from "../sandbox/openshell-sandb
 import {
   compileOpenShellCredentialPolicy,
   openShellCredentialProviderName,
+  openShellNetworksOverlappingCredentialPath,
 } from "../sandbox/openshell-credential-policy.ts";
+import { openShellNetworkRouteMayOverlap } from "../sandbox/openshell-policy.ts";
 import { openShellWorkspaceName, type OpenShellGateway } from "../../backends/openshell.ts";
 import type { OpenShellGatewayClient } from "../sandbox/openshell-gateway-client.ts";
 import {
@@ -544,6 +546,20 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         config.provider_attachment_epoch !== target.sandbox.spec?.provider_attachment_epoch ||
         !/^[0-9a-f]{64}$/.test(String(revision.policy_hash)) ||
         !openShellPushedPolicyMatches(revision.policy, config.policy, routes)
+      ) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      const effectiveNetworks = asRecord(asRecord(config.policy)?.network_policies);
+      if (
+        !effectiveNetworks ||
+        admittedRoutes.some(
+          (route) =>
+            !active.has(route.binding.bindingRef) &&
+            openShellNetworkRouteMayOverlap(
+              openShellNetworksOverlappingCredentialPath(effectiveNetworks, route.path),
+              route,
+            ),
+        )
       ) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }

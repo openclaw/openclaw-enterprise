@@ -1307,7 +1307,7 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
         ports: [443],
         protocol: "rest",
         enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-        rules: [{ allow: { method: "GET", path: "/discovery" } }],
+        rules: [{ allow: { method: "GET", path: "/discovery/v1/apis/drive/v3/rest" } }],
       },
     ],
   };
@@ -1423,12 +1423,20 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
   record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(reduced.policy);
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "ready" });
 
-  // A retained credential route for the withdrawn Provider is never accepted as readiness.
-  record(reduced.policy.network_policies).stale = {
+  // The post-detach effective policy must not reopen the withdrawn path as a public route.
+  const staleRule = {
     name: "stale",
     binaries: [{ path: pluginRequest.binary }],
-    endpoints: [pluginEndpoint],
+    endpoints: [{ ...discoveryEndpoint, path: pluginEndpoint.path, rules: pluginEndpoint.rules }],
   };
+  record(reduced.policy.network_policies).stale = staleRule;
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
+    state: "failed",
+    code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
+  });
+
+  // A retained credential route for the withdrawn Provider is never accepted as readiness.
+  staleRule.endpoints = [pluginEndpoint];
   f.sandbox.spec.policy = sourcePolicyFrom(reduced.policy);
   record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(reduced.policy);
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
