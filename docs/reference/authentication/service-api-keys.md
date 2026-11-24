@@ -27,7 +27,7 @@ upstream credentials managed by [Service accounts](../service-accounts.md).
 
 ## Issue a service key
 
-If you do not have a human session cookie, [sign in](#sign-in-as-a-human-administrator)
+For the cookie and session key used below, [sign in](#sign-in-as-a-human-administrator)
 or use an [existing service administrator](#manage-keys-with-a-service-administrator).
 The sample issues a 30-day Namespace key into an owner-readable file. Omit
 `namespaceId` only for an Installation-scoped principal.
@@ -37,7 +37,8 @@ umask 077
 export OCC_SERVICE_KEY_DIRECTORY='/secure/occ/service-keys'
 install -d -m 700 "$OCC_SERVICE_KEY_DIRECTORY"
 export OCC_SERVICE_KEY_FILE="$(mktemp "$OCC_SERVICE_KEY_DIRECTORY/key.XXXXXX")"
-curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
+curl -q --fail-with-body --silent --show-error --cookie "${OCC_SESSION_COOKIE_JAR:?}" \
+  -H @- <<<"x-occ-session-key: ${OCC_SESSION_KEY:?}" \
   "$OCC_URL/api/auth/service-keys" -H "Origin: $OCC_ORIGIN" -H 'Content-Type: application/json' \
   --data '{"servicePrincipalId":"<service-principal-id>","namespaceId":"<namespace-id>","name":"nightly-reader","expiresIn":2592000}' \
   --output "$OCC_SERVICE_KEY_FILE"
@@ -101,7 +102,8 @@ if key_id == "<confirmed-key-id>" or not key_id.strip(".") or "/" in key_id:
 print(quote(key_id, safe=""))
 ' "$OCC_SERVICE_KEY_ID") &&
   curl -q --globoff --fail-with-body --silent --show-error \
-    --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+    --cookie "${OCC_SESSION_COOKIE_JAR:?}" -H "Origin: $OCC_ORIGIN" \
+    -H @- <<<"x-occ-session-key: ${OCC_SESSION_KEY:?}" \
     --write-out '\nHTTP %{http_code}\n' \
     --request DELETE "$OCC_URL/api/auth/service-keys/$key_path"
 ```
@@ -114,45 +116,96 @@ its recorded ID. OCC does not rotate keys automatically.
 
 ## Sign in as a human administrator
 
-Use a human session for recovery, human-issued keys, and account-only APIs. For
-production, obtain the first administrator’s password through the protected
-bootstrap storage procedure. The following sends it from a file and keeps the
-session cookie in a private directory. Set `OCC_URL` to the approved HTTPS
-endpoint and `OCC_ORIGIN` as in [Requirements](#requirements); without it,
-sign-out returns `403` and the session stays live.
+For production, obtain the administrator’s password from protected bootstrap
+storage. Set `OCC_URL` and [`OCC_ORIGIN`](#requirements). Without the matching
+origin, sign-out returns `403` and the session stays live.
 
-When local startup printed an HTTPS browser console URL, set `OCC_URL` to its
-origin (`https://console.<cluster>.oce.localhost:<port>`, without `/console/`)
-and export `CURL_CA_BUNDLE` as the printed browser CA certificate file; unset it
-when finished. Do not use the loopback API URL there: sign-in returns `200`, but
-the session cookie is `Secure` and scoped to the console's domain, so curl never
-sends it to `http://127.0.0.1` and the next request returns `401`.
+For a local HTTPS console, use its printed origin
+(`https://console.<cluster>.oce.localhost:<port>`, without `/console/`).
+Export `CURL_CA_BUNDLE` with the printed CA certificate path. Unset it when
+finished. Curl can’t send the console’s Secure cookie to `http://127.0.0.1`.
+Without it the session check returns `200` with `data: null`.
+
+Start a fresh Bash shell with jq. Use the stored lowercase email and a private
+password file. Stop on errors. Keep the jar exclusive to this login.
+Password-only sign-in can omit the binding until the first session check.
 
 ```bash
+set +x
 set -o pipefail
 umask 077
-: "${OCC_URL:?Set OCC_URL to the approved HTTPS endpoint or local console origin}"
-: "${OCC_ORIGIN:?Set OCC_ORIGIN to the console origin; see Requirements}"
 export OCC_ADMIN_EMAIL='<first-admin@example.com>'
 export OCC_ADMIN_PASSWORD_FILE='/secure/occ/admin-password'
-OCC_SESSION_DIRECTORY="$(mktemp -d)"
-export OCC_SESSION_COOKIE_JAR="$OCC_SESSION_DIRECTORY/cookies"
-python3 -c 'import json, os, pathlib, sys; json.dump({"email": os.environ["OCC_ADMIN_EMAIL"], "password": pathlib.Path(os.environ["OCC_ADMIN_PASSWORD_FILE"]).read_text().rstrip("\n")}, sys.stdout)' |
-  curl --fail-with-body --silent --show-error --cookie-jar "$OCC_SESSION_COOKIE_JAR" "$OCC_URL/api/auth/sign-in/email" -H 'Content-Type: application/json' --data-binary @- --output /dev/null
-curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" "$OCC_URL/installation"
+
+auth_request() {
+  local status
+  status=$(curl -q --silent --show-error --output "$OCC_SESSION_DIRECTORY/reply" \
+    --write-out '%{http_code}' "$@") && [[ $status == 200 ]]
+}
+
+sign_in() {
+  [[ -z ${OCC_SESSION_DIRECTORY:-} ]] || return 1
+  unset OCC_SESSION_KEY
+  : "${OCC_URL:?}" "${OCC_ORIGIN:?}"
+  OCC_SESSION_DIRECTORY=$(mktemp -d) || return 1
+  export OCC_SESSION_COOKIE_JAR="$OCC_SESSION_DIRECTORY/cookies"
+  jq -cn --rawfile p "$OCC_ADMIN_PASSWORD_FILE" \
+    '{email: env.OCC_ADMIN_EMAIL, password: ($p | sub("\r?\n$"; ""))}' |
+    auth_request --cookie-jar "$OCC_SESSION_COOKIE_JAR" -H 'Content-Type: application/json' \
+      --data-binary @- "$OCC_URL/api/auth/sign-in/email" || return 1
+  mv -- "$OCC_SESSION_DIRECTORY/reply" "$OCC_SESSION_DIRECTORY/login" || return 1
+  verify_session
+}
+
+verify_session() {
+  local key
+  local -a binding=()
+  [[ -z ${OCC_SESSION_KEY:-} && -s ${OCC_SESSION_COOKIE_JAR:?} ]] || return 1
+  key=$(jq -ers 'select(length == 1) | .[0].data | select(.authenticated == true) |
+    if has("sessionKey") then .sessionKey | strings | select(test("^[A-Za-z0-9_-]{43}$") and length == 43)
+    else "" end' "$OCC_SESSION_DIRECTORY/login") || return 1
+  if [[ -n $key ]]; then binding=(-H @-); fi
+  auth_request --cookie "$OCC_SESSION_COOKIE_JAR" "${binding[@]}" \
+    "$OCC_URL/api/auth/session" <<<"x-occ-session-key: $key" || return 1
+  OCC_SESSION_KEY=$(jq -ers --slurpfile login "$OCC_SESSION_DIRECTORY/login" '
+    select(length == 1) | .[0].data |
+    select(.authenticated == true and .user.email == env.OCC_ADMIN_EMAIL) |
+    .sessionKey | strings | select(length == 43 and test("^[A-Za-z0-9_-]{43}$")) |
+    select(. == ($login[0].data.sessionKey // .))' "$OCC_SESSION_DIRECTORY/reply")
+}
+sign_in
 ```
 
-For local development, use the configured administrator credentials. Once
-finished, revoke the session and remove its file:
+If the first session read fails transiently, retry only `verify_session` with
+the original files. If verification remains uncertain, preserve them privately
+and contact the [account administrator](../../guides/deploy/credential-lifecycle.md#choose-the-credential-owner).
+Account-wide revocation ends other sessions too.
+
+When finished, confirm sign-out and check the unchanged cookie before cleanup.
+A missing or unsent cookie also yields `data: null`. That alone cannot prove
+revocation.
 
 ```bash
-curl --fail-with-body --silent --show-error \
-  --cookie "$OCC_SESSION_COOKIE_JAR" --cookie-jar "$OCC_SESSION_COOKIE_JAR" \
-  -H "Origin: $OCC_ORIGIN" \
-  --request POST "$OCC_URL/api/auth/sign-out" --output /dev/null
-rm -- "$OCC_SESSION_COOKIE_JAR"
-rmdir -- "$OCC_SESSION_DIRECTORY"
+check_session() {
+  auth_request --cookie "${OCC_SESSION_COOKIE_JAR:?}" -H @- \
+    "${OCC_URL:?}/api/auth/session" <<<"x-occ-session-key: ${OCC_SESSION_KEY:?}"
+}
+
+auth_request --cookie "${OCC_SESSION_COOKIE_JAR:?}" -H @- -H "Origin: ${OCC_ORIGIN:?}" \
+  --request POST "${OCC_URL:?}/api/auth/sign-out" <<<"x-occ-session-key: ${OCC_SESSION_KEY:?}" &&
+  jq -es 'length == 1 and .[0].data.success == true' "$OCC_SESSION_DIRECTORY/reply" >/dev/null &&
+  check_session &&
+  jq -es 'length == 1 and (.[0] | has("data") and .data == null)' "$OCC_SESSION_DIRECTORY/reply" >/dev/null &&
+  unset OCC_SESSION_KEY &&
+  rm -- "$OCC_SESSION_COOKIE_JAR" "$OCC_SESSION_DIRECTORY/login" "$OCC_SESSION_DIRECTORY/reply" &&
+  rmdir -- "$OCC_SESSION_DIRECTORY" &&
+  unset OCC_SESSION_COOKIE_JAR OCC_SESSION_DIRECTORY
 ```
+
+If revocation is uncertain, keep the files private. Run `check_session` and
+inspect `$OCC_SESSION_DIRECTORY/reply` privately after HTTP `200`. Retry only if the original session is still active.
+Never drop the binding or adopt a replacement key. If only file removal failed,
+finish local cleanup.
 
 ## Manage keys with a service administrator
 
