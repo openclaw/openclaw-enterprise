@@ -16,7 +16,15 @@ import {
   type CodexAdmission,
   type GatewayPod,
 } from "./agents.ts";
-import { log, minute, modelAddress, run, waitFor, type SmokeStep } from "./process.ts";
+import {
+  log,
+  minute,
+  modelAddress,
+  run,
+  waitFor,
+  waitForChannelProxyReadiness,
+  type SmokeStep,
+} from "./process.ts";
 import { kubectl, modelEvents, wireField, type SmokeStack } from "./setup.ts";
 
 interface Observation {
@@ -278,7 +286,7 @@ async function configureInstallation(
         ),
     );
   };
-  await smokeStep("channel-proxy-envoy-trust-rollout", () =>
+  const envoyTrust = smokeStep("channel-proxy-envoy-trust-rollout", () =>
     waitFor(
       "channel Envoy data-plane trust rollout",
       async () => {
@@ -341,6 +349,10 @@ async function configureInstallation(
     ),
   );
 
+  await waitForChannelProxyReadiness(envoyTrust, configureApiTrust(stack, ca, smokeStep));
+}
+
+async function configureApiTrust(stack: SmokeStack, ca: string, smokeStep: SmokeStep) {
   // The API keeps its ordinary Gateway CA and adds only the smoke provider's public CA.
   const current = (
     await kubectl(stack, [
