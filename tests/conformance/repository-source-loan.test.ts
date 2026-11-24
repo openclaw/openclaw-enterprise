@@ -7,6 +7,7 @@ import {
   RepositorySourceLoanRefusal,
   type RepositorySourceCustody,
   type RepositorySourceRefusalReason,
+  type RepositorySourceWriteFenceFailure,
 } from "../../apps/controller/src/drivers/repo/github/access/source-loan.ts";
 import { writeHoldOf } from "../../apps/controller/src/drivers/repo/access/material-hold.ts";
 
@@ -47,6 +48,8 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
   // Revisions with an unretired installed-copy record (deployment writes it, the Worker retires it).
   const copies = new Set(["revision-agent-a", "revision-agent-b"]);
   const copyRead = { fails: false };
+  // The copy record of a Provider write: its record or its settle can fail on the database.
+  const fence = { record: "ok" as "ok" | "throws" | "missing", settleFails: false };
   // The access each revision was deployed with: its saved repository network policy grants.
   const admitted = new Map<string, { repository: string; access: "read" | "write" }[] | undefined>([
     ["revision-agent-a", [{ repository: "fixture/a", access: "write" }]],
@@ -110,10 +113,16 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
         write: (revisionId: string, version: string) => ({
           dispatching: async () => {
             writes.push(["dispatching", revisionId, version]);
-            return true;
+            if (fence.record === "throws") {
+              throw new Error("canceling statement due to lock timeout");
+            }
+            return fence.record === "ok";
           },
           settled: async (outcome: "applied" | "unapplied") => {
             writes.push([outcome, revisionId, version]);
+            if (fence.settleFails) {
+              throw new Error("connection terminated");
+            }
           },
         }),
       };
@@ -139,6 +148,7 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
     operable,
     copies,
     copyRead,
+    fence,
     admitted,
     counts,
     writes,
@@ -168,11 +178,13 @@ type Lent = ReturnType<typeof lent>;
 
 function loanReader(fake: ReturnType<typeof custodyFake>, now = { value: start + 100_000 }) {
   const refusals: RepositorySourceLoanRefusal[] = [];
+  const fenceFailures: RepositorySourceWriteFenceFailure[] = [];
   const reader = createRepositorySourceMaterialReader<undefined, Lent>(fake.custody, {
     clock: { now: () => now.value },
     refused: (refusal) => refusals.push(refusal),
+    fenceFailed: (failure) => fenceFailures.push(failure),
   });
-  return { reader, refusals, now };
+  return { reader, refusals, fenceFailures, now };
 }
 
 async function lend(reader: ReturnType<typeof loanReader>["reader"], source = lent()) {
@@ -547,6 +559,54 @@ test("a loan's lifetime is fixed from its authority check, so a write that lands
     ["applied", "revision-agent-a", "version-1"],
   ]);
   await hold.release();
+});
+
+test("a lent write whose record or settle fails is reported with its Agent, revision and Source version", async () => {
+  const fake = custodyFake();
+  const { reader, fenceFailures } = loanReader(fake);
+  const told = (code: RepositorySourceWriteFenceFailure["code"]) => ({
+    code,
+    agentId: "agent-a",
+    revisionId: "revision-agent-a",
+    sourceId: "cs_fixture_token",
+    sourceVersion: "version-1",
+  });
+
+  // A record that fails (an error, or no copy row to record on) sends nothing and is reported.
+  for (const record of ["throws", "missing"] as const) {
+    fake.fence.record = record;
+    const { hold } = await lend(reader);
+    assert.equal(await hold.dispatching?.(), false, record);
+    await hold.release();
+  }
+  assert.deepEqual(fenceFailures.splice(0), [
+    told("REPOSITORY_SOURCE_WRITE_UNRECORDED"),
+    told("REPOSITORY_SOURCE_WRITE_UNRECORDED"),
+  ]);
+
+  // A hold that ended before the record records nothing by design: not a failure.
+  fake.fence.record = "missing";
+  const ended = await lend(reader);
+  await ended.hold.release();
+  assert.equal(await ended.hold.dispatching?.(), false);
+  assert.deepEqual(fenceFailures, []);
+
+  // A settle that fails leaves the record (the Source stays fenced): reported, never thrown to
+  // the Provider write, whose own outcome stands.
+  fake.fence.record = "ok";
+  fake.fence.settleFails = true;
+  for (const outcome of ["applied", "unapplied"] as const) {
+    const { hold } = await lend(reader);
+    assert.equal(await hold.dispatching?.(), true);
+    await hold.settled?.(outcome);
+    await hold.release();
+  }
+  assert.deepEqual(fenceFailures, [
+    told("REPOSITORY_SOURCE_WRITE_UNSETTLED"),
+    told("REPOSITORY_SOURCE_WRITE_UNSETTLED"),
+  ]);
+  // Neither report carries the value.
+  assert.doesNotMatch(JSON.stringify(fenceFailures), /github_pat_/);
 });
 
 test("a refused loan is reported once per revision, even while a peer revision's loans succeed", async () => {

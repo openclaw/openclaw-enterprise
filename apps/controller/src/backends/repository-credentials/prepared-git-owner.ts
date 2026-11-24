@@ -64,7 +64,9 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
       | "PREPARED_GITHUB_APP_KEY_INVALID"
       | "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC"
       | "PREPARED_GITHUB_RETIRED_UNREVOKED"
-      | "REPOSITORY_SOURCE_LOAN_REFUSED",
+      | "REPOSITORY_SOURCE_LOAN_REFUSED"
+      | "REPOSITORY_SOURCE_WRITE_UNRECORDED"
+      | "REPOSITORY_SOURCE_WRITE_UNSETTLED",
     context?: Readonly<Record<string, string | number | boolean | undefined>>,
     severity?: "info" | "error",
   ) => void;
@@ -247,6 +249,15 @@ export async function startPreparedGitHubGitOwner(
           credentialSourceId: refusal.sourceId,
           ...(refusal.sourceVersion && { credentialSourceVersion: refusal.sourceVersion }),
           ...(refusal.tokenClass && { tokenClass: refusal.tokenClass }),
+        }),
+      // A failed record sent nothing; a failed settle keeps the Source fenced until the copy is
+      // reconciled. Either way the operator sees which Agent and Source version it concerns.
+      fenceFailed: (failure) =>
+        options.report?.(failure.code, {
+          agentId: failure.agentId,
+          revisionId: failure.revisionId,
+          credentialSourceId: failure.sourceId,
+          credentialSourceVersion: failure.sourceVersion,
         }),
     });
   const custody = await privateInput(options.custodyKeyPath);

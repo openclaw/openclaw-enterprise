@@ -281,6 +281,17 @@ export function registerWorkerCases(): void {
         agentId: "agt_test",
         revisionId: "rev_test",
       },
+      // A lent write whose record failed (nothing sent) or whose settle failed (still fenced).
+      ...(["REPOSITORY_SOURCE_WRITE_UNRECORDED", "REPOSITORY_SOURCE_WRITE_UNSETTLED"] as const).map(
+        (code) => ({
+          event: "worker.error",
+          code,
+          agentId: "agt_test",
+          revisionId: "rev_test",
+          credentialSourceId,
+          credentialSourceVersion,
+        }),
+      ),
       {
         event: "worker.error",
         code: "REPOSITORY_SOURCE_LOAN_REFUSED",

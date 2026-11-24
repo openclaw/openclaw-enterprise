@@ -8,6 +8,7 @@ import type { MaterialWriteHold } from "../../drivers/repo/access/material-hold.
 import type {
   LockedRepositorySource,
   RepositorySourceCustody,
+  RepositorySourceWriteFence,
 } from "../../drivers/repo/github/access/source-loan.ts";
 
 /** Maximum wait to acquire a Source row lock. */
@@ -208,7 +209,7 @@ export function createRepositorySourceCustody(options: {
             AND retired_at IS NULL`;
           // Whether this write made the record: an earlier uncertain write's record is kept.
           let made = false;
-          const fence: Required<Pick<MaterialWriteHold, "dispatching" | "settled">> = {
+          const fence: RepositorySourceWriteFence = {
             async dispatching() {
               if (!hold.held()) {
                 return false;
@@ -237,33 +238,31 @@ export function createRepositorySourceCustody(options: {
               });
             },
             async settled(outcome) {
-              try {
-                if (outcome === "applied") {
-                  // A confirmed conditional write also settles an earlier uncertain one: that was
-                  // conditional on an older Provider resource version, which never recurs.
-                  await fenced((c) =>
-                    c.query(
-                      `UPDATE occ.repository_source_copies
-                       SET confirmed_source_version = $4, confirmed_at = clock_timestamp(),
-                         unknown_write_version = NULL, unknown_write_at = NULL
-                       WHERE ${where}`,
-                      [...copy, version],
-                    ),
-                  );
-                } else if (made) {
-                  await fenced((c) =>
-                    c.query(
-                      `UPDATE occ.repository_source_copies
-                       SET unknown_write_version = NULL, unknown_write_at = NULL
-                       WHERE ${where} AND unknown_write_version = $4`,
-                      [...copy, version],
-                    ),
-                  );
-                }
-                made = false;
-              } catch {
-                // The record stays: the Source stays fenced until reconciliation settles it.
+              // A failure rejects and leaves the record: the Source stays fenced until
+              // reconciliation settles it. The loan reports it.
+              if (outcome === "applied") {
+                // A confirmed conditional write also settles an earlier uncertain one: that was
+                // conditional on an older Provider resource version, which never recurs.
+                await fenced((c) =>
+                  c.query(
+                    `UPDATE occ.repository_source_copies
+                     SET confirmed_source_version = $4, confirmed_at = clock_timestamp(),
+                       unknown_write_version = NULL, unknown_write_at = NULL
+                     WHERE ${where}`,
+                    [...copy, version],
+                  ),
+                );
+              } else if (made) {
+                await fenced((c) =>
+                  c.query(
+                    `UPDATE occ.repository_source_copies
+                     SET unknown_write_version = NULL, unknown_write_at = NULL
+                     WHERE ${where} AND unknown_write_version = $4`,
+                    [...copy, version],
+                  ),
+                );
               }
+              made = false;
             },
           };
           return fence;

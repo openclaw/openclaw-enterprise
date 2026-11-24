@@ -38,6 +38,27 @@ export interface SourceLoanCaller {
   limitIdle(ms: number): Promise<void>;
 }
 
+/** The record of one Provider write on the revision's copy (see `RepositorySourceCustody.write`). */
+export interface RepositorySourceWriteFence {
+  /** Records the write before dispatch. False (or a throw) means nothing may be sent. */
+  dispatching(): Promise<boolean>;
+  /** Settles the record. A rejection leaves it, so the Source stays fenced. */
+  settled(outcome: "applied" | "unapplied"): Promise<void>;
+}
+
+/**
+ * A Provider write whose record failed (nothing was sent) or whose settle failed (the record
+ * stays, so the Source refuses replacement and deletion until it is reconciled). Names the Agent,
+ * revision, Source and its custody version; never the value, a digest or the Provider name.
+ */
+export interface RepositorySourceWriteFenceFailure {
+  readonly code: "REPOSITORY_SOURCE_WRITE_UNRECORDED" | "REPOSITORY_SOURCE_WRITE_UNSETTLED";
+  readonly agentId: string;
+  readonly revisionId: string;
+  readonly sourceId: string;
+  readonly sourceVersion: string;
+}
+
 export interface RepositorySourceCustody {
   /**
    * Takes a shared lock on the Source's catalog row with a bounded wait and reads it. Replacement
@@ -63,10 +84,7 @@ export interface RepositorySourceCustody {
          * on the copy as a write whose outcome is unknown, committed before dispatch; `settled`
          * clears it once the outcome is known. Replacement and retirement refuse while it stands.
          */
-        readonly write: (
-          revisionId: string,
-          version: string,
-        ) => Required<Pick<MaterialWriteHold, "dispatching" | "settled">>;
+        readonly write: (revisionId: string, version: string) => RepositorySourceWriteFence;
       }
     | undefined
   >;
@@ -159,6 +177,8 @@ export function createRepositorySourceMaterialReader<
     readonly clock?: { now(): number };
     /** Told once per revision, Source version and reason; a waiting route reads at every pass. */
     readonly refused?: (refusal: RepositorySourceLoanRefusal) => void;
+    /** Told each time a lent write's record or settle fails. */
+    readonly fenceFailed?: (failure: RepositorySourceWriteFenceFailure) => void;
   } = {},
 ): TokenMaterialReader<Transaction, Source> {
   const clock = options.clock ?? Date;
@@ -284,9 +304,37 @@ export function createRepositorySourceMaterialReader<
       }
       reported.delete(revisionKey(source));
       // The Provider write records itself on the revision's copy before it is dispatched.
+      const fence = locked.write(source.session.revisionId, resolved.version);
+      const failed = (code: RepositorySourceWriteFenceFailure["code"]) =>
+        options.fenceFailed?.({
+          code,
+          agentId: source.session.agentId,
+          revisionId: source.session.revisionId,
+          sourceId,
+          sourceVersion: resolved.version,
+        });
       const hold: MaterialWriteHold = {
         ...locked.hold,
-        ...locked.write(source.session.revisionId, resolved.version),
+        async dispatching() {
+          let recorded: boolean;
+          try {
+            recorded = await fence.dispatching();
+          } catch {
+            recorded = false;
+          }
+          // A hold that already ended records nothing by design; only a failed record is told.
+          if (!recorded && locked.hold.held()) {
+            failed("REPOSITORY_SOURCE_WRITE_UNRECORDED");
+          }
+          return recorded;
+        },
+        async settled(outcome) {
+          try {
+            await fence.settled(outcome);
+          } catch {
+            failed("REPOSITORY_SOURCE_WRITE_UNSETTLED");
+          }
+        },
       };
       return { resolved, hold, checkedAt };
     } catch (error) {
