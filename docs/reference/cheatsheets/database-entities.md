@@ -435,6 +435,8 @@ Records one native Git Provider copy of a [repository token Source](../repositor
 - `retirement_blocked`
 - `retirement_attempted_at`
 - `retired_at`
+- `expected_source_version`
+- `expected_at`
 
 ## Identity and access
 
