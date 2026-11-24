@@ -1,6 +1,6 @@
 # Other credential delivery modes
 
-This page describes legacy serving paths. The current Source API no longer admits or returns Gateway or old Proxy Source formats, so the former Source CRUD examples below cannot enroll or manage new Sources. Use the [TokenService Source API](../credential-sources.md#register-a-source) for current registration.
+Gateway and protected Proxy Sources use the Source API with named Secret references and their existing owner-specific lifecycle. For managed static and OAuth Sources, see [TokenService enrollment](../credential-sources.md#register-a-source).
 
 For a dedicated Agent, the **OpenClaw Gateway Pod** reads its admitted channel credentials and any configured Gateway password from Kubernetes Secrets. It does not receive the Harness model credential. Embedded execution combines Gateway and Harness in one workload. See [runtime credential placement](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
 

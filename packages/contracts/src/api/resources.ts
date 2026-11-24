@@ -16,6 +16,7 @@ import {
   CredentialSourceConfig,
   CredentialSourceId,
   CredentialSourceReference,
+  CredentialSourceSecrets,
   CredentialSourceType,
   GatewayManagedModeSchema,
   AgentNetworkProxySchema,
@@ -802,6 +803,51 @@ export const CredentialSourceSchema = Type.Union([
   OAuthCredentialSourceSchema,
 ]);
 
+const LegacyCredentialSourceSchema = Type.Object(
+  {
+    id: CredentialSourceId,
+    namespaceId: NamespaceId,
+    name: Name,
+    type: CredentialSourceType,
+    ownerCapability: Type.Union([
+      Type.Literal("credential_gateway"),
+      Type.Literal("credential_proxy"),
+    ]),
+    config: CredentialSourceConfig,
+    egress: Type.Optional(
+      Type.Object(
+        {
+          adoption: Type.Union([
+            Type.Literal("live"),
+            Type.Literal("prepared"),
+            Type.Literal("credential_free"),
+          ]),
+          retention: Type.Literal("none"),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
+        },
+      ),
+    ),
+    secrets: CredentialSourceSecrets,
+    state: Type.Union([
+      Type.Literal("registering"),
+      Type.Literal("ready"),
+      Type.Literal("deleting"),
+    ]),
+    ref: CredentialSourceReference,
+    status: Type.Optional(CredentialSourceStatusSchema),
+  },
+  { additionalProperties: false },
+);
+
+const CredentialSourceResultSchema = Type.Union([
+  CredentialSourceSchema,
+  LegacyCredentialSourceSchema,
+]);
+
 export const AgentRuntimeCredentialStatusSchema = Type.Object(
   {
     transportConfigured: Type.Boolean(),
@@ -1237,7 +1283,7 @@ export const SecretDetailResponse = Type.Object(
 );
 
 export const CredentialSourceResponse = Type.Object(
-  { data: CredentialSourceSchema, meta: Meta },
+  { data: CredentialSourceResultSchema, meta: Meta },
   {
     $id: "CredentialSourceResponse",
     additionalProperties: false,
@@ -1288,7 +1334,7 @@ export const CredentialWithdrawalResponse = Type.Object(
 );
 
 export const CredentialSourceListResponse = Type.Object(
-  { data: Type.Array(CredentialSourceSchema), meta: Meta },
+  { data: Type.Array(CredentialSourceResultSchema), meta: Meta },
   { additionalProperties: false },
 );
 

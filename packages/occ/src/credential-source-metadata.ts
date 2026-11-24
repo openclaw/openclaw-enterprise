@@ -31,7 +31,12 @@ export type LegacyCredentialSourceMetadata = Readonly<
   }
 >;
 
-/** Internal metadata for existing Gateway and Proxy callers, never a public Source response. */
+export type CredentialSourceManagementMetadata = Readonly<
+  | (CredentialSourceMetadata & { readonly status?: CredentialSourceStatus })
+  | LegacyCredentialSourceMetadata
+>;
+
+/** Internal legacy metadata. The HTTP projection selects wire fields and never spreads this record. */
 export function legacyCredentialSourceMetadata(
   source: Readonly<LegacyCredentialSource>,
   status?: CredentialSourceStatus,

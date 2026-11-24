@@ -279,20 +279,34 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     body: { name: "Slack access token", value: token },
   });
   assert.equal(secret.status, 201, JSON.stringify(secret.body));
+  const slackSecretRef = { kind: "secret", id: string(record(secret.data).id), namespaceId };
   const source = await request("POST", `${base}/credential-sources`, {
     body: {
       name: "Slack account",
       type: "bearer-token",
       config: sourceConfig,
-      secrets: { token: { kind: "secret", id: string(record(secret.data).id), namespaceId } },
+      secrets: { token: slackSecretRef },
     },
   });
   assert.equal(source.status, 201, JSON.stringify(source.body));
   const sourceId = string(record(source.data).id);
+  const slackSourceMetadata = {
+    id: sourceId,
+    namespaceId,
+    type: "bearer-token",
+    state: "ready",
+    ownerCapability: "credential_gateway",
+    config: sourceConfig,
+    ref: { kind: "credential_source", id: sourceId, namespaceId },
+    secrets: { token: slackSecretRef },
+  };
+  assert.partialDeepStrictEqual(source.data, slackSourceMetadata);
+  const googleToken = "fixture-google-refresh-token";
   const googleSecret = await request("POST", `${base}/secrets`, {
-    body: { name: "Google refresh token", value: "fixture-google-refresh-token" },
+    body: { name: "Google refresh token", value: googleToken },
   });
   assert.equal(googleSecret.status, 201, JSON.stringify(googleSecret.body));
+  const googleSecretRef = { kind: "secret", id: string(record(googleSecret.data).id), namespaceId };
   const googleSource = await request("POST", `${base}/credential-sources`, {
     body: {
       name: "Google account",
@@ -305,13 +319,53 @@ test("deploying Google Workspace and Slack together freezes both selections and 
         scope: "https://www.googleapis.com/auth/gmail.readonly",
         token_url: "https://oauth2.googleapis.com/token",
       },
-      secrets: {
-        refresh_token: { kind: "secret", namespaceId, id: string(record(googleSecret.data).id) },
-      },
+      secrets: { refresh_token: googleSecretRef },
     },
   });
   assert.equal(googleSource.status, 201, JSON.stringify(googleSource.body));
   const googleSourceId = string(record(googleSource.data).id);
+  const googleSourceMetadata = {
+    id: googleSourceId,
+    namespaceId,
+    type: "oauth2-refresh-token",
+    state: "ready",
+    ownerCapability: "credential_gateway",
+    ref: { kind: "credential_source", id: googleSourceId, namespaceId },
+    secrets: { refresh_token: googleSecretRef },
+  };
+  assert.partialDeepStrictEqual(googleSource.data, {
+    ...googleSourceMetadata,
+    status: { state: "ready", refresh: { state: "ready" } },
+  });
+
+  // Inline TokenService material cannot replace a Source owned by the Gateway.
+  const wrongOwner = await request("PATCH", `${base}/credential-sources/${sourceId}`, {
+    body: { secret: { token: "fixture-incorrect-owner-token" } },
+  });
+  assert.equal(wrongOwner.status, 409, JSON.stringify(wrongOwner.body));
+  assert.match(string(record(record(wrongOwner.body).error).message), /source owner/);
+
+  // Existing Source selectors need both Gateway records and their Secret references, without values.
+  const slackDetail = await request("GET", `${base}/credential-sources/${sourceId}`);
+  assert.equal(slackDetail.status, 200, JSON.stringify(slackDetail.body));
+  assert.partialDeepStrictEqual(slackDetail.data, {
+    ...slackSourceMetadata,
+    status: { state: "ready" },
+  });
+  const inventory = await request("GET", `${base}/credential-sources`);
+  assert.equal(inventory.status, 200, JSON.stringify(inventory.body));
+  assert(Array.isArray(inventory.data));
+  const sourcesById = new Map(inventory.data.map((item) => [record(item).id, item]));
+  assert.partialDeepStrictEqual(sourcesById.get(sourceId), slackSourceMetadata);
+  assert.partialDeepStrictEqual(sourcesById.get(googleSourceId), googleSourceMetadata);
+  const publicResponses = JSON.stringify([
+    source.body,
+    googleSource.body,
+    slackDetail.body,
+    inventory.body,
+  ]);
+  assert.equal(publicResponses.includes(token), false);
+  assert.equal(publicResponses.includes(googleToken), false);
   tokenReads = 0;
   const model = await request("POST", `${base}/credential-sources`, {
     body: { name: "Model account", type: "openai" },

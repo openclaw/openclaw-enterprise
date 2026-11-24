@@ -1,4 +1,7 @@
-import type { LegacyCredentialSourceMetadata } from "./credential-source-metadata.ts";
+import type {
+  CredentialSourceManagementMetadata,
+  LegacyCredentialSourceMetadata,
+} from "./credential-source-metadata.ts";
 import { ScopeViolationError } from "./errors.ts";
 import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
 import {
@@ -95,7 +98,6 @@ import type {
   ConnectionTemplate,
   CredentialSourceReference,
   CredentialSourceMetadata,
-  CredentialSourceStatus,
   CredentialWithdrawalStatus,
   AuditEvent,
   Driver,
@@ -1203,7 +1205,7 @@ export class OpenClawController {
     input: RotateCredentialSourceInput,
     failureAudit?: (reasonCode: string) => AuditEvent,
     audit?: AuditEvent,
-  ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
+  ): Promise<CredentialSourceManagementMetadata> {
     return this.composition.credentials.credentialSourceOperations.rotateCredentialSource(
       principalId,
       input,
@@ -1216,7 +1218,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     credentialSourceId: string,
-  ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
+  ): Promise<CredentialSourceManagementMetadata> {
     return this.composition.credentials.credentialSourceOperations.readCredentialSource(
       principalId,
       namespaceId,
@@ -1227,7 +1229,7 @@ export class OpenClawController {
   async listCredentialSources(
     principalId: string,
     namespaceId: string,
-  ): Promise<readonly Readonly<CredentialSourceMetadata>[]> {
+  ): Promise<readonly CredentialSourceManagementMetadata[]> {
     return this.composition.credentials.credentialSourceOperations.listCredentialSources(
       principalId,
       namespaceId,
