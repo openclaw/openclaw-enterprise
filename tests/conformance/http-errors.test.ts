@@ -58,6 +58,7 @@ import {
   RepositoryGitSenderUnqualifiedError,
   ResourceConflictError,
   RepositorySourceCopiesUnretiredError,
+  RepositorySourceWriteUnreconciledError,
   ResourceStateConflictError,
   RetryLaterError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -282,6 +283,36 @@ const cases = [
       code: "RESOURCE_CONFLICT",
       message:
         "1 Source copy unretired (unretired_repository_source_copy): agt_00000000-0000-4000-8000-000000000001/rev_00000000-0000-4000-8000-000000000002. Stop or redeploy its Agent without it; the Worker retries every few minutes.",
+    },
+  ],
+  [
+    "unreconciled Source writes, the largest count, the first readable one named",
+    new RepositorySourceWriteUnreconciledError(unretiredCopies(99_999), unretiredCopies(1)[0]),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "99999 Provider writes are unreconciled (unreconciled_repository_source_write): agt_00000000-0000-4000-8000-000000000001/rev_00000000-0000-4000-8000-000000000002 +99998. Stop or redeploy their Agents; the Worker then confirms the Provider retired.",
+    },
+  ],
+  [
+    "one unreconciled Source write, named",
+    new RepositorySourceWriteUnreconciledError(unretiredCopies(1), unretiredCopies(1)[0]),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "1 Provider write is unreconciled (unreconciled_repository_source_write): agt_00000000-0000-4000-8000-000000000001/rev_00000000-0000-4000-8000-000000000002. Stop or redeploy its Agent; the Worker then confirms the Provider retired.",
+    },
+  ],
+  [
+    "unreconciled Source writes, the largest count, none readable",
+    new RepositorySourceWriteUnreconciledError(unretiredCopies(99_999)),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "99999 native Git Provider writes of this credential source have an unknown outcome (unreconciled_repository_source_write). Stop or redeploy each Agent that uses it; the Worker then confirms its Provider retired.",
     },
   ],
   [
