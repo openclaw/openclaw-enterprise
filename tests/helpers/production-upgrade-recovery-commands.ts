@@ -1552,6 +1552,11 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
                   : [],
           });
         }
+      } else if (
+        args.includes("get") &&
+        args.includes("deployments,statefulsets,pods,persistentvolumeclaims")
+      ) {
+        out({ items: state.workloadInventory ?? [] });
       } else if (args.includes("get")) {
         out({ items: [] });
       } else if (args.includes("exec") && args.includes("/sys/fs/cgroup/memory.max")) {
