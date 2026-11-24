@@ -137,21 +137,16 @@ type ErrorCase = readonly [
   expected: Pick<RequestFailure, "status" | "code" | "message" | "details">,
 ];
 
-function dependencyUnavailable(message: string) {
-  return { status: 503, code: "DEPENDENCY_UNAVAILABLE", message } as const;
+function expectedFailure(status: number, code: string) {
+  return (message: string): ErrorCase[2] => ({ status, code, message });
 }
 
-function resourceConflict(message: string) {
-  return { status: 409, code: "RESOURCE_CONFLICT", message } as const;
-}
-
-function invalidRequest(message: string) {
-  return { status: 400, code: "INVALID_REQUEST", message } as const;
-}
-
-function forbidden(message: string) {
-  return { status: 403, code: "FORBIDDEN", message } as const;
-}
+const dependencyUnavailable = expectedFailure(503, "DEPENDENCY_UNAVAILABLE");
+const resourceConflict = expectedFailure(409, "RESOURCE_CONFLICT");
+const invalidRequest = expectedFailure(400, "INVALID_REQUEST");
+const forbidden = expectedFailure(403, "FORBIDDEN");
+const unauthenticated = expectedFailure(401, "UNAUTHENTICATED");
+const namespaceNotEmpty = expectedFailure(409, "NAMESPACE_NOT_EMPTY");
 
 // Many OCC errors subclass ScopeViolationError, ResourceConflictError or
 // AuthorizationDeniedError, so each row also guards the order of the checks in
@@ -203,11 +198,7 @@ const cases = [
   [
     "a non-empty Namespace names what it still contains",
     new NamespaceNotEmptyError(["Agents", "Presets"]),
-    {
-      status: 409,
-      code: "NAMESPACE_NOT_EMPTY",
-      message: "The requested Namespace is not empty. It still contains: Agents, Presets.",
-    },
+    namespaceNotEmpty("The requested Namespace is not empty. It still contains: Agents, Presets."),
   ],
   [
     "a non-empty Namespace names the remaining resource IDs that fit and counts the rest",
@@ -219,11 +210,9 @@ const cases = [
         Secrets: ["sec_1"],
       },
     ),
-    {
-      status: 409,
-      code: "NAMESPACE_NOT_EMPTY",
-      message: `The requested Namespace is not empty. It still contains: Agents, Configurations (${["0", "1"].map((digit) => `cfg_${digit.repeat(36)}`).join(", ")} and 10 more), Secrets (sec_1), pending Agent provisioning.`,
-    },
+    namespaceNotEmpty(
+      `The requested Namespace is not empty. It still contains: Agents, Configurations (${["0", "1"].map((digit) => `cfg_${digit.repeat(36)}`).join(", ")} and 10 more), Secrets (sec_1), pending Agent provisioning.`,
+    ),
   ],
   [
     "a non-empty Namespace with many Agents still names its Configurations",
@@ -231,17 +220,15 @@ const cases = [
       Agents: Array.from({ length: 5 }, (_, index) => `agt_${String(index).repeat(36)}`),
       Configurations: [`cfg_${"5".repeat(36)}`, `cfg_${"6".repeat(36)}`],
     }),
-    {
-      status: 409,
-      code: "NAMESPACE_NOT_EMPTY",
-      // IDs are taken one per kind in turn, so Agents cannot use up the whole message.
-      message: `The requested Namespace is not empty. It still contains: Agents (agt_${"0".repeat(36)}, agt_${"1".repeat(36)} and 3 more), Configurations (cfg_${"5".repeat(36)} and 1 more).`,
-    },
+    // IDs are taken one per kind in turn, so Agents cannot use up the whole message.
+    namespaceNotEmpty(
+      `The requested Namespace is not empty. It still contains: Agents (agt_${"0".repeat(36)}, agt_${"1".repeat(36)} and 3 more), Configurations (cfg_${"5".repeat(36)} and 1 more).`,
+    ),
   ],
   [
     "a non-empty Namespace with unnamed contents",
     new NamespaceNotEmptyError(),
-    { status: 409, code: "NAMESPACE_NOT_EMPTY", message: "The requested Namespace is not empty." },
+    namespaceNotEmpty("The requested Namespace is not empty."),
   ],
   [
     "an Installation without a Credential Gateway",
@@ -880,7 +867,7 @@ const cases = [
   ].map<ErrorCase>((reason) => [
     `a denial about the caller's own state says so: ${reason}`,
     new CallerStateDeniedError(reason),
-    { status: 403, code: "FORBIDDEN", message: reason },
+    forbidden(reason),
   ]),
   [
     "a deletion retry owned by another actor names the condition",
@@ -904,22 +891,18 @@ const cases = [
   [
     "a Kubernetes API 401",
     apiError(401),
-    {
-      status: 401,
-      code: "UNAUTHENTICATED",
-      message: "The caller did not provide valid credentials.",
-    },
+    unauthenticated("The caller did not provide valid credentials."),
   ],
   ["a Kubernetes API 403", apiError(403), forbidden(GENERIC_DENIAL)],
   [
     "a 401 admission failure",
     admissionFailure({ statusCode: 401 }),
-    { status: 401, code: "UNAUTHENTICATED", message: CREDENTIAL_REQUIRED },
+    unauthenticated(CREDENTIAL_REQUIRED),
   ],
   [
     "a 401 admission failure of a request that sent an Authorization header",
     admissionFailure({ statusCode: 401, reason: "authorization_header" }),
-    { status: 401, code: "UNAUTHENTICATED", message: AUTHORIZATION_HEADER_REFUSED },
+    unauthenticated(AUTHORIZATION_HEADER_REFUSED),
   ],
   [
     "a refused admission boundary",
@@ -1072,9 +1055,7 @@ for (const [name, error, expected] of cases) {
       expected,
     );
     assert.doesNotMatch(failure.message, /internal detail/);
-    // The wire cap (256 characters) must not cut a mapped message, such as a trailing doc link.
-    type WireError = { error: Pick<ErrorResponse["error"], "message" | "reason"> };
-    const sent: { body?: WireError } = {};
+    const sent: { status?: number; body?: ErrorResponse } = {};
     const headers = new Map<string, string>();
     const reply = {
       request: { id: "req_1" },
@@ -1082,8 +1063,11 @@ for (const [name, error, expected] of cases) {
         headers.set(name, value);
         return reply;
       },
-      status: () => reply,
-      send: (body: WireError) => {
+      status: (status: number) => {
+        sent.status = status;
+        return reply;
+      },
+      send: (body: ErrorResponse) => {
         sent.body = body;
         return reply;
       },
@@ -1091,7 +1075,12 @@ for (const [name, error, expected] of cases) {
     // This reply implements only the methods the wire mapper exercises.
     canonicalFailure(reply as unknown as Parameters<typeof canonicalFailure>[0], failure);
     assert.ok(sent.body);
-    assert.equal(sent.body.error.message, failure.message);
+    const { code, message, details } = sent.body.error;
+    // The wire cap (256 characters) must not cut a mapped message, such as a trailing doc link.
+    assert.deepEqual(
+      { status: sent.status, code, message, ...(details === undefined ? {} : { details }) },
+      expected,
+    );
     assert.equal(
       sent.body.error.reason,
       undefined,
