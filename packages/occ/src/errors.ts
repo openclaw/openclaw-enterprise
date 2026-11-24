@@ -1484,6 +1484,74 @@ export class CredentialWithdrawalInProgressError extends ResourceStateConflictEr
 }
 
 /**
+ * A repository token Source keeps its value while a native Git Provider copy of it may still be
+ * installed: the Worker confirms each copy retired only after it reads back that the Provider is
+ * gone, which needs the revision's Sandbox to be gone and its Gateway to answer.
+ */
+export class RepositorySourceCopiesUnretiredError extends ResourceStateConflictError {
+  readonly unretired: number;
+  /** Every unretired copy, for the caller-visible answer built after the transaction ends. */
+  readonly copies: readonly Readonly<UnretiredRepositorySourceCopy>[];
+  /**
+   * `named` is a copy whose Agent the caller may read; its retained reason (when the Worker
+   * recorded one) says whether a Sandbox still attaches the Provider or the Gateway did not
+   * answer. The message never names a Provider or carries a value, and fits the 256-character
+   * API message cap for any count up to 99999.
+   */
+  constructor(
+    copies: readonly Readonly<UnretiredRepositorySourceCopy>[],
+    named?: Readonly<UnretiredRepositorySourceCopy>,
+  ) {
+    const unretired = copies.length;
+    const one = unretired === 1;
+    super(
+      named
+        ? `${unretired} Source ${one ? "copy" : "copies"} unretired (unretired_repository_source_copy): ${named.agentId}/${named.revisionId}${named.retirementBlocked ? ` (${named.retirementBlocked})` : ""}${one ? "" : ` +${unretired - 1}`}. Stop or redeploy its ${one ? "Agent" : "Agents"} without it; the Worker retries every few minutes.`
+        : `${unretired} native Git ${one ? "copy" : "copies"} of this credential source ${one ? "is" : "are"} not confirmed retired (unretired_repository_source_copy). Stop or redeploy without the source each Agent that uses it; the Worker rechecks each copy every few minutes.`,
+    );
+    this.unretired = unretired;
+    this.copies = copies;
+    this.name = "RepositorySourceCopiesUnretiredError";
+  }
+}
+
+/**
+ * A repository token Source keeps its value while a native Git Provider write of it has an
+ * unknown outcome: the response was lost, so the write may still take effect. The Worker
+ * recorded the write before it sent it and settles it only once it reads the Provider back
+ * retired. Replacement and deletion are refused meanwhile, so a late write can neither reorder
+ * against a new value nor outlive the Source.
+ */
+export class RepositorySourceWriteUnreconciledError extends ResourceStateConflictError {
+  readonly copies: readonly Readonly<UnretiredRepositorySourceCopy>[];
+  /** `named` is a copy whose Agent the caller may read; never a Provider name or a value. */
+  constructor(
+    copies: readonly Readonly<UnretiredRepositorySourceCopy>[],
+    named?: Readonly<UnretiredRepositorySourceCopy>,
+  ) {
+    const count = copies.length;
+    const one = count === 1;
+    super(
+      named
+        ? `${count} Provider ${one ? "write is" : "writes are"} unreconciled (unreconciled_repository_source_write): ${named.agentId}/${named.revisionId}${one ? "" : ` +${count - 1}`}. Stop or redeploy ${one ? "its Agent" : "their Agents"}; the Worker then confirms the Provider retired.`
+        : `${count} native Git Provider ${one ? "write" : "writes"} of this credential source ${one ? "has" : "have"} an unknown outcome (unreconciled_repository_source_write). Stop or redeploy each Agent that uses it; the Worker then confirms its Provider retired.`,
+    );
+    this.copies = copies;
+    this.name = "RepositorySourceWriteUnreconciledError";
+  }
+}
+
+/** An unretired repository Source copy as Source deletion reports it; never a Provider name. */
+export interface UnretiredRepositorySourceCopy {
+  readonly agentId: string;
+  readonly revisionId: string;
+  /** Why the Worker's last attempt kept it: `provider_present` or `gateway_unavailable`. */
+  readonly retirementBlocked?: string;
+  /** A Provider write of the Source for this copy has an unknown outcome. */
+  readonly unreconciledWrite?: true;
+}
+
+/**
  * Source deletion is refused only because a provider token issued for the source may still be
  * valid: an issue or revocation whose outcome was lost. It settles once the provider's maximum
  * token lifetime has passed, never earlier. A retry repeats only the safe withdrawal.
@@ -1570,9 +1638,9 @@ export class CredentialGatewayNotConfiguredError extends Error {
 export class CredentialSourceConfigError extends Error {
   readonly field: string;
   /** The request member that holds `field`. */
-  readonly group: "config" | "secrets";
+  readonly group: "config" | "secrets" | "secret";
 
-  constructor(field: string, message: string, group: "config" | "secrets" = "config") {
+  constructor(field: string, message: string, group: "config" | "secrets" | "secret" = "config") {
     super(message);
     this.name = "CredentialSourceConfigError";
     this.field = field;

@@ -582,6 +582,10 @@
                         "label": "Access Levels"
                       },
                       {
+                        "page": "reference/repository-credentials/repository-token-source",
+                        "label": "Repository Token Source"
+                      },
+                      {
                         "page": "reference/repository-credentials/push-ref-guardrail",
                         "label": "Push Guardrail"
                       },
@@ -1394,6 +1398,7 @@
               "flows/agent-presets",
               "flows/credential-source-egress",
               "reference/sandbox-policies",
+              "reference/sandbox-policies/repository-credential",
               "guides/topics/agent-sandbox-policy",
               "flows/agent-sandbox-policy"
             ]

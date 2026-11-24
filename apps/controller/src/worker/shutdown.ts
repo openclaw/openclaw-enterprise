@@ -12,6 +12,8 @@ export interface WorkerComposition {
   readonly readinessPath?: string;
   readonly repositoryGitTransport?: Closable;
   readonly preparedRepositoryGit?: Closable;
+  /** The repository token Source row-hold pool; closed after the owner that holds rows. */
+  readonly sourceLockPool?: { end(): Promise<void> };
   readonly receiptServer?: Closable;
   readonly closeMetrics: () => Promise<void>;
   readonly preparedGitHub?: Closable;
@@ -34,6 +36,7 @@ export function closeWorkerComposition(composition: WorkerComposition): Promise<
       : { close: () => unlink(readinessPath).catch(() => {}) },
     composition.repositoryGitTransport,
     composition.preparedRepositoryGit,
+    composition.sourceLockPool && { close: () => composition.sourceLockPool!.end() },
     composition.receiptServer,
     { close: composition.closeMetrics },
     composition.preparedGitHub,

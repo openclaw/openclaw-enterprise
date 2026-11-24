@@ -9076,6 +9076,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.repositoryApiMaxima[].issues` | `"none" or "read" or "write"` | Yes | — |
 | `data.repositoryApiMaxima[].pull_requests` | `"none" or "read" or "write"` | Yes | — |
 | `data.repositoryApiMaxima[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
+| `data.repositoryCredential` | `object or object or object` | No | The credential the Agent's repository bindings resolve to. Absent when the Agent has no repository bindings or they do not resolve. Never contains the token. |
 | `data.repositoryNetworkPolicyCeiling` | `array<object>` | Yes | max items: 32; Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently. |
 | `data.repositoryNetworkPolicyCeiling[].access` | `"read" or "write"` | Yes | — |
 | `data.repositoryNetworkPolicyCeiling[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
@@ -11396,7 +11397,7 @@ Register a managed static Source. OCC allocates its identity and selects the Tok
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
+| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries. |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `secret` | `object<string, string>` | Yes | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
 | `type` | `"static"` | Yes | — |
@@ -11664,11 +11665,11 @@ Update a Source through its recorded owner
 
 **UpdateTokenServiceSourceBody**
 
-Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.
+Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed. The github preset cannot be added or removed after registration. A github Source's config update must repeat repositories with the preset; its repositories change only separately from material and while the Source is unbound.
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
+| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries. |
 | `secret` | `object<string, string>` | No | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
 
 Example request

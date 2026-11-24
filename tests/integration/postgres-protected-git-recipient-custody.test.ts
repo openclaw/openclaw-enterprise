@@ -6,7 +6,11 @@ import {
   selectBundledRepositoryGitCustody,
   selectRegisteredRepositoryGitCustody,
 } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/egress-proxy/openshell-repository-git-evidence.ts";
+import {
+  openShellGitRecipientEvidence,
+  openShellInstallationGitProviderPrefix,
+  openShellSourceGitProviderPrefix,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-repository-git-evidence.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { postgresRepositorySessions } from "../../packages/occ/src/state/postgres-repository-sessions.ts";
 import {
@@ -24,6 +28,7 @@ import type {
   RepositoryRevisionState,
 } from "../../packages/contracts/src/index.ts";
 import {
+  requireGitHubApp,
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
@@ -862,6 +867,57 @@ test(
 );
 
 test(
+  "an App installation recipient releases nothing to a Provider observed with a Source's name",
+  requiresPostgres,
+  async (t) => {
+    for (const provider of [
+      openShellInstallationGitProviderPrefix,
+      openShellSourceGitProviderPrefix,
+    ] as const) {
+      await t.test(provider, async (t) => {
+        const f = await fixture(t, { installationAccess: true });
+        await disposeNativeSession(f);
+        const binding = resolveGitHubRepositoryBinding(f.registry, {
+          namespaceId: f.revision.namespaceId,
+          repositoryRef: "team-install",
+          profile: "github-installation",
+        });
+        const driver = {
+          id: "installation-name",
+          implementation: "openshell",
+          configurationId: "c".repeat(64),
+        };
+        const owner = await f.startOwner({
+          controlSocket: undefined,
+          repositoryGitCustody: selectBundledRepositoryGitCustody(driver),
+        });
+        const { installation, revisionId } = await admitProtectedSession(f, driver, binding, {
+          mode: 6,
+        });
+        const routes = new PostgresOpenShellGitRouteStore(f.pool);
+        const recorded = await recordBootstrapRoute(f, routes, installation, revisionId);
+        // Only the native network-policy recipient lends a Source; this one keeps main's names.
+        const observed = { ...recorded.observed, provider: provider + "a".repeat(32) };
+        await f.pool.query(
+          "UPDATE occ.credential_deliveries SET observed=$2::jsonb WHERE revision_id=$1",
+          [revisionId, JSON.stringify(observed)],
+        );
+        await owner.maintain();
+        const material = await owner.protectedGit!.observedHook!.readMaterial(
+          { revisionId, fence: 1, observed },
+          t.signal,
+        );
+        if (provider === openShellInstallationGitProviderPrefix) {
+          assert.ok(material && "value" in material, "the installation name is released");
+        } else {
+          assert.ok(!material || !("value" in material), "a Source's name is not released");
+        }
+      });
+    }
+  },
+);
+
+test(
   "OpenShell custody requires the current fence and the actually observed material generation",
   requiresPostgres,
   async (t) => {
@@ -907,6 +963,21 @@ test(
     assert.ok(owner.protectedGit, "the protected Git authority is selected");
     await owner.maintain();
     const selectedRoute = { revisionId, fence: 1, observed };
+    // Keep the caller and durable observation in agreement. Only the Provider family
+    // is wrong for this online recipient, which has no deliveryProfile.
+    const source = { ...observed, provider: openShellSourceGitProviderPrefix + "a".repeat(32) };
+    const setObserved = (value: typeof observed) =>
+      f.pool.query("UPDATE occ.credential_deliveries SET observed=$2::jsonb WHERE revision_id=$1", [
+        revisionId,
+        JSON.stringify(value),
+      ]);
+    await setObserved(source);
+    const refused = await owner.protectedGit.online.readMaterial(
+      { ...selectedRoute, observed: source },
+      t.signal,
+    );
+    assert.ok(!refused || !("value" in refused), "online custody must refuse a Source Provider");
+    await setObserved(observed);
     const selected = await owner.protectedGit.online.readMaterial(selectedRoute, t.signal);
     assert.ok(
       selected && !("absent" in selected),
@@ -1109,7 +1180,7 @@ async function assertTerminalRetirement(
     providerInstanceId: binding.grant.providerInstanceId,
     grantId: binding.grant.grantId,
     scope: "github-repository" as const,
-    installationId: registry.githubInstallationId,
+    installationId: requireGitHubApp(registry).installationId,
     repositories: entries.map(({ repositoryId, repository }) => ({ repositoryId, repository })),
     operation: "receive-pack" as const,
   });
@@ -2003,7 +2074,7 @@ for (const removal of [
         providerInstanceId: bindings[0]!.grant.providerInstanceId,
         grantId: bindings[0]!.grant.grantId,
         scope: "github-repository" as const,
-        installationId: registry.githubInstallationId,
+        installationId: requireGitHubApp(registry).installationId,
         repositories: entries.map(({ repositoryId, repository }) => ({ repositoryId, repository })),
         operation: "receive-pack" as const,
       });

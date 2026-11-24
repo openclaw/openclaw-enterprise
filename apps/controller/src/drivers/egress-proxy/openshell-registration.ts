@@ -88,7 +88,10 @@ export function createOpenShellCapabilities(input: {
         throw new Error("Missing the selected Driver's protected repository Git authority.");
       }
       git.connectRouteStore(pool, emit);
-      return proxy.bindRepositoryGit(authority);
+      const bound = await proxy.bindRepositoryGit(authority);
+      // The copy record, not the loaded registry, names the Source copies left to retire.
+      git.retireSourceCopiesAtStart((name) => input.backend.client.clientForNamespace(name));
+      return bound;
     },
   };
   return {

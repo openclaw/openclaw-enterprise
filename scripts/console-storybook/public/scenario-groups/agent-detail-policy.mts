@@ -1,7 +1,9 @@
 import type {
+  RepositoryNetworkGrant,
   SandboxNetworkGrant,
   SandboxPolicyApplication,
   SandboxPolicyRecommendation,
+  SandboxPolicyViewWire,
 } from "@openclaw-enterprise/contracts";
 import type { createFixtureFetch } from "../preview-rules.mts";
 
@@ -40,6 +42,12 @@ type PolicyState =
   | "repositoryEditor"
   | "repositoryEditorConcurrent"
   | "repositoryRecovery"
+  | "credentialApp"
+  | "credentialUnreadable"
+  | "credentialConfirmed"
+  | "credentialPending"
+  | "credentialUnreconciled"
+  | "credentialUnavailable"
   | "protected"
   | "withheldOne"
   | "withheldMany";
@@ -68,9 +76,80 @@ type AgentDetailPolicyScenario = {
   policyKeepPending?: boolean;
   policyAdminDenied?: true;
   policyCeiling?: SandboxNetworkGrant[];
+  policyRepositoryCredential?: SandboxPolicyViewWire["repositoryCredential"];
 };
 
 type PolicyEntry = [id: string, scenario: AgentDetailPolicyScenario];
+
+const savedRepositoryGrants: RepositoryNetworkGrant[] = [
+  { repository: "example/application", access: "read" },
+  { repository: "example/tooling", access: "write" },
+];
+const tokenSource = {
+  kind: "credential_source" as const,
+  id: "cs_00000000-0000-4000-8000-000000000031",
+  name: "example-repository-token",
+  state: "ready" as const,
+  ceiling: savedRepositoryGrants,
+  effectiveRepositoryNetworkPolicy: savedRepositoryGrants,
+};
+const previousRevisionId = "rev_00000000-0000-4000-8000-000000000006";
+const currentRevisionId = "rev_00000000-0000-4000-8000-000000000007";
+const replacement = {
+  committedSourceVersion: "3",
+  committedAt: "2026-11-20T09:15:00.000Z",
+};
+
+// The repository credential in the policy read, one story per kind and delivery state.
+const repositoryCredentials: Partial<
+  Record<PolicyState, NonNullable<SandboxPolicyViewWire["repositoryCredential"]>>
+> = {
+  credentialApp: { kind: "github_app" },
+  credentialUnreadable: { kind: "credential_source", readable: false },
+  credentialConfirmed: {
+    ...tokenSource,
+    deliveries: [
+      {
+        revisionId: currentRevisionId,
+        state: "confirmed",
+        ...replacement,
+        confirmedSourceVersion: "3",
+        confirmedAt: "2026-11-20T09:16:30.000Z",
+      },
+    ],
+  },
+  credentialPending: {
+    ...tokenSource,
+    ceiling: [{ repository: "example/application", access: "read" }],
+    effectiveRepositoryNetworkPolicy: [{ repository: "example/application", access: "read" }],
+    deliveries: [
+      {
+        revisionId: previousRevisionId,
+        state: "confirmed",
+        ...replacement,
+        confirmedSourceVersion: "3",
+        confirmedAt: "2026-11-20T09:16:30.000Z",
+      },
+      {
+        revisionId: currentRevisionId,
+        state: "pending",
+        ...replacement,
+        confirmedSourceVersion: "2",
+        confirmedAt: "2026-11-19T17:40:00.000Z",
+      },
+    ],
+  },
+  credentialUnreconciled: {
+    ...tokenSource,
+    deliveries: [{ revisionId: currentRevisionId, state: "unreconciled", ...replacement }],
+  },
+  credentialUnavailable: {
+    kind: "credential_source",
+    id: "cs_00000000-0000-4000-8000-000000000032",
+    state: "unavailable",
+    deliveries: [],
+  },
+};
 
 export function createAgentDetailPolicyScenarios({
   candidateVersion,
@@ -95,6 +174,32 @@ export function createAgentDetailPolicyScenarios({
       "policyRepositoryEditorConcurrent",
       "repositoryEditorConcurrent",
       "Reconcile concurrent repository grant changes",
+    ],
+    ["policyRepositoryCredentialApp", "credentialApp", "Repository grants use the GitHub App"],
+    [
+      "policyRepositoryCredentialUnreadable",
+      "credentialUnreadable",
+      "Repository token Source the reader cannot read",
+    ],
+    [
+      "policyRepositoryCredentialConfirmed",
+      "credentialConfirmed",
+      "Replaced repository token confirmed",
+    ],
+    [
+      "policyRepositoryCredentialPending",
+      "credentialPending",
+      "Replaced repository token pending in a revision",
+    ],
+    [
+      "policyRepositoryCredentialUnreconciled",
+      "credentialUnreconciled",
+      "Repository token delivery unreconciled",
+    ],
+    [
+      "policyRepositoryCredentialUnavailable",
+      "credentialUnavailable",
+      "Repository token Source unavailable",
     ],
     ["policyDenialsMany", "many", "Two hundred denials with batch approval"],
     ["policyRulesPopulated", "populated", "Manage ten applied network rules"],
@@ -266,6 +371,18 @@ export function createAgentDetailPolicyScenarios({
                 steps: [
                   "Open View network limits. Check for example/application · read and example/tooling · write.",
                   "Open Manage rules. Check the guidance to create a new Agent and verify that no repository save controls appear.",
+                ],
+              }
+            : {}),
+          ...(repositoryCredentials[state]
+            ? {
+                policyCeiling: [],
+                policyRepositoryCredential: repositoryCredentials[state],
+                description:
+                  "The policy read names the credential the repository grants use and, for a readable repository token Source, whether each running revision activated the replaced token.",
+                steps: [
+                  "Open Manage rules. Under Repository network policy, check the Credential line.",
+                  "For a repository token Source, compare the effective access with the saved grants and check one row per revision. Revoke a replaced token only when every revision reads confirmed.",
                 ],
               }
             : {}),

@@ -46,6 +46,7 @@ import {
   type ComputeDriver,
   type ConfigurationDriver,
   type CreateAgentBody,
+  type CredentialSource,
   type LegacyEgressProxyDriver,
   type Identity,
   type Namespace,
@@ -98,7 +99,7 @@ interface HttpResponse {
 }
 
 type Request = (
-  method: "GET" | "POST" | "PATCH" | "PUT",
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
   path: string,
   payload?: unknown,
 ) => Promise<HttpResponse>;
@@ -1125,11 +1126,11 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
 
 type ProtectedPolicyFixture = Pick<
   AdmissionFixture,
-  "collection" | "controller" | "registry" | "request" | "state"
+  "app" | "collection" | "controller" | "registry" | "request" | "state"
 > & {
   readonly actorId: string;
   readonly configuration: { readonly id: string };
-
+  requestWithoutGrants(app: App, grant: (principalId: string) => void): Promise<Request>;
   readonly namespace: Pick<Namespace, "id">;
   readonly protectedDriver: InstalledDriver;
   readonly iamState: Parameters<typeof grantRole>[0] & { readonly identities: Identity[] };
@@ -1147,7 +1148,16 @@ interface ProtectedPolicyDeploymentFixtures {
       readonly gatewayVersion: string;
       readonly credentialGateway: true;
       readonly repositoryNetworkPolicyCeiling: readonly RepositoryNetworkGrant[];
-      configureRegistry(registry: GitHubRepositoryRegistry): GitHubRepositoryRegistry;
+      configureRegistry(
+        registry: GitHubRepositoryRegistry,
+        prepared?: string,
+      ): GitHubRepositoryRegistry;
+      readonly tokenService?: boolean;
+      readonly prepareRegistry?: (context: {
+        readonly request: Request;
+        readonly namespace: { readonly id: string };
+        readonly state: ProtectedPolicyFixture["state"];
+      }) => Promise<string>;
     },
   ): Promise<ProtectedPolicyFixture>;
   seedRepositoryPolicy(
@@ -1193,14 +1203,21 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       ceiling,
       gatewayVersion = "0.1.8",
       configureRegistry = selectedRepositoryRegistry("read", { nativeGit }),
+      repositorySourceCeiling,
     }: {
       nativeGit?: "v1";
       bindings?: readonly RepositoryBindingSelection[];
       ceiling?: readonly RepositoryNetworkGrant[];
       gatewayVersion?: string;
-      configureRegistry?: (registry: GitHubRepositoryRegistry) => GitHubRepositoryRegistry;
+      configureRegistry?: (
+        registry: GitHubRepositoryRegistry,
+        repositorySourceId?: string,
+      ) => GitHubRepositoryRegistry;
+      /** Selects the OCC TokenService and creates a github Source with this ceiling first. */
+      repositorySourceCeiling?: string;
     } = {},
   ) {
+    let repositorySourceId: string | undefined;
     const selected = { repository: "example/selected", access: "read" } as const;
     const writeGrant = { ...selected, access: "write" } as const;
     const unselected = { repository: "example/project", access: "read" } as const;
@@ -1217,13 +1234,34 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       repositoryNetworkPolicyCeiling: ceiling ?? [writeGrant, unselected, foreign],
       configureRegistry,
       inspected: nativeGit === "v1",
+      ...(repositorySourceCeiling !== undefined && {
+        tokenService: true,
+        // The registry names the Source by its ID, so the Source exists before the registry.
+        async prepareRegistry({ request, namespace, state }) {
+          await state.transact((unit) =>
+            unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+          );
+          const created = await request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+            name: "repository-token",
+            type: "static",
+            config: { provider_preset: "github", repositories: repositorySourceCeiling },
+            // A synthetic fine-grained token, built from parts.
+            secret: { token: ["github", "pat", "x".repeat(36)].join("_") },
+          });
+          assert.equal(created.status, 201, JSON.stringify(created));
+          repositorySourceId = (created.data as { id: string }).id;
+          return repositorySourceId;
+        },
+      }),
     });
     const fixtureCompute = f.controller.selectedDriver("compute");
     const sandbox = f.controller.selectedDriver("sandbox");
     assert.ok(sandbox);
-    await f.state.transact((unit) =>
-      unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-    );
+    if (repositorySourceId === undefined) {
+      await f.state.transact((unit) =>
+        unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
+      );
+    }
     const namespacePath = `/namespaces/${f.namespace.id}`;
     const { data: secret } = checkedEnvelope(
       await f.request("POST", `${namespacePath}/secrets`, {
@@ -1277,6 +1315,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       createSelectedAgent,
       sourceId,
       bindings,
+      repositorySourceId,
     };
   }
 
@@ -1379,6 +1418,498 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       );
       assert.deepEqual(revision.sandboxPolicy?.repositoryNetworkPolicy?.grants, grants);
     }
+  });
+
+  // The selected repository's registration names the Source; the others stay on the App.
+  function selectedSourceRegistry(
+    registry: GitHubRepositoryRegistry,
+    repositorySourceId?: string,
+  ): GitHubRepositoryRegistry {
+    assert.ok(repositorySourceId);
+    const withGit = selectedRepositoryRegistry("write", { nativeGit: "v1" })(registry);
+    return {
+      ...withGit,
+      repositories: withGit.repositories.map((repo) =>
+        repo.repositoryRef === "selected"
+          ? {
+              ...repo,
+              namespaces: repo.namespaces.map((policy) => ({
+                ...policy,
+                credentialSource: repositorySourceId,
+              })),
+            }
+          : repo,
+      ),
+    };
+  }
+
+  test("a registry-selected Source is checked at policy save, deploy and retirement", async (t) => {
+    selectFixtureRelease(t);
+    const fixture = await scopedFixture(t, {
+      nativeGit: "v1",
+      repositorySourceCeiling: "example/selected:read",
+      configureRegistry: selectedSourceRegistry,
+    });
+    const { f, selected, writeGrant, createSelectedAgent, fixtureCompute, sandbox } = fixture;
+    const repositorySourceId = fixture.repositorySourceId;
+    assert.ok(repositorySourceId);
+    const agent = await createSelectedAgent();
+    const path = `${f.collection}/${agent.id}`;
+    const policyPath = `${path}/sandbox-policy/networking`;
+    const sourcesPath = `/namespaces/${f.namespace.id}/credential-sources`;
+    assert.equal(
+      (await f.request("PATCH", policyPath + "/editing", { enabled: true })).status,
+      200,
+    );
+    const save = async (repositoryNetworkPolicy: readonly RepositoryNetworkGrant[]) => {
+      const { data: before } = checkedEnvelope(
+        await f.request("GET", policyPath),
+        SandboxPolicyViewResponse,
+        200,
+      );
+      return f.request("PUT", policyPath, {
+        expectedVersion: before.policy.version,
+        additions: [],
+        repositoryNetworkPolicy,
+      });
+    };
+
+    // The Agent principal has operate only on its model Source, so the save is forbidden.
+    checkedEnvelope(await save([selected]), ErrorResponse, 403);
+    const principal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
+    grantRole(f.iamState, principal.servicePrincipalId, {
+      id: `repository-token-for-${agent.id}`,
+      namespaceId: f.namespace.id,
+      permissions: { credential_source: ["operate"] },
+      resource: { kind: "credential_source", id: repositorySourceId },
+    });
+
+    // Placement is stubbed as in the other admission cases.
+    stubAdmissionCompute(t, fixtureCompute, selected);
+    sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
+    // A Source is scoped only by the saved network policy. Without one, deploy refuses with a
+    // named reason; it never falls back to the App's route.
+    const unsaved = checkedEnvelope(await f.request("POST", path + "/deploy"), ErrorResponse, 409);
+    assert.match(unsaved.error.message, /selects a credential source, which needs a saved/);
+    assert.deepEqual(
+      unsaved.error.details?.map(({ path: detailPath }) => detailPath),
+      ["/repositoryNetworkPolicy"],
+    );
+
+    // The registry allows write, but the Source ceiling does not.
+    const beyond = checkedEnvelope(await save([writeGrant]), ErrorResponse, 409);
+    assert.deepEqual(
+      beyond.error.details?.map(({ path: detailPath }) => detailPath),
+      ["/repositoryNetworkPolicy"],
+    );
+    checkedEnvelope(await save([selected]), SandboxPolicyResponse, 200);
+
+    // A Source the save cannot use answers 409. Only the Source row the save reads is rewritten;
+    // IAM, the ceiling, the policy write and the HTTP path are the ordinary ones.
+    const transact = f.state.transact.bind(f.state);
+    const rows: readonly (readonly [
+      string,
+      (source: CredentialSource) => CredentialSource | undefined,
+    ])[] = [
+      ["missing", () => undefined],
+      ["in another Namespace", (source) => ({ ...source, namespaceId: "another-namespace" })],
+      [
+        "owned by another TokenService instance",
+        (source) => ({ ...source, tokenServiceInstanceId: randomUUID() }) as CredentialSource,
+      ],
+      [
+        "not a github Source",
+        (source) => ({ ...source, config: { ...source.config, provider_preset: "openai" } }),
+      ],
+    ];
+    for (const [row, rewrite] of rows) {
+      const read = t.mock.fn();
+      const rewritten = t.mock.method(f.state, "transact", ((
+        work: Parameters<typeof f.state.transact>[0],
+      ) =>
+        transact((unit) =>
+          work({
+            ...unit,
+            credentialSources: {
+              ...unit.credentialSources,
+              async lockCredentialSource(namespaceId: string, sourceId: string) {
+                const source = await unit.credentialSources.lockCredentialSource(
+                  namespaceId,
+                  sourceId,
+                );
+                if (sourceId !== repositorySourceId || source === undefined) {
+                  return source;
+                }
+                read();
+                return rewrite(source);
+              },
+            },
+          }),
+        )) as typeof f.state.transact);
+      const refused = await save([selected]);
+      rewritten.mock.restore();
+      assert.equal(refused.status, 409, row);
+      assert.match(
+        checkedEnvelope(refused, ErrorResponse, 409).error.message,
+        /not a ready github source of this Namespace and its TokenService/,
+        row,
+      );
+      assert.equal(read.mock.callCount(), 1, row);
+    }
+    checkedEnvelope(await save([selected]), SandboxPolicyResponse, 200);
+
+    // While the loaded registry names the Source, it can be neither deleted nor re-scoped.
+    checkedEnvelope(
+      await f.request("DELETE", `${sourcesPath}/${repositorySourceId}`),
+      ErrorResponse,
+      409,
+    );
+    checkedEnvelope(
+      await f.request("PATCH", `${sourcesPath}/${repositorySourceId}`, {
+        config: { provider_preset: "github", repositories: `${selected.repository}:write` },
+      }),
+      ErrorResponse,
+      409,
+    );
+
+    // Deploy passes the same checks.
+    const deployed = checkedEnvelope(
+      await f.request("POST", path + "/deploy"),
+      AgentRevisionResponse,
+      202,
+    );
+    // The admitting transaction recorded the revision's copy of the Source before the
+    // deployment was queued; nothing has installed or retired it yet.
+    assert.deepEqual(
+      await f.state.transact((unit) =>
+        unit.credentialSources.findUnretiredRepositorySourceCopies(
+          f.namespace.id,
+          repositorySourceId,
+        ),
+      ),
+      [
+        {
+          namespaceId: f.namespace.id,
+          credentialSourceId: repositorySourceId,
+          tokenServiceInstanceId: f.controller.currentTokenServiceInstanceId(),
+          agentId: agent.id,
+          revisionId: deployed.data.id,
+        },
+      ],
+    );
+
+    // A Source that is no longer ready refuses the next save and deploy.
+    await f.state.transact((unit) =>
+      unit.credentialSources.markCredentialSourceDeleting(f.namespace.id, repositorySourceId),
+    );
+    checkedEnvelope(await save([selected]), ErrorResponse, 409);
+    checkedEnvelope(await f.request("POST", path + "/deploy"), ErrorResponse, 409);
+  });
+
+  test("the policy read names the repository credential, and the Source only to its readers", async (t) => {
+    selectFixtureRelease(t);
+    const fixture = await scopedFixture(t, {
+      nativeGit: "v1",
+      repositorySourceCeiling: "example/selected:read",
+      configureRegistry: selectedSourceRegistry,
+    });
+    const { f, selected, createSelectedAgent, fixtureCompute, sandbox, sourceId } = fixture;
+    const repositorySourceId = fixture.repositorySourceId;
+    assert.ok(repositorySourceId);
+    const agent = await createSelectedAgent();
+    const path = `${f.collection}/${agent.id}`;
+    const policyPath = `${path}/sandbox-policy/networking`;
+    // Delivery comes from the copy record alone: no policy read resolves the Source.
+    const tokenService = f.controller.selectedDriver("token_service") as {
+      resolveCredential(...args: unknown[]): unknown;
+    };
+    const resolutions = t.mock.method(tokenService, "resolveCredential");
+    const view = async (request: typeof f.request = f.request, at = policyPath) => {
+      const calls = resolutions.mock.callCount();
+      const data = checkedEnvelope(await request("GET", at), SandboxPolicyViewResponse, 200).data;
+      assert.equal(
+        resolutions.mock.callCount(),
+        calls,
+        "the policy read makes no TokenService call",
+      );
+      return data;
+    };
+    const source = {
+      kind: "credential_source",
+      id: repositorySourceId,
+      name: "repository-token",
+      state: "ready",
+      ceiling: [selected],
+    } as const;
+
+    // Nothing is saved yet, so the Source grants no access, and no revision holds a copy.
+    assert.deepEqual((await view()).repositoryCredential, {
+      ...source,
+      effectiveRepositoryNetworkPolicy: [],
+      deliveries: [],
+    });
+
+    const principal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
+    grantRole(f.iamState, principal.servicePrincipalId, {
+      id: `repository-token-for-${agent.id}`,
+      namespaceId: f.namespace.id,
+      permissions: { credential_source: ["operate"] },
+      resource: { kind: "credential_source", id: repositorySourceId },
+    });
+    assert.equal(
+      (await f.request("PATCH", policyPath + "/editing", { enabled: true })).status,
+      200,
+    );
+    const before = await view();
+    checkedEnvelope(
+      await f.request("PUT", policyPath, {
+        expectedVersion: before.policy.version,
+        additions: [],
+        repositoryNetworkPolicy: [selected],
+      }),
+      SandboxPolicyResponse,
+      200,
+    );
+    stubAdmissionCompute(t, fixtureCompute, selected);
+    sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
+    const deployed = checkedEnvelope(
+      await f.request("POST", path + "/deploy"),
+      AgentRevisionResponse,
+      202,
+    );
+    // Deployment recorded the revision's copy. No Worker has written the Source to its Provider,
+    // so the revision may hold no value or an earlier one: pending.
+    const readable = await view();
+    assert.deepEqual(readable.repositoryCredential, {
+      ...source,
+      effectiveRepositoryNetworkPolicy: [selected],
+      deliveries: [{ revisionId: deployed.data.id, state: "pending" }],
+    });
+
+    // A caller who may read and edit the policy and operate the Agent, but holds no grant on the
+    // Source, learns only that a Source is selected.
+    const policyReader = await f.requestWithoutGrants(f.app, (principalId) => {
+      grantRole(f.iamState, principalId, {
+        id: `policy-reader-${agent.id}`,
+        namespaceId: f.namespace.id,
+        resource: { kind: "agent", id: agent.id },
+        permissions: { agent: ["read", "manage_policy", "operate"] },
+      });
+      grantRole(f.iamState, principalId, {
+        id: `policy-reader-${readable.policy.id}`,
+        namespaceId: f.namespace.id,
+        resource: { kind: "sandbox_policy", id: readable.policy.id },
+        permissions: { sandbox_policy: ["read", "update"] },
+      });
+    });
+    const unreadable = await policyReader("GET", policyPath);
+    const hidden = checkedEnvelope(unreadable, SandboxPolicyViewResponse, 200).data;
+    assert.deepEqual(hidden.repositoryCredential, { kind: "credential_source", readable: false });
+    const serialized = JSON.stringify(unreadable);
+    for (const leaked of [
+      repositorySourceId,
+      "repository-token",
+      "effectiveRepositoryNetworkPolicy",
+      "deliveries",
+      "unreconciled",
+      "committedSourceVersion",
+      "committedAt",
+      "confirmedSourceVersion",
+      "confirmedAt",
+    ]) {
+      assert.equal(serialized.includes(leaked), false, leaked);
+    }
+    // The saved grants, the policy version and the Installation ceiling stay as the Source
+    // reader sees them.
+    const { repositoryCredential: _readable, ...withSource } = readable;
+    const { repositoryCredential: _hidden, ...withoutSource } = hidden;
+    assert.deepEqual(withoutSource.policy, withSource.policy);
+    assert.deepEqual(
+      withoutSource.repositoryNetworkPolicyCeiling,
+      withSource.repositoryNetworkPolicyCeiling,
+    );
+
+    // A Source the read cannot use is reported unavailable, with no ceiling or access. Only the
+    // Source row the read finds is rewritten.
+    const readState = f.state.read.bind(f.state);
+    const rows: readonly (readonly [
+      string,
+      (source: CredentialSource) => CredentialSource | undefined,
+      string | undefined,
+    ])[] = [
+      ["missing", () => undefined, undefined],
+      [
+        "in another Namespace",
+        (found) => ({ ...found, namespaceId: "another-namespace" }),
+        "repository-token",
+      ],
+      [
+        "owned by another TokenService instance",
+        (found) => ({ ...found, tokenServiceInstanceId: randomUUID() }) as CredentialSource,
+        "repository-token",
+      ],
+    ];
+    for (const [row, rewrite, name] of rows) {
+      const rewritten = t.mock.method(f.state, "read", ((
+        work: Parameters<typeof f.state.read>[0],
+      ) =>
+        readState((unit) =>
+          work({
+            ...unit,
+            credentialSources: {
+              ...unit.credentialSources,
+              async findCredentialSource(namespaceId: string, id: string) {
+                const found = await unit.credentialSources.findCredentialSource(namespaceId, id);
+                return id !== repositorySourceId || found === undefined ? found : rewrite(found);
+              },
+            },
+          }),
+        )) as typeof f.state.read);
+      const unavailable = await view();
+      rewritten.mock.restore();
+      assert.deepEqual(
+        unavailable.repositoryCredential,
+        {
+          kind: "credential_source",
+          id: repositorySourceId,
+          ...(name === undefined ? {} : { name }),
+          state: "unavailable",
+          deliveries: [{ revisionId: deployed.data.id, state: "pending" }],
+        },
+        row,
+      );
+    }
+
+    // A replacement commits a new version and stamps the revision's copy with it, so its
+    // delivery reads pending against that version. This adapter has no Worker, so nothing
+    // records an activation and no copy reads confirmed here.
+    checkedEnvelope(
+      await f.request(
+        "PATCH",
+        `/namespaces/${f.namespace.id}/credential-sources/${repositorySourceId}`,
+        {
+          // A synthetic fine-grained token, built from parts.
+          secret: { token: ["github", "pat", "y".repeat(36)].join("_") },
+        },
+      ),
+      CredentialSourceResponse,
+      200,
+    );
+    const replaced = await view();
+    assert.ok(replaced.repositoryCredential && "deliveries" in replaced.repositoryCredential);
+    const [delivery] = replaced.repositoryCredential.deliveries;
+    assert.ok(delivery);
+    const { committedSourceVersion, committedAt, ...rest } = delivery;
+    assert.deepEqual(rest, { revisionId: deployed.data.id, state: "pending" });
+    assert.match(committedSourceVersion ?? "", /^[0-9a-f-]{36}$/);
+    assert.ok(Date.parse(committedAt ?? "") > 0);
+
+    // Withdrawal survives lost Source authority: the same caller clears the saved grants and
+    // stops the Agent without any permission on the Source.
+    checkedEnvelope(
+      await policyReader("PUT", policyPath, {
+        expectedVersion: hidden.policy.version,
+        additions: [],
+        repositoryNetworkPolicy: [],
+      }),
+      SandboxPolicyResponse,
+      200,
+    );
+    const cleared = await view(policyReader);
+    assert.deepEqual(cleared.policy.repositoryNetworkPolicy, []);
+    assert.deepEqual(cleared.repositoryCredential, { kind: "credential_source", readable: false });
+    checkedEnvelope(await policyReader("POST", path + "/stop"), AgentResponse, 202);
+
+    // An Agent on the GitHub App path reports only that, and an Agent without repository
+    // bindings reports no credential at all.
+    const appAgent = await f.createAgent({
+      executionMode: "dedicated",
+      repositoryBindings: [{ repositoryRef: "project", profile: "github-repository" }],
+      harnessAuth: { method: "credential_source", sourceId },
+      credentialSources: [{ sourceId }],
+    });
+    const appView = await view(
+      f.request,
+      `${f.collection}/${appAgent.id}/sandbox-policy/networking`,
+    );
+    assert.deepEqual(appView.repositoryCredential, { kind: "github_app" });
+    const plainAgent = await f.createAgent({
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId },
+      credentialSources: [{ sourceId }],
+    });
+    const plainView = await view(
+      f.request,
+      `${f.collection}/${plainAgent.id}/sandbox-policy/networking`,
+    );
+    assert.equal(Object.hasOwn(plainView, "repositoryCredential"), false);
+  });
+
+  test("the policy read narrows a saved grant to a Source ceiling narrowed since the save", async (t) => {
+    selectFixtureRelease(t);
+    const fixture = await scopedFixture(t, {
+      nativeGit: "v1",
+      repositorySourceCeiling: "example/selected:write",
+      configureRegistry: selectedSourceRegistry,
+    });
+    const { f, selected, writeGrant, createSelectedAgent } = fixture;
+    const repositorySourceId = fixture.repositorySourceId;
+    assert.ok(repositorySourceId);
+    const agent = await createSelectedAgent();
+    const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+    const view = async () =>
+      checkedEnvelope(await f.request("GET", policyPath), SandboxPolicyViewResponse, 200).data;
+    const principal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
+    grantRole(f.iamState, principal.servicePrincipalId, {
+      id: `repository-token-for-${agent.id}`,
+      namespaceId: f.namespace.id,
+      permissions: { credential_source: ["operate"] },
+      resource: { kind: "credential_source", id: repositorySourceId },
+    });
+    assert.equal(
+      (await f.request("PATCH", policyPath + "/editing", { enabled: true })).status,
+      200,
+    );
+    checkedEnvelope(
+      await f.request("PUT", policyPath, {
+        expectedVersion: (await view()).policy.version,
+        additions: [],
+        repositoryNetworkPolicy: [writeGrant],
+      }),
+      SandboxPolicyResponse,
+      200,
+    );
+    const saved = await view();
+    assert.ok(saved.repositoryCredential && "deliveries" in saved.repositoryCredential);
+    assert.deepEqual(saved.repositoryCredential.effectiveRepositoryNetworkPolicy, [writeGrant]);
+
+    // The Source is re-scoped to read after the save, as it can be while no registry names it.
+    // The saved grant stays write, but the read reports the access the Source allows now.
+    await f.state.transact(async (unit) => {
+      const source = await unit.credentialSources.findCredentialSource(
+        f.namespace.id,
+        repositorySourceId,
+      );
+      assert.ok(source);
+      assert.ok(
+        await unit.credentialSources.updateCredentialSourceConfig(
+          f.namespace.id,
+          repositorySourceId,
+          { ...source.config, repositories: "example/selected:read" },
+        ),
+      );
+    });
+    const narrowed = await view();
+    assert.deepEqual(narrowed.policy.repositoryNetworkPolicy, [writeGrant]);
+    assert.deepEqual(narrowed.repositoryCredential, {
+      kind: "credential_source",
+      id: repositorySourceId,
+      name: "repository-token",
+      state: "ready",
+      ceiling: [selected],
+      effectiveRepositoryNetworkPolicy: [selected],
+      deliveries: [],
+    });
   });
 
   test("A repository API limit requires native policy and Agent edits narrow the next revision", async (t) => {

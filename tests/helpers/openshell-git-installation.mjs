@@ -84,7 +84,8 @@ export function createOpenShellGitApi({ origin, key, signal, after }) {
   // private dispatcher bypasses ambient proxies without altering other traffic.
   const dispatcher = new Agent();
   after(() => dispatcher.close());
-  return async (method, path, body, expectedFailure) => {
+  // `timeoutMs` lets a caller measure a write that waits on a database lock.
+  return async (method, path, body, expectedFailure, timeoutMs = 30_000) => {
     const url = new URL(path, base);
     assert.equal(url.origin, base.origin, "Installed Git API path changed origin");
     const response = await fetch(url, {
@@ -96,7 +97,7 @@ export function createOpenShellGitApi({ origin, key, signal, after }) {
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
     });
     if (expectedFailure !== undefined) {
       let envelope;
@@ -251,7 +252,12 @@ async function certificates(
 /**
  * Installs the supported model + selected-repository path in its own k3d cluster.
  * @param {import("node:test").TestContext} t
- * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, rest?: "reads" | "issues" | "issue-controls" }} [options]
+ * `repositorySource` selects the OCC TokenService, enrolls a `github` Source holding a fake
+ * fine-grained value through the API, and names it on the primary Namespace's registrations; the
+ * peer Namespace stays on the App. The origin accepts that value as a static token. Native Git only.
+ * `repositoryAppKey: false` (with `repositorySource`) then runs the Installation without a GitHub
+ * App: a Source-only registry, no App key Secret and no App key values.
+ * @param {{ onSetupStep?: (step: string) => void, witnessIssuedGit?: boolean, allowStandingApprovals?: boolean, nativeGit?: boolean, networkAcl?: boolean, rest?: "reads" | "issues" | "issue-controls", repositorySource?: boolean, repositoryAppKey?: boolean }} [options]
  */
 export function createOpenShellGitInstallation(
   t,
@@ -262,6 +268,8 @@ export function createOpenShellGitInstallation(
     nativeGit = false,
     networkAcl = false,
     rest,
+    repositorySource = false,
+    repositoryAppKey = true,
   } = {},
 ) {
   return ownFirstAgentWork(t)(
@@ -272,14 +280,33 @@ export function createOpenShellGitInstallation(
       nativeGit,
       networkAcl,
       rest,
+      repositorySource,
+      repositoryAppKey,
     }),
   );
 }
 
 async function installOpenShellGit(
   t,
-  { onSetupStep, witnessIssuedGit, allowStandingApprovals, nativeGit, networkAcl, rest },
+  {
+    onSetupStep,
+    witnessIssuedGit,
+    allowStandingApprovals,
+    nativeGit,
+    networkAcl,
+    rest,
+    repositorySource,
+    repositoryAppKey,
+  },
 ) {
+  assert.ok(
+    !repositorySource || (nativeGit && rest === undefined),
+    "A repository token Source lends to native Git only, without scoped REST",
+  );
+  assert.ok(
+    repositoryAppKey || repositorySource,
+    "Only a Source-only registry runs without the App",
+  );
   assert.ok(!(nativeGit && networkAcl), "Select one Git ACL credential fixture");
   assert.ok(
     !nativeGit || !allowStandingApprovals,
@@ -635,14 +662,15 @@ async function installOpenShellGit(
   const restPermissions = writeIssues
     ? scopedRestIssueWriteFixturePermissions
     : scopedRestFixturePermissions;
-  const sessionDurationSeconds = 600;
+  // A Source journey outlives one renewal window and the Provider's 15-minute limit.
+  const sessionDurationSeconds = repositorySource ? 3600 : 600;
   const registry = {
     version: 1,
     backendId: "repository-backend",
     providerInstanceId: "isolated-git-fixture",
     appId: origin.appId,
     githubInstallationId: origin.installationId,
-    maximumDurationSeconds: 600,
+    maximumDurationSeconds: sessionDurationSeconds,
     ...(allowStandingApprovals && { allowStandingApprovals: true }),
     repositories: repositoryScopes.map((scope) => ({
       ...scope,
@@ -770,6 +798,10 @@ async function installOpenShellGit(
   assert.ok(installation.drivers.credential_gateway && backend.drivers.credential_gateway);
   backend.drivers.credential_proxy = sandbox.id;
   installation.drivers.credential_proxy = { id: sandbox.id, configuration: {} };
+  if (repositorySource) {
+    assert.equal(installation.drivers.token_service, undefined);
+    installation.drivers.token_service = { id: "occ", configuration: {} };
+  }
   sandbox.configuration.gateway.networkPolicyResources.push(supervisorPolicy);
   // The protected sender owns GitHub TLS inspection. Remove only Local Setup's
   // exact uninspected Git rule; preserve every unrelated operator policy.
@@ -887,26 +919,29 @@ async function installOpenShellGit(
     { timeout: 190_000 },
   );
 
-  const callbacks = nativeGit
-    ? await installGitCallbackObserver({
-        kube,
-        apply,
-        configMap,
-        privateSecret,
-        metadata,
-        platform,
-        authorityHost,
-        clients,
-        controllerImage: values.images.controller,
-        ca: tls.ca,
-        certificate: tls.observer,
-        source: await readFile(
-          join(root, "tests/fixtures/openshell-git-callback-proxy.ts"),
-          "utf8",
-        ),
-        eventually,
-      })
-    : undefined;
+  const installCallbacks = async () =>
+    nativeGit
+      ? installGitCallbackObserver({
+          kube,
+          apply,
+          configMap,
+          privateSecret,
+          metadata,
+          platform,
+          authorityHost,
+          clients,
+          controllerImage: values.images.controller,
+          ca: tls.ca,
+          certificate: tls.observer,
+          source: await readFile(
+            join(root, "tests/fixtures/openshell-git-callback-proxy.ts"),
+            "utf8",
+          ),
+          eventually,
+        })
+      : undefined;
+  // The Source upgrade below rolls the Worker, so that path installs the observer after it.
+  let callbacks = repositorySource ? undefined : await installCallbacks();
 
   // Register after enabling repository.openShell: Git configuration must not divert model
   // registration into the Git-only Proxy. All installed Git journeys use this fresh source.
@@ -940,6 +975,194 @@ async function installOpenShellGit(
   const modelSource = await registerModel(namespace);
   if (independent) {
     independent.modelSource = await registerModel(independent.namespace);
+  }
+  let repositorySourceState;
+  let appLess;
+  if (repositorySource) {
+    onSetupStep?.("enroll repository token Source");
+    // Fake values only, built from parts: never a real token.
+    const fake = () => ["github", "pat", randomBytes(30).toString("hex")].join("_");
+    const value = fake();
+    const sourcesPath = `/namespaces/${namespace.id}/credential-sources`;
+    const created = await request("POST", sourcesPath, {
+      name: "repository-token",
+      type: "static",
+      config: {
+        provider_preset: "github",
+        repositories: repositoryScopes.map(({ repository }) => `${repository}:write`).join(","),
+      },
+      secret: { token: value },
+    });
+    assert.match(created.id, /^cs_/u);
+    const sourcePath = `${sourcesPath}/${created.id}`;
+    await eventually("repository token Source", async () => {
+      const current = await request("GET", sourcePath);
+      assert.notEqual(current.state, "failed", "repository token Source failed");
+      assert.ok(!JSON.stringify(current).includes(value), "Source read returned its value");
+      return current.state === "ready" ? current : undefined;
+    });
+    const index = origin.network.acceptStaticToken(value);
+    // Name the Source on the primary Namespace's registrations; the peer keeps the App.
+    const sourceRegistry = {
+      ...registry,
+      repositories: registry.repositories.map((entry) => ({
+        ...entry,
+        namespaces: entry.namespaces.map((policy) =>
+          policy.namespaceId === namespace.id
+            ? {
+                namespaceId: policy.namespaceId,
+                profiles: policy.profiles,
+                permissions: { metadata: "read", contents: "write" },
+                nativeGit: "v1",
+                credentialSource: created.id,
+              }
+            : policy,
+        ),
+      })),
+    };
+    if (!repositoryAppKey) {
+      // No GitHub App: only the primary Namespace's Source registrations, no App key Secret and
+      // no App key values. The upgrade below restarts the controller and Worker in this form.
+      delete sourceRegistry.appId;
+      delete sourceRegistry.githubInstallationId;
+      sourceRegistry.repositories = sourceRegistry.repositories.map((entry) => ({
+        ...entry,
+        namespaces: entry.namespaces.filter((policy) => policy.namespaceId === namespace.id),
+      }));
+      await kube(["delete", "secret", "git-fixture-app", "-n", platform, "--wait=true"]);
+      delete values.repositoryCredentials.appKeySecretName;
+      delete values.repositoryCredentials.appKeyKey;
+    }
+    await apply([
+      configMap("git-fixture-registry-source", { "registry.json": JSON.stringify(sourceRegistry) }),
+    ]);
+    values.repositoryCredentials.registryConfigMapName = "git-fixture-registry-source";
+    const sourceValuesFile = join(directory, "oce-values-source.json");
+    await writeFile(sourceValuesFile, JSON.stringify(values), { mode: 0o600 });
+    onSetupStep?.("upgrade controller with the Source registry");
+    const upgrade = (file, wait = true) =>
+      command(
+        "helm",
+        [
+          "upgrade",
+          "openclaw-enterprise",
+          join(root, "deploy/helm/openclaw-enterprise"),
+          ...helmContext,
+          "-f",
+          file,
+          ...(wait ? ["--wait", "--timeout", "180s"] : []),
+        ],
+        { timeout: 190_000 },
+      );
+    await upgrade(sourceValuesFile);
+    repositorySourceState = { id: created.id, path: sourcePath, value, index, fake };
+    if (!repositoryAppKey) {
+      const workerPods = async () =>
+        JSON.parse(
+          await kube(["get", "pods", "-n", platform, "-l", selector(workerLabels), "-o", "json"]),
+        ).items;
+      // The names of the Secrets the running Worker mounts for the prepared Git owner.
+      const ownerSecrets = (pod) =>
+        (pod.spec.volumes ?? [])
+          .filter(({ name }) => name === "prepared-repository-owner")
+          .flatMap(({ projected }) => projected?.sources ?? [])
+          .flatMap(({ secret }) => (secret ? [secret.name] : []));
+      const workerState = (pod) => {
+        const status = (pod.status.containerStatuses ?? []).find(({ name }) => name === "worker");
+        return {
+          ready: status?.ready === true,
+          restarts: status?.restartCount,
+          waiting: status?.state?.waiting?.reason,
+          exitCode: status?.lastState?.terminated?.exitCode,
+        };
+      };
+      const running = await workerPods();
+      appLess = {
+        state: {
+          appKeySecret:
+            (
+              await kube(["get", "secret", "git-fixture-app", "-n", platform, "--ignore-not-found"])
+            ).trim() === ""
+              ? "absent"
+              : "present",
+          registryNamesApp: false,
+          ownerSecrets: running.map(ownerSecrets),
+          workers: running.map(workerState),
+        },
+        // The same Installation, with a registry that names the App and still no key: the new
+        // Worker refuses to start with the documented code and reason.
+        refuseAppRegistryWithoutKey: async () => {
+          const before = new Set(running.map((pod) => pod.metadata.name));
+          const appRegistry = {
+            ...sourceRegistry,
+            appId: registry.appId,
+            githubInstallationId: registry.githubInstallationId,
+          };
+          await apply([
+            configMap("git-fixture-registry-app-no-key", {
+              "registry.json": JSON.stringify(appRegistry),
+            }),
+          ]);
+          const appValues = structuredClone(values);
+          appValues.repositoryCredentials.registryConfigMapName = "git-fixture-registry-app-no-key";
+          const appValuesFile = join(directory, "oce-values-app-no-key.json");
+          await writeFile(appValuesFile, JSON.stringify(appValues), { mode: 0o600 });
+          const started = Date.now();
+          await upgrade(appValuesFile, false);
+          const keyRefused = (logs) =>
+            logs
+              .split("\n")
+              .some(
+                (line) =>
+                  line.includes("PREPARED_GITHUB_APP_KEY_INVALID") &&
+                  line.includes("app_key_unreadable"),
+              );
+          return eventually(
+            "Worker refusal for an App registry without a key",
+            async () => {
+              await delay(3_000, undefined, { signal: t.signal });
+              const fresh = (await workerPods()).filter((pod) => !before.has(pod.metadata.name));
+              for (const pod of fresh) {
+                const name = pod.metadata.name;
+                const state = workerState(pod);
+                const logs = async (previous) =>
+                  kube(
+                    [
+                      "logs",
+                      "-n",
+                      platform,
+                      name,
+                      "--container=worker",
+                      "--tail=400",
+                      ...(previous ? ["--previous"] : []),
+                    ],
+                    { timeout: 30_000 },
+                  ).catch(() => "");
+                const refusedNow = keyRefused(await logs(false));
+                const refusedBefore = state.restarts > 0 && keyRefused(await logs(true));
+                if ((refusedNow || refusedBefore) && !state.ready) {
+                  const old = (await workerPods()).filter((current) =>
+                    before.has(current.metadata.name),
+                  );
+                  return {
+                    refused: true,
+                    code: "PREPARED_GITHUB_APP_KEY_INVALID",
+                    reason: "app_key_unreadable",
+                    seconds: (Date.now() - started) / 1000,
+                    newWorker: state,
+                    newWorkerOwnerSecrets: ownerSecrets(pod),
+                    previousWorkers: old.map(workerState),
+                  };
+                }
+              }
+              return undefined;
+            },
+            300_000,
+          );
+        },
+      };
+    }
+    callbacks = await installCallbacks();
   }
 
   // Local Setup imported the stock platform image. Bind the selected containerd
@@ -1766,10 +1989,42 @@ async function installOpenShellGit(
       throw error;
     }
   };
+  const k3dNode = `k3d-${state.cluster}-server-0`;
+  // One shell command on the k3d node (its own pids, not a Pod's), bounded by `timeout`.
+  const nodeShell = (script, timeout = 30_000) =>
+    command("docker", ["exec", k3dNode, "sh", "-c", script], { timeout });
+  // Pause or resume the Worker's process on the k3d node; returns the node pid it signalled.
+  // A known pid skips the container lookup, so a pause can follow an observation closely.
+  const signalWorker = async (signal, knownPid) => {
+    assert.ok(signal === "STOP" || signal === "CONT");
+    if (knownPid !== undefined) {
+      assert.ok(Number.isSafeInteger(knownPid) && knownPid > 1);
+      await command("docker", ["exec", k3dNode, "kill", `-${signal}`, String(knownPid)]);
+      return knownPid;
+    }
+    const ids = (
+      await command("docker", ["exec", k3dNode, "crictl", "ps", "--name", "^worker$", "-q"])
+    )
+      .trim()
+      .split(/\s+/u)
+      .filter(Boolean);
+    assert.equal(ids.length, 1, "expected one running Worker container");
+    const inspected = JSON.parse(
+      await command("docker", ["exec", k3dNode, "crictl", "inspect", ids[0]]),
+    );
+    const pid = inspected.info?.pid;
+    assert.ok(Number.isSafeInteger(pid) && pid > 1, "Worker container pid");
+    await command("docker", ["exec", k3dNode, "kill", `-${signal}`, String(pid)]);
+    return pid;
+  };
   return {
     request,
     platform,
     sessionDurationSeconds,
+    ...(repositorySourceState && { repositorySource: repositorySourceState }),
+    ...(appLess && { appLess }),
+    signalWorker,
+    nodeShell,
     ...(callbacks && { callbacks }),
     namespace,
     modelSource,

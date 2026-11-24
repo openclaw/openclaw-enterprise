@@ -2,7 +2,19 @@ import type { CredentialSourceDrivers } from "./credential-source-drivers.ts";
 import { validatePluginCredentialSources } from "./agent-plugin-validation.ts";
 import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import {
+  assertSourceRepositoryGrants,
+  effectiveRepositoryGrants,
+} from "./repository-network-policy.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
+import {
+  GITHUB_SOURCE_PRESET_ID,
+  readSourceRepositoryCeiling,
+  SOURCE_REPOSITORIES_CONFIG_KEY,
+  type RepositoryNetworkGrant,
+  type RepositoryNetworkPolicyCeiling,
+  isModelSourcePresetId,
   MAX_AGENT_CREDENTIAL_SOURCES,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   isSecretHarnessAuth,
   type AccessBinding,
   type Agent,
@@ -16,6 +28,7 @@ import {
   type RevisionHarnessDescriptor,
   type SandboxDriver,
   type SecretBindings,
+  type SandboxPolicyViewWire,
   type SecretReference,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -51,6 +64,12 @@ interface AgentCredentialAccessDependencies {
   readonly requireTokenServiceOwner: (instanceId?: string) => void;
   readonly offersProtectedType: (type: string) => boolean;
 }
+
+type RepositoryCredentialView = NonNullable<SandboxPolicyViewWire["repositoryCredential"]>;
+type RepositorySourceDeliveryView = Extract<
+  RepositoryCredentialView,
+  { readonly deliveries: unknown }
+>["deliveries"][number];
 
 export function parseAgentCredentialSources(
   value: unknown,
@@ -180,6 +199,12 @@ export function createAgentCredentialAccess({
       }
       if (isManagedTokenServiceSource(source)) {
         requireTokenServiceOwner(source.tokenServiceInstanceId);
+        const preset = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+        if (preset !== undefined && !isModelSourcePresetId(preset)) {
+          throw new ResourceStateConflictError(
+            "This credential source holds a repository token, not a model credential; an Agent cannot list it or use it for its Harness.",
+          );
+        }
         if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
           throw new ResourceStateConflictError(
             "This TokenService source must authenticate the selected Agent Harness.",
@@ -266,6 +291,138 @@ export function createAgentCredentialAccess({
       }
     }
     return immutableCopy(snapshots);
+  }
+
+  /**
+   * The repository registration selects this Source for the Agent's Git credential. The caller and
+   * the Agent principal need `operate` on it, as for a model Source, and the saved grants must fit
+   * its ceiling. Policy save and deploy both call this under the Namespace lock.
+   */
+  async function admitRepositoryCredentialSource(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sourceId: string,
+    grants: readonly RepositoryNetworkGrant[] | undefined,
+  ): Promise<{ readonly tokenServiceInstanceId: string }> {
+    const ref = {
+      kind: "credential_source",
+      namespaceId: agent.namespaceId,
+      id: sourceId,
+    } as const;
+    // Authorize before the lookup, so a caller without the grant learns nothing about the Source.
+    await authorizeSourceOperate(principalId, agent.namespaceId, sourceId);
+    const source = await state.credentialSources.lockCredentialSource(agent.namespaceId, sourceId);
+    let ceiling: RepositoryNetworkPolicyCeiling | undefined;
+    let tokenServiceInstanceId: string | undefined;
+    if (
+      isManagedTokenServiceSource(source) &&
+      source.state === "ready" &&
+      source.namespaceId === agent.namespaceId &&
+      source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === GITHUB_SOURCE_PRESET_ID
+    ) {
+      try {
+        requireTokenServiceOwner(source.tokenServiceInstanceId);
+        ceiling = readSourceRepositoryCeiling(source.config[SOURCE_REPOSITORIES_CONFIG_KEY] ?? "");
+        tokenServiceInstanceId = source.tokenServiceInstanceId;
+      } catch {
+        ceiling = undefined;
+      }
+    }
+    if (ceiling === undefined || tokenServiceInstanceId === undefined) {
+      throw new ResourceStateConflictError(
+        "The repository registration selects a credential source that is not a ready github source of this Namespace and its TokenService. Ask an operator to check the source and the repository registry.",
+      );
+    }
+    await authority.authorizeAgentPrincipal(principalId, agent, "operate", ref);
+    assertSourceRepositoryGrants(grants, ceiling);
+    return { tokenServiceInstanceId };
+  }
+
+  /**
+   * The policy read's view of the Source the registry selects for the Agent's Git credential.
+   * Its ID, name, state, ceiling, the effective access and the delivery state need exact
+   * `credential_source:read` on the Source, the decision the Source API's own read takes; without
+   * it the caller learns only that a Source is selected. Delivery comes from the copy records
+   * alone, never from TokenService: a copy is confirmed when the version its Sandbox activated is
+   * the version the last replacement committed (versions are random, so equality), or, when no
+   * replacement committed since the copy was recorded, once its Sandbox activated any version.
+   */
+  async function readRepositoryCredentialSource(
+    state: PlatformReadView,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sourceId: string,
+    grants: readonly RepositoryNetworkGrant[] | undefined,
+    limits: readonly (RepositoryNetworkPolicyCeiling | undefined)[],
+  ): Promise<RepositoryCredentialView> {
+    const ref = {
+      kind: "credential_source",
+      namespaceId: agent.namespaceId,
+      id: sourceId,
+    } as const;
+    let readable = false;
+    try {
+      readable = (await authority.authorizationDecision(principalId, "read", ref)).decision.allowed;
+    } catch {
+      // An authorization outage hides the Source; the saved grants stay readable.
+    }
+    if (!readable) {
+      return { kind: "credential_source", readable: false };
+    }
+    const source = await state.credentialSources.findCredentialSource(agent.namespaceId, sourceId);
+    let ceiling: RepositoryNetworkPolicyCeiling | undefined;
+    if (
+      isManagedTokenServiceSource(source) &&
+      source.namespaceId === agent.namespaceId &&
+      source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === GITHUB_SOURCE_PRESET_ID
+    ) {
+      try {
+        requireTokenServiceOwner(source.tokenServiceInstanceId);
+        ceiling = readSourceRepositoryCeiling(source.config[SOURCE_REPOSITORIES_CONFIG_KEY] ?? "");
+      } catch {
+        ceiling = undefined;
+      }
+    }
+    const copies = await state.credentialSources.findRepositorySourceDeliveries(
+      agent.namespaceId,
+      sourceId,
+      agent.id,
+    );
+    const deliveries = copies.map((copy): RepositorySourceDeliveryView => {
+      const confirmed =
+        copy.confirmedSourceVersion !== undefined &&
+        (copy.expectedSourceVersion === undefined ||
+          copy.confirmedSourceVersion === copy.expectedSourceVersion);
+      return {
+        revisionId: copy.revisionId,
+        state: copy.unreconciledWrite ? "unreconciled" : confirmed ? "confirmed" : "pending",
+        ...(copy.expectedSourceVersion === undefined
+          ? {}
+          : { committedSourceVersion: copy.expectedSourceVersion, committedAt: copy.expectedAt }),
+        ...(copy.confirmedSourceVersion === undefined
+          ? {}
+          : { confirmedSourceVersion: copy.confirmedSourceVersion, confirmedAt: copy.confirmedAt }),
+      };
+    });
+    if (source === undefined || ceiling === undefined) {
+      return {
+        kind: "credential_source",
+        id: sourceId,
+        ...(source === undefined ? {} : { name: source.name }),
+        state: "unavailable",
+        deliveries,
+      };
+    }
+    return {
+      kind: "credential_source",
+      id: sourceId,
+      name: source.name,
+      state: source.state,
+      ceiling: [...ceiling],
+      effectiveRepositoryNetworkPolicy: effectiveRepositoryGrants(grants, [...limits, ceiling]),
+      deliveries,
+    };
   }
 
   /** Returns the AccessBindings it created; existing exact grants are kept. */
@@ -419,6 +576,8 @@ export function createAgentCredentialAccess({
     authorizeBoundCredentialSources,
     authorizeAgentCredentialSources,
     admitCredentialSources,
+    admitRepositoryCredentialSource,
+    readRepositoryCredentialSource,
     ensureAgentOperateGrants,
     grantDeployedAgentSources,
   };

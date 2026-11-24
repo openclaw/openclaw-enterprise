@@ -44,6 +44,11 @@ export type RepositoryGrantPolicy = {
     readonly namespaceId: string;
     readonly grant: RepositoryNetworkGrant;
   }): boolean;
+  /** Whether a registration of the Namespace selects this credential source. */
+  namesCredentialSource?(input: {
+    readonly namespaceId: string;
+    readonly sourceId: string;
+  }): boolean;
 };
 
 export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
@@ -55,6 +60,8 @@ export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
   readonly repositoryApiMaxima?: readonly RepositoryApiMaximum[];
   /** The network access of these resolved bindings. The Namespace ceiling is independent. */
   readonly selectedRepositoryNetworkGrants?: RepositoryNetworkPolicyCeiling;
+  /** The TokenService Source that holds the credential in place of the GitHub App. */
+  readonly credentialSource?: string;
 };
 
 type RepositoryGrantMethod = NonNullable<RepositoryGrantPolicy["repositoryNetworkPolicyAllows"]>;
@@ -394,6 +401,31 @@ function selectedRepositoryGrantAllows(
   );
 }
 
+/**
+ * The saved grants as far as every limit allows them: write only where every limit allows write,
+ * read where every limit allows at least read. A grant that a limit omits is dropped.
+ */
+export function effectiveRepositoryGrants(
+  grants: readonly RepositoryNetworkGrant[] | undefined,
+  limits: readonly (RepositoryNetworkPolicyCeiling | undefined)[],
+): RepositoryNetworkGrant[] {
+  const allows = (
+    limit: RepositoryNetworkPolicyCeiling | undefined,
+    grant: RepositoryNetworkGrant,
+  ) =>
+    limit?.some(
+      ({ repository, access }) =>
+        repository === grant.repository && (access === grant.access || access === "write"),
+    ) === true;
+  return (grants ?? []).flatMap(({ repository, access }) => {
+    const levels = access === "write" ? (["write", "read"] as const) : (["read"] as const);
+    const allowed = levels
+      .map((level) => ({ repository, access: level }))
+      .find((grant) => limits.every((limit) => allows(limit, grant)));
+    return allowed === undefined ? [] : [allowed];
+  });
+}
+
 export function assertSelectedRepositoryGrants(
   grants: readonly RepositoryNetworkGrant[] | undefined,
   selected: RepositoryPolicyResolution | undefined,
@@ -401,6 +433,24 @@ export function assertSelectedRepositoryGrants(
   if (grants?.some((grant) => !selectedRepositoryGrantAllows(selected, grant))) {
     throw new ResourceStateConflictError(
       "The saved repository network policy exceeds the Agent's selected Git credential. Review the saved policy and repository bindings before deploying.",
+      [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+    );
+  }
+}
+
+/** The Source ceiling is one more limit on the saved grants, beside the registry and Installation. */
+export function assertSourceRepositoryGrants(
+  grants: readonly RepositoryNetworkGrant[] | undefined,
+  ceiling: RepositoryNetworkPolicyCeiling,
+): void {
+  const within = (grant: RepositoryNetworkGrant) =>
+    ceiling.some(
+      ({ repository, access }) =>
+        repository === grant.repository && (access === grant.access || access === "write"),
+    );
+  if (grants?.some((grant) => !within(grant))) {
+    throw new ResourceStateConflictError(
+      "The saved repository network policy exceeds the repository ceiling of the credential source that the repository registration selects. Remove those grants, or ask an operator to widen the source's ceiling.",
       [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
     );
   }

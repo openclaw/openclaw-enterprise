@@ -211,6 +211,8 @@ by manifest digest using `OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
 placement. A first empty list can be saved. Deploying it is refused before
 launch. Stop the active revision to retire its access.
 
+GET also returns the [repository credential](sandbox-policies/repository-credential.md) and its delivery.
+
 ## Denials and recommendations
 
 The console's **Policy denials** tab uses the existing bounded, exact-revision

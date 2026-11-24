@@ -227,6 +227,12 @@ Issue conversion stays open: preventing it needs OpenShell to inspect request
 bodies, which it does not. To rule it out, leave `pull_requests` at `read` on
 the registration, which withholds creation.
 
+### Repository token Source
+
+A Namespace registration can name a `github` Source in `credentialSource` so that
+native Git uses its fine-grained token in place of the GitHub App. See
+[Repository token Source](repository-token-source.md).
+
 ## Console access levels
 
 | Console choice          | Configuration value | Meaning                                                                       |

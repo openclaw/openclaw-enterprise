@@ -21,6 +21,7 @@ import type {
   ConnectionTemplateRepository,
 } from "../ports/connection-templates.ts";
 import type {
+  RepositorySourceCopy,
   StoredCredentialWithdrawal,
   CredentialSourceReadRepository,
   CredentialSourceRepository,
@@ -655,6 +656,19 @@ interface PlatformSnapshot {
   readonly authenticationStates: Map<string, AuthenticationState>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
+  /**
+   * Keyed by revision. This adapter has no Worker and no Gateway, so no Provider can hold a copy:
+   * a copy counts as retired once the PostgreSQL Worker's idle rule holds for its revision.
+   */
+  readonly repositorySourceCopies: Map<
+    string,
+    Readonly<
+      RepositorySourceCopy & {
+        readonly expectedSourceVersion?: string;
+        readonly expectedAt?: string;
+      }
+    >
+  >;
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
   readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
   readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
@@ -825,6 +839,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
     credentialWithdrawals: copyStoredMap(snapshot.credentialWithdrawals),
     credentialSources: copyStoredMap(snapshot.credentialSources),
+    repositorySourceCopies: copyStoredMap(snapshot.repositorySourceCopies),
     serviceAccounts: copyStoredMap(snapshot.serviceAccounts),
     agents: copyStoredMap(snapshot.agents),
     predecessorReplacements: copyStoredMap(snapshot.predecessorReplacements),
@@ -2241,6 +2256,26 @@ function repositories(
     },
   };
 
+  const unretiredSourceCopies = (namespaceId: string, credentialSourceId: string) =>
+    Array.from(snapshot.repositorySourceCopies.values()).filter((copy) => {
+      if (copy.namespaceId !== namespaceId || copy.credentialSourceId !== credentialSourceId) {
+        return false;
+      }
+      const agent = snapshot.agents.get(agentKey(namespaceId, copy.agentId));
+      const pending = snapshot.operations.some(
+        (operation) =>
+          operation.kind === "agent_revision" &&
+          operation.namespaceId === namespaceId &&
+          operation.resourceId === copy.revisionId,
+      );
+      return (
+        pending ||
+        (agent !== undefined &&
+          agent.activeRevisionId === copy.revisionId &&
+          agent.desiredRuntimeState !== "stopped")
+      );
+    });
+
   const findCredentialSource: CredentialSourceReadRepository["findCredentialSource"] = async (
     namespaceId,
     credentialSourceId,
@@ -2404,6 +2439,16 @@ function repositories(
       return saved;
     },
     findCredentialSource,
+    // No Worker runs here, so no copy records a confirmed delivery or an unknown write.
+    findRepositorySourceDeliveries: async (namespaceId, credentialSourceId, agentId) =>
+      unretiredSourceCopies(namespaceId, credentialSourceId)
+        .filter((copy) => copy.agentId === agentId)
+        .map(({ revisionId, expectedSourceVersion, expectedAt }) =>
+          Object.freeze({
+            revisionId,
+            ...(expectedSourceVersion === undefined ? {} : { expectedSourceVersion, expectedAt }),
+          }),
+        ),
     findCredentialWithdrawal,
     listCredentialWithdrawals: async (namespaceId, revisionId) =>
       Object.freeze(
@@ -2667,6 +2712,30 @@ function repositories(
       }
       return revisionOperations(true) ? "withdrawal_work" : undefined;
     },
+    recordRepositorySourceCopy: async (copy) => {
+      if (snapshot.repositorySourceCopies.has(copy.revisionId)) {
+        throw new ResourceConflictError("The repository source copy is already recorded.");
+      }
+      if ((await findCredentialSource(copy.namespaceId, copy.credentialSourceId)) === undefined) {
+        throw new ScopeViolationError("The credential source does not belong to the Namespace.");
+      }
+      snapshot.repositorySourceCopies.set(copy.revisionId, Object.freeze({ ...copy }));
+    },
+    // The Worker's idle rule (openshell-git-route-store.ts idleSourceCopies): no work recorded
+    // for the revision, and its Agent is gone, stopped or runs another revision. Recorded work
+    // never executes here and ends only with its Agent's deletion, so in practice a copy retires
+    // when its Agent is deleted, as revision cleanup retires it on PostgreSQL.
+    findUnretiredRepositorySourceCopies: async (namespaceId, credentialSourceId) =>
+      unretiredSourceCopies(namespaceId, credentialSourceId),
+    stampRepositorySourceCopies: async (namespaceId, credentialSourceId, version) => {
+      const expectedAt = new Date().toISOString();
+      for (const copy of unretiredSourceCopies(namespaceId, credentialSourceId)) {
+        snapshot.repositorySourceCopies.set(
+          copy.revisionId,
+          Object.freeze({ ...copy, expectedSourceVersion: version, expectedAt }),
+        );
+      }
+    },
     deleteCredentialSource: async (namespaceId, credentialSourceId) => {
       if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
         return false;
@@ -2678,6 +2747,11 @@ function repositories(
       }
       const key = agentKey(namespaceId, credentialSourceId);
       snapshot.credentialSources.delete(key);
+      for (const [revisionId, copy] of snapshot.repositorySourceCopies) {
+        if (copy.namespaceId === namespaceId && copy.credentialSourceId === credentialSourceId) {
+          snapshot.repositorySourceCopies.delete(revisionId);
+        }
+      }
       snapshot.connectionTokenCustody.delete(key);
       snapshot.savedConnections.delete(key);
       for (const [id, state] of snapshot.authenticationStates) {
@@ -4260,6 +4334,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     authenticationStates: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),
+    repositorySourceCopies: new Map(),
     credentialPolicyReductions: new Map(),
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),
