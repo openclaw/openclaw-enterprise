@@ -275,10 +275,11 @@ async function verifyLayerDiffId(
   expected: string,
   signal?: AbortSignal,
 ) {
+  const options = { chunkSize: 256 * 1024 };
   const decoder = layer.mediaType.endsWith("+gzip")
-    ? createGunzip()
+    ? createGunzip(options)
     : layer.mediaType.endsWith("+zstd")
-      ? createZstdDecompress()
+      ? createZstdDecompress(options)
       : undefined;
   if (!decoder) {
     assert.equal(layer.digest, expected, "OCI layer diff ID mismatch.");

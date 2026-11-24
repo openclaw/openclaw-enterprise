@@ -4,6 +4,7 @@ import type {
   PluginCatalogPage,
   PluginDesiredState,
 } from "../../../packages/contracts/src/index.ts";
+import type { StoryAction } from "../story-action.mts";
 import type { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
 
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
@@ -190,6 +191,41 @@ export const pluginDiscovery = {
     pluginCatalog.entries.map((entry): [string, PluginCatalogEntry] => [entry.remoteId, entry]),
   ),
 } satisfies Parameters<typeof servePluginDiscovery>[0];
+
+const savedPluginCatalogPath =
+  "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/plugins";
+const savedPluginDiscoveryConflict = {
+  method: "POST",
+  once: true,
+  status: 409,
+  code: "RESOURCE_CONFLICT",
+  message: "The Agent's plugin credential or catalog changed. Refresh and retry.",
+};
+
+export const pluginDiscoveryConflict = {
+  actions: [
+    { click: "Plugins" },
+    { selector: ".plugin-json > summary", click: true },
+    {
+      selector: "#agent-plugins",
+      value: JSON.stringify({ [projectTrackerPlugin.id]: { enabled: true } }, null, 2),
+    },
+    { click: "Configure plugins" },
+    { selector: 'button[aria-label="Calendar"]', click: true },
+  ] satisfies readonly StoryAction[],
+  // The prefetch succeeds so the picker has tool details to invalidate on refresh.
+  catalogRule: { ...savedPluginDiscoveryConflict, path: savedPluginCatalogPath, skip: 1 },
+  detailsRule: { ...savedPluginDiscoveryConflict, path: `${savedPluginCatalogPath}/details` },
+};
+
+export const pluginDiscoveryAgentDeleting = {
+  method: "POST",
+  path: savedPluginCatalogPath,
+  skip: 1,
+  status: 409,
+  code: "AGENT_DELETING",
+  message: "The requested Agent is being deleted.",
+};
 
 export const pluginDetailIdentityRefusal = {
   pages: {

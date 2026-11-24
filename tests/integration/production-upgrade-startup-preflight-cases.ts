@@ -1,6 +1,6 @@
 import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { constants, existsSync, readFileSync } from "node:fs";
 import {
   chmod,
@@ -2547,7 +2547,7 @@ exec "$0.fixture" "$@"
     });
   }
 
-  for (const [scenario, name] of [
+  for (const [scenario, name, denyAdmission] of [
     [
       "worker-only",
       "an oversized draft still lets a conflicting policy refuse the channel one-off before Stop",
@@ -2608,6 +2608,20 @@ exec "$0.fixture" "$@"
     [
       "collision",
       "the channel one-off preserves an Installation key matching the channel input filename",
+    ],
+    [
+      "worker-patch-denied",
+      "the channel one-off refuses a named Worker patch denial before Agent Stop",
+    ],
+    [
+      "worker-admission-denied",
+      "the channel one-off refuses a Worker admission denial before Agent Stop",
+      "worker",
+    ],
+    [
+      "api-admission-denied",
+      "the channel one-off refuses an API admission denial before Agent Stop",
+      "api",
     ],
   ] as const) {
     const conservative = scenario === "conservative";
@@ -2973,6 +2987,17 @@ exec "$0.fixture" "$@"
             await installationFile.close();
           }
         }
+        if (scenario === "worker-patch-denied") {
+          const state = await f.state();
+          state.denyWorkerPatch = true;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        }
+        if (denyAdmission) {
+          // Patch access is allowed, but admission refuses changing this writer to zero replicas.
+          const state = await f.state();
+          state[denyAdmission === "worker" ? "denyWorkerAdmission" : "denyApiAdmission"] = true;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        }
         const failure = await runForFailure(
           f.run,
           "--candidate-values",
@@ -2991,7 +3016,37 @@ exec "$0.fixture" "$@"
             [],
           );
         }
-        if (foreignExecution) {
+        if (scenario === "worker-patch-denied") {
+          assert.deepEqual(f.stopRequests, []);
+          assert.equal(failure.code, 1);
+          assert.match(
+            failure.stderr,
+            /Kubernetes denied patch on worker Deployment system\/openclaw-enterprise-worker\. Obtain patch access before resuming\./u,
+          );
+          assert.equal(existsSync(join(f.evidence, "quiescence-worker-preview.err")), false);
+          assert.equal(existsSync(join(f.evidence, "quiescence-api-preview.err")), false);
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+          await assertStoppedBeforeWriters(f);
+        } else if (denyAdmission) {
+          const writer = denyAdmission === "worker" ? "Worker" : "API";
+          assert.deepEqual(f.stopRequests, []);
+          assert.equal(failure.code, 1);
+          assert.ok(
+            failure.stderr.includes(
+              `Server-side dry-run of the ${writer} stop failed for system/openclaw-enterprise-${denyAdmission}.`,
+            ),
+            failure.stderr,
+          );
+          const previewError = await f.readEvidence(`quiescence-${denyAdmission}-preview.err`);
+          assert.ok(
+            previewError.includes(
+              `admission webhook "writer-policy.test" denied the ${writer} stop`,
+            ),
+            previewError,
+          );
+          await assertStoppedBeforeWriters(f);
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+        } else if (foreignExecution) {
           assert.deepEqual(f.stopRequests, []);
           assert.match(
             failure.stderr,
@@ -3229,46 +3284,46 @@ exec "$0.fixture" "$@"
     }
   });
 
-  test("the runtime upgrade refuses unauthorized retained Harness destinations before stopping writers", async (t) => {
-    if (skipWithoutHelm(t, realHelm)) {
-      return;
-    }
-    const fallback = "https://provider.example.test/v1";
-    const explicit = "https://evaluation.example.test/v1";
+  async function retainedHarnessFixture(
+    t: TestContext,
+    scenarios: readonly { name: string; override?: string; allowed: string }[],
+  ) {
     const provider = (baseUrl: string) => ({ protocol: "openai-responses", baseUrl });
     const { backend, drivers } = createCredentialProxyInstallationConfiguration();
     const gateway = drivers.credential_gateway;
     const tenant = restartInventory().namespaces[0]!;
-    const agents = ["mismatch", "matching", "explicit"].map((scenario) => ({
-      ...tenant.agents[0]!,
-      id: `agt_${scenario}`,
-      activeRevisionId: `rev_${scenario}`,
-      executionMode: "dedicated",
-    }));
-    // Only the inherited destination without matching consent should refuse.
-    const rows = agents.map((agent) => ({
-      namespace_id: tenant.id,
-      agent_id: agent.id,
-      revision_id: agent.activeRevisionId,
-      source_id: `src_${agent.id}`,
-      source_type: "openai",
-      driver_id: gateway.id,
-      overrides: JSON.stringify(
-        agent.id === "agt_explicit" ? { modelProvider: provider(explicit) } : {},
-      ),
-      config: JSON.stringify({
-        authorized_base_url: agent.id === "agt_matching" ? fallback : explicit,
-      }),
-    }));
+    const entries = scenarios.map(({ name, override, allowed }) => {
+      const agent = {
+        ...tenant.agents[0]!,
+        id: `agt_${name}`,
+        activeRevisionId: `rev_${name}`,
+        executionMode: "dedicated",
+      };
+      const row = {
+        namespace_id: tenant.id,
+        agent_id: agent.id,
+        revision_id: agent.activeRevisionId,
+        source_id: `cs_${randomUUID()}`,
+        source_type: "openai",
+        driver_id: gateway.id,
+        overrides: JSON.stringify(override ? { modelProvider: provider(override) } : {}),
+        config: JSON.stringify({ authorized_base_url: allowed }),
+      };
+      return { agent, row };
+    });
+    const agents = entries.map(({ agent }) => agent);
+    const rows = entries.map(({ row }) => row);
     const values = {
       agents: { defaults: { model: "codex/gpt-5.1" } },
       models: { providers: { codex: { agentRuntime: { id: "codex" } } } },
     };
+    let forecasts = 0;
     const f = await fixture(t, {
       agent: true,
       chart: {
         installation: (installation) => {
-          installation.drivers.compute.configuration.runtime.modelProvider = provider(fallback);
+          installation.drivers.compute.configuration.runtime.modelProvider =
+            provider(retainedHarnessDefaultUrl);
           installation.backend = [
             {
               ...backend[0],
@@ -3289,25 +3344,54 @@ exec "$0.fixture" "$@"
         },
       },
       inventoryNamespaces: [{ ...tenant, agents }],
+      inventoryRequiresApi: true,
       configurationValues: Object.fromEntries(agents.map(({ id }) => [`cfg_${id}`, values])),
-      databaseAnswer: (query) => ({
-        rows: query.includes("occ.agent_revisions") ? rows : [{ id: "ins_test" }],
-      }),
+      databaseAnswer: (query) => {
+        if (query.includes("occ.agent_revisions")) {
+          forecasts += 1;
+          return { rows };
+        }
+        return { rows: [{ id: "ins_test" }] };
+      },
     });
-    const seed = await f.state();
-    seed.agentDrafts = Object.fromEntries(
-      agents.map((agent) => [
-        agent.id,
-        {
-          ...agent,
-          namespaceId: tenant.id,
-          name: "Mail triage",
-          configurationId: `cfg_${agent.id}`,
-          harnessAuth: { method: "credential_source", sourceId: `src_${agent.id}` },
-        },
-      ]),
-    );
-    await writeFile(join(f.directory, "state.json"), JSON.stringify(seed));
+    async function setAgentBindings(overrides: Readonly<Record<string, unknown>> = {}) {
+      const seed = await f.state();
+      seed.agentDrafts = Object.fromEntries(
+        entries.map(({ agent, row }) => [
+          agent.id,
+          {
+            ...agent,
+            namespaceId: tenant.id,
+            name: "Mail triage",
+            configurationId: `cfg_${agent.id}`,
+            harnessAuth: { method: "credential_source", sourceId: row.source_id },
+            ...overrides,
+          },
+        ]),
+      );
+      await writeFile(join(f.directory, "state.json"), JSON.stringify(seed));
+    }
+    await setAgentBindings();
+    return { f, rows, setAgentBindings, forecastCount: () => forecasts };
+  }
+
+  const retainedHarnessDefaultUrl = "https://provider.example.test/v1";
+  const retainedHarnessExplicitUrl = "https://evaluation.example.test/v1";
+
+  test("the runtime upgrade refuses unauthorized retained Harness destinations before stopping writers", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    // Only the inherited destination without matching consent should refuse.
+    const { f, rows } = await retainedHarnessFixture(t, [
+      { name: "mismatch", allowed: retainedHarnessExplicitUrl },
+      { name: "matching", allowed: retainedHarnessDefaultUrl },
+      {
+        name: "explicit",
+        allowed: retainedHarnessExplicitUrl,
+        override: retainedHarnessExplicitUrl,
+      },
+    ]);
     // End the stock run at the first Helm submission, after it crosses the writer stop boundary.
     await f.failNext("reject-helm-submission");
 
@@ -3320,12 +3404,147 @@ exec "$0.fixture" "$@"
     const log = await f.readEvidence("preflight-api.log");
     assert.equal(log.match(/^Agent draft refused: /gm)?.length, 1);
     const diagnostics = commandStdout(error) + stderr + log;
-    for (const value of [fallback, explicit, ...rows.map(({ source_id }) => source_id)]) {
+    for (const value of [
+      retainedHarnessDefaultUrl,
+      retainedHarnessExplicitUrl,
+      ...rows.map(({ source_id }) => source_id),
+    ]) {
       assert.ok(!diagnostics.includes(value), "destination details must remain private");
     }
     const state = await assertStoppedBeforeWriters(f);
     assert.equal(state.helmSubmissions ?? 0, 0);
     assert.equal(state.dispatches, 0);
+  });
+
+  test("runtime upgrade resume checks current Harness destination policy before cutover", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    const { f, rows, forecastCount } = await retainedHarnessFixture(t, [
+      { name: "retained", allowed: retainedHarnessDefaultUrl },
+    ]);
+    const [row] = rows;
+    assert.ok(row);
+    const originalPolicy = row.config;
+
+    // Interrupt after a positive preparation, at the first attempted writer stop.
+    await runWithInjectedFault(f, "fail-scale-api");
+    assert.equal(existsSync(join(f.evidence, "prepared")), true);
+    assert.match(await f.readEvidence("preflight-api.log"), /harness-destinations-checked/);
+    assert.equal(forecastCount(), 1);
+    await assertStoppedBeforeWriters(f);
+
+    // An allowed destination can change while the deployment inventory stays identical.
+    row.config = JSON.stringify({ authorized_base_url: retainedHarnessExplicitUrl });
+    await f.failNext("reject-helm-submission");
+    const { stderr } = await runForFailure(f.run, "--resume");
+    assert.match(stderr, /config\.authorized_base_url[^\n]*retained Harness destination/);
+    assert.equal(forecastCount(), 2);
+    const state = await assertStoppedBeforeWriters(f);
+    assert.equal(state.helmSubmissions ?? 0, 0);
+    assert.equal(state.dispatches, 0);
+
+    // A permitted current policy lets this same attempt cross the writer stop boundary.
+    row.config = originalPolicy;
+    await runWithInjectedFault(f, "reject-helm-submission", "--resume");
+    assert.equal(forecastCount(), 3);
+    assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "secret-replaced"]);
+    assert.equal((await f.state()).helmSubmissions, 1);
+  });
+
+  test("runtime upgrade resume forecasts a newly bound Harness source before cutover", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    const { f, forecastCount, setAgentBindings } = await retainedHarnessFixture(t, [
+      { name: "retained", allowed: retainedHarnessExplicitUrl },
+    ]);
+    // The recorded, unbound draft gives no indication that a destination check
+    // will be required after its binding changes with the same active revision.
+    await setAgentBindings({ harnessAuth: null });
+    await runWithInjectedFault(f, "fail-scale-api");
+    assert.equal(forecastCount(), 0);
+    await assertStoppedBeforeWriters(f);
+
+    await setAgentBindings();
+    await f.failNext("reject-helm-submission");
+    const { stderr } = await runForFailure(f.run, "--resume");
+    assert.match(stderr, /config\.authorized_base_url[^\n]*retained Harness destination/);
+    assert.equal(forecastCount(), 1);
+    const state = await assertStoppedBeforeWriters(f);
+    assert.equal(state.helmSubmissions ?? 0, 0);
+    assert.equal(state.dispatches, 0);
+  });
+
+  test("runtime upgrade resume preserves fenced recovery after the Harness policy changes", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    const { f, rows, forecastCount } = await retainedHarnessFixture(t, [
+      { name: "retained", allowed: retainedHarnessDefaultUrl },
+    ]);
+    const [row] = rows;
+    assert.ok(row);
+
+    await runWithInjectedFault(f, "reject-helm-submission");
+    const stopped = await f.state();
+    assert.equal(stopped.api, 0);
+    assert.equal(stopped.worker, 0);
+    assert.equal(stopped.helmSubmissions, 1);
+    assert.equal(forecastCount(), 1);
+    const stoppedEvents = await f.events();
+    assert.deepEqual(stoppedEvents, ["scale-api", "scale-worker", "secret-replaced"]);
+
+    // With OCC unavailable, the existing guarded recovery needs neither a new
+    // prospective forecast nor a repeated stop to reach the reconciled Helm attempt.
+    row.config = JSON.stringify({ authorized_base_url: retainedHarnessExplicitUrl });
+    await runWithInjectedFault(
+      f,
+      "reject-helm-submission",
+      "--resume",
+      "--migration-history-checked",
+    );
+    const resumed = await f.state();
+    assert.equal(resumed.helmSubmissions, 2);
+    assert.equal(resumed.inventoryReadCount, stopped.inventoryReadCount);
+    assert.equal(forecastCount(), 1);
+    assert.deepEqual(await f.events(), stoppedEvents);
+    assert.equal(resumed.dispatches, 0);
+  });
+
+  test("runtime upgrade preparation requires a readable Harness authentication binding", async (t) => {
+    if (skipWithoutHelm(t, realHelm)) {
+      return;
+    }
+    for (const [name, harnessAuth] of [
+      ["missing", undefined],
+      ["unrecognized method", { method: "unexpected" }],
+      ["missing source ID", { method: "credential_source" }],
+      ["explicit null", null],
+    ] as const) {
+      await t.test(name, async (t) => {
+        const { f, setAgentBindings, forecastCount } = await retainedHarnessFixture(t, [
+          { name: "retained", allowed: retainedHarnessDefaultUrl },
+        ]);
+        await setAgentBindings({ harnessAuth });
+        if (harnessAuth === null) {
+          assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
+          await assertStoppedBeforeWriters(f);
+        } else {
+          await assert.rejects(
+            f.run("--preflight-only"),
+            /recorded draft or Harness source binding/,
+          );
+          const state = await f.state();
+          assert.equal(state.preflight, undefined);
+          assert.equal(state.api, 1);
+          assert.equal(state.worker, 1);
+          assert.equal(state.helmSubmissions ?? 0, 0);
+          assert.deepEqual(await f.events(), []);
+        }
+        assert.equal(forecastCount(), 0);
+      });
+    }
   });
 
   // The degraded draft-check paths. Each one either warns and lets OCC check the draft at deploy,

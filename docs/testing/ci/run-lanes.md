@@ -283,6 +283,13 @@ share a 30-minute deadline unless `CI_RUNNER_DEADLINE_MS` supplies an absolute U
 millisecond deadline. Cleanup has its own `CI_RUNNER_CLEANUP_TIMEOUT_MS` allowance
 (default 120 seconds). This mode does not promise immediate interruption.
 
+After preparation succeeds, complete mode keeps `state.json` until final cleanup,
+including when the journal has no resources. If the expected journal disappears,
+the result reports `cleanup-state-missing` and `reconciliation-required`. The
+runner stops automatic cleanup after it confirms the loss. Retain the attempt
+directory and reconcile the ownership and status of remaining resources before
+acting. Preparation can fail before creating a journal.
+
 A timeout, lost phase result or unconfirmed process termination produces
 `reconciliation-required` and prevents a later cleanup phase. Command owners stop
 their process groups when their phase loses its parent. Retain the attempt,

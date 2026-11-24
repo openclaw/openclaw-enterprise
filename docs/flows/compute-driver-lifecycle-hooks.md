@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-11-20
-last_updated_session: authoring-run/0c835bbb-ddf1-4774-98f0-abeeaad6ed97
+updated: 2026-11-22
+last_updated_session: authoring-run/e2bf3c80-1ad0-4e71-b380-f12048c9fc37
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -40,8 +40,8 @@ graph TD
     D -->|delete Namespace| H["OCC checks eligibility and cleans registrations"]
     E -->|success| I["Report ready"]
     F -->|ready| J["Return readiness for worker activation"]
-    E -->|failure| K["Compensate completed owners in reverse"]
-    F -->|failure| K
+    E -->|pending or failed| M["Block readiness and keep completed effects"]
+    F -->|beforeWorkloadStart fails| K["Try stop hooks for completed owners in reverse order"]
     G -->|revocation fails| L["Preserve owned runtime for retry"]
     H -->|revocation fails| L
   end
@@ -179,6 +179,8 @@ after the remaining resources. The worker settles deletion only from the resulti
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 21:57: Correct Namespace readiness and workload hook cleanup branches. (authoring-run/e2bf3c80-1ad0-4e71-b380-f12048c9fc37 - 51156ad89111a818a4515e3f902d7e6fbc09f065)
 
 - 2026-11-20 16:28: Trace lifecycle hook selection through the OCC Driver registry. (authoring-run/0c835bbb-ddf1-4774-98f0-abeeaad6ed97 - 890c90afd2db8ab7406fe4ea0f7483be2a44e597)
 

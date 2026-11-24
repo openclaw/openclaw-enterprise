@@ -10,7 +10,10 @@ import type {
   SandboxNamespaceContext,
   SandboxResourceRef,
 } from "@openclaw-enterprise/contracts";
-import { SandboxNetworkPolicyConflictError } from "@openclaw-enterprise/occ";
+import {
+  SandboxNetworkPolicyConflictError,
+  SandboxRevisionUnsupportedError,
+} from "@openclaw-enterprise/occ";
 import { asRecord, sha256Hex } from "@openclaw-enterprise/utils";
 import {
   OpenShellSandboxDriver,
@@ -56,6 +59,17 @@ const GIT_SCOPE = "openclaw.dev/git-scope";
 const POLICY_BASELINE = "openclaw.dev/managed-policy-baseline-v1";
 const stopped = (sandbox: OpenShellSandboxResponse) =>
   sandbox.phase === "SANDBOX_PHASE_STOPPED" || sandbox.phase === 7;
+
+function requireManagedTemplate(sandbox: OpenShellSandboxResponse): void {
+  const template = asRecord(sandbox.spec?.template);
+  const fields = asRecord(asRecord(template?.driver_config)?.fields);
+  if (template?.resources === undefined && fields?.kubernetes !== undefined) {
+    throw new SandboxRevisionUnsupportedError(
+      "SANDBOX_RECREATION_REQUIRED",
+      "Managed Sandbox still uses caller driver config for sizing. Preserve its files and recreate the Agent.",
+    );
+  }
+}
 
 /** Managed Workspace implementation used by the Kubernetes Harness runtime. */
 export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
@@ -209,6 +223,8 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         context.revision.harness.id === "openclaw",
         context.requirements.loginMode,
         context.requirements.workspaceSetup,
+        context.revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
+        binding?.inspected,
       ),
     ];
     const index = RUNTIME_WRAPPER_COMMAND.length;
@@ -240,9 +256,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         },
         environment,
         command,
-        driverConfig: {
-          containers: { agent: { resources } },
-        },
+        resources,
         filesystem: {
           ...filesystem,
           read_only: [
@@ -324,6 +338,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     );
     if (sandbox !== undefined) {
       this.verifyOwner(sandbox, context.namespace.id, context.revision.agentId);
+      requireManagedTemplate(sandbox);
       if (!stopped(sandbox)) {
         throw new Error("Stop the managed Sandbox before replacing runtime material.");
       }
@@ -433,20 +448,26 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     observed: OpenShellSandboxResponse,
     create: Omit<OpenShellSandboxCreateRequest, "requestId">,
     signal: AbortSignal,
+    sourcePolicy?: Readonly<Record<string, unknown>>,
   ): Promise<void> {
     if (!client.getPolicyStatus) {
       throw new Error("Managed Git requires current Sandbox policy observation.");
     }
-    const policy = await readOpenShellGitEvidence(
-      () => client.getPolicyStatus!({ workspace: create.workspace, sandbox: create.name }, signal),
-      signal,
-    );
+    const policy =
+      sourcePolicy ??
+      (
+        await readOpenShellGitEvidence(
+          () =>
+            client.getPolicyStatus!({ workspace: create.workspace, sandbox: create.name }, signal),
+          signal,
+        )
+      ).policy;
     // GetSandbox retains the creation policy. Check the current policy without masking any
     // workload or owner difference, including the successor's exact middleware binding.
     verifyExistingSandbox(
       {
         ...observed,
-        spec: { ...observed.spec, policy: policy.policy, providers: providerNames(observed.spec) },
+        spec: { ...observed.spec, policy, providers: providerNames(observed.spec) },
       },
       {
         ...withManagedPolicyBaseline(create),
@@ -483,6 +504,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       throw new Error("Managed Sandbox disappeared after creation.");
     }
     this.verifyOwner(existing, context.namespace.id, context.revision.agentId);
+    requireManagedTemplate(existing);
     if (
       existing.annotations[REVISION] !== context.revision.id &&
       context.revision.repositoryCredentials === undefined
@@ -501,8 +523,9 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         throw new Error("Stop the previous managed workload before updating its Sandbox.");
       }
       if (!isDeepStrictEqual(immutableWorkload(existing.spec), immutableWorkload(create.spec))) {
-        throw new Error(
-          "OpenShell workload update cannot change resources or runtime class; this prototype refuses that revision.",
+        throw new SandboxRevisionUnsupportedError(
+          "SANDBOX_WORKLOAD_IMMUTABLE",
+          "OpenShell workload update cannot change resources or other immutable Sandbox settings.",
         );
       }
       if (client.updateSandbox === undefined || existing.resourceVersion === undefined) {

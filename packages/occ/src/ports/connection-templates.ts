@@ -1,6 +1,7 @@
 import type { StoredOAuthClient } from "./oauth-client.ts";
 import type {
   ConnectionTemplate,
+  ConnectionTemplateVersion,
   OAuthConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
 
@@ -38,7 +39,7 @@ export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepo
   /** Renames, or appends `version` as the next version and makes it current. */
   updateConnectionTemplate(
     templateId: string,
-    changes: { readonly displayName?: string; readonly version?: OAuthConnectionTemplateVersion },
+    changes: { readonly displayName?: string; readonly version?: ConnectionTemplateVersion },
   ): Promise<Readonly<ConnectionTemplate> | undefined>;
   deleteConnectionTemplate(templateId: string): Promise<boolean>;
 }

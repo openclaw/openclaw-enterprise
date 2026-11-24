@@ -1,14 +1,16 @@
 import { RuntimeLogLimiter } from "./runtime-logs.ts";
 import type {
+  RepositoryNetworkGrant,
   SandboxNetworkGrant,
   SandboxPolicy,
   SandboxFacet,
 } from "@openclaw-enterprise/contracts";
+import type { PlatformUnitOfWork } from "@openclaw-enterprise/occ";
 import type { ResourceHandlers } from "./types.ts";
 
 const recommendationLimiter = new RuntimeLogLimiter();
 
-function policyBody(policy: Readonly<SandboxPolicy>) {
+function policyBody(policy: Readonly<SandboxPolicy>, includeRepositoryNetworkPolicy = true) {
   const application = policy.application;
   return {
     id: policy.id,
@@ -16,6 +18,9 @@ function policyBody(policy: Readonly<SandboxPolicy>) {
     agentId: policy.agentId,
     version: policy.version,
     additions: policy.additions,
+    ...(includeRepositoryNetworkPolicy && policy.repositoryNetworkPolicy !== undefined
+      ? { repositoryNetworkPolicy: policy.repositoryNetworkPolicy }
+      : {}),
     ...(policy.applied === undefined ? {} : { applied: policy.applied }),
     ...(application === undefined
       ? {}
@@ -72,12 +77,14 @@ export const sandboxPolicyHandlers = {
     reply,
     request,
     setAuditReadTarget,
+    resolveHarness,
   }) {
     const view = await controller.getAgentSandboxPolicy(
       context.actorId,
       namespaceId,
       params.agentId!,
       params.facet as SandboxFacet,
+      resolveHarness,
     );
     setAuditReadTarget({
       kind: "sandbox_policy",
@@ -127,8 +134,11 @@ export const sandboxPolicyHandlers = {
     reply,
     request,
     mutationEvent,
+    resolveHarness,
   }) {
-    const policy = await controller.transact(async (unit) => {
+    const repositoryNetworkPolicy = body!.repositoryNetworkPolicy as
+      readonly RepositoryNetworkGrant[] | undefined;
+    const save = async (unit: PlatformUnitOfWork) => {
       const updated = await controller.updateAgentSandboxPolicy(
         context.actorId,
         namespaceId,
@@ -136,6 +146,8 @@ export const sandboxPolicyHandlers = {
         params.facet as SandboxFacet,
         body!.expectedVersion as number,
         body!.additions as readonly SandboxNetworkGrant[],
+        repositoryNetworkPolicy,
+        resolveHarness,
       );
       await unit.audit.append(
         mutationEvent(
@@ -144,12 +156,23 @@ export const sandboxPolicyHandlers = {
             policyVersion: updated.version,
             agentId: updated.agentId,
             additions: updated.additions,
+            ...(repositoryNetworkPolicy === undefined
+              ? {}
+              : { repositoryGrantCount: updated.repositoryNetworkPolicy?.length }),
           },
         ),
       );
       return updated;
+    };
+    // The save and its audit share this transaction, including the IAM lock wait.
+    const policy = await controller.transact(save, {
+      readCommitted: repositoryNetworkPolicy !== undefined,
     });
-    reply.send({ data: policyBody(policy), meta: { requestId: request.id } });
+    // An additions-only writer may lack permission to read the saved repository grants.
+    reply.send({
+      data: policyBody(policy, repositoryNetworkPolicy !== undefined),
+      meta: { requestId: request.id },
+    });
   },
   async applyAgentSandboxPolicy({
     controller,

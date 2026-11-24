@@ -1,39 +1,34 @@
 # Recover a partial production upgrade
 
-Resume from the original checkout and private [evidence directory](production-upgrade.md).
-Aliases share its lock; changed directory identity refuses live access.
+Keep one operator and the maintenance freeze. Resume from the original checkout
+and private [evidence directory](production-upgrade.md). Aliases share its lock.
+Directory identity changes block live access.
 
 For runtime upgrades, preserve `<evidence-directory>.dispatch-state` separately
-from evidence backups. Missing or invalid journals stop resume before live access.
-After possible restoration, reconcile OCC history and audit records.
+from evidence backups. Missing or invalid journals block live access. After
+possible restoration, reconcile OCC history and audit records. For
+[separate migration](separate-database-upgrade.md#apply-and-verify-the-prepared-migration),
+keep the sibling journal and writers stopped until verification and cleanup pass.
 
-For [separate migration recovery](separate-database-upgrade.md#apply-and-verify-the-prepared-migration),
-retain the sibling journal and keep writers stopped until verification and cleanup succeed.
+`--preflight-only` leaves writers serving without a freeze and cannot resume.
+Before `prepared`, reconcile resources and start with fresh evidence. If an
+immutable Secret blocks preparation, [stage a successor](immutable-installation-upgrade.md).
+After preparation, [preserve the attempt on immutable Secret refusal](production-upgrade-command.md#stop-when-the-recorded-installation-secret-is-immutable).
 
-`--preflight-only` leaves writers serving without a freeze. It cannot resume;
-reconcile its resources before deploying with fresh evidence and checks.
+Reconcile processes, Helm, migration, rollout and dispatch. Run the original
+command with `--resume`. Keep protected paths, kubeconfig, OCC URL, scripts, flow,
+chart and equivalent candidates. Resume checks images, nodes, live state,
+both Secret UIDs and data on a [reference switch](immutable-installation-upgrade.md),
+and `controller-compatibility-results.json` when selected.
 
-Keep one operator and the freeze. Before `prepared`, writers and Helm are
-unchanged. Reconcile and use fresh evidence. If an immutable Secret blocks
-preparation, [stage a successor](immutable-installation-upgrade.md).
+For runtime upgrades, freeze Configuration generations, Harness source bindings
+and destination authorization through writer shutdown. Resume rechecks them
+before first cutover while both writers serve. Reconcile forecast refusals and
+prepare with fresh evidence.
 
-If prepared, [stop on immutable Secret refusal](production-upgrade-command.md#stop-when-the-recorded-installation-secret-is-immutable) and preserve the original evidence.
-
-For other resumable failures, reconcile processes, release, migration, rollout
-and dispatch. Add `--resume` with unchanged arguments, protected paths,
-kubeconfig contents, OCC URL, scripts, flow and chart. Keep candidates
-semantically unchanged. Resume rechecks images, nodes and live state against
-baseline or candidate.
-
-An [immutable reference switch](immutable-installation-upgrade.md) requires both
-Secrets' recorded UIDs and data.
-
-Resume requires the original `controller-compatibility-results.json` when selected.
-
-After verified completion, clean up without repeating rollout or Doctor.
-Preserve `completed` entries. They block resume before live access. New upgrades
-require fresh evidence. Reconcile live state after output or marker failures.
-Older runs may lack markers. Confirm completion independently of missing or `prepared` markers.
+Confirm completion against live state if output or markers are missing. Preserve
+`completed` markers, which block resume before live access. Clean up without
+repeating rollout or Doctor. Use fresh evidence for a new upgrade.
 
 ## Correct unusable comparison inputs
 
@@ -66,41 +61,44 @@ selection. Successful Helm work is not repeated. A replacement revision cannot p
 if redeployment is necessary, preserve this incomplete evidence and verify that
 separate recovery. The helper neither redeploys Agents nor rolls back the control plane.
 
-Read `native-command-failures.tsv` for failed scale, Helm or rollout commands:
-rows retain the operation, component (`api`, `worker`, `release`) and exit code.
-Client failures do not establish whether requests took effect; other failures
-may leave no row. Reconcile live state before resuming.
+For failed scale, Helm or rollout calls, `native-command-failures.tsv` records
+operation, component and exit status. Client errors can leave effects unknown.
+Compare `current-<component>-deployment.json` and
+`quiescence-<component>-patch.json` to live state.
 
-Both Deployments are validated before stopping either. Later UID/version/replica
-conflicts can leave the API stopped. Reconcile
-`current-<component>-deployment.json` and `quiescence-<component>-patch.json`
-against live state before resuming.
+### Restore incumbent API access after partial quiescence
 
-Helm failure or disconnection does not prove migration rollback. Inspect live
-Helm status/history, initialization Job/Pod outcomes and the database;
-`current-helm-status.json` may be stale. Keep the freeze. Reconcile the stopped
-Helm client before retry or recovery. Resolve `pending-*` releases with the
-release owner. Revision checks cannot fence concurrent clients.
+Preserve `channel-agent-operations.json`. After acknowledged Agent Stop, if both
+writers still serve, resolve the permission, admission or Deployment conflict
+and resume with the original evidence. For an unknown Stop, reconcile Agent
+state, revision history and audit records before further action.
 
-Ordinary resume skips Helm at the expected deployed revision with candidate
-values/Installation. It can retry the recorded prior or failed expected revision
-after the checks below. Invalid intents and other revisions refuse.
-For completed initialization, see [same-candidate Helm recovery](production-helm-recovery.md).
+If only the API stopped, keep exclusive maintenance. Reconcile failed or unknown
+patches and confirm the retained Helm release, mounted Installation Secret and
+database history are compatible with the original API. Restore only that API
+and verify inventory access before resuming. If there is a separate handoff or
+unresolved Helm or migration outcome, keep writers fenced and reconcile the
+original operation.
 
-Outside this pair, preserve intent and evidence. The release owner must verify
-the recovered manifest, values, Installation, required hook outcomes and migration
-history, then finish verification separately.
+### Reconcile Helm and migration
 
-Never start old writers against a migrated database. For a retry within the recorded pair, wait
-until the initialization Job and Pods are terminal. Run the **candidate controller
-image** with the [selected-image read-only check](separate-database-upgrade.md#run-a-selected-image-migration)
-against the retained database. Use its migrator credential and required CA. Use the
-same image for the maintenance Job. Require exit-zero `migration.checked`.
-[Separate migrations](separate-database-upgrade.md) require `--require-current`.
-Pass `--resume --migration-history-checked`. If Helm still reports the original
-revision in separate mode, keep the original API and worker stopped and preserve
-`database-migration-handoff.json`. Prefer a reviewed forward fix. Helm rollback
-leaves committed SQL in place.
+An interrupted Helm command leaves migration effects unknown. Check live Helm
+history, initialization Jobs and Pods, and the database. The saved Helm status
+can be stale. Reconcile the stopped client and resolve `pending-*` with the
+release owner. Keep the freeze against concurrent clients.
+
+Resume skips Helm at the expected deployed revision with matching candidate
+values and Installation. It permits a checked retry at the recorded prior or
+failed expected revision. Outside that pair, preserve intent. The release owner
+verifies manifest, values, Installation, hook outcomes and history separately.
+For completed initialization, see [same-candidate recovery](production-helm-recovery.md).
+
+When initializer Jobs and Pods are terminal, use the candidate controller image,
+migrator credential and CA for the [read-only check](separate-database-upgrade.md#run-a-selected-image-migration).
+Require exit-zero `migration.checked`. Separate mode needs `--require-current`.
+Resume with `--migration-history-checked`. At the original separate revision,
+preserve `database-migration-handoff.json` and keep writers stopped. Helm
+rollback leaves committed SQL in place. Keep old writers off migrated state.
 
 Consider an image-only return when the earlier image can read retained state and
 meets the applicable rollback guidance.
@@ -157,20 +155,17 @@ For stalled ReplicaSet creation, check [namespace object capacity](upgrade-check
 
 ## Correct a refused Agent deployment
 
-If startup preflight refuses `authorized_base_url`, settle a revision with
-authorized Harness overrides. Restart the upgrade with fresh evidence.
-
-After dispatch, `dispatch/*.rejected` records a definite refusal without a
-new revision. Correct the draft or replace a rejected key (`OCC_SERVICE_KEY_FILE`).
-For `authorized_base_url`, confirm the retained destination is intended.
-Use `occ agent update ID --file FILE` to select a ready source already authorized
-for it. Replace both `harnessAuth` and the corresponding `credentialSources`
-entry, preserving `configurationId` and other bindings. Verify caller and Agent
-source permissions. If you need another destination, stop. Manual deploy cannot
-repair the journal.
-
-Use the original checkout, command and evidence with `--resume` after correction.
-Reconcile unknown dispatches (408, 5xx or lost reply). Never resend them blindly.
+The startup preflight refuses some such drafts before any writer stops. If
+OCC still refuses an Agent's deployment with a 4xx answer, such as
+`HTTP 400 ... must use reviewed task actions`, it saved no new version. The same
+applies when `occ` sends no request because it cannot establish the active
+revision's Harness overrides. The command lists each such Agent with the
+message, keeps it in `dispatch/*.rejected`, and stops. Correct the cause, for
+example with `occ configuration update`, and repeat the command with `--resume`.
+The resume deploys each refused Agent once; do not deploy it yourself. A 408 or
+5xx answer stays an unknown dispatch. When OCC rejects the command's service
+key, the command lists the Agents it did not deploy; get a new key, point
+`OCC_SERVICE_KEY_FILE` at it, and resume.
 
 ## Correct a Doctor failure
 

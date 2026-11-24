@@ -14,6 +14,8 @@ export async function loadedProxyInstallation(
     id: string;
     registry: { backendId: string };
     preview?: boolean;
+    /** repository.preparedGitHub.apiOrigin; omitted selects github.com. */
+    apiOrigin?: string;
     createOpenShellBackend: NonNullable<
       Parameters<typeof loadInstallationConfiguration>[0]["createOpenShellBackend"]
     >;
@@ -81,6 +83,7 @@ export async function loadedProxyInstallation(
         preparedGitHub: {
           custodyKeyPath: join(directory, "custody.key"),
           privateKeyPath: join(directory, "app.pem"),
+          ...(input.apiOrigin && { apiOrigin: input.apiOrigin }),
         },
         openShell: { registrationName: "oce-prepared-git", authority },
       },
