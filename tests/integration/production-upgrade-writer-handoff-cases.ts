@@ -1438,10 +1438,14 @@ exec "$real_python" "$@"
       );
       assert.equal(existsSync(join(f.evidence, ".upgrade-lock")), false);
       const lines = failure.stderr.trimEnd().split("\n");
-      assert.deepEqual(lines.slice(-3, -1), [
+      assert.deepEqual(lines.slice(-4, -2), [
         "upgrade-production-images: OpenClaw Doctor failed (exit 1) in Agent agt_a's gateway.",
         "upgrade-production-images: Agent agt_a's gateway container did not restart after it became Ready.",
       ]);
+      assert.match(
+        lines.at(-2) ?? "",
+        /^Upgrade: Starting OpenClaw Doctor checks for Agent 2 of 2\./u,
+      );
       const lastLine = lines.at(-1);
       assert.ok(lastLine);
       assert.match(
