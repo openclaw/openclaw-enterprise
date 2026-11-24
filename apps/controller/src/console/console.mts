@@ -3199,23 +3199,17 @@ async function loadPage({
           );
         // A rebuild started at the top. Restore the snapshot's scroll and let focus
         // bring the shortcut into view if the page changed height.
-        const rebuiltAgentList =
-          current.feature === "agents" &&
-          !current.agentId &&
-          !current.creating &&
-          shell.view !== retainedView?.snapshot;
+        const rebuiltList =
+          shell.view !== retainedView?.snapshot &&
+          ((current.feature === "agents" && !current.agentId && !current.creating) ||
+            (trackSecretReturn && mountedRouteKey === routeKey(current)));
         const restoreScroll = Boolean(
-          focusTarget && (current.agentId || current.feature === "namespaces" || rebuiltAgentList),
+          focusTarget && (current.agentId || current.feature === "namespaces" || rebuiltList),
         );
         // Back can leave a rebuilt list scrolled past its heading when the old link is gone.
         const revealFallback =
-          returnFocus && !focusTarget && rebuiltAgentList && mountedRouteKey === routeKey(current);
-        const rebuiltSecretList =
-          trackSecretReturn &&
-          returnFocus &&
-          shell.view !== retainedView?.snapshot &&
-          mountedRouteKey === routeKey(current);
-        if ((restoreScroll || rebuiltSecretList) && retainedView) {
+          returnFocus && !focusTarget && rebuiltList && mountedRouteKey === routeKey(current);
+        if (restoreScroll && retainedView) {
           window.scrollTo({ top: retainedView.scrollY, left: 0 });
         }
         (focusTarget || app.querySelector<HTMLHeadingElement>(".content h1"))?.focus({

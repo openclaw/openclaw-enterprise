@@ -795,10 +795,36 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     {},
     { harnessAuth: { method: "api_key", source: secret.ref } },
   );
+  // Keep several readable matches in the library so Back has a real scroll position to restore.
+  for (let index = 1; index <= 8; index += 1) {
+    await fixture.createSecret(namespace.id, `Shared key ${index}`, "synthetic-library-value");
+  }
+  await page.setViewportSize({ width: 640, height: 600 });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page
+    .locator(settledView)
+    .getByRole("button", { name: "Shared key 8", exact: true })
+    .waitFor();
+
   const requests = apiRequests(page, fixture.origin);
+  const query = "Shared";
   const search = page.getByRole("searchbox", { name: "Search Secrets" });
   const shared = page.getByRole("button", { name: "Shared model", exact: true });
-  await search.fill(secret.id);
+  const heading = page.getByRole("heading", { name: "Credentials", level: 1 });
+  const intersectsViewport = (locator: Locator) =>
+    locator.evaluate((node) => {
+      const { top, bottom } = node.getBoundingClientRect();
+      return top < globalThis.innerHeight && bottom > 0;
+    });
+  await search.fill(query);
+  await shared.focus();
+  await shared.evaluate((row) => row.scrollIntoView({ block: "end" }));
+  const libraryScroll = await page.evaluate(() => globalThis.scrollY);
+  assert.equal(
+    await intersectsViewport(heading),
+    false,
+    "the library is scrolled past its heading",
+  );
   const detailRead = responseTo(
     page,
     "GET",
@@ -821,10 +847,6 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     SECRET_REFERENCED,
   );
   assert.doesNotMatch(await detail.innerText(), /remove .*references|remove them/i);
-  assert.ok(
-    requests.every((request) => request.method === "GET"),
-    "inspection must be read-only",
-  );
   const openConsumer = async () => {
     await consumer.press("Enter");
     await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
@@ -835,7 +857,7 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     await page.goBack();
     await page.waitForURL(`**${secretsUrl(namespace)}`);
     await page.locator(settledView).getByRole("searchbox", { name: "Search Secrets" }).waitFor();
-    assert.equal(await search.inputValue(), secret.id);
+    assert.equal(await search.inputValue(), query);
     assert.equal(await detail.count(), 0, "Back leaves the Secret inspector closed");
   };
 
@@ -843,6 +865,25 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   await returnToLibrary();
   assert.equal(await hasFocus(shared), true, "Back focuses the originating Secret row");
   assert.equal(await shared.evaluate((row) => row.matches(":focus-visible")), true);
+  assert.equal(await page.evaluate(() => globalThis.scrollY), libraryScroll);
+
+  // Another session adds matches before the originating row while the reader is away.
+  await page.keyboard.press("Enter");
+  await openConsumer();
+  await fixture.createSecret(namespace.id, "Shared backup 1", "synthetic-library-value");
+  await fixture.createSecret(namespace.id, "Shared backup 2", "synthetic-library-value");
+  await returnToLibrary();
+  assert.equal(await hasFocus(shared), true);
+  assert.equal(await intersectsViewport(shared), true, "Back reveals the shifted row");
+  assert.equal(
+    await shared.evaluate(
+      (row, oldScroll) =>
+        row.getBoundingClientRect().top + globalThis.scrollY >= oldScroll + globalThis.innerHeight,
+      libraryScroll,
+    ),
+    true,
+    "the old scroll offset would leave the row below the viewport",
+  );
 
   // The same return has no row to focus when the real list withdraws access while away.
   await page.keyboard.press("Enter");
@@ -853,8 +894,14 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   });
   await returnToLibrary();
   assert.equal(await shared.count(), 0);
-  assert.equal(await hasFocus(page.getByRole("heading", { name: "Credentials", level: 1 })), true);
+  assert.equal(await page.getByRole("list", { name: "Secrets" }).getByRole("button").count(), 10);
+  assert.equal(await hasFocus(heading), true);
+  assert.equal(await intersectsViewport(heading), true, "Back reveals the fallback heading");
   liftRestriction(fixture.policy, revoked);
+  assert.ok(
+    requests.every((request) => request.method === "GET"),
+    "inspection and navigation must be read-only",
+  );
 
   // Clear the Agent draft reference through its supported API before deleting the Secret.
   const unbound = await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
