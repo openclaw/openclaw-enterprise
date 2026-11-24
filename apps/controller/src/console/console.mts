@@ -1141,6 +1141,55 @@ function holdShownView({ busyCue = true, keepFocus = false } = {}) {
   return shell;
 }
 
+const agentSearchSelector = 'input[type="search"][data-refocus-key="agent-search"]';
+
+function captureAgentSearch(route: string) {
+  const input = document.activeElement;
+  const owner = sessionOwnerKey(session);
+  if (!owner || !(input instanceof HTMLInputElement) || !input.matches(agentSearchSelector)) {
+    return null;
+  }
+  const { value, selectionStart, selectionEnd, selectionDirection } = input;
+  const range = [selectionStart, selectionEnd, selectionDirection ?? undefined] as const;
+  return { owner, route, value, range };
+}
+
+type AgentSearchFocus = NonNullable<ReturnType<typeof captureAgentSearch>>;
+
+function restoreAgentSearch(view: HTMLElement, search: AgentSearchFocus) {
+  if (!document.hasFocus() || document.activeElement !== document.body) {
+    return;
+  }
+  const input = view.querySelector<HTMLInputElement>(agentSearchSelector);
+  if (input?.value === search.value && !input.disabled && input.checkVisibility()) {
+    input.focus();
+    input.setSelectionRange(...search.range);
+  }
+}
+
+// Only the uninterrupted focus on this error panel's Retry can carry the selection forward.
+function focusSearchRetry(view: HTMLElement, signal: AbortSignal, discard: () => void) {
+  const retry = view.querySelector<HTMLButtonElement>(":scope > .state-panel > button");
+  if (!retry || !document.hasFocus() || document.activeElement !== document.body) {
+    return discard();
+  }
+  retry.addEventListener("blur", discard, { once: true, signal });
+  retry.addEventListener(
+    "keydown",
+    ({ key }) => {
+      if (key === "Escape") {
+        discard();
+      }
+    },
+    { signal },
+  );
+  signal.addEventListener("abort", discard, { once: true });
+  retry.focus();
+  if (document.activeElement !== retry) {
+    discard();
+  }
+}
+
 // The control focused in the shown page, which a refocus recheck blurs when it holds the page
 // inert (finding 1654). restore() gives focus back once the page remounts (an input keeps its
 // caret), unless the reader has moved focus since. A deployment link that the list's reread
@@ -1657,6 +1706,7 @@ async function loadPage({
   openingAgent = false,
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
+  retrySearch = null,
 }: {
   fromNavigation?: boolean;
   reuseView?: boolean;
@@ -1665,6 +1715,7 @@ async function loadPage({
   restoreHistory?: ((url: string) => void) | null;
   openingAgent?: boolean;
   chatLinkFailure?: keyof typeof chatLinkFailures | null;
+  retrySearch?: AgentSearchFocus | null;
 } = {}) {
   noteConsoleLoad();
   if (loggingOut) {
@@ -1761,6 +1812,16 @@ async function loadPage({
   // list (finding 1636). The pending shell also replaces a pressed sidebar link (finding 1653).
   // On refocus, restore the reader’s place only if we reuse the view (finding 1654).
   const refocused = resumingView ? focusInShownView() : null;
+  const listRoute =
+    current.feature === "agents" && current.namespace && !current.agentId && !current.creating
+      ? routeKey(current)
+      : null;
+  let search =
+    retrySearch ??
+    (listRoute && previousMountedRouteKey === listRoute && refocused
+      ? captureAgentSearch(listRoute)
+      : null);
+  let searchForRetry: AgentSearchFocus | null = null;
   let shell: LoadingShell | null =
     knownPrivateState && !openingAgent
       ? holdShownView({ busyCue: !resumingView, keepFocus: !resumingView })
@@ -1772,6 +1833,26 @@ async function loadPage({
     document.activeElement instanceof HTMLElement &&
     document.activeElement === app.querySelector<HTMLHeadingElement>(".content h1")
       ? document.activeElement
+      : null;
+  // A reader who moves away and back has still moved on. Exempt only our own heading transfer.
+  let expectedHeading: HTMLElement | null = null;
+  const onFocus = (event: FocusEvent) => {
+    if (event.target !== expectedHeading) {
+      search = null;
+    }
+  };
+  if (search) {
+    document.addEventListener("focusin", onFocus, { capture: true, signal: lifetime.signal });
+  }
+  const pendingSearch = () =>
+    search &&
+    search.route === listRoute &&
+    search.route === routeKey(route()) &&
+    search.owner === sessionOwnerKey(session) &&
+    document.hasFocus() &&
+    document.activeElement !== null &&
+    document.activeElement === (retrySearch ? heldHeading : document.body)
+      ? search
       : null;
   let agentReturnHref: string | null = null;
   // Gives a refocus its reader's place back once the reused view's shell is usable.
@@ -1878,7 +1959,9 @@ async function loadPage({
               heldHeading = headingFocused
                 ? app.querySelector<HTMLHeadingElement>(".content h1")
                 : null;
+              expectedHeading = heldHeading;
               heldHeading?.focus({ preventScroll: true });
+              expectedHeading = null;
             };
             if (!accessResolved) {
               shell = pendingNamespaceShell = renderPendingNamespaceShell(privatePage);
@@ -2137,7 +2220,14 @@ async function loadPage({
             throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
           }
         }
-        firstItems = current.feature === "namespaces" ? namespaces : await request(itemsPath);
+        try {
+          firstItems = current.feature === "namespaces" ? namespaces : await request(itemsPath);
+        } catch (error) {
+          if (search && retryableAgentRecheck(error)) {
+            searchForRetry = pendingSearch();
+          }
+          throw error;
+        }
       }
       if (!lifetime.isCurrent(active)) {
         return;
@@ -2251,6 +2341,7 @@ async function loadPage({
     // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
     // replacing the shell briefly leaves it on the body again.
     const restoreFocus = document.activeElement === document.body ? refocused : null;
+    const restoreSearch = retrySearch && pendingSearch();
     // The Namespaces view is inert during the recheck. If Tab reached a shell control,
     // match that control when the shell is replaced, including the phone navigation toggle.
     const namespaceShellFocus =
@@ -2792,7 +2883,9 @@ async function loadPage({
       // a row's name or icon returns to the same control in the rebuilt row instead of falling
       // to the body (finding D814).
       const rebuiltView = shell.view;
-      restoreRefocus = () => refocused?.restore(rebuiltView, { rebuilt: true });
+      restoreRefocus = restoreSearch
+        ? () => restoreAgentSearch(rebuiltView, restoreSearch)
+        : () => refocused?.restore(rebuiltView, { rebuilt: true });
     } else if (current.feature === "namespaces") {
       renderNamespaces(
         {
@@ -2995,13 +3088,21 @@ async function loadPage({
       // again after a grant (finding 2549). The Request ID stays for whoever traces the denial,
       // behind a disclosure (finding D770).
       status === 403 ? undefined : "Retry",
-      status === 403 ? undefined : () => void loadPage({ confirmAgentPermissions }),
+      status === 403
+        ? undefined
+        : () => void loadPage({ confirmAgentPermissions, retrySearch: searchForRetry }),
       status === 403 ? null : requestId,
     );
+    if (searchForRetry) {
+      focusSearchRetry(shell.view, lifetime.signal, () => {
+        searchForRetry = null;
+      });
+    }
     if (status === 403 && requestId) {
       shell.view.querySelector(".state-panel")!.append(requestIdDisclosure(requestId));
     }
   } finally {
+    document.removeEventListener("focusin", onFocus, true);
     stopLoadingTimer();
     if (openingAgentLoad === active) {
       openingAgentLoad = null;

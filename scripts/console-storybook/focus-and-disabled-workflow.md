@@ -146,6 +146,14 @@ name. Escape returns to search without clearing it. Replace the query with
 `Research` and press Enter. Go back and check that the query remains and the
 focused Agent name is visible. Repeat at phone width.
 
+In **Pages / Agents / Resume a search after Retry**, type `Research` in the
+list filter. Hold Shift and press Left Arrow three times to select `rch`, then
+switch away and back. The fixture returns one 503 when it reads the list again.
+Press Enter on the focused **Retry** button. Check that focus returns to
+**Search Agents** with `rch` still selected and that typing replaces those letters.
+Reset the story and repeat after moving to another control before returning to **Retry**. Focus
+must not return to **Search Agents** in that case. Repeat at phone width.
+
 ## Agent collection access checks
 
 Open **Pages / Agents / Populated Namespace leaves the list** at desktop and

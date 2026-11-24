@@ -799,6 +799,26 @@ const authoredScenarios = {
       "Type Research and press Enter to open Research assistant. Use browser Back. The query remains and the focused Agent name is visible.",
     ],
   } satisfies LocalScenario,
+  agentsSearchRetry: {
+    group: "Pages/Agents",
+    name: "Resume a search after Retry",
+    rules: [
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        skip: 1,
+        once: true,
+        status: 503,
+      },
+    ],
+    description: "The first Agents list refresh after returning to the tab fails once.",
+    steps: [
+      "Open the preview in its own tab and wait for the Agents list. Type Research in Search Agents, then press Shift+Left three times to select rch.",
+      "Switch to another browser tab and return. When Request unavailable appears, confirm Retry has focus.",
+      "Press Enter. Check that Search Agents has focus, Research assistant is visible, and Research still has its final three letters selected.",
+      "Type X without moving focus. Check that the query becomes ReseaX and the list shows No matching Agents.",
+    ],
+  } satisfies LocalScenario,
   noNamespaces: {
     group: "Pages/Agents",
     name: "No readable Namespaces",
