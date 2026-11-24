@@ -1499,7 +1499,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preRepositorySourceCopies"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preRepositorySourceCopies"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1957,7 +1958,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preRepositorySourceCopies"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preRepositorySourceCopies"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2522,7 +2524,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preRepositorySourceCopies"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preRepositorySourceCopies"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2655,6 +2658,7 @@ test(
     for (const [prefix, history] of [
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [92, "preAgentRepositoryApiLimits"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2822,7 +2826,8 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preRepositorySourceCopies"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preRepositorySourceCopies"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2847,12 +2852,13 @@ test(
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         // Prefix 86 reaches 0087's admission-column ALTER TABLE without a later GRANT.
-        // 0093 aborts at its final-retirement trigger, after its table and function exist.
+        // 0094 aborts at its final-retirement trigger, after its table and function exist.
         const rollbackTag =
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [92, "CREATE TRIGGER"],
+                [93, "CREATE TRIGGER"],
+                [92, "CREATE FUNCTION"],
                 [91, "ALTER TABLE"],
                 [90, "ALTER TABLE"],
                 [89, "CREATE FUNCTION"],
@@ -2888,6 +2894,10 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 92) {
+          // Fail replacement of the policy validator after the action check and grants exist.
+          failAt =
+            "IF to_regprocedure('occ.repository_api_limits_are_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 89) {
           // Abort 0090 after replacing the execution check, while installing the session guard.
           failAt =

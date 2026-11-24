@@ -26,7 +26,7 @@ import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 
-// The repository token Source copy record (migration 0093) on real PostgreSQL: deployment
+// The repository token Source copy record (migration 0094) on real PostgreSQL: deployment
 // records a copy, the Worker completes and retires it with read-back, and Source deletion
 // answers 409 while any copy is not confirmed retired. The deploy-time write itself is pinned in
 // tests/integration/repository-credentials-deployment-admission-cases.ts; the Worker's Gateway

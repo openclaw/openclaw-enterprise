@@ -1080,6 +1080,27 @@ test("a Source-backed registration stays Git-only under the REST derivation", ()
   for (const field of ["scopedRest", "apiLimits", "installationId"]) {
     assert.equal(Object.hasOwn(delivery, field), false, field);
   }
+  // The Agent's own API limits only narrow: the maxima a Source offers are none, and a saved
+  // grant that asks for write still delivers native Git alone.
+  for (const maximum of resolution.repositoryApiMaxima ?? []) {
+    assert.equal(maximum.issues, "none");
+    assert.equal(maximum.pull_requests, "none");
+  }
+  assert.equal(resolution.repositoryApiMaxima?.length, 2);
+  const limited = {
+    ...sourceRevision(bindings),
+    sandboxPolicy: {
+      repositoryNetworkPolicy: {
+        grants: [{ ...grants[0], apiLimits: { default: "write" } }],
+      },
+    },
+    egressPlan: { repositoryGitAuthorization: "network-policy" },
+  } as unknown as AgentRevision;
+  const limitedDelivery = createGitHubRepositoryDeliveryResolver(registry)(limited).delivery;
+  assert.ok("credentialSource" in limitedDelivery);
+  for (const field of ["scopedRest", "apiLimits", "installationId"]) {
+    assert.equal(Object.hasOwn(limitedDelivery, field), false, field);
+  }
   // The Source Provider's rule binds Git paths only and refuses any REST authority.
   const provider = "oce-github-token-" + "a".repeat(32);
   const rule = compileOpenShellBoundGitRule(

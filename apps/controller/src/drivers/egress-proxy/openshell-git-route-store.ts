@@ -131,7 +131,7 @@ export interface OpenShellGitRouteStore {
   /** Tombstones every open route of a withdrawn revision or Namespace, whoever holds it. */
   withdraw(selector: OpenShellGitRouteWithdrawal): Promise<void>;
   /**
-   * Repository token Source copies (0093). Deployment records each one; the Worker adds the
+   * Repository token Source copies (0094). Deployment records each one; the Worker adds the
    * Provider name and the Source version it wrote, and retires it only after reading back that
    * the revision's Provider is gone. A store without them records nothing.
    */

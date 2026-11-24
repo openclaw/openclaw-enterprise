@@ -1,3 +1,4 @@
+import { repositoryGitRestOperations } from "../access/delivery.ts";
 import { hasControlCharacter } from "../access/client-contracts.ts";
 import type {
   ErrorDetail,
@@ -203,19 +204,22 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       const selected = bindings.some((binding) => binding.profile === "github-repository")
         ? resolveSelectedRepositoryScope(this.#registry, input.namespaceId, bindings)
         : undefined;
+      const selectedGrants = selected && selectedRepositoryGitNetworkGrants(selected);
       return Object.freeze({
         bindings,
         sessionDurationSeconds: this.#duration,
-        ...(selected === undefined
-          ? {}
-          : {
-              requiresNetworkPolicy: selected.requiresNetworkPolicy,
-              selectedRepositoryNetworkGrants: selectedRepositoryGitNetworkGrants(selected),
-              ...(selected.nativeGit && { nativeGit: selected.nativeGit }),
-              ...(selected.credential.kind === "credential_source" && {
-                credentialSource: selected.credential.sourceId,
-              }),
+        ...(selected &&
+          selectedGrants && {
+            requiresNetworkPolicy: selected.requiresNetworkPolicy,
+            selectedRepositoryNetworkGrants: selectedGrants,
+            ...(selected.nativeGit && {
+              nativeGit: selected.nativeGit,
+              repositoryApiMaxima: repositoryGitRestOperations(selectedGrants, selected.scopedRest),
             }),
+            ...(selected.credential.kind === "credential_source" && {
+              credentialSource: selected.credential.sourceId,
+            }),
+          }),
       });
     } catch {
       throw new ScopeViolationError(

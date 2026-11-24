@@ -166,7 +166,7 @@ export function createRepositorySourceCustody(options: {
               },
             }),
         };
-        // The record the deployment wrote in its admitting transaction (0093); the Worker
+        // The record the deployment wrote in its admitting transaction (0094); the Worker
         // retires it only after reading back that the revision's Provider is gone.
         const recorded = async (revisionId: string) => {
           if (!hold.held()) {
@@ -180,7 +180,7 @@ export function createRepositorySourceCustody(options: {
           );
           return copies.rows.length === 1;
         };
-        // The fence of one Provider write of this Source's value for a revision (0093). Each
+        // The fence of one Provider write of this Source's value for a revision (0094). Each
         // statement commits on its own connection: the holding session commits only when the
         // hold ends, and a record that died with it would not fence anything.
         const fenced = async <T>(

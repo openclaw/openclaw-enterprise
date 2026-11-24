@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-23"
-last_updated_session: "authoring-run/f51f99ed-c96c-4d33-b96b-5fcd4a39ca77"
+last_updated_session: "authoring-run/834fd8d9-74c1-4639-91e3-d87ff63bc9ef"
 ---
 
 # Agent sandbox policy flow
@@ -90,7 +90,7 @@ uses selected Namespace permissions and saved grants. Admission passes saved or 
 `read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-applies Namespace `apiLimits` to REST routes. Limits require native enforcement
+applies Namespace and frozen Agent `apiLimits` to REST routes. Limits require native enforcement
 at issuance and renewal. [Bodies remain unchecked](../reference/repository-credentials/access-levels.md#known-limits).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
@@ -110,9 +110,8 @@ and the Namespace ceiling. Save before deploy. Initial `[]` denies all. Omission
 retains grants without returning them. For `[]`, OCC checks SandboxPolicy read
 before lookup. A reader can withdraw after Driver loss with both lists empty.
 
-PostgreSQL saves an explicit list at Read Committed. The PUT starts that
-transaction before OCC waits for the IAM configuration lock, and the
-authorization checks see revocations committed during the wait.
+PUT starts a Read Committed transaction before waiting for the IAM lock.
+Authorization sees revocations committed during the wait.
 
 `apps/controller/src/console/agents/sandbox-policy.mts:renderAgentSandboxPolicy`
 uses the GET hint and Namespace limits. Refresh updates version and limits.
@@ -121,11 +120,10 @@ the returned Agent, Namespace, version and grants. Confirm deny-all and withdraw
 After unscoped deployment, save policy on a new Agent before deploy. A compatible
 controller and Worker must stop an unreadable revision.
 
-Deployment rechecks the selected Repo scope, proxy and Driver identities across
-asynchronous validation before accessing credentials and inserting a revision.
-Migration 0087 binds the snapshot to the exact saved policy version, grants
-and identity. Older Workers refuse its reader marker. The Worker rechecks
-the policy before dispatch. An explicit list blocks live application.
+Deployment rechecks Repo scope, proxy and Driver identities before credential
+access and revision insertion. PostgreSQL binds version, grants and identity,
+including API limits. Workers recheck before dispatch. Older Workers refuse the
+reader marker. Explicit lists block live application.
 
 ### 2. Freeze deployment or enqueue live application
 
@@ -269,6 +267,10 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 20:29: Trace Agent API limits. (authoring-run/834fd8d9-74c1-4639-91e3-d87ff63bc9ef - 9c5e29d947)
+
+- 2026-11-23 22:52: Trace Agent action filters. (authoring-run/0fa0ac1a-8ca1-46b3-896e-de8b1a400b39 - e01544b5df)
 
 - 2026-11-23 20:25: Describe Namespace API limits. (authoring-run/f51f99ed-c96c-4d33-b96b-5fcd4a39ca77 - 7d6fb6a344)
 
