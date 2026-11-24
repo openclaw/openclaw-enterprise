@@ -222,18 +222,27 @@ Sandbox until it ends.
   end it at once.
 - **Stop and retirement.** A stopped Agent's route is withdrawn: nothing is lent
   or renewed for it. Each deploy that selects the Source records the revision's
-  copy before the deployment is queued. The Worker retires a copy by deleting
-  the revision's `oce-github-token-` Provider, and records it only once a fresh
-  listing no longer shows that Provider: when the revision's Sandbox is gone
-  (Stop, redeploy or a deployment that ends without a Sandbox) and at each
-  Worker start. `DELETE` of the Source answers `409` with reason
+  copy before the deployment is queued, and the Worker lends the value only to a
+  revision whose copy is recorded and not retired (otherwise it logs
+  `REPOSITORY_SOURCE_LOAN_REFUSED` with reason `source_copy_unrecorded`; redeploy
+  the Agent). The Worker retires a copy by deleting the revision's
+  `oce-github-token-` Provider, and records it only once a fresh listing no
+  longer shows that Provider, or once the Gateway answers that the Workspace no
+  longer exists (reason `workspace_absent`). It tries when the revision's Sandbox
+  is gone (Stop, redeploy or a deployment that ends without a Sandbox), at Worker
+  start, and every five minutes for each copy whose revision no longer runs.
+  `DELETE` of the Source answers `409` with reason
   `unretired_repository_source_copy` while any copy is unretired, even after the
-  registry no longer names the Source. To clear it, stop or redeploy without the
-  Source each Agent whose revision uses it. A copy whose Provider OpenShell still
-  lists, or whose Gateway does not answer, stays unretired and the Worker logs
+  registry no longer names the Source. The answer gives the count and, when you
+  may read that Agent, the oldest copy's Agent and revision with the Worker's
+  last reason. To clear it, stop or redeploy without the Source each Agent whose
+  revision uses it. A copy whose Provider OpenShell still lists, or whose Gateway
+  does not answer, stays unretired and the Worker logs
   `worker.openshell-git-copy` with status `retained` and reason
-  `provider_present` or `gateway_unavailable`. The next cleanup or Worker start
-  retries it.
+  `provider_present` or `gateway_unavailable` until a later pass retires it.
+  Without OpenShell Git configured, the Worker runs no retirement pass: restore
+  its repository configuration (the registry may leave the Source out), restart
+  the Worker, then delete the Source and, after it, the Namespace.
 
 Replacement and retirement wait while the Worker holds the Source's catalog row.
 The Worker limits the hold to 60 seconds and confirms it before and after the
