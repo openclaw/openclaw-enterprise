@@ -79,7 +79,9 @@ Kubernetes namespace, and exposes only metadata through OCC. Updating a Secret
 does not restart workloads. Harnesses and embedded Gateways need a new
 Agent deployment to refresh revision copies. A dedicated Gateway restart
 reads current channel Secret values. If a static Credential Source holds a
-Gateway copy, update the source before deployment. Review saved drafts and
+Gateway copy, wait until every running Agent using that Source is idle.
+An OpenShell Source update briefly disconnects their workspace nodes and can
+interrupt turns. Update the Source before deployment. Review saved drafts and
 deploy only Agents intended to run. Follow
 [Update and redeploy](drivers/kubernetes-secret.md#update-and-redeploy)
 to verify each consumer. The selected Secret Driver is not a Credential Gateway, SecretBroker,

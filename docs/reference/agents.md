@@ -269,11 +269,11 @@ A failed or deleting Namespace rejects new Agents.
 
 ## Identity and deployment
 
-Each Agent has one stable service principal and runs embedded OpenClaw or
-dedicated Codex. A deployment request takes no body: it snapshots the saved
-draft, and a worker starts it asynchronously. See
-[Agent identity and deployment](agents/deployment.md) for permissions,
-snapshot fields, and activation guarantees.
+Each Agent has one stable service principal. [Supported topologies](harness-execution.md#supported-topology)
+include embedded OpenClaw, dedicated Codex and experimental dedicated native OpenClaw.
+The [optional request body](api.md#post-namespacesnamespaceidagentsagentiddeploy)
+accepts `harnessOverrides` and `expectedRepositoryPolicyVersion`.
+[Deployment](agents/deployment.md) snapshots the saved draft. A worker starts it asynchronously.
 
 An authorized bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop`
 sets desired state to `stopped`. The worker removes execution and routing, then

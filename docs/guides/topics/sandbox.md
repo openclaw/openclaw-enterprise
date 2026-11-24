@@ -21,8 +21,10 @@ token. Kubernetes Compute rejects dedicated OpenShell execution with
 `servicePrincipalCredentials.mode: projectedServiceAccountToken`. If the Agent
 needs projected identity, choose a Driver that supports it.
 
-For Codex app-server authentication, Compute sends OpenShell a SHA-256 hash
-of the token. The Agent Gateway retains the token.
+For Codex app-server authentication, Compute supplies a SHA-256 verifier in
+the launch environment. The Agent Gateway presents the bearer token when it
+connects. Compute also passes that token to the Sandbox Driver for readiness
+checks through the OpenShell service.
 
 OpenShell model credentials can use the [Credential Proxy](../../reference/drivers/credential-proxy.md)
 or the optional legacy [Credential Gateway](../../reference/drivers/openshell-credential-gateway.md).

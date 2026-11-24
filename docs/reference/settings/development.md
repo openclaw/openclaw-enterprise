@@ -132,9 +132,7 @@ The active runtime does not expose environment variables for these settings:
   polling worker; production workers reconcile Namespace operations and
   embedded OpenClaw or dedicated Codex AgentRevisions, and the API never
   launches a worker automatically.
-- Public ingress, stronger pre-execution sandbox barriers, credential brokerage,
-  and external identity providers remain
-  unavailable.
+- Public ingress and stronger pre-execution sandbox barriers remain unavailable.
 
 An embedded caller can set `ControllerAppOptions.maxBodyBytes` to a positive
 integer for the general limit and Agent/Preset write overrides. Standard
