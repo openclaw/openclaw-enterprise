@@ -796,19 +796,23 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     { harnessAuth: { method: "api_key", source: secret.ref } },
   );
   const requests = apiRequests(page, fixture.origin);
+  const search = page.getByRole("searchbox", { name: "Search Secrets" });
+  const shared = page.getByRole("button", { name: "Shared model", exact: true });
+  await search.fill(secret.id);
   const detailRead = responseTo(
     page,
     "GET",
     `${fixture.origin}${secretPath(namespace)}/${secret.id}`,
   );
-  await page.getByRole("button", { name: "Shared model", exact: true }).click();
+  await shared.press("Enter");
   const detailResponse = await detailRead;
   assert.equal(detailResponse.status(), 200);
   const { data: opened }: SecretDetailResponse = await detailResponse.json();
   assert.equal(opened.callerPermissions?.delete, true);
   const detail = dialog(page, "Shared model");
   // Consumers name the Agent, its ID beside it (finding D761).
-  await detail.getByRole("link", { name: agent.name, exact: true }).waitFor();
+  const consumer = detail.getByRole("link", { name: agent.name, exact: true });
+  await consumer.waitFor();
   await detail.getByText(agent.id, { exact: true }).waitFor();
   // A keyboard reader reaches the blocked Delete Secret and hears why (finding 2925).
   await expectReachableReason(
@@ -821,17 +825,44 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     requests.every((request) => request.method === "GET"),
     "inspection must be read-only",
   );
-  await detail.getByRole("link", { name: agent.name, exact: true }).click();
-  await page.waitForURL(new RegExp(`/console/agents/${agent.id}`));
-  await page.getByRole("heading", { name: "Shared model consumer", exact: true }).waitFor();
+  const openConsumer = async () => {
+    await consumer.press("Enter");
+    await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
+    await page.getByRole("heading", { name: agent.name, exact: true }).waitFor();
+    await page.locator(settledView).waitFor();
+  };
+  const returnToLibrary = async () => {
+    await page.goBack();
+    await page.waitForURL(`**${secretsUrl(namespace)}`);
+    await page.locator(settledView).getByRole("searchbox", { name: "Search Secrets" }).waitFor();
+    assert.equal(await search.inputValue(), secret.id);
+    assert.equal(await detail.count(), 0, "Back leaves the Secret inspector closed");
+  };
+
+  await openConsumer();
+  await returnToLibrary();
+  assert.equal(await hasFocus(shared), true, "Back focuses the originating Secret row");
+  assert.equal(await shared.evaluate((row) => row.matches(":focus-visible")), true);
+
+  // The same return has no row to focus when the real list withdraws access while away.
+  await page.keyboard.press("Enter");
+  await openConsumer();
+  const revoked = restrict(fixture.policy, "read", "secret", {
+    namespaceId: namespace.id,
+    resourceId: secret.id,
+  });
+  await returnToLibrary();
+  assert.equal(await shared.count(), 0);
+  assert.equal(await hasFocus(page.getByRole("heading", { name: "Credentials", level: 1 })), true);
+  liftRestriction(fixture.policy, revoked);
 
   // Clear the Agent draft reference through its supported API before deleting the Secret.
   const unbound = await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
     body: { configurationId: agent.configurationId, harnessAuth: null } satisfies UpdateAgentBody,
   });
   assert.equal(unbound.status, 200);
-  await page.getByRole("link", { name: "Credentials", exact: true }).click();
-  await page.getByRole("button", { name: "Shared model", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await shared.click();
   await dialog(page, "Shared model")
     .getByRole("button", { name: "Delete Secret", exact: true })
     .click();

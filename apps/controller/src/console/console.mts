@@ -124,6 +124,8 @@ interface MountedView {
   diagnostics?: Shell["diagnostics"];
 }
 
+type ReturnFocus = { href: string } | { key: string };
+
 interface RetainedView {
   owner: string;
   snapshot: HTMLDivElement;
@@ -131,7 +133,7 @@ interface RetainedView {
   title: string | null;
   scope: string | null;
   scrollY: number;
-  returnHref: string | null;
+  returnFocus: ReturnFocus | null;
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
@@ -1016,13 +1018,21 @@ function clearPasswordInputs() {
     });
 }
 
-function retainMountedView(returnLink: Element | null, scrollY = window.scrollY) {
+function retainMountedView(returnControl: Element | null, scrollY = window.scrollY) {
   const owner = sessionOwnerKey(session);
   // The mounted view's own node, never another page shown in its place: an Agent page renders
   // hidden behind the page that stands in for it (finding 1542).
   const view = mountedViewState?.view ?? null;
   if (!owner || mountedRouteKey === null || !view?.isConnected || view.hidden) {
     return;
+  }
+  let returnFocus: ReturnFocus | null = null;
+  if (returnControl instanceof HTMLElement && view.contains(returnControl)) {
+    if (returnControl instanceof HTMLAnchorElement) {
+      returnFocus = { href: returnControl.dataset.returnFocusHref ?? returnControl.href };
+    } else if (returnControl.dataset.refocusKey) {
+      returnFocus = { key: returnControl.dataset.refocusKey };
+    }
   }
   retainedViews.set(mountedRouteKey, {
     owner,
@@ -1034,10 +1044,7 @@ function retainMountedView(returnLink: Element | null, scrollY = window.scrollY)
     title: app.querySelector<HTMLHeadingElement>(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
     scrollY,
-    returnHref:
-      returnLink instanceof HTMLAnchorElement && view.contains(returnLink)
-        ? (returnLink.dataset.returnFocusHref ?? returnLink.href)
-        : null,
+    returnFocus,
   });
   while (retainedViews.size > 16) {
     retainedViews.delete(retainedViews.keys().next().value!);
@@ -1319,12 +1326,12 @@ function markMountedRoute(current: Route) {
 
 function resetReads({
   retainView = false,
-  returnLink = null,
+  returnControl = null,
   keepShell = false,
   retainedScrollY,
 }: {
   retainView?: boolean;
-  returnLink?: Element | null;
+  returnControl?: Element | null;
   keepShell?: boolean;
   retainedScrollY?: number | undefined;
 } = {}) {
@@ -1348,7 +1355,7 @@ function resetReads({
     shellUI.reset();
   }
   if (retainView) {
-    retainMountedView(returnLink, retainedScrollY);
+    retainMountedView(returnControl, retainedScrollY);
   } else {
     mountedRouteKey = null;
   }
@@ -1793,12 +1800,23 @@ async function loadPage({
     resumingView && !document.hidden && document.activeElement === document.body
       ? mountedViewState?.deferredAgentSearch
       : undefined;
+  const focused = document.activeElement;
+  // The Consumers link closes its inspector before navigating, so the native dialog returns
+  // focus to the Secret row that opened it. A directly linked inspector has no such row.
+  const leavingSecretRow =
+    fromNavigation &&
+    !restoreHistory &&
+    shownFeature === "secrets" &&
+    current.agentId &&
+    focused?.matches("button[data-refocus-key]");
   const active = resetReads({
     retainView: knownPrivateState,
     // Namespaces rows and snapshot shortcuts mark themselves for return focus too.
-    returnLink:
-      openingAgent || document.activeElement?.matches?.("a[data-return-focus-href]")
-        ? document.activeElement
+    returnControl:
+      leavingSecretRow ||
+      (focused instanceof HTMLAnchorElement &&
+        (openingAgent || focused.matches("[data-return-focus-href]")))
+        ? focused
         : null,
   });
   if (abandonedCreation) {
@@ -1848,8 +1866,19 @@ async function loadPage({
       : null;
   // A reader who moves away and back has still moved on. Exempt only our own heading transfer.
   let expectedHeading: HTMLElement | null = null;
+  const retainedFocus = retainedView?.returnFocus;
+  const trackSecretReturn =
+    fromNavigation &&
+    restoreHistory !== null &&
+    current.feature === "secrets" &&
+    retainedFocus != null &&
+    "key" in retainedFocus;
+  let secretReturnMoved = false;
   const onFocus = (event: FocusEvent) => {
     if (event.target !== expectedHeading && event.target !== document.body) {
+      if (trackSecretReturn) {
+        secretReturnMoved = true;
+      }
       // Both snapshots can return focus to Search if the new control later blurs.
       refocused = null;
       search = null;
@@ -1859,7 +1888,7 @@ async function loadPage({
       }
     }
   };
-  if (search) {
+  if (search || trackSecretReturn) {
     document.addEventListener("focusin", onFocus, { capture: true, signal: lifetime.signal });
   }
   const pendingSearch = () =>
@@ -1871,7 +1900,7 @@ async function loadPage({
     document.activeElement === (retrySearch ? heldHeading : document.body)
       ? search
       : null;
-  let agentReturnHref: string | null = null;
+  let returnFocus: ReturnFocus | null = null;
   // Gives a refocus its reader's place back once the reused view's shell is usable.
   let restoreRefocus: (() => void) | null = null;
   let pendingAgentHeading: HTMLHeadingElement | null = null;
@@ -2340,18 +2369,19 @@ async function loadPage({
           );
         });
     }
-    // Resolve the old link in the admitted view, even if its reads were unfinished and we
+    // Resolve the old control in the admitted view, even if its reads were unfinished and we
     // must rebuild it. Capture focus before replacing the shell, not after it falls back to body
     // (or leaves the held heading).
     if (
       retained &&
-      retainedView &&
+      retainedFocus &&
       reuseView &&
       !scopedNamespaceUnavailable &&
+      ("href" in retainedFocus || trackSecretReturn) &&
       (document.activeElement === document.body ||
         (heldHeading !== null && document.activeElement === heldHeading))
     ) {
-      agentReturnHref = retainedView.returnHref;
+      returnFocus = retainedFocus;
     }
     // Move focus to the Agent's heading only if the opening heading still owns it.
     focusAgentResult = document.activeElement === pendingAgentHeading;
@@ -3147,22 +3177,25 @@ async function loadPage({
         heading.focus({ preventScroll: true });
       } else if (
         fromNavigation &&
+        (!trackSecretReturn || (!secretReturnMoved && document.hasFocus())) &&
         previousMountedRouteKey !== routeKey(current) &&
         (document.activeElement === document.body ||
-          (agentReturnHref && document.activeElement === heldHeading))
+          (returnFocus && document.activeElement === heldHeading))
       ) {
+        const target = returnFocus;
         // A deployment being reread can receive return focus, but is not a link until it settles.
         const focusTarget =
-          agentReturnHref &&
+          target &&
           (!current.agentId || document.hasFocus()) &&
           Array.from(
             shell.view.querySelectorAll<HTMLElement & { href?: string }>(
-              "a[href], [data-return-focus-href]",
+              "href" in target ? "a[href], [data-return-focus-href]" : "button[data-refocus-key]",
             ),
           ).find(
             (item) =>
-              (item.dataset.returnFocusHref ?? item.href) === agentReturnHref &&
-              item.checkVisibility(),
+              ("href" in target
+                ? (item.dataset.returnFocusHref ?? item.href) === target.href
+                : item.dataset.refocusKey === target.key) && item.checkVisibility(),
           );
         // A rebuild started at the top. Restore the snapshot's scroll and let focus
         // bring the shortcut into view if the page changed height.
@@ -3176,11 +3209,13 @@ async function loadPage({
         );
         // Back can leave a rebuilt list scrolled past its heading when the old link is gone.
         const revealFallback =
-          agentReturnHref &&
-          !focusTarget &&
-          rebuiltAgentList &&
+          returnFocus && !focusTarget && rebuiltAgentList && mountedRouteKey === routeKey(current);
+        const rebuiltSecretList =
+          trackSecretReturn &&
+          returnFocus &&
+          shell.view !== retainedView?.snapshot &&
           mountedRouteKey === routeKey(current);
-        if (restoreScroll && retainedView) {
+        if ((restoreScroll || rebuiltSecretList) && retainedView) {
           window.scrollTo({ top: retainedView.scrollY, left: 0 });
         }
         (focusTarget || app.querySelector<HTMLHeadingElement>(".content h1"))?.focus({
