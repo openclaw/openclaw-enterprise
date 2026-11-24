@@ -73,15 +73,27 @@ test("smoke timing records overlapping admissions on one elapsed timeline", asyn
 
   await recorder.writeTimingReport(directory);
   const report: unknown = JSON.parse(
-    await readFile(join(directory, "first-agent-smoke-timing.json"), "utf8"),
+    await readFile(join(directory, "first-agent-smoke-timing-v2.json"), "utf8"),
   );
   assert.deepEqual(report, {
-    version: 1,
+    version: 2,
     rows: [
-      { phase: "admit-reader-control", startMs: 5, endMs: 10, status: "ok" },
-      { phase: "admit-embedded", startMs: 0, endMs: 20, status: "ok" },
-      { phase: "admit-codex", startMs: 2, endMs: 30, status: "ok" },
-      { phase: "initial-admissions", startMs: 0, endMs: 30, status: "ok" },
+      {
+        phase: "admit-reader-control",
+        parent: "initial-admissions",
+        startMs: 5,
+        endMs: 10,
+        status: "ok",
+      },
+      {
+        phase: "admit-embedded",
+        parent: "initial-admissions",
+        startMs: 0,
+        endMs: 20,
+        status: "ok",
+      },
+      { phase: "admit-codex", parent: "initial-admissions", startMs: 2, endMs: 30, status: "ok" },
+      { phase: "initial-admissions", parent: null, startMs: 0, endMs: 30, status: "ok" },
     ],
   });
 });
@@ -106,16 +118,142 @@ test("smoke timing retains failure and omits pending branches and free-form data
 
   await recorder.writeTimingReport(directory);
   const report: unknown = JSON.parse(
-    await readFile(join(directory, "first-agent-smoke-timing.json"), "utf8"),
+    await readFile(join(directory, "first-agent-smoke-timing-v2.json"), "utf8"),
   );
   assert.deepEqual(report, {
-    version: 1,
+    version: 2,
     rows: [
-      { phase: "admit-codex", startMs: 0, endMs: 8, status: "failed" },
-      { phase: "initial-admissions", startMs: 0, endMs: 8, status: "failed" },
+      {
+        phase: "admit-codex",
+        parent: "initial-admissions",
+        startMs: 0,
+        endMs: 8,
+        status: "failed",
+      },
+      { phase: "initial-admissions", parent: null, startMs: 0, endMs: 8, status: "failed" },
     ],
   });
   pending.resolve();
+});
+
+test("smoke timing attributes a delayed proxy wait without double-counting the parent", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-timing-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "first-agent-smoke-timing-v2.json");
+  let clock = 1000;
+  const { smokeStep, writeTimingReport } = createStepRecorder(() => clock);
+  const envoyStarted = Promise.withResolvers<void>();
+  const envoyReady = Promise.withResolvers<void>();
+
+  const proxy = smokeStep("controlled-channel-proxy", async () => {
+    clock += 3;
+    await smokeStep("channel-proxy-helm-wait", () => {
+      clock += 2;
+    });
+    await smokeStep("channel-proxy-envoy-trust-rollout", () => {
+      envoyStarted.resolve();
+      return envoyReady.promise;
+    });
+    clock += 5;
+    await smokeStep("channel-proxy-api-rollout", () => {
+      clock += 4;
+    });
+    await smokeStep("channel-proxy-host-route-readiness", () => {
+      clock += 6;
+    });
+    clock += 8;
+    return "proxy proof result";
+  });
+  await envoyStarted.promise;
+  clock += 47;
+  const helm = {
+    phase: "channel-proxy-helm-wait",
+    parent: "controlled-channel-proxy",
+    startMs: 3,
+    endMs: 5,
+    status: "ok",
+  };
+  // A partial snapshot contains the completed Helm wait. It cannot establish an
+  // elapsed time or an outcome for the in-flight wait or its parent phase.
+  await writeTimingReport(directory);
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { version: 2, rows: [helm] });
+
+  envoyReady.resolve();
+  assert.equal(await proxy, "proxy proof result");
+  await writeTimingReport(directory);
+  const report: unknown = JSON.parse(await readFile(file, "utf8"));
+  assert.deepStrictEqual(report, {
+    version: 2,
+    rows: [
+      helm,
+      {
+        phase: "channel-proxy-envoy-trust-rollout",
+        parent: "controlled-channel-proxy",
+        startMs: 5,
+        endMs: 52,
+        status: "ok",
+      },
+      {
+        phase: "channel-proxy-api-rollout",
+        parent: "controlled-channel-proxy",
+        startMs: 57,
+        endMs: 61,
+        status: "ok",
+      },
+      {
+        phase: "channel-proxy-host-route-readiness",
+        parent: "controlled-channel-proxy",
+        startMs: 61,
+        endMs: 67,
+        status: "ok",
+      },
+      { phase: "controlled-channel-proxy", parent: null, startMs: 0, endMs: 75, status: "ok" },
+    ],
+  });
+  const sumMs = (rows: typeof report.rows) =>
+    rows.reduce((total, { startMs, endMs }) => total + endMs - startMs, 0);
+  const topLevel = sumMs(report.rows.filter(({ parent }) => parent === null));
+  const waits = sumMs(report.rows.filter(({ parent }) => parent === "controlled-channel-proxy"));
+  assert.equal(topLevel, 75);
+  assert.equal(waits, 59);
+});
+
+test("smoke timing preserves a rejected proxy wait and omits unreached waits", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-timing-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let clock = 200;
+  const { smokeStep, writeTimingReport } = createStepRecorder(() => clock);
+  const error = new Error("unpublished proxy wait failure");
+  const proxy = smokeStep("controlled-channel-proxy", () =>
+    smokeStep("channel-proxy-helm-wait", async () => {
+      clock += 12;
+      throw error;
+    }),
+  );
+  await assert.rejects(proxy, (rejection) => rejection === error);
+  await writeTimingReport(directory);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(directory, "first-agent-smoke-timing-v2.json"), "utf8")),
+    {
+      version: 2,
+      rows: [
+        {
+          phase: "channel-proxy-helm-wait",
+          parent: "controlled-channel-proxy",
+          startMs: 0,
+          endMs: 12,
+          status: "failed",
+        },
+        {
+          phase: "controlled-channel-proxy",
+          parent: null,
+          startMs: 0,
+          endMs: 12,
+          status: "failed",
+        },
+      ],
+    },
+  );
 });
 
 test("the Actions smoke command reports no retirement waits when image setup is missing", async (t) => {
@@ -129,9 +267,9 @@ test("the Actions smoke command reports no retirement waits when image setup is 
     OCC_FIRST_AGENT_SMOKE_DIRECTORY: directory,
   };
   // The empty work directory fails before retirement. An unwritable Actions output
-  // must preserve the original diagnostic and exit code as well as the v1 timing report.
+  // must preserve the original diagnostic and exit code as well as the v2 timing report.
   for (const sink of [output, directory]) {
-    await rm(join(directory, "first-agent-smoke-timing.json"), { force: true });
+    await rm(join(directory, "first-agent-smoke-timing-v2.json"), { force: true });
     const command = spawnSync(process.execPath, [script, "run"], {
       encoding: "utf8",
       env: { ...env, GITHUB_OUTPUT: sink },
@@ -145,8 +283,8 @@ test("the Actions smoke command reports no retirement waits when image setup is 
       /::notice title=First Agent Smoke retirement wait::/,
     );
     assert.deepEqual(
-      JSON.parse(await readFile(join(directory, "first-agent-smoke-timing.json"), "utf8")),
-      { version: 1, rows: [] },
+      JSON.parse(await readFile(join(directory, "first-agent-smoke-timing-v2.json"), "utf8")),
+      { version: 2, rows: [] },
     );
   }
   assert.equal(
