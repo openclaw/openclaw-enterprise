@@ -28,17 +28,17 @@ user-visible behavior.
 graph TD
   A["Create Agent form"] --> B["Plugins, model, and repository choices"]
   B -->|repository access required and missing| H["Explain the requirement before provisioning"]
-  B -->|supported Dedicated with profile access| C["Queue provisioning with inline Configuration"]
+  B -->|Gateway model Secret| K["Validate and register the Secret with Credential Gateway"]
+  K --> P["Prepare Agent request with the selected credential"]
+  B -->|other authentication| P
+  P -->|eligible for guided provisioning| C["Queue provisioning with inline Configuration"]
   C --> D["Worker creates resources, grants and first deployment"]
-  B -->|Credential Source draft| S["Validate, then register the static Source"]
-  S --> E["Save Configuration and Agent draft"]
-  B -->|GitHub draft with a model Secret| K["Validate, then register the Secret with Credential Gateway"]
-  K --> E
-  B -->|other draft| J["Validate the draft"]
-  J --> E
+  P -->|member, per-repository access, or other draft| E["Save Configuration and Agent draft"]
+  B -->|direct static Source| S["Validate and register the static Source with TokenService"]
+  S --> E
   E -->|GitHub access per repository| I["Confirm saved GitHub grants"]
   I --> F
-  E -->|no per-repository policy| F["Grant Agent use of selected Secrets"]
+  E -->|no per-repository policy| F["Grant Agent access when needed"]
   F -->|failed| G["Retry credential access"]
 ```
 

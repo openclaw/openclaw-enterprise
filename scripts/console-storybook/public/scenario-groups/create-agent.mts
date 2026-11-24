@@ -2476,14 +2476,16 @@ export const createAgentProvisioningScenarios = {
     name: "Member Agent created, opens its draft",
     path: create,
     observabilityDenied: true,
-    actions: [...provisionableForm, click("Create Agent")],
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: provisionableForm,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "The session already knows this member does not administer the Installation. The member's deploy gives the Agent access to its Secrets (RFC-0026), so after the Agent saves the form sends no IAM request and opens the Agent's draft, where the member deploys it.",
+      "The member selects an existing Namespace Secret. Console enrolls it with the Credential Gateway and opens the saved Agent draft with the returned Credential Source.",
     steps: [
-      "After Create Agent, the Agent page opens on its draft.",
-      "The request log shows no /iam/ request.",
+      "Select Create Agent. The draft shows a saved Credential Source under Check authentication and credentials.",
+      "The request log shows Source enrollment before Agent creation, with no IAM or provisioning request.",
     ],
+    gap: "The preview simulates Source and IAM responses.",
   },
   createMemberCredentialSource: {
     group: "Pages/Create Agent",
