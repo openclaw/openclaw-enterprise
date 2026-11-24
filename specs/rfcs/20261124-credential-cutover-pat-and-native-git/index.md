@@ -15,4 +15,4 @@ The proposals are submitted in [#7217](https://github.com/openclaw/openclaw-ente
 
 ## Lifetime of Source-backed Repository policy
 
-An Agent revision using a shared TokenService Source records the approved Repository policy with a deadline only for a grant that has an explicit expiry. Native Git remains authorized during that deployment until the OpenClaw Control Plane withdraws the grant or its deadline passes. Legacy Repository sessions keep their configured deadlines, and TokenService continues to renew the separate GitHub installation token, which typically expires after one hour.
+An Agent revision using a shared TokenService Source records the approved Repository grant, which remains valid until the OpenClaw Control Plane withdraws it or its explicit deadline passes. Each native Git request still requires a valid credential from the selected Source and must match the saved Repository policy. Legacy Repository sessions keep their configured deadlines, and under this design TokenService renews the separate GitHub installation token, which typically expires after one hour.
