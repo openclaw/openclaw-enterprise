@@ -63,7 +63,7 @@ async function leaveAndReturn(page: Page) {
   await waitForLiveControls(page, ["configuration-json"]);
 }
 
-test("Configuration keeps an out-of-range number draft until corrected before saving", async (t) => {
+test("Configuration keeps invalid drafts and reveals syntax errors on keyboard Save", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Number range feedback");
   const agent = await fixture.createAgent(
     namespace.id,
@@ -80,13 +80,17 @@ test("Configuration keeps an out-of-range number draft until corrected before sa
   });
   await openEditor(page, fixture, namespace, agent, "corrected");
   const json = page.getByLabel("Configuration JSON", { exact: true });
-  const corrected = JSON.stringify(nativeValues("corrected"));
-  const draft = corrected.replace('"thresholds":[1,2,3]', '"thresholds":[1,1e400,3]');
-  assert.notEqual(draft, corrected);
+  const corrected = await json.inputValue(); // Pretty-printed by openEditor.
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  const error = page.locator("#configuration-json-error");
+  const draft = JSON.stringify(nativeValues("corrected")).replace(
+    '"thresholds":[1,2,3]',
+    '"thresholds":[1,1e400,3]',
+  );
+  assert.ok(draft.includes("1e400"));
   await json.fill(draft);
-  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
-  await page
-    .locator("#configuration-json-error")
+  await save.click();
+  await error
     .getByText("A number is too large or too small to save. Use a number closer to zero.", {
       exact: true,
     })
@@ -95,14 +99,38 @@ test("Configuration keeps an out-of-range number draft until corrected before sa
   assert.equal(await json.inputValue(), draft);
   assert.equal(patches, 0);
 
-  // The correction must reach the real Controller route and survive a separate read.
-  await json.fill(corrected);
+  // From the end of a long draft, Save should reveal the bad character on the first line.
+  const syntaxDraft = corrected.replace("{", "{x");
+  await json.fill(syntaxDraft);
+  await page.keyboard.press("Control+End");
+  assert.ok((await json.evaluate((node) => node.scrollTop)) > 0, "first line starts offscreen");
+  await page.keyboard.press("Tab");
+  assert.equal(await save.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  await error.getByText("Invalid JSON at line 1, column 2. Enter a valid JSON object.").waitFor();
+  assert.equal(await focusedId(page), "configuration-json");
+  assert.equal(await json.inputValue(), syntaxDraft);
+  assert.equal(patches, 0);
+  const cursor = await json.evaluate((node: HTMLTextAreaElement) => {
+    const { top } = node.getBoundingClientRect();
+    return {
+      selection: [node.selectionStart, node.selectionEnd],
+      firstLineVisible: node.scrollTop === 0 && top >= 0 && top < window.innerHeight,
+    };
+  });
+  assert.deepEqual(cursor, { selection: [1, 1], firstLineVisible: true });
+
+  // Repair from that caret and persist through the real Controller.
+  await page.keyboard.press("Delete");
+  assert.equal(await json.inputValue(), corrected);
+  assert.equal(await error.isHidden(), true);
   const savedResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "PATCH" &&
       new URL(response.url()).pathname === configurationPath,
   );
-  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Enter");
   assert.equal((await savedResponse).status(), 200);
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
   assert.equal(patches, 1);
