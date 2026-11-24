@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-24
-last_updated_session: authoring-run/e8a6ff72-e8b4-4dbd-8885-b0ca85474a91
+last_updated_session: authoring-run/30bee3df-243e-4c31-998a-d082827edafb
 ---
 
 # Console Agent stop and deletion
@@ -109,6 +109,15 @@ reference covers worker shutdown and preservation of versions, credentials, and 
 ### 8. Confirm deletion and read back the Agent
 
 `apps/controller/src/console/agents/deletion.mts:createAgentDeletion`
+
+`apps/controller/src/console/agents/lifecycle-confirmation.mts:keptResources`
+supplies the retention sentence and the read-only **View retained resource IDs**
+disclosure for initial and repeated deletion on detail and for list-row deletion.
+It shows the Namespace and Configuration IDs from the Agent snapshot. It also
+shows the model credential Secret ID and guidance for reviewing **Consumers**
+when the snapshot exposes a direct Secret reference in the same Namespace.
+Opening the disclosure sends no request and does not establish whether a resource
+exists or is used exclusively by this Agent.
 
 **Delete Agent** requests confirmation before sending a bodyless `DELETE` to the
 exact Agent URL. The controller requires Agent `delete`. A `403` shows the Console's
@@ -221,6 +230,7 @@ controller persistence or Compute shutdown.
 
 ## Changelog
 
+- 2026-11-24 08:54: Describe the retained resource ID disclosure in the accompanying uncommitted change. (authoring-run/30bee3df-243e-4c31-998a-d082827edafb - ed9efca109dd769c22dd53cb4caff1d4f9618111)
 - 2026-11-24 06:26: Identify the selected Agent in Stop and Delete confirmations. (authoring-run/e8a6ff72-e8b4-4dbd-8885-b0ca85474a91 - 4d4681144427368743596e0379b28dbadfef8c58)
 - 2026-11-20 17:34: Distinguish a denied deletion retry from status readback in the accompanying change. (authoring-run/428a2ef4-6974-4fd7-bad2-6f7f6099e5bd - acbfc35811e8929485813bbd315f5d12f71a4028)
 

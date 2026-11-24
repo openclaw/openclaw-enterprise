@@ -455,7 +455,7 @@ export function createAgentDeletion(
       targetId,
       description,
       kept.summary,
-      kept.commands,
+      kept.details,
       element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {

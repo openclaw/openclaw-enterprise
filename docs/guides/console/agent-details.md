@@ -249,12 +249,14 @@ version. See [Stop and resume](../../reference/agents/deployment.md#stop-and-res
 
 **Delete Agent**, in the same card, opens a confirmation dialog. **Cancel** closes it without changes.
 **Permanently delete Agent** irreversibly removes the Agent, version history,
-and workspace data; Namespace Configurations and Secrets remain. The dialog
-gives the commands that delete the Agent's Configuration and, if it has one, its
-model credential Secret: both are kept even when Create Agent made them.
-Secrets can also be inspected and deleted from the [Secrets page](secrets.md)
-once their references are cleared; Configuration cleanup uses the CLI. Exact Agent
-`delete` permission is required. After deletion starts, cleanup status replaces the tabs.
+and workspace data. Namespace Configurations and Secrets remain. Open
+**View retained resource IDs** to see the Namespace and Configuration IDs. If
+the dialog shows a model credential Secret ID and you have access, choose
+**Credentials** in the sidebar and use the [Secrets](secrets.md) tab for that
+Namespace. Search by ID, select the Secret, and review
+**Consumers**. The confirmation cannot determine whether another resource still
+uses the Configuration or Secret. Exact Agent `delete` permission is required.
+After deletion starts, cleanup status replaces the tabs.
 The page checks it every few seconds and returns to Agents once the Agent is gone.
 **Refresh deletion status** checks it immediately. **Request deletion again**
 opens a new confirmation for an already deleting Agent. Use it after fixing a

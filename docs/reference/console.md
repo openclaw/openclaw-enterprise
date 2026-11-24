@@ -185,10 +185,10 @@ preservation.
 
 ## Delete an Agent
 
-Select **Delete Agent** or the Agent's list-row Delete icon, then **Permanently
-delete Agent**. Exact Agent `delete` is required; `read` or `operate` is
-insufficient. Deletion removes the Agent, its versions, and its workspace data.
-Namespace Configurations and Secrets remain; see
+Select **Delete Agent** or the list-row Delete icon, then **Permanently delete
+Agent**. Agent `delete` is required. Deletion removes
+the Agent, versions, and workspace data. Namespace Configurations and Secrets
+remain. **View retained resource IDs** shows known references. See
 [Agent deletion](agents.md#deletion).
 
 **Refresh deletion status** follows asynchronous cleanup. When the API confirms

@@ -631,9 +631,9 @@ const authoredScenarios = {
     deployed: true,
     actions: [{ selector: '[aria-label="Delete Research assistant"]', click: true }],
     description:
-      "The confirmation says what deletion removes and what stays in the Namespace. Separate cleanup commands are available on request.",
+      "The confirmation says what deletion removes and what stays in the Namespace. Retained resource IDs are available in a disclosure.",
     steps: [
-      "Open View separate cleanup commands. Copying a command leaves the confirmation open.",
+      "Open View retained resource IDs and inspect the Namespace and Configuration IDs. If a model credential Secret ID appears, read the guidance for reviewing Consumers.",
       "Select Permanently delete Agent. The row shows Deleting and both icons are disabled.",
       "Select Refresh: the row still shows Deleting, because the list keeps an Agent until its cleanup finishes.",
     ],
@@ -1988,9 +1988,9 @@ const authoredScenarios = {
     path: draft,
     actions: [click("Delete Agent")],
     description:
-      "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View separate cleanup commands to find the full resource IDs.",
+      "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View retained resource IDs to inspect the known references.",
     steps: [
-      "Review the Agent name and ID. Press Enter on Copy Configuration command, then on Copy Secret command if shown. Only the latest row shows feedback. If copying fails, its full command is selected. Choose Cancel.",
+      "Review the Agent name and ID. Press Enter to expand View retained resource IDs, inspect the IDs and any Consumers guidance, then collapse it and choose Cancel.",
     ],
   } satisfies LocalScenario,
   deleting: {
@@ -2014,7 +2014,7 @@ const authoredScenarios = {
     deleting: true,
     actions: [click("Request deletion again")],
     description:
-      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged, and separate cleanup commands stay collapsed until opened.",
+      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged, and View retained resource IDs stays collapsed until opened.",
   } satisfies LocalScenario,
   deletionRetryDenied: {
     group: "Components/Deletion",
@@ -2610,7 +2610,7 @@ const authoredScenarios = {
       "Interactive deletion through the actual console controls, with simulated asynchronous cleanup.",
     steps: [
       "Scroll to Delete Agent and open its confirmation dialog.",
-      "Read what stays in the Namespace. Open View separate cleanup commands to copy a command without running it.",
+      "Read what stays in the Namespace. Open View retained resource IDs to inspect the known references.",
       "Cancel once to inspect the safe exit, then reopen and confirm Permanently delete Agent.",
       "The page marks deletion requested, removes edit/deploy controls, and keeps confirmed manual recovery available.",
       "Click Refresh deletion status. The fixture now reports completion and the console returns to the Agent list.",
