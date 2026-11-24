@@ -953,7 +953,7 @@ export function renderAgentList(context: AgentListContext) {
           resourceActionIcon("stop"),
           (event) => confirmAction(item, "stop", event.currentTarget as HTMLButtonElement),
           {
-            className: "icon-button",
+            className: "icon-button agent-row-action",
             "aria-label": `Stop ${item.name}`,
             title: "Stop Agent",
             "data-refocus-key": `${item.id} stop`,
@@ -964,6 +964,9 @@ export function renderAgentList(context: AgentListContext) {
           },
         );
     if (stop) {
+      stop.append(
+        element("span", { className: "agent-row-action-label", "aria-hidden": "true" }, "Stop"),
+      );
       setUnavailable(
         stop,
         !available || stopped || !canStop,
@@ -974,13 +977,16 @@ export function renderAgentList(context: AgentListContext) {
       resourceActionIcon("delete"),
       (event) => confirmAction(item, "delete", event.currentTarget as HTMLButtonElement),
       {
-        className: "icon-button",
+        className: "icon-button agent-row-action",
         "aria-label": `Delete ${item.name}`,
         title: "Delete Agent",
         "data-refocus-key": `${item.id} delete`,
         "data-refocus-fallback": `${item.id} name`,
         ...describedBy(deleteBlocked, item.status === "deleting" ? badgeId : null, "delete"),
       },
+    );
+    remove.append(
+      element("span", { className: "agent-row-action-label", "aria-hidden": "true" }, "Delete"),
     );
     setUnavailable(
       remove,
@@ -1188,7 +1194,11 @@ export function renderAgentList(context: AgentListContext) {
         ),
         current,
         deployment,
-        element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
+        element(
+          "td",
+          { className: "agent-created", "data-label": "Created" },
+          displayDate(item.createdAt),
+        ),
         cell,
       );
       row.addEventListener("click", (event) => {

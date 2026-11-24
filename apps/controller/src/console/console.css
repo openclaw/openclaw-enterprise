@@ -3816,23 +3816,52 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     display: inline;
   }
 }
+.agent-row-action-label {
+  display: none;
+}
+
 @media (760px < width <= 1100px) {
   .agent-table tbody tr {
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-    gap: var(--space-1) var(--space-4);
+    /* Leave room for labelled actions on narrow windows without shrinking the name on wide ones. */
+    --agent-field-width: min(25%, 7rem);
+    grid-template-columns: minmax(0, 2.5fr) minmax(var(--agent-field-width), 0.8fr) minmax(
+        var(--agent-field-width),
+        1.2fr
+      );
+    grid-template-areas:
+      "identity mode current"
+      "deployment created created"
+      "deployment actions actions";
+    grid-template-rows: auto auto minmax(min-content, 1fr);
+    row-gap: var(--space-1);
     padding-block: var(--space-2);
   }
-  .agent-table td:first-child {
-    grid-column: 1 / -1;
+  .agent-table tbody tr:has(.agent-name-unbroken) {
+    grid-template-areas:
+      "identity identity identity"
+      "mode current current"
+      "deployment created created"
+      "deployment actions actions";
+    grid-template-rows: auto auto auto minmax(min-content, 1fr);
   }
-  /* Let the full deployment reason wrap. Keep room for two lines while the read is pending. */
+  .agent-table td:first-child {
+    grid-area: identity;
+  }
+  .agent-table .agent-execution-mode {
+    grid-area: mode;
+  }
+  .agent-table .agent-current-version {
+    grid-area: current;
+  }
+  /* Keep deployment details beside the date and actions, with room for a pending read. */
   .agent-table .agent-deployment {
     display: grid;
-    grid-column: 1;
+    grid-area: deployment;
     grid-template-rows: auto auto minmax(
         calc(2 * var(--text-sm) * var(--text-sm--line-height)),
         auto
       );
+    align-content: start;
   }
   .agent-table .agent-deployment > a {
     justify-self: start;
@@ -3842,23 +3871,61 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
     white-space: normal;
     margin-top: 0;
   }
-  .agent-table td[data-label="Created"]::before {
-    display: inline;
-    margin-inline-end: var(--space-2);
+  .agent-table .agent-created {
+    display: grid;
+    grid-area: created;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: baseline;
+    column-gap: var(--space-2);
   }
   .agent-table .agent-row-actions-cell {
     display: grid;
-    grid-column: 2;
-    grid-row: 3 / span 2;
+    grid-area: actions;
     grid-template-columns: max-content minmax(0, 1fr);
     align-items: center;
     align-content: start;
     column-gap: var(--space-2);
   }
+  .agent-table .resource-row-actions {
+    min-inline-size: 0;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .agent-table :is(.agent-row-action, .icon-button-spacer) {
+    flex: none;
+    inline-size: min(100%, max(4.5rem, 5.5em));
+  }
+  .agent-table .agent-row-action {
+    gap: var(--space-1);
+    min-block-size: 34px;
+    block-size: auto;
+    padding: var(--space-1);
+  }
+  .agent-row-action > svg {
+    flex: none;
+  }
+  .agent-row-action-label {
+    display: inline;
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+  }
+  /* Keep permission guidance reachable with a full-strength focus ring. */
+  .agent-table .agent-row-action:is(:disabled, [aria-disabled="true"]) {
+    color: var(--color-text-muted);
+    background: var(--color-surface-2);
+    border: 1px dashed var(--color-border-strong);
+    opacity: 1;
+  }
+  .agent-table .agent-row-action[aria-disabled="true"] > svg {
+    opacity: 1;
+  }
   .agent-table .row-action-note {
     grid-column: 1 / -1;
     height: auto;
     min-height: 1lh;
+    margin-top: var(--space-1);
+    line-height: var(--text-sm--line-height);
+    overflow: visible;
     white-space: normal;
   }
 }

@@ -27,6 +27,13 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   `.resource-id`, and use the body font for status messages. Keep the full ID
   selectable. Highlight the row around a focused control and retain the
   control's own focus indicator.
+- **Rows.** Keep the named target in view when keyboard focus reaches a
+  consequential action such as Stop or Delete. Let unusually long names and
+  status reasons wrap without hiding the action or its focus ring. When an icon
+  needs a caption, put the text in the button and include it in the accessible
+  name (for example, **Delete** and `Delete Research assistant`). Do not use a
+  tooltip as the button's caption. Keep an unavailable action's visible reason
+  beside it and connect the full explanation as its accessible description.
 - **Actions.** Use `button(label, action, { tone: "primary" })` for the main
   action, a plain button for a secondary action, and a link for a destination.
 - **Forms and dialogs.** `field({ label, control, help })` connects a label

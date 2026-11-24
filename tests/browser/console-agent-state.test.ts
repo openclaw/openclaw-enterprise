@@ -4417,8 +4417,8 @@ test("Agents list row actions explain missing access and still report a refused 
 
   await login(page, fixture, listUrl(namespace.id), person.credentials);
   const row = page.getByRole("row").filter({ hasText: "Guarded Agent" });
-  const stop = row.getByRole("button", { name: "Stop Guarded Agent" });
-  const remove = row.getByRole("button", { name: "Delete Guarded Agent" });
+  const stop = row.getByRole("button", { name: "Stop Guarded Agent", exact: true });
+  const remove = row.getByRole("button", { name: "Delete Guarded Agent", exact: true });
 
   // A refusal that arrives while the dialog is open disables confirmation and moves focus to
   // Cancel. The redraw replaced the icon that opened the dialog, so closing it must land focus
@@ -4465,7 +4465,7 @@ test("Agents list row actions explain missing access and still report a refused 
   // Tab and Shift+Tab must keep the unavailable action, its reason and the same Agent in view.
   const name = row.getByRole("link", { name: "Guarded Agent", exact: true });
   await row.locator(".delayed-status").first().waitFor({ state: "detached" });
-  const expectActionInView = async (action: Locator, width: number) => {
+  const expectActionInView = async (action: Locator, width: number, caption: string) => {
     const state = await action.evaluate((node) => {
       const scroller = node.closest(".table-scroll");
       const identity = node.closest("tr")?.querySelector("td:first-child");
@@ -4483,44 +4483,91 @@ test("Agents list row actions explain missing access and still report a refused 
         box.bottom + margin <= Math.min(globalThis.innerHeight, bottom);
       const text = globalThis.document.createRange();
       text.selectNodeContents(note);
+      // Measure the actual caption inside the button. A tooltip alone has no rendered text here.
+      const label = node.querySelector(".agent-row-action-label");
+      const actionBox = node.getBoundingClientRect();
+      let visibleCaption: string | null = null;
+      if (label && globalThis.getComputedStyle(label).visibility === "visible") {
+        const labelText = globalThis.document.createRange();
+        labelText.selectNodeContents(label);
+        const box = labelText.getBoundingClientRect();
+        if (
+          box.width > 0 &&
+          box.height > 0 &&
+          box.left >= actionBox.left &&
+          box.right <= actionBox.right &&
+          box.top >= actionBox.top &&
+          box.bottom <= actionBox.bottom
+        ) {
+          visibleCaption = label.textContent;
+        }
+      }
       return {
         focused: node === globalThis.document.activeElement,
         identity: inside(identity.getBoundingClientRect()),
-        outline:
-          node.matches(":focus-visible") &&
-          outset > 0 &&
-          inside(node.getBoundingClientRect(), outset),
+        outline: node.matches(":focus-visible") && outset > 0 && inside(actionBox, outset),
         note: inside(text.getBoundingClientRect()),
         overflow: scroller.scrollWidth - scroller.clientWidth,
+        caption: visibleCaption,
       };
     });
     assert.deepEqual(
       state,
-      { focused: true, identity: true, outline: true, note: true, overflow: 0 },
-      `${width}: the focused action and Agent identity should fit together`,
+      {
+        focused: true,
+        identity: true,
+        outline: true,
+        note: true,
+        overflow: 0,
+        caption: width > 760 && width <= 1100 ? caption : null,
+      },
+      `${width}: the focused ${caption} action and Agent identity should fit together`,
     );
   };
   for (const width of [920, 761, 800, 1024, 1100, 1101, 1440]) {
     await page.setViewportSize({ width, height: 844 });
+    if (width === 920) {
+      // The short name and ID share the first line of cells with execution mode and version.
+      const alongside = await row.evaluate((node) => {
+        if (!(node instanceof HTMLTableRowElement)) {
+          throw new Error("Expected an Agent row");
+        }
+        const [identity, mode, version] = [...node.cells].map((cell) =>
+          cell.getBoundingClientRect(),
+        );
+        return (
+          identity &&
+          mode &&
+          version &&
+          identity.top === mode.top &&
+          mode.top === version.top &&
+          identity.right <= mode.left &&
+          mode.right <= version.left
+        );
+      });
+      assert.equal(alongside, true, "920: execution mode and current version sit beside the Agent");
+    }
     await name.focus();
     const controls = await row.locator("a, button:not(:disabled)").all();
     for (const control of controls.slice(1)) {
       await page.keyboard.press("Tab");
       assert.ok(await hasFocus(control));
     }
-    await expectActionInView(remove, width);
+    await expectActionInView(remove, width, "Delete");
     await page.keyboard.press("Shift+Tab");
-    await expectActionInView(stop, width);
+    await expectActionInView(stop, width, "Stop");
     assert.ok(
       await page.evaluate(
         () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
       ),
       `${width}: unavailable actions do not widen the page`,
     );
-  }
-  for (const action of [stop, remove]) {
-    await expectReachableReason(page, action, bothDenied);
-    assert.equal(await page.getByRole("dialog").count(), 0);
+    if (width === 920 || width === 1440) {
+      for (const action of [stop, remove]) {
+        await expectReachableReason(page, action, bothDenied);
+        assert.equal(await page.getByRole("dialog").count(), 0);
+      }
+    }
   }
   assert.equal(await page.evaluate(() => globalThis.scrollX), 0);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
