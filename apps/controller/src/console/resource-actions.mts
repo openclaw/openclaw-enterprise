@@ -1,7 +1,11 @@
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
-// Stroke icons on a 24-unit grid: a square for Stop and a trash can for Delete.
+// Stroke icons on a 24-unit grid.
 const ACTION_ICONS = {
+  repository: [
+    ["path", { d: "M4 18V5a2 2 0 0 1 2-2h14v13H6a2 2 0 0 0 0 4h14M9 3v7l2-1.5 2 1.5V3" }],
+  ],
+  remove: [["path", { d: "M5 5l14 14M19 5 5 19" }]],
   stop: [["rect", { x: 6, y: 6, width: 12, height: 12, rx: 1.5 }]],
   delete: [
     ["path", { d: "M4 7h16" }],
@@ -11,7 +15,7 @@ const ACTION_ICONS = {
   ],
 } as const;
 
-export function resourceActionIcon(name: "stop" | "delete") {
+export function resourceActionIcon(name: keyof typeof ACTION_ICONS) {
   const svg = document.createElementNS(SVG_NAMESPACE, "svg");
   const attributes = {
     class: "action-icon",

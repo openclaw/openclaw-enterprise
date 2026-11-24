@@ -87,6 +87,7 @@ type AgentDetailScenario = {
   harnessId?: "openclaw";
   credentialSources?: AgentCredentialSourceBinding[];
   configurationChangedElsewhere?: { values: OpenClawConfigurationDocument };
+  policyState?: "repositoryPermissions" | "repositoryPermissionsLimited";
   repositoryBindings?: RepositoryBindingSelection[];
   repositoryAccess?: RepositoryAccess;
   repositoryOptions?: RepositoryOption[];
@@ -157,6 +158,46 @@ export function createAgentDetailScenarios({
     deploymentStatus: "queued",
     deploymentErrorCode: null,
   };
+
+  const repositoryPermissionsDraft = {
+    group: "Pages/Agent detail",
+    name: "Set permissions on a saved draft",
+    path: draft,
+    policyState: "repositoryPermissions",
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application", profile: "github-repository" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "github-repository" }],
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        allowedProfiles: ["github-repository"],
+      },
+    ],
+    description:
+      "The saved Agent has a selected repository and no deployment or repository policy.",
+    steps: [
+      "Choose Set repository permissions above Deploy new version. In Repositories, choose Manage permissions.",
+      "Choose Enable policy editing, then Add access. Contributor is selected and Advanced is closed.",
+      "Expand Advanced, set Issues to Read-only, and save. Reopen the policy and check that Pull requests still uses the role.",
+    ],
+    gap: "The policy and deployment records are simulated. This preview cannot confirm runtime access.",
+  } satisfies AgentDetailScenario;
+
+  const repositoryPermissions = {
+    ...repositoryPermissionsDraft,
+    name: "Edit repository permissions after deployment",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    description: "The deployed Agent has a saved Contributor policy for example/application.",
+    steps: [
+      "Choose Edit repository permissions. Check that the saved policy matches the active version. Expand Advanced and set Pull requests to No access.",
+      "Save the policy. Confirm the new policy is pending. Reopen Manage permissions and check that Issues still uses the role.",
+      "Change Contributor to Read-only and save. Reopen Manage permissions to check your choice.",
+    ],
+  } satisfies AgentDetailScenario;
 
   const configurationConflictDraft = {
     group: "Pages/Agent detail",
@@ -353,6 +394,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Resize through desktop, tablet, and phone widths. Prepare this version sits beside Versions on a desktop and above it below 1,100 px. Each step shows a check when done or an open ring, with its detail line under the step text; Deploy new version stays on the first screen at 1440x900.",
           "Focus the selected tab and press Left, Right, Home and End: focus moves between tabs without opening one. Enter opens the focused tab. Tab leaves the strip and Shift+Tab returns to the selected tab. At phone width the edge with more tabs past it fades.",
+          "At desktop width, focus the selected tab, then press End and Left to focus the tab before last. Narrow the window to 920 px, then 390 px. Confirm the label and focus ring stay clear of both faded edges and the selected panel stays open.",
         ],
         description:
           "An Agent without a version can edit saved settings and deploy its first immutable version.",
@@ -1698,6 +1740,40 @@ export function createAgentDetailScenarios({
         ],
         description:
           "The new version draft names Contributor and Read-only access and shows write limits.",
+      },
+      repositoryPermissionsDraft,
+      repositoryPermissions,
+      repositoryPermissionsLimited: {
+        ...repositoryPermissions,
+        name: "Block unlisted API resources",
+        policyState: "repositoryPermissionsLimited",
+        description:
+          "The saved limits allow both listed resources. Namespace permissions currently block issue creation.",
+        steps: [
+          "Choose Edit repository permissions. Check that unlisted API resources are blocked.",
+          "Open Advanced. Issues allows Read and create, but current permissions limit it to Read-only.",
+          "Set Issues to Read-only and save. Reopen the pending policy. Select Reset to role defaults to remove all API limits.",
+        ],
+      },
+      repositoryPermissionsDenied: {
+        ...repositoryPermissions,
+        path: `${draft}&tab=repositories`,
+        name: "Repository policy read denied",
+        readOnlyPermissionSummary: true,
+        description: "The viewer can read this draft but cannot read the repository policy.",
+        steps: [
+          "Choose Manage permissions. Check the permission guidance. The Console shows no policy or save controls.",
+        ],
+      },
+      repositoryPermissionsLoading: {
+        ...repositoryPermissions,
+        path: `${draft}&tab=repositories`,
+        name: "Repository permissions loading",
+        rules: [{ suffix: "/sandbox-policy/networking", hold: true }],
+        description: "The policy read stays pending until the Console times out.",
+        steps: [
+          "Choose Manage permissions. Check the loading message and wait for the read error.",
+        ],
       },
       repositoryEditor: {
         group: "Pages/Agent detail",
@@ -3299,6 +3375,26 @@ export function createAgentDetailScenarios({
           "Use Tab to reach Retry and press Enter. Confirm the H1 becomes Research assistant and receives keyboard focus.",
         ],
       },
+      agentReadUnavailableOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Retry an Agent read on tab return",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+            status: 408,
+            skip: 1,
+            once: true,
+          },
+        ],
+        description: "A simulated Agent read timeout masks the Agent name and hides the draft.",
+        steps: [
+          "Open the preview in its own tab. Choose Edit Configuration, make an unsaved edit, and scroll the editor into view.",
+          "Switch to another browser tab and return. Confirm the heading is Agent details, the warning says Could not check Agent details, and the draft is hidden.",
+          "Focus Retry with Tab if needed, then press Enter. Confirm Research assistant and the unsaved edit return at the previous scroll position.",
+        ],
+      },
       configurationError: {
         group: "Pages/Agent detail",
         name: "Configuration unavailable",
@@ -3356,7 +3452,7 @@ export function createAgentDetailScenarios({
         description: "The Console retries one temporary Configuration read failure on tab return.",
         steps: [
           "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit, select text in the editor, and scroll until the page header is out of view.",
-          "Switch to another browser tab and return. When Still checking… appears at the bottom of the viewport and the draft is hidden, switch away again. Let the delayed retry finish while the preview tab is hidden.",
+          "Switch to another browser tab and return. When the draft hides for the automatic retry, confirm Still checking… appears immediately and only once at the bottom of the viewport, then switch away again. Let the delayed retry finish while the preview tab is hidden.",
           "Return to the preview. After the next access check succeeds, confirm the status disappears and the editor regains focus with the unsaved draft, selection, and scroll position intact. Type without clicking the editor to verify that only the selected text changes. Reset the story and repeat at 390 px wide. Confirm the status fits the viewport and navigation remains available.",
         ],
       },

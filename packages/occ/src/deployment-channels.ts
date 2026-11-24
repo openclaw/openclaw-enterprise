@@ -313,6 +313,7 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
         principalId,
         input.namespaceId,
         agent.id,
+        input.expectedRepositoryPolicyVersion,
       );
       return state.configurations.findConfiguration(input.namespaceId, agent.configurationId);
     });
