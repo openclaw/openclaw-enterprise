@@ -161,4 +161,4 @@ Use the [installed workflow and evidence by criterion](../plans/20261123-reposit
 
 Remove retired settings before upgrade. Existing Write grants can gain issue or PR creation on redeployment. Set restrictions first. A running Sandbox keeps its loaded rules and can lose renewal after a change. The operator must Stop and verify Sandbox retirement to withdraw access immediately.
 
-The [plan](../plans/20261123-repository-issue-creation.md) records acceptance and the implementation on `main` at `713ecb6ef`. That build includes the role picker and Namespace limits. Per-Agent limits and Advanced editing are separate follow-ups. Live parent-link effects and the deployed Console workflow remain unverified.
+The [plan](../plans/20261123-repository-issue-creation.md) records the merged policies, [Console editor](https://github.com/openclaw/openclaw-enterprise/pull/7180) and controlled checks. The upgrade sequence, live parent-link effects and the complete deployed Console workflow remain unverified.
