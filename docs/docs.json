@@ -226,6 +226,10 @@
                     "label": "Native Admin UI"
                   },
                   {
+                    "page": "reference/agent-automations",
+                    "label": "Automation API"
+                  },
+                  {
                     "page": "guides/topics/agent-troubleshoot",
                     "label": "Troubleshoot"
                   }
@@ -1369,6 +1373,7 @@
               "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",
+              "flows/agent-automations",
               "flows/agent-http-chat",
               "flows/kubernetes-existing-namespace-placement",
               "flows/production-tui",

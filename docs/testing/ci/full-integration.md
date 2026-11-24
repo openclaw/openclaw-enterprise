@@ -179,8 +179,9 @@ Use the [shared cleanup procedure](run-lanes.md#results-and-cleanup) for local r
 
 First-attempt scheduled and manual `all` runs can reuse eligible ordinary CI
 lanes from a successful push CI run on official `main` at the exact source SHA.
-Discovery waits at most 12 minutes. Required producer jobs must pass, and
-current-attempt artifacts must contain complete case and cleanup evidence.
+Discovery polls every 30 seconds for up to 14 minutes within the 18-minute
+reuse job timeout. Required producer jobs must pass, and current-attempt
+artifacts must contain complete case and cleanup evidence.
 Validated results must be published as `full-ci-reused-results` before their lanes
 are omitted from fresh execution. Ineligible lanes and unavailable, invalid or
 unpublished results fall back to fresh runs. Preflight supplies the full matrix

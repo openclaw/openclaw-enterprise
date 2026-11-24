@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-22
-last_updated_session: authoring-run/303eb0c9-04da-4bab-9fac-cc0dca754630
+updated: 2026-11-24
+last_updated_session: authoring-run/0e68027f-b229-42d4-8639-87267b4b6363
 ---
 
 # Console Agent editing and runtime requests
@@ -108,8 +108,9 @@ on a bound Secret disables deployment. Permissions list readable Secrets lacking
 `operate` and count the rest without names (D756). After deployment, versions outside the newest page
 appear unreadable until an audited read (D758).
 
-`parseEditor(true)` rejects nonfinite numbers (even nested `1e400`).
-Keep text, show the error, and focus the editor. Retry closer to zero.
+On Save, `parseEditor(true)` keeps invalid JSON, shows the error and focuses
+the editor at any reported syntax error. Reduce nonfinite numbers such as
+nested `1e400` toward zero.
 
 `detail.mts:saveConfiguration` rereads Agent and Configuration before PATCHing
 `{ values, expectedGeneration }`, preserving `secretBindings`. Responses must confirm
@@ -132,8 +133,10 @@ refusals in order, or Kubernetes-only `agents/validate` refusals.
 
 Saves preserve scroll and admitted snapshots. Refusals keep edits.
 Unsaved edits block deployment. Pending saves block tab and version changes.
-On blocked Back/Forward, `apps/controller/src/console/navigation.mts:traverse`
-restores the address without reloading for missing or equal markers or impossible steps.
+`apps/controller/src/console/shell.mts:createShell` guards Account → Settings against
+pending or dirty repository edits.
+Blocked Back/Forward calls `apps/controller/src/console/navigation.mts:traverse`, which
+restores the address without reload for missing or equal markers or impossible steps.
 Overflowed markers are untracked.
 Write refusals list required grants without guessing which failed. Preflight refusals name
 read access, Workspace saves Agent `operate`. Without Agent `update`, Configuration `read` or
@@ -144,15 +147,14 @@ Channels can replace bindings if all denied Secrets have Slack token names.
 Read-only drafts say so and omit the checklist without `deploy`.
 
 `agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
-`agents/plugins.mts:savePlugins` rereads the Agent before PATCH. If the Agent,
-Namespace, Configuration, selections, or approvers differ from the editor's
-baseline, it sends no write. This read does not lock the Agent. The editor clears
-the draft only when the response confirms that identity and the submitted settings.
-The page then rebuilds from that response, which also carries a Stop or
-deployment made since the page loaded.
-**Reload plugin selections** discards the local draft and reads the Agent without
-repeating the PATCH. A successful read rebuilds the editor from saved settings.
-If the read fails, the Console opens the draft page again. The Plugin Driver
+`agents/plugins.mts:savePlugins` rereads the Agent before PATCH without locking it.
+If Agent, Namespace, Configuration, selections, or approvers differ from the editor
+baseline, it sends no write. The editor clears the draft only when the response
+confirms identity and submitted settings. The page rebuilds from that response,
+including any Stop or deployment since page load.
+**Reload plugin selections** discards the draft and rereads the Agent without
+repeating PATCH. Success rebuilds the editor from saved settings. Failure reopens
+the draft page. The Plugin Driver
 validates the selections before deployment [snapshots the saved settings](../agent-plugins.md).
 
 **Repositories** uses `createRepositoryFields` with exact-Agent discovery and
@@ -183,6 +185,13 @@ retains plugin selections. Pending channel saves and Secret creation prevent dis
 only **Open draft** permits editing. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
+
+With the drawer closed, `console.mts` rechecks draft
+**Channels** access on tab return. Header **Refresh** uses `confirmForAgent` to require a valid
+permission result. **Retry** keeps that requirement if the Agent read fails.
+On a failed or invalid check, `agents/detail.mts` disables editing and deployment
+and suggests **Refresh**. A confirmed denial names the missing permission.
+Editing returns once the required grants are confirmed.
 
 `agents/detail.mts:renderConfigurationTab` reads draft Harness authentication
 from the Agent, or admitted authentication and channel `secretBindings` from the
@@ -357,15 +366,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
-- 2026-11-22 21:08: Conflict focus. (authoring-run/303eb0c9-04da-4bab-9fac-cc0dca754630 - 2b01b92963bfeb8bfa0f29fe583f9523d48a78a3)
-- 2026-11-22 08:58: Link snapshots to draft tabs. (authoring-run/ec03baba-cadf-4c59-9194-3a93a3c4763b - f3996c521e94d8bf18ff9018069c699dda6913c6)
-- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
-
-- 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
-- 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
-- 2026-11-05 01:51: Guard pending-save history. (authoring-run/19e029b0-7ee3-4034-8e3b-e403265ff746 - 516ee6d87dea5326df70e647b17e2a141392cd0c)
-- 2026-11-05 01:03: Document read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
-- 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
+- 2026-11-24 15:51: Trace draft Channels access confirmation. (authoring-run/0e68027f-b229-42d4-8639-87267b4b6363 - fccad45bda2c0004ecf6ee4cdd93a3cefbfd089e)
+- 2026-11-24 06:58: Guard Settings during pending saves. (authoring-run/261aa429-df62-4285-b574-5417ff787bdc - 4d4681144427368743596e0379b28dbadfef8c58)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

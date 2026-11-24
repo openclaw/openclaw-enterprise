@@ -1,5 +1,9 @@
 import { registerManagedOpenShellStartupCases } from "./sandbox-driver-managed-startup-cases.ts";
-import { verifyStagedHarnessActivation } from "./sandbox-driver-staged-harness-cases.ts";
+import {
+  stagedManagedMcpPolicy,
+  verifyStagedHarnessActivation,
+  verifyStagedModelPolicyObservation,
+} from "./sandbox-driver-staged-harness-cases.ts";
 import {
   registerDedicatedCodexProviderCase,
   registerInitialWorkspaceCases,
@@ -46,7 +50,16 @@ import {
 registerSandboxDriverStartupWiringCases(credentialGatewayOverProviders);
 
 test(
-  "OpenShell stages without running the Harness and activates with fresh provider placeholders",
+  "OpenShell observes and applies the canonical model-only staged policy",
+  verifyStagedModelPolicyObservation,
+);
+
+test("OpenShell qualifies and stages the managed MCP session and selected tool policy", async () => {
+  await stagedManagedMcpPolicy();
+});
+
+test(
+  "OpenShell adopts an idle Sandbox and activates with model and Google Provider placeholders",
   verifyStagedHarnessActivation,
 );
 

@@ -233,6 +233,11 @@ COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-comp
 RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
 
+# Link a single chat-completions input to its server-assigned completion ID.
+COPY deploy/runtime/openclaw-http-chat-input.patch /tmp/openclaw-http-chat-input.patch
+RUN echo 'bad12711e8452c1d6045530d99ed76b8e86e408bdf85d3b6f1771c5a841320f8  /tmp/openclaw-http-chat-input.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-http-chat-input.patch
+
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -243,6 +248,7 @@ FROM openclaw-patched-source AS openclaw-bridge-tests
 # disk: tmpfs charges the compiled tree to RAM alongside the compiler and tests.
 # Create and remove the directory in each RUN so cache renames stay in the writable
 # layer and no generated files enter the image.
+# The Gateway-only regression does not need worker deployment artifacts.
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
@@ -291,6 +297,9 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
     -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
+    && OPENCLAW_BUILD_WORKER_DEPLOY_BUNDLE=0 OPENCLAW_RUN_NODE_SKIP_DTS_BUILD=1 \
+    OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.chat-recovered-output.test.ts \
     && rm -rf .artifacts
 # Type-check production and the native/UI test graphs touched by the bridges.
 # The upstream runner generates database types and compiler cache under .artifacts.
