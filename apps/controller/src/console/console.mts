@@ -49,6 +49,7 @@ import {
   oauthClientsPage,
   createNavigation,
   pages,
+  type AgentsLanding,
 } from "./navigation.mjs";
 import {
   brandContents,
@@ -1720,6 +1721,7 @@ async function loadPage({
   openingAgent = false,
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
+  agentsLanding = null,
   retrySearch = null,
 }: {
   fromNavigation?: boolean;
@@ -1729,6 +1731,7 @@ async function loadPage({
   restoreHistory?: ((url: string) => void) | null;
   openingAgent?: boolean;
   chatLinkFailure?: keyof typeof chatLinkFailures | null;
+  agentsLanding?: AgentsLanding | null;
   retrySearch?: AgentSearchFocus | null;
 } = {}) {
   noteConsoleLoad();
@@ -2211,6 +2214,12 @@ async function loadPage({
       )?.id ??
       null;
     const selectedNamespace = namespaceId;
+    const showDeletionStatusNotice =
+      agentsLanding === "deletion-status-unavailable" &&
+      listRoute !== null &&
+      selectedNamespace === current.namespace &&
+      previousOwner !== null &&
+      owner === previousOwner;
     const unscopedAgentId = current.namespace === null ? current.agentId : null;
     // Record the history position while keeping the Agent's Namespace provisional.
     replaceUrl(pageUrl(current.target, unscopedAgentId ? null : selectedNamespace));
@@ -2415,9 +2424,10 @@ async function loadPage({
       }
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       shell = restoredShell;
-      // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
+      // Landing notices stay on a refocus of the same view and clear on a new navigation.
       if (!resumingView) {
         shell.view.querySelector(":scope > .unopened-chat-link")?.remove();
+        updateDeletionStatusNotice(shell.view, showDeletionStatusNotice);
       }
       mountedViewState = retainedState;
       retainedState.active = active;
@@ -2937,6 +2947,7 @@ async function loadPage({
         resumed: resumingView,
       });
       showChatLinkFailure(shell.view, chatLinkFailure);
+      updateDeletionStatusNotice(shell.view, showDeletionStatusNotice);
       // A refocus rebuilds the list when its recheck reads changed (a re-grant, a row another
       // person deleted) or after a row write, which makes the list one it never reuses. Focus on
       // a row's name or icon returns to the same control in the rebuilt row instead of falling
@@ -3258,6 +3269,21 @@ function showChatLinkFailure(view: HTMLElement, failure: keyof typeof chatLinkFa
         className: "unopened-chat-link",
         role: "status",
       }),
+    );
+  }
+}
+
+function updateDeletionStatusNotice(view: HTMLElement, show: boolean) {
+  view.querySelector(":scope > .agent-deletion-status-unavailable")?.remove();
+  if (show) {
+    view.prepend(
+      statusBlock(
+        "info",
+        null,
+        "Deletion requested. The Agent’s status is no longer available, so cleanup is unconfirmed.",
+        [],
+        { className: "agent-deletion-status-unavailable" },
+      ),
     );
   }
 }

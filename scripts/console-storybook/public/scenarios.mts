@@ -2164,6 +2164,29 @@ const authoredScenarios = {
       "Tab to Delete Agent. It takes focus and looks unavailable, described by the Outcome unknown alert; Enter, Space or a click sends nothing (finding 2935).",
     ],
   } satisfies LocalScenario,
+  deletionStatusUnavailable: {
+    group: "Components/Deletion",
+    name: "Status unavailable after deletion request",
+    path: draft,
+    deleting: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        skip: 1,
+        once: true,
+        delayMs: 1300,
+        status: 404,
+        code: "NOT_FOUND",
+      },
+    ],
+    description:
+      "An Agent is already marked for deletion. Its next status check returns 404, and the Agents list is still readable.",
+    steps: [
+      "Wait for the status check to return you to Agents. Read the notice above the list. It says deletion was requested and cleanup could not be confirmed.",
+      "Check that the Agent still shows Deleting. Open Namespaces, then return to Agents and check that the notice has cleared.",
+    ],
+  } satisfies LocalScenario,
   createFlow: {
     group: "Flows",
     name: "Create and deploy an Agent",
