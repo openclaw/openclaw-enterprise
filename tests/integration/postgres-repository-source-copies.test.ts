@@ -14,12 +14,14 @@ import type { AuditEvent, CredentialSourceReference } from "../../packages/contr
 import {
   RepositorySourceCopiesUnretiredError,
   ResourceConflictError,
+  PostgresPlatformState,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
+import { seedSessionRevision } from "../conformance/repository-sessions.contract.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 
 // The repository token Source copy record (migration 0093) on real PostgreSQL: deployment
@@ -207,7 +209,10 @@ test(
       ResourceConflictError,
     );
     await assert.rejects(retire(), RepositorySourceCopiesUnretiredError);
-    await assert.rejects(retire(), /2 native Git copies .*unretired_repository_source_copy/);
+    // The caller may read the (deleted) Agent, so the answer names the oldest copy.
+    await assert.rejects(retire(), {
+      message: `2 Source copies unretired (unretired_repository_source_copy): agent-${first}/${first} +1. Stop or redeploy its Agents without it; the Worker retries every few minutes.`,
+    });
     // The refusal changed nothing: the Source is still ready and keeps its value.
     assert.equal(
       (
@@ -250,7 +255,12 @@ test(
       "provider_present",
     );
     assert.equal((await row(first))?.retirement_blocked, "provider_present");
-    await assert.rejects(retire(), /2 native Git copies/);
+    // The answer carries the reason the Worker recorded; never the Provider name.
+    await assert.rejects(retire(), (error: Error) => {
+      assert.match(error.message, new RegExp(`^2 Source copies unretired .*/${first} \\(provider_present\\) \\+1\\. `));
+      assert.doesNotMatch(error.message, /oce-github-token/);
+      return true;
+    });
 
     // A Worker stopped during retirement: it deleted the second Provider but recorded nothing.
     g.providers.delete(
@@ -272,7 +282,10 @@ test(
     await git.retireIdleSourceCopies(() => g.client, AbortSignal.timeout(5_000));
     assert.equal((await row(second))?.retired, true);
     assert.equal((await row(first))?.retired, false, "an attached Provider keeps its copy");
-    await assert.rejects(retire(), /1 native Git copy of this credential source is not/);
+    await assert.rejects(
+      retire(),
+      /: 1 Source copy unretired .* \(provider_present\)\. Stop or redeploy its Agent /,
+    );
 
     // Once the Sandbox is gone, the next pass retires the last copy and deletion proceeds.
     g.attached.delete(firstProvider);
@@ -432,6 +445,129 @@ test(
         ),
         ...(phase ? { details: { phase } } : {}),
       }),
+    );
+  },
+);
+
+test(
+  "the Worker's idle rule skips a copy with queued or claimed work or a running active revision, and retires a stopped Agent's",
+  requiresPostgres,
+  async (t) => {
+    assert.ok(databaseUrl);
+    const pool = testPool(t, { connectionString: databaseUrl, max: 4 });
+    const state = new PostgresPlatformState(pool);
+    const store = new PostgresOpenShellGitRouteStore(pool);
+    /** A seeded Agent with one revision whose copy of a Source in its Namespace is recorded. */
+    const seeded = async () => {
+      const { namespace, agent, revision } = await seedSessionRevision(state);
+      const sourceId = `cs_${randomUUID()}`;
+      await state.transact(async (unit) => {
+        await unit.credentialSources.createCredentialSource({
+          id: sourceId,
+          namespaceId: namespace.id,
+          name: `repository-token-${randomUUID().slice(0, 8)}`,
+          type: "registry",
+          config: { host: "registry.example.com" },
+          secrets: {},
+          ownerCapability: "credential_gateway",
+          driverId: "credential-gateway-test",
+          state: "ready",
+          createdAt: "2030-03-17T17:46:40.000Z",
+        });
+        await unit.credentialSources.recordRepositorySourceCopy({
+          namespaceId: namespace.id,
+          credentialSourceId: sourceId,
+          tokenServiceInstanceId: "tsi-idle-rule",
+          agentId: agent.id,
+          revisionId: revision.id,
+        });
+      });
+      const work = () =>
+        state.transact((unit) =>
+          unit.operations.append({
+            kind: "agent_revision",
+            action: "reconcile",
+            namespaceId: namespace.id,
+            resourceId: revision.id,
+            actorId: revision.servicePrincipalId,
+          }),
+        );
+      const desired = (from: "running" | "stopped", to: "running" | "stopped") =>
+        state.transact((unit) =>
+          unit.agents.transitionAgentDesiredRuntimeState(namespace.id, agent.id, from, to),
+        );
+      const activate = () =>
+        state.transact((unit) =>
+          unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
+        );
+      return { revisionId: revision.id, work, desired, activate };
+    };
+    const setWork = (revisionId: string, set: string) =>
+      pool.query(
+        `UPDATE occ.controller_work SET ${set} WHERE revision_id=$1 AND state='queued'`,
+        [revisionId],
+      );
+    // The work clause alone keeps these two: each Agent is stopped and runs no revision.
+    const queued = await seeded();
+    await queued.work();
+    await queued.desired("running", "stopped");
+    const claimed = await seeded();
+    await claimed.work();
+    await claimed.desired("running", "stopped");
+    assert.equal(
+      (
+        await setWork(
+          claimed.revisionId,
+          `state='claimed',claim_token='${randomUUID()}',attempt_count=1,
+           lease_expires_at=clock_timestamp()+interval '1 minute'`,
+        )
+      ).rowCount,
+      1,
+    );
+    // The active-revision clause alone keeps this one: no work, the Agent runs the revision.
+    const running = await seeded();
+    assert.ok(await running.activate());
+    // Idle: the same, but the Agent is stopped and its finished work no longer counts.
+    const stopped = await seeded();
+    assert.ok(await stopped.activate());
+    await stopped.work();
+    assert.equal(
+      (await setWork(stopped.revisionId, "state='succeeded',completed_at=clock_timestamp(),reason_code='DEPLOYED'"))
+        .rowCount,
+      1,
+    );
+    await stopped.desired("running", "stopped");
+    // Idle as well: no work, and the Agent does not run this revision (no active revision, as
+    // after a deployment that never became active).
+    const replaced = await seeded();
+    const ours = new Set(
+      [queued, claimed, running, stopped, replaced].map(({ revisionId }) => revisionId),
+    );
+
+    const idle = (await store.idleSourceCopies())
+      .map(({ revisionId }) => revisionId)
+      .filter((revisionId) => ours.has(revisionId));
+    assert.deepEqual(new Set(idle), new Set([stopped.revisionId, replaced.revisionId]));
+
+    // The pass retires only those: the Gateway lists no Provider for any revision.
+    const g = gateway();
+    await worker(store).retireIdleSourceCopies(() => g.client, AbortSignal.timeout(5_000));
+    const rows = (
+      await pool.query(
+        `SELECT revision_id,retired_at IS NOT NULL AS retired,retirement_attempted_at IS NOT NULL AS attempted
+         FROM occ.repository_source_copies WHERE revision_id = ANY($1)`,
+        [[...ours]],
+      )
+    ).rows as { revision_id: string; retired: boolean; attempted: boolean }[];
+    assert.deepEqual(
+      Object.fromEntries(rows.map((row) => [row.revision_id, [row.retired, row.attempted]])),
+      {
+        [queued.revisionId]: [false, false],
+        [claimed.revisionId]: [false, false],
+        [running.revisionId]: [false, false],
+        [stopped.revisionId]: [true, true],
+        [replaced.revisionId]: [true, true],
+      },
     );
   },
 );
