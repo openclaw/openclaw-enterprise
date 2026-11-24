@@ -24,13 +24,26 @@ function gateway() {
   const attached = new Set<string>();
   const calls: string[] = [];
   let unavailable = false;
+  // "present": the Workspace exists; "absent": GetWorkspace answers NOT_FOUND (the client maps
+  // it to undefined); "error": it fails another way. A missing Workspace fails every listing.
+  const workspace = { state: "present" as "present" | "absent" | "error" };
   const answer = (method: string) => {
     calls.push(method);
     if (unavailable) {
       throw Object.assign(new Error("Gateway unavailable"), { code: 14 });
     }
+    if (workspace.state !== "present") {
+      throw Object.assign(new Error("Workspace not found"), { code: 5 });
+    }
   };
   const client = {
+    async getWorkspace(name: string) {
+      calls.push("getWorkspace");
+      if (unavailable || workspace.state === "error") {
+        throw Object.assign(new Error("Gateway unavailable"), { code: 14 });
+      }
+      return workspace.state === "absent" ? undefined : { id: "workspace-id", name };
+    },
     async listProviders(_workspace: string) {
       answer("listProviders");
       return Array.from(providers.values());
@@ -76,6 +89,7 @@ function gateway() {
     attached,
     calls,
     prepare,
+    workspace,
     setUnavailable(value: boolean) {
       unavailable = value;
     },
@@ -221,4 +235,84 @@ test("at Worker start the record, not the registry, names the copies to retire",
   record("rev-stopped", true);
   await git.retireIdleSourceCopies(() => g.client, signal());
   assert.equal(store.copies.get("rev-stopped")?.retired, true);
+});
+
+test("the idle-copy pass runs again from the runtime tick, one at a time, and not after close", async () => {
+  const { git, store, record } = runtime();
+  const g = gateway();
+  // A cleanup whose read-back failed: the Sandbox is gone, the copy stayed unretired.
+  record("rev-a", true);
+  g.prepare("rev-a");
+  g.setUnavailable(true);
+  git.retireSourceCopiesAtStart(() => g.client);
+  await git["sweeping"];
+  assert.equal(store.copies.get("rev-a")?.retirementBlocked, "gateway_unavailable");
+  const due = git["nextSweepAt"] - performance.now();
+  assert.ok(due > 240_000 && due <= 300_000, `the next pass is due in about five minutes (${due})`);
+  // Not yet due: the tick starts nothing.
+  g.calls.length = 0;
+  git["sweepSourceCopiesWhenDue"]();
+  await git["sweeping"];
+  assert.deepEqual(g.calls, []);
+
+  // Due: the next pass retires the copy without a Worker restart or another cleanup.
+  g.setUnavailable(false);
+  git["nextSweepAt"] = 0;
+  const listed = store.idleSourceCopies!.bind(store);
+  let reads = 0;
+  let unblock!: () => void;
+  const blocked = new Promise<void>((resolve) => (unblock = resolve));
+  store.idleSourceCopies = async () => {
+    reads += 1;
+    await blocked;
+    return listed();
+  };
+  git["sweepSourceCopiesWhenDue"]();
+  git["sweepSourceCopiesWhenDue"]();
+  assert.equal(reads, 1, "a pass in flight is not started again");
+  unblock();
+  await git["sweeping"];
+  assert.equal(store.copies.get("rev-a")?.retired, true);
+
+  // Closed: no pass starts.
+  record("rev-b", true);
+  git["nextSweepAt"] = 0;
+  await git.close();
+  git["sweepSourceCopiesWhenDue"]();
+  await git["sweeping"];
+  assert.equal(reads, 1, "no pass after close");
+  assert.equal(store.copies.get("rev-b")?.retired, false);
+});
+
+test("a copy whose Workspace the Gateway confirms absent is retired; any other failure keeps it", async () => {
+  const { git, store, events, record } = runtime();
+  const g = gateway();
+  record("rev-a");
+  g.prepare("rev-a");
+  // The Gateway answers, but neither the listing nor the Workspace read proves anything.
+  g.workspace.state = "error";
+  assert.equal(
+    await git.retireSourceCopy("rev-a", g.client, "team-a", signal()),
+    "gateway_unavailable",
+  );
+  g.setUnavailable(true);
+  assert.equal(
+    await git.retireSourceCopy("rev-a", g.client, "team-a", signal()),
+    "gateway_unavailable",
+  );
+  g.setUnavailable(false);
+  assert.equal(store.copies.get("rev-a")?.retired, false);
+  // The Workspace was deleted (or the Gateway rebuilt without it): OpenShell refuses to delete
+  // a Workspace that has Providers, so none holds the copy.
+  g.workspace.state = "absent";
+  assert.equal(await git.retireSourceCopy("rev-a", g.client, "team-a", signal()), "retired");
+  assert.equal(store.copies.get("rev-a")?.retired, true);
+  assert.deepEqual(
+    events.map(({ status, reason }) => [status, reason]),
+    [
+      ["retained", "gateway_unavailable"],
+      ["retained", "gateway_unavailable"],
+      ["retired", "workspace_absent"],
+    ],
+  );
 });

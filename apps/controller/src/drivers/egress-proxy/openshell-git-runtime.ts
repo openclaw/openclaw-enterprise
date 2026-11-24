@@ -305,6 +305,11 @@ interface EntryState {
 const OPENSHELL_GIT_DRAFT_PATH = `/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${REPOSITORY_CLIENT_BIN}`;
 const OBSERVE_TIMEOUT_MS = 5000;
 const REFRESH_INTERVAL_MS = 10_000;
+// The idle-copy retirement pass runs again this long after the last one ended. A pass is one
+// indexed read of the copy record and a Provider listing per idle unretired copy, so it is cheap;
+// a copy left unretired by a cleanup whose Gateway read failed clears within minutes, which is
+// what an operator waiting to delete its Source can wait for, without a Worker restart.
+const SOURCE_COPY_SWEEP_INTERVAL_MS = 300_000;
 // A failed read is observed again after 1 s, doubling to this cap. A replaced OpenShell
 // Gateway Pod answers again within about 30 s; the route is back on the next read after that.
 const OBSERVE_BACKOFF_CAP_MS = 10_000;
@@ -452,6 +457,10 @@ export class OpenShellGitRuntime {
   private stopped = new AbortController();
   private running: Promise<void> = Promise.resolve();
   private sweeping: Promise<void> = Promise.resolve();
+  /** Set at Worker start; the runtime tick starts the next idle-copy pass once it is due. */
+  private sweepClients: ((namespaceName: string) => OpenShellGatewayClient) | undefined;
+  private sweepInFlight = false;
+  private nextSweepAt = Number.POSITIVE_INFINITY;
   private timer?: ReturnType<typeof setTimeout>;
   private server?: ReturnType<typeof createOpenShellOnlineGitAuthority>;
   readonly configuration: OpenShellGitRuntimeConfiguration;
@@ -1639,6 +1648,7 @@ export class OpenShellGitRuntime {
     revisionId: string,
     client: Pick<
       OpenShellGatewayClient,
+      | "getWorkspace"
       | "listProviders"
       | "deleteProvider"
       | "getProviderProfile"
@@ -1667,13 +1677,23 @@ export class OpenShellGitRuntime {
       // A refusal (still attached) or an unanswered call: the read-back below decides.
     }
     let outcome: "retired" | OpenShellGitSourceCopyRetained;
+    // Evidence for a retirement that no listing could give: the Workspace itself is gone.
+    let absent = false;
     try {
       const providers = await client.listProviders(workspace, signal);
       outcome = providers.some((provider) => preparedGitProviderForRevision(provider, revisionId))
         ? "provider_present"
         : "retired";
     } catch {
-      outcome = "gateway_unavailable";
+      // OpenShell resolves the Workspace before it lists, so a deleted Workspace fails every
+      // listing. It refuses to delete a Workspace that still has Providers, so a Workspace the
+      // Gateway confirms absent (NOT_FOUND) holds none. Any other answer proves nothing.
+      try {
+        absent = (await client.getWorkspace(workspace, signal)) === undefined;
+      } catch {
+        absent = false;
+      }
+      outcome = absent ? "retired" : "gateway_unavailable";
     }
     try {
       if (outcome === "retired") {
@@ -1687,7 +1707,11 @@ export class OpenShellGitRuntime {
     this.emit?.({
       event: "worker.openshell-git-copy",
       status: outcome === "retired" ? "retired" : "retained",
-      ...(outcome === "retired" ? {} : { reason: outcome }),
+      ...(outcome !== "retired"
+        ? { reason: outcome }
+        : absent
+          ? { reason: "workspace_absent" }
+          : {}),
       namespaceId: copy.namespaceId,
       agentId: copy.agentId,
       revisionId,
@@ -1699,13 +1723,32 @@ export class OpenShellGitRuntime {
   /**
    * Worker start: the record, not the registry, names the copies to retire. Each idle copy (no
    * pending work for its revision, which is not the running Agent's active revision) is read
-   * back and retired; a copy whose Sandbox still attaches its Provider stays recorded.
+   * back and retired; a copy whose Sandbox still attaches its Provider stays recorded. The
+   * runtime tick runs the same pass again every few minutes, so a copy that a cleanup could not
+   * read back (or a revision whose cleanup never ran) retires without a restart.
    */
   retireSourceCopiesAtStart(
     clientForNamespace: (namespaceName: string) => OpenShellGatewayClient,
   ): void {
-    this.sweeping = this.retireIdleSourceCopies(clientForNamespace, this.stopped.signal).catch(
-      (error: unknown) => {
+    this.sweepClients = clientForNamespace;
+    this.sweepSourceCopies();
+  }
+
+  /** Starts the next idle-copy pass once it is due. One pass at a time; none after close. */
+  private sweepSourceCopiesWhenDue(): void {
+    if (performance.now() >= this.nextSweepAt) {
+      this.sweepSourceCopies();
+    }
+  }
+
+  private sweepSourceCopies(): void {
+    const clients = this.sweepClients;
+    if (!clients || this.sweepInFlight || this.stopped.signal.aborted) {
+      return;
+    }
+    this.sweepInFlight = true;
+    this.sweeping = this.retireIdleSourceCopies(clients, this.stopped.signal)
+      .catch((error: unknown) => {
         if (!this.stopped.signal.aborted) {
           this.emit?.({
             event: "worker.error",
@@ -1713,8 +1756,11 @@ export class OpenShellGitRuntime {
             cause: error instanceof Error ? error.name : "unknown",
           });
         }
-      },
-    );
+      })
+      .finally(() => {
+        this.sweepInFlight = false;
+        this.nextSweepAt = performance.now() + SOURCE_COPY_SWEEP_INTERVAL_MS;
+      });
   }
 
   async retireIdleSourceCopies(
@@ -2810,6 +2856,7 @@ export class OpenShellGitRuntime {
         }
       })().finally(() => {
         if (!this.stopped.signal.aborted) {
+          this.sweepSourceCopiesWhenDue();
           this.timer = setTimeout(tick, 1000);
         }
       });
