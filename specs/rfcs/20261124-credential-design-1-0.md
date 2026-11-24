@@ -15,7 +15,7 @@ Use one Credential Client catalog and one Source lifecycle for OAuth and GitHub 
 
 ## Client registration
 
-Installation administrators use the Console catalog and `/credential-clients`. Create and rotate requests explicitly select `oauth2` or `github-app`. OAuth client registration is independent of Connection Templates and supplies its own scope, issuer, approved endpoints, and authentication method. GitHub App clients have an immutable App ID and Installation scope. The stored Client kind remains canonical. The TokenService's client purpose type comes from the same typed Client union.
+Installation administrators use the Console catalog and `/credential-clients`. Create and rotate requests explicitly select `oauth2` or `github-app`. OAuth client registration is independent of Connection Templates and supplies its own scope, issuer, approved endpoints, and authentication method. GitHub App Clients have an immutable App ID. An administrator can register either Client kind for the Installation or for one Namespace. The stored Client kind remains canonical. The TokenService's client purpose type comes from the same typed Client union.
 
 Keep [OAuth client selection and consent](0023-egress-proxy-credential-lifecycle/oauth-client-associations.md). The caller needs `credential_source:create` in the destination Namespace and explicitly selects an eligible OAuth client from that Namespace or the Installation. PostgreSQL enforces the client kind on saved references and blocks deletion while a Source or pending consent references the client. Built-in Codex OAuth Sources carry no registration reference.
 
@@ -31,7 +31,7 @@ The OCC TokenService uses one private store from the selected Secret Driver. Eac
 
 The API creates and replaces private custody. The Worker retains its existing private-store read access and deletion authority for retired Sources and Clients. The private store supports atomic compare-and-swap for OAuth grants. The API runs the OAuth and Git renewal scans at five-second intervals and sends committed versions to Credential Proxy. The Worker uses an eligible committed credential for deployment and waits for API renewal if none is available. A failed delivery retries the committed version.
 
-Public API and resource schemas stay the same. Private custody references can change. Verify that tenant-namespace administrators and workload identities cannot read backing Secrets. Exercise Source and Client lifecycles, OAuth refresh, and same-Agent Codex and Git delivery. Existing credentials need a separately approved preservation or re-enrollment plan before moving live custody.
+Private custody references can change. Verify that tenant-namespace administrators and workload identities cannot read backing Secrets. Exercise Source and Client lifecycles, OAuth refresh, and same-Agent Codex and Git delivery. Existing credentials need a separately approved preservation or re-enrollment plan before moving live custody.
 
 ## GitHub App Sources
 

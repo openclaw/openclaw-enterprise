@@ -50,8 +50,8 @@ function loopback(name: string, protocol: string): URL {
 
 async function serviceKey(): Promise<string> {
   try {
-    const file = (await readFile(required("OCC_SERVICE_KEY_FILE"), "utf8")).trim();
-    const key: unknown = file.startsWith("{") ? JSON.parse(file).data?.key : file;
+    const file = await readFile(required("OCC_SERVICE_KEY_FILE"), "utf8");
+    const key: unknown = JSON.parse(file).data?.key;
     assert.ok(typeof key === "string" && /^\S+$/.test(key));
     return key;
   } catch {
@@ -118,7 +118,13 @@ test(
       body?: unknown,
       timeout = 45_000,
     ) {
-      const response = await fetch(new URL(path, origin), {
+      const url = new URL(path, origin);
+      assert.equal(
+        url.origin,
+        origin.origin,
+        "Service-key requests must use the prepared OCC origin.",
+      );
+      const response = await fetch(url, {
         method,
         redirect: "error",
         signal: AbortSignal.timeout(timeout),
