@@ -8,13 +8,13 @@ rfc: ../rfcs/20261123-repository-issue-creation.md
 - **Delivery status:** In progress. Wider rollout is on hold.
 - **Owner:** Repository access maintainers
 - **Authority:** [Issue creation with repository Write access](../rfcs/20261123-repository-issue-creation.md)
-- **Source baseline:** [OCE main](https://github.com/openclaw/openclaw-enterprise/commit/09c89c243)
+- **Source reviewed:** [`3ab8f42b` on main](https://github.com/openclaw/openclaw-enterprise/commit/3ab8f42b0e1933c0d9510c3f2331d089d244ba1a)
 
 ## Implementation
 
-1. Review [GitHub App delivery #6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) in parallel with the RFC. Merge the RFC first. Remove `scopedRest`, `apiActions`, `createIssues` and bare `deny` from registrations. Recheck [permissions](../../docs/reference/repository-credentials/access-levels.md), set `apiLimits` and coordinate redeployment before upgrading. Ship the [Namespace guide #7165](https://github.com/openclaw/openclaw-enterprise/pull/7165) with the new configuration.
-2. [Create Agent #7178](https://github.com/openclaw/openclaw-enterprise/pull/7178) landed independently at [`d4149427`](https://github.com/openclaw/openclaw-enterprise/commit/d41494271000c79831532a2ee77ed74ddf1bac0a). Keep the catalog and creation schemas limited to repository and access. If draft creation fails, check for a saved Configuration or model credential before retrying.
-3. After #6864, add [per-Agent grants #7179](https://github.com/openclaw/openclaw-enterprise/pull/7179). Review the SQL validator and immutable revision checks before upgrading. Integrate [Console editing #7180](https://github.com/openclaw/openclaw-enterprise/pull/7180) with both #7178 and #7179. Exercise the complete journey before wider rollout.
+1. [Create Agent #7178](https://github.com/openclaw/openclaw-enterprise/commit/d41494271000c79831532a2ee77ed74ddf1bac0a) added the role picker and first-deployment version check. Initial grants contain only repository and access. If draft creation fails, check for a saved Configuration or model credential before retrying.
+2. The maintainer approved [RFC #6861](https://github.com/openclaw/openclaw-enterprise/commit/1b28f82683b307b7234723b7832bf90afd84918d). [GitHub App delivery #6864](https://github.com/openclaw/openclaw-enterprise/commit/713ecb6effe69c9e254676e22aec6b00d1514794) added issue creation and Namespace limits. Before upgrading, remove retired settings, [review permissions and limits](../../docs/reference/repository-credentials/access-levels.md#cut-over-existing-registrations) and plan redeployment.
+3. [#7165](https://github.com/openclaw/openclaw-enterprise/pull/7165) added the operator preview. [#7179](https://github.com/openclaw/openclaw-enterprise/pull/7179) added per-Agent limits and migration 0093. [#7180](https://github.com/openclaw/openclaw-enterprise/pull/7180) supplies the editor. Older Workers cannot read limited revisions. Keep matching Controllers and Workers available through Stop and retirement.
 
 ## Verification
 
@@ -33,9 +33,12 @@ Repeat these checks on builds with `apiLimits`. Use a controlled origin to count
 
 ## Delivery record
 
-[#6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) reported 239 focused tests and 18 installed checks across three runs at `0a01f129` and `aeb2a54e`. They used the earlier action lists, a simulated issuer and a controlled GitHub origin. Results covered mixed grants, peer repositories, downgrade, renewal, Git-only access, deployment refusal and the read-only token case (parts of AC-1–AC-3 and AC-5–AC-7).
+- **AC-2, AC-3, AC-5 and AC-8, partial.** [The saved-Agent run](https://github.com/openclaw/openclaw-enterprise/pull/7179) passed seven checks at `5648c9e3` with stock OpenShell 0.1.9, migration 0093, a simulated App issuer and a controlled origin. B pushed and opened regular and draft PRs with Issues read-only. Its issue POST stayed blocked after redeployment and renewal. C kept Git only despite a more permissive Agent setting. A concurrent peer retained its Git access. The merged authorization code is identical.
+- **AC-7, controlled.** Five checks passed on the same build with Issues read in the App permission map. Setting the Namespace limit to Write left the issue POST blocked before and after renewal.
+- **AC-5 and AC-8, partial.** The [guide](https://github.com/openclaw/openclaw-enterprise/pull/7165) matched the compiler across 1,152 combinations. [Controller and browser tests](https://github.com/openclaw/openclaw-enterprise/pull/7180) exercised both independent opt-outs, a concurrent edit, the first revision and later editing with synthetic Drivers.
+- **Earlier checks.** [#6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) records controlled runs using the previous action lists. The origin linked both parents in AC-4. Those results do not qualify the new contract.
 
-The controlled origin linked both parents in AC-4. Live effects remain unknown. [#7178](https://github.com/openclaw/openclaw-enterprise/pull/7178) exercised installed Git access. These results do not verify `apiLimits` or the complete AC-8 workflow.
+**Before wider rollout**, verify the upgrade sequence, live GitHub effects on both parent repositories and both opt-outs on deployed Agents with an unaffected peer. See [#7179](https://github.com/openclaw/openclaw-enterprise/pull/7179) for additional installed results.
 
 ## Manual Notes
 
@@ -43,3 +46,5 @@ The controlled origin linked both parents in AC-4. Live effects remain unknown. 
 
 - 2026-11-23 16:08 PST — Linked the delivery dependencies and separated controlled results from live verification at `09c89c243`.
 - 2026-11-23 18:23 PST — Replaced action lists with resource limits and revised verification from `271212578`.
+- 2026-11-23 18:49 PST — Recorded acceptance and the implementation on main at `713ecb6ef`.
+- 2026-11-23 19:07 PST — Recorded the guide, Agent limit implementation and controlled enforcement results at `3ab8f42b`.
