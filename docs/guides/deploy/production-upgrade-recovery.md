@@ -41,39 +41,40 @@ unlock the upgrade or establish database state.
 
 ## Resume an unfinished prepared upgrade
 
-Failed application identity or migration preflight prevents further shutdown and
-Helm submission; writers may already be stopped. Inspect the current
-`upgrade-preflight-resume.*/preflight-{api,worker,migration}.log` and corresponding
-`preflight-*-logs.err`. Reconcile the application connection or migration failure
-and unknown creates; retain the original evidence, lock and dispatch journal for
-`--resume`. Historical `migration-preflight-resume.*` attempts remain valid for
-`--cleanup-preflight` using their original, hash-matching helper checkout.
+Failed application identity or migration preflight blocks further stops and
+Helm submission. Inspect the latest `upgrade-preflight-resume.*/preflight-{api,worker,migration}.log`
+and `preflight-*-logs.err`. Reconcile connection or migration failures and
+unknown creates. Use the original, hash-matching checkout to run
+`--cleanup-preflight` for historical `migration-preflight-resume.*` attempts.
 
-With `--verify-agent`, inspect `agent-continuity.json` and
-`agent-continuity-after*.json`. The former binds the original revision and workload
-roles; never edit it. Restore that revision's readiness, then resume with the same
-selection. Successful Helm work is not repeated. A replacement revision cannot pass;
-if redeployment is necessary, preserve this incomplete evidence and verify that
-separate recovery. The helper neither redeploys Agents nor rolls back the control plane.
+For `--verify-agent`, keep `agent-continuity.json` and review
+`agent-continuity-after*.json`. Restore readiness of the recorded revision and
+workload roles, then resume with the same selection. Resume skips successful
+Helm work. A replacement revision requires separate recovery and verification.
 
-For failed scale, Helm or rollout calls, `native-command-failures.tsv` records
-operation, component and exit status. Client errors can leave effects unknown.
-Compare `current-<component>-deployment.json` and
-`quiescence-<component>-patch.json` to live state.
+Review `native-command-failures.tsv`. Settle outstanding operations. Before retrying,
+privately copy the journals, last prepared `quiescence-<component>-patch.json` and
+`current-<component>-deployment.json`. Compare them with both live Deployments.
+The files alone prove neither submission nor acceptance.
+
+At zero Worker replicas, further quiescence requires a valid
+`worker-stop-confirmed.json`.
+Privately restore only an authentic copy from this attempt. Live state, the
+request and the handoff cannot reconstruct the receipt.
+
+After handoff or possible SQL or Helm submission, keep both writers fenced
+and reconcile with the release and database owners. Restarting either writer
+invalidates the handoff. Before handoff or submission, the release owner can
+restore compatible writers under exclusive maintenance after checking Helm,
+the mounted Installation Secret, database history and outstanding work.
+Resume rechecks inventory before a fresh stop.
 
 ### Restore incumbent API access after partial quiescence
 
-Preserve `channel-agent-operations.json`. After acknowledged Agent Stop, if both
-writers still serve, resolve the permission, admission or Deployment conflict
-and resume with the original evidence. For an unknown Stop, reconcile Agent
-state, revision history and audit records before further action.
-
-If only the API stopped, keep exclusive maintenance. Reconcile failed or unknown
-patches and confirm the retained Helm release, mounted Installation Secret and
-database history are compatible with the original API. Restore only that API
-and verify inventory access before resuming. If there is a separate handoff or
-unresolved Helm or migration outcome, keep writers fenced and reconcile the
-original operation.
+Preserve `channel-agent-operations.json`. Reconcile unknown Agent Stops against
+state, revisions and audit records. If both writers serve, resolve the access, admission
+or Deployment conflict and resume. If only the API stopped before handoff or submission,
+follow the compatibility checks above. Restore only that API and verify inventory access.
 
 ### Reconcile Helm and migration
 

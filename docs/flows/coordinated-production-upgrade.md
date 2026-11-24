@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: 2026-11-24
-last_updated_session: authoring-run/b49fd055-c8ec-4d10-8ba1-536c248c8f66
+last_updated_session: authoring-run/1c3ad59b-d58f-4d86-bdd9-767c3a9547d4
 ---
 
 # Production image upgrade flow
@@ -199,11 +199,10 @@ initializers and reconcile unknown creates. `new_attempt` synchronizes
 directories before publication. Failed checks keep writers fenced. A verified
 deployed candidate or recovery successor skips Helm submission.
 
-Before preparing a retry or running preflight, verify the submitted migration
-mode. At the original separate revision, verify both handoff identities,
-release and component labels, zero replicas, no deletion, Pod absence and the
-Worker receipt. Before retry, recheck Helm status and terminal
-initializers. Failed expected revisions use checked retry.
+Before retry preparation or preflight, verify the submitted migration mode.
+At the original separate revision, check both handoff identities, ownership
+labels, zero replicas, no deletion, Pod absence and the Worker receipt.
+Recheck Helm status and terminal initializers before submission.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
 `upgrade-helm-state.py:recover` checks payload, ownership, completed Job and Pod
@@ -222,19 +221,19 @@ client shutdown, exclusive ownership, resource reconciliation and history.
 
 ### 3. Quiesce writers and run the candidate release
 
-`quiescence_remaining` bounds shutdown. Stop other writers and autoscalers.
-Keep nodes reachable. If the Worker runs, check named patch access and refresh
-inventory before stopping either writer. Denial or drift blocks. Inconclusive
-reviews warn. Live PATCHes test UID, resource version and replicas. A conflict
-can leave the API stopped.
+Stop other writers and autoscalers. Keep nodes reachable.
+`observe_quiescence_writers` saves live Deployments separately from submitted
+PATCHes and their inputs. For a running Worker, check named patch access and
+refresh inventory before stopping either writer. Denial or drift blocks.
+Inconclusive reviews warn. PATCH tests UID, resource version and replicas.
+A conflict can leave the API stopped.
 
-A stopped Worker requires resume and a private `worker-stop-confirmed.json`
-bound to the attempt, UID and generation. The PATCH must confirm the same UID,
-next generation and zero replicas. Lost responses or invalid receipts block.
-A confirmed stop skips the Worker PATCH and inventory read. After drain, recheck
-both UIDs, zero replicas and the Worker receipt before settings, Secret or Helm
-writes. For an existing separate migration handoff, also match both generations
-before the first Helm submission or retry.
+At zero Worker replicas, resume requires private `worker-stop-confirmed.json`
+for this attempt, UID and generation. The PATCH response must confirm the same
+UID, next generation and zero replicas. A missing or invalid receipt blocks
+without overwriting the request or input. A valid receipt skips Worker PATCH
+and inventory. After drain, recheck both UIDs, zero replicas and the receipt
+before writes. A separate handoff also requires both generations before Helm.
 
 For a [one-off channel transition](channel-egress.md#0-install-or-upgrade-channel-routing),
 check the Worker receipt if zero and named patch access if running. Preview each
@@ -364,6 +363,8 @@ requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 03:54: Preserve writer stop evidence. (authoring-run/1c3ad59b-d58f-4d86-bdd9-767c3a9547d4 - e2b29e944303936e3228e76945e0613024ac3e3f)
 
 - 2026-11-24 02:21: Recheck writer generations before Helm. (authoring-run/b49fd055-c8ec-4d10-8ba1-536c248c8f66 - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
 - 2026-11-23 04:18: Preview API. (authoring-run/80b539ac-f508-454c-a905-70939d30ec31 - b24f6ec158b861b13f2baff95bf661346de7f767)
