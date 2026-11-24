@@ -6,7 +6,7 @@ import {
   RevisionId,
   Meta,
   SandboxPolicyVersion,
-  RepositoryNetworkGrantSchema,
+  RepositoryNetworkGrantSchema as RepositoryNetworkLimitSchema,
 } from "./common.ts";
 import { maxRepositoryNetworkGrants } from "../repository-network-policy.ts";
 import { SandboxNetworkGrantSchema, SandboxNetworkGrantsSchema } from "../sandbox-policy.ts";
@@ -25,6 +25,33 @@ export const SandboxPolicyParams = Type.Object(
 );
 export const SandboxPolicyRevisionParams = Type.Object(
   { ...SandboxPolicyParams.properties, revisionId: RevisionId },
+  { additionalProperties: false },
+);
+
+const RepositoryApiLevelSchema = Type.Union([
+  Type.Literal("none"),
+  Type.Literal("read"),
+  Type.Literal("write"),
+]);
+const RepositoryNetworkGrantSchema = Type.Object(
+  {
+    ...RepositoryNetworkLimitSchema.properties,
+    apiLimits: Type.Optional(
+      Type.Object(
+        {
+          default: Type.Optional(Type.Literal("none")),
+          issues: Type.Optional(RepositoryApiLevelSchema),
+          pull_requests: Type.Optional(RepositoryApiLevelSchema),
+        },
+        {
+          additionalProperties: false,
+          minProperties: 1,
+          description:
+            "Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply.",
+        },
+      ),
+    ),
+  },
   { additionalProperties: false },
 );
 
@@ -85,11 +112,28 @@ export const SandboxPolicyViewResponse = Type.Object(
             "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
         }),
         ceiling: SandboxNetworkGrantsSchema,
-        repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkGrantSchema, {
+        repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkLimitSchema, {
           description:
             "Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently.",
           maxItems: maxRepositoryNetworkGrants,
         }),
+        repositoryApiMaxima: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                ...RepositoryNetworkLimitSchema.properties,
+                issues: RepositoryApiLevelSchema,
+                pull_requests: RepositoryApiLevelSchema,
+              },
+              { additionalProperties: false },
+            ),
+            {
+              maxItems: maxRepositoryNetworkGrants,
+              description:
+                "Selected repositories eligible for API limits and the maximum Git and API levels permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy.",
+            },
+          ),
+        ),
         repositoryNetworkPolicySaveSupported: Type.Boolean({
           description:
             "Whether the editor can request withdrawal of a saved list or submit a first list for validation. Before the first deployment, a qualified Driver pair can evaluate a first list if the selected and delegated scopes overlap or the pair accepts an empty list. PUT validates the complete proposed list.",

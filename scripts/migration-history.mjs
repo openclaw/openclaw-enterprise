@@ -153,6 +153,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 91 && completedCount > 91) {
     return "preAgentNetworkProxyAdmission";
   }
+  if (count === 92 && completedCount > 92) {
+    return "preAgentRepositoryApiLimits";
+  }
   if (count === completedCount) {
     return "completed";
   }

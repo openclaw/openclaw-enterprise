@@ -31,8 +31,9 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
   ```
 
   The suite selects `issues` for native Issues write. Run the file directly
-  with `issue-controls` to keep Issues write on the token, cap B at
-  `apiLimits: { issues: "read" }` and restrict C to Git. Use `reads` to check
+  with `issue-controls` to keep Issues write on the token, cap B's Agent grant at
+  `apiLimits: { issues: "read" }` and restrict C to Git through its Namespace
+  despite the Agent's Issues Write limit. Use `reads` to check
   that B's explicit write limit cannot exceed the token's Issues read permission.
   Calibrate the legacy callback in a Namespace without limits.
 
