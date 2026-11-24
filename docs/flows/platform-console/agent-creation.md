@@ -17,8 +17,8 @@ user-visible behavior.
 ## Entry Points
 
 - `apps/controller/src/console/agents/create.mts:renderCreateAgent` renders the
-  form (`renderAgentForm`) and submits it. `createAgentTabs` shows the form's
-  sections as six tabs, under a bar that holds the form's actions.
+  form (`renderAgentForm`) and submits it. `createAgentTabs` shows its
+  sections as tabs.
 - `apps/controller/src/console/agents/plugin-fields.mts:createPluginFields` and
   `agents/repositories.mts:createRepositoryFields` supply the plugin and repository fields.
 - A signed-in caller with Namespace Agent `create`; each write is authorized again.
@@ -29,9 +29,11 @@ user-visible behavior.
 graph TD
   A["Create Agent form"] --> B["Plugins, model, and repository choices"]
   B -->|repository access required and missing| H["Explain the requirement before provisioning"]
-  B -->|supported Dedicated| C["Queue provisioning with inline Configuration"]
+  B -->|supported Dedicated with profile access| C["Queue provisioning with inline Configuration"]
   C --> D["Worker creates resources, grants and first deployment"]
   B -->|ordinary draft| E["Validate, then POST Configuration and Agent"]
+  B -->|GitHub access per repository| I["Save draft with policy and verify grants"]
+  I --> F
   E --> F["Grant Agent use of selected Secrets"]
   F -->|failed| G["Retry credential access"]
 ```
@@ -143,7 +145,13 @@ Source-free deployment follows the [protected admission flow](../credential-sour
 
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
-Supported Dedicated runtimes submit inline Configuration, optional repository
+[Per-repository access](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
+defaults selected repositories to their delegated limits. With a selection,
+the API saves the draft and grants atomically. Console confirms them before
+granting credentials. Deployment checks the reviewed version under the Namespace lock
+and refuses stale grants with HTTP 409.
+
+Otherwise supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
 a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. Before it saves a model Secret or registers a
 Credential Source for the request, the form runs the preflight below with the planned method.
@@ -158,9 +166,7 @@ names what an administrator changes, because the form can change neither the bin
 Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
 (`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
 `agents/workspace.mts:workspaceFileProblem`, which names the file.
-`dom.mts:validateFields` dispatches `revealField` on the first failing field, so
-`createAgentTabs` selects that field's tab before focus: **Workspace files** for a
-refused file. A new Secret gets no `operate` grant, so where the `operate` answer above denies
+`createAgentTabs` selects a failing field's tab (`dom.mts:revealField`). A new Secret gets no `operate` grant, so where the `operate` answer above denies
 any readable Secret, the Preset's **Create new Secret** choice is disabled and a typed model key
 is refused before any write. It then checks the Agent name, draft values with their staged channel
 `secretBindings`, plugins and the planned `harnessAuth`
@@ -263,7 +269,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 - 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 
-- 2026-11-20 14:31: Trace the Create Agent tabs, the action bar, and the tab selection for a field that fails validation; accompanies uncommitted Console changes. (authoring-run/2a00b231-82dc-480a-a3af-9dd8215aefe0 - 5bf2ae7fd703197701f311098d734a10ed4ab593)
+- 2026-11-20 14:31: Trace the Create Agent tabs. (authoring-run/2a00b231-82dc-480a-a3af-9dd8215aefe0 - 5bf2ae7fd703197701f311098d734a10ed4ab593)
 
 - 2026-11-18 10:15: Preserve authored `plugins.allow`, `plugins.deny` and an explicitly disabled native Codex entry across Harness switches, including unfinished JSON recovery. (authoring-run/658e4f7a-f9c1-4bea-8723-f9dfe9053b2f - 27aa612d2bafd819c734942d59125084a6c658eb)
 

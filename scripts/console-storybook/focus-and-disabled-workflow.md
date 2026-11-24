@@ -143,7 +143,8 @@ for step 5).
 In **Pages / Agents / No search matches**, press Escape and type `assistant`.
 Enter keeps the list open because two Agents match. Down Arrow visits each
 name. Escape returns to search without clearing it. Replace the query with
-`Research` and press Enter. Go back and check that the Agent name has focus.
+`Research` and press Enter. Go back and check that the query remains and the
+focused Agent name is visible. Repeat at phone width.
 
 ## Agent collection access checks
 

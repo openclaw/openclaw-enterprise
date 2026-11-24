@@ -796,7 +796,7 @@ const authoredScenarios = {
     steps: [
       "Press Enter. Stay on No matching Agents. Press Escape to restore the list.",
       "Press Down twice to focus the second name, then Up to focus the first. Escape returns to search.",
-      "Type Research and press Enter to open Research assistant. Use browser Back. The query remains and the Agent name has focus.",
+      "Type Research and press Enter to open Research assistant. Use browser Back. The query remains and the focused Agent name is visible.",
     ],
   } satisfies LocalScenario,
   noNamespaces: {

@@ -586,6 +586,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           principalId,
           namespace.id,
           agent.id,
+          input.expectedRepositoryPolicyVersion,
         );
         if (!preview) {
           await dependencies.provisioningWorker.guardAgentProvisioning(
@@ -680,6 +681,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         principalId,
         namespace.id,
         lockedAgent.id,
+        input.expectedRepositoryPolicyVersion,
       );
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
@@ -988,6 +990,15 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
             )
           : undefined;
       const egressPlan = proxyAdmission?.plan;
+      if (
+        admittedRepository?.requiresNetworkPolicy &&
+        (!policy?.repositoryNetworkPolicy ||
+          egressPlan?.repositoryGitAuthorization !== "network-policy")
+      ) {
+        throw new ResourceStateConflictError(
+          "Repository restrictions require a saved native repository network policy.",
+        );
+      }
       const executionAdmission: ExecutionAdmission =
         credentialDeployment === undefined
           ? executionAdmissionFor(egressPlan)

@@ -209,6 +209,108 @@ test("refocusing the Agents list restores its focused link unless the reader mov
   }
 });
 
+test("Back keeps the keyboard-focused Agent in view when the filtered list changes", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Report workspace");
+  const query = "Fleet Report";
+  await fixture.createAgent(namespace.id, "Fleet Report 02", nativeValues("report-02"));
+  const target = await fixture.createAgent(
+    namespace.id,
+    "Fleet Report 03",
+    nativeValues("report-03"),
+  );
+  await fixture.createAgent(namespace.id, "Fleet Report 04", nativeValues("report-04"));
+  const unrelated = await fixture.createAgent(namespace.id, "Inventory", nativeValues("inventory"));
+  const { credentials } = await fixture.createNamespaceMember(
+    "report-reader",
+    namespace.id,
+    AGENT_READ,
+  );
+  const viewport = { width: 390, height: 844 };
+  const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`, credentials);
+
+  const view = page.locator(settledView);
+  const search = view.getByRole("searchbox", { name: "Search Agents", exact: true });
+  const list = view.getByRole("table", { name: "Agents", exact: true });
+  const link = (name: string) => list.getByRole("link", { name, exact: true });
+  const opened = link(target.name);
+  await opened.waitFor();
+  const requests = apiRequests(page, fixture.origin);
+  const listUrl = page.url();
+
+  await search.focus();
+  await page.keyboard.insertText(query);
+  await waitForIdleFetches(page);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await hasFocus(opened), true, "Down Arrow reaches the second match");
+  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { level: 1, name: target.name, exact: true }).waitFor();
+  await view.waitFor();
+  await waitForIdleFetches(page);
+
+  // Another caller inserts an earlier match, moving the opened Agent below the fold on return.
+  const added = await fixture.createAgent(
+    namespace.id,
+    "Fleet Report 01",
+    nativeValues("report-01"),
+  );
+  const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+  const returned = responseTo(page, "GET", agentsUrl);
+  await page.goBack();
+  const response = await returned;
+  assert.equal(response.status(), 200);
+  const body: unknown = await response.json();
+  assert.ok(Check(AgentListResponse, body), "the Controller returned an Agents list");
+  assert.ok(
+    body.data.some(({ id }) => id === target.id),
+    "the first list includes the target",
+  );
+  await page.waitForURL(listUrl);
+  await link(added.name).waitFor();
+  await waitForIdleFetches(page);
+
+  assert.equal(await search.inputValue(), query);
+  assert.equal(await link(unrelated.name).count(), 0, "the saved filter excludes unrelated Agents");
+  assert.equal(await hasFocus(opened), true, "Back restores focus to the opened Agent");
+  const box = await opened.boundingBox();
+  assert.ok(
+    box && box.y >= 0 && box.y + box.height <= viewport.height,
+    "the focused Agent link is within the viewport",
+  );
+  // Reopen the focused Agent. On this return the list no longer contains its focus target.
+  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { level: 1, name: target.name, exact: true }).waitFor();
+  await view.waitFor();
+  await waitForIdleFetches(page);
+  await fulfillMethod(page, agentsUrl, "GET", {
+    status: 200,
+    json: { ...body, data: body.data.filter(({ id }) => id !== target.id) },
+  });
+  const reread = responseTo(page, "GET", agentsUrl);
+  await page.goBack();
+  assert.equal((await reread).status(), 200);
+  await page.waitForURL(listUrl);
+  await link(added.name).waitFor();
+  await waitForIdleFetches(page);
+
+  assert.equal(await search.inputValue(), query);
+  assert.equal(await opened.count(), 0, "the stale Agent link is gone");
+  const heading = page.getByRole("heading", { level: 1, name: "Agents", exact: true });
+  assert.equal(await hasFocus(heading), true, "Back falls back to the Agents heading");
+  const bounds = await heading.boundingBox();
+  assert.ok(
+    bounds &&
+      bounds.x >= 0 &&
+      bounds.x + bounds.width <= viewport.width &&
+      bounds.y >= 0 &&
+      bounds.y + bounds.height <= viewport.height,
+    "the focused heading is fully within the viewport",
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), [], "opening and returning send no writes");
+});
+
 // The admitted selector becomes usable before the Agent list read settles. A reader who
 // tabs to it during the wait should keep that place when the shell redraws.
 test("The Namespace selector keeps keyboard focus acquired during Agents list revalidation", async (t) => {
