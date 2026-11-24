@@ -168,27 +168,27 @@ Log reads check Job and Pod identities, refuse NUL and report up to 32 fields.
 
 Kubernetes Compute uses the Pod service account and refuses single-cluster
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
-Some images and inputs over 1 MiB defer draft checks. `checkHarnessDestinations`
-binds the active revision and Configuration generation. For source-authenticated
-Harnesses, it checks all attached OpenAI sources. Invalid bindings, denied or
-incomplete forecasts and oversized source-backed drafts block shutdown.
+`checkHarnessDestinations` binds the active revision and Configuration generation.
+For source-authenticated Harnesses, it checks attached OpenAI sources. Invalid
+bindings, denied or incomplete forecasts, and required payloads over 1 MiB block
+shutdown. Some images and oversized payloads defer ordinary draft checks.
 Deployment rechecks authorization.
 
-Two-cluster Jobs check API Pod, proxy and optional log/Event access and worker
-Pod patch and Job get, create and delete access. Missing grants require the
+Two-cluster Jobs check API Pod, proxy and optional log/Event access, plus worker
+Pod patch and Job get, create and delete access. For missing grants, use the
 [execution chart upgrade](../testing/kubernetes.md#upgrade-the-execution-chart).
-Verify enforcement of the default-deny and dependency egress policies.
+Verify default-deny and dependency egress enforcement.
 
 `upgrade-preflight-state.py` records create intent and acknowledged UIDs.
 [Cleanup](coordinated-production-upgrade/preflight-cleanup.md) confirms Jobs and
 children are gone before removing dependencies. Unknown consumers retain them.
 
 After cleanup, recheck switch Secrets and record `startup-preflight-passed`.
-Standalone preflight prepares no deployment and exits 1 with
-`preflight-blocked-original-worker` if needed. Apply refreshes inventory and
-records bound candidates, inventory and target parameters. On interruption,
-retain the lock and skip cleanup. Before unlocking, confirm termination and
-reconcile accepted operations. Follow the [maintenance freeze](../guides/deploy/production-upgrade.md).
+Standalone preflight prepares no deployment and can exit 1 with
+`preflight-blocked-original-worker`. Apply refreshes and records inventory
+with bound candidates and target parameters. On interruption, retain the lock and
+skip cleanup. Before unlocking, confirm termination and reconcile accepted
+operations. Keep the [maintenance freeze](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 

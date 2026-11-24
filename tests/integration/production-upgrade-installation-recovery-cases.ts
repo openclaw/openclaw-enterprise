@@ -13,6 +13,7 @@ import {
   assertHelmIntent,
   assertPrivateReceipt,
   assertStoppedBeforeWriters,
+  restoreIncumbentApi,
   runWithInjectedFault,
 } from "../helpers/production-upgrade-recovery-evidence.ts";
 import type {
@@ -603,7 +604,15 @@ export function registerInstallationRecoveryCases({
     const f = await immutableInstallationSwitch(fixture, t, { agent: true });
     await runWithInjectedFault(f, "fail-scale-worker");
     assert.deepEqual(await f.events(), ["scale-api"]);
-    assert.equal((await f.state()).worker, 1);
+    // Resume must read the retained drafts from the incumbent API before it stops the Worker.
+    await assert.rejects(f.run("--resume"), /OCC API is stopped during partial quiescence/);
+    const partial = await f.state();
+    assert.equal(partial.api, 0);
+    assert.equal(partial.worker, 1);
+    assert.equal(partial.helmSubmissions ?? 0, 0);
+    assert.equal(partial.dispatches, 0);
+    assert.deepEqual(await f.events(), ["scale-api"]);
+    await restoreIncumbentApi(f, partial);
     await runWithInjectedFault(f, "lost-helm-response", "--resume");
     assert.equal((await f.state()).helmSubmissions, 1);
     assert.equal((await f.state()).dispatches, 0);

@@ -22,7 +22,7 @@ both Secret UIDs and data on a [reference switch](immutable-installation-upgrade
 and `controller-compatibility-results.json` when selected.
 
 For runtime upgrades, freeze Configuration generations, Harness authentication,
-Agent source bindings and destination authorization through writer shutdown.
+Agent source bindings and destination authorization through Agent dispatch.
 Resume rechecks destinations before cutover while both writers serve. Resolve
 refusals before preparing fresh evidence.
 

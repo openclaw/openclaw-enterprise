@@ -29,6 +29,7 @@ import {
   assertHelmIntent,
   assertPrivateReceipt,
   assertStoppedBeforeWriters,
+  restoreIncumbentApi,
   runWithInjectedFault,
 } from "../helpers/production-upgrade-recovery-evidence.ts";
 import type {
@@ -71,15 +72,6 @@ async function expectUpgradeFailure(result: Promise<unknown>, message: string) {
     return readUpgradeFailure(error);
   }
   assert.fail(message);
-}
-
-async function restoreIncumbentApi(fixture: RecoveryFixture, state: RecoveryState): Promise<void> {
-  state.api = 1;
-  const identities = record(state.deploymentIdentities, "Deployment identities");
-  const api = record(identities.api, "API Deployment identity");
-  api.generation = Number(api.generation) + 1;
-  api.resourceVersion = String(Number(api.resourceVersion) + 1);
-  await writeFile(join(fixture.directory, "state.json"), JSON.stringify(state));
 }
 
 function doctorTargets(contents: string) {
@@ -1288,6 +1280,7 @@ exec "$real_python" "$@"
           assert.equal((await f.state()).dispatches, 0);
           if (change === "move") {
             await rename(moved, f.evidence);
+            await restoreIncumbentApi(f, await f.state());
             await f.run("--resume");
             assert.equal((await f.state()).dispatches, 1);
           }
@@ -1368,6 +1361,7 @@ exec "$real_python" "$@"
       // A lock held by the sibling must neither block this resume nor be removed.
       const siblingLock = join(f.evidence, ".upgrade-lock");
       await mkdir(siblingLock);
+      await restoreIncumbentApi(f, await f.state());
       await f.run("--resume", "--evidence-dir", evidence);
       assert.equal((await f.state()).dispatches, 1);
       assert.equal(existsSync(lock), false);

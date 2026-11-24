@@ -176,6 +176,14 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
       assert.ok(value !== undefined, `expected a value for ${name}`);
       return value;
     };
+    const findInventoryAgent = (namespaceId: string | undefined, agentId: string) => {
+      const namespace = list(state.inventoryNamespaces ?? [], "inventory namespaces").find(
+        (entry) => optionalField(entry, "id") === namespaceId,
+      );
+      return list(optionalField(namespace, "agents") ?? [], "namespace agents").find(
+        (entry) => optionalField(entry, "id") === agentId,
+      );
+    };
     // The replacement revision's ready gateway Pod; an OOM kill shows in its restart history.
     const gatewayPod = () =>
       doctorPod({
@@ -1882,30 +1890,31 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         log("read " + args.at(-1));
         const id = args[args.length - 1];
         assert.ok(id !== undefined);
-        const home = list(state.inventoryNamespaces ?? [], "inventory namespaces").find(
-          (namespace) =>
-            list(field(namespace, "agents"), "namespace agents").some(
-              (agent) => field(agent, "id") === id,
-            ),
-        );
-        const name =
-          args.includes("agent") &&
-          (!args.includes("--namespace") || fileArg("--namespace") !== optionalField(home, "id"))
-            ? undefined
-            : field(state.names, id);
+        const name = field(state.names, id);
         if (name === undefined) {
           return fail(1, "permission denied");
         }
-        out({
-          id: args.at(-1),
-          name,
-          ...(args.includes("agent")
-            ? {
-                configurationId: `cfg_${args.at(-1)}`,
-                activeRevisionId: state.activeRevision ?? "rev_old",
-              }
-            : {}),
-        });
+        if (args.includes("agent")) {
+          if (!args.includes("--namespace")) {
+            return fail(1, "permission denied");
+          }
+          const namespaceId = fileArg("--namespace");
+          const agent = findInventoryAgent(namespaceId, id);
+          if (!agent) {
+            return fail(1, "permission denied");
+          }
+          out({
+            id,
+            namespaceId,
+            name,
+            configurationId: `cfg_${id}`,
+            activeRevisionId: field(agent, "activeRevisionId"),
+            executionMode: field(agent, "executionMode"),
+            harnessAuth: null,
+          });
+        } else {
+          out({ id, name });
+        }
       } else if (args.includes("agent") && args.includes("revision")) {
         log("revision-read " + args.at(-1));
         if (state.activeRevisionResponse === "denied") {
@@ -1960,13 +1969,21 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         const id = field(deploymentReply, "id");
         const status = field(deploymentReply, "status");
         delete state.nextDeployment;
+        const namespaceId = fileArg("--namespace");
         if (status === "succeeded") {
           state.activeRevision = id;
+          if (state.names) {
+            // A successful dispatch advances this Agent's revision, including when its reply is lost.
+            const agent = findInventoryAgent(namespaceId, agentId);
+            if (agent) {
+              record(agent, "inventory Agent").activeRevisionId = id;
+            }
+          }
           if (state.channelStopCase) {
             state.channelAgentStopped = false;
           }
         }
-        const deployment = [fileArg("--namespace"), agentId, id].join("/");
+        const deployment = [namespaceId, agentId, id].join("/");
         if (state.deployments == null) {
           throw new TypeError(
             `Cannot set properties of ${state.deployments} (setting '${deployment}')`,
@@ -1979,16 +1996,11 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         if (take("lost-agent-response")) {
           return fail(9);
         }
-        out(state.channelStopCase ? { id, agentId, namespaceId: fileArg("--namespace") } : { id });
+        out(state.channelStopCase ? { id, agentId, namespaceId } : { id });
       } else if (args.includes("agent") && args.includes("get")) {
         const id = requiredArg("get");
         const namespaceId = fileArg("--namespace");
-        const namespace = list(state.inventoryNamespaces ?? [], "inventory namespaces").find(
-          (namespace) => optionalField(namespace, "id") === namespaceId,
-        );
-        const agent = list(optionalField(namespace, "agents") ?? [], "namespace agents").find(
-          (agent) => optionalField(agent, "id") === id,
-        );
+        const agent = findInventoryAgent(namespaceId, id);
         out(
           optionalField(state.agentDrafts, id) ?? {
             id,
