@@ -25,7 +25,7 @@ import {
   POLICY_EDITING_SETTING_REFUSED,
   SANDBOX_POLICY_READ_DENIED,
 } from "./access-reasons.mjs";
-import { namespacePath, rejectionMessage } from "./list.mjs";
+import { displayDate, namespacePath, rejectionMessage } from "./list.mjs";
 import { recordRow, visibleText } from "./logs-view.mjs";
 
 type Policy = SandboxPolicyViewWire["policy"];
@@ -374,6 +374,79 @@ function ruleList(rules: readonly unknown[], actions?: (index: number) => Node) 
   root.append(search, rows, pager);
   render();
   return root;
+}
+
+const REPOSITORY_SOURCE_UNAVAILABLE =
+  "The Source is missing, in another Namespace or owned by another TokenService. Saves and deployments refuse it.";
+const REPOSITORY_DELIVERY_PENDING =
+  "A pending revision can still use the replaced token. Revoke it only when every revision reads confirmed.";
+const REPOSITORY_DELIVERY_UNRECONCILED =
+  "Replacing or deleting the Source is refused until the Agent is stopped or redeployed.";
+
+// Which credential the repository grants use and, for a readable repository token Source, which
+// running revisions have activated its current value. Read-only. Versions are opaque, so only the
+// states and times are shown; the read never carries the token.
+function repositoryCredentialLines(
+  credential: SandboxPolicyViewWire["repositoryCredential"],
+  saved: RepositoryGrants | undefined,
+): Node[] {
+  if (credential?.kind === "github_app") {
+    return [element("p", {}, "Credential: GitHub App")];
+  }
+  if (credential?.kind !== "credential_source") {
+    return [];
+  }
+  if (!("id" in credential)) {
+    return [element("p", {}, "Credential: a repository token Source you cannot read")];
+  }
+  const { id, name, state, effectiveRepositoryNetworkPolicy: effective, deliveries } = credential;
+  const lines: Node[] = [
+    element(
+      "p",
+      {},
+      "Credential: repository token Source ",
+      element("span", { className: "resource-id" }, name ?? id),
+      ` · ${state}`,
+    ),
+  ];
+  if (state === "unavailable") {
+    lines.push(element("p", { className: "hint" }, REPOSITORY_SOURCE_UNAVAILABLE));
+  }
+  if (readableRepositoryGrants(effective) && !sameRepositoryGrants(saved, effective)) {
+    const label = "Effective access after the Namespace, registry and Source limits";
+    lines.push(
+      element("p", {}, effective.length ? `${label}:` : `${label}: none`),
+      ...(effective.length ? [repositoryGrantList(effective)] : []),
+    );
+  }
+  if (!Array.isArray(deliveries) || deliveries.length === 0) {
+    return lines;
+  }
+  lines.push(
+    element("p", {}, "Token delivery by revision:"),
+    element(
+      "ul",
+      {},
+      ...deliveries.map(({ revisionId, state: delivery, committedAt, confirmedAt }) =>
+        element(
+          "li",
+          {},
+          "Revision ",
+          element("span", { className: "resource-id" }, revisionId),
+          ` · ${delivery}`,
+          committedAt ? ` · replacement committed ${displayDate(committedAt)}` : "",
+          confirmedAt ? ` · activation confirmed ${displayDate(confirmedAt)}` : "",
+        ),
+      ),
+    ),
+  );
+  if (deliveries.some(({ state: delivery }) => delivery === "pending")) {
+    lines.push(element("p", { className: "hint" }, REPOSITORY_DELIVERY_PENDING));
+  }
+  if (deliveries.some(({ state: delivery }) => delivery === "unreconciled")) {
+    lines.push(element("p", { className: "hint" }, REPOSITORY_DELIVERY_UNRECONCILED));
+  }
+  return lines;
 }
 
 /** Logs, recommendations, and policy editing keep independent permissions and availability. */
@@ -1604,6 +1677,7 @@ export function renderAgentSandboxPolicy(
       element("p", {}, summary),
     );
     const hint = (text: string) => element("p", { className: "hint" }, text);
+    panel.append(...repositoryCredentialLines(loaded.repositoryCredential, saved));
     if (repositoryDraft?.conflicted) {
       if (saved?.length) {
         panel.append(repositoryGrantList(saved));

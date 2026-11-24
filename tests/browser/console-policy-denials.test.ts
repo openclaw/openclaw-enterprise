@@ -174,6 +174,151 @@ test("a policy reader can inspect repository limits without opening a proposal",
   assert.equal(await repositoryPanel.count(), 0, "no saved policy or delegated repositories");
 });
 
+test("the repository policy panel shows the repository credential and its delivery state", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t);
+  restrict(fixture.policy, "manage_policy", "agent", {
+    namespaceId: namespace.id,
+    resourceId: agent.id,
+  });
+  const { page } = await newPage(t, fixture);
+  const saved = [
+    { repository: "example/application", access: "read" },
+    { repository: "example/tooling", access: "write" },
+  ];
+  const source = {
+    kind: "credential_source",
+    id: "cs_00000000-0000-4000-8000-000000000031",
+    name: "example-repository-token",
+    state: "ready",
+    ceiling: saved,
+    effectiveRepositoryNetworkPolicy: saved,
+  };
+  const revisionId = "rev_00000000-0000-4000-8000-000000000007";
+  const committed = { committedSourceVersion: "3", committedAt: "2026-11-20T09:15:00.000Z" };
+  let repositoryCredential: unknown;
+  // Supply the repository fields on the real read response. IAM and all other routes stay real.
+  await page.route(fixture.origin + base, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        data: {
+          ...body.data,
+          policy: { ...body.data.policy, repositoryNetworkPolicy: saved },
+          repositoryNetworkPolicyCeiling: saved,
+          repositoryNetworkPolicySaveSupported: true,
+          ...(repositoryCredential === undefined ? {} : { repositoryCredential }),
+        },
+      },
+    });
+  });
+  const requests = apiRequests(page, fixture.origin);
+  const repositoryPanel = page.getByRole("region", { name: "Repository network policy" });
+  async function panelText(credential: unknown, reload = true) {
+    repositoryCredential = credential;
+    if (reload) {
+      await page.reload();
+    }
+    await page.getByRole("button", { name: /^(Manage|View) rules$/ }).click();
+    const text = await repositoryPanel.innerText();
+    await page.keyboard.press("Escape");
+    return text;
+  }
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, undefined, "policy"));
+  const absent = await panelText(undefined, false);
+  assert.match(absent, /example\/tooling · write/);
+  assert.doesNotMatch(absent, /Credential|Token delivery/);
+
+  assert.match(await panelText({ kind: "github_app" }), /^Credential: GitHub App$/m);
+
+  const unreadable = await panelText({ kind: "credential_source", readable: false });
+  assert.match(unreadable, /^Credential: a repository token Source you cannot read$/m);
+  assert.doesNotMatch(unreadable, /Token delivery|Effective access/);
+
+  const confirmed = await panelText({
+    ...source,
+    deliveries: [
+      {
+        revisionId,
+        state: "confirmed",
+        ...committed,
+        confirmedSourceVersion: "3",
+        confirmedAt: "2026-11-20T09:16:30.000Z",
+      },
+    ],
+  });
+  assert.match(
+    confirmed,
+    /^Credential: repository token Source example-repository-token · ready$/m,
+  );
+  assert.match(
+    confirmed,
+    new RegExp(
+      `^Revision ${revisionId} · confirmed · replacement committed .+ · activation confirmed .+$`,
+      "m",
+    ),
+  );
+  assert.doesNotMatch(confirmed, /Effective access|can still use the replaced token|refused/);
+
+  const pending = await panelText({
+    ...source,
+    effectiveRepositoryNetworkPolicy: [saved[0]],
+    deliveries: [{ revisionId, state: "pending", ...committed }],
+  });
+  assert.match(
+    pending,
+    /^Effective access after the Namespace, registry and Source limits:\n+example\/application · read$/m,
+  );
+  assert.match(
+    pending,
+    new RegExp(`^Revision ${revisionId} · pending · replacement committed .+$`, "m"),
+  );
+  assert.match(
+    pending,
+    /A pending revision can still use the replaced token\. Revoke it only when every revision reads confirmed\./,
+  );
+
+  const unreconciled = await panelText({
+    ...source,
+    effectiveRepositoryNetworkPolicy: [],
+    deliveries: [{ revisionId, state: "unreconciled" }],
+  });
+  assert.match(
+    unreconciled,
+    /^Effective access after the Namespace, registry and Source limits: none$/m,
+  );
+  assert.match(unreconciled, new RegExp(`^Revision ${revisionId} · unreconciled$`, "m"));
+  assert.match(
+    unreconciled,
+    /Replacing or deleting the Source is refused until the Agent is stopped or redeployed\./,
+  );
+
+  const unavailable = await panelText({
+    kind: "credential_source",
+    id: "cs_00000000-0000-4000-8000-000000000032",
+    state: "unavailable",
+    deliveries: [],
+  });
+  assert.match(
+    unavailable,
+    /^Credential: repository token Source cs_00000000-0000-4000-8000-000000000032 · unavailable$/m,
+  );
+  assert.match(
+    unavailable,
+    /The Source is missing, in another Namespace or owned by another TokenService\./,
+  );
+  assert.doesNotMatch(unavailable, /Token delivery|Effective access/);
+  assert.equal(pathRequests(requests, "PUT", base).length, 0);
+});
+
 test("the Policy denials page controls policy editing and disabling preserves saved rules", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t, grants);
   assert.equal(
