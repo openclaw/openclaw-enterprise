@@ -470,7 +470,7 @@ test(
       },
     });
     assert.equal(changedIssuer.statusCode, 409, changedIssuer.body);
-    assert.match(changedIssuer.json().error.message, /Reconnect.*issuer changes/);
+    assert.match(changedIssuer.json().error.message, /Reconnect.*issuer.*changes/);
     assert.deepEqual(
       (await owner("GET", `${sources}/${defaultsId}`)).json().data.consent,
       defaultConsent,
