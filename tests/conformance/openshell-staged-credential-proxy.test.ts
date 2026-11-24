@@ -8,6 +8,7 @@ import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.t
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { openShellProjectedCredentialProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
 import {
   GrpcOpenShellGatewayClient,
@@ -960,54 +961,161 @@ test("staged OpenShell Proxy accepts OCC TokenService and reuses its Provider wi
   assert.equal(f.state.updates.length, 0);
 });
 
-test("native Proxy refuses a mixed model and MCP Plugin policy before Source resolution", async (t) => {
+test("native Proxy delivers a managed Slack MCP binding and rejects broadened policy readback", async (t) => {
   const f = await fixture(t);
-  const plugin = {
-    ...binding,
-    sourceRef: { ...binding.sourceRef, id: "source-plugin" },
-    bindingRef: "plugin-api",
-    consumer: { kind: "plugin" as const, pluginId: "http", requirement: "api", connection: "one" },
-    projection: { environment: "PLUGIN_API_KEY", presentation: "bearer" as const },
-  };
-  const pluginRequest = {
-    ...request,
-    requestPolicy: { type: "http" as const, method: "GET", path: "/api" },
-  };
-  const mcp = {
-    ...pluginRequest,
-    requestPolicy: {
-      type: "mcp" as const,
-      method: "tools/call",
-      toolName: "example",
-      path: "/api",
+  const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
+  assert.ok(slack);
+  const slot = slack.slotId;
+  const sourceRef = { ...binding.sourceRef, id: "cs_slack" };
+  const toolName = "slack_search_messages";
+  const selection = {
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: slack.releaseSha256,
+      credentials: { [slot]: sourceRef.id },
+      toolNames: [toolName],
     },
   };
-  const mcpPolicy = { bindingRef: plugin.bindingRef, allowedRequests: [mcp] };
-  const mcpContext: CredentialDeploymentContext = {
+  const description = await new OCCPluginDriver().describeDeployment({
+    plugin: { catalog: "driver", pluginId: slack.id },
+    selection,
+    connections: { [slot]: { default: sourceRef } },
+  });
+  const account = description.credentials[slot]?.default;
+  assert.ok(account);
+  const requests = description.networkRequirements
+    .filter(({ id }) => account.networkRequirementIds.includes(id))
+    .map(({ match }) => match);
+  const plugin = {
+    bindingRef: JSON.stringify(["plugin", slack.id, slot, "default"]),
+    sourceRef: account.sourceRef,
+    consumer: {
+      kind: "plugin" as const,
+      pluginId: slack.id,
+      requirement: slot,
+      connection: "default",
+    },
+    projection: account.projection,
+  };
+  const modelRequest = { ...request, binary: "/usr/local/bin/node" };
+  const policies = [
+    { ...injection, allowedRequests: [modelRequest] },
+    { bindingRef: plugin.bindingRef, allowedRequests: requests },
+  ];
+  const context: CredentialDeploymentContext = {
     ...f.context,
     revision: {
       ...f.context.revision,
+      harness: { ...f.context.revision.harness, id: "openclaw" },
+      harnessAuth: {
+        method: "credential_source",
+        sourceId: binding.sourceRef.id,
+        sourceType: "static",
+        tokenServiceInstanceId: "tokens",
+      },
+      credentialSources: [binding.sourceRef, sourceRef].map(({ id }) => ({
+        sourceId: id,
+        sourceType: "static",
+        tokenServiceInstanceId: "tokens",
+      })),
+      plugins: {
+        driver: { id: "openclaw-plugin", implementation: "occ/openclaw-plugin" },
+        plugins: { [slack.id]: selection },
+      },
       credentialDeployment: {
         ...f.context.revision.credentialDeployment!,
-        networkAccessPolicy: { allowed: [request, mcp] },
+        networkAccessPolicy: { allowed: [modelRequest, ...requests] },
         bindings: [binding, plugin],
-        injectionPolicies: [injection, mcpPolicy],
+        injectionPolicies: policies,
       },
     },
   };
-  await assert.rejects(
-    f.proxy.configureDeployment(mcpContext, {
-      ...configuration,
-      bindings: [
-        f.suppliedBinding,
-        { binding: plugin, resolveCredential: f.suppliedBinding.resolveCredential },
-      ],
-      injectionPolicies: [injection, mcpPolicy],
-    }),
-    DependencyUnavailableError,
+  let pluginResolutions = 0;
+  const configured = await f.proxy.configureDeployment(context, {
+    ...configuration,
+    bindings: [
+      f.suppliedBinding,
+      {
+        binding: plugin,
+        resolveCredential: async () => {
+          pluginResolutions++;
+          return { credential: "synthetic-slack-access-token", version: "slack-v1" };
+        },
+      },
+    ],
+    injectionPolicies: policies,
+  });
+  assert.deepEqual(
+    configured.credentialProjections,
+    [binding, plugin].map((current) => ({
+      bindingRef: current.bindingRef,
+      environment: current.projection.environment,
+      placeholder: { kind: "runtime" },
+    })),
   );
-  assert.equal(f.resolutions(), 0);
-  assert.equal(f.state.creates.length, 0);
+  assert.equal(f.resolutions(), 1);
+  assert.equal(pluginResolutions, 1);
+  assert.deepEqual(
+    f.state.creates.map((creation) => record(creation.provider).credentials),
+    [{ OPENAI_API_KEY: "synthetic-material" }, { SLACK_MCP_TOKEN: "synthetic-slack-access-token" }],
+  );
+
+  // The controlled Gateway supplies the loaded Sandbox policy and per-Provider serving evidence.
+  const evidence = f.observeServing();
+  const modelEndpoint = (record(evidence.rule).endpoints as Wire[])[0]!;
+  modelEndpoint.path = modelRequest.requestPolicy.path;
+  evidence.rule.binaries = [{ path: modelRequest.binary }];
+  const pluginName = openShellProjectedCredentialProviderName(sourceRef.id, "SLACK_MCP_TOKEN");
+  const pluginProvider = f.state.additionalProviders.get(pluginName);
+  assert.ok(pluginProvider);
+  assert.deepEqual(f.sandbox.spec.providers, [f.state.provider!.metadata.name, pluginName]);
+  const mcpEndpoint = {
+    host: "mcp.slack.com",
+    path: "/mcp",
+    ports: [443],
+    protocol: "mcp",
+    mcp: { strict_tool_names: true, versions: ["2025-03-26", "2025-06-18", "2025-11-25"] },
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    rules: [
+      { allow: { method: "ping" } },
+      { allow: { method: "initialize" } },
+      { allow: { method: "notifications/initialized" } },
+      { allow: { method: "tools/list" } },
+      { allow: { method: "tools/call", params: { name: { glob: toolName } } } },
+    ],
+    credential_binding: { provider: pluginName },
+    provider_credentialed: true,
+  };
+  record(evidence.policy.network_policies).slack = {
+    name: "slack",
+    binaries: [{ path: "/usr/local/bin/node" }],
+    endpoints: [mcpEndpoint],
+  };
+  const publishPolicy = () => {
+    const sourcePolicy = sourcePolicyFrom(evidence.policy);
+    f.sandbox.spec.policy = sourcePolicy;
+    record(f.state.policyStatus!.revision).policy = sourcePolicy;
+  };
+  publishPolicy();
+  const pluginStatus = structuredClone(f.state.providerStatus!);
+  const receipt = record(pluginStatus.receipt);
+  receipt.provider = pluginName;
+  Object.assign(record(receipt.desired), {
+    provider_id: pluginProvider.metadata.id,
+    provider_resource_version: pluginProvider.metadata.resource_version,
+  });
+  f.state.additionalProviderStatuses.set(pluginName, pluginStatus);
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "ready" });
+
+  // A second tool would exceed the frozen selector even if both Gateway policy views agree.
+  mcpEndpoint.rules.push({
+    allow: { method: "tools/call", params: { name: { glob: "slack_delete_message" } } },
+  });
+  publishPolicy();
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
+    state: "failed",
+    code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
+  });
 });
 
 test("native Proxy isolates model and Google Plugin delivery and rotates only the selected Source", async (t) => {
