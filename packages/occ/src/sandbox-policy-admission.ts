@@ -3,6 +3,7 @@ import {
   ConfigurationValidationError,
   validateSandboxNetworkGrants,
   type AgentRevision,
+  type RepositoryGitDeliveryProfile,
   type SandboxDriver,
   type SandboxNetworkGrant,
   type SandboxPolicySnapshot,
@@ -27,16 +28,22 @@ const sandboxPolicyRefused = () =>
     ],
   );
 
+export type DeploymentRepositoryScope = {
+  readonly repositoryCredentials: boolean;
+  readonly onlineProfile?: RepositoryGitDeliveryProfile | undefined;
+};
+
 export function defaultDeploymentSandboxPolicy(
   sandbox: SandboxPolicyAdmissionDriver | undefined,
   version: number,
   protectedExecution: boolean,
   harness: Pick<AgentRevision["harness"], "id" | "mode">,
   scope: { readonly repositoryCredentials: boolean },
+  onlineProfile?: RepositoryGitDeliveryProfile,
 ): SandboxPolicySnapshot | undefined {
   if (protectedExecution) {
     return harness.id === "codex" && harness.mode === "dedicated" && scope.repositoryCredentials
-      ? checkedProtectedCodexArtifactPolicy(sandbox, version)
+      ? checkedProtectedCodexArtifactPolicy(sandbox, version, onlineProfile)
       : undefined;
   }
   if (sandbox?.admitNetworkPolicy === undefined) {
@@ -93,6 +100,7 @@ export function checkedSandboxPolicySnapshot(
 function checkedProtectedCodexArtifactPolicy(
   driver: SandboxPolicyAdmissionDriver | undefined,
   version: number,
+  onlineProfile: RepositoryGitDeliveryProfile | undefined,
 ): SandboxPolicySnapshot {
   const admit = (() => {
     try {
@@ -109,7 +117,13 @@ function checkedProtectedCodexArtifactPolicy(
   return checkedSandboxPolicySnapshot(driver, [], version, undefined, undefined, () => {
     const result = (() => {
       try {
-        return immutableCopy(Reflect.apply(admit, driver, [version]));
+        return immutableCopy(
+          Reflect.apply(
+            admit,
+            driver,
+            onlineProfile === undefined ? [version] : [version, onlineProfile],
+          ),
+        );
       } catch {
         // Protected admission never publishes Driver diagnostics, even for typed errors.
         throw sandboxPolicyRefused();

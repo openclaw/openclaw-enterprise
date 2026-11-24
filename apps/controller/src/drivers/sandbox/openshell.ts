@@ -87,6 +87,7 @@ import {
 } from "./openshell-policy.ts";
 import type {
   SandboxNetworkGrant,
+  RepositoryGitDeliveryProfile,
   RepositoryNetworkPolicy,
   ProtectedCodexArtifactPolicyAdmission,
   SandboxPolicySnapshot,
@@ -5254,8 +5255,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
   }
 
-  /** Qualify declared credential-free artifact rules without I/O. */
-  admitProtectedCodexArtifactPolicy(version: number): ProtectedCodexArtifactPolicyAdmission {
+  /** Freeze declared artifact rules and any stock download grant without I/O. */
+  admitProtectedCodexArtifactPolicy(
+    version: number,
+    onlineProfile?: RepositoryGitDeliveryProfile,
+  ): ProtectedCodexArtifactPolicyAdmission {
     const names = this.options.policy.codexArtifactRuleNames ?? [];
     if (
       !Number.isSafeInteger(version) ||
@@ -5277,10 +5281,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const defaults = qualifyOpenShellCodexArtifactRules(
       networkPolicies(this.options) as OpenClawConfigurationDocument,
       names,
+      onlineProfile,
     );
     return immutableCopy({
       purpose: "protected-codex-artifacts",
-      declaredRuleNames: names,
+      declaredRuleNames: Object.keys(defaults),
       snapshot: {
         driverId: this.id,
         implementation: this.implementation,

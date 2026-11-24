@@ -1,6 +1,7 @@
 import {
   checkedSandboxPolicySnapshot,
   defaultDeploymentSandboxPolicy,
+  type DeploymentRepositoryScope,
 } from "./sandbox-policy-admission.ts";
 import { assertScopedRepositoryHistory } from "./repository-network-policy.ts";
 
@@ -909,10 +910,10 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     revisionHarness: Pick<RevisionHarnessDescriptor, "id" | "mode">,
     sandbox: SandboxDriver | undefined,
     executionAdmission: ExecutionAdmission,
-    repositoryCredentials: boolean,
+    scope: DeploymentRepositoryScope,
     policyAlreadyAuthorized = false,
   ): Promise<SandboxPolicySnapshot | undefined> {
-    const policyScope = { repositoryCredentials };
+    const policyScope = { repositoryCredentials: scope.repositoryCredentials };
     // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
     // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
     // execution. The caller learns of saved additions only with SandboxPolicy read access.
@@ -940,6 +941,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
             protectedExecution,
             revisionHarness,
             policyScope,
+            scope.onlineProfile,
           );
     if ((policy?.additions.length ?? 0) > 0 && sandboxPolicy === undefined) {
       throw new ResourceStateConflictError(

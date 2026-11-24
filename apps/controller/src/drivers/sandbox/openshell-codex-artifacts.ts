@@ -1,7 +1,15 @@
 import { isIP } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 
-import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
-import type { AgentRevision, OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
+import {
+  ConfigurationValidationError,
+  repositoryGitDeliveryProfile,
+} from "@openclaw-enterprise/contracts";
+import type {
+  AgentRevision,
+  OpenClawConfigurationDocument,
+  RepositoryGitDeliveryProfile,
+} from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 
 import { AGENT_POLICY_PREFIX } from "./openshell-policy.ts";
@@ -11,6 +19,32 @@ const CODEX_BINARIES = new Set([
   "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
   "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 ]);
+
+// Keep this wire shape readable when admitting a future set of GitHub /meta actions hosts.
+const GITHUB_ACTIONS_DOWNLOADS_RULE = {
+  name: "oce-egress-actions-downloads",
+  binaries: [{ path: "/usr/local/bin/gh" }],
+  endpoints: [
+    "results-receiver.actions.githubusercontent.com",
+    ...(
+      [
+        [0, 19],
+        [30, 49],
+        [100, 199],
+      ] as const
+    ).flatMap(([first, last]) =>
+      Array.from(
+        { length: last - first + 1 },
+        (_, index) => `productionresultssa${first + index}.blob.core.windows.net`,
+      ),
+    ),
+  ].map((host) => ({
+    host,
+    ports: [443],
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    tls: "NETWORK_TLS_MODE_SKIP",
+  })),
+};
 
 function refuse(): never {
   throw new ConfigurationValidationError([
@@ -78,12 +112,36 @@ function literalArtifactHost(value: unknown): boolean {
 }
 
 /** Validate the complete closed wire form, including data rehydrated from persistence. */
-function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
+function qualifiedMap(
+  value: unknown,
+  revision?: Readonly<AgentRevision>,
+): Readonly<OpenClawConfigurationDocument> {
   const map = asRecord(value);
   if (!map) {
     refuse();
   }
   for (const [name, value] of Object.entries(map)) {
+    if (name === GITHUB_ACTIONS_DOWNLOADS_RULE.name && revision !== undefined) {
+      const { egressPlan, repositoryCredentials, sandboxPolicy } = revision;
+      if (
+        revision.executionAdmission.version !== 5 ||
+        egressPlan?.repositoryGitAuthorization !== "online-request" ||
+        sandboxPolicy?.repositoryNetworkPolicy !== undefined ||
+        repositoryGitDeliveryProfile(repositoryCredentials) !== "github_repository" ||
+        !isDeepStrictEqual(repositoryCredentials, egressPlan.repositoryGit) ||
+        !isDeepStrictEqual(value, GITHUB_ACTIONS_DOWNLOADS_RULE)
+      ) {
+        throw new ConfigurationValidationError([
+          {
+            path: `/sandboxPolicy/defaults/${name}`,
+            code: "INVALID_VALUE",
+            message:
+              "GitHub Actions downloads require the exact rule and online repository admission.",
+          },
+        ]);
+      }
+      continue;
+    }
     if (!ruleName(name)) {
       refuse();
     }
@@ -136,6 +194,7 @@ function qualifiedMap(value: unknown): Readonly<OpenClawConfigurationDocument> {
 export function qualifyOpenShellCodexArtifactRules(
   defaults: Readonly<OpenClawConfigurationDocument>,
   names: readonly string[],
+  onlineProfile?: RepositoryGitDeliveryProfile,
 ): Readonly<OpenClawConfigurationDocument> {
   if (
     !Array.isArray(names) ||
@@ -146,7 +205,13 @@ export function qualifyOpenShellCodexArtifactRules(
   ) {
     refuse();
   }
-  return qualifiedMap(Object.fromEntries(names.map((name) => [name, defaults[name]!])));
+  const declared = qualifiedMap(Object.fromEntries(names.map((name) => [name, defaults[name]!])));
+  return onlineProfile === "github_repository"
+    ? immutableCopy({
+        ...declared,
+        [GITHUB_ACTIONS_DOWNLOADS_RULE.name]: GITHUB_ACTIONS_DOWNLOADS_RULE,
+      })
+    : declared;
 }
 
 /** Both paired compilers consume immutable admission, never current Installation defaults. */
@@ -199,5 +264,5 @@ export function openShellProtectedCodexArtifacts(
   ) {
     refuse();
   }
-  return qualifiedMap(snapshot.defaults);
+  return qualifiedMap(snapshot.defaults, revision);
 }

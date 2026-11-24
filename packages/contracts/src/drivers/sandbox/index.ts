@@ -1,6 +1,10 @@
 import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
-import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
+import type {
+  EgressInstallation,
+  ProxyWiring,
+  RepositoryGitDeliveryProfile,
+} from "../credential-proxy/index.ts";
 import type {
   CredentialDeploymentTarget,
   CredentialProjection,
@@ -265,9 +269,14 @@ export interface SandboxDriver extends Driver {
    * Side-effect-free admission for protected, dedicated Codex repository execution.
    * A normal network-policy result cannot acknowledge this purpose. The result names
    * exactly the qualified defaults map's keys and carries no Agent additions.
-   * Absence refuses this composition; it never imports ordinary defaults.
+   * The optional profile describes matching online repository bindings without a
+   * saved repository network policy. Omission grants no profile-specific access.
+   * Absence of the method refuses this composition; it never imports ordinary defaults.
    */
-  admitProtectedCodexArtifactPolicy?(version: number): ProtectedCodexArtifactPolicyAdmission;
+  admitProtectedCodexArtifactPolicy?(
+    version: number,
+    onlineProfile?: RepositoryGitDeliveryProfile,
+  ): ProtectedCodexArtifactPolicyAdmission;
   observeNetworkPolicy?(
     context: SandboxLogContext,
     snapshot: SandboxPolicySnapshot,

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { TestContext } from "node:test";
-import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  ConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
   SandboxPolicySnapshot,
@@ -21,6 +24,7 @@ import type { OpenShellNetworkPolicyRule } from "../../apps/controller/src/drive
 
 const native =
   "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex";
+const actionsDownloads = "oce-egress-actions-downloads";
 
 function artifact(): OpenShellNetworkPolicyRule {
   return {
@@ -219,6 +223,134 @@ function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
     },
   };
 }
+
+function onlineRepositoryRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
+  const revision = protectedRevision(snapshot);
+  const { policyReductionVersion: _, ...plan } = revision.egressPlan!;
+  const repository = {
+    ...revision.repositoryCredentials!,
+    bindings: revision.repositoryCredentials!.bindings.map((binding) => ({
+      ...binding,
+      profile: "github-repository" as const,
+    })),
+  };
+  return {
+    ...revision,
+    repositoryCredentials: repository,
+    executionAdmission: { version: 5, mode: "protected" },
+    egressPlan: {
+      ...plan,
+      repositoryGit: repository,
+      repositoryGitAuthorization: "online-request",
+    },
+  };
+}
+
+// Pin the complete published host set independently of the Driver's range expansion.
+const expectedDownloads = {
+  name: actionsDownloads,
+  binaries: [{ path: "/usr/local/bin/gh" }],
+  endpoints: [
+    "results-receiver.actions.githubusercontent.com",
+    ...Array.from({ length: 200 }, (_, n) => n)
+      .filter((n) => n < 20 || (n >= 30 && n < 50) || n >= 100)
+      .map((n) => `productionresultssa${n}.blob.core.windows.net`),
+  ].map((host) => ({
+    host,
+    ports: [443],
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    tls: "NETWORK_TLS_MODE_SKIP",
+  })),
+};
+
+test("only the online repository profile adds Actions downloads and old snapshots keep their rules", (t) => {
+  const plugin = artifact();
+  const driver = sandbox(t, [plugin], [plugin.name]);
+  const historical = driver.admitProtectedCodexArtifactPolicy(1).snapshot;
+  const admission = driver.admitProtectedCodexArtifactPolicy(2, "github_repository");
+  assert.deepEqual(admission.declaredRuleNames, [plugin.name, actionsDownloads]);
+  assert.deepEqual(admission.snapshot.defaults, {
+    ...historical.defaults,
+    [actionsDownloads]: expectedDownloads,
+  });
+  const revision: AgentRevision = JSON.parse(
+    JSON.stringify(onlineRepositoryRevision(admission.snapshot)),
+  );
+  assert.deepEqual(openShellProtectedCodexArtifacts(revision), admission.snapshot.defaults);
+  assert.deepEqual(
+    openShellProtectedCodexArtifacts(onlineRepositoryRevision(historical)),
+    historical.defaults,
+  );
+  for (const profile of ["repository_git", "github_installation"] as const) {
+    assert.deepEqual(
+      driver.admitProtectedCodexArtifactPolicy(2, profile).snapshot.defaults,
+      historical.defaults,
+    );
+  }
+  assert.throws(
+    () =>
+      sandbox(
+        t,
+        [{ ...plugin, name: actionsDownloads }],
+        [actionsDownloads],
+      ).admitProtectedCodexArtifactPolicy(1),
+    ConfigurationValidationError,
+  );
+});
+
+test("frozen Actions downloads reject changes to the rule or the repository that qualified", (t) => {
+  const { snapshot } = sandbox(t, [artifact()]).admitProtectedCodexArtifactPolicy(
+    1,
+    "github_repository",
+  );
+  const revision = onlineRepositoryRevision(snapshot);
+  const reject = (changed: AgentRevision) =>
+    assert.throws(() => openShellProtectedCodexArtifacts(changed), ConfigurationValidationError);
+  for (const altered of [
+    { ...expectedDownloads, binaries: [{ path: "/usr/bin/curl" }] },
+    { ...expectedDownloads, endpoints: expectedDownloads.endpoints.slice(1) },
+    { ...expectedDownloads, credentialAlias: "forbidden" },
+  ]) {
+    reject({
+      ...revision,
+      sandboxPolicy: { ...snapshot, defaults: { [actionsDownloads]: altered } },
+    });
+  }
+  const plan = revision.egressPlan!;
+  const repository = revision.repositoryCredentials!;
+  const gitOnly = protectedRevision(snapshot).repositoryCredentials!;
+  reject({
+    ...revision,
+    repositoryCredentials: gitOnly,
+    egressPlan: { ...plan, repositoryGit: gitOnly },
+  });
+  const different = {
+    ...repository,
+    bindings: repository.bindings.map((b) => ({ ...b, repositoryRef: "another" })),
+  };
+  reject({ ...revision, egressPlan: { ...plan, repositoryGit: different } });
+  const denyAll = admitRepositoryNetworkPolicy([], [])!;
+  reject({ ...revision, sandboxPolicy: { ...snapshot, repositoryNetworkPolicy: denyAll } });
+  // Native Git uses this same repository profile, but has its own network policy.
+  const grants = [{ repository: "example/application", access: "read" }];
+  const native = {
+    ...revision,
+    executionAdmission: { version: 9, mode: "protected" },
+    egressPlan: { ...plan, repositoryGitAuthorization: "network-policy" },
+    sandboxPolicy: {
+      ...snapshot,
+      repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants)!,
+    },
+  } satisfies AgentRevision;
+  assert.deepEqual(
+    openShellProtectedCodexArtifacts({
+      ...native,
+      sandboxPolicy: { ...native.sandboxPolicy, defaults: {} },
+    }),
+    {},
+  );
+  reject(native);
+});
 
 test("protected Git compilation carries the complete frozen artifact map without ambient defaults", (t) => {
   const snapshot = sandbox(t, [artifact()], [artifact().name]).admitProtectedCodexArtifactPolicy(

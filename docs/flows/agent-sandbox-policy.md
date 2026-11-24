@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-23"
-last_updated_session: "authoring-run/33927adf-1105-42ee-be57-c37d2132a624"
+updated: "2026-11-24"
+last_updated_session: "authoring-run/85d2abf4-8c31-4c42-91f0-181ae3391c03"
 ---
 
 # Agent sandbox policy flow
@@ -74,14 +74,15 @@ Legacy protected execution rejects nonempty additions at save, deploy, and
 live apply (`409 SANDBOX_POLICY_PROTECTED_EXECUTION`).
 A repository-only Proxy permits a model exception with no repositories and one ready
 Gateway static Harness Source. Managed revisions block nonempty
-edits and live apply. Protected dedicated Codex admits the Sandbox-approved
-[artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
-`checkedProtectedCodexArtifactPolicy` verifies its purpose, keys, Driver,
-version and empty additions before credential provisioning. That snapshot
-cannot be applied live. Unreadable scoped revisions report `protectedExecution: null`.
+edits and live apply. Before provisioning credentials, `checkedProtectedCodexArtifactPolicy`
+checks purpose, keys, Driver, version and empty additions for the
+[artifact snapshot](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+Live apply is unavailable. Unreadable scoped revisions report `protectedExecution: null`.
 
-Both protected Codex compilers validate revision artifacts. `openshell-codex-artifacts.ts`
-excludes ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
+For dedicated Codex v5 without saved repository policy, OCC passes the profile
+if bindings match the Proxy plan. OpenShell adds [Actions downloads](../reference/drivers/openshell-sandbox.md#github-actions-downloads)
+for `github_repository`. Both compilers use
+`openshell-codex-artifacts.ts`, excluding ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
 immutable `SandboxResourceRef.proxyWiring`. Proxy checks the map, auxiliary rule and loaded
 policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
 uses selected Namespace permissions and saved grants. Admission passes saved or deployed
@@ -268,6 +269,8 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-24 22:10: Trace Actions downloads. (authoring-run/85d2abf4-8c31-4c42-91f0-181ae3391c03 - 3922deaa26)
 
 - 2026-11-23 20:32: Trace Console API limits. (authoring-run/33927adf-1105-42ee-be57-c37d2132a624 - 7402e100f1)
 

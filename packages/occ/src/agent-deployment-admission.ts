@@ -19,6 +19,7 @@ import {
   inferenceKeyDestination,
   isSourceProviderPresetId,
   modelProviderRequestApproved,
+  repositoryGitDeliveryProfile,
   sandboxNetworkGrantsWithinCeiling,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   type Agent,
@@ -1041,7 +1042,15 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         revisionHarness,
         sandbox,
         executionAdmission,
-        repositoryCredentials !== undefined,
+        {
+          repositoryCredentials: repositoryCredentials !== undefined,
+          onlineProfile:
+            repositoryGrants === undefined &&
+            egressPlan?.repositoryGitAuthorization === "online-request" &&
+            isDeepStrictEqual(egressPlan.repositoryGit, repositoryCredentials)
+              ? repositoryGitDeliveryProfile(repositoryCredentials)
+              : undefined,
+        },
         stagedModel !== undefined,
       );
       const { sandboxPolicy, ownerUnchanged } = admitDeploymentRepositoryPolicy(

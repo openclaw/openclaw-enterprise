@@ -601,6 +601,11 @@ async function repositoryGitJourney(
   state.sandbox = sandbox.harnessResource!(context).resourceName;
   const release = new ProtectedExecutionDriver(owner);
   const wiring = await release.configure(context);
+  // Both profiles use online Git. Only the repository profile can follow
+  // the GitHub API's redirects to signed Actions log and artifact URLs.
+  const defaults = revision.sandboxPolicy!.defaults;
+  assert.equal(Object.hasOwn(defaults, "oce-egress-actions-downloads"), !narrowProfile);
+  assert.deepEqual(wiring.configuration.network_policies, defaults);
   state.policy = wiring.configuration;
   if (beforePrepare) {
     await beforePrepare({

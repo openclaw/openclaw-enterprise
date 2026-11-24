@@ -91,40 +91,42 @@ pairs. Set `cpu` or `memory` in `requests` and `limits`. Omitted keys inherit
 limits. Check scheduling before redeploying. Adoption requires an exact spec.
 Configure RuntimeClass in Kubernetes or OpenShell.
 
-Set `policy.process.runAsUser` and `runAsGroup`. The pinned OpenShell runs
-Sandbox processes as the workload identity, normally `10001:10001`.
+Set `policy.process.runAsUser` and `runAsGroup`. OpenShell uses the workload
+identity, normally `10001:10001`. Uninspected rules for `api.openai.com` conflict with provider TLS inspection.
 
-The credential provider already configures TLS inspection for `api.openai.com`.
-An uninspected rule for that host conflicts.
+Use unique policy names and nonempty executable paths. `workspace-node-enrollment`
+is reserved. `enforcement` accepts `enforce` or `audit`. Omitted `tls` enables inspection.
+`skip` disables it.
+The gateway rejects `terminate` and `passthrough`.
+OCE lowercases the optional `protocol`. Explicit `tcp` forbids `access` and
+`enforcement`. `rest`, `websocket`, `graphql` and `sql` require `access`
+(`read_only`, `read_write` or `full`). SQL requires audit enforcement. Startup
+rejects unsupported `json-rpc` and `mcp` rules.
 
-Use unique network policy names and nonempty executable paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
-and `access: read_only|read_write|full`. Omit `tls` for automatic TLS inspection;
-`tls: skip` bypasses inspection. The pinned gateway rejects explicit `terminate`
-and `passthrough`. An endpoint `protocol` is `tcp`, `rest`, `websocket`, `graphql` or
-`sql` in any case (OCE sends it lowercase), or omitted. `tcp` takes neither
-`access` nor `enforcement`; the other protocols need `access`, and `sql` allows
-only `enforcement: audit`. `json-rpc` and `mcp` need rules this setting cannot
-express, so startup refuses them. `gatewayConfigured` is the only ServiceAccount mode; the
-gateway's configured sandbox ServiceAccount applies to every Sandbox and does
-not satisfy the per-Agent production requirement below.
+Only `gatewayConfigured` is supported. Its shared Sandbox ServiceAccount cannot
+satisfy the per-Agent production requirement.
 
 ### Protected Codex artifact rules
 
-For protected, dedicated Codex repository execution, select
-[approved artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
-with `policy.codexArtifactRuleNames`, for example
-`codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
-one existing `policy.networkPolicies` rule. Omission grants no artifact access.
+Protected, dedicated Codex repository execution grants plugin downloads only through
+[`policy.codexArtifactRuleNames`](../../snippets/openshell-quickstart/plugin-network-policy.yaml).
+Each name must match exactly one `policy.networkPolicies` rule
+with bundled Codex paths, exact DNS hosts, port 443, `protocol: rest`,
+`enforcement: enforce`, `access: read_only` and omitted `tls` for inspection.
+Wildcards, IPs, GitHub repository hosts, reserved names and credential or provider
+fields are forbidden. Deploy freezes rules without Agent additions. Changes require redeployment.
 
-Selected rules require the bundled Codex executable paths, exact DNS hosts,
-port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
-Omit `tls` for verified REST TLS inspection. Admission refuses explicit skip and
-deprecated termination modes. Wildcards, numeric
-addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
+### GitHub Actions downloads
 
-Admission freezes only that qualified map with empty Agent additions. Preparation
-and replay use the revision, even if Installation defaults change. Select a new
-revision to change artifact authority. Live Agent policy apply remains unavailable.
+For protected, dedicated Codex with matching online `github-repository` bindings
+and no saved repository policy,
+`gh run view --log-failed` and `gh run download` follow signed URLs. The proxy
+keeps credentials on the API route. Private repositories require Actions read access.
+OpenShell permits `/usr/local/bin/gh` and its descendants to reach the Actions
+receiver and 140 storage hosts on TCP port 443. The CLI verifies TLS.
+OpenShell allows any method or path. URLs can authorize other repositories or writes and outlive withdrawal.
+Native Git and earlier revisions keep their rules. Upgrade all readers before
+admission, including the recovery controller. Redeploy without this profile to remove access.
 
 ### Gateway readiness and workspace
 
