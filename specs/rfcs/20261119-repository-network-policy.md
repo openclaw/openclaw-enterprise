@@ -141,7 +141,7 @@ The [bundled Codex skill](https://github.com/openclaw/openclaw-enterprise/pull/6
 
 **One permission model.** [Issue creation with repository Write access](20261123-repository-issue-creation.md) removes `scopedRest`. For native App delivery, derive routes from the approved Namespace permissions and saved Agent grant. Metadata and Contents alone keep Git-only access. Existing agents with broader permissions can gain eligible routes on their next deployment. There is no separate REST version or Agent upgrade approval.
 
-**Issue creation.** Issues write plus saved Write allows the [full issue POST](https://docs.github.com/en/rest/issues/issues#create-an-issue). The proposed [API action filter](20261123-repository-issue-creation.md#optional-api-restrictions) narrows eligible routes for one repository. Other bindings do not veto issue creation. The existing PR safeguard still applies. Eligible PRs can still convert issues.
+**Issue creation.** Issues write plus saved Write allows the [full issue POST](https://docs.github.com/en/rest/issues/issues#create-an-issue). Proposed [API limits](20261123-repository-issue-creation.md#optional-api-restrictions) narrow direct requests per repository for a Namespace or one Agent. Set `apiLimits.issues` to `read` to turn off issue creation. Other bindings do not veto issue creation. The existing PR safeguard still applies. Eligible PRs can still convert issues.
 
 **Outside this proposal.** [#7149](https://github.com/openclaw/openclaw-enterprise/pull/7149) proposes Git-only personal access tokens. PRs backed by personal or shared installation tokens need a separate decision because those credentials can cover repositories beyond the Agent’s bindings.
 
@@ -216,7 +216,7 @@ Require installed AC-1–AC-5 for Git and AC-6 for App REST v1. Keep legacy Agen
 
 - **App issues.** With A Read, B Write, C bound without a grant and shared Issues write, verify only B can create issues. Unbind C and redeploy. Verify both issue and PR creation in B. Disable issue creation on B and redeploy. Verify Git, reads and eligible PRs still work.
 - **Indirect effects.** The [earlier installed trial](https://github.com/openclaw/openclaw-enterprise/pull/6864) recorded parent links in A and C at a controlled origin. Live GitHub effects remain unverified. Inspect both sides with authorized test repositories. Hold wider rollout if A changes or C is exposed or changed.
-- **Deployment.** Verify new and existing Agents get the same routes for the same grants and permissions. Verify the opt-out on redeployment, placeholder-only access, zero OCE callbacks, unchanged routes after rotation and denied writes after downgrade.
+- **Deployment.** Verify new and existing Agents get the same routes for the same grants, limits and permissions. Verify the opt-out on redeployment, placeholder-only access, zero OCE callbacks, unchanged routes after rotation and denied writes after downgrade.
 
 <a id="alternatives-and-open-decisions"></a>
 
