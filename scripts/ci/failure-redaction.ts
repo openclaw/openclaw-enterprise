@@ -503,6 +503,23 @@ export function redactOutputLines(
   return maskPrivateKeyLines(lines).map((line) => redactOutputLine(line, secrets, root, limit));
 }
 
+// The newest whole lines of a command's output that fit in `budget` characters, each redacted as
+// a failed file's output is, with private keys masked across all of `text` first. The newest
+// line is always kept, cut after redaction when it alone is over `budget`.
+export function redactedTail(text: string, budget: number, secrets: RedactionSecrets) {
+  const kept: string[] = [];
+  let length = 0;
+  for (const line of maskPrivateKeyLines(text.trimEnd().split("\n")).reverse()) {
+    const shown = redactOutputLine(line, secrets, "", budget);
+    if (kept.length > 0 && length + shown.length > budget) {
+      break;
+    }
+    kept.push(shown);
+    length += shown.length + 1;
+  }
+  return kept.reverse().join("\n");
+}
+
 // One line of a failed file's output for the diagnostics report.
 export function redactOutputLine(
   line: string,

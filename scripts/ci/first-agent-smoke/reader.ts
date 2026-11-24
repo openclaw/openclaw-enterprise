@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import { PUBLIC_GITHUB_READ_SKILL } from "../../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
 import { installPublicGithubReadFixture } from "../../../tests/helpers/public-github-read-k3d.mjs";
+import { failureSecrets, redactedTail } from "../failure-redaction.ts";
 import { compareEvents, eventObservedTime } from "../kubernetes-event-time.ts";
 import {
   log,
@@ -734,14 +735,14 @@ export function clusterEventLines(list: { items?: readonly ClusterEvent[] | null
 
 export async function diagnostics(stack: (LocalSetup & Partial<SmokeStack>) | undefined) {
   log("collecting diagnostics");
+  const secrets = failureSecrets([process.env]);
   const attempt = async (label: string, operation: () => Promise<{ stdout: string }>) => {
     try {
       const result = await operation();
-      process.stdout.write(`----- ${label}\n${result.stdout.slice(-20_000)}\n`);
+      process.stdout.write(`----- ${label}\n${redactedTail(result.stdout, 20_000, secrets)}\n`);
     } catch (error) {
-      process.stdout.write(
-        `----- ${label} unavailable: ${(error as Error).message.slice(0, 500)}\n`,
-      );
+      const message = redactedTail((error as Error).message, 500, secrets);
+      process.stdout.write(`----- ${label} unavailable: ${message}\n`);
     }
   };
   await attempt("stand-in provider events", () =>
@@ -774,7 +775,8 @@ export async function diagnostics(stack: (LocalSetup & Partial<SmokeStack>) | un
       );
     }
     for (const [index, output] of (agent.stoppedGatewayLogs ?? []).entries()) {
-      process.stdout.write(`----- ${agent.label} stopped gateway ${index + 1} logs\n${output}\n`);
+      const shown = redactedTail(output, 20_000, secrets);
+      process.stdout.write(`----- ${agent.label} stopped gateway ${index + 1} logs\n${shown}\n`);
     }
   }
   try {
