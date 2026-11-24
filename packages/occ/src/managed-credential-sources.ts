@@ -44,6 +44,7 @@ import {
   DependencyUnavailableError,
   DriverSelectionError,
   NamespaceNotReadyError,
+  RepositorySourceCopiesUnretiredError,
   ResourceStateConflictError,
   RetryLaterError,
   ScopeViolationError,
@@ -168,7 +169,7 @@ function managedSourceConfig(
 
 interface ManagedCredentialSourceDependencies {
   readonly transactions: Pick<ControllerTransactions, "transact" | "requireIndependentMutation">;
-  readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
+  readonly authority: Pick<ControllerAuthority, "authorize" | "canRead" | "holdAuthority">;
   readonly sourceDrivers: Pick<
     CredentialSourceDrivers,
     | "credentialNamespace"
@@ -537,6 +538,27 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
   }
 
   /**
+   * The refusal names the first unretired copy whose Agent the caller may read, read after the
+   * transaction ended so no authorization call waits under its row locks. A copy whose Agent the
+   * caller cannot read (or an IAM outage) is only counted.
+   */
+  async function namedUnretiredCopies(
+    principalId: string,
+    namespaceId: string,
+    error: RepositorySourceCopiesUnretiredError,
+  ): Promise<RepositorySourceCopiesUnretiredError> {
+    for (const copy of error.copies.slice(0, 3)) {
+      const readable = await dependencies.authority
+        .canRead(principalId, { kind: "agent", id: copy.agentId, namespaceId })
+        .catch(() => false);
+      if (readable) {
+        return new RepositorySourceCopiesUnretiredError(error.copies, copy);
+      }
+    }
+    return error;
+  }
+
+  /**
    * Deletion is caller-retried: the record stays `deleting` until its recorded owner confirms
    * material removal. It keeps the Namespace nonempty and blocks new bindings in the meantime.
    */
@@ -554,8 +576,8 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       "Credential source registration and deletion",
     );
     namespaceIdentity(namespaceId);
-    const { namespace, source, gateway } = await dependencies.transactions.transact(
-      async (state) => {
+    const { namespace, source, gateway } = await dependencies.transactions
+      .transact(async (state) => {
         const locked =
           connection === pendingConnection
             ? await lockNamespace(state, namespaceId)
@@ -601,6 +623,15 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
             "The repository registry selects this credential source for a Namespace registration. Remove it from the registry and restart the controller and Worker, then delete it.",
           );
         }
+        // Read under the Namespace and Source row locks this transaction already holds: a deploy
+        // records its copy under the same Source lock, and the Worker only retires copies.
+        const unretired = await state.credentialSources.findUnretiredRepositorySourceCopies(
+          locked.id,
+          found.id,
+        );
+        if (unretired.length > 0) {
+          throw new RepositorySourceCopiesUnretiredError(unretired);
+        }
         const blocking = await state.credentialSources.findBlockingReference(locked.id, found.id);
         if (blocking === "reference") {
           throw new ResourceStateConflictError(
@@ -639,8 +670,12 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           source: deleting,
           gateway: owner?.kind === "gateway" ? owner.driver : undefined,
         };
-      },
-    );
+      })
+      .catch(async (error: unknown) => {
+        throw error instanceof RepositorySourceCopiesUnretiredError
+          ? await namedUnretiredCopies(principalId, namespaceId, error)
+          : error;
+      });
     if (isManagedTokenServiceSource(source)) {
       const owner = ownedTokenServiceDriver(source.tokenServiceInstanceId);
       const identity = {

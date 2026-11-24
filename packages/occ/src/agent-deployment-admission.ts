@@ -934,6 +934,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         );
       const admittedRepository = admitRepository();
       const repositorySourceId = admittedRepository?.credentialSource;
+      let repositorySource: { readonly tokenServiceInstanceId: string } | undefined;
       if (repositorySourceId !== undefined) {
         // A Source credential is scoped only by the saved network policy: without one there is
         // nothing to enforce, and the App's online path must never serve it.
@@ -943,7 +944,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
             [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
           );
         }
-        await dependencies.credentialAccess.admitRepositoryCredentialSource(
+        repositorySource = await dependencies.credentialAccess.admitRepositoryCredentialSource(
           state,
           principalId,
           lockedAgent,
@@ -1196,6 +1197,17 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       }
       assertProvidersCurrent();
       const revision = await state.revisions.createRevision(candidate, first?.digest);
+      if (repositorySourceId !== undefined && repositorySource !== undefined) {
+        // Recorded before the deployment is queued, under the Source row lock the admission took:
+        // Source deletion then sees this pending deployment as a copy it must wait for.
+        await state.credentialSources.recordRepositorySourceCopy({
+          namespaceId: namespace.id,
+          credentialSourceId: repositorySourceId,
+          tokenServiceInstanceId: repositorySource.tokenServiceInstanceId,
+          agentId: lockedAgent.id,
+          revisionId: revision.id,
+        });
+      }
       if (
         lockedAgent.activeRevisionId &&
         (lockedAgent.desiredRuntimeState === "stopped" ||

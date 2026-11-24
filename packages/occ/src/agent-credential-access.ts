@@ -293,7 +293,7 @@ export function createAgentCredentialAccess({
     agent: Readonly<Agent>,
     sourceId: string,
     grants: readonly RepositoryNetworkGrant[] | undefined,
-  ): Promise<void> {
+  ): Promise<{ readonly tokenServiceInstanceId: string }> {
     const ref = {
       kind: "credential_source",
       namespaceId: agent.namespaceId,
@@ -303,6 +303,7 @@ export function createAgentCredentialAccess({
     await authorizeSourceOperate(principalId, agent.namespaceId, sourceId);
     const source = await state.credentialSources.lockCredentialSource(agent.namespaceId, sourceId);
     let ceiling: RepositoryNetworkPolicyCeiling | undefined;
+    let tokenServiceInstanceId: string | undefined;
     if (
       isManagedTokenServiceSource(source) &&
       source.state === "ready" &&
@@ -312,17 +313,19 @@ export function createAgentCredentialAccess({
       try {
         requireTokenServiceOwner(source.tokenServiceInstanceId);
         ceiling = readSourceRepositoryCeiling(source.config[SOURCE_REPOSITORIES_CONFIG_KEY] ?? "");
+        tokenServiceInstanceId = source.tokenServiceInstanceId;
       } catch {
         ceiling = undefined;
       }
     }
-    if (ceiling === undefined) {
+    if (ceiling === undefined || tokenServiceInstanceId === undefined) {
       throw new ResourceStateConflictError(
         "The repository registration selects a credential source that is not a ready github source of this Namespace and its TokenService. Ask an operator to check the source and the repository registry.",
       );
     }
     await authority.authorizeAgentPrincipal(principalId, agent, "operate", ref);
     assertSourceRepositoryGrants(grants, ceiling);
+    return { tokenServiceInstanceId };
   }
 
   /** Returns the AccessBindings it created; existing exact grants are kept. */

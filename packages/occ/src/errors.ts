@@ -1484,6 +1484,46 @@ export class CredentialWithdrawalInProgressError extends ResourceStateConflictEr
 }
 
 /**
+ * A repository token Source keeps its value while a native Git Provider copy of it may still be
+ * installed: the Worker confirms each copy retired only after it reads back that the Provider is
+ * gone, which needs the revision's Sandbox to be gone and its Gateway to answer.
+ */
+export class RepositorySourceCopiesUnretiredError extends ResourceStateConflictError {
+  readonly unretired: number;
+  /** Every unretired copy, for the caller-visible answer built after the transaction ends. */
+  readonly copies: readonly Readonly<UnretiredRepositorySourceCopy>[];
+  /**
+   * `named` is a copy whose Agent the caller may read; its retained reason (when the Worker
+   * recorded one) says whether a Sandbox still attaches the Provider or the Gateway did not
+   * answer. The message never names a Provider or carries a value, and fits the 256-character
+   * API message cap for any count up to 99999.
+   */
+  constructor(
+    copies: readonly Readonly<UnretiredRepositorySourceCopy>[],
+    named?: Readonly<UnretiredRepositorySourceCopy>,
+  ) {
+    const unretired = copies.length;
+    const one = unretired === 1;
+    super(
+      named
+        ? `${unretired} Source ${one ? "copy" : "copies"} unretired (unretired_repository_source_copy): ${named.agentId}/${named.revisionId}${named.retirementBlocked ? ` (${named.retirementBlocked})` : ""}${one ? "" : ` +${unretired - 1}`}. Stop or redeploy its ${one ? "Agent" : "Agents"} without it; the Worker retries every few minutes.`
+        : `${unretired} native Git ${one ? "copy" : "copies"} of this credential source ${one ? "is" : "are"} not confirmed retired (unretired_repository_source_copy). Stop or redeploy without the source each Agent that uses it; the Worker rechecks each copy every few minutes.`,
+    );
+    this.unretired = unretired;
+    this.copies = copies;
+    this.name = "RepositorySourceCopiesUnretiredError";
+  }
+}
+
+/** An unretired repository Source copy as Source deletion reports it; never a Provider name. */
+export interface UnretiredRepositorySourceCopy {
+  readonly agentId: string;
+  readonly revisionId: string;
+  /** Why the Worker's last attempt kept it: `provider_present` or `gateway_unavailable`. */
+  readonly retirementBlocked?: string;
+}
+
+/**
  * Source deletion is refused only because a provider token issued for the source may still be
  * valid: an issue or revocation whose outcome was lost. It settles once the provider's maximum
  * token lifetime has passed, never earlier. A retry repeats only the safe withdrawal.

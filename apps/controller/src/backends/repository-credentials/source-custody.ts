@@ -165,7 +165,21 @@ export function createRepositorySourceCustody(options: {
               },
             }),
         };
-        return { source, hold };
+        // The record the deployment wrote in its admitting transaction (0093); the Worker
+        // retires it only after reading back that the revision's Provider is gone.
+        const recorded = async (revisionId: string) => {
+          if (!hold.held()) {
+            throw new Error("The repository token Source is no longer held.");
+          }
+          const copies = await client.query(
+            `SELECT 1 FROM occ.repository_source_copies
+             WHERE revision_id = $1 AND namespace_id = $2 AND credential_source_id = $3
+               AND retired_at IS NULL`,
+            [revisionId, namespaceId, sourceId],
+          );
+          return copies.rows.length === 1;
+        };
+        return { source, hold, recorded };
       } catch (error) {
         if (!returned) {
           await client.query("ROLLBACK").catch(() => {});

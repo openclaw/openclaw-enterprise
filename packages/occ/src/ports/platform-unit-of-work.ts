@@ -165,6 +165,8 @@ export function bindPlatformUnitOfWork(
       "deleteCredentialSource",
       "hasReferences",
       "findBlockingReference",
+      "recordRepositorySourceCopy",
+      "findUnretiredRepositorySourceCopies",
       "requestCredentialWithdrawal",
       "reassignCredentialWithdrawal",
       "recordCredentialWithdrawalAttempt",

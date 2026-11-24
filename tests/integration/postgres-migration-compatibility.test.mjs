@@ -1499,6 +1499,7 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
+      [92, "preRepositorySourceCopies"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1956,6 +1957,7 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
+      [92, "preRepositorySourceCopies"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2520,6 +2522,7 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
+      [92, "preRepositorySourceCopies"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2819,6 +2822,7 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
+      [92, "preRepositorySourceCopies"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2843,10 +2847,12 @@ test(
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         // Prefix 86 reaches 0087's admission-column ALTER TABLE without a later GRANT.
+        // 0093 aborts at its final-retirement trigger, after its table and function exist.
         const rollbackTag =
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [92, "CREATE TRIGGER"],
                 [91, "ALTER TABLE"],
                 [90, "ALTER TABLE"],
                 [89, "CREATE FUNCTION"],

@@ -446,3 +446,84 @@ export async function refuseInvalidBackendIds(): Promise<void> {
     );
   }
 }
+
+/**
+ * The repository Source copy record without a Worker: a copy counts as retired once the
+ * PostgreSQL Worker's idle rule holds, so a Source deployed once can be deleted here as well.
+ */
+export async function retireRepositorySourceCopies(): Promise<void> {
+  const store = new InMemoryPlatformState();
+  const { namespace, agent, revision } = await seedSessionRevision(store);
+  const source = {
+    id: `cs_${randomUUID()}`,
+    namespaceId: namespace.id,
+    name: "repository-token",
+    type: "registry",
+    config: { host: "registry.example.com" },
+    secrets: {},
+    ownerCapability: "credential_gateway",
+    driverId: "credential-gateway-test",
+    state: "ready",
+    createdAt: "2030-03-17T17:46:40.000Z",
+  } as const;
+  const actorId = `prn_${randomUUID()}`;
+  const stoppedRevision = `rev_${randomUUID()}`;
+  await store.transact(async (unit) => {
+    await unit.credentialSources.createCredentialSource(source);
+    for (const revisionId of [revision.id, stoppedRevision]) {
+      await unit.credentialSources.recordRepositorySourceCopy({
+        namespaceId: namespace.id,
+        credentialSourceId: source.id,
+        tokenServiceInstanceId: "tsi-a",
+        agentId: agent.id,
+        revisionId,
+      });
+    }
+    // The deployment of the first revision is queued; the second's never was (it ended).
+    await unit.operations.append({
+      kind: "agent_revision",
+      action: "reconcile",
+      namespaceId: namespace.id,
+      resourceId: revision.id,
+      actorId,
+    });
+  });
+  const unretired = () =>
+    store.transact(async (unit) =>
+      (
+        await unit.credentialSources.findUnretiredRepositorySourceCopies(namespace.id, source.id)
+      ).map(({ revisionId }) => revisionId),
+    );
+  // Pending work keeps a copy; a revision with no work that its Agent does not run is idle.
+  assert.deepEqual(await unretired(), [revision.id]);
+
+  // Stop, then Delete: memory never runs the work, so the copy retires with its Agent.
+  await store.transact(async (unit) => {
+    await unit.agents.transitionAgentDesiredRuntimeState(
+      namespace.id,
+      agent.id,
+      ["running", "stopped"],
+      "stopped",
+    );
+    assert.ok(
+      await unit.agents.transitionAgentStatus(namespace.id, agent.id, "active", "deleting"),
+    );
+    await unit.operations.append({
+      kind: "agent",
+      action: "reconcile",
+      target: "deleted",
+      namespaceId: namespace.id,
+      resourceId: agent.id,
+      actorId,
+    });
+  });
+  assert.deepEqual(await unretired(), [revision.id], "stopped with its work still queued");
+  assert.equal(await store.completeAgentDeletion(namespace.id, agent.id), true);
+  assert.deepEqual(await unretired(), []);
+  assert.equal(
+    await store.transact((unit) =>
+      unit.credentialSources.deleteCredentialSource(namespace.id, source.id),
+    ),
+    true,
+  );
+}

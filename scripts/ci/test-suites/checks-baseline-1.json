@@ -158,6 +158,7 @@
     "tests/conformance/openshell-prepared-git-provider.test.ts",
     "tests/conformance/repository-source-loan.test.ts",
     "tests/conformance/repository-source-custody.test.ts",
+    "tests/conformance/repository-source-copy-retirement.test.ts",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
@@ -1062,6 +1063,15 @@
         "a Source hold ends when its session is lost, and confirms only on a live session",
         "a Source hold is over at its limit even before its timer runs",
         "a Source lock reports an ended lock wait apart from other failures"
+      ]
+    },
+    {
+      "path": "tests/conformance/repository-source-copy-retirement.test.ts",
+      "expectedTests": [
+        "a recorded copy is retired only after the Workspace no longer lists its Provider",
+        "a copy whose Gateway does not answer stays unretired until a later pass reads it back",
+        "a revision without a recorded copy calls no Gateway, as for an App-backed revision",
+        "at Worker start the record, not the registry, names the copies to retire"
       ]
     },
     {

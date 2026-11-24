@@ -4,6 +4,7 @@ import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type pg from "pg";
 import { createRepositorySourceCustody } from "../../apps/controller/src/backends/repository-credentials/source-custody.ts";
+import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import type { MaterialWriteHold } from "../../apps/controller/src/drivers/repo/access/material-hold.ts";
 import { PreparedGitHubPostgres } from "../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
@@ -395,5 +396,49 @@ test(
       await custody.admitted({ ...session, revisionId: `rev_${randomUUID()}` }),
       undefined,
     );
+  },
+);
+
+test(
+  "a Source lock lends only for a revision whose installed copy is recorded and not retired",
+  { ...requiresPostgres, timeout: caseTimeoutMs },
+  async (t) => {
+    const f = await fixture(t);
+    const custody = f.custody();
+    const unrecorded = await custody.lock(f.ref);
+    assert.ok(unrecorded?.source);
+    // No row: a revision deployed without its record (none exists on a released version).
+    assert.equal(await unrecorded.recorded(f.revisionId), false);
+    await unrecorded.hold.release();
+    await assert.rejects(unrecorded.recorded(f.revisionId), /no longer held/);
+
+    await f.state.transact((unit) =>
+      unit.credentialSources.recordRepositorySourceCopy({
+        namespaceId: f.ref.namespaceId,
+        credentialSourceId: f.ref.sourceId,
+        tokenServiceInstanceId: f.instanceRef.tokenServiceInstanceId,
+        agentId: f.agentId,
+        revisionId: f.revisionId,
+      }),
+    );
+    const recorded = await custody.lock(f.ref);
+    assert.ok(recorded);
+    assert.equal(await recorded.recorded(f.revisionId), true);
+    assert.equal(await recorded.recorded(`rev_${randomUUID()}`), false, "another revision");
+    await recorded.hold.release();
+    const otherSource = await custody.lock({ ...f.ref, sourceId: "cs_missing" });
+    assert.ok(otherSource);
+    assert.equal(await otherSource.recorded(f.revisionId), false, "another Source");
+    await otherSource.hold.release();
+
+    // Retired after the read-back: the revision is never lent the value again.
+    assert.equal(
+      await new PostgresOpenShellGitRouteStore(f.pool).retireSourceCopy(f.revisionId),
+      true,
+    );
+    const retired = await custody.lock(f.ref);
+    assert.ok(retired);
+    assert.equal(await retired.recorded(f.revisionId), false);
+    await retired.hold.release();
   },
 );

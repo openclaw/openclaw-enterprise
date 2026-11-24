@@ -1151,7 +1151,14 @@ export function preparedGitProviderForRevision(
 
 /** Also finds artifacts left after a lost create/delete reply, without resolving live policy. */
 export async function deleteRetiredGitProviders(
-  client: OpenShellGatewayClient,
+  client: Pick<
+    OpenShellGatewayClient,
+    | "listProviders"
+    | "deleteProvider"
+    | "getProviderProfile"
+    | "listProviderProfiles"
+    | "deleteProviderProfile"
+  >,
   workspace: string,
   revisionId: string,
   signal: AbortSignal,

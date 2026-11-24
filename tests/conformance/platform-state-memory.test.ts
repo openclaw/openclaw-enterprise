@@ -5,6 +5,7 @@ import {
   isolateRevisionHistory,
   refuseGrantsAfterDeletion,
   refuseInvalidBackendIds,
+  retireRepositorySourceCopies,
 } from "./platform-state-memory-cases.ts";
 import { verifyPlatformStateStoreContract } from "./platform-state-store.contract.ts";
 
@@ -26,4 +27,8 @@ test(
 test(
   "memory state refuses an Agent backendId outside the API's Backend ID rule",
   refuseInvalidBackendIds,
+);
+test(
+  "memory state retires a repository Source copy by the Worker's idle rule, so its Source can be deleted",
+  retireRepositorySourceCopies,
 );
