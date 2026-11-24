@@ -200,6 +200,7 @@ export function secretsScenarios({
         "The inspector says “This Secret is referenced.” The readable Agent keeps its link. A previously listed Agent shows no identity or link and asks you to reopen the Secret to check again. The hidden count and incomplete-list warning remain.",
       steps: [
         "Tab to Delete Secret. It looks unavailable and its accessible description is “This Secret is referenced.” Inspecting usage does not ask you to remove references.",
+        "In the standalone preview, close the inspector and search for sec_demo_model. Reopen the result, then follow Research assistant under Consumers. Use the keyboard shortcut for browser Back. The filter remains and the inspector stays closed. After revalidation, focus returns to the Secret row if it is still visible. Press Enter to reopen it.",
       ],
     },
     secretsReadOnly: {

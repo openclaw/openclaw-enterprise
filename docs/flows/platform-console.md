@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-11-22
-last_updated_session: authoring-run/7befa996-8a20-4b54-9c7c-5d7d18dd0095
+updated: 2026-11-24
+last_updated_session: authoring-run/98a91bb0-a61e-44aa-99a8-48df79e1e388
 ---
 
 # Platform console request flow
@@ -200,24 +200,24 @@ returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
 [`secrets.mts:renderSecrets`](../guides/console/secrets.md) lists metadata.
-Actions follow reads of the selected Secret's `consumers` and advisory `callerPermissions`.
-Only readable Agents show names. References disable Delete. The server rechecks.
+Actions read `consumers` and advisory `callerPermissions`. Only readable Agents
+show names. References disable Delete. The server rechecks.
 `console.mts:takeLinkedSecret` retains linked IDs until shown. Creation and
-replacement require Namespace readiness. Writes use the tracked client and Secret API.
+replacement require Namespace readiness. Tracked writes use the Secret API.
 
-After revalidation or Back, `console.mts:loadPage` restores Namespaces and
-Secrets searches within their session and scope. Both filter readable names
-and IDs locally. `focusInShownView` restores the text selection or row focus by ID unless
-the reader moved focus. Missing Secrets return focus to search. Back reveals
-the opened Namespace. **Refresh** clears search.
+After revalidation or Back, `console.mts:loadPage` restores scoped, session-owned
+Namespace and Secret searches, filtering readable names and IDs locally.
+`focusInShownView` restores selection or row focus by ID unless focus moved.
+Missing Secrets refocus search. Back reveals the opened Namespace. Back from an
+Agent consumer revalidates, restores scroll, and focuses the visible Secret row
+by key (Credentials heading if absent), unless focus moved. **Refresh** clears search.
 
-`secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
-and clears it after the request, dismissal, or view retention
-(`console.mjs:clearPasswordInputs`). Pending requests block navigation and
-dismissal. A denied write disables submission; an unconfirmed write cannot be
-replayed from that dialog. `secrets.mjs:confirmDelete` offers an explicit exact
-status read after an uncertain delete; a denial never confirms removal.
-Replacement hands delivery to explicit Agent deployment or CredentialSource
+`secrets.mts:editValue` masks input, preserves whitespace (CRLF to LF), and
+clears input after request, dismissal, or retention (`console.mts:clearPasswordInputs`).
+Pending requests block navigation and dismissal. Denial disables submission.
+The dialog cannot replay unconfirmed writes. `secrets.mts:confirmDelete` offers
+an exact status read after uncertain deletion. Denial never confirms removal.
+Replacement requires explicit Agent deployment or CredentialSource
 update under the [Secret delivery contract](../reference/drivers/kubernetes-secret.md#update-and-redeploy).
 
 [`namespaces.mts:renderNamespaces`](../guides/console/create-namespace.md) validates names.
@@ -377,6 +377,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 10:55: Trace Secret consumer return. (authoring-run/98a91bb0-a61e-44aa-99a8-48df79e1e388 - acd247bba5b03788840efc5f0d1dda7b7fe0c63d)
 
 - 2026-11-22 11:39: Trace Namespace cleanup and keyboard focus. (authoring-run/7befa996-8a20-4b54-9c7c-5d7d18dd0095 - 5768ebdac724be812904dba59ae1c31f749f6bec)
 

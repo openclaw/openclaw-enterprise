@@ -795,20 +795,50 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     {},
     { harnessAuth: { method: "api_key", source: secret.ref } },
   );
+  // Keep several readable matches in the library so Back has a real scroll position to restore.
+  for (let index = 1; index <= 8; index += 1) {
+    await fixture.createSecret(namespace.id, `Shared key ${index}`, "synthetic-library-value");
+  }
+  await page.setViewportSize({ width: 640, height: 600 });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page
+    .locator(settledView)
+    .getByRole("button", { name: "Shared key 8", exact: true })
+    .waitFor();
+
   const requests = apiRequests(page, fixture.origin);
+  const query = "Shared";
+  const search = page.getByRole("searchbox", { name: "Search Secrets" });
+  const shared = page.getByRole("button", { name: "Shared model", exact: true });
+  const heading = page.getByRole("heading", { name: "Credentials", level: 1 });
+  const intersectsViewport = (locator: Locator) =>
+    locator.evaluate((node) => {
+      const { top, bottom } = node.getBoundingClientRect();
+      return top < globalThis.innerHeight && bottom > 0;
+    });
+  await search.fill(query);
+  await shared.focus();
+  await shared.evaluate((row) => row.scrollIntoView({ block: "end" }));
+  const libraryScroll = await page.evaluate(() => globalThis.scrollY);
+  assert.equal(
+    await intersectsViewport(heading),
+    false,
+    "the library is scrolled past its heading",
+  );
   const detailRead = responseTo(
     page,
     "GET",
     `${fixture.origin}${secretPath(namespace)}/${secret.id}`,
   );
-  await page.getByRole("button", { name: "Shared model", exact: true }).click();
+  await shared.press("Enter");
   const detailResponse = await detailRead;
   assert.equal(detailResponse.status(), 200);
   const { data: opened }: SecretDetailResponse = await detailResponse.json();
   assert.equal(opened.callerPermissions?.delete, true);
   const detail = dialog(page, "Shared model");
   // Consumers name the Agent, its ID beside it (finding D761).
-  await detail.getByRole("link", { name: agent.name, exact: true }).waitFor();
+  const consumer = detail.getByRole("link", { name: agent.name, exact: true });
+  await consumer.waitFor();
   await detail.getByText(agent.id, { exact: true }).waitFor();
   // A keyboard reader reaches the blocked Delete Secret and hears why (finding 2925).
   await expectReachableReason(
@@ -817,21 +847,69 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     SECRET_REFERENCED,
   );
   assert.doesNotMatch(await detail.innerText(), /remove .*references|remove them/i);
+  const openConsumer = async () => {
+    await consumer.press("Enter");
+    await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
+    await page.getByRole("heading", { name: agent.name, exact: true }).waitFor();
+    await page.locator(settledView).waitFor();
+  };
+  const returnToLibrary = async () => {
+    await page.goBack();
+    await page.waitForURL(`**${secretsUrl(namespace)}`);
+    await page.locator(settledView).getByRole("searchbox", { name: "Search Secrets" }).waitFor();
+    assert.equal(await search.inputValue(), query);
+    assert.equal(await detail.count(), 0, "Back leaves the Secret inspector closed");
+  };
+
+  await openConsumer();
+  await returnToLibrary();
+  assert.equal(await hasFocus(shared), true, "Back focuses the originating Secret row");
+  assert.equal(await shared.evaluate((row) => row.matches(":focus-visible")), true);
+  assert.equal(await page.evaluate(() => globalThis.scrollY), libraryScroll);
+
+  // Another session adds matches before the originating row while the reader is away.
+  await page.keyboard.press("Enter");
+  await openConsumer();
+  await fixture.createSecret(namespace.id, "Shared backup 1", "synthetic-library-value");
+  await fixture.createSecret(namespace.id, "Shared backup 2", "synthetic-library-value");
+  await returnToLibrary();
+  assert.equal(await hasFocus(shared), true);
+  assert.equal(await intersectsViewport(shared), true, "Back reveals the shifted row");
+  assert.equal(
+    await shared.evaluate(
+      (row, oldScroll) =>
+        row.getBoundingClientRect().top + globalThis.scrollY >= oldScroll + globalThis.innerHeight,
+      libraryScroll,
+    ),
+    true,
+    "the old scroll offset would leave the row below the viewport",
+  );
+
+  // The same return has no row to focus when the real list withdraws access while away.
+  await page.keyboard.press("Enter");
+  await openConsumer();
+  const revoked = restrict(fixture.policy, "read", "secret", {
+    namespaceId: namespace.id,
+    resourceId: secret.id,
+  });
+  await returnToLibrary();
+  assert.equal(await shared.count(), 0);
+  assert.equal(await page.getByRole("list", { name: "Secrets" }).getByRole("button").count(), 10);
+  assert.equal(await hasFocus(heading), true);
+  assert.equal(await intersectsViewport(heading), true, "Back reveals the fallback heading");
+  liftRestriction(fixture.policy, revoked);
   assert.ok(
     requests.every((request) => request.method === "GET"),
-    "inspection must be read-only",
+    "inspection and navigation must be read-only",
   );
-  await detail.getByRole("link", { name: agent.name, exact: true }).click();
-  await page.waitForURL(new RegExp(`/console/agents/${agent.id}`));
-  await page.getByRole("heading", { name: "Shared model consumer", exact: true }).waitFor();
 
   // Clear the Agent draft reference through its supported API before deleting the Secret.
   const unbound = await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
     body: { configurationId: agent.configurationId, harnessAuth: null } satisfies UpdateAgentBody,
   });
   assert.equal(unbound.status, 200);
-  await page.getByRole("link", { name: "Credentials", exact: true }).click();
-  await page.getByRole("button", { name: "Shared model", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await shared.click();
   await dialog(page, "Shared model")
     .getByRole("button", { name: "Delete Secret", exact: true })
     .click();
