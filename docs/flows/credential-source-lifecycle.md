@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-24
-last_updated_session: authoring-run/71b868ab-4583-4018-8755-568a186c1c69
+last_updated_session: authoring-run/2270a9df-5f0f-4c15-b5e2-1f37520233e3
 ---
 
 # Credential source lifecycle flow
@@ -75,7 +75,7 @@ Compute creates and records an idle Sandbox, with the model credential route wit
 
 The OpenShell Proxy creates or reuses a Provider for each credential projection. Two bindings can use the same Source with different environments and disjoint endpoint paths. Worker resolves each Source at most once when Proxy needs material to create its delivery copies. Existing Providers are attached without renewal. The Harness receives a fresh Sandbox placeholder for each binding. Failed attachment triggers cleanup of the prepared copies. OpenShell refuses to delete a Provider still attached to another Sandbox.
 
-Sandbox compiles the HTTP routes from the frozen bindings and injection policies. It checks for overlap with credential-free routes and refuses broad Plugin network grants it cannot preserve. A sole model route keeps the established endpoint shape for recovery. Compute checks that the Harness can launch with its selected authentication method and waits for Sandbox policy and Proxy readiness before preparing launch. The ordinary Agent workflow still needs Plugin admission and pinned Template authority. The [status table](../reference/credential-sources.md#implementation-status) records the current limits.
+Sandbox compiles HTTP and managed MCP routes from the frozen bindings and injection policies. Managed MCP uses exact RPC and selected tool rules at the reviewed endpoint. Sandbox checks for overlap with credential-free routes and refuses broad Plugin network grants it cannot preserve. The [Proxy Driver reference](../reference/drivers/credential-proxy.md) records the accepted temporary MCP exceptions. A sole model route keeps the established endpoint shape for recovery. Compute checks that the Harness can launch with its selected authentication method and waits for Sandbox policy and Proxy readiness before preparing launch. The ordinary Agent workflow still needs Plugin admission and pinned Template authority. The [status table](../reference/credential-sources.md#implementation-status) records the current limits.
 
 ### 4. Activate and stop the Agent
 
@@ -141,6 +141,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 09:12: Describe managed MCP compilation from frozen bindings and its enforcement limits. (authoring-run/2270a9df-5f0f-4c15-b5e2-1f37520233e3 - 7bba27408a4ae30c1f7066b7d250b24ec0b36dd0)
 
 - 2026-11-24 00:18: Describe per-binding delivery and Source-wide rotation and retirement. (authoring-run/71b868ab-4583-4018-8755-568a186c1c69 - 9ee73bafa34d54d0081e3fe1437c0f302ec1821f)
 

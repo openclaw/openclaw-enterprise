@@ -1,10 +1,14 @@
 import { DriverConfigurationDescriptorSchema } from "./driver-configurations.ts";
 import { Type } from "typebox";
-import { AgentId, NamespaceId, RevisionId, Meta } from "./common.ts";
 import {
-  maxRepositoryNetworkGrants,
-  repositoryNetworkGrantPattern,
-} from "../repository-network-policy.ts";
+  AgentId,
+  NamespaceId,
+  RevisionId,
+  Meta,
+  SandboxPolicyVersion,
+  RepositoryNetworkGrantSchema,
+} from "./common.ts";
+import { maxRepositoryNetworkGrants } from "../repository-network-policy.ts";
 import { SandboxNetworkGrantSchema, SandboxNetworkGrantsSchema } from "../sandbox-policy.ts";
 
 export const SandboxPolicyParams = Type.Object(
@@ -24,19 +28,6 @@ export const SandboxPolicyRevisionParams = Type.Object(
   { additionalProperties: false },
 );
 
-const RepositoryNetworkGrantSchema = Type.Object(
-  {
-    repository: Type.String({
-      pattern: repositoryNetworkGrantPattern.source,
-      description: "Canonical lowercase GitHub owner/name without a .git suffix.",
-      not: { type: "string", pattern: "\\.git$|\\s" },
-    }),
-    access: Type.Union([Type.Literal("read"), Type.Literal("write")]),
-  },
-  { additionalProperties: false },
-);
-
-export const SandboxPolicyVersion = Type.Integer({ minimum: 1, maximum: 2147483647 });
 export const SandboxPolicyApplicationSchema = Type.Object(
   {
     id: Type.String({ format: "uuid" }),
