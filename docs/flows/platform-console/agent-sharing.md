@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-09-28
-last_updated_session: authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a
+updated: 2026-11-24
+last_updated_session: authoring-run/35799ac1-4172-470c-8e06-b9f9023a37ab
 ---
 
 # Console Agent sharing and removal
@@ -54,16 +54,17 @@ answer already showed the person lacks Installation administration: the policy
 endpoints require it and the API audits each denial. The panel reads the selected Namespace's existing
 `/iam/roles` and `/iam/access-bindings` endpoints, one list at a time, so a
 person whose administration ended after the page loaded gets one audited `403`.
-A policy `403` hides the
-panel and the tab, opens Configuration, and leaves the other panels usable; a current `401` retains global
-session expiry. The panel is built once per page. A return to the tab reads the
-policy again, with the controls disabled, so a `403` after
-administration ends takes the same path. **Refresh sharing** first rereads the
-Agent's and the Namespace's permission answers, which are not audited. Agent
-detail follows the Agent answer. When the console already settled that the
-person lacks Installation administration, the policy is read again only if the
-Namespace answer reports it, so administration granted again applies without a
-page reload; otherwise the tab gives way to Configuration with no audited read.
+On panel load, a policy `403` hides **Access**. Agent detail opens
+**Configuration** only if the page is current, **Access** is still selected
+and deletion is not underway. A current `401` expires the session.
+
+The panel is built once per page. Returning to a healthy panel reloads
+policy with the controls disabled. **Refresh sharing** checks Agent
+permissions and rechecks a remembered denial of Installation administration
+through Namespace permissions. These permission checks are unaudited. If
+administration is restored, the panel can read policy without a page reload.
+If the denial stands, it hides **Access** under the same navigation rules
+without another audited policy read.
 
 ### 2. Serialize Role and binding writes
 
@@ -72,12 +73,17 @@ page reload; otherwise the tab gives way to Configuration with no audited read.
 Submission rereads policy, finds or creates an immutable Role by exact Namespace
 and permissions, then binds Namespace read to the exact Namespace. Only after
 that response does it find or create the exact Agent read/administer Role and
-bind it to the selected Agent. The panel rejects a subject that is not a `prn_`
-Principal ID, such as an email, before any request, and reports a `404` during a
-share as an unknown Principal ID. The server validates the supplied subject and
-resource on each write. Confirmed progress survives later failure; unknown
-results disable mutations until an explicit current-policy refresh. Readback is
-configuration evidence, not a historical receipt, and never triggers a write.
+bind it to the selected Agent. The panel rejects an invalid Principal ID,
+including an email address, before submission. OCC validates the subject and
+target when creating an AccessBinding. During a share write, a `404` or a
+`400` naming `/subjectId` or `/resourceId` reports that the Principal cannot receive
+access here or the Agent is unavailable. The message cannot distinguish them.
+
+If a policy reread or write fails during sharing or removal, even with
+`403`, the panel shows an error and retains confirmed progress. Returning
+to the tab does not clear the error. **Refresh sharing** must succeed before
+another change. Refresh shows current grants without proving an earlier
+request's outcome or replaying a write.
 
 ### 3. Hold the page while writes run
 
@@ -91,9 +97,10 @@ selector, Back and Forward, the header's Refresh, and the page's own reloads. Th
 page shows "This page stays open until sharing finishes." Tabs still switch. After
 Delete replaces the page with its deletion row, a write still in flight holds the
 page and its note shows above that row. The page's `setWriteInFlight` check, which
-also covers a draft's writes, makes `beforeunload` in `console.mjs` ask before a
-reload or tab close. The hold ends when the last request settles. At worst that is
-five requests of up to 15 s each, about 75 s. Session expiry and sign-out still leave.
+also covers a draft's writes, makes `beforeunload` in `console.mts` ask before a
+reload or tab close. The hold ends when the operation settles. A share can
+make two policy reads and up to four writes. Each request has a 15-second
+timeout. Session expiry and sign-out still leave.
 
 ### 4. Remove one explicit binding
 
@@ -105,8 +112,9 @@ The panel retains discovery grants and explains other possible access sources.
 
 ## Debugging and Verification
 
-- A `403` on the policy reads hides only the Access tab; check Installation
-  administration before treating a missing panel as a console fault.
+- If **Access** disappears when loading or refreshing policy, check
+  Installation administration. For a denial during sharing or removal,
+  select **Refresh sharing**.
 - After an uncertain write, select **Refresh sharing** and inspect the direct
   grants before submitting again. A present binding does not prove an earlier
   request's outcome.
@@ -125,6 +133,8 @@ The panel retains discovery grants and explains other possible access sources.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 07:47: Correct sharing errors, recovery and request timing. (authoring-run/35799ac1-4172-470c-8e06-b9f9023a37ab - 2105bdcb059a49741f883566dc4e847b0161f489)
 
 - 2026-09-28 01:39: Move the sharing trace out of the parent and editing flows to keep them within the length limit. (authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a - 4f32ebbca5d699296a142dfbd34c8ec46844fce7)
 

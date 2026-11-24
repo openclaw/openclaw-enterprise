@@ -15,17 +15,17 @@ If the Console says it could not load, click **Reload page** to try the same
 address again. If it stays on the loading screen without that button, use your
 browser's Reload command. The Console does not automatically reload the page.
 
-For [external sign-in](authentication/external-sign-in.md), select **Continue with Google**
+[Sign in externally](authentication/external-sign-in.md) with **Continue with Google**
 or your OpenID Connect provider’s **Continue with** button.
-[OpenID Connect enrollment](authentication/team-enrollment.md) can create accounts if enabled.
+[OpenID Connect enrollment](authentication/team-enrollment.md) can create accounts when enabled.
 
 If passwords are allowed, enter your email and password and select **Sign in**.
-In recovery-only mode, only the designated account can use a password.
-If the form is hidden, select **Recovery sign-in** first.
+Recovery-only mode restricts passwords to the designated account.
+**Recovery sign-in** reveals the hidden form.
 
-Public signup and self-service password resets are unavailable. Ask your administrator for help.
-Wrong credentials return identical errors. Respect retry delays. Retry later if sign-in
-is unavailable. For origin errors, use the configured Console address. See the
+Public signup and self-service resets are unavailable. Ask your administrator.
+Wrong credentials return identical errors. Observe retry delays. Retry later
+during outages. For origin errors, use the configured Console address. See the
 [quickstart](../guides/quickstart.md#open-the-platform-console) or
 [deployment guide](../guides/deploy.md#open-the-platform-console).
 

@@ -45,6 +45,7 @@ Each Agent explicitly records how its selected Harness runs:
   credential. A selected Sandbox requires dedicated execution.
 
 Kubernetes supports embedded OpenClaw and dedicated Codex in production.
+[OpenShell](../drivers/openshell-sandbox.md#qualification-contract) is for development only.
 Dedicated native OpenClaw is experimental and requires a compatible Sandbox
 and native worker support.
 
@@ -100,7 +101,8 @@ Deployment saves the Agent `name` as the sole roster entry's `identity.name`,
 under `agents.entries.main` if no roster exists. The native admin UI shows up to
 50 characters. OCC preserves configured names and does not name larger rosters.
 
-The bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy` requires a
+`POST /namespaces/:namespaceId/agents/:agentId/deploy` accepts an optional body.
+Deployment requires a
 `ready` Namespace, exact-Agent `deploy`, exact
 Configuration `read`, and, for managed credentials, the selected
 [harness source permissions](../agents.md#harness-authentication). If the selected
