@@ -175,14 +175,7 @@ test(
     assert.equal(createdAgent.statusCode, 201, createdAgent.body);
     const agent = createdAgent.json().data;
     const agentPath = `${base}/agents/${agent.id}`;
-    const networking = `${agentPath}/sandbox-policy/networking`;
-    const editing = await request("PATCH", `${networking}/editing`, { enabled: true });
-    assert.equal(editing.statusCode, 200, editing.body);
-    const network = await request("PUT", networking, {
-      expectedVersion: 1,
-      additions: grants,
-    });
-    assert.equal(network.statusCode, 200, network.body);
+    // The first deploy must select only the PAT preset's fixed requests within the Installation ceiling.
     const deployment = await request("POST", `${agentPath}/deploy`);
     assert.equal(deployment.statusCode, 202, deployment.body);
     const revision = await state.read((view) =>
@@ -193,6 +186,26 @@ test(
     assert.equal(revision?.credentialSources?.[0]?.tokenServiceInstanceId, instanceId);
     assert.equal(binding?.consumer.kind, "model");
     assert.equal(binding?.projection.environment, "CODEX_ACCESS_TOKEN");
+    const policy = revision?.credentialDeployment;
+    const [injection] = policy?.injectionPolicies ?? [];
+    assert.equal(injection?.bindingRef, binding?.bindingRef);
+    assert.ok(injection);
+    assert.deepEqual(injection.allowedRequests, policy?.networkAccessPolicy.allowed);
+    const requests = injection.allowedRequests.map(({ binary, host, ports, requestPolicy }) => {
+      assert.equal(binary, OPEN_SHELL_CODEX_BINARIES[0]);
+      assert.deepEqual(ports, [{ from: 443, to: 443 }]);
+      assert.ok(requestPolicy?.type === "http");
+      return `${requestPolicy.method} ${host}${requestPolicy.path}`;
+    });
+    assert.deepEqual(requests.toSorted(), [
+      "GET auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
+      "GET chatgpt.com/backend-api/codex/models",
+      "GET chatgpt.com/backend-api/wham/accounts/check",
+      "GET chatgpt.com/backend-api/wham/config/bundle",
+      "GET chatgpt.com/backend-api/wham/settings/user",
+      "GET chatgpt.com/backend-api/wham/usage",
+      "POST chatgpt.com/backend-api/codex/responses",
+    ]);
     assert.doesNotMatch(JSON.stringify(revision), new RegExp(pat));
   },
 );

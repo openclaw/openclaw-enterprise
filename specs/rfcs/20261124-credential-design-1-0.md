@@ -43,6 +43,8 @@ Static Source enrollment and update take a single write-only credential string. 
 
 A caller with `credential_source:update` on the exact Namespace Source can request renewal with `POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`. A ready OAuth or GitHub App installation Source renews through its selected TokenService's `forceRefresh` operation. The existing committed-update path delivers the replacement through Credential Proxy. If delivery fails after the commit, the delivery retry uses the committed version. Static credentials use the existing update operation.
 
+The temporary native PAT transport exception covers manually enrolled and ServiceAccount-issued Codex PATs on the selected executable, two approved hosts and [seven fixed requests](../../docs/reference/credential-sources/managed-static.md#codex-pat). A matching plaintext request on port 443 can receive the PAT. Retire the exception when native substitution enforces HTTPS and rejects the matching plaintext request.
+
 ## Proposed change to protected GitHub metadata
 
 Retire the built-in protected `github-app-metadata` Source that uses a Namespace Secret as its GitHub App signing key. The selected Credential Proxy stops offering and admitting this Source. Authenticated `GET /repos/{owner}/{repo}` through that offer requires a future TokenService-backed replacement.

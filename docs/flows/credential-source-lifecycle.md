@@ -92,7 +92,7 @@ For OCC custody, OpenShell Proxy creates or reuses a Provider per projection, re
 
 In the [OpenShell custody preview](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/token-service/openshell.ts:resolveNativeProvider` verifies the Source locator, Workspace, and Provider. Proxy attaches the authoritative Provider directly. Stop and withdrawal detach it; Source DELETE removes it. Updates modify that Provider, and delivery retry checks its version. Serving still requires running-Harness qualification.
 
-For a built-in Codex account, OCC freezes three fixed requests in one Model binding. Worker projects the authorized account metadata with the placeholder; Compute and Sandbox receive no access or refresh token. See the [native policy limits](../reference/credential-sources.md#implementation-status).
+For built-in OAuth and Codex PATs, admission freezes the [preset requests](../reference/credential-sources.md#codex-account-model-requests) for one stock executable within the Installation ceiling. Both receive placeholders. Worker also projects trusted account metadata for OAuth.
 
 Sandbox compiles HTTP and managed MCP bindings. MCP checks exact RPCs and selected tools at the approved endpoint. Sandbox refuses overlapping credential-free routes and unsupported broad Plugin grants. For Git, Proxy compares the complete effective policy, allowing name-only rules for approved attached Providers. Compute waits for Sandbox policy and Proxy readiness. See the [Proxy Driver reference](../reference/drivers/credential-proxy.md) for MCP exceptions.
 

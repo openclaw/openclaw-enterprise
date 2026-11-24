@@ -110,14 +110,11 @@ OCC qualifies the complete policy against the selected OpenShell Sandbox and Cre
 
 ## Use a Codex PAT Source
 
-Enroll a service account PAT as a static Source with `config.provider_preset: codex-pat`
-in OCC TokenService. Bind that Source under the Agent's Harness authentication.
-A caller who can operate the Source can use it for hosted Apps discovery. OCC
-resolves the PAT for the selected Plugin Driver, which checks account identity
-with the issuer. The Agent deployment receives only the Credential Proxy placeholder.
-
-[Enroll a PAT for hosted Apps](../guides/deploy/credential-lifecycle.md#enroll-a-codex-pat-source)
-covers existing Agents with PAT Secrets. Live native PAT transport qualification remains separate.
+Bind a static `codex-pat` Source for model access. First deployment can use the
+[seven fixed PAT requests](credential-sources/managed-static.md#codex-pat) allowed
+by the Installation. That reference also describes the temporary transport exception.
+For hosted Apps, [enroll the PAT](../guides/deploy/credential-lifecycle.md#enroll-a-codex-pat-source)
+and grant the caller Source operate access. The Plugin Driver verifies the account with the issuer.
 
 ## Update a source
 

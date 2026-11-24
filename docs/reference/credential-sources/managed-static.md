@@ -2,6 +2,38 @@
 
 TokenService owns a managed static Source and its credential. OCC controls who may create, bind, update, or delete it. This example uses an OpenAI model; see [implementation status](../credential-sources.md#implementation-status) for provider coverage and work still in progress.
 
+## Native model requests
+
+### OpenAI API key
+
+For the static OpenAI API-key preset, the temporary transport exception covers
+`POST api.openai.com:443/v1/responses`. Dedicated Codex with standalone web
+search also permits the fixed executable to send `POST api.openai.com:443/v1/alpha/search`.
+A matching plaintext request can receive the API key until native substitution
+enforces HTTPS.
+
+### Codex PAT
+
+The native Proxy has a temporary transport exception for manually enrolled and
+ServiceAccount-issued Codex PATs. It can inject the PAT into a matching plaintext
+HTTP request on port 443. When the Agent has no saved network rule, first deploy admits only the preset
+requests that the Installation ceiling permits for one stock Codex executable.
+All seven must be authorized. The PAT binding permits these seven method and path combinations:
+
+| Host              | Method | Path                                           |
+| ----------------- | ------ | ---------------------------------------------- |
+| `auth.openai.com` | GET    | `/api/accounts/v1/user-auth-credential/whoami` |
+| `chatgpt.com`     | GET    | `/backend-api/codex/models`                    |
+| `chatgpt.com`     | POST   | `/backend-api/codex/responses`                 |
+| `chatgpt.com`     | GET    | `/backend-api/wham/accounts/check`             |
+| `chatgpt.com`     | GET    | `/backend-api/wham/config/bundle`              |
+| `chatgpt.com`     | GET    | `/backend-api/wham/settings/user`              |
+| `chatgpt.com`     | GET    | `/backend-api/wham/usage`                      |
+
+Remove the exception once OpenShell enforces HTTPS during substitution and a
+native test verifies that a matching plaintext request cannot receive the PAT.
+OpenShell already [reports the transport scheme to middleware](https://github.com/ai-openshell/openshell/pull/4397).
+
 ## Register a source
 
 In a ready Namespace, send `POST /namespaces/:namespaceId/credential-sources` with `credential_source:create`:

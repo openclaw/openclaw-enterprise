@@ -331,6 +331,8 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     { source, preset }: PreparedModelCredentialDeployment,
     networkGrants: readonly DeploymentRequestMatch[],
   ) {
+    const presetId = permittedModelCredentialPresetId(source);
+    const fixedCodexModel = presetId === "builtin_codex" || presetId === "codex-pat";
     const automaticNetwork: DeploymentRequestMatch[] = [];
     const requests: DeploymentRequestMatch[] = preset.destinations.map((destination) => {
       const grants = networkGrants.filter(
@@ -344,12 +346,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         ports: [{ from: destination.port, to: destination.port }],
         requestPolicy: { type: "http", method: destination.method, path: destination.path },
       } satisfies Omit<DeploymentRequestMatch, "binary">;
-      // Codex OAuth selects a stock executable and fixed model routes. The Installation must
-      // still allow exactly one eligible executable when the Agent has no matching saved grant.
-      const usePresetNetwork =
-        grants.length === 0 &&
-        source.type === "oauth2-refresh-token" &&
-        source.consent.kind === "builtin_codex";
+      // For fixed Codex routes the Installation can supply a unique executable
+      // when the Agent has no saved network grant for the destination.
+      const usePresetNetwork = grants.length === 0 && fixedCodexModel;
       const binaries = usePresetNetwork
         ? (preset.binaries ?? []).filter((binary) =>
             sandboxNetworkGrantsWithinCeiling(
@@ -371,6 +370,11 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       }
       return request;
     });
+    if (fixedCodexModel && new Set(requests.map(({ binary }) => binary)).size !== 1) {
+      throw new ResourceStateConflictError(
+        "The fixed Codex model requests must use the same approved executable.",
+      );
+    }
     const binding: DeploymentCredentialBinding = {
       bindingRef: "model",
       sourceRef: credentialSourceRef(source),

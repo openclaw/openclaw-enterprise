@@ -30,6 +30,7 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
     --attempt "${PRIVATE_FRESH_ATTEMPT:?}"
   ```
 
+- Run [`openshell-token-service-pat-agent`](../../scripts/ci/test-suites/openshell-token-service-pat-agent.json) against an active Dedicated Codex Agent bound to a ready `codex-pat` Source. With its Agent and Namespace IDs, a loopback OCC URL and an authorized service key, the test checks the model reply and a new allowed HTTPS request in that revision’s Supervisor log.
 - [`openshell-linear`](../../scripts/ci/test-suites/openshell-linear.json): starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).
 - [`k3d-two-cluster`](../../scripts/ci/test-suites/k3d-two-cluster.json): requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).
 - [`openshell-oauth`](../../scripts/ci/test-suites/openshell-oauth.json): requires a prepared OpenShell OAuth gateway, trust files, tokens and a Kubernetes context. See [OpenShell OAuth tests](openshell-oauth.md).
