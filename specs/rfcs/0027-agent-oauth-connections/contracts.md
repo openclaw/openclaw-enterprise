@@ -162,6 +162,8 @@ administrators, who hold every action through the built-in administrator role.
 
 ## Update a running sender
 
+> [Template policy supersession](../20261124-credential-design-1-0/index.md#template-policy-changes)
+
 The worker compares the current delivery policy with the policy installed for that
 Agent. Before changing the recipients, Credential Proxy disables use of the affected binding, including its installed token. Once withdrawal is confirmed, the paired Sandbox applies the updated policy and prevents direct egress. Compute verifies the installed policy for that revision. OCC then rechecks the grant, template and Agent binding before allowing the proxy to use a token prepared by Token Service.
 A failed or superseded update leaves that sender without a usable token until

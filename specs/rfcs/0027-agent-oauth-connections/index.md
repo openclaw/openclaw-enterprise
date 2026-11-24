@@ -153,6 +153,8 @@ applies to future connections. Changing the issuer, setup method or MCP target
 requires a new grant for that target. OCC refuses to delete a template while a
 saved account references it.
 
+> [Supersession](../20261124-credential-design-1-0/index.md#template-policy-changes)
+
 When an administrator rotates the secret for the same OAuth client, the next
 code exchange or token refresh uses its current secret. An existing account
 can refresh its original grant without another consent flow. Its issuer,

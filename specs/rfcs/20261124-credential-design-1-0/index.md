@@ -23,7 +23,7 @@ This target consolidates amendments to [RFC-0023](../0023-egress-proxy-credentia
 
 Templates and clients are independent. An Installation-wide OAuth Template can use a compatible Namespace client. TokenService declares supported client scopes per purpose. OpenShell supports Namespace-scoped OAuth clients through its Workspace. GitHub App clients have Installation scope.
 
-The Installation selects one TokenService instance to own its Sources and private client material. OCC stores material with SecretDriver. OpenShell can instead own a native Provider. OCC privately binds registrations to that instance so another store cannot resolve existing Sources under a reused Driver name. App key rotation affects the next mint. Cached tokens remain usable until renewal.
+The Installation selects one TokenService instance to own its Sources and private client material. OCC stores material with SecretDriver. OpenShell can instead own a native Provider. OCC privately binds registrations to that instance so another store cannot resolve existing Sources under a reused Driver name.
 
 ## From enrollment to an Agent revision
 
@@ -31,7 +31,9 @@ An authorized caller enrolls a static or account credential. For browser OAuth, 
 
 The operator selects a Source for model authentication or a named Plugin connection. PluginDriver declares the selected Plugin's tools, network needs, and connections. OCC checks that the deployer and Agent principal can operate each exact Source, applies the Installation ceiling, and derives one admitted binding list for the revision. A shared Git Source binding also requires separate Repository grants.
 
-For a Template-backed Plugin Source, OCC checks and freezes the current compatible Template version in the revision. The Source retains the Template ID. An OAuth Source also retains its consent version, client, and granted scopes. Existing revisions keep their policy after a Template update.
+<a id="template-policy-changes"></a>
+
+Each new Agent revision freezes the current compatible Template version for a Template-backed Plugin Source. A running Agent keeps its saved policy until redeployment. To end access sooner, withdraw the binding or stop the Agent. This supersedes [RFC-0027’s live Template reconciliation](../0027-agent-oauth-connections/index.md#versions-and-consent). The Source retains the Template ID and, for OAuth, its consent version, client, and granted scopes.
 
 Dashed arrows show proposed handoffs.
 
