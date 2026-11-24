@@ -774,3 +774,71 @@ test("Installation deployment inventory refuses a revision owned by a different 
   const inventory = await controller.request("GET", "/installation/deployment-inventory");
   assertApiError(inventory, 503, "DEPENDENCY_UNAVAILABLE", "orphan deployment operation");
 });
+
+test("inventory assesses the active revision while a distinct successor waits for dispatch", async () => {
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks, work } =
+    await admittedDeploymentFixture("queued-inventory", "queued-agent", { recordOperations: true });
+  deploymentWorks.set(work.key, work.record("succeeded", 1));
+  assert.ok(fixture.platformState);
+  await fixture.platformState.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, admitted.data.id),
+  );
+  const response = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  );
+  const next = checkedInjectedBody(response, 202, AgentRevisionResponse).data;
+  assert.notEqual(next.id, admitted.data.id);
+  const key = `agent_revision:${next.id}:reconcile`;
+  const { completedAt: _completed, ...entry } = work.record("queued", 0);
+  const queued = { ...entry, idempotencyKey: key, revisionId: next.id, attemptCount: 0 };
+  deploymentWorks.set(key, queued);
+  const path = "/installation/deployment-inventory";
+  const read = async () => {
+    const resp = await controller.request("GET", path);
+    const body = checkedInjectedBody(resp, 200, InstallationDeploymentInventoryResponse);
+    const found = body.data.namespaces.flatMap((n) => n.agents).find((a) => a.id === agent.id);
+    assert.equal(found?.activeRevisionId, admitted.data.id);
+    assert.equal(found?.deploymentInProgress, true);
+    return found?.repositoryWorkerRestart;
+  };
+  const compute: ComputeDriver = fixture.computeDriver;
+  const observed: string[] = [];
+  let claimDuringRead = false;
+  compute.repositoryWorkerRestartDisposition = async (revision) => {
+    observed.push(revision.id);
+    if (claimDuringRead) {
+      deploymentWorks.set(key, { ...queued, state: "claimed", attemptCount: 1 });
+    }
+    return "original-worker-required";
+  };
+  assert.equal(await read(), "original-worker-required");
+  assert.deepEqual(observed, [admitted.data.id]);
+  for (const deny of [
+    { action: "deploy", resourceKind: "agent", resourceId: agent.id },
+    { action: "read", resourceKind: "agent_revision", resourceId: admitted.data.id },
+  ] as const) {
+    fixture.state.restrictions.push({
+      ...deny,
+      namespaceId: namespace.id,
+      id: "deny-active-inventory",
+      effect: "deny",
+    });
+    assert.equal((await controller.request("GET", path)).status, 403);
+    fixture.state.restrictions.pop();
+  }
+  deploymentWorks.set(key, { ...queued, attemptCount: 1 });
+  assert.equal(await read(), undefined);
+  deploymentWorks.set(key, queued);
+  deploymentWorks.set(work.key, { ...entry, attemptCount: 0 });
+  assert.equal(await read(), undefined);
+  assert.deepEqual(observed, [admitted.data.id]);
+  deploymentWorks.set(key, { ...queued, state: "succeeded" });
+  assert.equal(await read(), undefined);
+  deploymentWorks.set(key, queued);
+  deploymentWorks.set(work.key, work.record("succeeded", 1));
+  claimDuringRead = true;
+  assert.equal((await controller.request("GET", path)).status, 503);
+  assert.equal(await read(), undefined);
+  assert.deepEqual(observed, [admitted.data.id, admitted.data.id]);
+});

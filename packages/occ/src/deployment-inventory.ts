@@ -125,7 +125,9 @@ async function deploymentInventorySnapshot(
   });
   return dependencies.read(async (state) => {
     const revisions = new Map<string, Readonly<AgentRevision> | undefined>();
-    const deploymentsInProgress = new Set<string>();
+    // Only one other queued revision with zero recorded attempts leaves the active revision assessable.
+    // null marks claimed, attempted or ambiguous work.
+    const pending = new Map<string, string | null>();
     // Credential withdrawal targets an active revision without deploying it.
     const deployments = (await state.operations.list())
       .filter(
@@ -149,7 +151,9 @@ async function deploymentInventorySnapshot(
         throw new DependencyUnavailableError("The Agent deployment inventory is incomplete.");
       }
       if (work.state === "queued" || work.state === "claimed") {
-        deploymentsInProgress.add(`${work.namespaceId}\u0000${work.agentId}`);
+        const agentKey = `${work.namespaceId}\u0000${work.agentId}`;
+        const queuedAtZero = work.state === "queued" && work.attemptCount === 0;
+        pending.set(agentKey, queuedAtZero && !pending.has(agentKey) ? revisionId : null);
       }
     }
 
@@ -167,12 +171,14 @@ async function deploymentInventorySnapshot(
           id: agent.id,
           namespaceId: namespace.id,
         });
-        const deploymentInProgress = deploymentsInProgress.has(`${namespace.id}\u0000${agent.id}`);
+        const pendingRevisionId = pending.get(`${namespace.id}\u0000${agent.id}`);
+        const deploymentInProgress = pendingRevisionId !== undefined;
         if (
           agent.status === "active" &&
           agent.desiredRuntimeState === "running" &&
           agent.activeRevisionId !== undefined &&
-          !deploymentInProgress
+          pendingRevisionId !== null &&
+          pendingRevisionId !== agent.activeRevisionId
         ) {
           await dependencies.authorize(principalId, "deploy", {
             kind: "agent",
