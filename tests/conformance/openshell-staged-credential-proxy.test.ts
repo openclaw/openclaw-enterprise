@@ -1098,6 +1098,17 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
       },
     },
   };
+  // Supplying the model twice must not satisfy the two admitted bindings.
+  await assert.rejects(
+    f.proxy.configureDeployment(context, {
+      ...configuration,
+      bindings: [f.suppliedBinding, f.suppliedBinding],
+      injectionPolicies: policies,
+    }),
+    DependencyUnavailableError,
+  );
+  assert.equal(f.resolutions(), 0);
+  assert.equal(f.state.creates.length, 0);
   let pluginResolutions = 0;
   const configured = await f.proxy.configureDeployment(context, {
     ...configuration,

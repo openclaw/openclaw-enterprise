@@ -44,7 +44,7 @@ import {
   assertOpenShellDeploymentConfiguration,
   assertOpenShellDeploymentContext,
   assertOpenShellDeploymentRef,
-  assertOpenShellPushedBinding,
+  assertOpenShellPushedBindingScope,
   assertOpenShellPushedTarget,
   OpenShellCredentialDeliveryRefusedError,
   openShellDeliveryProviderNames,
@@ -316,18 +316,18 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (!isDeepStrictEqual(input.injectionPolicies, admitted.injectionPolicies)) {
       throw new OpenShellCredentialDeliveryRefusedError();
     }
-    const seen = new Set<string>();
+    const remaining = new Map(admitted.bindings.map((binding) => [binding.bindingRef, binding]));
     for (const supplied of input.bindings) {
       const { binding } = supplied;
       if (
-        seen.has(binding.bindingRef) ||
+        !isDeepStrictEqual(binding, remaining.get(binding.bindingRef)) ||
         supplied.sharedProviderRef !== undefined ||
         typeof supplied.resolveCredential !== "function"
       ) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
-      seen.add(binding.bindingRef);
-      assertOpenShellPushedBinding(context, binding, input.injectionPolicies);
+      remaining.delete(binding.bindingRef);
+      assertOpenShellPushedBindingScope(context, binding);
     }
     const initialTarget = await this.readSandboxTarget(context, input);
     if (typeof initialTarget.client.attachSandboxProviderWithReceipt !== "function") {
@@ -446,7 +446,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       const target = await this.readSandboxTarget(context, expected);
       const providers = [];
       for (const binding of bindings) {
-        assertOpenShellPushedBinding(context, binding, admitted.injectionPolicies);
+        assertOpenShellPushedBindingScope(context, binding);
         const provider = await readOpenShellPushedProvider({
           client: target.client,
           workspace: target.workspace,
@@ -624,7 +624,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
       for (const binding of bindings) {
-        assertOpenShellPushedBinding(context, binding, admitted.injectionPolicies);
+        assertOpenShellPushedBindingScope(context, binding);
       }
       const readSandbox = () =>
         scope.client.getSandbox({ workspace: scope.workspace, name: scope.name }, context.signal);

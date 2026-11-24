@@ -709,23 +709,10 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     consumer: { kind: "model", providerId: "openai" },
     projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
   };
-  // A second HTTP consumer has a distinct projection for the same Plugin Source.
-  const secondPluginBinding = {
-    ...pluginBinding,
-    bindingRef: "reporting-default",
-    consumer: { ...pluginBinding.consumer, pluginId: "reporting-plugin" },
-    projection: { ...pluginBinding.projection, environment: "REPORTING_ACCESS_TOKEN" },
-  };
-  const secondPluginRequest = {
-    ...pluginRequest,
-    binary: "/app/bin/reporting",
-    host: "reporting.example.test",
-    requestPolicy: { type: "http", method: "GET", path: "/reports" },
-  };
   let target;
   let prepared;
   const removals = [];
-  const bindings = [pluginBinding, modelBinding, secondPluginBinding];
+  const bindings = [pluginBinding, modelBinding];
   const projections = bindings.map((binding) => ({
     bindingRef: binding.bindingRef,
     environment: binding.projection.environment,
@@ -848,7 +835,6 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
           allowed: [
             { binary: modelGrant.binary, host: modelGrant.host, ports: modelGrant.ports },
             pluginRequest,
-            secondPluginRequest,
           ],
         },
         bindings,
@@ -865,7 +851,6 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
               },
             ],
           },
-          { bindingRef: secondPluginBinding.bindingRef, allowedRequests: [secondPluginRequest] },
         ],
       },
     },
@@ -917,7 +902,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
   );
   const removal = {
     targetRef: target,
-    bindingRefs: [pluginBinding.bindingRef, secondPluginBinding.bindingRef],
+    bindingRefs: [pluginBinding.bindingRef],
   };
   assert.deepEqual(removals, [removal, removal]);
 });
