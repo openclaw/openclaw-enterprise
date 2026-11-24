@@ -1523,7 +1523,11 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     const view = async (request: typeof f.request = f.request, at = policyPath) => {
       const calls = resolutions.mock.callCount();
       const data = checkedEnvelope(await request("GET", at), SandboxPolicyViewResponse, 200).data;
-      assert.equal(resolutions.mock.callCount(), calls, "the policy read makes no TokenService call");
+      assert.equal(
+        resolutions.mock.callCount(),
+        calls,
+        "the policy read makes no TokenService call",
+      );
       return data;
     };
     const source = {
@@ -1696,7 +1700,10 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       harnessAuth: { method: "credential_source", sourceId },
       credentialSources: [{ sourceId }],
     });
-    const appView = await view(f.request, `${f.collection}/${appAgent.id}/sandbox-policy/networking`);
+    const appView = await view(
+      f.request,
+      `${f.collection}/${appAgent.id}/sandbox-policy/networking`,
+    );
     assert.deepEqual(appView.repositoryCredential, { kind: "github_app" });
     const plainAgent = await f.createAgent({
       executionMode: "dedicated",

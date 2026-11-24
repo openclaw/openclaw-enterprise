@@ -356,7 +356,11 @@ export function createAgentCredentialAccess({
     grants: readonly RepositoryNetworkGrant[] | undefined,
     limits: readonly (RepositoryNetworkPolicyCeiling | undefined)[],
   ): Promise<RepositoryCredentialView> {
-    const ref = { kind: "credential_source", namespaceId: agent.namespaceId, id: sourceId } as const;
+    const ref = {
+      kind: "credential_source",
+      namespaceId: agent.namespaceId,
+      id: sourceId,
+    } as const;
     let readable = false;
     try {
       readable = (await authority.authorizationDecision(principalId, "read", ref)).decision.allowed;

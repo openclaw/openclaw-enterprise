@@ -98,17 +98,13 @@ const RepositorySourceDeliverySchema = Type.Object(
           "The version the last replacement committed while this copy existed. Absent when none did.",
       }),
     ),
-    committedAt: Type.Optional(
-      Type.String({ description: "When that replacement committed." }),
-    ),
+    committedAt: Type.Optional(Type.String({ description: "When that replacement committed." })),
     confirmedSourceVersion: Type.Optional(
       Type.String({
         description: "The last version this revision's Sandbox was seen to activate.",
       }),
     ),
-    confirmedAt: Type.Optional(
-      Type.String({ description: "When that activation was observed." }),
-    ),
+    confirmedAt: Type.Optional(Type.String({ description: "When that activation was observed." })),
   },
   { additionalProperties: false },
 );

@@ -202,6 +202,8 @@ by manifest digest using `OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
 placement. A first empty list can be saved. Deploying it is refused before
 launch. Stop the active revision to retire its access.
 
+GET also returns `repositoryCredential` for an Agent with repository bindings: which credential the bindings select, and, to a caller who can read a selected Source, each revision's delivery state. See [repository credential in the policy read](sandbox-policies/repository-credential.md).
+
 ## Denials and recommendations
 
 The console's **Policy denials** tab uses the existing bounded, exact-revision

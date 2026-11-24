@@ -983,9 +983,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
    * policy read. Undefined without bindings or when they do not resolve: the read keeps the saved
    * grants visible and reports no credential.
    */
-  function repositoryCredentialSelection(
-    agent: Readonly<Agent>,
-  ):
+  function repositoryCredentialSelection(agent: Readonly<Agent>):
     | {
         readonly credentialSource?: string;
         readonly selectedGrants?: RepositoryNetworkPolicyCeiling;

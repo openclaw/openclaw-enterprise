@@ -663,7 +663,10 @@ interface PlatformSnapshot {
   readonly repositorySourceCopies: Map<
     string,
     Readonly<
-      RepositorySourceCopy & { readonly expectedSourceVersion?: string; readonly expectedAt?: string }
+      RepositorySourceCopy & {
+        readonly expectedSourceVersion?: string;
+        readonly expectedAt?: string;
+      }
     >
   >;
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;

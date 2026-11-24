@@ -32978,6 +32978,133 @@
                           "anyOf": [{ "type": "boolean" }, { "type": "null" }],
                           "description": "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone."
                         },
+                        "repositoryCredential": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": { "kind": { "const": "github_app", "type": "string" } },
+                              "required": ["kind"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "description": "The caller lacks credential_source read on the selected Source. The saved grants stay visible and can be cleared.",
+                              "properties": {
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "readable": { "const": false, "type": "boolean" }
+                              },
+                              "required": ["kind", "readable"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "ceiling": {
+                                  "description": "The Source ceiling. Absent when state is unavailable.",
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "access": {
+                                        "anyOf": [
+                                          { "const": "read", "type": "string" },
+                                          { "const": "write", "type": "string" }
+                                        ]
+                                      },
+                                      "repository": {
+                                        "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                        "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                        "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["repository", "access"],
+                                    "type": "object"
+                                  },
+                                  "maxItems": 32,
+                                  "type": "array"
+                                },
+                                "deliveries": {
+                                  "description": "One entry per revision of this Agent whose copy of the Source the Worker has not confirmed retired, oldest first.",
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "committedAt": {
+                                        "description": "When that replacement committed.",
+                                        "type": "string"
+                                      },
+                                      "committedSourceVersion": {
+                                        "description": "The version the last replacement committed while this copy existed. Absent when none did.",
+                                        "type": "string"
+                                      },
+                                      "confirmedAt": {
+                                        "description": "When that activation was observed.",
+                                        "type": "string"
+                                      },
+                                      "confirmedSourceVersion": {
+                                        "description": "The last version this revision's Sandbox was seen to activate.",
+                                        "type": "string"
+                                      },
+                                      "revisionId": {
+                                        "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "state": {
+                                        "anyOf": [
+                                          { "const": "pending", "type": "string" },
+                                          { "const": "confirmed", "type": "string" },
+                                          { "const": "unreconciled", "type": "string" }
+                                        ],
+                                        "description": "confirmed: this revision's Sandbox activated the Provider credential written for the committed version (committedSourceVersion equals confirmedSourceVersion), or, when no replacement committed since the copy was recorded, activated its first value. pending: no such activation is recorded, so the Sandbox can still hold an earlier value. unreconciled: a Provider write's outcome is unknown; replacing or deleting the Source answers 409 until the Agent is stopped or redeployed."
+                                      }
+                                    },
+                                    "required": ["revisionId", "state"],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "effectiveRepositoryNetworkPolicy": {
+                                  "description": "The saved grants within the Installation ceiling, the registration's permissions and the Source ceiling. Absent when state is unavailable.",
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "access": {
+                                        "anyOf": [
+                                          { "const": "read", "type": "string" },
+                                          { "const": "write", "type": "string" }
+                                        ]
+                                      },
+                                      "repository": {
+                                        "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                        "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                        "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["repository", "access"],
+                                    "type": "object"
+                                  },
+                                  "maxItems": 32,
+                                  "type": "array"
+                                },
+                                "id": { "type": "string" },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "name": { "type": "string" },
+                                "state": {
+                                  "anyOf": [
+                                    { "const": "registering", "type": "string" },
+                                    { "const": "ready", "type": "string" },
+                                    { "const": "deleting", "type": "string" },
+                                    { "const": "unavailable", "type": "string" }
+                                  ],
+                                  "description": "unavailable: the Source is missing, or is not a github Source of this Namespace and its TokenService. Save and deploy refuse it."
+                                }
+                              },
+                              "required": ["kind", "id", "state", "deliveries"],
+                              "type": "object"
+                            }
+                          ],
+                          "description": "The credential the Agent's repository bindings resolve to. Absent when the Agent has no repository bindings or they do not resolve. Never contains the token."
+                        },
                         "repositoryNetworkPolicyCeiling": {
                           "description": "Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently.",
                           "items": {
