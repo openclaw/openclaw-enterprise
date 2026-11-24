@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { AgentDeviceAuthorizationResponse } from "../../packages/contracts/src/api/resources.ts";
+import {
+  AgentDeviceAuthorizationResponse,
+  CredentialSourceListResponse,
+} from "../../packages/contracts/src/api/resources.ts";
 import {
   assertNoCredentials,
   createFixture,
@@ -60,7 +63,7 @@ export function registerDeviceAuthorizationSessionCases() {
       fixture.gateway.calls.some((call) => call.operation === "removeSource"),
       false,
     );
-    assert.equal(await retainedSourceId(fixture), sourceId);
+    assert.equal(await firstListedSourceId(fixture), sourceId);
     assertNoCredentials(fixture);
   });
 
@@ -84,7 +87,7 @@ export function registerDeviceAuthorizationSessionCases() {
     assert.equal(stored.sourceId, original.sourceId);
     assert.equal(stored.phase, "pending");
     assert.equal(stored.privateState, original.privateState);
-    assert.equal(await retainedSourceId(fixture), original.sourceId);
+    assert.equal(await firstListedSourceId(fixture), original.sourceId);
     assertNoCredentials(fixture);
   });
 
@@ -124,7 +127,7 @@ export function registerDeviceAuthorizationSessionCases() {
       "an externally completed grant cannot mark this session ready",
     );
     assert.equal(fixture.gateway.sources.get(original.sourceId), "ready");
-    assert.equal(await retainedSourceId(fixture), original.sourceId);
+    assert.equal(await firstListedSourceId(fixture), original.sourceId);
     assert.equal(
       fixture.gateway.calls.some(
         ({ operation }) => operation === "removeRefresh" || operation === "removeSource",
@@ -174,19 +177,33 @@ export function registerDeviceAuthorizationSessionCases() {
       body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
     });
     assert.equal(discovery.status, 200, JSON.stringify(discovery.body));
-    assert.equal(fixture.gateway.sources.has(login.source.id), true);
+    // Explicit source deletion, unlike session closure, invokes external removal.
+    assert.equal(
+      (await fixture.request("DELETE", `${fixture.sourcesPath}/${login.source.id}`)).status,
+      204,
+    );
+    assert.equal(fixture.gateway.sources.has(login.source.id), false);
+    assert.equal(
+      (
+        await fixture.request("POST", fixture.pluginsPath, {
+          body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
+        })
+      ).status,
+      409,
+    );
     assertNoCredentials(fixture);
   });
 }
 
-async function retainedSourceId(fixture: DeviceAuthFixture) {
-  const sources = await fixture.controller.transact((unit) =>
-    unit.credentialSources.listCredentialSources(fixture.namespace.id),
+async function firstListedSourceId(fixture: DeviceAuthFixture) {
+  const response = await fixture.request("GET", fixture.sourcesPath);
+  const { data } = fixture.fixtureResponse(
+    response,
+    200,
+    CredentialSourceListResponse,
+    "list sources",
   );
-  const first = sources[0];
-  assert.ok(
-    first && first.ownerCapability === "credential_gateway",
-    "retained Gateway-owned device Source",
-  );
+  const first = data[0];
+  assert.ok(first, "the credential source must remain listed");
   return first.id;
 }

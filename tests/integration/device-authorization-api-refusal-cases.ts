@@ -27,7 +27,7 @@ import {
 } from "./device-authorization-api-fixture.ts";
 
 export function registerDeviceAuthorizationRefusalCases() {
-  test("a failed Refresh login start retains its Gateway Source and sanitizes the failure", async (t) => {
+  test("a failed Refresh login start retains a manageable source and sanitizes the failure", async (t) => {
     const lines: unknown[] = [];
     const logger = createOccLogger({
       component: "occ-api",
@@ -67,17 +67,17 @@ export function registerDeviceAuthorizationRefusalCases() {
       [],
     );
     const sourceList = await fixture.request("GET", fixture.sourcesPath);
-    const { data: publicSources } = fixture.fixtureResponse(
+    const { data: sources } = fixture.fixtureResponse(
       sourceList,
       200,
       CredentialSourceListResponse,
       "list sources after Refresh failure",
     );
-    assert.deepEqual(publicSources, [], "canonical Source listing omits Gateway-owned Sources");
-    const sources = await fixture.controller.transact((unit) =>
-      unit.credentialSources.listCredentialSources(fixture.namespace.id),
+    assert.equal(
+      sources.length,
+      1,
+      "an uncertain external login remains visible for source management",
     );
-    assert.equal(sources.length, 1, "an uncertain external login retains its Gateway Source");
     const [source] = sources;
     assert.ok(source);
     const evidence = fixture.auditSink.events.filter(
@@ -96,7 +96,13 @@ export function registerDeviceAuthorizationRefusalCases() {
         namespaceId: fixture.namespace.id,
       });
     }
-    assert.equal(fixture.gateway.sources.has(source.id), true);
+    // Source deletion fences uncertain external registration before final removal.
+    await fixture.clock.advance(71_000);
+    assert.equal(
+      (await fixture.request("DELETE", `${fixture.sourcesPath}/${source.id}`)).status,
+      204,
+    );
+    assert.equal(fixture.gateway.sources.size, 0);
     assertNoCredentials(fixture);
   });
 
@@ -196,7 +202,7 @@ export function registerDeviceAuthorizationRefusalCases() {
       );
       assert.equal(error.code, "DEPENDENCY_UNAVAILABLE");
       const sourceList = await fixture.request("GET", fixture.sourcesPath);
-      const { data: publicSources } = fixture.fixtureResponse(
+      const { data: sources } = fixture.fixtureResponse(
         sourceList,
         200,
         CredentialSourceListResponse,
@@ -213,10 +219,6 @@ export function registerDeviceAuthorizationRefusalCases() {
         "list Secrets after audit failure",
       );
       assert.deepEqual(secrets, [], "a rejected start cannot leave a login Secret");
-      assert.deepEqual(publicSources, [], "canonical Source listing omits Gateway-owned Sources");
-      const sources = await fixture.controller.transact((unit) =>
-        unit.credentialSources.listCredentialSources(fixture.namespace.id),
-      );
       assert.equal(sources.length, retainedSources);
       const evidence = fixture.auditSink.events.filter(
         (event) => event.action === "openclaw.agents.device_authorization.start",

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-24
-last_updated_session: authoring-run/460fd0ef-1bc5-4950-85de-bf351916de43
+last_updated_session: authoring-run/fc29889e-e795-4b35-91dd-40a401edafe0
 ---
 
 # Credential source lifecycle flow
@@ -60,6 +60,8 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 OCC checks `credential_source:create` for the ready Namespace before looking up an optional Connection Template selection. It rejects an unavailable, foreign, or non-static Template, or a Template selection combined with a model provider preset, before calling TokenService. TokenService creates the canonical Source, saves its optional Template ID, and stores the write-only credential in its private custody. OCC then grants the creator access and records completion. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
 
+The same POST accepts Gateway and protected Proxy requests. OCC checks the owner and access to referenced Secrets before registration. See [existing Source registration](../reference/credential-sources/other-delivery-modes.md#register-a-source).
+
 Template OAuth consent follows the [browser workflow](connection-templates.md#3-authorize-the-account-in-the-browser). OCC keeps temporary consent state without creating a Source, exchanges the authorization code, and calls the selected TokenService registration boundary with the grant and `connection_template` consent. TokenService creates the ready OAuth Source and takes custody of its tokens; OCC grants access and audits completion. The Source retains its Template ID, original consent version, and selected client. The same Source schema also permits trusted `builtin_codex` authorization without a Template; moving device-login completion to that path is a separate cutover. When a Plugin selects this Source, OCC resolves its current Template and checks the original consent. See [Plugin admission and delivery limits](agent-plugins.md#2-admit-an-immutable-plugin-deployment).
 
 <a id="3-bind-and-admit-an-agent-revision"></a>
@@ -81,7 +83,7 @@ Compute creates and records an idle Sandbox, with the model credential route wit
 
 The OpenShell Proxy creates or reuses a Provider for each credential projection. Two bindings can use the same Source with different environments and disjoint endpoint paths. Worker resolves each Source at most once when Proxy needs material to create its delivery copies. Existing Providers are attached without renewal. The Harness receives a fresh Sandbox placeholder for each binding. Failed attachment triggers cleanup of the prepared copies. OpenShell refuses to delete a Provider still attached to another Sandbox.
 
-Sandbox compiles the HTTP routes from the frozen bindings and injection policies. It checks for overlap with credential-free routes and refuses broad Plugin network grants it cannot preserve. A sole model route keeps the established endpoint shape for recovery. Compute checks that the Harness can launch with its selected authentication method and waits for Sandbox policy and Proxy readiness before preparing launch. The managed Google Workspace slot still requires a Gateway Source, and the native qualifier refuses MCP credential policies. The [status table](../reference/credential-sources.md#implementation-status) records the current limits.
+Sandbox compiles frozen HTTP and managed MCP bindings. Managed MCP checks exact RPC and selected tool rules at the reviewed endpoint. Sandbox refuses overlaps with credential-free routes and broad Plugin grants it cannot preserve. A sole model route keeps its established endpoint for recovery. Compute checks Harness authentication support and waits for Sandbox policy and Proxy readiness during preparation. See the [Proxy Driver reference](../reference/drivers/credential-proxy.md) for MCP exceptions.
 
 ### 4. Activate and stop the Agent
 
@@ -107,6 +109,8 @@ After confirmed detachment of each binding for the Source, Proxy attempts to ret
 `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
 OCC checks permission on the exact Source and dispatches static credential replacement to its TokenService owner. An active Agent revision can keep using the Source during replacement. Changing or removing the provider preset requires an unbound Source and a separate request.
+
+The recorded owner determines lifecycle operations for Gateway and protected Proxy Sources. Responses return Secret references and public metadata.
 
 #### Deliver Source updates
 
@@ -150,7 +154,11 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 
 ## Changelog
 
+- 2026-11-24 09:33: Document the existing Gateway and Proxy request and the recorded-owner lifecycle on the Source API. (authoring-run/fc29889e-e795-4b35-91dd-40a401edafe0 - 5fe2168a8d17bc7dee2d63a251093367da3ac446)
+
 - 2026-11-24 09:12: Describe static Source retirement and OAuth disconnect alongside per-binding HTTP delivery. (authoring-run/460fd0ef-1bc5-4950-85de-bf351916de43 - 03091f9a99ec9cbc18e88f97c297e0e7c217054d)
+
+- 2026-11-24 09:12: Describe managed MCP compilation from frozen bindings and its enforcement limits. (authoring-run/2270a9df-5f0f-4c15-b5e2-1f37520233e3 - 7bba27408a4ae30c1f7066b7d250b24ec0b36dd0)
 
 - 2026-11-24 00:18: Describe per-binding delivery and Source-wide rotation and retirement. (authoring-run/71b868ab-4583-4018-8755-568a186c1c69 - 9ee73bafa34d54d0081e3fe1437c0f302ec1821f)
 

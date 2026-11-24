@@ -573,6 +573,9 @@ function createCredentialServices({
     transactions,
     authority,
     iamPolicy,
+    sourceDrivers: credentialSourceDrivers,
+    preparedIssuer,
+    clock: resourceValues.now,
     selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
     retireDelivery: async (namespace, source, signal) => {
       if (!drivers.hasSelection("credential_proxy_delivery")) {

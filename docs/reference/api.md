@@ -10675,7 +10675,7 @@ Example response
 | [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source |
 | [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one readable credential source and its available status |
 | [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Update a Source through its recorded owner |
-| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Ask the selected TokenService to refresh an OAuth Source |
+| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Ask the recorded owner to refresh a credential source |
 
 #### `GET /namespaces/{namespaceId}/credential-sources`
 
@@ -10714,7 +10714,7 @@ List readable credential sources without revealing credential values
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object or object or object>` | Yes | — |
+| `data` | `array<object or object or object or object>` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -10817,6 +10817,19 @@ Register a credential source
 
 **Content type:** `application/json`
 
+**Required fields: `name`, `type`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `config` | `object<string, string>` | No | max properties: 32; Non-secret source configuration keyed by catalog field name. |
+| `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
+| `type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+
+**RegisterTokenServiceSourceBody (required fields: `name`, `type`, `secret`)**
+
+Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before TokenService takes custody.
+
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
@@ -10859,7 +10872,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object or object` | Yes | — |
+| `data` | `object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -10959,7 +10972,7 @@ Get one readable credential source and its available status
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object or object` | Yes | — |
+| `data` | `object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11035,6 +11048,18 @@ Update a Source through its recorded owner
 
 **Content type:** `application/json`
 
+**Optional fields: `adoption`, `authorityScope`, `secrets`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `adoption` | `"live"` | No | Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission. |
+| `authorityScope` | `"execution"` | No | Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change. |
+| `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
+
+**UpdateTokenServiceSourceBody**
+
+Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.
+
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
@@ -11068,7 +11093,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object or object` | Yes | — |
+| `data` | `object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11101,7 +11126,7 @@ Example response
 
 <span id="post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate"></span>
 
-Ask the selected TokenService to refresh an OAuth Source
+Ask the recorded owner to refresh a credential source
 
 **Operation ID:** `rotateCredentialSource`
 
@@ -11135,7 +11160,7 @@ Ask the selected TokenService to refresh an OAuth Source
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object or object` | Yes | — |
+| `data` | `object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 

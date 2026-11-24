@@ -93,7 +93,7 @@ test("published TokenService source request schemas validate managed static mate
   }
 });
 
-test("namespace Source writes accept static material and reject legacy Secret references or direct OAuth enrollment", async (t) => {
+test("namespace Source writes accept distinct static material and legacy Secret reference bodies", async (t) => {
   const { route, validatorCompiler } = await publishedCredentialComponents(t);
   const create = occApiRoutes.find(
     (candidate) => candidate.operationId === "createCredentialSource",
@@ -116,17 +116,22 @@ test("namespace Source writes accept static material and reject legacy Secret re
   const legacy = { name: "Legacy access", type: "openai", secrets: { api_key: reference } };
 
   assert.equal(register(managed), true);
-  assert.equal(register(legacy), false);
-  assert.equal(register({ name: managed.name, type: "static" }), false);
+  assert.equal(register(legacy), true);
+  assert.equal(
+    register({ name: managed.name, type: "static", connectionTemplateId: `ctp_${uuid}` }),
+    false,
+  );
   assert.equal(register({ ...managed, type: "oauth2-refresh-token" }), false);
   assert.equal(register({ ...managed, secrets: legacy.secrets }), false);
+  assert.equal(register({ ...legacy, connectionTemplateId: `ctp_${uuid}` }), false);
   assert.equal(register({ ...managed, type: "openai" }), false);
   assert.equal(register({ ...managed, secret: { first: "one", second: "two" } }), false);
   assert.equal(register({ ...managed, ownerCapability: "token_service" }), false);
   assert.equal(patch({ secret: material }), true);
   assert.equal(patch({ config: { provider_preset: "openai" } }), true);
-  assert.equal(patch({ secrets: legacy.secrets }), false);
+  assert.equal(patch({ secrets: legacy.secrets }), true);
   assert.equal(patch({ secret: material, secrets: legacy.secrets }), false);
+  assert.equal(patch({ config: managed.config, secrets: legacy.secrets }), false);
   assert.equal(patch({ secret: material, ownerCapability: "token_service" }), false);
 });
 

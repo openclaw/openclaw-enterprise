@@ -120,6 +120,16 @@ test("consented protected repository read uses only exact, already prepared meta
             row.committed.attemptId === evidence.preparationAttemptId,
         );
       },
+      async ready(source, signal) {
+        signal.throwIfAborted();
+        assert.equal(source.key.source.id, admission.familyId);
+        const result = await reader.readWarm(admission);
+        if (result.kind !== "warm") {
+          return false;
+        }
+        result.material.bytes.fill(0);
+        return true;
+      },
     },
     async admitSource({ app, agent, namespace, secret, path }) {
       const input = {
@@ -152,6 +162,16 @@ test("consented protected repository read uses only exact, already prepared meta
       const created = await app.request("POST", path, { body: input });
       assert.equal(created.status, 201, JSON.stringify(created.body));
       const source = created.data;
+      assert.partialDeepStrictEqual(source, {
+        namespaceId: namespace.id,
+        type: "github-app-metadata",
+        ownerCapability: "credential_proxy",
+        ref: { kind: "credential_source", id: source.id, namespaceId: namespace.id },
+        secrets: { private_key: secret.ref },
+        state: "ready",
+        status: { state: "pending" },
+      });
+      assert.deepEqual(source.egress, { adoption: "prepared", retention: "none" });
       const bound = await app.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
         body: {
           configurationId: agent.configurationId,
@@ -168,6 +188,10 @@ test("consented protected repository read uses only exact, already prepared meta
   const [route] = installation.plan.routes;
   assert.equal(route.binding.grant.profile, "metadata-read");
   assert.equal(f.attachment.configuration.network_policies["oce-egress-0"].binaries, undefined);
+  const sourcePath = `${f.path}/${f.source.id}`;
+  const coldSource = await f.request("GET", sourcePath);
+  assert.equal(coldSource.status, 200, JSON.stringify(coldSource.body));
+  assert.deepEqual(coldSource.data.status, { state: "pending" });
   const signal = new AbortController().signal;
   const resolve = (changed) => f.resolve(captureMetadata(f, changed));
   assert.equal(
@@ -196,6 +220,13 @@ test("consented protected repository read uses only exact, already prepared meta
     "committed",
   );
   assert.equal(gh.issuesOfTokens.length, 1);
+  // Preparation makes the same protected Source usable without exposing its grant or token.
+  const warmSource = await f.request("GET", sourcePath);
+  assert.equal(warmSource.status, 200, JSON.stringify(warmSource.body));
+  assert.deepEqual(warmSource.data, { ...coldSource.data, status: { state: "ready" } });
+  assert.deepEqual(warmSource.data.ref, f.source.ref);
+  assert.deepEqual(warmSource.data.egress, f.source.egress);
+  assert.equal(gh.issuesOfTokens.length, 1, "reading Source status must not issue a token");
 
   // A replacement grant callback must not participate in an already resolved exchange,
   // even when it would return the same authorized grant.

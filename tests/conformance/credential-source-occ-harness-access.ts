@@ -7,6 +7,7 @@ import {
   AgentCredentialSourceBindingError,
   AuthorizationDeniedError,
   CredentialGatewayNotConfiguredError,
+  ResourceConflictError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
 import {
@@ -164,6 +165,11 @@ export function registerHarnessAccessCases(): void {
       unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id),
     );
 
+    // Both the draft and the active revision keep the source referenced.
+    await assert.rejects(
+      controller.deleteCredentialSource(administrator, namespace.id, registry.id),
+      ResourceConflictError,
+    );
     // Any listed source on the active revision can be withdrawn.
     const withdrawal = await controller.withdrawAgentCredentialSource(administrator, {
       namespaceId: namespace.id,
@@ -509,11 +515,11 @@ export function registerHarnessAccessCases(): void {
     );
   });
 
-  test("canonical Source listing requires Namespace read and omits Gateway Sources", async () => {
+  test("listing credential sources requires Namespace read before filtering each source", async () => {
     const { controller, makeReady, modelSecret, namespace } = await fixture();
     await makeReady();
     const secret = await modelSecret();
-    await controller.createCredentialSource(administrator, {
+    const source = await controller.createCredentialSource(administrator, {
       namespaceId: namespace.id,
       name: "openai",
       type: "openai",
@@ -527,7 +533,10 @@ export function registerHarnessAccessCases(): void {
       );
     }
     const listed = await controller.listCredentialSources(deployer, namespace.id);
-    assert.deepEqual(listed, []);
+    assert.deepEqual(
+      listed.map(({ id }) => id),
+      [source.id],
+    );
   });
 
   test("a selected Credential Gateway rejects Secret-backed Harness authentication", async () => {

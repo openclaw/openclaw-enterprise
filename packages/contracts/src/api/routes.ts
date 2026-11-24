@@ -72,6 +72,7 @@ import {
   ProvisionAgentBody,
   ValidateAgentCreateBody,
   CreateSecretBody,
+  CreateCredentialSourceBody,
   AgentCredentialSourceParams,
   CredentialSourceParams,
   CreateServiceAccountBody,
@@ -93,6 +94,7 @@ import {
   UpdateAgentBody,
   UpdateConfigurationBody,
   UpdateSecretBody,
+  UpdateCredentialSourceBody,
   UpdateServiceAccountCredentialBody,
   UpdateWorkspaceFileBody,
   WorkspaceFileParams,
@@ -1254,7 +1256,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      body: Type.Ref("RegisterTokenServiceSourceBody"),
+      body: Type.Union([CreateCredentialSourceBody, Type.Ref("RegisterTokenServiceSourceBody")]),
       response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
     },
   },
@@ -1303,7 +1305,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      body: Type.Ref("UpdateTokenServiceSourceBody"),
+      body: Type.Union([UpdateCredentialSourceBody, Type.Ref("UpdateTokenServiceSourceBody")]),
       response: { 200: CredentialSourceResponseRef, ...createErrors },
     },
   },
@@ -1315,7 +1317,7 @@ export const occApiRoutes = [
     iamAction: "update",
     resourceKind: "credential_source",
     authorizationTarget: "credential_source",
-    summary: "Ask the selected TokenService to refresh an OAuth Source",
+    summary: "Ask the recorded owner to refresh a credential source",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
