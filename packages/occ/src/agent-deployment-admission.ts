@@ -270,17 +270,6 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         "The Harness credential source has no permitted model provider preset.",
       );
     }
-    let preset: ModelCredentialPreset | undefined;
-    try {
-      preset = dependencies.modelCredentialPreset?.({ presetId, configuration, harness });
-    } catch {
-      preset = undefined;
-    }
-    if (preset === undefined) {
-      throw new ResourceStateConflictError(
-        "The selected model has no matching approved source preset and explicit inference route.",
-      );
-    }
     if (sandbox === undefined || dependencies.supportsCredentialDeployment === undefined) {
       throw new ResourceStateConflictError(
         "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
@@ -300,6 +289,17 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     if (owner === undefined || proxy === undefined) {
       throw new ResourceStateConflictError(
         "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
+      );
+    }
+    let preset: ModelCredentialPreset | undefined;
+    try {
+      preset = dependencies.modelCredentialPreset?.({ presetId, configuration, harness });
+    } catch {
+      preset = undefined;
+    }
+    if (preset === undefined) {
+      throw new ResourceStateConflictError(
+        "The selected model has no matching approved source preset and explicit inference route.",
       );
     }
     return { source, preset, owner, proxy, sandbox };
