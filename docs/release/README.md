@@ -53,20 +53,24 @@ steps. The source must remain in `main` history. Expired evidence, conflicting
 bytes, or a newer alias stops recovery. Preserve the original run and refer
 conflicts to a release maintainer.
 
-## Standalone publication
+<a id="standalone-publication"></a>
 
-- [Publish images independently](containers.md#prepare-and-publish)
+## Advanced
+
+Use these procedures when you need to publish an individual component or copy
+released images to another registry:
+
+- [Publish container images independently](containers.md#prepare-and-publish)
 - [Publish images with a Helm chart](chart-publication.md#publish)
 - [Publish the OCC CLI independently](cli-publication.md#publish)
+- [Check standalone published images](staging-qualification.md)
+- [Copy released images to private Docker Hub repositories](container-promotion.md#promote)
+- [Recover a standalone image publication](containers.md#recover-a-partial-publication)
 
-These workflows qualify only their own outputs. Before the first versioned
+Standalone workflows qualify only their own outputs. Before the first versioned
 rollout, maintainers must decide whether versioned releases require Release OCE
 or verified recovery, and whether `latest` is reserved for complete releases.
 Coordinate writers until that decision is made.
-
-Other tasks: [Configuration](configuration.md), [Docker Hub promotion](container-promotion.md#promote),
-[standalone image recovery](containers.md#recover-a-partial-publication), and
-[checks for standalone published images](staging-qualification.md).
 
 ## Implementation flows
 
