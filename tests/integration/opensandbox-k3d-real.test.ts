@@ -695,11 +695,49 @@ test(
         "s.once('connect',()=>finish('CONNECTED'));s.once('error',err=>finish(err.code));"
       );
     }
-    // Bracket the negative observation with successful connections to the
-    // same Pod IP. A refused port or a dead listener cannot pass as a timeout.
+    // Network plugins can reject a connection immediately or drop packets.
+    // Change only the Harness egress rule and require the same socket to open,
+    // then close again. A dead listener cannot satisfy all three observations.
+    const connectFromHarness = () => exec(first.pod, "agent", connect(podIp));
+    const refused = (outcome: string) => outcome === "ECONNREFUSED" || outcome === "TIMEOUT";
     assert.equal(await exec(probe, "listener", connect(podIp)), "CONNECTED");
-    assert.equal(await exec(first.pod, "agent", connect(podIp)), "TIMEOUT");
+    assert.ok(refused(await connectFromHarness()), "The Harness reached an ungranted listener");
+    const probeGrant = "opensandbox-probe-grant-" + nonce;
+    await kube.applyManifest(
+      JSON.stringify({
+        apiVersion: "networking.k8s.io/v1",
+        kind: "NetworkPolicy",
+        metadata: { name: probeGrant, namespace: placement },
+        spec: {
+          podSelector: { matchLabels: { "openclaw.dev/opensandbox-pod": kubeUid(first.pod) } },
+          policyTypes: ["Egress"],
+          egress: [
+            {
+              to: [{ podSelector: { matchLabels: { app: deniedProbe } } }],
+              ports: [{ protocol: "TCP", port: deniedPort }],
+            },
+          ],
+        },
+      }),
+    );
+    try {
+      await kube.waitFor(
+        "the test-only listener grant to take effect",
+        async () => (await connectFromHarness()) === "CONNECTED",
+        30_000,
+      );
+    } finally {
+      await kube.kubectl("delete", "networkpolicy", probeGrant, "-n", placement, "--timeout=30s");
+    }
+    await kube.waitFor(
+      "withdrawal of the test-only listener grant",
+      async () => refused(await connectFromHarness()),
+      30_000,
+    );
     assert.equal(await exec(probe, "listener", connect(podIp)), "CONNECTED");
+    t.diagnostic(
+      "The same Harness connection failed, succeeded with the test grant, and failed after withdrawal.",
+    );
     await kube.resource("deployment", gatewayName(agent.id), placement);
     const [gatewayPod] = await resources(
       "pods",
