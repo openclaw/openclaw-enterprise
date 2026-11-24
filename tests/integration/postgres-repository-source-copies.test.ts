@@ -11,7 +11,12 @@ import type {
   OpenShellProviderResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
-import type { AuditEvent, CredentialSourceReference } from "../../packages/contracts/src/index.ts";
+import type {
+  Agent,
+  AuditEvent,
+  CredentialSourceReference,
+} from "../../packages/contracts/src/index.ts";
+import { createAgentCredentialAccess } from "../../packages/occ/src/agent-credential-access.ts";
 import {
   RepositorySourceCopiesUnretiredError,
   ResourceConflictError,
@@ -856,9 +861,11 @@ test(
     await write.settled("applied");
     await writing.hold.release();
     await replacing;
+    // Settling clears the record of the write; the Gateway accepting it is not delivery, so no
+    // confirmed version is written here.
     assert.deepEqual(await row(live), {
       unknown_write_version: null,
-      confirmed_source_version: current,
+      confirmed_source_version: null,
       retired: false,
     });
 
@@ -952,5 +959,115 @@ test(
     assert.equal(await again.write(revisionId, version).dispatching(), true);
     await again.hold.release();
     await assert.rejects(deleting, fenced);
+  },
+);
+
+test(
+  "the policy read's delivery state comes from the copy record alone: pending until the Sandbox activates the committed version",
+  requiresPostgres,
+  async (t) => {
+    const f = await managedSource(t, "repository-source-delivery-state");
+    const ref = { namespaceId: f.namespaceId, sourceId: f.source.id };
+    const routes = new PostgresOpenShellGitRouteStore(f.pool);
+    const revisionId = `rev-${randomUUID()}`;
+    await f.state.transact((unit) =>
+      unit.credentialSources.recordRepositorySourceCopy(f.copy(revisionId)),
+    );
+    // Only the read and its record lookups are under test: every caller may read the Source.
+    const access = createAgentCredentialAccess({
+      authority: { authorizationDecision: async () => ({ decision: { allowed: true } }) },
+      requireTokenServiceOwner: () => {},
+    } as unknown as Parameters<typeof createAgentCredentialAccess>[0]);
+    const resolve = t.mock.method(f.owner, "resolveCredential");
+    const agent = { id: `agent-${revisionId}`, namespaceId: f.namespaceId } as Agent;
+    const delivery = async () => {
+      const calls = resolve.mock.callCount();
+      const view = await f.state.read((state) =>
+        access.readRepositoryCredentialSource(state, "reader", agent, f.source.id, [], []),
+      );
+      assert.equal(resolve.mock.callCount(), calls, "the read makes no TokenService call");
+      assert.ok("deliveries" in view);
+      assert.equal(view.deliveries.length, 1);
+      return view.deliveries[0]!;
+    };
+    // The Worker's write of the Source's current value, accepted by the Gateway and installed.
+    const write = async () => {
+      const worker = f.custody();
+      const lent = await worker.lock(ref);
+      assert.ok(lent?.source);
+      assert.equal(await lent.recorded(revisionId), true);
+      const { version } = await worker.resolve(ref, lent.source);
+      assert.ok(version);
+      const written = lent.write(revisionId, version);
+      assert.equal(await written.dispatching(), true);
+      await written.settled("applied");
+      await lent.hold.release();
+      assert.equal(await routes.recordSourceCopyInstalled(revisionId, "provider-a", version), true);
+      return version;
+    };
+    const committed = async () => {
+      const [copy] = (
+        await f.pool.query(
+          "SELECT expected_source_version FROM occ.repository_source_copies WHERE revision_id=$1",
+          [revisionId],
+        )
+      ).rows as { expected_source_version: string | null }[];
+      return copy?.expected_source_version;
+    };
+
+    assert.deepEqual(await delivery(), { revisionId, state: "pending" });
+    // The Gateway accepted the first value; the Sandbox has not activated it.
+    const first = await write();
+    assert.deepEqual(await delivery(), { revisionId, state: "pending" });
+    // No replacement committed since the copy was recorded: its first activation is delivery.
+    assert.equal(await routes.recordSourceCopyConfirmed(revisionId, first), true);
+    const initial = await delivery();
+    assert.equal(initial.state, "confirmed");
+    assert.equal(initial.confirmedSourceVersion, first);
+    assert.equal(initial.committedSourceVersion, undefined);
+
+    // A replacement commits: the copy expects its version and is pending again.
+    await f.update({ secret: { token: fineGrained() } });
+    const replaced = await committed();
+    assert.ok(replaced && replaced !== first);
+    const expected = await delivery();
+    assert.equal(expected.state, "pending");
+    assert.equal(expected.committedSourceVersion, replaced);
+    assert.equal(expected.confirmedSourceVersion, first);
+    assert.equal(await write(), replaced);
+    assert.equal((await delivery()).state, "pending", "accepted by the Gateway is not delivered");
+
+    // A second replacement commits before the Sandbox activates the first: activating the older
+    // version never reads confirmed.
+    await f.update({ secret: { token: fineGrained() } });
+    const latest = await committed();
+    assert.ok(latest && latest !== replaced);
+    assert.equal(await routes.recordSourceCopyConfirmed(revisionId, replaced), true);
+    const older = await delivery();
+    assert.equal(older.state, "pending");
+    assert.equal(older.committedSourceVersion, latest);
+    assert.equal(older.confirmedSourceVersion, replaced);
+
+    // The latest written and activated: confirmed, with both times. An older version's
+    // activation can no longer be recorded over it.
+    assert.equal(await write(), latest);
+    assert.equal(await routes.recordSourceCopyConfirmed(revisionId, latest), true);
+    assert.equal(await routes.recordSourceCopyConfirmed(revisionId, replaced), false);
+    const confirmed = await delivery();
+    assert.equal(confirmed.state, "confirmed");
+    assert.equal(confirmed.committedSourceVersion, latest);
+    assert.equal(confirmed.confirmedSourceVersion, latest);
+    assert.ok(confirmed.committedAt && confirmed.confirmedAt);
+    assert.ok(Date.parse(confirmed.committedAt) <= Date.parse(confirmed.confirmedAt));
+
+    // A write whose outcome is unknown: unreconciled, whatever was confirmed before.
+    const worker = f.custody();
+    const lent = await worker.lock(ref);
+    assert.ok(lent?.source);
+    assert.equal(await lent.recorded(revisionId), true);
+    const { version } = await worker.resolve(ref, lent.source);
+    assert.equal(await lent.write(revisionId, version).dispatching(), true);
+    await lent.hold.release();
+    assert.equal((await delivery()).state, "unreconciled");
   },
 );

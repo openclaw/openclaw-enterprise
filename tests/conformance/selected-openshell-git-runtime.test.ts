@@ -4557,6 +4557,8 @@ test("native Git rotates a lent Source in place, confirms each version's deliver
     const copy = store.copies.get(revision.id);
     return [copy?.provider, copy?.sourceVersion];
   };
+  // The copy record's delivery: written when the supervisor is seen to activate the version.
+  const recorded = () => store.copies.get(revision.id)?.confirmedSourceVersion;
   assert.match(prepared.provider, /^oce-github-token-[a-f0-9]{32}$/);
   const confirmed = () =>
     f.events
@@ -4571,6 +4573,7 @@ test("native Git rotates a lent Source in place, confirms each version's deliver
   assert.equal(f.runtime.route(revision.id).state, "installed");
   assert.deepEqual(confirmed(), [["cs_fixture_token", "version-1", revision.id]]);
   assert.deepEqual(installed(), [prepared.provider, "version-1"]);
+  assert.equal(recorded(), "version-1");
   await reconcile();
   assert.equal(confirmed().length, 1, "confirmed once per version, not per pass");
 
@@ -4585,6 +4588,7 @@ test("native Git rotates a lent Source in place, confirms each version's deliver
   };
   await reconcile();
   assert.equal(activity.updates, 2);
+  assert.equal(recorded(), "version-2");
   assert.equal(entry.binding.provider, prepared.provider);
   assert.equal(entry.binding.providerId, providerId);
   assert.deepEqual(confirmed(), [

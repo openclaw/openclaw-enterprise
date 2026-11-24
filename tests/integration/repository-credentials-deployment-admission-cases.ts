@@ -1515,8 +1515,17 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     const agent = await createSelectedAgent();
     const path = `${f.collection}/${agent.id}`;
     const policyPath = `${path}/sandbox-policy/networking`;
-    const view = async (request: typeof f.request = f.request, at = policyPath) =>
-      checkedEnvelope(await request("GET", at), SandboxPolicyViewResponse, 200).data;
+    // Delivery comes from the copy record alone: no policy read resolves the Source.
+    const tokenService = f.controller.selectedDriver("token_service") as {
+      resolveCredential(...args: unknown[]): unknown;
+    };
+    const resolutions = t.mock.method(tokenService, "resolveCredential");
+    const view = async (request: typeof f.request = f.request, at = policyPath) => {
+      const calls = resolutions.mock.callCount();
+      const data = checkedEnvelope(await request("GET", at), SandboxPolicyViewResponse, 200).data;
+      assert.equal(resolutions.mock.callCount(), calls, "the policy read makes no TokenService call");
+      return data;
+    };
     const source = {
       kind: "credential_source",
       id: repositorySourceId,
@@ -1594,9 +1603,11 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       "repository-token",
       "effectiveRepositoryNetworkPolicy",
       "deliveries",
-      "provider_updated",
       "unreconciled",
-      "providerUpdatedAt",
+      "committedSourceVersion",
+      "committedAt",
+      "confirmedSourceVersion",
+      "confirmedAt",
     ]) {
       assert.equal(serialized.includes(leaked), false, leaked);
     }
