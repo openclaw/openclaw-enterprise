@@ -67,7 +67,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
    with no running Pod (**Pages / Agent detail / Logs of a version with no
    running Pod**). A dialog that cannot submit after a refusal or an unknown
    outcome keeps its fields and confirmation in the Tab order, described by
-   its alert, while focus moves to Cancel or Close (finding 2935): **Pages /
+   its alert, while focus moves to the dismissal button (finding 2935): **Pages /
    Namespaces / Create permission denied** and **Create outcome unknown**,
    **Pages / Secrets / Create denied** and **Concurrent reference conflict**,
    and the Stop and Delete confirmations when a refusal arrives while they are

@@ -406,11 +406,11 @@ export function createAgentStop(
     state.used = true;
     let submitted = false;
     const dialog = element("dialog", {
-      className: "dialog agent-stop-dialog",
+      className: "dialog dialog--framed agent-stop-dialog",
       "aria-labelledby": "agent-stop-confirm-title",
       "aria-describedby": "agent-stop-confirm-target agent-stop-confirm-description",
     });
-    const cancel = button("Cancel", () => dialog.close());
+    const cancel = button("Go back", () => dialog.close());
     const confirm = button(
       "Stop Agent",
       () => {
@@ -422,10 +422,10 @@ export function createAgentStop(
       },
       { className: "danger" },
     );
-    const description = element(
-      "p",
-      { id: "agent-stop-confirm-description", "aria-live": "polite" },
-      stopConfirmation(state.agent, state.latestDeployment),
+    const description = stopConfirmation(
+      "agent-stop-confirm-description",
+      state.agent,
+      state.latestDeployment,
     );
     const showRestriction = () => {
       // A late answer cannot undo a request already sent.
@@ -439,13 +439,11 @@ export function createAgentStop(
     };
     restrictConfirmation = showRestriction;
     dialog.append(
-      element("h2", { id: "agent-stop-confirm-title" }, "Stop this Agent?"),
-      // The short title no longer names the Agent, so the dialog does, as text.
       element(
-        "p",
-        { id: "agent-stop-confirm-target" },
-        "Agent: ",
-        element("strong", {}, state.agent.name),
+        "header",
+        { className: "dialog-header" },
+        element("p", { id: "agent-stop-confirm-target" }, state.agent.name),
+        element("h2", { id: "agent-stop-confirm-title" }, "Stop this Agent?"),
       ),
       description,
       element("div", { className: "dialog-actions" }, cancel, confirm),

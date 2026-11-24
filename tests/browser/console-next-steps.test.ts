@@ -10,6 +10,7 @@ import {
   deployAcceptedVersionUnreadable,
   MODEL_CREDENTIAL_REJECTED_RECORDED,
   requestedVersionUnavailable,
+  STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION,
   VERSION_READ_DENIED,
   VERSION_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
@@ -560,15 +561,10 @@ async function redeployUnreadable(t: TestContext, name: string, { paged = false 
   await waitForEnabled(stop);
   await stop.click();
   const dialog = page.getByRole("dialog", { name: "Stop this Agent?", exact: true });
-  await dialog.getByText(`Agent: ${agent.name}`, { exact: true }).waitFor();
-  await dialog
-    .getByText(
-      "This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.",
-      { exact: true },
-    )
-    .waitFor();
+  await dialog.getByText(agent.name, { exact: true }).waitFor();
+  await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
   await waitForEnabled(dialog.getByRole("button", { name: "Stop Agent", exact: true }));
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.getByRole("button", { name: "Go back", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
   await waitForIdleFetches(page);
   assert.equal(

@@ -108,7 +108,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   const cases = [
     {
       name: "stop",
-      actions: ["Cancel", "Stop Agent"],
+      actions: ["Go back", "Stop Agent"],
       async open() {
         await page.goto(detail(agent.id));
         const region = page.getByRole("region", { name: "Stop Agent", exact: true });
@@ -176,7 +176,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
       await page.screenshot({ path: join(artifacts, `dialog-${name}-${viewport.width}.png`) });
       seen.set(`${name} ${viewport.width}`, state);
       assert.equal(state.focusInside, true, `${name}: focus moves into the dialog`);
-      // Every confirming dialog shares one action row: Cancel first, its confirming action last
+      // Every confirming dialog shares one action row: dismiss first, its confirming action last
       // (finding 1942: Delete kept the page's form-actions row).
       assert.deepEqual(state.actions, actions, `${name}: its .dialog-actions row`);
       // Escape keeps today's rule (it closes an idle dialog), and focus returns to the opener.
@@ -283,7 +283,10 @@ test("Stop, row Stop and Namespace deletion dialogs keep focus that moved on bef
   const cancelKeeps = async (dialogName: string, elsewhere: Locator, label: string) => {
     const dialog = page.getByRole("dialog", { name: dialogName, exact: true });
     await dialog.waitFor();
-    const cancel = dialog.getByRole("button", { name: "Cancel", exact: true });
+    const cancel = dialog.getByRole("button", {
+      name: dialogName.startsWith("Stop ") ? "Go back" : "Cancel",
+      exact: true,
+    });
     assert.equal(await focusKeptOverClose(cancel, elsewhere), true, label);
   };
 

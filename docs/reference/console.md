@@ -172,6 +172,9 @@ Select **Stop Agent** or the Agent's list-row Stop icon, review its effect, and
 confirm. Stop requires exact Agent `operate`. It requests shutdown while
 retaining version history, credentials, gateway state, and workspace files.
 
+Cancel a reply with chat **Stop** first.
+[Interrupted work](agents/interrupted-turns.md) can resume.
+
 An accepted request means shutdown was queued; the list row shows **Stop
 requested**. **Refresh stop status** rereads the Agent's desired state and
 selected version without probing the runtime. After Stop, **Request Stop
