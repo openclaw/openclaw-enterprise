@@ -6,6 +6,12 @@ after **Deploy new version**; a workspace file save applies at once.
 
 ## Configuration tab
 
+The tab shows one card for each part of the Configuration: the **Configuration
+draft** or **Configuration snapshot** summary, then **Settings**, which holds the
+native document, and **Gateway channel proxy**. The draft adds **Collaboration
+and safety** and **Gateway managed mode**. The help under each control states
+what the control does and what it risks.
+
 | Field                                  | Meaning                                                                                                          |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Model**                              | Primary model configured for the Agent.                                                                          |
@@ -153,9 +159,14 @@ plugin allowlist and is separate from these Agent-owned selections.
 
 ## Workspace files tab
 
-**Workspace access is unavailable** leaves
-the editor and Save disabled. The empty box does not mean the file is empty.
-Check gateway access, then use Reload.
+If the gateway or the API does not answer, each affected file shows the reason
+under its editor, and one notice above the files names those files. The empty box
+does not mean the file is empty. Check that the Agent is running, then select
+**Retry**.
+
+**Retry** does not read a file that has unsaved edits or an unknown save outcome.
+Select **Reload** for that file. **Reload** replaces your unsaved edits with the
+current file.
 
 These are live files belonging to the Agent, even when you browse an older
 version. They are not historical copies or Configuration fields.

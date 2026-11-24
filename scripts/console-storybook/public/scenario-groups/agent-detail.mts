@@ -145,6 +145,12 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const longPluginId =
+    "codex-plugin:example-document-review-and-records-retention-workspace@openai-curated-remote";
+  const pluginSelectionsWithLongId: PluginDesiredState = {
+    ...pluginSelectionState,
+    [longPluginId]: { enabled: true },
+  };
   const newerDeployment: AgentRevisionSummaryWire = {
     id: "rev_00000000-0000-4000-8000-000000000008",
     namespaceId: "ns_00000000-0000-4000-8000-000000000001",
@@ -1345,7 +1351,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=plugins`,
         deployed: true,
         auth: "codex_pat",
-        agentPlugins: structuredClone(pluginSelectionState),
+        agentPlugins: structuredClone(pluginSelectionsWithLongId),
         agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
         pluginCapabilities,
         pluginDiscovery,
@@ -1353,6 +1359,7 @@ export function createAgentDetailScenarios({
         description:
           "The permission answer denies Agent update, so the saved selections show as a read-only summary with no editor, Save or Discard, and the note names the grant to ask for. The page does not read the plugin policy capabilities, which need Agent update, so the saved default plugin approvers show as text. The API still decides.",
         steps: [
+          "At 390 px, focus the Plugins tab and press Tab. The full plugin ID wraps inside the focused JSON block.",
           "Under Default plugin approvers, read that the next deployment uses these Agent default approvers and find slack: team:TDEMO123:user:UDEMO123. No approver field is offered.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -1584,11 +1591,14 @@ export function createAgentDetailScenarios({
         name: "Plugins in admitted version",
         path: revision,
         deployed: true,
-        agentPlugins: structuredClone(pluginSelectionState),
+        agentPlugins: structuredClone(pluginSelectionsWithLongId),
         pluginCapabilities,
         actions: [click("Plugins")],
         description:
           "An admitted version shows its immutable Agent-owned plugin selection and policy.",
+        steps: [
+          "Select Plugins. At 390 px, focus the tab and press Tab. The full plugin ID wraps inside the focused JSON block.",
+        ],
       },
       invalidConfiguration: {
         group: "Pages/Agent detail",
@@ -3844,6 +3854,29 @@ export function createAgentDetailScenarios({
     } satisfies Record<string, AgentDetailScenario>,
 
     layout: {
+      channelsAccessUnconfirmedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Channels access could not be checked on tab return",
+        path: `${draft}&tab=channels`,
+        slack: true,
+        rules: [
+          {
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
+            method: "GET",
+            skip: 1,
+            once: true,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "Channels opens with editing available. When you return to the browser tab, the Agent's permission check fails once.",
+        steps: [
+          "Open the preview in its own tab. Use the keyboard to open Edit Slack, then Cancel. Check that focus returns to Edit Slack.",
+          "Switch to another browser tab and return. Channels stays selected and receives focus. Read the access-check message and Refresh guidance. Edit Slack and Deploy new version are unavailable.",
+          "Choose Refresh in the page header. Channels stays selected, the access-check message clears, and Edit Slack is available again.",
+        ],
+      },
       agentDetailLayout: {
         group: "Pages/Agent detail",
         name: "Agent detail layout",

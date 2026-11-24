@@ -104,7 +104,9 @@ your approved upgrade procedure and credential policy.
 
 When you select candidate files or other expert options, pass the same options
 after `--` to `plan` and `apply`. Review the deployment effects and image digests
-before you approve. Plan, apply, and preflight refuse changes to protected
+before you approve. Schedule a maintenance window even if Agent
+revisions stay the same and the database is current. Deployment stops the OCC API and Worker.
+Plan, apply, and preflight refuse changes to protected
 settings that they can detect in local files. Current cluster state and
 migration history remain unknown until the upgrade checks the cluster.
 
@@ -168,7 +170,8 @@ paths. After completion, [verify the release](production-upgrade.md#verify-the-r
 ### Continue after a separate database migration
 
 If `apply` reports a separate database migration pause and exits with status
-**3**, the API and worker are stopped. Helm submission waits for verified
+**3**, confirm both writers are stopped. Exit status alone does not confirm
+the pause. Helm submission waits for verified
 migration history. Keep the maintenance window active, other writers and
 autoscalers fenced, and the original evidence in place.
 

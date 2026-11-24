@@ -122,6 +122,7 @@ export function secretsScenarios({
       description:
         "The header identifies the Namespace. The form preserves whitespace and explains that you can replace a saved value but cannot retrieve it.",
       steps: [
+        "At short desktop and phone heights, use Tab and Shift+Tab through the form. Check that each focused control, including Value, and its outline are fully visible.",
         "Enter a name and a dummy value. Use Show value beside the Value label, then hide it again.",
         "Press Enter from Secret name to submit. After the save, Close is the only dialog action.",
       ],
@@ -238,6 +239,9 @@ export function secretsScenarios({
       actions: [click("Demo model API key (simulated)"), click("Replace value")],
       description:
         "Replacement preserves the reference and explains deployment and CredentialSource handoff. Existing values are never loaded.",
+      steps: [
+        "At short desktop and phone heights, use Tab and Shift+Tab through Show value, Value, Close and Replace value. Check that each focused control and its outline are fully visible.",
+      ],
     },
     secretsReplaceDenied: {
       group: "Pages/Secrets",

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-24 15:51"
-last_updated_session: "authoring-run/acb5e9f3-ca5f-443d-ba44-31a213dffc65"
+updated: "2026-11-24 16:36"
+last_updated_session: "authoring-run/1a56db49-0f69-4836-8921-ba746a9bd026"
 ---
 
 # Console Agent editing and runtime requests
@@ -168,7 +168,7 @@ Without review, a `github-repository` binding and empty readable history yield
 `null`. Otherwise Console omits the field. Admission rechecks independently.
 Success opens the version. Uncertainty disables Deploy. Check history before retrying.
 
-`apps/controller/src/console/drafts.mts:createDraftStore` keeps drafts only in memory by Namespace
+`apps/controller/src/console/drafts.mts:createDraftStore` isolates in-memory drafts by Namespace
 and Agent. `console.mts:resetReads` and `detail.mts:renderTab` exclude passwords.
 Session expiry, user change, logout, exit or browser reload clears drafts.
 Baselines guard saves. Channel snapshots include staged Secret metadata.
@@ -184,6 +184,13 @@ retains plugin selections. Pending channel saves and Secret creation prevent dis
 only **Open draft** permits editing. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
+
+With the drawer closed, `console.mts` rechecks draft
+**Channels** access on tab return. Header **Refresh** uses `confirmForAgent` to require a valid
+permission result. **Retry** keeps that requirement if the Agent read fails.
+On a failed or invalid check, `agents/detail.mts` disables editing and deployment
+and suggests **Refresh**. A confirmed denial names the missing permission.
+Editing returns once the required grants are confirmed.
 
 `agents/detail.mts:renderConfigurationTab` reads draft Harness authentication
 from the Agent, or admitted authentication and channel `secretBindings` from the
@@ -356,20 +363,10 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-24 16:36: Reconcile Channels and reload. (authoring-run/1a56db49-0f69-4836-8921-ba746a9bd026 - ad89333393b92bf2c7020d5fa3b480a74ab4dbec)
+- 2026-11-24 15:51: Trace draft Channels access confirmation. (authoring-run/0e68027f-b229-42d4-8639-87267b4b6363 - fccad45bda2c0004ecf6ee4cdd93a3cefbfd089e)
 - 2026-11-24 15:51: Distinguish draft reload outcomes. (authoring-run/acb5e9f3-ca5f-443d-ba44-31a213dffc65 - 7b0d04f59c01e53e3f19e1e744daee1e428e851c)
-
 - 2026-11-24 06:58: Guard Settings during pending saves. (authoring-run/261aa429-df62-4285-b574-5417ff787bdc - 4d4681144427368743596e0379b28dbadfef8c58)
-
 - 2026-11-24 04:34: Correct deployment and access checks. (authoring-run/c18adb53-c759-42e0-a930-ff768e9075d0 - 8975a292b01b6ddbf7c01be8b3f70878085a772d)
-- 2026-11-22 21:08: Conflict focus. (authoring-run/303eb0c9-04da-4bab-9fac-cc0dca754630 - 2b01b92963bfeb8bfa0f29fe583f9523d48a78a3)
-- 2026-11-22 08:58: Link snapshots to draft tabs. (authoring-run/ec03baba-cadf-4c59-9194-3a93a3c4763b - f3996c521e94d8bf18ff9018069c699dda6913c6)
-- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-06 23:58: Render repository guidance. (authoring-run/d680b93c-3891-475b-b5f6-0b4f5ccf1ecf - d55839d701)
-
-- 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
-- 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
-- 2026-11-05 01:51: Guard pending-save history. (authoring-run/19e029b0-7ee3-4034-8e3b-e403265ff746 - 516ee6d87dea5326df70e647b17e2a141392cd0c)
-- 2026-11-05 01:03: Document read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
-- 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

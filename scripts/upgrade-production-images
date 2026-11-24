@@ -1665,7 +1665,15 @@ run_preflight_jobs() {
               "$evidence_dir/preflight-api.log") || draft_refusals=
           fi
           if [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
-            message="the selected controller image failed the guarded database migration check for the expected Installation. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No ${writer_qualifier}OCC writer was stopped. Confirm that the image supports --check-for-installation and reconcile the migrator connection or database history before retrying."
+            if [[ "$phase" == Failed && "$logs_status" == 0 ]] && jq -Rse '
+              [split("\n")[] | fromjson? | objects |
+                select(.event | strings | startswith("migration.")) | [.event, .code]]
+                == [["migration.failed", "MIGRATION_HISTORY_UNSUPPORTED"]]
+            ' "$evidence_dir/preflight-migration.log" >/dev/null 2>&1; then
+              message="the selected controller image does not support the installed database history (MIGRATION_HISTORY_UNSUPPORTED). No ${writer_qualifier}OCC writer was stopped. Preserve the database and select an image verified against this history. See preflight-migration.log and preflight-migration-status.json in $evidence_dir."
+            else
+              message="the selected controller image failed the guarded database migration check for the expected Installation. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No ${writer_qualifier}OCC writer was stopped. Confirm that the image supports --check-for-installation and reconcile the migrator connection or database history before retrying."
+            fi
           elif [[ "$component" == migration ]]; then
             message="the selected controller image could not confirm database migration compatibility. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No additional OCC writer was stopped; reconcile the database history, migrator access, or database connectivity before retrying."
           elif [[ -n "$draft_refusals" ]]; then
