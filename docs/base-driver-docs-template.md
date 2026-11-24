@@ -6,7 +6,7 @@ It starts with `kind: reference/driver`. See the [documentation taxonomy](taxono
 for the scope of this kind.
 
 The required sections are **Overview**, **Interface**, **IAM**, **Lifecycle**,
-**Limits**, **Troubleshooting**, **Implementations**, and **Related**. Interface
+**Configuration**, **Limits**, **Troubleshooting**, **Implementations**, and **Related**. Interface
 lists properties first and methods second. Each table lists required members
 before optional members. Use only `Required` or `Optional` in the Requirement
 column. Describe the effect of an omitted member in its behavior or value column.

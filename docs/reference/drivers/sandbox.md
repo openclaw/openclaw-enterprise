@@ -340,9 +340,10 @@ inputs as Sandbox startup fields.
 
 ## Implementations
 
-- [OpenShell SandboxDriver](openshell-sandbox.md): bundled implementation, paired
-  with the OpenShell Credential Gateway through an `openshell` Backend. Trusted
-  YAML can also select an operator-installed Sandbox package, which cannot pair
+- Bundled [OpenShell](openshell-sandbox.md) requires an `openshell` Backend.
+  Model credentials use a compatible Credential Proxy or the optional legacy
+  OpenShell Credential Gateway.
+- Operator-installed Sandbox packages selected in trusted YAML cannot pair
   with a Credential Gateway.
 
 ## Related

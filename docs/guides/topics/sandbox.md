@@ -22,9 +22,11 @@ token. Kubernetes Compute rejects dedicated OpenShell execution with
 needs projected identity, choose a Driver that supports it.
 
 For Codex app-server authentication, Compute sends OpenShell a SHA-256 hash
-of the token. The Agent Gateway retains the token. The paired
-[Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
-keeps the model API key out of the Harness. The [local verification setup](../deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
+of the token. The Agent Gateway retains the token.
+
+OpenShell model credentials can use the [Credential Proxy](../../reference/drivers/credential-proxy.md)
+or the optional legacy [Credential Gateway](../../reference/drivers/openshell-credential-gateway.md).
+The [local verification setup](../deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
 is for development only. Deployment stops if the selected Sandbox cannot enforce
 required containment or preserve workload identity.
 
