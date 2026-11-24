@@ -581,6 +581,20 @@ test(
         })),
       });
       if (agents.length === 0) {
+        // The obsolete standalone snapshot has a valid finite deadline and the same grants;
+        // removing the Source marker cannot turn it into an eligible native revision.
+        const obsoleteAuthority = {
+          driver: authority.driver,
+          bindings: authority.bindings,
+          deadlineWallMs: Date.now() + 600_000,
+        };
+        assert.equal(
+          isNativeStagedRepositoryRevision({
+            ...revision,
+            repositoryCredentials: obsoleteAuthority,
+          }),
+          false,
+        );
         // Exercise the actual app-role database validator against the admitted stored revision.
         // Each mutation removes or changes one independently required Repository boundary.
         const checked = await pool.query(
@@ -611,21 +625,40 @@ test(
             "standing-approval": false,
           },
         );
+        const insertAlteredRevision = (field: string[], value: unknown) =>
+          pool.query(
+            `INSERT INTO occ.agent_revisions
+               (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at,
+                backend_id, gateway_managed_mode)
+             SELECT $4, namespace_id, agent_id, revision_number + 1,
+                    jsonb_set(admitted_spec, $5::text[], $6::jsonb),
+                    admitted_at, backend_id, gateway_managed_mode
+               FROM occ.agent_revisions
+              WHERE namespace_id=$1 AND agent_id=$2 AND id=$3`,
+            [
+              namespaceId,
+              agent.id,
+              revision.id,
+              `rev_${randomUUID()}`,
+              field,
+              JSON.stringify(value),
+            ],
+          );
+        // Use the application role's real write path to check the authority/context invariant.
+        await assert.rejects(
+          () => insertAlteredRevision(["repository_credentials"], obsoleteAuthority),
+          {
+            code: "23514",
+            constraint: "agent_revisions_source_backed_repository_authorization",
+          },
+        );
         // A stored revision cannot manufacture write authority from the Agent's saved read
         // request, even when its finite Source can issue write-capable installation tokens.
         await assert.rejects(
           () =>
-            pool.query(
-              `INSERT INTO occ.agent_revisions
-                 (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at,
-                  backend_id, gateway_managed_mode)
-               SELECT $4, namespace_id, agent_id, revision_number + 1,
-                      jsonb_set(admitted_spec,
-                        '{sandbox_policy,repositoryNetworkPolicy,grants,0,access}', '"write"'),
-                      admitted_at, backend_id, gateway_managed_mode
-                 FROM occ.agent_revisions
-                WHERE namespace_id=$1 AND agent_id=$2 AND id=$3`,
-              [namespaceId, agent.id, revision.id, `rev_${randomUUID()}`],
+            insertAlteredRevision(
+              ["sandbox_policy", "repositoryNetworkPolicy", "grants", "0", "access"],
+              "write",
             ),
           (error: unknown) => {
             const failure = error as { code?: string; where?: string };
@@ -1067,15 +1100,14 @@ test(
         creatorSource.type === "github-app-installation",
     );
     assert.deepEqual(creatorSource.scope, gitSource.scope);
-    const creatorCredential = await owner.resolveCredential(
-      {
-        sourceRef: { kind: "credential_source", namespaceId, id: creatorGitSourceId },
-        tokenServiceInstanceId: nativeController.currentTokenServiceInstanceId(),
-      },
-      t.signal,
-    );
+    const creatorTokenSource = {
+      sourceRef: { kind: "credential_source" as const, namespaceId, id: creatorGitSourceId },
+      tokenServiceInstanceId: nativeController.currentTokenServiceInstanceId(),
+    };
+    const creatorCredential = await owner.resolveCredential(creatorTokenSource, t.signal);
     assert.ok(creatorCredential.version);
     assert.ok(creatorCredential.credential);
+    assert.ok(creatorCredential.expiresAt);
 
     // Run the actual Worker against the real admission and queue. Control only the Compute
     // workload boundary, since this fixture does not start a Gateway or Sandbox.
@@ -1200,6 +1232,18 @@ test(
       assert.equal(github.issuesOfTokens.length, mintsBeforeWorker);
     } finally {
       await worker.stop();
+    }
+
+    // Source-backed authorization still uses finite installation credentials. Cross the issuer
+    // receipt's expiry after the Worker has shut down so only custody resolution sees this clock.
+    t.mock.timers.enable({ apis: ["Date"], now: Date.parse(creatorCredential.expiresAt) + 1 });
+    try {
+      await assert.rejects(
+        () => owner.resolveCredential(creatorTokenSource, t.signal),
+        /GitHub App Source credential has expired/,
+      );
+    } finally {
+      t.mock.timers.reset();
     }
   },
 );

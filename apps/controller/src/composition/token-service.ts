@@ -260,9 +260,6 @@ export async function installTokenServiceDriver(
       );
       if (
         !isNativeStagedRepositoryRevision(revision) ||
-        !revision.repositoryCredentials ||
-        (revision.repositoryCredentials.authorization !== "credential_source" &&
-          Date.now() >= revision.repositoryCredentials.deadlineWallMs) ||
         !activeBindings.some(
           ({ sourceRef: bound, consumer }) =>
             consumer.kind === "repository" && bound.id === sourceRef.id,

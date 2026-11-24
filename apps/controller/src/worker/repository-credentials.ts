@@ -259,7 +259,8 @@ export class RepositoryCredentialLifecycle {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_DRIVER_MISMATCH");
     }
     if (
-      snapshot.authorization === "credential_source" &&
+      (revision.executionAdmission.mode === "standalone" ||
+        snapshot.authorization === "credential_source") &&
       !isNativeStagedRepositoryRevision(revision)
     ) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_RUNTIME_UNSUPPORTED");

@@ -6392,8 +6392,6 @@ export class ControllerWorker {
       if (
         !isNativeStagedRepositoryRevision(revision) ||
         !repository ||
-        (repository.authorization !== "credential_source" &&
-          Date.now() >= repository.deadlineWallMs) ||
         !grants ||
         source?.ownerCapability !== "token_service" ||
         source.type !== "github-app-installation" ||
@@ -7790,8 +7788,8 @@ export class ControllerWorker {
   /**
    * The claim's revision, under Namespace then Agent locks, if it may keep running after its
    * work fails: the running Agent's active revision, of the Agent's service principal, in a
-   * ready Namespace and within its repository deadline. The queue's continuation repeats these
-   * checks on the database clock.
+   * ready Namespace with valid Repository authority. The queue checks legacy session deadlines
+   * on the database clock.
    */
   private async lockContinuingRevision(
     unit: PlatformUnitOfWork,
@@ -7818,11 +7816,17 @@ export class ControllerWorker {
     if (
       namespace?.status !== "ready" ||
       revision === undefined ||
-      revision.servicePrincipalId !== agent.servicePrincipalId ||
-      (revision.repositoryCredentials !== undefined &&
-        revision.repositoryCredentials.authorization !== "credential_source" &&
-        revision.repositoryCredentials.standingApprovalId === undefined &&
-        Date.now() >= revision.repositoryCredentials.deadlineWallMs)
+      revision.servicePrincipalId !== agent.servicePrincipalId
+    ) {
+      return undefined;
+    }
+    const repository = revision.repositoryCredentials;
+    if (
+      repository &&
+      (revision.executionAdmission.mode === "standalone"
+        ? !isNativeStagedRepositoryRevision(revision)
+        : repository.authorization === "credential_source" ||
+          (repository.standingApprovalId === undefined && Date.now() >= repository.deadlineWallMs))
     ) {
       return undefined;
     }
@@ -8034,17 +8038,7 @@ export class ControllerWorker {
     withdrawnInterval?: number,
   ): Promise<void> {
     const interval = withdrawnInterval ?? this.revisionMaintenanceInterval(revision)!;
-    const repository = revision.repositoryCredentials;
-    const remaining =
-      repository && repository.authorization !== "credential_source"
-        ? repository.deadlineWallMs - Date.now()
-        : 0;
-    // TODO(OpenShell #2881): replace Worker-only grant deadlines with native per-Agent expiry.
-    const delayMs =
-      withdrawnInterval === undefined && remaining > 0 && isNativeStagedRepositoryRevision(revision)
-        ? Math.min(interval, remaining)
-        : interval;
-    let maintenanceBucket = Math.floor((Date.now() + delayMs) / interval);
+    let maintenanceBucket = Math.floor((Date.now() + interval) / interval);
     const maintenancePrefix = `agent_revision:${revision.id}:maintenance:`;
     const currentBucket = previousMaintenanceKey.startsWith(maintenancePrefix)
       ? Number(previousMaintenanceKey.slice(maintenancePrefix.length))
@@ -8068,7 +8062,7 @@ export class ControllerWorker {
         actorId: claim.actorId,
       },
       undefined,
-      { delayMs },
+      { delayMs: interval },
     );
   }
 

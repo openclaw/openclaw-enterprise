@@ -155,11 +155,12 @@ export function isNativeStagedRepositoryRevision(
     !deployment ||
     !revision.sandboxDriverId ||
     revision.sandboxPolicy?.driverId !== revision.sandboxDriverId ||
-    !repository ||
-    repository.standingApprovalId !== undefined ||
-    (repository.authorization === "credential_source"
-      ? repository.deadlineWallMs !== undefined
-      : !Number.isSafeInteger(repository.deadlineWallMs) || repository.deadlineWallMs <= 0) ||
+    repository?.authorization !== "credential_source" ||
+    Object.keys(repository).length !== 3 ||
+    !Object.hasOwn(repository, "authorization") ||
+    !Object.hasOwn(repository, "driver") ||
+    !Object.hasOwn(repository, "bindings") ||
+    !Array.isArray(repository.bindings) ||
     repository.bindings.length === 0 ||
     repository.bindings.some(({ profile }) => profile !== "github-repository") ||
     !policy ||

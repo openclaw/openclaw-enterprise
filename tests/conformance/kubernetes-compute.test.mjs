@@ -1073,8 +1073,8 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
             ],
             executionAdmission: { version: 8, mode: "standalone" },
             repositoryCredentials: {
+              authorization: "credential_source",
               driver: { id: "repository", implementation: "github" },
-              deadlineWallMs: Date.now() + 600_000,
               bindings: grants.map(({ repository }, index) => ({
                 repositoryRef: repository.split("/")[1],
                 profile: "github-repository",

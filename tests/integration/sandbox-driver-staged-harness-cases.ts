@@ -268,8 +268,8 @@ export async function verifyStagedModelPolicyObservation(
       },
     ],
     repositoryCredentials: {
+      authorization: "credential_source",
       driver: { id: "repository", implementation: "github" },
-      deadlineWallMs: Date.now() + 600_000,
       bindings: [
         {
           repositoryRef: "repository",

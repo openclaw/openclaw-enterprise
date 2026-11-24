@@ -1,3 +1,18 @@
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT FROM occ.agent_revisions
+    WHERE admitted_spec #>> '{execution_admission,mode}' = 'standalone'
+      AND admitted_spec #> '{execution_admission,version}' = '8'::jsonb
+      AND admitted_spec ? 'repository_credentials'
+      AND admitted_spec #> '{repository_credentials,authorization}' IS DISTINCT FROM '"credential_source"'::jsonb
+  ) THEN
+    RAISE EXCEPTION 'Source-backed Repository authorization requires disposition of retained standalone Repository revisions'
+      USING ERRCODE = '55000';
+  END IF;
+END;
+$$;
+--> statement-breakpoint
 CREATE OR REPLACE FUNCTION occ.repository_credentials_are_valid(credentials jsonb)
 RETURNS boolean LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE
@@ -55,10 +70,14 @@ END;
 $$;
 --> statement-breakpoint
 ALTER TABLE occ.agent_revisions ADD CONSTRAINT agent_revisions_source_backed_repository_authorization CHECK (
-  NOT COALESCE((admitted_spec->'repository_credentials') ? 'authorization', false)
-  OR COALESCE((admitted_spec #>> '{execution_admission,mode}' = 'standalone'
+  CASE WHEN admitted_spec #>> '{execution_admission,mode}' = 'standalone'
     AND admitted_spec #> '{execution_admission,version}' = '8'::jsonb
-    AND admitted_spec #>> '{harness,id}' IN ('codex', 'openclaw')), false)
+    AND admitted_spec ? 'repository_credentials'
+  THEN COALESCE(
+    admitted_spec #> '{repository_credentials,authorization}' = '"credential_source"'::jsonb
+    AND admitted_spec #>> '{harness,id}' IN ('codex', 'openclaw'), false)
+  ELSE NOT COALESCE((admitted_spec->'repository_credentials') ? 'authorization', false)
+  END
 ) NOT VALID;
 --> statement-breakpoint
 ALTER TABLE occ.agent_revisions VALIDATE CONSTRAINT agent_revisions_source_backed_repository_authorization;

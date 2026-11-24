@@ -288,7 +288,6 @@ function transferRepositoryCleanupSql(
             AND agent.active_revision_id = revision.id
             AND source.idempotency_key ~
               ('^agent_revision:' || revision.id || ':maintenance:(0|[1-9][0-9]*)$')
-            AND NOT COALESCE((revision.admitted_spec->'repository_credentials') ? 'authorization', false)
             AND (revision.admitted_spec #>> '{repository_credentials,deadlineWallMs}')::bigint <=
               EXTRACT(EPOCH FROM clock_timestamp()) * 1000
           THEN 'expiry' ELSE 'retire' END

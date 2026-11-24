@@ -849,6 +849,17 @@ export const agentRevisions = occSchema.table(
         AND jsonb_typeof(${table.admittedSpec}->'egress_plan'->'routes') = 'array',
         false)`,
     ),
+    check(
+      "agent_revisions_source_backed_repository_authorization",
+      sql`CASE WHEN ${table.admittedSpec} #>> '{execution_admission,mode}' = 'standalone'
+        AND ${table.admittedSpec} #> '{execution_admission,version}' = '8'::jsonb
+        AND ${table.admittedSpec} ? 'repository_credentials'
+      THEN COALESCE(
+        ${table.admittedSpec} #> '{repository_credentials,authorization}' = '"credential_source"'::jsonb
+        AND ${table.admittedSpec} #>> '{harness,id}' IN ('codex', 'openclaw'), false)
+      ELSE NOT COALESCE((${table.admittedSpec}->'repository_credentials') ? 'authorization', false)
+      END`,
+    ),
     // Migration 0060 adds this as NOT VALID, records the unprotected decision on
     // revisions admitted before it existed and validates every stored row.
     check(
