@@ -119,18 +119,26 @@ to that issuer, then retry. The refresh Worker also needs issuer connectivity.
 3. For later plugin edits, use the saved Source. Authorized hosted Apps discovery
    resolves a usable access token through TokenService. Another device login is
    needed only when replacing or recovering the connection.
-4. To replace the connection, sign in from the credential editor, save the new
-   source, and deploy. Saving a draft does not change the running version.
+4. To replace the connection, sign in from the credential editor and save the new
+   Source. Complete **Stop** before deploying the replacement; deploying over an
+   active managed-credential revision returns `409`. Once no Agent, active
+   revision, or pending deployment references the old Source,
+   [delete it](../../reference/credential-sources.md#delete-a-source). A refused
+   deletion leaves the Source and grant unchanged.
 
 Starting requires Agent-create and credential-source-create in the Namespace.
 For an existing Agent, exact Agent `read` and `update` replace Agent-create.
 Only the person who started the login can poll or close it, while retaining
-those Agent permissions. Polling also requires `credential_source:operate` on
-the resulting source. The temporary login needs no separate grant. If polling
-returns `403`, give your platform operator the request ID. They can find the
-exact permission and resource in the [denial audit event](../topics/audit-log.md#access-and-limitations).
-Once an administrator restores access, select **Retry login check** before the
-login expires. Keep the provider's sign-in code private.
+those Agent permissions. Completing a pending login rechecks
+`credential_source:create`; replaying a ready session requires
+`credential_source:operate` on the new Source. The temporary login needs no
+separate grant. If polling returns `403`, give your platform operator the
+request ID. They can find the exact permission and resource in the
+[denial audit event](../topics/audit-log.md#access-and-limitations). After access
+is restored, select **Retry login check** for a denied Agent check or ready
+replay before the login expires. If Source creation was denied during completion,
+select **Cancel login** and start a new login. Keep the provider's sign-in code
+private.
 
 For API clients, the start response includes a `session` handle with `id` and
 `namespaceId`. Use the same device-authorizations route that started the login:
