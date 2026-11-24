@@ -13,13 +13,15 @@ author: freeqaz-openai
 
 ## Summary
 
-Allow an administrator to enroll the existing `github` managed static Source for native GitHub Issues and Pull requests APIs. The administrator explicitly adds `:api` to each repository ceiling that may use these APIs. OpenClaw Enterprise (OCE) derives the permitted direct routes from that ceiling, the Namespace registration and the saved Agent grant. Existing bare repository entries remain Git-only.
+This proposal depends on [RFC #7149](https://github.com/openclaw/openclaw-enterprise/pull/7149), [Source enrollment #7152](https://github.com/openclaw/openclaw-enterprise/pull/7152) and [locked token delivery #7153](https://github.com/openclaw/openclaw-enterprise/pull/7153). All three are pending review. The GitHub App path is on main. The proposed PAT enrollment and delivery are prerequisites for [the API extension #7247](https://github.com/openclaw/openclaw-enterprise/pull/7247).
+
+Allow an administrator to enroll the proposed `github` managed static Source for native GitHub Issues and Pull requests APIs. The administrator explicitly adds `:api` to each repository ceiling that may use these APIs. OpenClaw Enterprise (OCE) derives the permitted direct routes from that ceiling, the Namespace registration and the saved Agent grant. Existing bare repository entries remain Git-only.
 
 ## Proposal
 
 ### Enroll and register the Source
 
-Use the existing Source `repositories` ceiling. For example:
+Use the proposed Source `repositories` ceiling. For example:
 
 ```text
 acme/web:write:api,acme/docs:read:api,acme/tools:write
@@ -29,7 +31,7 @@ The first entry permits Git and eligible API reads and creation. The second perm
 
 The administrator must enroll a dedicated fine-grained personal access token limited by GitHub to **exactly** the declared repositories. Before enrollment or replacement, the operator checks the selected repositories and resource permissions in GitHub and stops if they cannot confirm the scope. OCE has no automated check for extra token rights. A token prefix and an OCE Source record cannot attest the token's actual GitHub scope. Keep the token in TokenService and outside the Agent workload.
 
-An existing Source cannot acquire or expand API opt-in through an update or credential rotation. Enroll a fresh Source for that expansion. Replacement of an opted-in token retains the enrolled ceiling and repeats the GitHub scope check. Preserve withdrawal and the existing Source retirement and credential cleanup workflow.
+An existing Source cannot acquire or expand API opt-in through an update or credential rotation. Enroll a fresh Source for that expansion or to change the declared repository set while API access is enabled. Removing a repository from the declaration alone could otherwise enable PRs without shrinking the token. Replacement of an opted-in token retains the enrolled ceiling and repeats the GitHub scope check. Preserve withdrawal and the existing Source retirement and credential cleanup workflow.
 
 ### Select direct routes
 
