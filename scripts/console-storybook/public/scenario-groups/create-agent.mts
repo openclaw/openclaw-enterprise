@@ -1683,7 +1683,12 @@ export const createAgentProvisioningScenarios = {
       { selector: "#provider-credential-secret", value: "sec_demo_model" },
     ],
     description:
-      "Selecting a GitHub repository shows the model Secret picker and changes the action to Save Agent draft. Application allows only Read-only. Tooling starts at Contributor. Change tooling to Read-only, remove it and undo the removal to check that the narrower choice stays selected. The preview shows the form before saving. Saving and deployment require a supporting Installation.",
+      "Selecting a GitHub repository shows the model Secret picker and changes the action to Save Agent draft. Application allows only Read-only; tooling starts at Contributor. Change tooling to Read-only, remove it and undo removal to confirm the narrower choice is retained. Saving and deployment require a supporting Installation.",
+    steps: [
+      "With application and tooling selected, check that the action says Save Agent draft and the deployment warning is absent.",
+      "Uncheck both repositories. Before Create Agent, read the warning about deployment without a repository policy and the need for a new Agent to add Per-repository access later.",
+      "Switch to Access profiles and check its existing warning. Return to Per-repository access and select application again; Save Agent draft returns and the deployment warning disappears.",
+    ],
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",

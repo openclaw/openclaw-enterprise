@@ -9,7 +9,7 @@ import type {
   InstallationDeploymentInventoryAgent,
   InstallationDeploymentInventoryNamespace,
 } from "@openclaw-enterprise/contracts";
-import { optionalField, type RecoveryState } from "./production-upgrade-recovery-state.ts";
+import { optionalField, record, type RecoveryState } from "./production-upgrade-recovery-state.ts";
 import { execute } from "./production-upgrade-recovery-tools.ts";
 
 // The command fixture also accepts deliberately malformed JSON and raw stdout.
@@ -453,6 +453,153 @@ export function registerRetainedFleetPreflightTests(
     }
   });
 
+  test("worker quiescence refuses a zero replica count without this upgrade's stop acknowledgement", async (t) => {
+    for (const [scenario, fault, events] of [
+      ["fresh", null, []],
+      ["external stop", "fail-scale-worker", ["scale-api"]],
+      ["lost acknowledgement", "lost-worker-stop-response", ["scale-api", "scale-worker"]],
+    ] as const) {
+      await t.test(scenario, async (t) => {
+        const f = await fixture(t, { controllerOnly: true, candidates: true });
+        if (fault) {
+          await f.failNext(fault);
+          await assert.rejects(f.run(), injectedFault);
+        }
+        const stopFiles = ["current-worker-deployment.json", "quiescence-worker-patch.json"].map(
+          (name) => join(f.evidence, name),
+        );
+        const originalStop = fault && (await Promise.all(stopFiles.map((path) => readFile(path))));
+        const state = await f.state();
+        assert.equal(state.worker, scenario === "lost acknowledgement" ? 0 : 1);
+        if (scenario !== "lost acknowledgement") {
+          // Scale to zero outside the upgrade while retaining the same Deployment.
+          state.worker = 0;
+          state.deploymentIdentities = {
+            ...record(state.deploymentIdentities ?? {}, "Deployment identities"),
+            worker: { uid: "worker-deployment-uid", generation: 2, resourceVersion: "2" },
+          };
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        }
+        assert.deepEqual(await f.events(), events);
+        const refusal = f.run(...(scenario === "fresh" ? [] : ["--resume"]));
+        await assert.rejects(
+          refusal,
+          /worker Deployment .* is at zero replicas without a confirmed stop/u,
+        );
+        // A fresh refusal leaves no request. Resume retains the original one-to-zero request.
+        if (originalStop) {
+          assert.deepEqual(
+            await Promise.all(stopFiles.map((path) => readFile(path))),
+            originalStop,
+            "resume must preserve the original Worker stop request and observation",
+          );
+        } else {
+          assert.deepEqual(
+            stopFiles.map((path) => existsSync(path)),
+            [false, false],
+          );
+        }
+        await assert.rejects(refusal, /worker-stop-confirmed\.json/u);
+        const observed: unknown = JSON.parse(
+          await readFile(join(f.evidence, "observed-worker-deployment.json"), "utf8"),
+        );
+        assert.equal(optionalField(optionalField(observed, "spec"), "replicas"), 0);
+        assert.deepEqual(await f.events(), events);
+        const refused = await f.state();
+        assert.equal(refused.api, scenario === "fresh" ? 1 : 0);
+        assert.equal(refused.worker, 0);
+        assert.equal(refused.version, 1);
+        assert.deepEqual(refused.secret, state.secret);
+        assert.equal(refused.dispatches, 0);
+        for (const name of [
+          "worker-stop-confirmed.json",
+          "helm-started",
+          "database-migration-handoff.json",
+        ]) {
+          assert.equal(existsSync(join(f.evidence, name)), false);
+        }
+      });
+    }
+  });
+
+  test("worker quiescence refuses a stale stop acknowledgement on resume", async (t) => {
+    for (const change of ["replacement UID", "same UID scaled up and down"] as const) {
+      await t.test(change, async (t) => {
+        const f = await fixture(t, { controllerOnly: true, candidates: true });
+        await f.failNext("lost-secret-response");
+        await assert.rejects(f.run(), injectedFault);
+        const state = await f.state();
+        assert.equal(state.worker, 0);
+        const identities = record(state.deploymentIdentities, "Deployment identities");
+        const worker = record(identities.worker, "worker identity");
+        if (change === "replacement UID") {
+          worker.uid = "replacement-worker-uid";
+        } else {
+          worker.generation = Number(worker.generation) + 2;
+        }
+        worker.resourceVersion = String(Number(worker.resourceVersion) + 2);
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        const events = await f.events();
+        await assert.rejects(f.run("--resume"), {
+          message:
+            /worker Deployment .* is at zero replicas without a confirmed stop[\s\S]*selected release, mounted Installation Secret, and database migration history are compatible before taking any recovery action/u,
+        });
+        assert.deepEqual(await f.events(), events);
+        assert.equal((await f.state()).version, 1);
+        assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+      });
+    }
+  });
+
+  test("worker quiescence refuses generation drift after drain", async (t) => {
+    const f = await fixture(t, { controllerOnly: true, candidates: true });
+    const before = await f.state();
+    await f.failNext("drift-worker-generation-after-drain");
+    await assert.rejects(
+      f.run(),
+      /worker Deployment .* is at zero replicas without a confirmed stop/u,
+    );
+
+    const readEvidence = async (name: string): Promise<unknown> =>
+      JSON.parse(await readFile(join(f.evidence, name), "utf8"));
+    const receipt = record(await readEvidence("worker-stop-confirmed.json"), "worker stop receipt");
+    const initial = record(await readEvidence("current-worker-deployment.json"), "initial worker");
+    const drained = record(
+      await readEvidence("quiescence-worker-deployment.json"),
+      "drained worker",
+    );
+    const generation = Number(optionalField(initial.metadata, "generation"));
+    assert.equal(receipt.generation, generation + 1);
+    assert.deepEqual(await readEvidence("quiescence-pods.json"), { items: [] });
+    const live = record(drained.metadata, "drained Worker metadata");
+    assert.equal(optionalField(drained.spec, "replicas"), 0);
+
+    // Refusal keeps both writers stopped without handing off, replacing the Secret, or applying Helm.
+    assert.deepEqual(await f.events(), ["scale-api", "scale-worker"]);
+    const refused = await f.state();
+    const stopped = record(
+      optionalField(refused.deploymentIdentities, "worker"),
+      "persisted Worker identity",
+    );
+    assert.equal(stopped.uid, receipt.uid);
+    assert.equal(stopped.generation, generation + 2);
+    assert.equal(
+      stopped.resourceVersion,
+      String(Number(optionalField(initial.metadata, "resourceVersion")) + 2),
+    );
+    assert.equal(live.uid, stopped.uid);
+    assert.equal(live.generation, stopped.generation);
+    assert.equal(live.resourceVersion, stopped.resourceVersion);
+    assert.equal(refused.api, 0);
+    assert.equal(refused.worker, 0);
+    assert.equal(refused.version, 1);
+    assert.deepEqual(refused.secret, before.secret);
+    assert.equal(refused.dispatches, 0);
+    for (const name of ["helm-started", "database-migration-handoff.json"]) {
+      assert.equal(existsSync(join(f.evidence, name)), false);
+    }
+  });
+
   test("repository restart preflight resumes prospectively only while the worker still runs", async (t) => {
     await t.test(
       "stopped API must be available for fresh inventory before the remaining stop",
@@ -475,7 +622,10 @@ export function registerRetainedFleetPreflightTests(
           (await f.events()).filter((event) => event.startsWith("scale-")),
           ["scale-api"],
         );
-        await assert.rejects(f.run("--resume"), /Restore access to the existing API/u);
+        await assert.rejects(
+          f.run("--resume"),
+          /cannot read the complete deployment inventory before stopping the worker.*restore the existing API under exclusive maintenance only after verifying compatibility/u,
+        );
         assert.equal((await f.state()).api, 0);
         assert.equal((await f.state()).worker, 1);
         assert.equal((await f.state()).version, 1);

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-23
-last_updated_session: authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e
+updated: 2026-11-24
+last_updated_session: authoring-run/816f6bc5-1b99-4a82-8903-be3d98e6dd07
 ---
 
 # Console Agent creation
@@ -132,16 +132,16 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 ### 3. Load repository options
 
 `agents/repositories.mts:createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
-which authorizes Agent create. Create Agent holds this read until the permission answer allows
-Agent create, or the Installation read succeeds without an answer; after a known refusal it
-reads none and says so, without a retry. After the read it requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
-submitted `repositoryAccess`. Retained drafts keep selections through failed
-discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
-or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
-failures block submission.
+which authorizes Agent create. The form waits for permission to allow Agent create,
+or a successful Installation read without an answer. A known refusal prevents the read
+and offers no retry. Discovery requests optional descriptions for visible refs.
+[Repository admission](../agent-repository-credentials.md) resolves submitted
+`repositoryAccess`. Failed discovery retains draft selections; retries recheck current
+policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` or `meta.notConfigured` (no
+`repository` settings), with no retained selections, permits creation without bindings.
+Other failures block submission.
 
-Repository access remains optional in the form. Source admission and deployment
-follow the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
+The credential catalog includes ordinary Gateway Sources when a Git Proxy is selected. Repository access remains optional. Managed model Source admission and delivery follow the [credential Source lifecycle](../credential-source-lifecycle.md); legacy protected Git traffic follows its [egress flow](../credential-source-egress.md).
 
 ### 4. Submit provisioning or an ordinary draft
 
@@ -152,14 +152,9 @@ defaults selected repositories to their delegated limits. The API saves the Agen
 draft and grants in one transaction. Console confirms the grants before granting
 credential access. Deployment refuses stale policy versions with HTTP 409.
 
-Otherwise, eligible Dedicated runtimes can [provision](../agent-provisioning.md)
-with inline Configuration, optional repository access, and Secret references.
-When the Credential Gateway offers the selected login method, Console registers
-the model Secret and binds the returned Source ID in the draft or provisioning
-request. Namespace members can enroll from their Agent capabilities and save a draft.
-With **Credential Source** storage, Console validates the Agent, then submits the
-OpenAI API key to TokenService through the Namespace's `credential-sources` collection.
-Console clears the key and opens a draft that binds the returned static Source ID.
+With eligible scoped repository choices but none selected, **Create Agent** warns before requesting deployment without a repository policy. Selecting a repository changes the action to **Save Agent draft**.
+
+Eligible Dedicated runtimes otherwise preflight and provision inline Configuration, optional repository access and Secret references. If the selected Credential Gateway offers the login method, Console binds the returned Source ID. With **Credential Source** storage, Console validates the Agent, enrolls the OpenAI API key through TokenService, clears the key and opens a draft bound to that static Source.
 
 The Installation capabilities do not show whether the Compute Driver supplies a Preset's
 operator-managed (`runtime`) binding. When the capabilities are read, `checkRuntimeBinding` sends
@@ -265,6 +260,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-24 05:45: Reconcile Source enrollment with first-deployment repository warning. (authoring-run/816f6bc5-1b99-4a82-8903-be3d98e6dd07 - d6403c2401e338964f5486f8db2fcb40a3758448)
+- 2026-11-24 04:58: Trace the first-deployment repository warning and draft action. (authoring-run/02daa2dc-277c-444c-bb4d-5589ee0579e9 - 840798ada6c310271e26b3004c25bd7b253d042c)
 - 2026-11-23 07:52: Trace direct static Source creation and draft save in Console. (authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e - e4a24549373e8e111a15ec6da6b753eca4449646)
 - 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)
 - 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
