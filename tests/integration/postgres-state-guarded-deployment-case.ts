@@ -75,8 +75,8 @@ export async function persistGuardedDeployment(context: TestContext) {
       compute,
       configurationDriver,
       secretDriver,
-      channel,
     ]);
+    controller.installChannelDrivers([{ provider: "slack", driver: channel }]);
     return controller;
   };
   const controller = createController(state);

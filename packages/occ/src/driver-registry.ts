@@ -1,4 +1,6 @@
 import type {
+  ChannelDriver,
+  ChannelProviderDriver,
   ComputeDriver,
   Driver,
   DriverByCapability,
@@ -28,6 +30,8 @@ import {
 
 export interface RegisteredDriver {
   readonly harnessId?: string;
+  /** The channel provider that trusted composition bound to this Channel Driver. */
+  readonly provider?: string;
   readonly owner?: InstalledDriver;
   readonly driver: Driver;
   readonly capability: DriverCapability;
@@ -64,6 +68,7 @@ export class DriverRegistry {
   private readonly registrations = new Map<string, RegisteredDriver>();
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private pluginRegistrations: readonly RegisteredDriver[] = [];
+  private channelRegistrations: readonly RegisteredDriver[] = [];
   private readonly dependencies: DriverRegistryDependencies;
 
   constructor(dependencies: DriverRegistryDependencies) {
@@ -120,8 +125,60 @@ export class DriverRegistry {
   }
 
   private selectPluginRegistrations(entries: readonly RegisteredDriver[]): void {
-    this.applyLifecycleDrivers(this.selections, entries);
+    this.applyLifecycleDrivers(this.selections, [...entries, ...this.channelRegistrations]);
     this.pluginRegistrations = entries;
+  }
+
+  /** Install the provider-to-Driver set that trusted composition also gives Compute. */
+  installChannelDrivers(providers: readonly ChannelProviderDriver[]): void {
+    if (
+      providers.some(
+        ({ provider, driver }) =>
+          !isNonEmptyString(provider) ||
+          !/^[a-z][a-z0-9_-]{0,63}$/.test(provider) ||
+          driver?.capability !== "channel" ||
+          typeof driver.directoryContextSchema !== "function",
+      ) ||
+      new Set(providers.map(({ provider }) => provider)).size !== providers.length ||
+      new Set(providers.map(({ driver }) => driver.id)).size !== providers.length
+    ) {
+      throw new DriverSelectionError(
+        "Each channel provider must bind one distinct Channel Driver identity.",
+      );
+    }
+    const registrations = providers.map(({ provider, driver }) => {
+      const [key, entry] = this.driverRegistrationEntry(driver);
+      return [key, Object.freeze({ ...entry, provider })] as const;
+    });
+    const entries = registrations.map(([, entry]) => entry);
+    this.applyLifecycleDrivers(this.selections, [...this.pluginRegistrations, ...entries]);
+    for (const [key, entry] of registrations) {
+      this.registrations.set(key, entry);
+    }
+    this.channelRegistrations = entries;
+  }
+
+  /** Whether composition installed any Channel Driver; reads no Driver member. */
+  hasChannelDrivers(): boolean {
+    return this.channelRegistrations.length > 0;
+  }
+
+  /** Every installed Channel Driver, in composition order. */
+  installedChannelDrivers(): readonly ChannelDriver[] {
+    return this.channelRegistrations.map((entry) => {
+      if (!unchangedDriver(entry)) {
+        throw new DriverSelectionError("An installed Channel Driver changed identity.");
+      }
+      return entry.driver as ChannelDriver;
+    });
+  }
+
+  /** The Channel Driver installed for one provider, or undefined. */
+  channelDriver(provider: string): ChannelDriver | undefined {
+    const entry = this.channelRegistrations.find((candidate) => candidate.provider === provider);
+    return entry === undefined || !unchangedDriver(entry)
+      ? undefined
+      : (entry.driver as ChannelDriver);
   }
 
   private driverRegistrationEntry(
@@ -181,6 +238,9 @@ export class DriverRegistry {
         "The Driver capability or implementation identity is invalid.",
       );
     }
+    if (selectedCapability === "channel") {
+      throw new DriverSelectionError("Install Channel Drivers per provider.");
+    }
     const selected = this.registrations.get(driverKey(selectedCapability, driverId));
     if (!selected || !unchangedDriver(selected)) {
       throw new DriverSelectionError(
@@ -197,7 +257,7 @@ export class DriverRegistry {
   selectedDriver<Capability extends DriverCapability>(
     selectedCapability: Capability,
   ): DriverFor<Capability> {
-    if (!capability(selectedCapability)) {
+    if (!capability(selectedCapability) || selectedCapability === "channel") {
       throw new DriverSelectionError("The requested Driver capability is invalid.");
     }
     const selected =
@@ -262,7 +322,11 @@ export class DriverRegistry {
     compute: ComputeDriver;
     participants: readonly NamespaceLifecycleParticipant[];
   } {
-    const owners = [...this.selections.values(), ...this.pluginRegistrations].map((selected) => {
+    const owners = [
+      ...this.selections.values(),
+      ...this.pluginRegistrations,
+      ...this.channelRegistrations,
+    ].map((selected) => {
       if (!unchangedDriver(selected)) {
         throw new DriverSelectionError("A selected Namespace lifecycle Driver changed identity.");
       }
@@ -279,9 +343,11 @@ export class DriverRegistry {
   }
 
   configurationDriverSelected(capability: DriverCapability, id: string): boolean {
-    return capability === "plugin"
-      ? this.pluginRegistrations.some((entry) => entry.id === id)
-      : this.selections.get(capability)?.id === id;
+    if (capability === "plugin" || capability === "channel") {
+      const listed = capability === "plugin" ? this.pluginRegistrations : this.channelRegistrations;
+      return listed.some((entry) => entry.id === id);
+    }
+    return this.selections.get(capability)?.id === id;
   }
 
   enabledPluginDrivers(): readonly PluginDriver[] {
@@ -316,20 +382,23 @@ export class DriverRegistry {
   ): DriverFor<Capability> {
     const proposed = new Map(this.selections);
     proposed.set(selectedCapability, selected);
-    this.applyLifecycleDrivers(proposed, this.pluginRegistrations);
+    this.applyLifecycleDrivers(proposed, [
+      ...this.pluginRegistrations,
+      ...this.channelRegistrations,
+    ]);
     this.selections.set(selectedCapability, selected);
     return selected.driver as DriverFor<Capability>;
   }
 
   private applyLifecycleDrivers(
     proposed: ReadonlyMap<DriverCapability, RegisteredDriver>,
-    plugins: readonly RegisteredDriver[],
+    listed: readonly RegisteredDriver[],
   ): void {
     const namespaceParticipants = selectedNamespaceLifecycle(
-      [...proposed.values(), ...plugins].map((entry) => entry.owner ?? entry.driver),
+      [...proposed.values(), ...listed].map((entry) => entry.owner ?? entry.driver),
       this.dependencies.namespaceLifecycleBindings,
     );
-    const lifecycleDrivers = this.lifecycleDrivers(proposed, plugins);
+    const lifecycleDrivers = this.lifecycleDrivers(proposed, listed);
     const compute = proposed.get("compute");
     if (compute !== undefined) {
       if (!unchangedDriver(compute)) {
@@ -356,10 +425,10 @@ export class DriverRegistry {
 
   private lifecycleDrivers(
     selections: ReadonlyMap<DriverCapability, RegisteredDriver>,
-    plugins: readonly RegisteredDriver[],
+    listed: readonly RegisteredDriver[],
   ): readonly Driver[] {
     const drivers = new Set<Driver>();
-    for (const selected of [...selections.values(), ...plugins]) {
+    for (const selected of [...selections.values(), ...listed]) {
       if (selected.capability === "compute") {
         continue;
       }

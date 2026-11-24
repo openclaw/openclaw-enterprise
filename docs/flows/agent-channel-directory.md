@@ -1,6 +1,6 @@
 ---
 created: 2026-09-27
-updated: 2026-11-20
+updated: 2026-11-24
 last_updated_session: authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d
 ---
 
@@ -11,8 +11,8 @@ last_updated_session: authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d
 An operator searches Slack users or channels while creating or editing an
 Agent. The Console uses the selected bot Secret to show names and workspace
 identity, then saves only the selected IDs in channel Configuration. OpenClaw
-Control Plane (OCC) authorizes and reads the Secret; the selected ChannelDriver
-owns provider calls. This flow ends when the Console displays candidates or an
+Control Plane (OCC) authorizes and reads the Secret, then sends the request to
+the ChannelDriver installed for the named provider, which owns provider calls. This flow ends when the Console displays candidates or an
 actionable error.
 
 ## Entry Points
@@ -23,6 +23,7 @@ actionable error.
   Configuration, and can operate the selected same-Namespace Secret.
 - Source: `apps/controller/src/console/agents/slack-directory.mts:createSlackDirectoryField`,
   `packages/occ/src/setup-discovery.ts:SetupDiscovery.lookupChannelDirectory`,
+  `packages/occ/src/driver-registry.ts:DriverRegistry.channelDriver`,
   and `apps/controller/src/drivers/channel/slack.ts:SlackChannelDriver.lookupDirectory`.
 
 ## Flow
@@ -31,9 +32,11 @@ actionable error.
 graph TD
   A["Operator selects bot Secret and searches"] --> B["OCC checks edit target and exact Secret operate"]
   B -->|denied or missing| X["Return safe lookup error"]
-  B -->|authorized| P{"ChannelDriver selected?"}
+  B -->|authorized| P{"Driver installed for the provider?"}
   P -->|no| U["Return 501; Console offers exact-ID entry"]
-  P -->|yes| C["SecretDriver reads current value"]
+  P -->|yes| K{"Context matches the Driver's schema?"}
+  K -->|no| I["Return 400 before the Secret read"]
+  K -->|yes| C["SecretDriver reads current value"]
   C --> D["OCC rechecks target, Secret grant, and backend identity"]
   D -->|changed| X
   D -->|current| M{"Managed OCC listener configured?"}
@@ -51,8 +54,10 @@ graph TD
 
 `packages/occ/src/setup-discovery.ts:SetupDiscovery.channelDirectorySecret`
 
-The request names a same-Namespace Secret and optionally an Agent or
-Configuration being edited. OCC checks the matching create or exact update
+The request names a same-Namespace Secret, the channel `provider`, optional
+provider-owned `context`, and optionally an Agent or Configuration being
+edited. The API treats a request without `provider` as a Slack lookup, so
+clients written before provider selection keep working. OCC checks the matching create or exact update
 permission and Secret `operate`, then reads the resource and Secret from
 platform state. A missing or foreign target is rejected before provider I/O.
 
@@ -60,8 +65,12 @@ platform state. A missing or foreign target is rejected before provider I/O.
 
 `packages/occ/src/setup-discovery.ts:SetupDiscovery.lookupChannelDirectory`
 
-Composition binds the Slack Driver to the reserved OCC channel-egress listener
-from the validated Installation configuration. Missing routing prevents provider
+`apps/controller/src/composition/installation-config.ts` builds one Driver for
+each `drivers.channel` selection with `createChannelProviders`, binds it to the
+reserved OCC channel-egress listener from the validated Installation
+configuration, and gives the same provider set to OCC (`installChannelDrivers`)
+and Kubernetes Compute. `DriverRegistry.channelDriver` selects the Driver for
+the request's provider; a provider without one returns 501. Missing routing prevents provider
 I/O; it never enables direct fallback. Directory failures are returned as
 unavailable. Credential validation reports a configuration conflict when the
 managed route is absent. Helm admits only the authorized API Pods to this
@@ -70,7 +79,11 @@ listener. Agent and Harness grants remain separate. See
 
 The selected SecretDriver invokes `withValue` and verifies backend ownership.
 OCC rechecks grants and Secret backend identity after the read. It passes the
-token only in process to the ChannelDriver. The bundled Slack implementation
+token and the validated `context` only in process to the ChannelDriver. Before
+the Secret read, OCC validates `context` against the Driver's
+`directoryContextSchema()` and returns `400 INVALID_REQUEST` with field paths on
+a mismatch. The bundled Slack implementation declares an empty schema, so any
+context is refused before a provider call. It
 requires a bot identity from `auth.test` and pages through `users.list` or
 `conversations.list`. Exact-ID searches and saved IDs use `users.info` or `conversations.info`.
 The response contains at most 100 candidates and pagination state, never the token.
@@ -159,6 +172,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 10:00: Send each lookup to its provider's installed Channel Driver; an omitted provider is Slack. (RFC-20261120-channel-provider-drivers - b9517748410b346b10a97fea7e20d81916ae9c1c)
 
 - 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
 

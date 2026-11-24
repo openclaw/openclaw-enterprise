@@ -2244,8 +2244,7 @@ test("deployment delivers a Channel Secret only through the captured validator",
     },
   });
   channel.validateCredentials = validate;
-  controller.registerDriver(channel);
-  controller.selectDriver("channel", channel.id);
+  controller.installChannelDrivers([{ provider: "slack", driver: channel }]);
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
 
   const first = await fixture.request("POST", `${path}/deploy-first`, {
@@ -2942,8 +2941,7 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
           throw error;
         }
       };
-      controller.registerDriver(channel);
-      controller.selectDriver("channel", channel.id);
+      controller.installChannelDrivers([{ provider: "slack", driver: channel }]);
       const deployBound = (guarded: boolean) =>
         guarded
           ? fixture.request("POST", boundPath + "/deploy-first", { body: intent })

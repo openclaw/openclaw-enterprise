@@ -3,7 +3,7 @@ import {
   hasInspectedWorkspaceImages,
 } from "../../sandbox/inspected-workspace-release.ts";
 import { enabledChannelEntries } from "@openclaw-enterprise/occ";
-import { resolveChannelRouting, type ChannelProviderDriver } from "../../channel/routing.ts";
+import { resolveChannelRouting } from "../../channel/routing.ts";
 import {
   ChannelPublicEgressPolicyConflict,
   KubernetesChannelEgress,
@@ -32,7 +32,10 @@ import {
   type HarnessRuntime,
   WORKLOAD_TERMINATION_TIMEOUT_MS,
 } from "./harness/runtime.ts";
-import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
+import type {
+  ChannelProviderDriver,
+  CredentialPolicyWithdrawalOptions,
+} from "@openclaw-enterprise/contracts";
 import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { OpenShellSandboxConfigurationFailure } from "../../sandbox/openshell-sandbox-errors.ts";
 import { networkPolicySpecToJson, resolverEgress } from "../../kubernetes/network-policy.ts";

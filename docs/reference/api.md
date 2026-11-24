@@ -9848,6 +9848,7 @@ Example request
 ```json
 {
   "kind": "channels",
+  "provider": "slack",
   "query": "engineering",
   "secretId": "sec_123e4567-e89b-42d3-a456-426614174000"
 }

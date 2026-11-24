@@ -9,6 +9,7 @@ import type {
   Secret,
   SecretDriver,
 } from "@openclaw-enterprise/contracts";
+import { validateConfiguration } from "@openclaw-enterprise/contracts";
 import {
   asRecord,
   hasControlCharacter,
@@ -33,6 +34,9 @@ import { sameSecretBackend, secretOperation } from "./secret-operations.ts";
 
 export interface LookupChannelDirectoryInput {
   readonly secretId: string;
+  /** The channel provider whose installed Channel Driver serves this lookup. */
+  readonly provider: string;
+  readonly context?: ChannelDirectoryLookupInput["context"];
   readonly kind: ChannelDirectoryLookupInput["kind"];
   readonly query?: string;
   readonly cursor?: string;
@@ -54,7 +58,7 @@ interface SetupDiscoveryDependencies {
     facet: SandboxFacet,
   ) => Promise<{ readonly configuration: DriverConfigurationDescriptor | undefined }>;
   readonly selectCompute: () => ComputeDriver;
-  readonly selectChannel: () => ChannelDriver;
+  readonly channelDriver: (provider: string) => ChannelDriver | undefined;
   readonly secretDriver: (driverId: string) => SecretDriver;
 }
 
@@ -71,6 +75,17 @@ function validateChannelDirectoryInput(
     !value.includes("\u0000");
   if (
     !bounded(input.secretId, 200) ||
+    !bounded(input.provider, 64) ||
+    !/^[a-z][a-z0-9_-]*$/.test(input.provider) ||
+    (input.context !== undefined &&
+      (!asRecord(input.context) ||
+        Object.keys(input.context).length > 8 ||
+        Object.entries(input.context).some(
+          ([key, value]) =>
+            !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(key) ||
+            !bounded(value, 200) ||
+            hasControlCharacter(value),
+        ))) ||
     (input.kind !== "users" && input.kind !== "channels") ||
     (input.query !== undefined && !bounded(input.query, 200, true)) ||
     (input.cursor !== undefined && !bounded(input.cursor, 2048)) ||
@@ -210,13 +225,19 @@ export class SetupDiscovery {
   ): Promise<ChannelDirectoryResult> {
     const ids = validateChannelDirectoryInput(input);
     const first = await this.channelDirectorySecret(principalId, namespaceId, input);
-    let driver: ChannelDriver;
-    try {
-      driver = this.dependencies.selectChannel();
-    } catch {
+    const driver = this.dependencies.channelDriver(input.provider);
+    if (driver === undefined) {
       throw new NotImplementedError(
         "channel_directory.lookup",
-        "Channel directory lookup is unavailable.",
+        "Channel directory lookup is unavailable for this provider.",
+      );
+    }
+    // The provider's Driver declares its lookup fields; refuse others before reading the Secret.
+    const context = validateConfiguration(driver.directoryContextSchema(), input.context ?? {});
+    if (!context.success) {
+      throw new ChannelDirectoryError(
+        "invalid_request",
+        context.error.details.map(({ path, code }) => ({ path: `/context${path}`, code })),
       );
     }
     if (!first.driver.withValue) {
@@ -246,6 +267,7 @@ export class SetupDiscovery {
           const result = await driver.lookupDirectory(
             {
               token,
+              ...(input.context === undefined ? {} : { context: input.context }),
               kind: input.kind,
               ...(input.query === undefined ? {} : { query: input.query }),
               ...(input.cursor === undefined ? {} : { cursor: input.cursor }),

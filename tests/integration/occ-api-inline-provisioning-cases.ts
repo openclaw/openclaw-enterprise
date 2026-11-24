@@ -713,8 +713,7 @@ export async function runChannelReferenceRefusals(
     return new Response(JSON.stringify({ ok: true, bot_id: "B123", team_id: "T123" }));
   });
   assert(fixture.controller, "Bootstrap must create the controller.");
-  fixture.controller.registerDriver(channel);
-  fixture.controller.selectDriver("channel", channel.id);
+  fixture.controller.installChannelDrivers([{ provider: "slack", driver: channel }]);
   const form = (name: "otherText" | "inline" | "fallback" | "shorthand") =>
     referenceFormRefusal("channels.slack.botToken", name);
   const unbound = unboundReferenceRefusal("channels.slack.botToken", "SLACK_SPARE_TOKEN");

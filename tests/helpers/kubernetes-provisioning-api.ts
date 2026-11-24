@@ -146,6 +146,8 @@ function runtimeDrivers(
           definition: KubernetesSecretDriver,
           configuration: {},
         },
+        // This fixture installs no Channel Drivers.
+        channel: [],
       },
     },
     computeDriver,

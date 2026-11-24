@@ -974,7 +974,7 @@ export function createControllerComposition(
     getAgentSandboxPolicy: (principalId, namespaceId, agentId, facet) =>
       publicController.getAgentSandboxPolicy(principalId, namespaceId, agentId, facet),
     selectCompute: selectedCompute,
-    selectChannel: () => publicController.selectedDriver("channel"),
+    channelDriver: (provider) => drivers.channelDriver(provider),
     secretDriver: secretOperations.secretDriver,
   });
   const runtimeCredentials: AgentRuntimeCredentials = new AgentRuntimeCredentials({
@@ -1043,7 +1043,6 @@ export function createControllerComposition(
     transactions,
     authority,
     drivers,
-    selectedChannel: () => publicController.selectedDriver("channel"),
     configurationDriver: configurationOperations.selectedDriver,
     requireBundledChannelBindings,
     ownedSecretDriver: secretOperations.ownedSecretDriver,

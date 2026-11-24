@@ -10,6 +10,7 @@ import type { GatewayNodeEnrollment } from "../../apps/controller/src/gateway/no
 type DriverSelection = NonNullable<ConstructorParameters<typeof KubernetesComputeDriver>[1]>;
 
 interface TestKubernetesComputeDriverOptions {
+  channelDrivers?: DriverSelection["channelDrivers"];
   repositoryCredentials?: boolean | undefined;
   gatewayRuntime?: boolean | undefined;
   channelRuntime?: boolean | undefined;
@@ -47,6 +48,7 @@ export function createTestKubernetesComputeDriver(
     gatewayRuntime = false,
     // An Installation with runtime.channelEgress: isolated channel credentials and a reviewed proxy.
     channelRuntime = false,
+    channelDrivers = slackChannelDrivers,
     // false: runtime storage without gateway routing or node enrollment, which dedicated Agents
     // cannot use (provisioning and deployment admission refuse them).
     routed = true,
@@ -127,7 +129,7 @@ export function createTestKubernetesComputeDriver(
     },
     {
       id,
-      channelDrivers: slackChannelDrivers,
+      channelDrivers,
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
       ...(protectedDriver === undefined ? {} : { protectedDriver }),

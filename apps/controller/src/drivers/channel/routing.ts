@@ -1,14 +1,8 @@
 import {
   normalizeNetworkDestinationRules,
-  type ChannelDriver,
+  type ChannelProviderDriver,
   type NetworkDestinationRule,
 } from "@openclaw-enterprise/contracts";
-
-/** Installed by trusted composition, never supplied through Agent configuration. */
-export interface ChannelProviderDriver {
-  readonly provider: string;
-  readonly driver: ChannelDriver;
-}
 
 export interface ChannelRoutingRequirements {
   readonly providers: readonly string[];

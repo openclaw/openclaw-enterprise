@@ -534,8 +534,7 @@ export async function runOrdinaryChannelAdmission(t: TestContext) {
         } else if (change === "channel") {
           const driver = new SlackChannelDriver(async () => assert.fail("Unexpected provider"));
           Object.defineProperty(driver, "id", { value: "replacement-channel" });
-          fixture.controller.registerDriver(driver);
-          fixture.controller.selectDriver("channel", driver.id);
+          fixture.controller.installChannelDrivers([{ provider: "slack", driver }]);
         } else if (change === "channel-validator") {
           channelDriver.validateCredentials = async () => assert.fail("Unexpected validation");
         }

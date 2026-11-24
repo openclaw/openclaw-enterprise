@@ -13,7 +13,7 @@ interface DirectoryEvidence {
 // eslint-disable-next-line no-control-regex -- directory IDs must exclude ASCII control characters.
 const idControls = /[\u0000-\u001f\u007f]/;
 const ownerId = /^(?:agt|cfg)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const commonFields = ["kind", "secretId", "agentId", "configurationId"];
+const commonFields = ["provider", "kind", "secretId", "agentId", "configurationId"];
 const lookupFields = [...commonFields, "query", "cursor"];
 const hydrationFields = [...commonFields, "ids"];
 
@@ -22,6 +22,8 @@ function isLookupBody(body: unknown): body is ChannelDirectoryLookupBody {
     return false;
   }
   if (
+    // The preview serves only Slack; the API treats an omitted provider as Slack.
+    ("provider" in body && body.provider !== "slack") ||
     !("kind" in body) ||
     (body.kind !== "users" && body.kind !== "channels") ||
     !("secretId" in body) ||

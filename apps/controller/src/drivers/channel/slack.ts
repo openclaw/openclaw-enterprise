@@ -1,7 +1,10 @@
 import type {
   ChannelCredentialReader,
+  ChannelDirectoryLookupInput,
   ChannelDirectoryResult,
   ChannelDriver,
+  ErrorDetail,
+  JSONSchema,
   NetworkDestinationRule,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -11,7 +14,7 @@ import {
   slackAccountTargets,
   wholeEnvironmentReferenceName,
 } from "@openclaw-enterprise/occ";
-import { asRecord, readCappedBody } from "@openclaw-enterprise/utils";
+import { asRecord, deepFreeze, readCappedBody } from "@openclaw-enterprise/utils";
 import { isIP } from "node:net";
 import { fetch as undiciFetch, ProxyAgent, type Response as UndiciResponse } from "undici";
 
@@ -26,6 +29,12 @@ const MANAGED_SERVICE_PROXY_ENDPOINT =
   /^https?:\/\/([a-z]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc):([1-9][0-9]{0,4})$/;
 
 type SlackRecord = Record<string, unknown>;
+
+const SLACK_DIRECTORY_CONTEXT_SCHEMA: JSONSchema = deepFreeze({
+  type: "object",
+  additionalProperties: false,
+  properties: {},
+});
 
 /** Provider calls require the separate managed OCC channel-egress listener. */
 export class SlackRouteNotConfiguredError extends ResourceStateConflictError {
@@ -112,6 +121,23 @@ export class SlackChannelDriver implements ChannelDriver {
   readonly capability = "channel" as const;
   readonly id = "slack-channel";
   readonly implementation = "occ/slack-channel";
+
+  /** `drivers.channel[].configuration` for `slack-channel` has no settings. */
+  static readonly configurationSchema: JSONSchema = deepFreeze({
+    type: "object",
+    additionalProperties: false,
+    properties: {},
+  });
+
+  static validateConfiguration(): readonly ErrorDetail[] {
+    return [];
+  }
+
+  /** Slack lookups need only the bot token, so `context` accepts no fields. */
+  directoryContextSchema(): JSONSchema {
+    return SLACK_DIRECTORY_CONTEXT_SCHEMA;
+  }
+
   private readonly request: typeof fetch;
   private readonly proxy?: ProxyAgent;
   // Production never falls back to direct provider access.
@@ -334,13 +360,7 @@ export class SlackChannelDriver implements ChannelDriver {
   }
 
   async lookupDirectory(
-    input: {
-      readonly token: string;
-      readonly kind: "users" | "channels";
-      readonly query?: string;
-      readonly cursor?: string;
-      readonly ids?: readonly string[];
-    },
+    input: ChannelDirectoryLookupInput,
     signal?: AbortSignal,
   ): Promise<ChannelDirectoryResult> {
     const auth = await this.call("auth.test", input.token, new URLSearchParams(), signal);
