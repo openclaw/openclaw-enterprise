@@ -734,6 +734,7 @@
     },
     {
       "path": "tests/integration/dev-up.test.mjs",
+      "optionalEnv": ["OCC_TEST_DEV_UP_CLI"],
       "expectedTests": [
         "Kubernetes dev-up authenticates the Installation and cleanup uses its saved endpoint and Compose configuration",
         "Kubernetes Compute defaults to the Kubernetes control plane",
@@ -750,10 +751,12 @@
       ]
     },
     {
-      "path": "tests/integration/dev-up-compose.test.mjs"
+      "path": "tests/integration/dev-up-compose.test.mjs",
+      "optionalEnv": ["OCC_TEST_DEV_UP_CLI"]
     },
     {
       "path": "tests/integration/dev-up-compose-startup.test.ts",
+      "optionalEnv": ["OCC_TEST_DEV_UP_CLI"],
       "expectedTests": [
         "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
         "dev-up preserves a selected custom runtime image and skips the quickstart build",

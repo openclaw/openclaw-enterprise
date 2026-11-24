@@ -76,7 +76,7 @@ async function checkWorkflowCommand(
   if (signin) {
     // Use real repository objects so the fixed reader/catalog projection is
     // checked by the production planner, without replacing Git decisions.
-    await execute("git", ["clone", "--shared", "--quiet", process.cwd(), root]);
+    await execute("git", ["clone", "--shared", "--quiet", "--no-checkout", process.cwd(), root]);
     await git(["checkout", "--quiet", "7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb"]);
     await cp("scripts/ci", join(root, "scripts/ci"), { recursive: true });
     await cp("scripts/upgrade-image-identity.py", join(root, "scripts/upgrade-image-identity.py"));
