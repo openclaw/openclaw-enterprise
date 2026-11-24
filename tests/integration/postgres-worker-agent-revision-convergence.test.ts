@@ -1389,6 +1389,10 @@ for (const { agent, material } of [
             outcome === "permanent"),
       );
       assert.equal(ended.event, "worker.completed", JSON.stringify(ended));
+      assert.equal(ended.revisionId, candidate.id);
+      assert.equal(ended.result, "permanent");
+      assert.equal(ended.code, expectedCode);
+      assert.equal(Object.hasOwn(ended, "stopYields"), false);
       assert.equal(await pointer(), candidate.id);
       const active = await fixture.currentAgent(owner);
       assert.ok(active, "the existing Agent remains persisted");
@@ -1431,6 +1435,13 @@ for (const { agent, material } of [
       assert.equal(await pointer(), fixed.id);
       assert.ok(retired.includes(candidate.id), retired.join());
       assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+      const permanentCompletions = events.filter(
+        ({ event, workId, outcome }) =>
+          event === "worker.completed" &&
+          workId === candidate.idempotencyKey &&
+          outcome === "permanent",
+      );
+      assert.equal(permanentCompletions.length, 1);
     },
   );
 }

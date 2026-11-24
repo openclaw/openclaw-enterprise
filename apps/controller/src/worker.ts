@@ -469,17 +469,9 @@ function loggedErrorClass(error: unknown): string {
  * A failure whose Compute cleanup also failed adds `cleanupCause`, the first cleanup failure's
  * class, so a failed cleanup never reads as a clean one (finding 2268).
  */
-function revisionFailureLogFields(error: unknown): {
-  readonly dependency?: string;
-  readonly cause?: string;
-  readonly failure?: string;
-  readonly status?: number;
-  readonly reason?: string;
-  readonly method?: string;
-  readonly grpcStatus?: number;
-  readonly validationCategory?: string;
-  readonly cleanupCause?: string;
-} {
+function revisionFailureLogFields(
+  error: unknown,
+): ReturnType<typeof primaryFailureLogFields> & ReturnType<typeof computeCleanupLogFields> {
   return { ...primaryFailureLogFields(error), ...computeCleanupLogFields(error) };
 }
 
@@ -527,6 +519,11 @@ function primaryFailureLogFields(error: unknown): {
     ? { cause: errorClass }
     : { cause: errorClass, ...causeStatusLogFields(record) };
 }
+
+type RevisionFailureFields = ReturnType<typeof revisionFailureLogFields> & {
+  readonly refusal?: string;
+  readonly predecessorStop?: string;
+};
 
 /** An invalid row: reading it again fails the same way until someone repairs it. */
 function unrecoverableRead(error: unknown): boolean {
@@ -599,7 +596,7 @@ class RefusedCandidateStopError extends Error {
    */
   pending(): {
     readonly result: RevisionDispatchResult;
-    readonly logFields: Readonly<Record<string, string | number>>;
+    readonly logFields: RevisionFailureFields;
   } {
     return {
       result: {
@@ -4889,7 +4886,7 @@ export class ControllerWorker {
       this.deployTimings.beginPass(claim.idempotencyKey);
     }
     let result: RevisionDispatchResult;
-    let failureLogFields: Readonly<Record<string, string | number>> | undefined;
+    let failureLogFields: RevisionFailureFields | undefined;
     let refusalWaitRead = false;
     let claimAgent: Readonly<Agent> | undefined;
     let supervisedRevision: Readonly<AgentRevision> | undefined;
@@ -6071,7 +6068,7 @@ export class ControllerWorker {
     if (withdraw === undefined) {
       return false;
     }
-    let failureLogFields: Readonly<Record<string, string | number>> | undefined;
+    let failureLogFields: RevisionFailureFields | undefined;
     const withdrawal = await this.withClaimHeartbeat(claim, async () => {
       const agent = await this.state.read((view) =>
         view.agents.findAgent(revision.namespaceId, revision.agentId),
@@ -6503,7 +6500,7 @@ export class ControllerWorker {
   private async finalizeRevision(
     claim: ClaimedWork,
     result: RevisionDispatchResult,
-    failureLogFields?: Readonly<Record<string, string | number>>,
+    failureLogFields?: RevisionFailureFields,
   ): Promise<void> {
     if (
       this.refusalWait?.idempotencyKey === claim.idempotencyKey &&
@@ -6660,7 +6657,7 @@ export class ControllerWorker {
     transition: RevisionTransition,
     resolved: RevisionDispatchResult,
     outcome: Outcome,
-    failureLogFields?: Readonly<Record<string, string | number>>,
+    failureLogFields?: RevisionFailureFields,
   ): Promise<void> {
     if (transition.kind === "stopped") {
       const stoppedCandidate = transition.revision;
@@ -6800,27 +6797,29 @@ export class ControllerWorker {
       transition.kind === "active-revision-changed"
         ? { outcome: "retry", code: "ACTIVE_REVISION_CHANGED" }
         : resolved,
-      stopYields,
-      failureLogFields,
+      { stopYields, failureLogFields },
     );
   }
 
   private emitRevisionCompletion(
     claim: ClaimedWork,
     result: Pick<RevisionDispatchResult, "outcome" | "code">,
-    stopYields: number | undefined,
-    failureLogFields?: Readonly<Record<string, string | number>>,
+    observation: {
+      readonly stopYields?: number | undefined;
+      readonly failureLogFields?: RevisionFailureFields | undefined;
+      readonly capturedRevisionId?: string;
+    },
   ): void {
     this.emit({
       event: "worker.completed",
       ...agentWorkLogFields(claim),
-      revisionId: claim.revisionId,
+      revisionId: observation.capturedRevisionId ?? claim.revisionId,
       result: result.outcome,
       outcome: result.outcome,
       code: result.code,
-      ...failureLogFields,
+      ...observation.failureLogFields,
       ...this.deployTimingFields(claim),
-      ...stopYieldsField(stopYields),
+      ...stopYieldsField(observation.stopYields),
     });
   }
 
@@ -6957,7 +6956,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     drain: "yield" | "wait" = "wait",
     failures: "log" | "throw" = "log",
-  ): Promise<Readonly<Record<string, string | number>>> {
+  ): Promise<Pick<RevisionFailureFields, "predecessorStop">> {
     if (
       claim.agentId === undefined ||
       claim.revisionId === undefined ||
@@ -7405,7 +7404,7 @@ export class ControllerWorker {
       this.emitRevisionCompletion(
         claim,
         { outcome: "retry", code: "ACTIVE_REVISION_CHANGED" },
-        this.stopYields.count(claim.idempotencyKey),
+        { stopYields: this.stopYields.count(claim.idempotencyKey) },
       );
       return;
     }
@@ -7415,7 +7414,9 @@ export class ControllerWorker {
     if (claim.idempotencyKey === `agent_revision:${revision.id}:reconcile`) {
       this.metrics?.observeAgentOperation("deploy", this.workAgeMs(claim) / 1000);
     }
-    this.emitRevisionCompletion(claim, result, this.stopYields.count(claim.idempotencyKey));
+    this.emitRevisionCompletion(claim, result, {
+      stopYields: this.stopYields.count(claim.idempotencyKey),
+    });
   }
 
   private async finalizeActiveRevision(
@@ -7425,7 +7426,7 @@ export class ControllerWorker {
     runtimeFailure?: RuntimeFailureEvidence,
     failure: {
       readonly dependencyFailure?: TransientDependencyError;
-      readonly failureLogFields?: Readonly<Record<string, string | number>>;
+      readonly failureLogFields?: RevisionFailureFields;
     } = {},
   ): Promise<void> {
     if (
@@ -7512,7 +7513,7 @@ export class ControllerWorker {
   private async continueExhaustedActiveRevision(
     claim: ClaimedWork,
     code: string,
-    failureLogFields?: Readonly<Record<string, string | number>>,
+    failureLogFields?: RevisionFailureFields,
   ): Promise<boolean> {
     const revisionId = claim.revisionId;
     if (
@@ -7560,17 +7561,15 @@ export class ControllerWorker {
       return false;
     }
     this.passOutcome = "permanent";
-    this.emit({
-      event: "worker.completed",
-      ...agentWorkLogFields(claim),
-      revisionId,
-      result: "retry",
-      outcome: "retry",
-      code,
-      // Like any other ended pass, say why the last attempt failed (finding 1743).
-      ...failureLogFields,
-      ...this.deployTimingFields(claim),
-    });
+    // Like any other ended pass, say why the last attempt failed (finding 1743).
+    this.emitRevisionCompletion(
+      claim,
+      { outcome: "retry", code },
+      {
+        failureLogFields,
+        capturedRevisionId: revisionId,
+      },
+    );
     return true;
   }
 
@@ -7631,7 +7630,7 @@ export class ControllerWorker {
   private async continueRevisionWithoutGit(
     claim: ClaimedWork,
     code: string,
-    failureLogFields?: Readonly<Record<string, string | number>>,
+    failureLogFields?: RevisionFailureFields,
   ): Promise<boolean> {
     if (claim.agentId === undefined || claim.revisionId === undefined) {
       return false;
@@ -7654,16 +7653,7 @@ export class ControllerWorker {
       return false;
     }
     this.passOutcome = "permanent";
-    this.emit({
-      event: "worker.completed",
-      ...agentWorkLogFields(claim),
-      revisionId: claim.revisionId,
-      result: "permanent",
-      outcome: "permanent",
-      code,
-      ...failureLogFields,
-      ...this.deployTimingFields(claim),
-    });
+    this.emitRevisionCompletion(claim, { outcome: "permanent", code }, { failureLogFields });
     return true;
   }
 
