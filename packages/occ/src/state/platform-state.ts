@@ -1,5 +1,5 @@
 import type { InstallationSandboxNetworkPolicyCeiling } from "@openclaw-enterprise/contracts";
-import { admitRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
+import { isCanonicalRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
 import type {
   WorkspaceSetupRepository,
   SandboxPolicyRepository,
@@ -3522,7 +3522,8 @@ function repositories(
       const grants = policy?.repositoryNetworkPolicy;
       const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
       if (
-        !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
+        !isDeepStrictEqual(grants, admittedPolicy?.grants) ||
+        (admittedPolicy !== undefined && !isCanonicalRepositoryNetworkPolicy(admittedPolicy)) ||
         (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
       ) {
         throw new ScopeViolationError(

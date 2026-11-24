@@ -2,7 +2,7 @@ import type { InstallationSandboxNetworkPolicyCeiling } from "@openclaw-enterpri
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
-  admitRepositoryNetworkPolicy,
+  isCanonicalRepositoryNetworkPolicy,
   assertExecutionAdmission,
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
@@ -824,7 +824,7 @@ function executionAdmissionFromRow(
       (hasReaderVersion &&
         (policy?.version !== 1 ||
           repositoryNetworkPolicyVersion !== policy.version ||
-          !isDeepStrictEqual(admitRepositoryNetworkPolicy(policy.grants, policy.grants), policy)))
+          !isCanonicalRepositoryNetworkPolicy(policy)))
     ) {
       throw new Error("Invalid persisted repository network policy reader version.");
     }

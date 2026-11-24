@@ -13,7 +13,7 @@ denials and recommendations.
 
 ## Entry Points
 
-- Trigger: API startup, the Console Settings ceiling editor, the Agent Policy denials tab, or `occ agent policy` commands.
+- Trigger: API startup, the Console Settings ceiling editor, [Repositories](../guides/topics/agent-sandbox-policy.md#repository-access), Policy denials or `occ agent policy`.
 - Source: `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` and
   `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
 - Assumptions: Settings needs Installation `administer`. Agent mutations need a
@@ -125,7 +125,7 @@ uses selected Namespace permissions and saved grants. Admission passes saved or 
 `read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-applies Namespace `apiLimits` to REST routes. Limits require native enforcement
+applies Namespace and frozen Agent `apiLimits` to REST routes. Limits require native enforcement
 at issuance and renewal. [Bodies remain unchecked](../reference/repository-credentials/access-levels.md#known-limits).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
@@ -140,27 +140,26 @@ of pending applications. The Worker records the expected provider version
 and settles the application as `applied` or `failed`. Deleting the Agent
 removes its policy and exact IAM access.
 
-The [editor](../reference/sandbox-policies.md#repository-network-policy) shows grants
-and the Namespace ceiling. Save before deploy. Initial `[]` denies all. Omission
-retains grants without returning them. For `[]`, OCC checks SandboxPolicy read
-before lookup. A reader can withdraw after Driver loss with both lists empty.
+The [editor](../reference/sandbox-policies.md#repository-network-policy)
+compares saved and deployed versions. Initial `[]` denies all. Omission preserves
+grants without returning them. Withdrawal after Driver loss requires both lists
+empty. For `[]`, OCC checks SandboxPolicy read before lookup.
 
-PostgreSQL saves an explicit list at Read Committed. The PUT starts that
-transaction before OCC waits for the IAM configuration lock, and the
-authorization checks see revocations committed during the wait.
+PUT uses Read Committed to observe revocations during IAM lock waits.
 
-`apps/controller/src/console/agents/sandbox-policy.mts:renderAgentSandboxPolicy`
-uses the GET hint and Namespace limits. Refresh updates version and limits.
-Refresh and rejected saves preserve drafts while saved grants match. Otherwise, discard them. PUT validates the list and the editor checks
-the returned Agent, Namespace, version and grants. Confirm deny-all and withdrawal.
-After unscoped deployment, save policy on a new Agent before deploy. A compatible
-controller and Worker must stop an unreadable revision.
+`apps/controller/src/console/agents/sandbox-policy.mts:repositoryApiEditor`
+previews role, Namespace and Agent limits. Refresh and rejected saves retain
+drafts if saved grants match. Otherwise, discard them. PUT validates the list.
+The editor confirms Agent, Namespace, version
+and grants, including limits. First deployment review shows API limits beside each role.
+Deny-all and withdrawal require confirmation.
+Unscoped history requires a new Agent. Unreadable revisions require a compatible
+controller and Worker to stop.
 
-Deployment rechecks the selected Repo scope, proxy and Driver identities across
-asynchronous validation before accessing credentials and inserting a revision.
-Migration 0087 binds the snapshot to the exact saved policy version, grants
-and identity. Older Workers refuse its reader marker. The Worker rechecks
-the policy before dispatch. An explicit list blocks live application.
+Deployment rechecks Repo scope, proxy and Driver identities before credential
+access and revision insertion. PostgreSQL binds version, grants and identity,
+including API limits. Workers recheck before dispatch. Older Workers refuse the
+reader marker. Explicit lists block live application.
 
 ### 2. Freeze deployment or enqueue live application
 
@@ -305,7 +304,16 @@ counters, controls and empty rows.
 
 ## Changelog
 
+- 2026-11-23 22:33: Retain persisted ceiling admission and history while integrating Agent repository API limits. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - c43d8ed9a7dbd1c0e0d26819cfb7fce07835fce0)
+
 - 2026-11-23 22:01: Preserve saved ceiling admission with Namespace GitHub API permission limits. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - cedec867632ced6523f645f41952070eba585dad)
+
+- 2026-11-23 20:32: Trace Console API limits. (authoring-run/33927adf-1105-42ee-be57-c37d2132a624 - 7402e100f1)
+
+- 2026-11-23 20:29: Trace Agent API limits. (authoring-run/834fd8d9-74c1-4639-91e3-d87ff63bc9ef - 9c5e29d947)
+
+- 2026-11-23 22:52: Trace Agent action filters. (authoring-run/0fa0ac1a-8ca1-46b3-896e-de8b1a400b39 - e01544b5df)
+
 - 2026-11-23 20:25: Describe Namespace API limits. (authoring-run/f51f99ed-c96c-4d33-b96b-5fcd4a39ca77 - 7d6fb6a344)
 
 - 2026-11-23 19:42: Document API filters. (authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6 - d9b229e2ff)
@@ -315,6 +323,7 @@ counters, controls and empty rows.
 - 2026-11-23 17:24: Document scoped issue creation. (authoring-run/2ee89ec8-d3b0-4cf3-8484-fe06b6075f69 - c97a1ab0938f8aac3880ad68bc5feaccd118820a)
 
 - 2026-11-23 19:11: Request Read Committed only on outer transactions that initialize or apply ceiling-dependent policy. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - b33e9efe691c008f8a7c9d5c48fde34e5e752aea)
+
 - 2026-11-23 18:40: Integrate the persisted ceiling with extracted Sandbox policy, provisioning and deployment owners. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - 03d64d7fee54fa6aa44c217732e19ca44d0a3991)
 
 See [documentation history](agent-sandbox-policy/history.md) for earlier changes.

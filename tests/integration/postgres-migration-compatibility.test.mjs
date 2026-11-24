@@ -1499,8 +1499,9 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preInstallationNetworkPolicyCeiling"],
-      [93, "preDynamicInstallationNetworkPolicyCeiling"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preInstallationNetworkPolicyCeiling"],
+      [94, "preDynamicInstallationNetworkPolicyCeiling"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1958,8 +1959,9 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preInstallationNetworkPolicyCeiling"],
-      [93, "preDynamicInstallationNetworkPolicyCeiling"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preInstallationNetworkPolicyCeiling"],
+      [94, "preDynamicInstallationNetworkPolicyCeiling"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2524,8 +2526,9 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preInstallationNetworkPolicyCeiling"],
-      [93, "preDynamicInstallationNetworkPolicyCeiling"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preInstallationNetworkPolicyCeiling"],
+      [94, "preDynamicInstallationNetworkPolicyCeiling"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2658,6 +2661,9 @@ test(
     for (const [prefix, history] of [
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preInstallationNetworkPolicyCeiling"],
+      [94, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2825,8 +2831,9 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preInstallationNetworkPolicyCeiling"],
-      [93, "preDynamicInstallationNetworkPolicyCeiling"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preInstallationNetworkPolicyCeiling"],
+      [94, "preDynamicInstallationNetworkPolicyCeiling"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2855,8 +2862,9 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [93, "ALTER TABLE"],
-                [92, "GRANT"],
+                [94, "ALTER TABLE"],
+                [93, "GRANT"],
+                [92, "CREATE FUNCTION"],
                 [91, "ALTER TABLE"],
                 [90, "ALTER TABLE"],
                 [89, "CREATE FUNCTION"],
@@ -2892,6 +2900,10 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 92) {
+          // Fail replacement of the policy validator after the action check and grants exist.
+          failAt =
+            "IF to_regprocedure('occ.repository_api_limits_are_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 89) {
           // Abort 0090 after replacing the execution check, while installing the session guard.
           failAt =

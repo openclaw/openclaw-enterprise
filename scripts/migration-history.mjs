@@ -154,9 +154,12 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preAgentNetworkProxyAdmission";
   }
   if (count === 92 && completedCount > 92) {
-    return "preInstallationNetworkPolicyCeiling";
+    return "preAgentRepositoryApiLimits";
   }
   if (count === 93 && completedCount > 93) {
+    return "preInstallationNetworkPolicyCeiling";
+  }
+  if (count === 94 && completedCount > 94) {
     return "preDynamicInstallationNetworkPolicyCeiling";
   }
   if (count === completedCount) {

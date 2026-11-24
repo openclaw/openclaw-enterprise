@@ -4570,18 +4570,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "startup_configuration": {
-          "name": "startup_configuration",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "management_mode": {
-          "name": "management_mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -4623,10 +4611,6 @@
         "installation_ceiling_rules": {
           "name": "installation_ceiling_rules",
           "value": "occ.sandbox_network_grants_are_valid(\"occ\".\"installation_network_policy_ceiling\".\"rules\")"
-        },
-        "installation_ceiling_mode": {
-          "name": "installation_ceiling_mode",
-          "value": "\"occ\".\"installation_network_policy_ceiling\".\"management_mode\" IN ('console', 'startup')"
         }
       },
       "isRLSEnabled": false
@@ -7837,6 +7821,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a",
-  "prevId": "57be4ec3-81ed-4c74-8fb3-e41316a73ce7"
+  "id": "e54f0d7c-8d0c-4949-bd38-46ec0d60756c",
+  "prevId": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a"
 }

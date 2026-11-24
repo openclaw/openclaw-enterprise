@@ -650,14 +650,21 @@
       "idx": 93,
       "version": "7",
       "when": 1787000000093,
-      "tag": "0093_installation_network_policy_ceiling",
+      "tag": "0093_agent_repository_api_limits",
       "breakpoints": true
     },
     {
       "idx": 94,
       "version": "7",
       "when": 1787000000094,
-      "tag": "0094_dynamic_installation_network_policy_ceiling",
+      "tag": "0094_installation_network_policy_ceiling",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1787000000095,
+      "tag": "0095_dynamic_installation_network_policy_ceiling",
       "breakpoints": true
     }
   ]

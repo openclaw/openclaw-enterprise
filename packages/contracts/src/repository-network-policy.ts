@@ -1,9 +1,28 @@
-export interface RepositoryNetworkGrant {
+import { isDeepStrictEqual } from "node:util";
+
+export type RepositoryApiLevel = "none" | "read" | "write";
+
+export interface RepositoryApiLimits {
+  readonly default?: "none";
+  readonly issues?: RepositoryApiLevel;
+  readonly pull_requests?: RepositoryApiLevel;
+}
+
+export interface RepositoryApiMaximum extends RepositoryNetworkLimit {
+  readonly issues: RepositoryApiLevel;
+  readonly pull_requests: RepositoryApiLevel;
+}
+
+interface RepositoryNetworkLimit {
   readonly repository: string;
   readonly access: "read" | "write";
 }
 
-export type RepositoryNetworkPolicyCeiling = readonly RepositoryNetworkGrant[];
+export interface RepositoryNetworkGrant extends RepositoryNetworkLimit {
+  readonly apiLimits?: RepositoryApiLimits;
+}
+
+export type RepositoryNetworkPolicyCeiling = readonly RepositoryNetworkLimit[];
 
 export interface RepositoryNetworkPolicy {
   readonly version: 1;
@@ -27,7 +46,44 @@ export class RepositoryNetworkPolicyAdmissionError extends Error {
 export const repositoryNetworkGrantPattern = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
 export const maxRepositoryNetworkGrants = 32;
 
-function parseGrants(value: unknown, path: string): RepositoryNetworkGrant[] {
+export function parseRepositoryApiLimits(input: unknown, path = "/apiLimits"): RepositoryApiLimits {
+  const invalid = () =>
+    new RepositoryNetworkPolicyAdmissionError(
+      "INVALID_VALUE",
+      path,
+      "Set issues or pull_requests to none, read or write, or default to none.",
+    );
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw invalid();
+  }
+  const limits = input as Record<string, unknown>;
+  if (
+    !Object.keys(limits).length ||
+    Reflect.ownKeys(limits).some(
+      (key) => key !== "default" && key !== "issues" && key !== "pull_requests",
+    ) ||
+    (Object.hasOwn(limits, "default") && limits.default !== "none")
+  ) {
+    throw invalid();
+  }
+  function level(value: unknown): RepositoryApiLevel {
+    if (value !== "none" && value !== "read" && value !== "write") {
+      throw invalid();
+    }
+    return value;
+  }
+  // Match the revision identity even if the input or database reordered the keys.
+  return Object.freeze({
+    ...(Object.hasOwn(limits, "default") && { default: "none" as const }),
+    ...(Object.hasOwn(limits, "issues") && { issues: level(limits.issues) }),
+    ...(Object.hasOwn(limits, "pull_requests") && { pull_requests: level(limits.pull_requests) }),
+  });
+}
+
+function parseGrants(
+  value: unknown,
+  path: "/repositoryNetworkPolicy" | "/repositoryNetworkPolicyCeiling",
+): RepositoryNetworkGrant[] {
   if (!Array.isArray(value)) {
     throw new RepositoryNetworkPolicyAdmissionError(
       "INVALID_VALUE",
@@ -50,7 +106,12 @@ function parseGrants(value: unknown, path: string): RepositoryNetworkGrant[] {
       entry === null ||
       typeof entry !== "object" ||
       Array.isArray(entry) ||
-      Object.keys(entry).length !== 2 ||
+      Reflect.ownKeys(entry).some(
+        (key) =>
+          key !== "repository" &&
+          key !== "access" &&
+          (key !== "apiLimits" || path !== "/repositoryNetworkPolicy"),
+      ) ||
       !Object.hasOwn(entry, "repository") ||
       !Object.hasOwn(entry, "access")
     ) {
@@ -88,7 +149,10 @@ function parseGrants(value: unknown, path: string): RepositoryNetworkGrant[] {
       );
     }
     repositories.add(repository);
-    grants.push({ repository, access });
+    const apiLimits = Object.hasOwn(entry, "apiLimits")
+      ? parseRepositoryApiLimits(entry.apiLimits, `${entryPath}/apiLimits`)
+      : undefined;
+    grants.push({ repository, access, ...(apiLimits && { apiLimits }) });
   }
   return grants;
 }
@@ -108,8 +172,11 @@ export function isCanonicalRepositoryGrantList(
 ): value is readonly RepositoryNetworkGrant[] {
   try {
     const grants = parseGrants(value, "/repositoryNetworkPolicy");
-    return grants.every(
-      (grant, index) => index === 0 || grants[index - 1]!.repository < grant.repository,
+    return (
+      isDeepStrictEqual(value, grants) &&
+      grants.every(
+        (grant, index) => index === 0 || grants[index - 1]!.repository < grant.repository,
+      )
     );
   } catch {
     return false;
@@ -140,6 +207,22 @@ export function admitRepositoryNetworkPolicy(
     }
   }
 
+  return freezePolicy(grants);
+}
+
+/** Validate stored revision identity without treating the Agent grants as Installation authority. */
+export function isCanonicalRepositoryNetworkPolicy(policy: RepositoryNetworkPolicy): boolean {
+  try {
+    return isDeepStrictEqual(
+      policy,
+      freezePolicy(parseGrants(policy.grants, "/repositoryNetworkPolicy")),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function freezePolicy(grants: RepositoryNetworkGrant[]): RepositoryNetworkPolicy {
   grants.sort((a, b) => (a.repository < b.repository ? -1 : 1));
   const version = 1;
   const canonicalGrants = Object.freeze(grants.map((grant) => Object.freeze(grant)));
