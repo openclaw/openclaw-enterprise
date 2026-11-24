@@ -3483,20 +3483,22 @@ export class PostgresPlatformState implements PlatformStateStore {
       findUnretiredRepositorySourceCopies: async (namespaceId, credentialSourceId) =>
         (
           await client.query(
-            `SELECT revision_id,namespace_id,credential_source_id,token_service_instance_id,agent_id
+            `SELECT revision_id,namespace_id,credential_source_id,token_service_instance_id,agent_id,
+               retirement_blocked
              FROM occ.repository_source_copies
              WHERE namespace_id=$1 AND credential_source_id=$2 AND retired_at IS NULL
              ORDER BY recorded_at,revision_id`,
             [namespaceId, credentialSourceId],
           )
         ).rows.map((row) => {
-          const copy = row as Record<string, string>;
+          const copy = row as Record<string, string | null>;
           return Object.freeze({
             revisionId: copy.revision_id!,
             namespaceId: copy.namespace_id!,
             credentialSourceId: copy.credential_source_id!,
             tokenServiceInstanceId: copy.token_service_instance_id!,
             agentId: copy.agent_id!,
+            ...(copy.retirement_blocked ? { retirementBlocked: copy.retirement_blocked } : {}),
           });
         }),
       deleteCredentialSource: async (namespaceId, credentialSourceId) => {

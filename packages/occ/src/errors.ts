@@ -1490,13 +1490,37 @@ export class CredentialWithdrawalInProgressError extends ResourceStateConflictEr
  */
 export class RepositorySourceCopiesUnretiredError extends ResourceStateConflictError {
   readonly unretired: number;
-  constructor(unretired: number) {
+  /** Every unretired copy, for the caller-visible answer built after the transaction ends. */
+  readonly copies: readonly Readonly<UnretiredRepositorySourceCopy>[];
+  /**
+   * `named` is a copy whose Agent the caller may read; its retained reason (when the Worker
+   * recorded one) says whether a Sandbox still attaches the Provider or the Gateway did not
+   * answer. The message never names a Provider or carries a value, and fits the 256-character
+   * API message cap for any count up to 99999.
+   */
+  constructor(
+    copies: readonly Readonly<UnretiredRepositorySourceCopy>[],
+    named?: Readonly<UnretiredRepositorySourceCopy>,
+  ) {
+    const unretired = copies.length;
+    const one = unretired === 1;
     super(
-      `${unretired} native Git ${unretired === 1 ? "copy" : "copies"} of this credential source ${unretired === 1 ? "is" : "are"} not confirmed retired (unretired_repository_source_copy). Stop or redeploy without the source each Agent whose revision uses it; the Worker retires a copy once its Sandbox is gone and its Gateway answers. Then retry.`,
+      named
+        ? `${unretired} Source ${one ? "copy" : "copies"} unretired (unretired_repository_source_copy): ${named.agentId}/${named.revisionId}${named.retirementBlocked ? ` (${named.retirementBlocked})` : ""}${one ? "" : ` +${unretired - 1}`}. Stop or redeploy its ${one ? "Agent" : "Agents"} without it; the Worker retries every few minutes.`
+        : `${unretired} native Git ${one ? "copy" : "copies"} of this credential source ${one ? "is" : "are"} not confirmed retired (unretired_repository_source_copy). Stop or redeploy without the source each Agent that uses it; the Worker rechecks each copy every few minutes.`,
     );
     this.unretired = unretired;
+    this.copies = copies;
     this.name = "RepositorySourceCopiesUnretiredError";
   }
+}
+
+/** An unretired repository Source copy as Source deletion reports it; never a Provider name. */
+export interface UnretiredRepositorySourceCopy {
+  readonly agentId: string;
+  readonly revisionId: string;
+  /** Why the Worker's last attempt kept it: `provider_present` or `gateway_unavailable`. */
+  readonly retirementBlocked?: string;
 }
 
 /**

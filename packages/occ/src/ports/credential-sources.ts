@@ -117,11 +117,14 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
    * before the deployment is queued. The Worker completes and retires it.
    */
   recordRepositorySourceCopy(copy: RepositorySourceCopy): Promise<void>;
-  /** The copies of the source that the Worker has not confirmed retired. */
+  /**
+   * The copies of the source that the Worker has not confirmed retired, oldest first, with the
+   * reason the Worker's last attempt kept each one when it recorded one.
+   */
   findUnretiredRepositorySourceCopies(
     namespaceId: string,
     credentialSourceId: string,
-  ): Promise<readonly Readonly<RepositorySourceCopy>[]>;
+  ): Promise<readonly Readonly<RepositorySourceCopy & { readonly retirementBlocked?: string }>[]>;
   /** Records a pending withdrawal, or returns the existing one for the same revision and source. */
   requestCredentialWithdrawal(
     withdrawal: CredentialWithdrawal,
