@@ -6674,7 +6674,7 @@ Save an Agent revision from the Agent's saved settings
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `expectedRepositoryPolicyVersion` | `integer` | No | minimum: 1; maximum: 2147483647; Requires SandboxPolicy read. Deployment returns HTTP 409 if no repository policy is saved or the networking policy version differs from the one reviewed. |
+| `expectedRepositoryPolicyVersion` | `integer or null` | No | Send the reviewed networking policy version to require a saved repository policy at that version. Send null to require no saved repository policy. Omit to skip this check. A version or a saved repository policy requires SandboxPolicy read. An authorized mismatch returns HTTP 409. |
 | `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 
 Example request
