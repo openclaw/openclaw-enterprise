@@ -708,6 +708,13 @@
       "when": 1787000000101,
       "tag": "0101_agent_repository_client_intent",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1787000000102,
+      "tag": "0102_source_backed_repository_authorization",
+      "breakpoints": true
     }
   ]
 }

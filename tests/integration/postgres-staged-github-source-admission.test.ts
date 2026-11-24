@@ -4,6 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { join } from "node:path";
 import test from "node:test";
+import pg from "pg";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
@@ -13,11 +14,19 @@ import {
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
-import { isNativeStagedRepositoryRevision } from "../../packages/contracts/src/index.ts";
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import {
+  isNativeStagedRepositoryRevision,
+  type AgentRevision,
+  type ComputeRevisionContext,
+  type CredentialSource,
+} from "../../packages/contracts/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 import {
@@ -36,6 +45,7 @@ import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.m
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { waitFor } from "../helpers/wait-for.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
@@ -245,6 +255,7 @@ test(
     );
     const delivery = credentialSourceDeliveryBinding(runtime);
     assert.ok(delivery);
+    let admissionTime: Date | undefined;
     const nativeController = OpenClawController.forInstallation(
       controller.installation,
       {
@@ -253,6 +264,7 @@ test(
         credentialSourceDelivery: delivery,
         namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
         backends: runtime.installation.backend,
+        now: () => admissionTime ?? new Date(),
       },
       runtime.repositoryAdmission,
     );
@@ -263,9 +275,10 @@ test(
     }
     const selectedTokenService = runtime.installation.drivers.token_service;
     assert.ok(selectedTokenService);
+    const storeIdentity = randomUUID();
     const instanceId = await nativeController.activateTokenServiceInstance(
       selectedTokenService.id,
-      randomUUID(),
+      storeIdentity,
     );
     const owner = new OCCTokenServiceDriver(
       selectedTokenService.id,
@@ -556,6 +569,17 @@ test(
       assert.equal(repositorySnapshot.sourceId, gitSourceId);
       // Worker must accept the PostgreSQL-loaded policy after JSONB changes object key order.
       assert.equal(isNativeStagedRepositoryRevision(revision), true);
+      const authority = revision.repositoryCredentials;
+      assert.ok(authority);
+      assert.equal(authority.authorization, "credential_source");
+      assert.deepEqual(Object.keys(authority).sort(), ["authorization", "bindings", "driver"]);
+      assert.deepEqual(admitted.json().data.repositoryCredentials, {
+        driver: authority.driver,
+        bindings: repositories.map(({ repositoryRef }) => ({
+          repositoryRef,
+          profile: "github-repository",
+        })),
+      });
       if (agents.length === 0) {
         // Exercise the actual app-role database validator against the admitted stored revision.
         // Each mutation removes or changes one independently required Repository boundary.
@@ -569,6 +593,7 @@ test(
                ('source-instance', jsonb_set(r.admitted_spec, '{credential_sources,1,tokenServiceInstanceId}', to_jsonb($4::text))),
                ('reader-marker', r.admitted_spec #- '{execution_admission,repositoryNetworkPolicyVersion}'),
                ('saved-grant', jsonb_set(r.admitted_spec, '{sandbox_policy,repositoryNetworkPolicy,grants}', '[]')),
+               ('legacy-deadline', jsonb_set(r.admitted_spec, '{repository_credentials,deadlineWallMs}', '1')),
                ('standing-approval', jsonb_set(r.admitted_spec, '{repository_credentials,standingApprovalId}', to_jsonb($4::text)))
              ) AS candidate(label,spec)
             WHERE r.namespace_id=$1 AND r.agent_id=$2 AND r.id=$3`,
@@ -582,6 +607,7 @@ test(
             "source-instance": false,
             "reader-marker": false,
             "saved-grant": false,
+            "legacy-deadline": false,
             "standing-approval": false,
           },
         );
@@ -799,15 +825,23 @@ test(
       repositoryAccess: selected("read"),
     });
     assert.equal(sharedScope.statusCode, 200, sharedScope.body);
-    const second = await request("POST", `${agentPath}/deploy`, {});
+    // The former deadline was calculated from the controller clock. Make that input old enough
+    // that the deadline would already have elapsed, while keeping the database clock and token current.
+    const formerDeadline = Date.now() - 1_000;
+    admissionTime = new Date(formerDeadline - 600_000);
+    const second = await request("POST", `${agentPath}/deploy`, {}).finally(() => {
+      admissionTime = undefined;
+    });
     assert.equal(second.statusCode, 202, second.body);
     const history = await state.read((view) => view.revisions.listRevisions(namespaceId, agentId));
     assert.deepEqual(history[0], firstRevision);
-    assert.equal(history[1]?.id, second.json().data.id);
-    assert.equal(history[1]?.revision, 2);
-    assert.ok(history[1] && isNativeStagedRepositoryRevision(history[1]));
-    assert.deepEqual(history[1].sandboxPolicy?.additions, [modelGrant]);
-    assert.deepEqual(history[1].sandboxPolicy?.repositoryNetworkPolicy?.grants, newGrants);
+    const agedRevision = history[1];
+    assert.ok(agedRevision && isNativeStagedRepositoryRevision(agedRevision));
+    assert.equal(agedRevision.id, second.json().data.id);
+    assert.equal(agedRevision.revision, 2);
+    assert.ok(Date.parse(agedRevision.createdAt) > formerDeadline);
+    assert.deepEqual(agedRevision.sandboxPolicy?.additions, [modelGrant]);
+    assert.deepEqual(agedRevision.sandboxPolicy?.repositoryNetworkPolicy?.grants, newGrants);
 
     assert.equal(
       github.issuesOfTokens.length,
@@ -1042,5 +1076,130 @@ test(
     );
     assert.ok(creatorCredential.version);
     assert.ok(creatorCredential.credential);
+
+    // Run the actual Worker against the real admission and queue. Control only the Compute
+    // workload boundary, since this fixture does not start a Gateway or Sandbox.
+    const compute = runtime.computeDriver;
+    assert.ok(compute instanceof KubernetesComputeDriver);
+    const ready = ({ namespaceId, agentId, id }: Readonly<AgentRevision>) => ({
+      namespaceId,
+      agentId,
+      revisionId: id,
+      ready: true,
+    });
+    t.mock.method(compute, "preflight", async () => ({ warnings: [] }));
+    const prepare = t.mock.method(
+      compute,
+      "prepareRevision",
+      async (revision: AgentRevision, context?: ComputeRevisionContext) => {
+        assert.equal(typeof context?.configureCredentialDeployment, "function");
+        return ready(revision);
+      },
+    );
+    t.mock.method(compute, "observeRevision", async () => ({ state: "running" as const }));
+    t.mock.method(compute, "activateRevision", async () => {});
+    const stop = t.mock.method(compute, "stopRevision", async (_revision: AgentRevision) => {});
+    t.mock.method(compute, "retireRevision", async () => {});
+    const withdraw = t.mock.method(
+      compute,
+      "withdrawCredentialSource",
+      async (_revision: Readonly<AgentRevision>, source: Readonly<CredentialSource>) => ({
+        sourceId: source.id,
+        state: "revoked" as const,
+      }),
+    );
+    await store.create(
+      {
+        installationId: controller.installation.id,
+        id: `token-service-store-identity:${driver.id}`,
+      },
+      storeIdentity,
+    );
+    const workKey = `agent_revision:${agedRevision.id}:reconcile`;
+    const maintenancePrefix = `agent_revision:${agedRevision.id}:maintenance:`;
+    const cleanupPrefix = `agent_revision:${agedRevision.id}:repository_cleanup:`;
+    await pool.query(
+      `UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour'
+       WHERE namespace_id=$1 AND idempotency_key<>$2 AND state='queued'`,
+      [namespaceId, workKey],
+    );
+    const work = (key: string) => state.read((view) => view.operations.findWork(key));
+    const succeed = (key: string) =>
+      waitFor(key, async () => {
+        const result = await work(key);
+        if (result?.state === "failed_permanent") {
+          assert.fail(`${key} failed: ${result.reasonCode}`);
+        }
+        return result?.state === "succeeded" ? result : undefined;
+      });
+    const worker = createControllerWorker({
+      pool: new pg.Pool({ connectionString: databaseUrl }),
+      drivers: {
+        ...runtime,
+        installation: {
+          ...runtime.installation,
+          drivers: {
+            ...runtime.installation.drivers,
+            secret: { ...runtime.installation.drivers.secret, id: driver.id },
+          },
+        },
+        secretDriver: driver,
+      },
+      pollIntervalMs: 15,
+      maxAttempts: 1,
+      emit() {},
+    });
+    const mintsBeforeWorker = github.issuesOfTokens.length;
+    try {
+      await worker.start();
+      await succeed(workKey);
+      assert.ok(
+        prepare.mock.calls.some(({ arguments: [revision] }) => revision.id === agedRevision.id),
+      );
+      const maintenance = await pool.query<{ idempotency_key: string }>(
+        `UPDATE occ.controller_work SET available_at=clock_timestamp()
+         WHERE namespace_id=$1 AND revision_id=$2 AND starts_with(idempotency_key, $3) AND state='queued'
+         RETURNING idempotency_key`,
+        [namespaceId, agedRevision.id, maintenancePrefix],
+      );
+      assert.equal(maintenance.rowCount, 1);
+      await succeed(maintenance.rows[0]!.idempotency_key);
+      assert.equal(
+        (await state.read((view) => view.agents.findAgent(namespaceId, agentId)))?.activeRevisionId,
+        agedRevision.id,
+      );
+      assert.equal(
+        stop.mock.calls.some(({ arguments: [revision] }) => revision.id === agedRevision.id),
+        false,
+      );
+      const pendingWork = await pool.query<{ idempotency_key: string }>(
+        `SELECT idempotency_key FROM occ.controller_work
+         WHERE namespace_id=$1 AND revision_id=$2
+           AND ((starts_with(idempotency_key, $3) AND state='queued') OR starts_with(idempotency_key, $4))`,
+        [namespaceId, agedRevision.id, maintenancePrefix, cleanupPrefix],
+      );
+      assert.equal(pendingWork.rowCount, 1);
+      assert.ok(pendingWork.rows[0]!.idempotency_key.startsWith(maintenancePrefix));
+      assert.equal(withdraw.mock.callCount(), 0);
+
+      // Removing Repository access from the Agent still withdraws the exact Git Source delivery.
+      const cleared = await request("PATCH", agentPath, {
+        configurationId: config.json().data.id,
+        repositoryBindings: [],
+      });
+      assert.equal(cleared.statusCode, 200, cleared.body);
+      const removal = await succeed(repositoryRemovalWorkKey(agedRevision.id));
+      assert.equal(removal.reasonCode, "REPOSITORY_ACCESS_WITHDRAWN");
+      assert.deepEqual(
+        withdraw.mock.calls.map(({ arguments: [revision, source] }) => [revision.id, source.id]),
+        [[agedRevision.id, gitSource.id]],
+      );
+      const running = await state.read((view) => view.agents.findAgent(namespaceId, agentId));
+      assert.equal(running?.activeRevisionId, agedRevision.id);
+      assert.equal(running?.desiredRuntimeState, "running");
+      assert.equal(github.issuesOfTokens.length, mintsBeforeWorker);
+    } finally {
+      await worker.stop();
+    }
   },
 );

@@ -795,8 +795,8 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
     !validCredentialSourceSnapshots(revision.credentialSources) ||
     !validStandaloneCredentialDeployment(revision) ||
-    (revision.executionAdmission.mode === "standalone" &&
-      revision.repositoryCredentials !== undefined) ||
+    (revision.repositoryCredentials?.authorization === "credential_source" &&
+      revision.executionAdmission.mode !== "standalone") ||
     !validPluginRevisionState(revision.plugins) ||
     !validPluginApprovers(revision.pluginApprovers) ||
     (revision.repositoryCredentials !== undefined &&

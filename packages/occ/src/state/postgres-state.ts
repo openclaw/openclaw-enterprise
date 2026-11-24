@@ -1039,7 +1039,9 @@ function revisionFromRow(
   }
   if (
     admitted.repository_credentials !== undefined &&
-    !validRepositoryRevisionState(admitted.repository_credentials)
+    (!validRepositoryRevisionState(admitted.repository_credentials) ||
+      (admitted.repository_credentials.authorization === "credential_source" &&
+        executionAdmission.mode !== "standalone"))
   ) {
     throw new SavedConfigurationReadError(
       "repositoryCredentials",

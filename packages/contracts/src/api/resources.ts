@@ -1566,7 +1566,7 @@ export const RepositoryRevisionStateSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
-    deadlineWallMs: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+    deadlineWallMs: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
     bindings: RepositoryBindingSelectionsSchema,
   },
   { additionalProperties: false },

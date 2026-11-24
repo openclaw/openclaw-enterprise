@@ -6392,7 +6392,8 @@ export class ControllerWorker {
       if (
         !isNativeStagedRepositoryRevision(revision) ||
         !repository ||
-        Date.now() >= repository.deadlineWallMs ||
+        (repository.authorization !== "credential_source" &&
+          Date.now() >= repository.deadlineWallMs) ||
         !grants ||
         source?.ownerCapability !== "token_service" ||
         source.type !== "github-app-installation" ||
@@ -7819,6 +7820,7 @@ export class ControllerWorker {
       revision === undefined ||
       revision.servicePrincipalId !== agent.servicePrincipalId ||
       (revision.repositoryCredentials !== undefined &&
+        revision.repositoryCredentials.authorization !== "credential_source" &&
         revision.repositoryCredentials.standingApprovalId === undefined &&
         Date.now() >= revision.repositoryCredentials.deadlineWallMs)
     ) {
@@ -8032,7 +8034,11 @@ export class ControllerWorker {
     withdrawnInterval?: number,
   ): Promise<void> {
     const interval = withdrawnInterval ?? this.revisionMaintenanceInterval(revision)!;
-    const remaining = (revision.repositoryCredentials?.deadlineWallMs ?? 0) - Date.now();
+    const repository = revision.repositoryCredentials;
+    const remaining =
+      repository && repository.authorization !== "credential_source"
+        ? repository.deadlineWallMs - Date.now()
+        : 0;
     // TODO(OpenShell #2881): replace Worker-only grant deadlines with native per-Agent expiry.
     const delayMs =
       withdrawnInterval === undefined && remaining > 0 && isNativeStagedRepositoryRevision(revision)

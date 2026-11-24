@@ -128,7 +128,9 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
       : {
           repositoryCredentials: {
             driver: revision.repositoryCredentials.driver,
-            deadlineWallMs: revision.repositoryCredentials.deadlineWallMs,
+            ...(revision.repositoryCredentials.deadlineWallMs === undefined
+              ? {}
+              : { deadlineWallMs: revision.repositoryCredentials.deadlineWallMs }),
             bindings: revision.repositoryCredentials.bindings.map(({ repositoryRef, profile }) => ({
               repositoryRef,
               profile,

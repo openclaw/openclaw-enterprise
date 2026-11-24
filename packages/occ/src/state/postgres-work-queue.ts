@@ -288,6 +288,7 @@ function transferRepositoryCleanupSql(
             AND agent.active_revision_id = revision.id
             AND source.idempotency_key ~
               ('^agent_revision:' || revision.id || ':maintenance:(0|[1-9][0-9]*)$')
+            AND NOT COALESCE((revision.admitted_spec->'repository_credentials') ? 'authorization', false)
             AND (revision.admitted_spec #>> '{repository_credentials,deadlineWallMs}')::bigint <=
               EXTRACT(EPOCH FROM clock_timestamp()) * 1000
           THEN 'expiry' ELSE 'retire' END
@@ -410,6 +411,7 @@ function continuingMaintenanceSql(candidates: string): string {
       WHERE agent.desired_runtime_state = 'running'
         AND namespace.status = 'ready' AND namespace.deleted_at IS NULL
         AND (revision.admitted_spec->'repository_credentials' IS NULL OR
+          revision.admitted_spec #>> '{repository_credentials,authorization}' = 'credential_source' OR
           occ.repository_standing_execution_is_current(revision.admitted_spec->'repository_credentials',revision.namespace_id,revision.agent_id,revision.id) OR
           (revision.admitted_spec #>> '{repository_credentials,deadlineWallMs}')::bigint >
             EXTRACT(EPOCH FROM clock_timestamp()) * 1000 OR
@@ -1601,6 +1603,7 @@ export class PostgresWorkQueue {
                  ('^agent_revision:' || revision.id || ':maintenance:(0|[1-9][0-9]*)$')
                  OR source.idempotency_key = 'agent_revision:' || revision.id || ':reconcile')
                AND (revision.admitted_spec->'repository_credentials' IS NULL OR
+                 revision.admitted_spec #>> '{repository_credentials,authorization}' = 'credential_source' OR
                  occ.repository_standing_execution_is_current(revision.admitted_spec->'repository_credentials',revision.namespace_id,revision.agent_id,revision.id) OR
                  (revision.admitted_spec #>> '{repository_credentials,deadlineWallMs}')::bigint >
                    EXTRACT(EPOCH FROM clock_timestamp()) * 1000 OR

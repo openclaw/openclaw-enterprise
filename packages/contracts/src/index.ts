@@ -230,6 +230,7 @@ import type {
   RepositoryAccess,
   RepositoryBindingSelection,
   RepositoryRevisionState,
+  SourceBackedRepositoryRevisionState,
 } from "./drivers/repo/index.ts";
 
 export type {
@@ -287,6 +288,7 @@ export type {
   RepositoryCredentialSessionFiles,
   RepositoryCredentialSessionStatus,
   RepositoryRevisionState,
+  SourceBackedRepositoryRevisionState,
 } from "./drivers/repo/index.ts";
 export {
   githubInstallationProfile,
@@ -1391,7 +1393,7 @@ export interface AgentRevision extends Scope {
   readonly secretBindings?: SecretBindings;
   readonly plugins?: PluginRevisionState;
   readonly pluginApprovers?: PluginApprovers;
-  readonly repositoryCredentials?: RepositoryRevisionState;
+  readonly repositoryCredentials?: RepositoryRevisionState | SourceBackedRepositoryRevisionState;
   readonly harnessAuth: HarnessAuthSnapshot;
   readonly credentialSources?: readonly CredentialSourceSnapshot[];
   readonly servicePrincipalId: string;

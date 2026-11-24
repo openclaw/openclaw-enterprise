@@ -180,6 +180,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 100 && completedCount > 100) {
     return "preAgentRepositoryClientIntent";
   }
+  if (count === 101 && completedCount > 101) {
+    return "preSourceBackedRepositoryAuthorization";
+  }
   if (count === completedCount) {
     return "completed";
   }

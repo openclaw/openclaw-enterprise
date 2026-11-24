@@ -83,9 +83,13 @@ Use **Rotate GitHub App key** on the same Client to replace its signing key.
 TokenService uses that key at the next mint. Existing installation tokens keep
 their own expiry.
 
+The Agent's saved Repository grants apply for that deployment, subject to
+withdrawal. The configured session duration applies to legacy Repository sessions.
+
 ## Keep Git access on the same running Agent
 
-An Agent administrator can approve one repository binding until they remove that approval.
+For legacy Repository sessions, an Agent administrator can approve one
+repository binding until they remove that approval.
 The worker can then open another short session for the same running Agent without an hourly
 approval or a replacement Agent. Git can pause between sessions. The approval does not extend a
 token, change its repository or permissions, or grant access to a model.

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-20"
-last_updated_session: "authoring-run/7a822e28-b4b9-453a-ae0d-313b27e85a4e"
+updated: "2026-11-24"
+last_updated_session: "authoring-run/5ab9f2fd-bf55-4e30-a445-a5a432c3b796"
 ---
 
 # Agent repository credential flow
@@ -111,22 +111,18 @@ graph TD
 
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
-`listRepositoryOptions` checks Namespace Agent `create` or exact Agent `update`
-and Compute support. It reads the bound GitHub catalog or the registered Repo
-Driver catalog and rejects stale owner results. Eligible Installation
-administrators see configured Git access limits. A missing selection adds
-`meta.notConfigured`. Closed Namespaces conflict. Classified discovery failures
-return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
+`listRepositoryOptions` checks Namespace Agent `create` or exact Agent `update`,
+then reads the current Repo catalog if Compute supports it. Installation
+administrators see access limits. A missing selection adds `meta.notConfigured`.
+Discovery failure returns `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
 The catalog accepts 1,000 repositories plus the Installation option. Overflow
-returns `503 DEPENDENCY_UNAVAILABLE`. The editor allows 16 selections.
-`repositorySettings` uses the bound policy or selected Repo Driver for both
-explicit and inherited selections. PostgreSQL checks bindings. Fresh, empty
-drafts tolerate classified outages. Catalogs omit credentials and sender metadata.
+returns `503 DEPENDENCY_UNAVAILABLE`. The editor accepts 16 selections.
+`repositorySettings` resolves explicit and inherited selections. PostgreSQL
+checks bindings. Empty drafts can save during catalog outages.
 
-Save Configuration first. Reuse it after a confirmed Agent rejection. For scoped
-retries, reload and select a repository and profile. After an uncertain outcome,
-read both resources.
+Reuse a saved Configuration after an Agent rejection. Reload choices before
+retrying a scope failure. Read both resources after an uncertain save.
 
 Requests carry refs and optional profiles. TokenService Git also saves a Client
 and access per ref. Legacy GitHub defaults to `git-write` without provider calls.
@@ -142,16 +138,19 @@ allowlist. Omitted selections persist. `[]` clears them.
 ### 2. Freeze a deployable version
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-matches GitHub Backend and registry IDs. It snapshots policy before loading
-packages or registries, preserving protected Driver identity.
+matches GitHub Backend and registry IDs and freezes the policy owner.
 `packages/occ/src/repository-policy.ts:bindInstallation` binds that owner.
-File-based `repository` requires `built-in` policy. Startup rejects other modes,
-`drivers.repo`, and separate Repo Drivers. Programmatic registration remains available.
-`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts` owns
-OpenShell parsing and chart constraints.
+The configuration file selects `repository` with `built-in` policy. Drivers
+can also register programmatically.
 
-`repository-policy.ts:admitRepositoryCredentials` resolves bindings through the bound policy or Repo Driver. It checks Compute topology and freezes Driver identity, grants and deadline across renewal and recovery. `validateRepositoryBrokerNetworkProxy` rejects
-broker-blocking Codex settings.
+`packages/occ/src/repository-policy.ts:admitRepositoryCredentials` saves the Driver
+identity and grants. Legacy sessions include the configured deadline.
+`validateRepositoryBrokerNetworkProxy` rejects Codex settings that block the broker.
+
+For TokenService Git, the deployment pins the Source and Git request policy.
+`apps/controller/src/worker.ts:ControllerWorker.authorizedCredentialDeployment`
+checks Source access and current Repository scope. Token renewal leaves the
+revision policy in place. Withdrawal removes that revision's Git delivery.
 
 After approval lookup, changed bound ownership returns 503 before invocation.
 Unbound deploys recheck their Driver. Denial or changes to binding or scope
@@ -382,6 +381,8 @@ exclude CNI.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 17:19: Trace the lifetime of Source-backed Git authorization. (authoring-run/5ab9f2fd-bf55-4e30-a445-a5a432c3b796 - 936baaa9652b5008437647a818ad3c09eed317f1)
 
 - 2026-11-20 16:39: Point repository binding and standing approval checks to the policy module. (authoring-run/7a822e28-b4b9-453a-ae0d-313b27e85a4e - 571102147928317ea943b955070e901086ad1503)
 

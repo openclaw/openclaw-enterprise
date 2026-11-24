@@ -20,6 +20,7 @@ import {
   type RepositoryNetworkGrant,
   type RepositoryPolicyDriver,
   type RepositoryRevisionState,
+  type SourceBackedRepositoryRevisionState,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
   type SandboxNetworkGrant,
@@ -910,11 +911,17 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     } else {
       validateRepositoryTopology(compute, harness, sandboxDriverId);
     }
-    const snapshot: RepositoryRevisionState = {
+    const identity = {
       driver: { id: resolved.driver.id, implementation: resolved.driver.implementation },
-      deadlineWallMs: admittedAtWallMs + resolved.resolution.sessionDurationSeconds * 1000,
       bindings: resolved.resolution.bindings,
     };
+    const snapshot: RepositoryRevisionState | SourceBackedRepositoryRevisionState =
+      staged === undefined
+        ? {
+            ...identity,
+            deadlineWallMs: admittedAtWallMs + resolved.resolution.sessionDurationSeconds * 1000,
+          }
+        : { ...identity, authorization: "credential_source" };
     if (!validRepositoryRevisionState(snapshot)) {
       throw new DependencyUnavailableError(
         "The selected repository credential Driver returned an invalid admission snapshot.",
@@ -1081,8 +1088,17 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     state: PlatformUnitOfWork,
     namespaceId: string,
     agentId: string,
-    credentials: RepositoryRevisionState | undefined,
-  ): Promise<RepositoryRevisionState | undefined> {
+    credentials: RepositoryRevisionState | SourceBackedRepositoryRevisionState | undefined,
+  ): Promise<RepositoryRevisionState | SourceBackedRepositoryRevisionState | undefined> {
+    if (credentials?.authorization === "credential_source") {
+      const approvals = await state.repositorySessions.listStandingApprovals(namespaceId, agentId);
+      if (approvals.some((approval) => !approval.revokedAt)) {
+        throw new ResourceStateConflictError(
+          "Remove this Agent's standing Repository approval before deploying with a Repository Source.",
+        );
+      }
+      return credentials;
+    }
     if (credentials?.bindings.length !== 1) {
       const approvals = await state.repositorySessions.listStandingApprovals(namespaceId, agentId);
       if (approvals.some((approval) => !approval.revokedAt)) {

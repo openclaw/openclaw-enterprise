@@ -125,7 +125,7 @@ export interface DeploymentWorkloadRequirement {
   readonly readOnlyRootFilesystem?: boolean;
 }
 
-/** The frozen, finite native recipient is distinct from a legacy repository session. */
+/** The frozen native recipient is distinct from a legacy repository session. */
 export function isNativeStagedRepositoryRevision(
   revision: Readonly<
     Pick<
@@ -157,8 +157,9 @@ export function isNativeStagedRepositoryRevision(
     revision.sandboxPolicy?.driverId !== revision.sandboxDriverId ||
     !repository ||
     repository.standingApprovalId !== undefined ||
-    !Number.isSafeInteger(repository.deadlineWallMs) ||
-    repository.deadlineWallMs <= 0 ||
+    (repository.authorization === "credential_source"
+      ? repository.deadlineWallMs !== undefined
+      : !Number.isSafeInteger(repository.deadlineWallMs) || repository.deadlineWallMs <= 0) ||
     repository.bindings.length === 0 ||
     repository.bindings.some(({ profile }) => profile !== "github-repository") ||
     !policy ||

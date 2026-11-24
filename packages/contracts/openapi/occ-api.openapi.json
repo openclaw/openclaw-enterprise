@@ -26153,7 +26153,7 @@
                               "type": "object"
                             }
                           },
-                          "required": ["driver", "deadlineWallMs", "bindings"],
+                          "required": ["driver", "bindings"],
                           "type": "object"
                         },
                         "revision": { "minimum": 1, "type": "integer" },
@@ -33630,7 +33630,7 @@
                                   "type": "object"
                                 }
                               },
-                              "required": ["driver", "deadlineWallMs", "bindings"],
+                              "required": ["driver", "bindings"],
                               "type": "object"
                             },
                             "revision": { "minimum": 1, "type": "integer" },

@@ -1293,8 +1293,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       if (stagedRepositorySource) {
         if (
           !admittedRepository?.requests?.length ||
-          repositoryCredentials?.standingApprovalId ||
-          !repositoryCredentials
+          repositoryCredentials?.authorization !== "credential_source"
         ) {
           throw new ResourceStateConflictError(
             "The staged Repository Source and saved grants cannot be admitted.",
@@ -1306,7 +1305,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         };
       }
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
-      // The repository credential deadline above stays on this controller's clock.
+      // Legacy Repository session deadlines stay on this controller's clock.
       const revisionId = dependencies.nextIdentifier("agent_revision");
       if (
         (stagedModel !== undefined || admittedSources.descriptions.size > 0) &&
@@ -1360,22 +1359,25 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           stagedPluginIds,
         );
       }
-      const proxyAdmission =
-        credentialDeployment === undefined
-          ? await dependencies.egress.admitProxyPlan(
-              state,
-              lockedAgent,
-              revisionId,
-              admittedConfiguration,
-              sandbox?.id,
-              repositoryCredentials,
-              harnessAuth,
-              revisionHarness.configuration,
-              policy?.repositoryNetworkPolicy === undefined
-                ? undefined
-                : admittedRepository?.nativeGit,
-            )
-          : undefined;
+      let proxyAdmission: Awaited<ReturnType<typeof dependencies.egress.admitProxyPlan>>;
+      if (credentialDeployment === undefined) {
+        if (repositoryCredentials?.authorization === "credential_source") {
+          throw new ResourceStateConflictError(
+            "Repository Source access requires staged credential delivery.",
+          );
+        }
+        proxyAdmission = await dependencies.egress.admitProxyPlan(
+          state,
+          lockedAgent,
+          revisionId,
+          admittedConfiguration,
+          sandbox?.id,
+          repositoryCredentials,
+          harnessAuth,
+          revisionHarness.configuration,
+          policy?.repositoryNetworkPolicy === undefined ? undefined : admittedRepository?.nativeGit,
+        );
+      }
       const egressPlan = proxyAdmission?.plan;
       if (
         (admittedRepository?.requiresNetworkPolicy ||

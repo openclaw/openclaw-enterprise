@@ -1133,7 +1133,8 @@ async function repositoryGitJourney(
       await askModel("before");
     }
     if (standing) {
-      const credentials = revision.repositoryCredentials!;
+      const credentials = revision.repositoryCredentials;
+      assert.ok(credentials && credentials.authorization !== "credential_source");
       const ownerKey = {
         namespaceId: revision.namespaceId,
         agentId: agent.id,

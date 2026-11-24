@@ -286,7 +286,11 @@ export async function verifyManagedGitReplacement(
         const deployment = (
           repositories: readonly string[],
         ): SandboxHarnessContext & { plan: ProxyPlan | undefined } => {
-          assert.ok(rev.repositoryCredentials, "the protected fixture has repository credentials");
+          assert.ok(
+            rev.repositoryCredentials &&
+              rev.repositoryCredentials.authorization !== "credential_source",
+            "the protected fixture has finite repository credentials",
+          );
           const repositoryCredentials = repositories.length
             ? {
                 ...rev.repositoryCredentials,

@@ -34,6 +34,7 @@ import type {
   Namespace,
   ProtectedRepositoryGitAuthority,
   ProxyRevisionContext,
+  RepositoryRevisionState,
   SandboxHarnessStatusContext,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -501,21 +502,23 @@ function repositoryDeliveryFixture() {
     repositoryRef: "application",
     profile: "git-write",
   });
+  const repositoryCredentials: RepositoryRevisionState = {
+    driver: { id: "repo", implementation: "github" },
+    bindings: [binding],
+    deadlineWallMs: Date.now() + 600_000,
+  };
   const revision = {
     ...routedRevision(
       { id: "compute", implementation: "kubernetes" },
       {
         namespaceId: "namespace-a",
         backendId: null,
-        repositoryCredentials: {
-          driver: { id: "repo", implementation: "github" },
-          bindings: [binding],
-          deadlineWallMs: Date.now() + 600_000,
-        },
+        repositoryCredentials,
       },
     ),
     backendId: null,
-  } as AgentRevision;
+    repositoryCredentials,
+  } satisfies AgentRevision;
   return { registry, revision, binding };
 }
 
@@ -713,7 +716,7 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     signal: AbortSignal,
     owner: InstalledDriver,
     version: 5 | 6,
-    repositoryGit: NonNullable<AgentRevision["repositoryCredentials"]>,
+    repositoryGit: RepositoryRevisionState,
     authorization: "online-request" | "request-hook-observed",
   ): ProxyRevisionContext => {
     const plan = {

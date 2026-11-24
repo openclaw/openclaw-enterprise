@@ -3,6 +3,7 @@ import type {
   RepositoryAccess,
   RepositoryBindingSelection,
   RepositoryRevisionState,
+  SourceBackedRepositoryRevisionState,
 } from "@openclaw-enterprise/contracts";
 import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts";
 import { hasControlCharacter, immutableCopy } from "@openclaw-enterprise/utils";
@@ -163,18 +164,33 @@ export function validAdmittedRepositoryBindings(
 }
 
 /** Mirrors the database's closed, material-free immutable snapshot shape. */
-export function validRepositoryRevisionState(value: unknown): value is RepositoryRevisionState {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    exactObject(value, [
+export function validRepositoryRevisionState(
+  value: unknown,
+): value is RepositoryRevisionState | SourceBackedRepositoryRevisionState {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const sourceBacked = Object.hasOwn(value, "authorization");
+  if (
+    !exactObject(value, [
       "driver",
-      "deadlineWallMs",
       "bindings",
-      ...(Object.hasOwn(value, "standingApprovalId")
+      ...(sourceBacked ? ["authorization"] : ["deadlineWallMs"]),
+      ...(Object.hasOwn(value, "standingApprovalId") && !sourceBacked
         ? ["standingApprovalId", "standingApprovalGeneration", "standingApprovalScopeFingerprint"]
         : []),
-    ]) &&
+    ]) ||
+    !exactObject(value.driver, ["id", "implementation"]) ||
+    !opaqueIdentity(value.driver.id) ||
+    !opaqueIdentity(value.driver.implementation) ||
+    !validAdmittedRepositoryBindings(value.bindings)
+  ) {
+    return false;
+  }
+  if (sourceBacked) {
+    return value.authorization === "credential_source";
+  }
+  return (
     (!Object.hasOwn(value, "standingApprovalId") ||
       (boundedToken(value.standingApprovalId) &&
         typeof value.standingApprovalScopeFingerprint === "string" &&
@@ -183,13 +199,9 @@ export function validRepositoryRevisionState(value: unknown): value is Repositor
         Number(value.standingApprovalGeneration) > 0 &&
         Array.isArray(value.bindings) &&
         value.bindings.length === 1)) &&
-    exactObject(value.driver, ["id", "implementation"]) &&
-    opaqueIdentity(value.driver.id) &&
-    opaqueIdentity(value.driver.implementation) &&
     typeof value.deadlineWallMs === "number" &&
     Number.isSafeInteger(value.deadlineWallMs) &&
-    value.deadlineWallMs > 0 &&
-    validAdmittedRepositoryBindings(value.bindings)
+    value.deadlineWallMs > 0
   );
 }
 

@@ -442,6 +442,10 @@ for (const fault of ["before write", "after commit", "during worker replacement"
     { ...requiresPostgres, timeout: 45_000 },
     async (t) => {
       const { f, registry, revision } = await standingExecutionFixture(t, import.meta.url);
+      const repositoryCredentials = revision.repositoryCredentials;
+      assert.ok(
+        repositoryCredentials && repositoryCredentials.authorization !== "credential_source",
+      );
       const terminal = "preview_release_unconfirmed";
       let writes = 0;
       // Exercise the real transaction. Either refuse its first update before PostgreSQL sees it,
@@ -520,7 +524,7 @@ for (const fault of ["before write", "after commit", "during worker replacement"
         profile: "git-write",
         profileVersion: "1",
         resourceVersion: "2",
-        expiresAt: new Date(revision.repositoryCredentials!.deadlineWallMs).toISOString(),
+        expiresAt: new Date(repositoryCredentials.deadlineWallMs).toISOString(),
         credentialState: "active",
         update: "accepted",
         supervisor: "unknown",

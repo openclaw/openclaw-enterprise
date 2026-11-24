@@ -1770,6 +1770,7 @@ async function admitProtectedSession(
           ? "online-request"
           : undefined;
   const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } = previous;
+  assert.ok(repositoryCredentials && repositoryCredentials.authorization !== "credential_source");
   const admissionId = randomUUID();
   const sessionId = randomUUID();
   const revisionId = "rev_" + randomUUID();
@@ -1794,7 +1795,7 @@ async function admitProtectedSession(
     },
     sandboxDriverId: driver.id,
     egressDriverId: driver.id,
-    repositoryGit: { ...repositoryCredentials!, ...standingApproval, bindings, deadlineWallMs },
+    repositoryGit: { ...repositoryCredentials, ...standingApproval, bindings, deadlineWallMs },
     ...(mode === 7 && { policyReductionVersion: 2 as const }),
     ...(admissionAuthorization !== undefined && {
       repositoryGitAuthorization: admissionAuthorization,

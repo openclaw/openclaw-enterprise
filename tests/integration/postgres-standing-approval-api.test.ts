@@ -655,7 +655,7 @@ test(
             v.revisions.findRevision(namespaceId, finiteAgent.id, deployed.json().data.id),
           );
           const snapshot = revision?.repositoryCredentials;
-          assert.ok(snapshot);
+          assert.ok(snapshot && snapshot.authorization !== "credential_source");
           assert.equal(calls, route === "bundled" || route === "built-in" ? 0 : 1);
           assert.equal(snapshot.standingApprovalId, undefined);
           if (route === "legacy") {
@@ -1217,6 +1217,8 @@ test(
       v.revisions.findRevision(namespaceId, agent.id, deployment.json().data.id),
     );
     assert.ok(revision?.repositoryCredentials);
+    const repositoryCredentials = revision.repositoryCredentials;
+    assert.ok(repositoryCredentials.authorization !== "credential_source");
     assert.equal(revision.repositoryCredentials.standingApprovalId, first.id);
     assert.equal(revision.repositoryCredentials.standingApprovalGeneration, 1);
     assert.equal(
@@ -1420,7 +1422,7 @@ test(
         repositoryRef: "project",
         admissionId: openingId,
         durationSeconds: 3600,
-        deadlineWallMs: revision.repositoryCredentials!.deadlineWallMs,
+        deadlineWallMs: repositoryCredentials.deadlineWallMs,
         createdAt: new Date().toISOString(),
       }),
     );

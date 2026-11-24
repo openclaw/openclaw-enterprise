@@ -7098,7 +7098,7 @@ Example request
 | `data.repositoryCredentials.bindings` | `array<object>` | Yes | min items: 1; max items: 16 |
 | `data.repositoryCredentials.bindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryCredentials.bindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryCredentials.deadlineWallMs` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `data.repositoryCredentials.deadlineWallMs` | `integer` | No | minimum: 1; maximum: 9007199254740991 |
 | `data.repositoryCredentials.driver` | `object` | Yes | — |
 | `data.repositoryCredentials.driver.id` | `string` | Yes | min length: 1 |
 | `data.repositoryCredentials.driver.implementation` | `string` | Yes | min length: 1 |

@@ -109,7 +109,9 @@ test(
     const executionId = revision.id;
     const sandboxId = randomUUID();
     const model = "original-model";
-    const deadline = persisted.repositoryCredentials!.deadlineWallMs;
+    const repositoryCredentials = persisted.repositoryCredentials;
+    assert.ok(repositoryCredentials && repositoryCredentials.authorization !== "credential_source");
+    const deadline = repositoryCredentials.deadlineWallMs;
     const { client, world } = await gitExpiryGateway(t, {
       workspace,
       sandbox,
@@ -370,7 +372,7 @@ test(
     await f.state.transact(async (u) => {
       await u.repositorySessions.createAttempt({
         ...key,
-        repositoryRef: persisted.repositoryCredentials!.bindings[0]!.repositoryRef,
+        repositoryRef: repositoryCredentials.bindings[0]!.repositoryRef,
         admissionId,
         durationSeconds: 20,
         deadlineWallMs: deadline,

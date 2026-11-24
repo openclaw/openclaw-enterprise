@@ -1,6 +1,9 @@
 import type { NativeRepositoryWithdrawalSession } from "../drivers/repo/github/access/prepared-repository-git.ts";
 import { sameBinding } from "../drivers/repo/access/grant-identity.ts";
-import { protectedRepositoryGitAdmission } from "@openclaw-enterprise/contracts";
+import {
+  isNativeStagedRepositoryRevision,
+  protectedRepositoryGitAdmission,
+} from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import type {
@@ -163,6 +166,7 @@ export class RepositoryCredentialLifecycle {
       revision.executionAdmission.mode === "unprotected" &&
       revision.sandboxDriverId === undefined &&
       snapshot !== undefined &&
+      snapshot.authorization !== "credential_source" &&
       snapshot.standingApprovalId === undefined &&
       snapshot.bindings.length > 0 &&
       snapshot.bindings.every(({ profile }) => profile === "git-write") &&
@@ -254,7 +258,17 @@ export class RepositoryCredentialLifecycle {
     ) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_DRIVER_MISMATCH");
     }
-    if (snapshot.standingApprovalId === undefined && Date.now() >= snapshot.deadlineWallMs) {
+    if (
+      snapshot.authorization === "credential_source" &&
+      !isNativeStagedRepositoryRevision(revision)
+    ) {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_RUNTIME_UNSUPPORTED");
+    }
+    if (
+      snapshot.authorization !== "credential_source" &&
+      snapshot.standingApprovalId === undefined &&
+      Date.now() >= snapshot.deadlineWallMs
+    ) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED");
     }
     if (snapshot.standingApprovalId !== undefined) {
@@ -326,6 +340,9 @@ export class RepositoryCredentialLifecycle {
   ): Promise<readonly RepositoryCredentialRuntimeBinding[]> {
     if (revision.repositoryCredentials === undefined) {
       return [];
+    }
+    if (revision.repositoryCredentials.authorization === "credential_source") {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_RUNTIME_UNSUPPORTED");
     }
     await this.authorize(claim, revision);
     const prepared: RepositoryCredentialRuntimeBinding[] = [];
@@ -815,8 +832,12 @@ export class RepositoryCredentialLifecycle {
     revision: Revision,
     binding: AdmittedRepositoryBinding,
   ): Promise<RepositoryCredentialRuntimeBinding> {
+    const snapshot = revision.repositoryCredentials;
+    if (snapshot === undefined || snapshot.authorization === "credential_source") {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_RUNTIME_UNSUPPORTED");
+    }
     const proxy = protectedRepositoryGitAdmission(revision.executionAdmission);
-    const driver = proxy ? undefined : this.driverFor(revision.repositoryCredentials?.driver);
+    const driver = proxy ? undefined : this.driverFor(snapshot.driver);
     if (driver && driver.durableBrokerReceipts !== true) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_PREPARED_ADMISSION_UNAVAILABLE");
     }
@@ -825,7 +846,7 @@ export class RepositoryCredentialLifecycle {
         driver.checkAdmissionReady!(AbortSignal.any([signal, AbortSignal.timeout(2000)])),
       );
     }
-    const standing = revision.repositoryCredentials?.standingApprovalId !== undefined;
+    const standing = snapshot.standingApprovalId !== undefined;
     const predecessor = standing
       ? await this.dependencies.state.read(async (v) =>
           (await v.repositorySessions.listRevisionAttempts(revisionOwner(revision)))
@@ -840,7 +861,7 @@ export class RepositoryCredentialLifecycle {
       const openedAt = Date.now();
       const deadlineWallMs = predecessor
         ? openedAt + this.validate(revision)! * 1000
-        : revision.repositoryCredentials!.deadlineWallMs;
+        : snapshot.deadlineWallMs;
       const durationSeconds = predecessor
         ? this.validate(revision)!
         : Math.min(this.validate(revision)!, Math.floor((deadlineWallMs - Date.now()) / 1000));
