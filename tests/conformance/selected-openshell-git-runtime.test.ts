@@ -4646,6 +4646,106 @@ test("native Git rotates a lent Source in place, confirms each version's deliver
   assert.equal(store.copies.get(revision.id)?.retired, true);
 });
 
+/** A native route lending a Source, with the copy its deploy recorded. */
+async function lentSourceCopy(t: TestContext) {
+  const held = await heldGit(t, true, undefined, undefined, "cs_fixture_token");
+  const { f, store, revision } = held;
+  lentSourceHolds(f);
+  store.copies.set(revision.id, {
+    revisionId: revision.id,
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    credentialSourceId: "cs_fixture_token",
+    namespaceName: f.sandbox.workspace,
+    retired: false,
+    idle: false,
+  });
+  return {
+    ...held,
+    /** The version the copy record's last write installed, and the one it holds as confirmed. */
+    copy: () => {
+      const copy = store.copies.get(revision.id);
+      return { installed: copy?.sourceVersion, confirmed: copy?.confirmedSourceVersion };
+    },
+    events: (name: string) =>
+      f.events.filter(({ event, code }) => event === name || code === name).length,
+  };
+}
+
+test("native Git confirms a Source delivery only once the Sandbox activates the accepted write", async (t) => {
+  const { f, revision, reconcile, activity, client, copy } = await lentSourceCopy(t);
+  // The Gateway accepted the Provider write, but the supervisor has not installed the
+  // credential yet. The policy read must not call that delivery confirmed: the old token may
+  // still be the one the Sandbox uses.
+  let activated = false;
+  const status = client.getSandboxProviderStatus.bind(client);
+  client.getSandboxProviderStatus = async (...args) => {
+    const read = await status(...args);
+    // Before the write the supervisor holds its bootstrap credential, which stays as observed.
+    return args[2] === "openai" || activity.updates === 0 || activated
+      ? read
+      : { ...read, observed: { ...read.observed, credentialsInstalled: false } };
+  };
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.notEqual(f.runtime.route(revision.id).state, "installed");
+  assert.deepEqual(copy(), { installed: "version-1", confirmed: undefined });
+
+  activated = true;
+  await reconcile();
+  assert.equal(activity.updates, 1, "activation is observed, not written again");
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.deepEqual(copy(), { installed: "version-1", confirmed: "version-1" });
+});
+
+test("native Git records a failed Source delivery confirmation at a later activation of that version", async (t) => {
+  const { f, store, revision, reconcile, activity, copy, events } = await lentSourceCopy(t);
+  const record = store.recordSourceCopyConfirmed!.bind(store);
+  let failures = 2;
+  let calls = 0;
+  store.recordSourceCopyConfirmed = async (...args) => {
+    calls += 1;
+    if (failures-- > 0) {
+      throw new Error("transient database error");
+    }
+    return record(...args);
+  };
+  const renew = () => {
+    f.owner.material = {
+      ...f.owner.material,
+      preparationAttemptId: randomUUID(),
+      materialVersion: randomUUID(),
+    };
+  };
+  // The record fails: the route still serves, the copy reads pending, the failure is logged.
+  await reconcile();
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.deepEqual(copy(), { installed: "version-1", confirmed: undefined });
+  assert.equal(events("OPENSHELL_GIT_SOURCE_COPY_UNCONFIRMED"), 1);
+  // A pass with no new material does not retry: no timer, no loop of its own.
+  await reconcile();
+  assert.equal(calls, 1);
+
+  // Each loan renewal of the same version is activated again and retries the record. A
+  // repeated failure is not logged again.
+  renew();
+  await reconcile();
+  assert.equal(calls, 2);
+  assert.deepEqual(copy(), { installed: "version-1", confirmed: undefined });
+  assert.equal(events("OPENSHELL_GIT_SOURCE_COPY_UNCONFIRMED"), 1);
+  renew();
+  await reconcile();
+  assert.equal(activity.updates, 3);
+  assert.equal(calls, 3);
+  assert.deepEqual(copy(), { installed: "version-1", confirmed: "version-1" });
+  assert.equal(events("worker.openshell-git-delivery-confirmed"), 1, "one delivery per version");
+
+  // Once recorded, a renewal writes no record again.
+  renew();
+  await reconcile();
+  assert.equal(calls, 3);
+});
+
 /**
  * Gives every material read of a lent Source its own row hold, as the Source custody does:
  * `confirm` stands for the round trip on the holding session.

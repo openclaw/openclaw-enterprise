@@ -252,8 +252,11 @@ interface Entry extends OpenShellGitObservationEntry {
         readonly at: number;
       }
     | undefined;
-  /** The lent Source version whose delivery this route last confirmed. */
-  confirmedSourceVersion?: string | undefined;
+  /**
+   * The lent Source version whose activation this route last observed, and whether the copy
+   * record holds it as confirmed. An unrecorded version is recorded again at its next activation.
+   */
+  sourceDelivery?: { readonly version: string; readonly recorded: boolean } | undefined;
   blocked?: OpenShellGitRouteBlockReason;
   /** Only this terminal record can be retried, never the uncertain preview operation. */
   previewClosure?:
@@ -1638,22 +1641,28 @@ export class OpenShellGitRuntime {
 
   /**
    * The supervisor activated this Source version for the revision: the policy read shows its
-   * delivery confirmed. A failure leaves it pending there and never fails the route.
+   * delivery confirmed. A failure leaves it pending there and never fails the route; it is
+   * logged once per version (`report`), not at each retry.
    */
-  private async recordSourceCopyConfirmed(entry: Entry, sourceVersion: string): Promise<void> {
+  private async recordSourceCopyConfirmed(
+    entry: Entry,
+    sourceVersion: string,
+    report: boolean,
+  ): Promise<boolean> {
     let recorded: boolean | undefined;
     try {
       recorded = await this.routes?.recordSourceCopyConfirmed?.(entry.revision.id, sourceVersion);
     } catch {
       recorded = false;
     }
-    if (recorded === false) {
+    if (recorded === false && report) {
       this.emit?.({
         event: "worker.error",
         code: "OPENSHELL_GIT_SOURCE_COPY_UNCONFIRMED",
         ...this.identity(entry),
       });
     }
+    return recorded !== false;
   }
 
   /**
@@ -2482,22 +2491,30 @@ export class OpenShellGitRuntime {
             credentialSource?: string;
             credentialSourceVersion?: string;
           };
+          const version = lent.credentialSourceVersion;
+          const delivery = entry.sourceDelivery;
           if (
             lent.credentialSource !== undefined &&
-            lent.credentialSourceVersion !== entry.confirmedSourceVersion
+            version !== undefined &&
+            !(delivery?.version === version && delivery.recorded)
           ) {
             // Replacement was committed when the PATCH returned; this is the revision's delivery.
-            // A renewal of the same version is new material but not a new delivery.
-            entry.confirmedSourceVersion = lent.credentialSourceVersion;
-            this.emit?.({
-              event: "worker.openshell-git-delivery-confirmed",
-              credentialSourceId: lent.credentialSource,
-              credentialSourceVersion: lent.credentialSourceVersion,
-              ...this.identity(entry),
-            });
-            if (lent.credentialSourceVersion !== undefined) {
-              await this.recordSourceCopyConfirmed(entry, lent.credentialSourceVersion);
+            // A renewal of the same version is new material but not a new delivery: it only
+            // retries a record that failed, while the route still serves that version. Once the
+            // route serves another version, the earlier one is never recorded.
+            const first = delivery?.version !== version;
+            if (first) {
+              this.emit?.({
+                event: "worker.openshell-git-delivery-confirmed",
+                credentialSourceId: lent.credentialSource,
+                credentialSourceVersion: version,
+                ...this.identity(entry),
+              });
             }
+            entry.sourceDelivery = {
+              version,
+              recorded: await this.recordSourceCopyConfirmed(entry, version, first),
+            };
           }
         }
       } else {
