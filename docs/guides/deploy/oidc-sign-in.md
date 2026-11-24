@@ -234,8 +234,7 @@ missing Secret or key leaves the Pod at `Init:0/1`; its events
 `FailedMount`. To recover, restore the previous values and run `helm upgrade`, or fix the
 input as described under [Rotate the IdP CA](#rotate-the-idp-ca).
 
-Once the rollout succeeds, list the roots the API trusts. The image has no `openssl`,
-so this uses its Node and changes nothing:
+After rollout, list the additional CA certificates assembled for the API.
 
 ```bash
 kubectl -n openclaw-system exec deployment/openclaw-enterprise-api -c api -- node -e '
@@ -247,44 +246,39 @@ for (const block of pem.match(/-----BEGIN CERTIFICATE-----[^-]+-----END CERTIFIC
 }'
 ```
 
-It prints the IdP roots, then any Gateway roots. Then check recovery password sign-in,
-IdP sign-in and Gateway access.
+Compare the fingerprints with the expected IdP and Gateway certificates. The list
+can include intermediates and omits Node's default roots. Check recovery password
+sign-in, fresh IdP sign-in and Gateway access.
 
-This extends public trust **process-wide in the API** for clients that use
-Node's default trust. The chart does not add IdP roots to workers or Jobs, and
-dedicated Agent (Harness) Pods receive only the Gateway CA through
-`OCC_GATEWAY_CA_PATH`, or no extra CA without one. It preserves the Gateway CA selected by the chart, including an
-external issuer's `gatewayRouting.caSecretName` and `caSecretKey`. Do not replace
-`NODE_EXTRA_CA_CERTS` separately. URL, port, hostname, certificate and token checks
-still apply. If the IdP certificate already chains to a root in the
-`gatewayRouting.caSecretName` bundle, the API trusts it without these values, but that
-bundle also reaches workers and database clients; use these values to keep IdP trust
-API-only with isolated database trust. See the [trust contract](../../reference/settings/oidc.md).
+The bundle extends Node's default trust process-wide in the API. Keep the chart's
+`NODE_EXTRA_CA_CERTS` and the separate database CA configuration. An IdP whose
+certificate already chains to a trusted Gateway root needs no additional CA.
+Keep IdP-only CAs out of the Gateway bundle because workers and dedicated
+Agents can receive it too. See the [trust contract](../../reference/settings/oidc.md).
 
 ### Rotate the IdP CA
 
-The init container copies the inputs once, when the Pod starts. Prefer a new
-versioned Secret for every change: changing `caSecretName` changes the Pod template,
-so `helm upgrade` alone replaces the API Pod.
+Plan for an API interruption. The init container assembles the bundle at Pod
+startup. Restarting the API container alone keeps the old snapshot.
 
-1. Overlap: create `occ-oidc-ca-v2` holding the old and new CA certificates together,
-   set `caSecretName: occ-oidc-ca-v2`, run `helm upgrade` and the `rollout status`
-   check above, and list the trusted roots.
-2. Move the IdP to certificates from the new CA, and check IdP sign-in.
-3. Remove the old CA: create `occ-oidc-ca-v3` holding only the new CA, and upgrade and
-   check the same way.
-4. Delete the superseded Secrets once you no longer need them to roll back:
-   `kubectl -n openclaw-system delete secret occ-oidc-ca-v1 occ-oidc-ca-v2`.
+1. Create a Secret with an unused name in the release namespace. Include both
+   old and new CAs. Set `auth.oidc.caSecretName` and `auth.oidc.caSecretKey`
+   to its name and bundle key. Run `helm upgrade`, wait for the API rollout
+   and verify both fingerprints as above.
+2. Switch the IdP to a certificate from the new CA. Verify a fresh IdP sign-in.
+3. Upgrade again with a new Secret containing only the new CA. Wait for rollout,
+   verify the fingerprints and repeat the access checks. The API still trusts the old CA
+   if the Gateway bundle or Node's default roots supply it.
+4. Have the owner retire superseded Secrets only after checking that no consumer
+   or rollback needs them.
 
-Editing a Secret in place, including a combined Gateway CA Secret, changes nothing
-until the API Pod is replaced, and restarting only the API container keeps the old
-snapshot. The plain `kubectl create secret` command fails once the Secret exists, so
-replace its contents and then the Pod:
+If you must update a mutable Secret in place, check the API Deployment's
+`oidc-ca` volume for `secret.secretName` and `secret.items[].key`. Have the owner
+check all consumers and update only that key. Use a new Secret for immutable inputs.
+Stop if the update fails or is uncertain. After confirming the update, replace
+the Pod and repeat the checks above. Substitute your namespace and Deployment.
 
 ```bash
-kubectl -n openclaw-system create secret generic occ-oidc-ca-v2 \
-  --from-file=ca.pem=/secure/occ/idp-ca-bundle.pem \
-  --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n openclaw-system rollout restart deployment/openclaw-enterprise-api
 kubectl -n openclaw-system rollout status deployment/openclaw-enterprise-api --timeout=5m
 ```
