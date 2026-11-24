@@ -108,12 +108,17 @@ their count and the oldest pending request and operation IDs. On completion,
   not confirm the audit append. `COMMIT_OUTCOME_UNKNOWN` means PostgreSQL
   may still commit the change, even after the API exits.
 
+For `occ-api` records, the Collector exports `request.id` when present and
+`occ.audit_drain.pending` at the start. At the end it exports
+`occ.audit_drain.outcome`, either warning code in `occ.code` when applicable,
+and `duration_ms` for waits up to ten minutes. The operation ID stays local.
+
 Check `http.audit_append_failed` and `http.commit_outcome_unknown` for
 other affected requests. A forced stop can leave no finish event. Keep
 writers stopped during maintenance until outstanding transactions settle.
 Check the resource and mutation audit before retrying a write.
 
-Both records carry the API-generated request ID, registered operation,
+The admission and result records carry the API-generated request ID, registered operation,
 HTTP method, and Installation ID. The result adds the HTTP status. The hook
 uses the authenticated actor when identity resolution succeeded. A result
 describes the response OCC prepared. If its append fails, the hook logs
