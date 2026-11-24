@@ -4,104 +4,144 @@ implementation_status: Not implemented
 author: freeqaz-openai
 ---
 
-# Issue creation with repository Write access
+# Proposal: Issue creation with repository Write access
 
 - **ID:** RFC-20261123-repository-issue-creation
 - **Created:** 2026-11-23
+- **Last updated:** 2026-11-23
 - **RFC PR:** [#6861](https://github.com/openclaw/openclaw-enterprise/pull/6861)
-- **Related:** [Per-Agent repository network policy](20261119-repository-network-policy.md)
+- **Implementation plan:** [Delivery and verification](../plans/20261123-repository-issue-creation.md)
+- **Related:** [Repository network policy](20261119-repository-network-policy.md) · [GitHub App implementation](https://github.com/openclaw/openclaw-enterprise/pull/6864)
+
+<a id="problem-and-decision"></a>
 
 ## Summary
 
-**Write plus GitHub Issues write allows issue creation by default.** For native App delivery, derive eligible actions from the repository permissions approved in the Namespace and the Agent’s saved Read or Write grant. Operators who need tighter controls can limit API actions per repository.
-
-Remove the `scopedRest` setting. This supersedes the proposed REST versions and separate Agent approval in [#7120](https://github.com/openclaw/openclaw-enterprise/pull/7120).
+**Contributor can push code, create issues and open pull requests by default on a selected repository.** Each operation still needs the corresponding GitHub App permission, Namespace approval and Agent grant. Choose **Read-only** to prevent direct writes. Under **Advanced**, turn off either creation action independently.
 
 ## Motivation
 
-An Admin who grants Write on B should know what the Agent can do there. A second REST switch, version selection and upgrade approval would duplicate permission decisions and make redeployments harder to predict.
+The [shipped native policy](20261119-repository-network-policy.md) requires a separate REST setting and cannot create issues. An Admin should be able to grant useful access once, see the exceptions and change them later from the Agent.
+
+<a id="scope"></a>
+
+## Goals
+
+- **G1.** Let a Contributor open issues and PRs through `gh api` with credentials outside the Agent.
+- **G2.** Let operators narrow direct requests per repository across a Namespace or for one Agent.
+- **G3.** Make access easy to review before deployment and find again afterward.
+
+## Non-goals
+
+PATs, protected profiles, GraphQL, comments, edits, reviews, merges and JSON body inspection.
+
+<a id="design"></a>
 
 ## Proposal
 
-Keep the existing native Git delivery selection. The table shows eligible **direct requests** to GitHub on stock OpenShell before filtering.
+Keep `nativeGit: "v1"` for GitHub App delivery. Remove `scopedRest` and the separate REST upgrade approval proposed in [#7120](https://github.com/openclaw/openclaw-enterprise/pull/7120). A saved grant sets the maximum for **direct requests**.
 
-| Approved Namespace permission | Agent Read           | Agent Write                        |
-| ----------------------------- | -------------------- | ---------------------------------- |
-| `issues: read`                | List and read issues | List and read issues               |
-| `issues: write`               | List and read issues | Also create issues unless disabled |
-| `pull_requests: read`         | List and read PRs    | List and read PRs                  |
-| `pull_requests: write`        | List and read PRs    | Also open eligible PRs             |
+| Agent grant         | Git          | Issues      | Pull requests |
+| ------------------- | ------------ | ----------- | ------------- |
+| Read-only (Read)    | Clone, fetch | List, read  | List, read    |
+| Contributor (Write) | Also push    | Also create | Also open     |
+| No grant            | None         | None        | None          |
 
-Omitted permissions grant no corresponding routes. Metadata and Contents alone mean Git-only, even if the installed App has broader permissions. Without a saved grant, deny direct access to that repository. GitHub also enforces the credential’s permissions.
+For each API column, absent permission removes all routes, read permits GETs and write also permits POST for Contributor. Metadata and Contents alone mean Git-only.
 
-Repositories on one selected App token must have identical permission maps. Their filters can differ. With A Read, B Write and C bound without a grant, [#7135](https://github.com/openclaw/openclaw-enterprise/pull/7135) withholds PR creation on B but permits eligible issue creation there. Setting `allow: []` on C leaves it bound. Unbind C and redeploy to restore eligible PR creation on B.
+Repositories sharing one selected App token need identical permission maps. With A Read, B Write and C bound but ungranted, [#7135](https://github.com/openclaw/openclaw-enterprise/pull/7135) blocks PR creation everywhere. B can still create issues. To restore PR creation, unbind C and redeploy. Filtering C leaves it bound.
 
 ### Optional API restrictions
 
-Setting `apiActions` on B’s Namespace registration filters direct API requests for **every Agent using that registration**. Git fetch and push keep their existing grants.
+The [operator guide](https://github.com/openclaw/openclaw-enterprise/pull/7165) generates a filter for the Namespace registration for **every Agent** using that repository. The Agent editor narrows **one Agent**. Neither filter expands permissions or changes Git access.
 
-| Operator intent           | Registration example                                                    | When OCE supports another eligible action |
-| ------------------------- | ----------------------------------------------------------------------- | ----------------------------------------- |
-| All permitted (default)   | Omit `apiActions`                                                       | Included                                  |
-| All except issue creation | `apiActions: { deny: ["issues:create"] }`                               | Included unless excluded                  |
-| Only read and open PRs    | `apiActions: { allow: ["pull_requests:read", "pull_requests:create"] }` | Excluded until listed                     |
-| Git only                  | `apiActions: { allow: [] }`                                             | Excluded                                  |
+| `apiActions`                        | Effect                                       |
+| ----------------------------------- | -------------------------------------------- |
+| Omitted or `{ deny: [] }`           | All eligible actions, including future ones  |
+| `{ deny: ["issues:create"] }`       | All eligible actions except issue creation   |
+| `{ allow: ["pull_requests:read"] }` | Only listed actions, even as OCE adds others |
+| `{ allow: [] }`                     | Git only                                     |
 
-If present, `apiActions` must be an object with exactly one key, `allow` or `deny`, whose value is an array of unique literal action names. Reject malformed values, mixed or extra keys, wildcards and unknown names. Reject retired `scopedRest`, `createIssues` and bare `deny` settings without conversion.
+Accept exactly one key and unique literal names. `issues:read` and `pull_requests:read` cover list and numbered detail GETs. `issues:create` and `pull_requests:create` each cover one collection POST. Reject invalid names, extra keys and retired settings. New routes stay closed until OCE defines them.
 
-Treat `deny: []` as omission. Every allow list (even `allow: []`) and every nonempty deny list is an active restriction. Filters can only remove eligible routes. Listing a write action cannot override Read, a missing permission or the PR safeguard.
-
-Start with four actions. `issues:read` and `pull_requests:read` each cover list and numbered detail GETs. `issues:create` and `pull_requests:create` each cover one collection POST. Creation does not enable a separate GET. Give new operations distinct names. A new GitHub endpoint stays closed until OCE deliberately supports it and specifies its permissions.
-
-**Default setup.** Offer **Read-only** and **Contributor (recommended)** for a selected repository. Contributor means full permitted access. Save a Write grant where allowed, leave filters unset, and deploy. This includes opening PRs and creating issues when authorized. A repository the user did not select gains nothing.
-
-**Customize access.** Keep the [setup guide’s controls](https://github.com/openclaw/openclaw-enterprise/pull/7165) collapsed under **Advanced**. Show a short summary when customized. Check the actions to keep. With **Include new eligible actions automatically** on, generate `deny` from unchecked actions. With it off, generate `allow` from checked actions. Copy the filter into the Namespace registration. The guide previews an example and cannot read or change a running Agent.
-
-**Before deploying**, remove `scopedRest` and check the approved permissions. To keep Git-only access, set `apiActions: { allow: [] }`. To keep issue creation off, use `apiActions: { deny: ["issues:create"] }`. An unchanged Write grant can otherwise gain issue or PR creation at the next deployment. A running Sandbox retains its loaded policy and may lose credential renewal after a change. Retire it to complete withdrawal.
-
-**Limits.** These actions control direct requests. GitHub can apply labels or link a parent in another repository through the [issue POST](https://docs.github.com/en/rest/issues/issues#create-an-issue). An eligible PR POST can convert an issue even when issue creation is disabled. Issue reads can return PRs, and creation returns the created record. Denying a GET cannot hide those responses. Comments, edits, reviews, merges and GraphQL remain outside this policy. Finer field restrictions belong in OpenShell.
+**Limits.** Issue reads can return PRs. Creation returns a record even if GET is off. Opening a PR can convert an existing issue. GitHub can apply labels or [link a parent issue](https://docs.github.com/en/rest/issues/issues#create-an-issue) in another repository. OpenShell checks the route without inspecting those fields. Wider rollout depends on AC-4.
 
 ### Per-Agent controls (separate follow-up)
 
-The Agent’s **Repositories** tab should also let an Admin narrow one selected repository for that Agent. Show the same two levels, with **Create issues** and **Open pull requests** on by default for an eligible Contributor. Put exceptions under **Advanced** and summarize them when collapsed. An Agent filter can only narrow the Namespace filter. Editing one Agent must preserve other Agents, untouched repositories and restrictions the editor does not expose.
+In **Create Agent → Per-repository access**, selected repositories default to Contributor where Write is permitted. Unselected repositories receive no grant. Save the draft, then customize exceptions in **Repositories → Manage permissions → Advanced**. Show exceptions beside the role before deployment.
 
-Offer a way to save a draft and review access before automatic first deployment. Reopen the same controls from Repositories after creation. Show whether a change needs deployment. Explain when a previously unscoped Agent needs a new Agent ID. The Namespace implementation in [#6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) can land separately.
+For a running Agent, **Configuration → Edit repository permissions** opens the same editor. Preserve untouched grants and filters. Show whether the saved policy version matches the deployed revision, differs or is unknown. Deploy a new version to apply changes. An Agent first deployed without a repository policy needs a new Agent ID to adopt one.
+
+### Request lifecycle
+
+Proposed flow on stock OpenShell. The Admin saves the grants. The Controller rechecks Namespace limits at deploy. The version check covers only the saved Agent policy.
+
+```mermaid
+sequenceDiagram
+  participant Admin
+  participant OCC as Controller
+  participant Worker
+  participant Shell as OpenShell
+  participant Agent
+  participant GitHub
+  Admin->>OCC: Deploy reviewed policy
+  alt Saved policy changed
+    OCC-->>Admin: 409, review again
+  else Admitted
+    OCC->>Worker: Immutable revision
+    Worker->>Shell: Install and verify rules before credential delivery
+    Agent->>Shell: POST issues with placeholder
+    alt Route allowed
+      Shell->>GitHub: Forward with App token
+      GitHub-->>Shell: Created issue or refusal
+      Shell-->>Agent: GitHub response
+    else Denied
+      Shell-->>Agent: Refuse locally
+    end
+  end
+```
 
 ## Interface changes
 
 ### APIs
 
-Add `POST /repos/{owner}/{repo}/issues` on `api.github.com`. The Agent follow-up extends the existing Sandbox policy GET and PUT with optional `repositoryNetworkPolicy[].apiActions` using the same filter grammar. GET indicates which selected repositories support it. No new endpoint.
+| Operation                                                                               | Change                                                                                                                                                                                                                                                                         |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| GitHub `POST /repos/{owner}/{repo}/issues`                                              | Permit the existing endpoint. Verify an uncertain result before retrying.                                                                                                                                                                                                      |
+| [Catalog, create and deploy](https://github.com/openclaw/openclaw-enterprise/pull/7178) | Return optional `githubAccess`. Atomically save initial `repositoryNetworkPolicy` with the draft. For first deployment of a scoped draft, require the Console to send `expectedRepositoryPolicyVersion`. A mismatch returns 409 without a revision. Other clients may omit it. |
+| [Sandbox policy GET and PUT](https://github.com/openclaw/openclaw-enterprise/pull/7179) | GET returns optional `repositoryApiActionFilters` before Agent limits and the PR safeguard. Saved grants accept optional `apiActions`. PUT checks `expectedVersion`.                                                                                                           |
 
 ### IAM
 
-Reuse existing registration, Agent policy and deployment permissions.
+No new permissions. Catalog hints require Installation administration and Namespace-wide Agent and policy read. Enabling edits requires Installation and Agent administration. Saving and deploying scoped grants require policy read/update and Agent `manage_policy`, in addition to normal create or deploy authority.
 
 ### Database entities
 
-Namespace filters need no database changes. The Agent follow-up extends validation of saved grants and immutable revision identity to include their filters. Installation ceilings remain repository and access only.
+Namespace filters require no migration. The Agent follow-up extends saved grant validation and immutable revision identity. Installation limits and initial grants contain only repository and access.
 
 ### Driver contracts
 
-Filter eligible routes before compiling OpenShell policy. Include each repository’s filter and effective actions in the credential grant identity. Ignore list order. Verify the loaded policy at issuance and renewal. Reject stale policy after tightening. If native policy cannot enforce an active restriction, refuse both issuance and renewal even when permissions leave no eligible routes. Preserve legacy online fallback for unfiltered grants, Stop and withdrawal. PATs and protected profiles are outside this change.
-
-For the Agent follow-up, preserve each saved filter through admission and deployment. Intersect the Agent’s filtered actions with the Namespace’s eligible set. Reject unsupported enforcement before credential release.
+Intersect eligible actions with both filters. Include filters and effective actions in credential identity, ignoring order. Verify loaded rules at issuance and renewal. Any allow list or nonempty deny list requires native enforcement even if no actions remain. Refuse stale or unenforceable restrictions. Preserve unfiltered online delivery and Stop.
 
 ## Simplifications
 
-One policy applies at every deployment. No compatibility mode, per-Agent upgrade step, request hook, new client or OpenShell fork.
+One grant and two optional filters replace REST versions and upgrade approvals. Keeping only Read and Write would prevent independent opt-outs. OpenShell enforces routes locally without a new CLI, request callback or fork.
 
 ## Acceptance Criteria
 
-- **AC-1.** On stock OpenShell, bind A/B/C with identical permissions including Issues and Pull requests write. Grant A Read and B Write. Leave C bound without a grant and set `allow: []` on C. Create and independently read back an issue in B. Block PR creation on B. Require zero direct writes to A, zero direct requests to C, zero Worker callbacks and only a placeholder in the Agent.
-- **AC-2.** Unbind C and redeploy. Through the same Agent and binding, read issues and PRs and verify both POSTs in B. Deny `issues:create` on B and redeploy. Verify B’s reads, push and PR creation still work. Another eligible Write repository retains issue creation.
-- **AC-3.** Check current permissions and filters on existing drafts, redeployment, rotation and downgrade. Reordering actions preserves grant identity. Tightening blocks renewal against stale policy. Verify the new limits on redeploy and retire the prior Sandbox. Block disallowed methods, routes and redirects before forwarding.
-- **AC-4.** Hold wider rollout until reviewers assess live parent links from B to A and C separately in authorized test repositories. Inspect both sides. Keep the hold if read-only A changes or denied C is exposed or changed.
-- **AC-5.** Reject invalid and retired settings. Allow only PR reads and block other API routes. Allow only `issues:create` on B and verify POST succeeds while GET stops before forwarding. Explicit allows must respect Read, missing permissions, Issues read and #7135. With `allow: []`, verify Git works and all API requests stop.
-- **AC-6.** With native policy missing, test issuance and renewal separately. Both must fail without fallback for `allow: []` and for a nonempty `deny`, even with no eligible API routes. Under the same conditions verify legacy delivery still works with the filter omitted or `deny: []`.
-- **AC-7.** Keep B’s Agent grant at Write and approve only Issues read for the token. Even with `issues:create` listed in `allow`, a valid issue POST must stop before the origin. Verify that the issued permission map remains unchanged.
-- **Agent follow-up.** From creation, select one repo and review Contributor before deployment. Return through Repositories, turn off either create action, save, reopen and redeploy. Verify the other action still works, the disabled POST stops before forwarding and a peer is unaffected. Verify the Namespace limit holds, saved restrictions survive unrelated edits, and read-only and unsupported users cannot broaden access.
+Use the [installed workflow and evidence by criterion](../plans/20261123-repository-issue-creation.md#verification).
+
+- **AC-1 · G1.** With A Read, B Write and C bound without a grant, create and independently read back B’s issue. Deny A writes, C access and all PR creation.
+- **AC-2 · G1.** Unbind C, redeploy and verify both creations in B. Disable issue creation there. PRs, reads, push and another Contributor repository still work.
+- **AC-3 · G2.** Rotate, tighten and redeploy. Refuse stale renewal and forbidden routes. Verify retirement of the previous Sandbox.
+- **AC-4 · G2.** Inspect both sides of live parent links from B. Maintainers hold wider rollout if read-only A changes or denied C is exposed or changed.
+- **AC-5 · G2.** Reject invalid configuration. Verify PR-read-only, issue-create-only and Git-only filters independently.
+- **AC-6 · G2.** Without native enforcement, refuse restricted issuance and renewal. Unfiltered delivery still works.
+- **AC-7 · G2.** With Issues read, even an explicit allow cannot enable issue creation.
+- **AC-8 · G3.** Create, reopen, customize and deploy an Agent. Refuse stale review. Verify each opt-out independently at GitHub without changing a peer.
 
 ## Delivery and verification
 
-[#6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) reports 18 passing installed checks across three stock OpenShell 0.1.9 runs at `0a01f129` and `aeb2a54e`. An explicit allow could not override Issues read, even after renewal. The controlled origin recorded both cross-repository parent links despite direct denials. Live private GitHub effects remain unverified.
+Remove `scopedRest` before upgrade. Existing Write grants can gain issue or PR creation on redeployment. Set restrictions first. A running Sandbox keeps its loaded rules and can lose renewal after a change. The operator must Stop and verify Sandbox retirement to withdraw access immediately.
+
+The [plan](../plans/20261123-repository-issue-creation.md) separates the Namespace change from the Console follow-up. Controlled installed checks cover parts of AC-1–AC-7. Live parent-link effects and the full deployed Console journey remain unverified.
