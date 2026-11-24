@@ -222,7 +222,7 @@ export function createHarnessAuthFields(
     context,
     agentId: context.agentId,
     initial: draft?.oauthLogin,
-    hint: "Sign in to replace this Agent's credential, then save the authentication source. If an Agent revision that uses managed credentials is active, complete Stop before deploying the replacement.",
+    hint: "Sign in to replace this Agent's credential, then save the authentication source. If this Agent has an active revision, complete Stop before deploying the replacement.",
     onChange(source) {
       if (method.value === "device_login") {
         const cleared = selectedCredentialSource !== null && source === null;

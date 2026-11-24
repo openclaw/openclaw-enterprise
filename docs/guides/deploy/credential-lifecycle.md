@@ -120,8 +120,8 @@ to that issuer, then retry. The refresh Worker also needs issuer connectivity.
    resolves a usable access token through TokenService. Another device login is
    needed only when replacing or recovering the connection.
 4. To replace the connection, sign in from the credential editor and save the new
-   Source. Complete **Stop** before deploying the replacement; deploying over an
-   active managed-credential revision returns `409`. Once no Agent, active
+   Source. Complete **Stop** before deploying the replacement; deploying managed
+   credentials over an active revision returns `409`. Once no Agent, active
    revision, or pending deployment references the old Source,
    [delete it](../../reference/credential-sources.md#delete-a-source). A refused
    deletion leaves the Source and grant unchanged.
