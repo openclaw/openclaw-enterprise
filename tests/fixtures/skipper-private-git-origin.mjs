@@ -19,6 +19,11 @@ export const scopedRestFixturePermissions = Object.freeze({
   pull_requests: "write",
 });
 
+export const scopedRestIssueWriteFixturePermissions = Object.freeze({
+  ...scopedRestFixturePermissions,
+  issues: "write",
+});
+
 // Compare raw bytes, before URL parsing. Only the encoded read of A has
 // an equivalent canonical spelling (unreserved ASCII in the path and query).
 function readVariantWire(probe, method, target) {
@@ -56,6 +61,7 @@ export async function startSkipperPrivateGitOrigin({
   witnessIssuedGit = false,
   networkAcl = /** @type {boolean | "issued"} */ (false),
   scopedRest = false,
+  writeIssues = false,
 } = {}) {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(repository)) {
     throw new Error("repository must be owner/name");
@@ -87,6 +93,7 @@ export async function startSkipperPrivateGitOrigin({
   await run("git", ["check-ref-format", approvalRef]);
   const issuedNetwork = networkAcl === "issued";
   assert.ok(!scopedRest || issuedNetwork, "Scoped REST requires the controlled App issuer");
+  assert.ok(!writeIssues || scopedRest, "Issue Write requires the REST fixture");
   const repositoryScopes = [{ repository, repositoryRef, repositoryId }];
   if (networkAcl) {
     repositoryScopes.push(
@@ -263,7 +270,9 @@ export async function startSkipperPrivateGitOrigin({
       }),
       additionalPermissions: [
         ...(teamReview ? [{ metadata: "read", contents: "write", pull_requests: "write" }] : []),
-        ...(scopedRest ? [scopedRestFixturePermissions] : []),
+        ...(scopedRest
+          ? [writeIssues ? scopedRestIssueWriteFixturePermissions : scopedRestFixturePermissions]
+          : []),
       ],
     });
     const reviewHead = approvalRef.slice("refs/heads/".length);
@@ -274,6 +283,25 @@ export async function startSkipperPrivateGitOrigin({
     /** @typedef {{ number: number, title: string, state: string, draft: boolean, head: ScopedPullSide, base: ScopedPullSide }} ScopedPull */
     /** @type {Map<string, ScopedPull[]>} */
     const scopedPulls = new Map();
+    /** @type {Map<string, unknown[]>} */
+    const scopedIssuePosts = new Map();
+    const scopedParents = new Map(
+      repositoryScopes.map((scope) => [Number(scope.repositoryId) * 1000 + 42, scope]),
+    );
+    /** @type {Map<number, { repository: string, number: number }[]>} */
+    const scopedIssueChildren = new Map();
+    const scopedIssueLists = new Map(
+      repositoryScopes.map(({ repository }) => [
+        repository,
+        [
+          {
+            number: 42,
+            title: `Fixture issue in ${repository}`,
+            state: "open",
+          },
+        ],
+      ]),
+    );
     let redirectPullReadToC = false;
     const observePullRequest = async () => {
       if (!pullRequest) {
@@ -287,7 +315,7 @@ export async function startSkipperPrivateGitOrigin({
       });
       return { ...pullRequest, head: side(reviewHead), base: side("main") };
     };
-    const readPullBody = async (request, reply) => {
+    const readRestBody = async (request, reply) => {
       const chunks = [];
       let size = 0;
       for await (const chunk of request) {
@@ -308,7 +336,7 @@ export async function startSkipperPrivateGitOrigin({
         reply(403);
         return;
       }
-      const fields = await readPullBody(request, reply);
+      const fields = await readRestBody(request, reply);
       if (fields === undefined) {
         return;
       }
@@ -353,9 +381,8 @@ export async function startSkipperPrivateGitOrigin({
       const operation =
         {
           issues: request.method === "GET" ? "rest-issue-list" : "rest-issue-create",
-          "issues/42": "rest-issue-read",
           pulls: request.method === "GET" ? "rest-pull-list" : "rest-pull-create",
-        }[route] ?? "rest-pull-read";
+        }[route] ?? (route.startsWith("issues/") ? "rest-issue-read" : "rest-pull-read");
       networkRequests.push({
         repository: name,
         operation,
@@ -369,12 +396,71 @@ export async function startSkipperPrivateGitOrigin({
       }
       const permissions = authority.permissions(authorization);
       if (route.startsWith("issues")) {
-        if (request.method === "GET" && permissions?.issues === "read") {
-          const issue = { number: 42, title: `Fixture issue in ${name}`, state: "open" };
-          reply(200, route === "issues" ? [issue] : issue);
-        } else {
-          reply(403);
+        const issues = scopedIssueLists.get(name);
+        assert.ok(issues);
+        if (
+          request.method === "GET" &&
+          (permissions?.issues === "read" || permissions?.issues === "write")
+        ) {
+          if (route === "issues") {
+            reply(200, issues);
+          } else {
+            const issue = issues.find(({ number }) => route === `issues/${number}`);
+            reply(issue ? 200 : 404, issue);
+          }
+          return;
         }
+        if (request.method !== "POST" || route !== "issues" || permissions?.issues !== "write") {
+          reply(403);
+          return;
+        }
+        const fields = await readRestBody(request, reply);
+        if (fields === undefined) {
+          return;
+        }
+        const { title, body = "", labels = [], parent_issue_id: parentId } = fields;
+        if (
+          typeof title !== "string" ||
+          !title ||
+          typeof body !== "string" ||
+          !Array.isArray(labels) ||
+          labels.some((label) => typeof label !== "string")
+        ) {
+          reply(422);
+          return;
+        }
+        // The issuer can retire the credential while the request body is read.
+        if (!authority.authorize(authorization)) {
+          reply(403);
+          return;
+        }
+        // The synthetic App's Issues Write grant models triage on its selected
+        // repositories. Model the link separately from either issue record.
+        if (parentId !== undefined) {
+          const parent = scopedParents.get(parentId);
+          if (!parent || !authority.permitsRepository(authorization, parent.repositoryId)) {
+            reply(403);
+            return;
+          }
+        }
+        const issue = {
+          number: 42 + issues.length,
+          title,
+          body,
+          state: "open",
+          labels: labels.map((name) => ({ name })),
+        };
+        issues.push(issue);
+        const posts = scopedIssuePosts.get(name) ?? [];
+        scopedIssuePosts.set(name, [...posts, fields]);
+        if (parentId !== undefined) {
+          const children = scopedIssueChildren.get(parentId) ?? [];
+          scopedIssueChildren.set(parentId, [
+            ...children,
+            { repository: name, number: issue.number },
+          ]);
+        }
+        reply(201, issue);
         return;
       }
       const created = scopedPulls.get(name) ?? [];
@@ -407,7 +493,7 @@ export async function startSkipperPrivateGitOrigin({
         reply(403);
         return;
       }
-      const fields = await readPullBody(request, reply);
+      const fields = await readRestBody(request, reply);
       if (fields === undefined) {
         return;
       }
@@ -562,7 +648,7 @@ export async function startSkipperPrivateGitOrigin({
         const rest =
           scopedRest &&
           !url.search &&
-          /^\/repos\/([^/]+\/[^/]+)\/(issues(?:\/42)?|pulls(?:\/[1-9][0-9]*)?)$/.exec(url.pathname);
+          /^\/repos\/([^/]+\/[^/]+)\/((?:issues|pulls)(?:\/[1-9][0-9]*)?)$/.exec(url.pathname);
         if (rest) {
           const scope = repositoryByName.get(rest[1]);
           if (!scope) {
@@ -1000,6 +1086,12 @@ export async function startSkipperPrivateGitOrigin({
             );
           },
           requests: () => networkRequests.map((entry) => ({ ...entry })),
+          /** @param {string} name */
+          issues: (name) => structuredClone(scopedIssueLists.get(name) ?? []),
+          /** @param {string} name */
+          issuePosts: (name) => structuredClone(scopedIssuePosts.get(name) ?? []),
+          /** @param {number} parentId */
+          issueChildren: (parentId) => structuredClone(scopedIssueChildren.get(parentId) ?? []),
           /** @param {string} name */
           pullRequest: (name) => structuredClone(scopedPulls.get(name)?.[0]),
           /** @param {string} name */

@@ -32,7 +32,7 @@ type Policy = SandboxPolicyViewWire["policy"];
 
 type RepositoryGrants = readonly RepositoryNetworkGrant[];
 
-function readableRepositoryGrants(value: unknown): value is RepositoryGrants {
+export function readableRepositoryGrants(value: unknown): value is RepositoryGrants {
   if (!Array.isArray(value)) {
     return false;
   }

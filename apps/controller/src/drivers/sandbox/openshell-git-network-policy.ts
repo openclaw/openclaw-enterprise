@@ -189,6 +189,7 @@ function scopedApiEndpoints(
   const endpoints: OpenShellProviderProfileEndpoint[] = [];
   for (const {
     repository,
+    createIssues,
     createPullRequests,
     readIssues,
     readPullRequests,
@@ -196,6 +197,9 @@ function scopedApiEndpoints(
     const rules = [];
     if (createPullRequests) {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
+    }
+    if (createIssues) {
+      rules.push({ allow: { method: "POST", path: `/repos/${repository}/issues` } });
     }
     for (const [resource, enabled] of [
       ["issues", readIssues],
