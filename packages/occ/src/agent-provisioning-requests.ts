@@ -122,7 +122,7 @@ interface ProvisioningRequestDependencies {
   readonly selectedIAM: () => IAMDriver;
   readonly channels: Pick<
     ReturnType<typeof createDeploymentChannelChecks>,
-    "validateChannelCredentials"
+    "validateChannelCredentials" | "assertEnabledChannelsInstalled"
   >;
   readonly modelPolicyAgent: (mode: HarnessExecutionMode) => ModelPolicyAgent;
   readonly harness: Pick<
@@ -317,6 +317,9 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       // credential reference form these rules name (an unbound name, `$NAME`, a fallback, other
       // text) with its generic binding refusal (finding 2506). Admission repeats them below.
       await validateContent(configurationInput);
+      // The worker that later deploys this Agent has no Channel Drivers; refuse here, in the API,
+      // an enabled channel without an installed Driver, as deployment admission does.
+      dependencies.channels.assertEnabledChannelsInstalled(configurationInput.values);
       await dependencies.channels.validateChannelCredentials(
         principalId,
         input.namespaceId,

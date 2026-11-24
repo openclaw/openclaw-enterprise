@@ -80,9 +80,9 @@ drivers:
 
 Without `drivers.channel`, the controller installs every bundled Driver. With
 it, the controller installs only the listed Drivers. OCC then refuses to deploy
-an Agent that enables another provider, on every Compute, because it can neither
-check that provider's credentials nor own its traffic. Kubernetes Compute also
-refuses such an Agent Configuration at save. Each Driver's
+or provision an Agent that enables another provider, on every Compute, because it
+can neither check that provider's credentials nor own its traffic. Kubernetes
+Compute also refuses such an Agent Configuration at save. Each Driver's
 configuration has a closed schema, so startup refuses unknown fields. A later
 provider can add its own settings, such as Teams storage hosts.
 
@@ -110,6 +110,12 @@ At deployment, OCC runs the credential check of every installed Driver. Each
 Driver checks only its own provider's settings and skips them when the
 provider is off. If an installed Driver or its check changes before the
 revision is recorded, OCC refuses the deployment.
+
+The API process owns the Installation's Channel Driver set and makes these
+checks: in deployment admission, and in an Agent provisioning request before
+the job is queued. The provisioning worker deploys that queued Agent with its
+own controller, which has no Channel Drivers because it cannot reach provider
+egress; it does not repeat the channel checks.
 
 ## Interface changes
 
@@ -161,8 +167,10 @@ Driver that forwards each request to the correct provider.
   in a Slack lookup's context is refused the same way.
 - **AC-4 — Selection controls installation:** With an empty `drivers.channel`,
   OCC refuses to deploy an Agent that enables Slack, on SSH Compute as on
-  Kubernetes Compute, which also refuses to save that Configuration. An Agent
-  with Slack off still deploys. Unknown or malformed settings stop startup.
+  Kubernetes Compute, which also refuses to save that Configuration, and refuses
+  an Agent provisioning request that enables it. An Agent with Slack off still
+  deploys. The provisioning worker still deploys a Slack Agent that the API
+  admitted. Unknown or malformed settings stop startup.
 - **AC-5 — Every installed credential check gates deployment:** With two
   providers installed, deployment runs both checks. A change to either Driver
   or its check before the revision is recorded refuses the deployment.

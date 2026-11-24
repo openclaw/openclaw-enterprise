@@ -84,9 +84,10 @@ drivers:
 
 If you omit `drivers.channel`, startup installs every bundled Driver with
 default configuration. If you supply the list, startup installs only the listed
-Drivers. OCC refuses to deploy an Agent that enables a channel whose Driver is
-not installed, on every Compute. Kubernetes Compute also refuses that Agent
-Configuration at save.
+Drivers. The API refuses to deploy or provision an Agent that enables a channel
+whose Driver is not installed, on every Compute; the provisioning worker, which
+has no Channel Drivers, deploys only Agents the API admitted. Kubernetes Compute
+also refuses that Agent Configuration at save.
 Startup refuses an unknown ID, a repeated ID and unknown or invalid
 configuration. OCC directory lookup and Compute admission use the same
 installed set.

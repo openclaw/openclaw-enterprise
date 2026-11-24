@@ -87,6 +87,8 @@ export class DriverRegistry {
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private pluginRegistrations: readonly RegisteredDriver[] = [];
   private channelRegistrations: readonly RegisteredDriver[] = [];
+  // Whether composition gave this controller its Channel Driver set, even an empty one.
+  private channelSetInstalled = false;
   private readonly dependencies: DriverRegistryDependencies;
 
   constructor(dependencies: DriverRegistryDependencies) {
@@ -192,6 +194,16 @@ export class DriverRegistry {
       this.registrations.set(key, entry);
     }
     this.channelRegistrations = registrations.map(([, entry]) => entry);
+    this.channelSetInstalled = true;
+  }
+
+  /**
+   * Whether composition gave this controller the Installation's Channel Driver set, even an
+   * empty one. The API owns that set; a controller without one, such as the provisioning
+   * worker's, carries out work the API already checked.
+   */
+  ownsChannelDriverSet(): boolean {
+    return this.channelSetInstalled;
   }
 
   /** Whether composition installed any Channel Driver; reads no Driver member. */

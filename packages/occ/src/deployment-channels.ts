@@ -78,6 +78,7 @@ interface DeploymentChannelDependencies {
     | "hasChannelDrivers"
     | "installedChannelDrivers"
     | "installedChannelProviders"
+    | "ownsChannelDriverSet"
     | "channelDriver"
   >;
   readonly configurationDriver: () => ConfigurationDriver;
@@ -406,7 +407,13 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
 
   // Every Compute: an enabled channel needs an installed Channel Driver, or OCC can neither check
   // its credentials nor own its egress. Kubernetes Compute also refuses it at Configuration save.
+  // Only a controller that owns the Installation's Channel Driver set applies this: the API, for
+  // deployment and provisioning requests. The provisioning worker has no Channel Drivers, since
+  // it cannot reach provider egress, and admits only work the API already checked.
   function assertEnabledChannelsInstalled(values: OpenClawConfigurationDocument): void {
+    if (!dependencies.drivers.ownsChannelDriverSet()) {
+      return;
+    }
     const installed = dependencies.drivers.installedChannelProviders();
     for (const provider of enabledChannelEntries(values)) {
       if (dependencies.drivers.channelDriver(provider) === undefined) {

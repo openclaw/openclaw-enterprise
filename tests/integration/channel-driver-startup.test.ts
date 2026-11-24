@@ -5,7 +5,16 @@ import { resolveChannelRouting } from "../../apps/controller/src/drivers/channel
 import { createRuntimeAuthFixture } from "../browser/console-agents-runtime-auth-fixture.ts";
 import { nativeValues } from "../browser/console-agents-browser-helpers.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import { createReadyComputeDriver } from "../helpers/development.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import {
+  createInjectedControllerFixture,
+  injectedRequest,
+  readyNamespaceFixture,
+} from "./occ-api-injected-fixture.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 
 async function load(t: TestContext, channel?: unknown) {
@@ -148,4 +157,74 @@ test("SSH Compute deployment refuses an enabled channel without an installed Cha
   // An Agent with the channel turned off still deploys on the same Installation.
   const admitted = await deploy("ssh-slack-off", false);
   assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+});
+
+test("Agent provisioning refuses an enabled channel without an installed Channel Driver in the API", async () => {
+  // A Compute that provisions Agents but has no channel rules of its own, so only OCC refuses.
+  const computeDriver = createReadyComputeDriver("compute-provisioning-no-channels", {
+    agentProvisioning: { executionModes: ["dedicated"] },
+    validateAgentProvisioning() {},
+    async provisionAgentRuntimeCredentials() {
+      return { transportConfigured: true };
+    },
+    async getAgentRuntimeCredentialStatus() {
+      return { transportConfigured: false };
+    },
+  });
+  // The API owns the Installation's Channel Driver set; drivers.channel: [] installs none.
+  const fixture = await createInjectedControllerFixture(
+    {
+      channelDrivers: [],
+      computeDriver,
+      configurationDriver: createTestConfigurationDriver({ exact: true }),
+      secretDriver: createTestSecretDriver(),
+    },
+    {
+      wrapPlatformState: (state) => state,
+      invokeApplication(factory, { backendSummaries: _summaries, ...options }) {
+        return factory(options);
+      },
+    },
+  );
+  const { namespace } = await readyNamespaceFixture(
+    {
+      fixture,
+      request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
+    },
+    "Provisioning without channels",
+  );
+  const controller = fixture.controller;
+  assert(controller, "bootstrap must create the controller");
+  const harnessSecret = await controller.createSecret(fixture.principal.id, {
+    namespaceId: namespace.id,
+    name: "provisioning-model-key",
+    value: "synthetic-model-key",
+  });
+  const provision = (enabled: boolean, requestId: string) =>
+    controller.provisionAgent(fixture.principal.id, {
+      namespaceId: namespace.id,
+      requestId,
+      name: requestId,
+      executionMode: "dedicated",
+      configuration: {
+        kind: "agent",
+        values: {
+          ...createHarnessConfiguration("openclaw", "gpt-4.1"),
+          channels: { slack: { enabled, mode: "socket" } },
+        },
+      },
+      harnessAuth: { method: "api_key", source: harnessSecret.ref },
+    });
+  // The worker that would deploy this Agent has no Channel Drivers, so the API refuses the
+  // request before anything is stored or queued.
+  await assert.rejects(provision(true, "slack-enabled"), {
+    name: "ConfigurationHarnessError",
+    message: /channels\.slack is not a supported channel: install its Channel Driver/,
+  });
+  // With the channel off, the request passes every check and reaches the provisioning store,
+  // which this in-memory state does not provide.
+  await assert.rejects(provision(false, "slack-off"), {
+    name: "DependencyUnavailableError",
+    message: /requires durable PostgreSQL state/,
+  });
 });
