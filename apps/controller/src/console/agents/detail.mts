@@ -1819,11 +1819,21 @@ export async function renderAgentDetail(
   });
   // Tabbing back in lands on the selected tab, wherever the arrows left focus. Checked once focus
   // has moved: a window losing focus leaves it on the tab, so the arrowed-to stop stays.
-  tabs.addEventListener("focusout", () => {
+  tabs.addEventListener("focusout", ({ relatedTarget }) => {
     queueMicrotask(() => {
       if (!tabs.contains(document.activeElement)) {
         for (const [id, control] of tabControls) {
           control.tabIndex = id === selectedTab ? 0 : -1;
+        }
+        // Native focusout can run before the new target has focus. Only scroll for a transfer
+        // out of the strip so a pointer press on another tab cannot move it before the click.
+        if (
+          relatedTarget instanceof Node &&
+          !tabs.contains(relatedTarget) &&
+          tabs.isConnected &&
+          context.isCurrent()
+        ) {
+          revealSelectedTab();
         }
       }
     });
