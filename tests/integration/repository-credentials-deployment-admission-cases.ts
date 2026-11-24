@@ -1676,6 +1676,30 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       );
     }
 
+    // A replacement commits a new version and stamps the revision's copy with it, so its
+    // delivery reads pending against that version. This adapter has no Worker, so nothing
+    // records an activation and no copy reads confirmed here.
+    checkedEnvelope(
+      await f.request(
+        "PATCH",
+        `/namespaces/${f.namespace.id}/credential-sources/${repositorySourceId}`,
+        {
+          // A synthetic fine-grained token, built from parts.
+          secret: { token: ["github", "pat", "y".repeat(36)].join("_") },
+        },
+      ),
+      CredentialSourceResponse,
+      200,
+    );
+    const replaced = await view();
+    assert.ok(replaced.repositoryCredential && "deliveries" in replaced.repositoryCredential);
+    const [delivery] = replaced.repositoryCredential.deliveries;
+    assert.ok(delivery);
+    const { committedSourceVersion, committedAt, ...rest } = delivery;
+    assert.deepEqual(rest, { revisionId: deployed.data.id, state: "pending" });
+    assert.match(committedSourceVersion ?? "", /^[0-9a-f-]{36}$/);
+    assert.ok(Date.parse(committedAt ?? "") > 0);
+
     // Withdrawal survives lost Source authority: the same caller clears the saved grants and
     // stops the Agent without any permission on the Source.
     checkedEnvelope(
@@ -1715,6 +1739,73 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       `${f.collection}/${plainAgent.id}/sandbox-policy/networking`,
     );
     assert.equal(Object.hasOwn(plainView, "repositoryCredential"), false);
+  });
+
+  test("the policy read narrows a saved grant to a Source ceiling narrowed since the save", async (t) => {
+    selectFixtureRelease(t);
+    const fixture = await scopedFixture(t, {
+      nativeGit: "v1",
+      repositorySourceCeiling: "example/selected:write",
+      configureRegistry: selectedSourceRegistry,
+    });
+    const { f, selected, writeGrant, createSelectedAgent } = fixture;
+    const repositorySourceId = fixture.repositorySourceId;
+    assert.ok(repositorySourceId);
+    const agent = await createSelectedAgent();
+    const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
+    const view = async () =>
+      checkedEnvelope(await f.request("GET", policyPath), SandboxPolicyViewResponse, 200).data;
+    const principal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
+    grantRole(f.iamState, principal.servicePrincipalId, {
+      id: `repository-token-for-${agent.id}`,
+      namespaceId: f.namespace.id,
+      permissions: { credential_source: ["operate"] },
+      resource: { kind: "credential_source", id: repositorySourceId },
+    });
+    assert.equal(
+      (await f.request("PATCH", policyPath + "/editing", { enabled: true })).status,
+      200,
+    );
+    checkedEnvelope(
+      await f.request("PUT", policyPath, {
+        expectedVersion: (await view()).policy.version,
+        additions: [],
+        repositoryNetworkPolicy: [writeGrant],
+      }),
+      SandboxPolicyResponse,
+      200,
+    );
+    const saved = await view();
+    assert.ok(saved.repositoryCredential && "deliveries" in saved.repositoryCredential);
+    assert.deepEqual(saved.repositoryCredential.effectiveRepositoryNetworkPolicy, [writeGrant]);
+
+    // The Source is re-scoped to read after the save, as it can be while no registry names it.
+    // The saved grant stays write, but the read reports the access the Source allows now.
+    await f.state.transact(async (unit) => {
+      const source = await unit.credentialSources.findCredentialSource(
+        f.namespace.id,
+        repositorySourceId,
+      );
+      assert.ok(source);
+      assert.ok(
+        await unit.credentialSources.updateCredentialSourceConfig(
+          f.namespace.id,
+          repositorySourceId,
+          { ...source.config, repositories: "example/selected:read" },
+        ),
+      );
+    });
+    const narrowed = await view();
+    assert.deepEqual(narrowed.policy.repositoryNetworkPolicy, [writeGrant]);
+    assert.deepEqual(narrowed.repositoryCredential, {
+      kind: "credential_source",
+      id: repositorySourceId,
+      name: "repository-token",
+      state: "ready",
+      ceiling: [selected],
+      effectiveRepositoryNetworkPolicy: [selected],
+      deliveries: [],
+    });
   });
 
   function stubAdmissionCompute(
