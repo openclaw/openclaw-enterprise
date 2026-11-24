@@ -1,12 +1,12 @@
 ---
-status: In progress
+status: Completed
 rfc: ../rfcs/20261121-agent-automations.md
 ---
 
 # Implementation plan: Agent automation APIs
 
 - **ID:** RFC-20261121-agent-automations
-- **Delivery status:** In progress
+- **Delivery status:** Completed
 - **Authority:** [Agent automation RFC](../rfcs/20261121-agent-automations.md), PR #6850
 
 ## Outcome
@@ -36,8 +36,24 @@ for this API-only change.
 
 ## Delivery record
 
-The simplified wrapper and its focused integration proof are in progress.
-Earlier model-only and approved-tool qualification work is outside this scope.
+Implemented in [PR #6942](https://github.com/openclaw/openclaw-enterprise/pull/6942)
+at commit `fda1229e7adf0b36ec185824fde6b4cef0e7ad1e`. The current
+[reference](../../docs/reference/agent-automations.md) and
+[flow](../../docs/flows/agent-automations.md) describe the supported API.
+
+The real native Gateway integration passed on that commit on kdevbox-2 with
+Node.js 24: 1 passed, 0 failed, 0 skipped, in 84.155 seconds.
+
+```sh
+OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime@sha256:2697f9166f1fcceecd3b2e5e9bda8e68ab994c218b58288440b42721ec1d8362 \
+OCC_TEST_WORKSPACE_ENVOY_IMAGE=envoyproxy/envoy@sha256:947974108bb93df64469fedaa0ab7191cdf86c608217d6ff9b497c4e96ff1069 \
+node --test tests/integration/workspace-files-native.test.ts
+```
+
+[Required CI passed](https://github.com/openclaw/openclaw-enterprise/actions/runs/45262190826/job/138010823178)
+at the same commit: 35 successful checks, 9 conditional skips, and 1 optional
+neutral check. The integration made no model calls. It did not qualify model,
+MCP, scheduled tool, release, or deployment behavior.
 
 ## Manual Notes
 

@@ -1,6 +1,6 @@
 ---
-status: Proposed
-implementation_status: Partially implemented
+status: Accepted
+implementation_status: Implemented
 author: kevinlin-openai
 ---
 
@@ -78,5 +78,7 @@ qualification are outside this API change.
 
 ## Delivery status
 
-Implementation and focused integration verification are in progress. The
-[plan](../plans/20261121-agent-automations.md) owns the delivery record.
+The six APIs are implemented. The current [Agent automation API
+reference](../../docs/reference/agent-automations.md) owns supported behavior.
+The [plan](../plans/20261121-agent-automations.md) records the tested commit,
+verification results, and limits.
