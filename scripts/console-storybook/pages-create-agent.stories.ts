@@ -1,5 +1,7 @@
 import { story } from "./story.ts";
 
+export const CreateNetworkProxy = { ...story("createNetworkProxy"), name: "Gateway Channel Proxy" };
+
 export default { title: "Pages/Create Agent" };
 
 export const CreateStart = { ...story("createStart"), name: "Choose a starting point" };

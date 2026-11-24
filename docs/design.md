@@ -171,6 +171,8 @@ Agent's enabled-channel requirements through a dedicated Envoy egress fleet,
 separate from private workspace ingress. Protected listener ports select Agent
 policies until verified Gateway workload identities are available. See
 [channel egress](reference/drivers/kubernetes-compute/channel-egress.md).
+When an Agent selects an upstream proxy, Envoy authorizes CONNECT host and port;
+the proxy owns final destination resolution and address enforcement.
 
 Installation configuration selects compute, configuration, IAM, and Secret
 implementations, plus channel and optional service-account, plugin, repository, Sandbox, and

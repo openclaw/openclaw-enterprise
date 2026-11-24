@@ -476,6 +476,7 @@ test(
       assert.ok(state);
       assert.equal(Object.hasOwn(started, "credentialSourceId"), false);
       return {
+        connectionTemplateId: template.id,
         complete: () =>
           f.request(
             "GET",
@@ -530,6 +531,41 @@ test(
       assert.equal(exchanges, before, "a denied callback does not redeem the provider code");
       await connectionEffects(namespaceId, 0);
     });
+
+    await t.test(
+      "OAuth refuses consent when the selected IAM cannot grant Source ownership",
+      async () => {
+        await f.reset();
+        const namespaceId = await f.namespace();
+        const attempt = await connection(namespaceId);
+        // Authorization still reads real Native IAM policy; only its optional binding writer is absent.
+        const unsupportedIAM = new NativeIAMDriver(f.state, { id: "durable-iam-without-binding" });
+        Object.defineProperty(unsupportedIAM, "createNamespaceAccessBinding", { value: undefined });
+        f.controller.registerDriver(unsupportedIAM);
+        f.controller.selectDriver("iam", unsupportedIAM.id);
+        try {
+          const before = exchanges;
+          const start = await f.request("POST", `/namespaces/${namespaceId}/connections`, {
+            connectionTemplateId: attempt.connectionTemplateId,
+          });
+          assert.equal(start.statusCode, 503, start.body);
+          const states = await f.pool.query<{ count: number }>(
+            "SELECT count(*)::integer AS count FROM occ.authentication_states WHERE namespace_id=$1 AND kind='oauth_connection'",
+            [namespaceId],
+          );
+          assert.equal(states.rows[0]?.count, 1, "only the earlier authorized attempt exists");
+
+          // A separate callback must recheck the selected IAM before redeeming the one-use code.
+          const callback = await attempt.complete();
+          assert.equal(callback.statusCode, 303);
+          assert.match(String(callback.headers.location), /connection=failed/);
+          assert.equal(exchanges, before, "an unsupported owner grant cannot redeem the code");
+          await connectionEffects(namespaceId, 0);
+        } finally {
+          f.controller.selectDriver("iam", f.iam.id);
+        }
+      },
+    );
 
     await t.test(
       "OAuth Source owner can disconnect with its read/operate binding and no delete grant",

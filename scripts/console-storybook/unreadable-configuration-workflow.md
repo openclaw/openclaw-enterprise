@@ -68,6 +68,14 @@ returns. Confirm **Save Configuration** is available after the simulated grant
 answer. The loopback Controller test covers the separate case where a version
 becomes unreadable and the replacement view cannot confirm permission to save.
 
+Open **Pages / Agent detail / Retry an Agent read on tab return** on desktop.
+Choose **Edit Configuration**, make an unsaved edit, and scroll down. Switch to
+another browser tab and return. The exact Agent read returns one simulated HTTP
+408. Confirm **Agent details** replaces the Agent name. Use the keyboard to
+activate **Retry**. Confirm the original draft and scroll position return, and
+the Agent name appears only after the access check succeeds. Repeat at phone
+width.
+
 ## Binding preflight refusal and Save recovery
 
 Open **Components / Credentials / Channel binding read denied**. This separate

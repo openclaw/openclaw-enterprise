@@ -47,9 +47,9 @@ export type CreateManagedCredentialSourceInput = Omit<
 };
 
 export type UpdateManagedCredentialSourceInput =
-  | (SourceUpdate & { readonly providerPreset?: SourceProviderPresetId | null })
+  | (SourceUpdate & { readonly providerPreset?: string | null })
   | {
-      readonly providerPreset: SourceProviderPresetId | null;
+      readonly providerPreset: string | null;
       readonly secret?: never;
       readonly lifecycleConfig?: never;
     };
@@ -62,7 +62,10 @@ function assertManagedSourceLifecycleSettings(settings: Readonly<Record<string, 
 
 function assertSourceProviderPreset(value: unknown): asserts value is SourceProviderPresetId {
   if (!isSourceProviderPresetId(value)) {
-    throw new ScopeViolationError("Choose an approved source provider preset.");
+    throw new CredentialSourceConfigError(
+      SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+      "Choose an approved credential source provider preset.",
+    );
   }
 }
 
@@ -269,14 +272,26 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     };
     const changesCredential = input.secret !== undefined || input.lifecycleConfig !== undefined;
     const authorize = async (state: PlatformUnitOfWork) => {
-      await dependencies.authority.authorize(principalId, "update", resource);
       await dependencies.authority.holdAuthority(state);
+      await dependencies.authority.authorize(principalId, "update", resource);
       const namespace = await lockNamespace(state, ref.namespaceId);
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
+      const source = await state.credentialSources.lockCredentialSource(
+        ref.namespaceId,
+        ref.credentialSourceId,
+      );
+      if (!isManagedTokenServiceSource(source)) {
+        throw new ScopeViolationError(
+          "The credential source does not belong to the exact Namespace.",
+        );
+      }
+      if (source.type !== "static") {
+        throw new ResourceStateConflictError("Only a static Source can be updated.");
       }
       if (input.providerPreset !== undefined && input.providerPreset !== null) {
         assertSourceProviderPreset(input.providerPreset);
+      }
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
       }
       if (input.lifecycleConfig !== undefined) {
         assertManagedSourceLifecycleSettings(input.lifecycleConfig.settings);
@@ -286,20 +301,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
           "A source update requires a provider preset or owner update.",
         );
       }
-      const source = await state.credentialSources.lockCredentialSource(
-        ref.namespaceId,
-        ref.credentialSourceId,
-      );
-      if (!source) {
-        throw new ScopeViolationError(
-          "The credential source does not belong to the exact Namespace.",
-        );
-      }
-      if (
-        !isManagedTokenServiceSource(source) ||
-        source.type !== "static" ||
-        source.state !== "ready"
-      ) {
+      if (source.state !== "ready") {
         throw new ResourceStateConflictError(
           "This credential source cannot be updated through the selected TokenService.",
         );

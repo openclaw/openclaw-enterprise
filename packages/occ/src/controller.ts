@@ -1212,18 +1212,6 @@ export class OpenClawController {
     );
   }
 
-  async credentialSourceUpdateIdentity(
-    principalId: string,
-    namespaceId: string,
-    credentialSourceId: string,
-  ): Promise<{ readonly managed: boolean; readonly type: string }> {
-    return this.composition.credentials.credentialSourceOperations.credentialSourceUpdateIdentity(
-      principalId,
-      namespaceId,
-      credentialSourceId,
-    );
-  }
-
   async readCredentialSource(
     principalId: string,
     namespaceId: string,
