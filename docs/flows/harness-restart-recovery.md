@@ -1,7 +1,7 @@
 ---
 created: "2026-11-17 17:20"
-updated: "2026-11-20"
-last_updated_session: "authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc"
+updated: "2026-11-24 15:55"
+last_updated_session: "authoring-run/108574a5-daed-49ea-9cde-67b36c4de76d"
 ---
 
 # Harness restart recovery flow
@@ -151,6 +151,8 @@ case must also show one continuation and a final result without another user mes
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-24 15:55: Record the turn error after admission. (authoring-run/108574a5-daed-49ea-9cde-67b36c4de76d - 03c15a532de4b906771f773b8e9bd1d2ba3ec7b4)
 
 - 2026-11-20 16:58: Point to deployment admission and its request module. (authoring-run/c0b1d670-9c9d-4163-a9e1-c480b2170bfc - 48e378422c0f6527682d305cac5ca3992a00c5ad)
 

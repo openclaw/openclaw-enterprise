@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-22
-last_updated_session: authoring-run/88a02f98-14c3-4a30-af11-58217411a763
+updated: "2026-11-24 15:55"
+last_updated_session: "authoring-run/108574a5-daed-49ea-9cde-67b36c4de76d"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -422,6 +422,8 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 15:55: Record possible Harness port exposure during startup. (authoring-run/108574a5-daed-49ea-9cde-67b36c4de76d - 03c15a532de4b906771f773b8e9bd1d2ba3ec7b4)
 
 - 2026-11-22 10:40: Link the exposure sweep. (authoring-run/88a02f98-14c3-4a30-af11-58217411a763 - ac82af3d6e61946fc2a6874eeb39363c9ba8c3f5)
 
