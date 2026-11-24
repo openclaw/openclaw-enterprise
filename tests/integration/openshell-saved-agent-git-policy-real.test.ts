@@ -35,7 +35,7 @@ const emptyDeployRefusal = {
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 // The manual lane exercises issue creation. Other selectors use a different
-// Namespace permission or a repository-local deny on the same REST policy.
+// Namespace permission or a repository limit on the same REST policy.
 const restSelection = process.env.OCC_TEST_OPENSHELL_SAVED_AGENT_REST;
 const rest =
   restSelection === "issues" || restSelection === "reads" || restSelection === "issue-controls"
@@ -1585,21 +1585,21 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
 
       if (issueControls || issueReadOnly) {
         // Attempt fallback with the legacy callback still available. This Agent
-        // has the active filters, and no saved network policy was supplied.
-        const filtered = await prepareAgent(fixture);
-        const filteredPolicy: SandboxPolicyViewWire = await request(
+        // has API limits, and no saved network policy was supplied.
+        const limited = await prepareAgent(fixture);
+        const limitedPolicy: SandboxPolicyViewWire = await request(
           "GET",
-          `${filtered.path}/sandbox-policy/networking`,
+          `${limited.path}/sandbox-policy/networking`,
         );
-        assert.equal(filteredPolicy.policy.repositoryNetworkPolicy, undefined);
+        assert.equal(limitedPolicy.policy.repositoryNetworkPolicy, undefined);
         const before = origin.snapshot();
         const attempts = await callbacks.read();
-        const deployPath = `${filtered.path}/deploy`;
+        const deployPath = `${limited.path}/deploy`;
         await assert.rejects(request("POST", deployPath), {
           message: `OCC POST ${deployPath} returned HTTP 409`,
         });
-        assert.deepEqual(await request("GET", `${filtered.path}/revisions`), []);
-        const refusedAgent: AgentReadWire = await request("GET", filtered.path);
+        assert.deepEqual(await request("GET", `${limited.path}/revisions`), []);
+        const refusedAgent: AgentReadWire = await request("GET", limited.path);
         assert.equal(refusedAgent.activeRevisionId, undefined);
         assert.equal(origin.snapshot().issued, before.issued);
         assert.equal(origin.snapshot().requests, before.requests);
@@ -1653,7 +1653,7 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
         );
         if (issueControls) {
           await t.test(
-            "Repository-local denial blocks B issue POST while A still creates issues",
+            "Issues read limit blocks B issue POST while A still creates issues",
             async () => {
               assertScopedRestCredential(origin, deployed);
               await createSavedIssue(fixture, exec, deployed, {
@@ -1662,14 +1662,14 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
                 number: 43,
               });
               await refuseSavedIssueCreation(fixture, exec, deployed);
-              // C still has Git Write. Its empty API allowlist withholds all four REST actions.
+              // C still has Git Write. Its default of none blocks all REST routes.
               for (const route of ["issues", "issues/42", "pulls", "pulls/42"]) {
                 await refuseGh(fixture, exec, deployed, `repos/fixture/c/${route}`);
               }
               await refuseSavedIssueCreation(fixture, exec, deployed, "fixture/c");
               await refuseGh(fixture, exec, deployed, "repos/fixture/c/pulls", pull);
               const { gitScript, repositoryUrl } = savedGitProbeTools(fixture, exec);
-              const ref = "refs/heads/empty-api-allowlist-control";
+              const ref = "refs/heads/git-only-control";
               assert.equal(await network.ref("fixture/c", ref), undefined);
               const pushed = await gitScript(
                 deployed.target,
@@ -1735,7 +1735,7 @@ git -C "$work/checkout" rev-parse HEAD`,
         const { resourceVersion, providerRevision, ...binding } = installed;
         assert.ok(resourceVersion && binding.providerId);
         if (issueReadOnly) {
-          // B still has saved Write and explicitly lists issues:create, but its
+          // B still has saved Write and has an explicit issues write limit, but its
           // actual App credential has Issues Read before and after renewal.
           assertScopedRestCredential(origin, original);
           await refuseSavedIssueCreation(fixture, exec, original);

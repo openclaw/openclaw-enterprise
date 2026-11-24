@@ -93,34 +93,31 @@ custody and recipient checks remain unchanged. Comments, reviews, PR updates or
 merges, other issue-write routes, GraphQL, and direct access to ungranted
 repositories remain denied. See [Known limits](#known-limits) for indirect effects.
 
-#### API action restrictions
+#### API limits
 
-On a repository's selected native Namespace registration, optional `apiActions`
-can narrow the routes already eligible under Namespace permissions and the
-Agent's saved grant. Use exactly one of `allow` or `deny` with an array of
-unique action IDs:
+Omit `apiLimits` for the Contributor defaults in the table above. To narrow
+direct REST access, set `apiLimits` on the selected native Namespace
+registration for the repository. Git access stays the same.
 
-| Action ID              | Direct GitHub routes                      |
-| ---------------------- | ----------------------------------------- |
-| `issues:read`          | Issue collection and numbered detail GETs |
-| `issues:create`        | Issue collection POST                     |
-| `pull_requests:read`   | PR collection and numbered detail GETs    |
-| `pull_requests:create` | PR collection POST                        |
+Each resource, `issues` or `pull_requests`, accepts `none` (no routes), `read`
+(list and detail) or `write` (read and create). A limit cannot add permissions,
+override the saved grant or bypass the pull request safeguard. Creation always
+requires read access to the same resource.
 
-For example, `apiActions: { deny: ["issues:create"] }` removes only issue
-creation. `apiActions: { allow: ["pull_requests:read"] }` permits only eligible
-PR GETs. `apiActions: { allow: [] }` removes all API routes while leaving Git
-grants unchanged. Omitting `apiActions` or setting `apiActions: { deny: [] }`
-applies no filter. Reject null or malformed filters, both keys together, extra
-keys, unknown IDs, wildcards and duplicate entries. An allow entry never adds
-a missing Namespace permission, overrides Agent Read, or bypasses the existing
-mixed-grant PR safeguard. Creation does not grant a separate GET.
+| Example `apiLimits`                    | Effect on eligible routes                    |
+| -------------------------------------- | -------------------------------------------- |
+| `{ issues: "read" }`                   | Block issue creation only                    |
+| `{ pull_requests: "none" }`            | Block direct pull request reads and creation |
+| `{ default: "none", issues: "write" }` | Keep only issue reads and creation           |
+| `{ default: "none" }`                  | Git only                                     |
 
-An allow list, including `allow: []`, or a nonempty deny list is an active
-filter even if no API permission is configured. Active filters require a saved
-repository network ACL and enforceable native policy. If either is missing,
-credential delivery is refused rather than falling back to broader online
-authorization. Withdrawal and Stop remain available.
+An omitted resource inherits eligible access. Set `default: "none"` to block
+all unlisted resources, including future ones. OCE rejects any other default,
+an empty object, unknown keys and invalid values.
+
+Any explicit limit requires a saved repository network policy and native
+enforcement, even without API permissions. If either is missing, OCE refuses
+credential delivery and renewal. Withdrawal and Stop remain available.
 
 #### Preview Namespace limits
 
@@ -137,7 +134,7 @@ reads can return pull requests even if you block direct pull request access.
 #### Issue creation
 
 Namespace `permissions.issues: write` and saved Agent Write permit
-`POST /repos/{owner}/{repo}/issues` unless `apiActions` filters it out. Read-only
+`POST /repos/{owner}/{repo}/issues` unless an API limit blocks creation. Read-only
 or denied repositories bound to the same credential do not block issue creation
 in a writable repository.
 
@@ -155,8 +152,8 @@ Inspect the repository before retrying an uncertain creation result.
 
 #### Cut over existing registrations
 
-Remove retired REST-version and issue-switch configuration fields. Review each
-Namespace's Issues and Pull requests permissions and any `apiActions` restriction
+Remove the retired `scopedRest`, `createIssues` and `apiActions` fields. Review each
+Namespace's Issues and Pull requests permissions and any `apiLimits`
 before deployment. An existing Agent draft can gain eligible REST routes at its
 next deployment. Changed grant identities can interrupt an older revision's
 credential preparation or renewal, affecting Git and REST until recovery. Edit
@@ -201,7 +198,7 @@ results do not qualify live GitHub effects. Disable issue creation if these
 effects are unacceptable.
 
 The [existing pull-request rule](https://github.com/openclaw/openclaw-enterprise/pull/7135)
-remains independent. Denying `issues:create` does not prevent conversion of an issue
+remains independent. Blocking issue creation does not prevent conversion of an issue
 through an independently permitted PR POST.
 
 OpenShell matches the method, path and query of a request. It does not inspect
