@@ -7188,8 +7188,17 @@ export async function renderAgentDetail(
         if (diagnostic.kind === "invalid-json" && diagnostic.offset !== undefined) {
           // Set the caret before focus so the browser scrolls it into view.
           editor.setSelectionRange(diagnostic.offset, diagnostic.offset);
+          editor.focus();
+          const editorTop = editor.getBoundingClientRect().top;
+          const messageBottom = editorError.node.getBoundingClientRect().bottom;
+          const viewportHeight = document.documentElement.clientHeight;
+          // Keep the caret in view when the editor and diagnostic cannot fit together.
+          if (messageBottom > viewportHeight && messageBottom - editorTop <= viewportHeight) {
+            editorError.node.scrollIntoView({ block: "nearest", inline: "nearest" });
+          }
+        } else {
+          editor.focus();
         }
-        editor.focus();
       }
       return undefined;
     }

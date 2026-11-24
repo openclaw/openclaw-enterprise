@@ -108,9 +108,9 @@ on a bound Secret disables deployment. Permissions list readable Secrets lacking
 `operate` and count the rest without names (D756). After deployment, versions outside the newest page
 appear unreadable until an audited read (D758).
 
-On Save, `parseEditor(true)` keeps invalid JSON, shows the error and focuses
-the editor at any reported syntax error. Reduce nonfinite numbers such as
-nested `1e400` toward zero.
+On Save, `parseEditor(true)` preserves invalid JSON. Keep the caret at the reported
+syntax error. Show the message alongside it when space permits. Reduce oversized
+numbers like `1e400`.
 
 `detail.mts:saveConfiguration` rereads Agent and Configuration before PATCHing
 `{ values, expectedGeneration }`, preserving `secretBindings`. Responses must confirm

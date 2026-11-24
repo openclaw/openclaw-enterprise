@@ -80,7 +80,7 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
   });
   await openEditor(page, fixture, namespace, agent, "corrected");
   const json = page.getByLabel("Configuration JSON", { exact: true });
-  const corrected = await json.inputValue(); // Pretty-printed by openEditor.
+  const corrected = (await json.inputValue()) + "\n".repeat(100); // Scrolls even on a tall screen.
   const save = page.getByRole("button", { name: "Save Configuration", exact: true });
   const error = page.locator("#configuration-json-error");
   const draft = JSON.stringify(nativeValues("corrected")).replace(
@@ -99,38 +99,62 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
   assert.equal(await json.inputValue(), draft);
   assert.equal(patches, 0);
 
-  // From the end of a long draft, Save should reveal the bad character on the first line.
-  await json.fill(corrected);
-  await page.keyboard.press("Control+Home");
-  await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("x");
-  const syntaxDraft = await json.inputValue();
-  await page.keyboard.press("Control+End");
-  assert.ok((await json.evaluate((node) => node.scrollTop)) > 0, "first line starts offscreen");
-  await page.keyboard.press("Tab");
-  assert.equal(await save.evaluate((node) => node === document.activeElement), true);
-  await page.keyboard.press("Enter");
-  await error.getByText("Invalid JSON at line 1, column 2. Enter a valid JSON object.").waitFor();
-  assert.equal(await focusedId(page), "configuration-json");
-  assert.equal(await json.inputValue(), syntaxDraft);
-  assert.equal(patches, 0);
-  const cursor = await json.evaluate((node: HTMLTextAreaElement) => {
-    const { paddingTop, lineHeight } = getComputedStyle(node);
-    const firstLineTop =
-      node.getBoundingClientRect().top + node.clientTop + Number.parseFloat(paddingTop);
-    const firstLineBottom = firstLineTop + Number.parseFloat(lineHeight);
-    return {
-      selection: [node.selectionStart, node.selectionEnd],
-      firstLineVisible:
-        node.scrollTop === 0 && firstLineTop >= 0 && firstLineBottom <= window.innerHeight,
-    };
-  });
-  assert.deepEqual(cursor, { selection: [1, 1], firstLineVisible: true });
+  // Save from the end of the draft so focus alone cannot leave the first line in view.
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 640, height: 360 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await json.fill(corrected);
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("x");
+    const syntaxDraft = await json.inputValue();
+    await page.keyboard.press("Control+End");
+    assert.ok((await json.evaluate((node) => node.scrollTop)) > 0, "first line starts offscreen");
+    await page.keyboard.press("Tab");
+    assert.equal(await save.evaluate((node) => node === document.activeElement), true);
+    await page.keyboard.press("Enter");
+    await error.getByText("Invalid JSON at line 1, column 2. Enter a valid JSON object.").waitFor();
+    assert.equal(await focusedId(page), "configuration-json");
+    assert.equal(await json.inputValue(), syntaxDraft);
+    assert.equal(patches, 0);
 
-  // Repair from that caret and persist through the real Controller.
-  await page.keyboard.press("Delete");
-  assert.equal(await json.inputValue(), corrected);
-  assert.equal(await error.isHidden(), true);
+    const visible = await json.evaluate((node: HTMLTextAreaElement) => {
+      const { paddingTop, lineHeight } = getComputedStyle(node);
+      const clientTop = node.getBoundingClientRect().top + node.clientTop;
+      const firstLineTop = clientTop + Number.parseFloat(paddingTop) - node.scrollTop;
+      const firstLineBottom = firstLineTop + Number.parseFloat(lineHeight);
+      const diagnostic = document
+        .getElementById("configuration-json-error")!
+        .getBoundingClientRect();
+      return {
+        selection: [node.selectionStart, node.selectionEnd],
+        firstLineVisible:
+          node.scrollTop === 0 &&
+          firstLineTop >= Math.max(0, clientTop) &&
+          firstLineBottom <= Math.min(window.innerHeight, clientTop + node.clientHeight),
+        diagnosticVisible:
+          diagnostic.height > 0 &&
+          diagnostic.top >= 0 &&
+          diagnostic.bottom <= window.innerHeight &&
+          diagnostic.left >= 0 &&
+          diagnostic.right <= document.documentElement.clientWidth,
+      };
+    });
+    assert.deepEqual(
+      visible,
+      { selection: [1, 1], firstLineVisible: true, diagnosticVisible: true },
+      `the first line and the full diagnostic are visible together at ${viewport.width}×${viewport.height}`,
+    );
+
+    // Repair from the caret, without moving focus or scrolling to the diagnostic.
+    await page.keyboard.press("Delete");
+    assert.equal(await json.inputValue(), corrected);
+    assert.equal(await error.isHidden(), true);
+  }
+
+  // Persist through the real Controller and read back the saved Configuration independently.
   const savedResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "PATCH" &&
