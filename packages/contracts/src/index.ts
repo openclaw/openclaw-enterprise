@@ -461,11 +461,20 @@ export type {
 } from "./model-providers.ts";
 export {
   inferenceKeyDestination,
+  isModelSourcePresetId,
   isSourceProviderPresetId,
   modelProviderRequestApproved,
   normalizeInferenceBaseUrl,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "./model-providers.ts";
+export {
+  canonicalSourceRepositoryCeiling,
+  GITHUB_SOURCE_PRESET_ID,
+  isGitHubFineGrainedToken,
+  isRepositoryTokenSource,
+  SOURCE_REPOSITORIES_CONFIG_KEY,
+  SourceRepositoryCeilingError,
+} from "./repository-token-source.ts";
 export interface Installation {
   readonly id: string;
   readonly name: string;

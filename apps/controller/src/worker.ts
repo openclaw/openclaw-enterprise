@@ -5,6 +5,7 @@ import {
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
+  isRepositoryTokenSource,
 } from "@openclaw-enterprise/contracts";
 import type {
   CredentialDeploymentContext,
@@ -6230,7 +6231,9 @@ export class ControllerWorker {
         withdrawal ||
         !source ||
         source.ownerCapability !== "token_service" ||
-        source.tokenServiceInstanceId !== instanceId
+        source.tokenServiceInstanceId !== instanceId ||
+        // A repository token is never staged for a credential binding, whatever its consumer.
+        isRepositoryTokenSource(source)
       ) {
         throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
       }
