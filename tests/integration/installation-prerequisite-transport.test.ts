@@ -713,8 +713,12 @@ fi
     assert.equal(clientProbe.status, 0);
     const { clientVersion } = JSON.parse(clientProbe.stdout);
     const supportsPolicy =
-      clientVersion.platform === "linux/amd64" &&
-      ["v1.35.0", "v1.36.2", "v1.36.4"].includes(clientVersion.gitVersion);
+      clientVersion?.platform === "linux/amd64" &&
+      clientVersion.gitTreeState === "clean" &&
+      clientVersion.major === "1" &&
+      ((clientVersion.minor === "35" && clientVersion.gitVersion === "v1.35.0") ||
+        (clientVersion.minor === "36" &&
+          ["v1.36.2", "v1.36.4"].includes(clientVersion.gitVersion)));
     const policyClient = { skip: supportsPolicy ? false : "requires a qualified kubectl" };
 
     const denyAll = JSON.stringify({ ...preference, credentialPluginPolicy: "DenyAll" });
