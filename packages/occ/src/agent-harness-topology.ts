@@ -122,7 +122,7 @@ export function resolveAgentHarness(
 }
 
 // Whether the Configuration selects a model for the default or any roster entry.
-function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean {
+export function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean {
   const agents = asRecord(values.agents);
   return [asRecord(agents?.defaults), ...Object.values(asRecord(agents?.entries) ?? {})].some(
     (entry) => asRecord(entry)?.model !== undefined,

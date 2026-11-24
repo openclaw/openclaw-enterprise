@@ -9,6 +9,38 @@ export const Layout = story("agentDetailLayout");
 export const EmptyDeployment = story("deploymentEmpty");
 export const DeploymentSnapshotUnavailable = story("deploymentSnapshotUnavailable");
 export const NewVersion = story("newVersion");
+export const NetworkProxyEmpty = {
+  ...story("networkProxyEmpty"),
+  name: "Gateway Channel Proxy Empty",
+};
+export const NetworkProxySaved = {
+  ...story("networkProxySaved"),
+  name: "Gateway Channel Proxy Saved",
+};
+export const NetworkProxyValidation = {
+  ...story("networkProxyValidation"),
+  name: "Gateway Channel Proxy Validation",
+};
+export const NetworkProxySaveError = {
+  ...story("networkProxySaveError"),
+  name: "Gateway Channel Proxy Save Error",
+};
+export const NetworkProxyEnforcementUnavailable = {
+  ...story("networkProxyEnforcementUnavailable"),
+  name: "Gateway Channel Proxy Enforcement Unavailable",
+};
+export const NetworkProxyPermission = {
+  ...story("networkProxyPermission"),
+  name: "Gateway Channel Proxy Permission",
+};
+export const NetworkProxySecretLoading = {
+  ...story("networkProxySecretLoading"),
+  name: "Gateway Channel Proxy Secrets Loading",
+};
+export const NetworkProxySecretError = {
+  ...story("networkProxySecretError"),
+  name: "Gateway Channel Proxy Secrets Error",
+};
 export const FailedFirstVersion = story("failedFirstVersion");
 export const EditCurrentConfiguration = story("editCurrentConfiguration");
 export const CurrentConfigurationReader = story("currentConfigurationReader");
@@ -50,12 +82,20 @@ export const SlackMcpTools = {
   ...story("slackMcpTools"),
   name: "Choose tools for a connected Slack account",
 };
+export const SlackMcpAccountRecovery = {
+  ...story("slackMcpAccountRecovery"),
+  name: "Recover a Slack account after access is restored",
+};
 export const SlackMcpSavedToolsUnavailable = story("slackMcpSavedToolsUnavailable");
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const DraftReader = story("draftReader");
 export const DraftSourcesOperateDenied = story("draftSourcesOperateDenied");
 export const PluginsToolRefusal = story("pluginsToolRefusal");
+export const PluginsDetailIdentityRefused = story("pluginsDetailIdentityRefused");
+export const PluginsCatalogConflict = story("pluginsCatalogConflict");
+export const PluginsDetailsConflict = story("pluginsDetailsConflict");
+export const PluginsAgentDeleting = story("pluginsAgentDeleting");
 export const PluginApproversInherited = story("pluginApproversInherited");
 export const PluginApproversOverrides = story("pluginApproversOverrides");
 export const PluginApproversLookup = story("pluginApproversLookup");
@@ -178,6 +218,10 @@ export const AgentReadInterrupted = {
   ...story("agentReadInterrupted", { openInNewTab: true }),
   name: "Retry a direct Agent link",
 };
+export const AgentReadUnavailableOnRefocus = {
+  ...story("agentReadUnavailableOnRefocus", { openInNewTab: true }),
+  name: "Retry an Agent read on tab return",
+};
 export const ConfigurationError = {
   ...story("configurationError"),
   name: "Configuration unavailable",
@@ -238,6 +282,11 @@ export const DeployAgentPrincipalDenied = {
 };
 export const DeploySandboxPolicyReadDenied = story("deploySandboxPolicyReadDenied");
 
+export const RepositoryPermissionsDraft = story("repositoryPermissionsDraft");
+export const RepositoryPermissions = story("repositoryPermissions");
+export const RepositoryPermissionsLimited = story("repositoryPermissionsLimited");
+export const RepositoryPermissionsDenied = story("repositoryPermissionsDenied");
+export const RepositoryPermissionsLoading = story("repositoryPermissionsLoading");
 export const RepositoryEditor = story("repositoryEditor");
 export const RepositoryCollaborator = story("repositoryCollaborator");
 export const RepositoryCollaboratorSaved = story("repositoryCollaboratorSaved");
@@ -282,6 +331,10 @@ export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup"
 export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");
 
 export const PolicyDenials = story("policyDenials");
+export const PolicyRepositoryRecovery = story("policyRepositoryRecovery");
+export const PolicyRepositoryLimits = story("policyRepositoryLimits");
+export const PolicyRepositoryEditor = story("policyRepositoryEditor");
+export const PolicyRepositoryEditorConcurrent = story("policyRepositoryEditorConcurrent");
 export const PolicyUnicodeExecutable = story("policyUnicodeExecutable");
 export const PolicyDenialsMany = story("policyDenialsMany");
 export const PolicyRulesPopulated = story("policyRulesPopulated");

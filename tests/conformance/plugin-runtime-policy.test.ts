@@ -1,3 +1,4 @@
+import { registerInspectedWorkspaceCases } from "./plugin-runtime-policy-inspected-workspace-cases.ts";
 import {
   registerDedicatedGatewayCases,
   registerEmbeddedDockerCase,
@@ -18,6 +19,7 @@ registerInstallationAndNativeAdminCases();
 registerSlackApprovalCases();
 registerInstallAndGrantCases();
 registerWorkspacePollCases();
+registerInspectedWorkspaceCases();
 registerWorkspaceLaunchCases();
 registerKubernetesAdmissionCases();
 registerWorkspaceTimeoutCase();

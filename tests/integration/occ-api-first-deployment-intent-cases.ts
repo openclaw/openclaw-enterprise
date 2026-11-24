@@ -63,7 +63,7 @@ export async function runUnreadyNamespace() {
   assert.equal(providerCalls(), 0);
 }
 
-export function malformedIntents(input: Target, intent: FirstDeploymentIntent): InvalidCase[] {
+function malformedIntents(input: Target, intent: FirstDeploymentIntent): InvalidCase[] {
   const { key: _key, ...missingKey } = intent;
   const nonPrimitiveIdentity: HostileIdentity = {
     toJSON() {
@@ -97,7 +97,7 @@ export function malformedIntents(input: Target, intent: FirstDeploymentIntent): 
   ];
 }
 
-export async function expectMalformedRejection(
+async function expectMalformedRejection(
   t: TestContext,
   prepared: Deployment,
   options: {
@@ -150,7 +150,7 @@ export async function expectMalformedRejection(
   assert.equal(work().length, 0);
 }
 
-export async function verifyValidAdmission(
+async function verifyValidAdmission(
   prepared: Deployment,
   resolveHarness: typeof resolveApprovedHarness,
 ) {
@@ -174,7 +174,7 @@ export async function verifyValidAdmission(
   assert.equal(work().length, 1);
 }
 
-export function installScalarCapture(
+function installScalarCapture(
   t: TestContext,
   change: CaptureChange,
   prepared: Deployment,
@@ -204,7 +204,7 @@ export function installScalarCapture(
   return () => keyReads;
 }
 
-export async function assertCapturedAdmission(
+async function assertCapturedAdmission(
   prepared: Deployment,
   response: FixtureResponse,
   beforeAudit: number,
@@ -250,10 +250,10 @@ export async function assertCapturedAdmission(
     action: "deploy",
     resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
   });
-  return { revisions, events };
+  return { receipt: admitted, revisions, events };
 }
 
-export async function assertFirstDeploymentRecoveryUnchanged(
+async function assertFirstDeploymentRecoveryUnchanged(
   prepared: Deployment,
   snapshot: Awaited<ReturnType<typeof assertCapturedAdmission>> & { beforeAudit: number },
 ) {
@@ -263,6 +263,88 @@ export async function assertFirstDeploymentRecoveryUnchanged(
     prepared.controller.fixture.auditSink.events.slice(snapshot.beforeAudit),
     snapshot.events,
   );
+}
+
+export async function runMalformedIntentBoundary(
+  t: TestContext,
+  resolveHarness: typeof resolveApprovedHarness,
+  ErrorClass: typeof ScopeViolationError,
+) {
+  const prepared = await firstDeploymentFixture();
+  const { controller, namespace, agent, intent, listRevisions, work } = prepared;
+  const { fixture } = controller;
+  const input = { namespaceId: namespace.id, agentId: agent.id };
+  const beforeAudit = fixture.auditSink.events.length;
+  const invalid = malformedIntents(input, intent);
+
+  // Independent public calls must reject before even opening a state boundary.
+  // Keep the real authorized controller; spies guard only downstream I/O.
+  for (const method of ["deployAgentFirst", "recoverAgentFirstDeployment"] as const) {
+    for (const [
+      label,
+      malformed,
+      target = input,
+      message = "Invalid first-deployment intent.",
+    ] of invalid) {
+      await t.test(`${method}: ${label}`, async (caseContext) => {
+        await expectMalformedRejection(
+          caseContext,
+          prepared,
+          { method, target, malformed, message, beforeAudit },
+          resolveHarness,
+          ErrorClass,
+        );
+      });
+    }
+  }
+  // No revision or queued work can be written without crossing the guarded state
+  // boundaries. Inspect the real store too, after the per-call spies are restored.
+  assert.deepEqual(await listRevisions(), []);
+  assert.equal(work().length, 0);
+
+  await t.test("valid string admits revision one and recovers with real grants", async () => {
+    await verifyValidAdmission(prepared, resolveHarness);
+  });
+}
+
+export async function runScalarCapture(t: TestContext, missingAgentId: string) {
+  for (const change of ["stateful key", "immediate target and generation mutation"] as const) {
+    await t.test(change, async (caseContext) => {
+      const prepared = await firstDeploymentFixture();
+      const { controller, namespace, agent, path, intent } = prepared;
+      const { fixture } = controller;
+      const actorId = fixture.principal.id;
+      const keyReads = installScalarCapture(caseContext, change, prepared, missingAgentId);
+      const beforeAudit = fixture.auditSink.events.length;
+      const admitted = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+      if (change === "stateful key") {
+        assert.equal(keyReads(), 1);
+      }
+      const admission = await assertCapturedAdmission(prepared, admitted, beforeAudit);
+      const input = { namespaceId: namespace.id, agentId: agent.id };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        assert.deepEqual(
+          await fixture.controller.recoverAgentFirstDeployment(actorId, input, intent),
+          admission.receipt,
+        );
+      }
+      if (change === "stateful key") {
+        let recoveryKeyReads = 0;
+        const lookup = { ...intent };
+        Object.defineProperty(lookup, "key", {
+          get: () => (++recoveryKeyReads === 1 ? intent.key : 123),
+        });
+        assert.deepEqual(
+          await fixture.controller.recoverAgentFirstDeployment(actorId, input, lookup),
+          admission.receipt,
+        );
+        assert.equal(recoveryKeyReads, 1);
+      }
+      const admissionSnapshot = { beforeAudit, ...admission };
+      await assertFirstDeploymentRecoveryUnchanged(prepared, admissionSnapshot);
+    });
+  }
 }
 
 export async function runStockDeployRetry(
@@ -306,20 +388,24 @@ export async function runStockDeployRetry(
   assert.equal(work().length, 2);
 }
 
-export async function verifyOrdinaryDeploy(
-  prepared: {
-    controller: { request: FixtureRequest };
-    fixture: Fixture;
-    namespace: { id: string };
-    agent: { id: string };
-    agentPath: string;
-  },
-  reviewedResponse: FixtureResponse,
-  updatedResponse: FixtureResponse,
+export async function runOrdinaryDeployGeneration(
+  controller: { request: FixtureRequest },
+  fixture: Fixture,
+  namespace: { id: string },
 ) {
-  const { controller, fixture, namespace, agent, agentPath } = prepared;
+  const agent = await createAgent(controller, namespace.id, "generation-baseline");
+  await bindHarnessKey(fixture, namespace.id, agent);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const reviewedResponse = await controller.request("GET", configurationPath);
+  assert.equal(reviewedResponse.status, 200);
   const reviewed = checkedInjectedBody(reviewedResponse, 200, ConfigurationResponse).data;
+  const updatedResponse = await controller.request("PATCH", configurationPath, {
+    body: { values: { temperature: "1" }, expectedGeneration: reviewed.generation },
+  });
   const updated = checkedInjectedBody(updatedResponse, 200, ConfigurationResponse).data;
+  assert.equal(updated.generation, reviewed.generation + 1);
+
   const state = fixture.platformState;
   assert(state instanceof InMemoryPlatformState, "bootstrap must create in-memory state");
   const rejected = await controller.request("POST", `${agentPath}/deploy`, {

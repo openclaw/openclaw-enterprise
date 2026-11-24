@@ -6,10 +6,10 @@ kind: reference/driver
 
 ## Overview
 
-`CredentialGatewayDriver` holds credentials outside the Agent workload and
-applies them to the Agent's outbound requests. OpenClaw Control Plane (OCC) owns
-the [credential source](../credential-sources.md) record, its Secret references,
-authorization, and Agent bindings. The Driver owns the stored copy of the value,
+`CredentialGatewayDriver` is the legacy delivery contract. It holds credentials
+outside the Agent workload and applies them to outbound requests. OpenClaw Control
+Plane (OCC) owns the legacy [Source](../credential-sources.md) record, its Secret
+references, authorization, and Agent bindings. The Driver owns the stored copy of the value,
 the source-type catalog, and how a credential reaches a request. The paired
 [SandboxDriver](sandbox.md) consumes the Driver's attachments for each Agent revision when
 it creates the Harness, and [Compute](compute.md) waits for those attachments
@@ -191,7 +191,7 @@ configuration. The interface has no initializer or destructor.
    Driver must finish every effect of an aborted registration within 30 seconds
    of the abort. A record left `registering` or `deleting` is never usable, and
    the caller retries DELETE to remove any gateway copy. See
-   [credential sources](../credential-sources.md#register-a-source).
+   [credential sources](../credential-sources/other-delivery-modes.md#register-a-source).
 2. **Admission.** `deployAgent` freezes `{ method, sourceId,
 credentialGatewayId, sourceType, loginMode }` in the Agent revision. The source must
    be `ready`, and its type must declare `harnessAuth`. A Sandbox must be
@@ -218,7 +218,8 @@ credentialGatewayId, sourceType, loginMode }` in the Agent revision. The source 
    attachment lets the Agent revision activate.
 6. **Update.** The API locks the source, reads its current or replacement Secret
    values, and calls `updateSource`. Running Harness processes keep the previous
-   value until they restart.
+   value until they restart. See
+   [Gateway source updates](../credential-sources/other-delivery-modes.md#update-a-source).
 7. **Withdrawal.** The API records a `pending` withdrawal for the currently selected
    Agent revision and queues worker work. The worker rechecks `agent:operate`, and
    Compute derives the Sandbox from the Agent revision ID and calls `withdraw` for each pending

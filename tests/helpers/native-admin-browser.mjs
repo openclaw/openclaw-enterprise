@@ -893,6 +893,36 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
       deniedProbes.push(await nativeProbe(page, 403, siblingTarget.origin));
       const nativePage = await openNativeAdminConsole(page, status.origin, "chat");
       const profile = await nativeProfile(nativePage, "operator.sessions.write");
+      // Load the bookmarked main chat before the operator starts their first session.
+      const mainChat = new URL("/chat/main", status.origin);
+      // The public reader probes the signed-in session before opening its private document.
+      const entry = new URL("/__openclaw__/session-entry", status.origin);
+      entry.searchParams.set("path", mainChat.pathname);
+      const [document, bookmark] = await Promise.all([
+        nativePage.waitForResponse(
+          (response) =>
+            response.url() === entry.href &&
+            response.request().isNavigationRequest() &&
+            response.frame() === nativePage.mainFrame(),
+          { timeout: 60_000 },
+        ),
+        nativePage.goto(mainChat.href, { waitUntil: "commit" }),
+      ]);
+      assert.equal(bookmark?.url(), mainChat.href, "main chat bookmark URL");
+      assert.equal(document.status(), 200, "authenticated main chat document");
+      await waitForStockUi(nativePage);
+      await nativePage.waitForFunction(
+        () => {
+          const { routeReady, sessionKey } = globalThis.openclawControlUi.snapshot();
+          return routeReady && sessionKey === "agent:main:main";
+        },
+        undefined,
+        { timeout: 60_000 },
+      );
+      const composer = nativePage.locator(".agent-chat__composer-combobox > textarea").first();
+      await composer.fill("", { timeout: 60_000 });
+      assert.equal(new URL(nativePage.url()).pathname, mainChat.pathname);
+
       const marker = `operator-chat-${randomUUID()}`;
       const terminal = await submitChatTurnWithAssistantProof(nativePage, marker, frames, waitFor);
       await assertNativeAttribution(nativePage, terminal, profile.id, marker);

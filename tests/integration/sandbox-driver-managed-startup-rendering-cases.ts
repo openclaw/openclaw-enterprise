@@ -24,6 +24,7 @@ export type ManagedSandboxPhase =
 export type ManagedPolicy = Record<string, unknown> & { network_policies: Record<string, unknown> };
 export type ManagedWorkloadSpec = Record<string, unknown> & {
   command: string[];
+  template: Record<string, unknown>;
   environment: Record<string, string>;
   providers: string[];
   policy: ManagedPolicy;
@@ -42,7 +43,8 @@ export function assertManagedPolicy(value: unknown): asserts value is ManagedPol
 export function assertManagedSandboxRequest(
   request: OpenShellSandboxCreateRequest,
 ): asserts request is ManagedSandboxRequest {
-  const { command, environment, providers, policy } = request.spec;
+  const { command, template, environment, providers, policy } = request.spec;
+  assert.ok(isRecord(template));
   assert.ok(Array.isArray(command) && command.every((part: unknown) => typeof part === "string"));
   assert.ok(
     isRecord(environment) && Object.values(environment).every((value) => typeof value === "string"),
@@ -150,7 +152,17 @@ export function registerManagedStartupRenderingCases(): void {
     const wireClient = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
     t.after(() => wireClient.close());
     client.updateProviderConfig = wireClient.updateProviderConfig.bind(wireClient);
-    const configuration = sandboxInstallation().drivers.sandbox.configuration;
+    const base = sandboxInstallation().drivers.sandbox.configuration;
+    const configuration = {
+      ...base,
+      kubernetes: {
+        ...base.kubernetes,
+        agentResources: {
+          requests: { cpu: "1", memory: "1Gi" },
+          limits: { cpu: "2", memory: "2Gi" },
+        },
+      },
+    };
     configuration.integrationMode = "service";
     configuration.gateway = {};
     configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
@@ -169,8 +181,27 @@ export function registerManagedStartupRenderingCases(): void {
       request = value;
       return storedSandbox(value, { phase: "SANDBOX_PHASE_PROVISIONING" });
     };
-    client.getSandbox = async () =>
-      request === undefined ? undefined : storedSandbox(request, { phase, resourceVersion: "7" });
+    const structDefinition = await loader.load(
+      join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+      { oneofs: true },
+    );
+    const struct = structDefinition["google.protobuf.Struct"];
+    assert.ok(struct && "serialize" in struct && "deserialize" in struct);
+    const { serialize, deserialize } = struct;
+    assert.ok(typeof serialize === "function" && typeof deserialize === "function");
+    client.getSandbox = async () => {
+      if (request === undefined) {
+        return undefined;
+      }
+      const result = storedSandbox(structuredClone(request), { phase, resourceVersion: "7" });
+      const template = result.spec.template;
+      assert.ok(isRecord(template));
+      if (template.resources !== undefined) {
+        assert.ok(isRecord(template.resources));
+        template.resources = deserialize(serialize(template.resources));
+      }
+      return result;
+    };
     client.getService = async () =>
       harnessService(currentRequest().name, "", "http://codex.example.test:8080/");
     const { context, revision: fixtureRevision, requirements } = runtimeSandboxFixture(driver);
@@ -190,6 +221,31 @@ export function registerManagedStartupRenderingCases(): void {
     await driver.provisionHarness({ ...context, revision, requirements });
     // This is outgoing workload-contract proof, with transport responses supplied
     // by the fixture. Cluster storage and provider lifecycle remain a live proof.
+    const template = currentRequest().spec.template;
+    assert.equal(template.driver_config, undefined);
+    // Keep independent quantity expectations at the outgoing request boundary.
+    assert.deepEqual(template.resources, {
+      fields: {
+        requests: {
+          structValue: {
+            fields: {
+              cpu: { stringValue: "1" },
+              memory: { stringValue: "1Gi" },
+              "ephemeral-storage": { stringValue: "256Mi" },
+            },
+          },
+        },
+        limits: {
+          structValue: {
+            fields: {
+              cpu: { stringValue: "2" },
+              memory: { stringValue: "2Gi" },
+              "ephemeral-storage": { stringValue: "1Gi" },
+            },
+          },
+        },
+      },
+    });
     assert.equal(JSON.stringify(currentRequest().spec).includes("persistent_volume_claim"), false);
     assert.equal(JSON.stringify(currentRequest().spec).includes("harness-workspace-codex"), false);
     assert.equal(
@@ -215,6 +271,56 @@ export function registerManagedStartupRenderingCases(): void {
       driver.harnessResource({ namespace: context.namespace, revision }).resourceName,
       driver.harnessResource({ namespace: context.namespace, revision: successor }).resourceName,
     );
+    // Sizing is immutable even while stopped. Missing or changed readback must
+    // refuse replacement before update or start can run.
+    phase = "SANDBOX_PHASE_STOPPED";
+    client.updateSandbox = client.startSandbox = async () => assert.fail("Sizing changed");
+    for (const resources of [undefined, { fields: {} }]) {
+      const getSandbox = client.getSandbox;
+      client.getSandbox = async (selector, signal) => {
+        const result = await getSandbox(selector, signal);
+        assert.ok(result);
+        const template = result.spec?.template;
+        assert.ok(isRecord(template));
+        template.resources = resources;
+        return result;
+      };
+      await assert.rejects(
+        driver.provisionHarness({ ...context, revision, requirements }),
+        /cannot change resources/,
+      );
+      client.getSandbox = getSandbox;
+    }
+    // A predecessor created before template sizing retains its caller config.
+    // Neither resuming it nor deploying a successor can convert its storage in place.
+    const originalTemplate = currentRequest().spec.template;
+    const { resources: previousSizing, ...previousTemplate } = originalTemplate;
+    const config = { resources: { structValue: previousSizing } };
+    const agentConfig = { agent: { structValue: { fields: config } } };
+    const containers = { containers: { structValue: { fields: agentConfig } } };
+    currentRequest().spec.template = {
+      ...previousTemplate,
+      driver_config: { fields: { kubernetes: { structValue: { fields: containers } } } },
+    };
+    for (const target of [revision, successor]) {
+      await assert.rejects(
+        driver.provisionHarness({ ...context, revision: target, requirements }),
+        {
+          code: "SANDBOX_RECREATION_REQUIRED",
+        },
+      );
+    }
+    currentRequest().spec.template = originalTemplate;
+    const resized = structuredClone(configuration);
+    resized.kubernetes.agentResources.requests.cpu = "1500m";
+    const resizedDriver = new ManagedOpenShellSandbox(resized, {
+      id: "openshell-sandbox",
+      backend: backendFor(client),
+    });
+    await assert.rejects(resizedDriver.provisionHarness({ ...context, revision, requirements }), {
+      code: "SANDBOX_WORKLOAD_IMMUTABLE",
+    });
+
     // A server with the older image-only update contract can acknowledge an update
     // while retaining command/environment/metadata. Readback must prevent StartSandbox.
     phase = "SANDBOX_PHASE_STOPPED";
@@ -294,6 +400,20 @@ export function registerManagedStartupRenderingCases(): void {
       false,
     );
     assert.equal(providerByName(configUpdate[1]).config.node_ca_pem, "");
+    // Storing the successor metadata is insufficient if sizing disappears on
+    // readback. The stopped workload must not reach StartSandbox.
+    const beforeUpdate = structuredClone(currentRequest());
+    for (const resources of [undefined, { fields: {} }]) {
+      client.updateSandbox = async (value) => {
+        assertManagedSandboxRequest(value);
+        request = structuredClone(value);
+        request.spec.template.resources = resources;
+        return storedSandbox(request, { phase, resourceVersion: "8" });
+      };
+      await assert.rejects(replace(), /did not store the exact requested workload update/);
+      assert.equal(phase, "SANDBOX_PHASE_STOPPED");
+      request = structuredClone(beforeUpdate);
+    }
     // Retrying with a server that stores the complete update must finish the
     // replacement, without resending the already committed Provider patch.
     client.updateSandbox = async (value) => {

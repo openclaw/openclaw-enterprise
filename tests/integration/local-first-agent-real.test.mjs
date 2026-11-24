@@ -918,14 +918,17 @@ test(
         path: join(workspaceRoot, "USER.md"),
         content: retainedFiles["USER.md"],
       };
-      const proofOptions = {
+      const proofOptions = (revisionId) => ({
         stateDirectory,
         state: recorded,
         environment: env,
         namespaceId: nativeNamespace.id,
         agentId: nativeAgent.id,
         workspaceFile,
-      };
+        credentialProxyScope: stack.ownsInstallation
+          ? { actorId: nativeAgent.servicePrincipalId, sourceId: nativeSource.id, revisionId }
+          : undefined,
+      });
       const readProviderRevision = async (revisionId, stage, requestedAt) => {
         const pods = await readKubernetesJson(
           kube,
@@ -1083,7 +1086,7 @@ test(
       const completionRetainedUntil = completion.completion.ts + 20 * 60_000;
       const firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
         assertNativeWorkerProofInController(nativeContext, {
-          ...proofOptions,
+          ...proofOptions(initialRevisionId),
           expectedNodeId: initialProvider.expectedNodeId,
         }),
       );
@@ -1159,7 +1162,7 @@ test(
         "native-resumed-model",
         () =>
           assertNativeWorkerProofInController(nativeContext, {
-            ...proofOptions,
+            ...proofOptions(replacement.id),
             expectedNodeId: replacementProvider.expectedNodeId,
             session: firstNativeProof.session,
             sessionFile: firstNativeProof.sessionFile,

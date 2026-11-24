@@ -13,6 +13,7 @@ type ValidationConfiguration = ReturnType<typeof installation> & {
   observability?: { url: string };
   presets?: unknown;
   sandboxNetworkPolicyCeiling?: unknown;
+  repositoryNetworkPolicyCeiling?: unknown;
 };
 type FieldDetail = { path: string; code: string; message: string };
 type DiagnosticCase = [
@@ -172,9 +173,25 @@ export function registerStartupDiagnosticsCases({
         ],
         { bootProcesses: true },
       ],
+      [
+        (configuration) => {
+          configuration.repositoryNetworkPolicyCeiling = [
+            { repository: "example/startup-validation", access: "read" },
+            { repository: "example/startup-validation", access: "write" },
+          ];
+        },
+        [
+          {
+            path: "/repositoryNetworkPolicyCeiling/1/repository",
+            code: "INVALID_VALUE",
+            message: "Each repository may have only one grant.",
+          },
+        ],
+        { bootProcesses: true },
+      ],
     ];
-    // All three entrypoints map a ConfigurationValidationError to the code and its details with
-    // the same function. Marked negative-resource and ceiling cases boot them for real.
+    // All three entrypoints map configuration errors to safe details with the same function.
+    // Marked negative-resource and ceiling cases boot them for real.
     // The others reach the loader all three call with the file (production mode) and get that
     // function's one-line diagnostic.
     for (const [mutate, details, { bootProcesses = false } = {}] of cases) {
@@ -270,7 +287,7 @@ export function registerStartupDiagnosticsCases({
           );
           assert.ok(!result.stderr.includes(path));
           assert.ok(
-            !/Bad_Class|ceiling\.example\.test|\/additions|PERSISTENCE_UNAVAILABLE/.test(
+            !/Bad_Class|ceiling\.example\.test|example\/startup-validation|\/additions|PERSISTENCE_UNAVAILABLE/.test(
               result.stderr,
             ),
             "startup diagnostic must omit input values, Agent paths, and persistence errors",

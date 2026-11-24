@@ -3,6 +3,11 @@ import { story } from "./story.ts";
 export default { title: "Pages/Agents" };
 
 export const Agents = { ...story("agents"), name: "Populated" };
+export const DeploymentFailurePhone = story("agentsDeploymentFailed", {
+  name: "Latest deployment failed on mobile",
+  frameWidth: "390px",
+  frameHeight: "844px",
+});
 export const RowNavigation = story("agentsRowNavigation");
 export const NamespaceFocusDuringRefresh = {
   ...story("agentsNamespaceFocusDuringRefresh"),
@@ -21,6 +26,7 @@ export const AgentsEmpty = { ...story("agentsEmpty"), name: "Empty" };
 export const AgentsEmptyMember = story("agentsEmptyMember");
 export const CreateBlockedByRestriction = story("agentsCreateBlockedByRestriction");
 export const AgentsSearch = { ...story("agentsSearch"), name: "No search matches" };
+export const AgentsSearchRetry = story("agentsSearchRetry", { openInNewTab: true });
 export const NoNamespaces = { ...story("noNamespaces"), name: "No readable Namespaces" };
 export const NamespaceMissing = { ...story("namespaceMissing"), name: "Namespace unavailable" };
 export const NamespaceMissingNoneReadable = {

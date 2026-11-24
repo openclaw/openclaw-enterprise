@@ -1,5 +1,5 @@
 import type { AuditSink } from "@openclaw-enterprise/audit";
-import type { OccApiRoute, UpdateWorkspaceFileBody } from "@openclaw-enterprise/contracts";
+import type { UpdateWorkspaceFileBody } from "@openclaw-enterprise/contracts";
 import { NoActiveAgentRevisionError } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -11,7 +11,7 @@ import {
 } from "../gateway/contracts.ts";
 import type { ErrorDetail } from "./error-details.ts";
 import { dependencyUnavailable, failure, workspaceWithoutRunningVersion } from "./errors.ts";
-import type { ResourceHandler, ResourceHandlers } from "./types.ts";
+import type { RequestOperation, ResourceHandler, ResourceHandlers } from "./types.ts";
 
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
 // 16 KiB of content may need six bytes per UTF-8 byte in JSON (`\u0001`), plus `{"content":""}`.
@@ -25,7 +25,7 @@ interface WorkspaceFileHandlerOptions {
   readonly isAuditManaged: (request: FastifyRequest) => boolean;
   readonly logAuditFailure: (
     request: FastifyRequest,
-    operation: OccApiRoute,
+    operation: RequestOperation,
     error: unknown,
   ) => void;
 }

@@ -106,6 +106,11 @@ configured credential plugin when applicable. It does not request Kubernetes Sec
 
 ## Run and interpret the checks
 
+`--config` disables kubectl preferences, including credential plugin rules in
+`kuberc`, even when `KUBECTL_KUBERC` is unset. Use a trusted kubeconfig and
+context. Proceed only if the credential owner permits running without these
+preferences.
+
 ```bash
 node scripts/diagnose-kubernetes-prerequisites.ts --config "$RUN_DIR/prerequisites.json"
 # Save machine-readable evidence privately when needed.

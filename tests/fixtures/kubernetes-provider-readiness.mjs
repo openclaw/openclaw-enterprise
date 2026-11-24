@@ -98,25 +98,22 @@ export function providerReadinessFixture({
   });
   const namespace = kubernetesNamespaceName(tenant.id);
   const agentName = `agent-${digest(revision.agentId)}`;
-  const deployment = driver.deployment(
-    `${agentName}-rev-${digest(revision.id)}`,
-    {
+  const deployment = driver.deployment({
+    name: `${agentName}-rev-${digest(revision.id)}`,
+    ownership: {
       namespaceId: tenant.id,
       agentId: revision.agentId,
       revisionId: revision.id,
       servicePrincipalId: revision.servicePrincipalId,
     },
-    { name: namespace, plane: "execution" },
-    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
-    agentName,
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, namespace, false),
-  );
+    namespace: { name: namespace, plane: "execution" },
+    images: { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
+    serviceAccountName: agentName,
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, namespace, false),
+  });
   const labels = {
     ...deployment.spec.template.metadata.labels,
     "openclaw.dev/network-profile": "provider-fenced-v1",

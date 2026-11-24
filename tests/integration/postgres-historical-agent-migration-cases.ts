@@ -918,6 +918,66 @@ export async function assertEmptyInstallationHistory(
   }
 }
 
+export async function assertPendingRegistrationGuard(
+  managed: HistoricalDatabase,
+  expected: string,
+  { runHistoryCommand, historySnapshot }: GuardOperations,
+) {
+  // A ready TokenService source and a pending Gateway registration on 0085
+  // both permit the pre-stop check.
+  const namespaceId = `ns_${randomUUID()}`;
+  const instanceId = randomUUID();
+  await managed.app.query(
+    "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+    [expected],
+  );
+  await managed.app.query(
+    "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Migration fixture','ready',now())",
+    [namespaceId],
+  );
+  await managed.app.query(
+    `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
+     VALUES($1,$2,'fixture-token-service','fixture-store')`,
+    [expected, instanceId],
+  );
+  await managed.app.query(
+    `INSERT INTO occ.credential_sources
+     (id,namespace_id,name,type,owner_capability,token_service_instance_id,driver_id,state,
+      config,registration,registration_dispatched_at,created_at)
+     VALUES
+       ($1,$3,'Ready source','static','token_service',$4,NULL,'ready','{}','{}',now(),now()),
+       ($2,$3,'Gateway reservation','codex-pat','credential_gateway',NULL,'fixture-gateway',
+        'registering','{}',NULL,NULL,now())`,
+    [`cs_${randomUUID()}`, `cs_${randomUUID()}`, namespaceId, instanceId],
+  );
+  assert.deepEqual(
+    await runHistoryCommand(managed, "production", "--check-for-installation", undefined, expected),
+    { ok: true, history: "preTokenServiceSourceOwnership" },
+  );
+
+  // An undispatched reservation still belongs to the original writer. The
+  // upgrade must refuse it before downtime and again at the apply boundary.
+  await managed.app.query(
+    `INSERT INTO occ.credential_sources
+     (id,namespace_id,name,type,owner_capability,token_service_instance_id,state,config,created_at)
+     VALUES($1,$2,'Reserved source','static','token_service',$3,'registering','{}',now())`,
+    [`cs_${randomUUID()}`, namespaceId, instanceId],
+  );
+  const readSources = async () =>
+    (await managed.app.query("SELECT * FROM occ.credential_sources ORDER BY id")).rows;
+  const sources = await readSources();
+  const before = await historySnapshot(managed);
+  const refusal = /0086 is blocked by an unfinished TokenService registration\..*original owner/;
+  for (const flag of guardedCommands) {
+    assert.deepEqual(await runHistoryCommand(managed, "production", flag, refusal, expected), {
+      ok: false,
+      code: "MIGRATION_REGISTRATION_PENDING",
+    });
+    assert.deepEqual(await readSources(), sources);
+    assert.deepEqual(await historySnapshot(managed), before);
+  }
+}
+
 export async function assertGuardedInstallationUpgrade(
   pending: unknown,
   expected: string,

@@ -39,7 +39,8 @@ optional Namespace at issuance, but it does not snapshot or grant permissions.
 - `POST /api/auth/service-keys`: a human session or Installation-scoped service
   key with current IAM `administer` on the bootstrapped Installation names an
   existing principal in its exact scope.
-  [apps/controller/src/index.ts:requireInstallationAdmin](../../apps/controller/src/index.ts).
+  [Installation authorization](../../apps/controller/src/index.ts) and
+  [HTTP schema](../../apps/controller/src/http/auth-schemas.ts).
 - `GET /namespaces/:namespaceId` with `x-api-key`: a stored, unexpired key
   authenticates the service identity before IAM evaluates the resource request.
   [apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify](../../apps/controller/src/auth/index.ts).
