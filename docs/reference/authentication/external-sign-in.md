@@ -82,9 +82,9 @@ trust and API egress. Provider bodies share a 64 KiB limit and requests share a
 
 ## Recovery-only password sign-in
 
-By default every enrolled account can still sign in with its password once a
-provider is enabled, so strangers who know an email can spend that account's
-password sign-in budget. `OCC_AUTH_PASSWORD_SIGN_IN=recovery-only` (Helm
+By default, enabled, enrolled users who know their password can still use it
+after you enable a provider. Strangers who know an email address can spend
+that account's password sign-in budget. `OCC_AUTH_PASSWORD_SIGN_IN=recovery-only` (Helm
 `auth.passwordSignIn: recovery-only`; default `all`) removes that surface:
 only the recovery account signs in with a password, and every other account uses
 its attached Google or OIDC identity. It requires a configured provider;
@@ -96,25 +96,36 @@ answer after the same password hashing, audited as `INVALID_CREDENTIALS`; no
 other account's credential is read, so the answer reveals nothing. `GET /api/auth/providers`
 reports `password: false`. The Console keeps the password form behind
 **Recovery sign-in** while discovering sign-in methods, then adds the configured
-provider buttons. During a provider outage only the recovery account can sign in.
+provider buttons. If all configured providers are unavailable, only the recovery
+account can complete a new sign-in in this mode.
 
-Before you switch to `recovery-only`, check that each person can still sign in.
+Keep `all` until you can verify access for every enabled, enrolled account.
 
-1. Keep `all`. Use a human Installation administrator session to check every
-   enabled, enrolled account except the designated recovery account. Include other
-   administrators. For anyone missing an identity with a configured provider,
-   attach the correct [Google](../../guides/deploy/google-sign-in.md#attach-and-detach)
-   or [OIDC](../../guides/deploy/oidc-sign-in.md#attach-and-detach) subject.
-2. Have every enabled, enrolled user except the recovery administrator verify
-   a fresh sign-in with a configured provider. Verify a fresh password sign-in
-   for the recovery account. Then set `recovery-only` and upgrade.
-3. Check the API startup logs. If logging is configured and accounts lack an
-   identity, `authentication.password-sign-in-warning` reports
-   `EXTERNAL_IDENTITY_MISSING`. When `skippedUserIdsTruncated` is true,
-   `skippedUserIds` is incomplete. Check the remaining accounts too.
+1. Obtain a complete, current roster of user IDs, including other
+   administrators and accounts created at first OIDC sign-in. No API lists
+   all accounts. Maintenance `status` counts cannot establish coverage.
+2. As a human Installation administrator, check `GET /api/auth/recovery`
+   and [read each account by ID](#session-and-recovery-controls) with
+   `GET /api/auth/accounts/:userId`. Check `disabled` and `methods`. For each
+   enabled, enrolled account except recovery, ensure at least one attached
+   [Google](../../guides/deploy/google-sign-in.md#attach-and-detach) or
+   [OIDC](../../guides/deploy/oidc-sign-in.md#attach-and-detach) identity belongs to a
+   configured provider instance. Attach one if needed.
+3. Have each of those users verify a fresh provider sign-in to the intended
+   OCE account. Verify a fresh password sign-in for the recovery account.
+   If the roster is incomplete or a check fails, keep `all`. Otherwise
+   set `recovery-only` and upgrade.
+4. Check the API startup logs. When logging is configured,
+   `authentication.password-sign-in-warning` reports `EXTERNAL_IDENTITY_MISSING`
+   for missing attachments. `skippedUserCount` counts the affected accounts.
+   `skippedUserIds` contains at most 100 IDs and can omit filtered IDs even
+   when `skippedUserIdsTruncated` is false. Reconcile against the full roster.
+   A quiet log cannot prove access.
 
-Attaching a missing identity takes effect without a restart. To allow password
-sign-in for other accounts again, set `all` and upgrade.
+If you find gaps after the upgrade, restore `all` and upgrade again. This
+allows password sign-in for users who know their local password. First-login
+OIDC enrollment gives users no usable password. Attaching a missing identity
+takes effect without a restart.
 
 State orders password-session creation with online recovery replacement. If the
 move commits first, the former holder's login receives the same audited `401`,

@@ -52,40 +52,41 @@ Changing the issuer or client ID creates a new provider instance; see
 
 ## Rotate the IdP signing key
 
-The API reads the JWKS on every callback, without a cache, so a signing-key rotation
-needs no OCE change or restart. Add the new key in the IdP and make it active, then
-disable the old one. Existing OCE sessions are unaffected: they do not depend on ID
-tokens after sign-in.
+For a planned rotation, publish the new public key under a distinct `kid` in
+the IdP's JSON Web Key Set (JWKS) before switching signers. Verify a fresh
+sign-in. Keep the old public key published until callbacks using it finish.
+The API fetches the JWKS after token exchange. No API restart is needed, and
+existing OCE sessions survive rotation.
 
 ## Read an outage
 
-An IdP outage looks different depending on when the IdP fails:
+- **The browser cannot reach the IdP.** Check the IdP and the browser's
+  connection. If no callback reaches OCE, there is no callback failure for
+  OCE to log or audit.
+- **The API cannot complete token exchange or fetch the JWKS.** Both requests
+  share a 10-second deadline. For provider unavailability, the API returns the
+  browser to `/console/?authError=oidc&authReason=provider-unavailable`.
+  The Console suggests trying later or using **Recovery sign-in** in
+  `recovery-only` mode. Check the `PROVIDER_UNAVAILABLE` audit reason and
+  the `step` and `cause` in the
+  [`authentication.provider-unavailable-warning` log](../../reference/authentication/external-sign-in.md#external-sign-in-profile).
 
-- **The IdP is down before the person reaches it.** This is the common case. The
-  browser shows its own connection error at the IdP's host name. OCE receives no
-  request, so the Console shows no message and OCE writes no audit row or log line.
-  Check the IdP itself.
-- **The IdP fails after the person signed in there**, at the token or JWKS step, or the
-  API cannot reach it (blocked egress, DNS, TLS), or it refuses the configured client.
-  The API waits at most 10 seconds, then returns the browser to
-  `/console/?authError=oidc&authReason=provider-unavailable`. The Console says that
-  sign-in with the IdP is unavailable right now and to try again later; where password
-  sign-in is `recovery-only`, it tells administrators to use **Recovery sign-in**. The
-  audit row has reason `PROVIDER_UNAVAILABLE`, and the API logs
-  `authentication.provider-unavailable-warning` at WARN with the failing `step` and
-  `cause`, such as `timeout`, `connect_refused` or `client_rejected`; see the
-  [external sign-in reference](../../reference/authentication/external-sign-in.md#external-sign-in-profile).
+For `timeout` or `connect_refused`, check API egress, DNS, TLS and IdP health.
+With valid settings, restored connectivity needs no API restart. For
+`client_rejected`, check the client ID, secret, authentication method and
+authorization-code grant. If only the secret changed,
+[update the Secret and restart the API](#rotate-the-client-secret).
 
-During an outage, existing sessions keep working, and so does password sign-in for the
-recovery administrator (and for everyone under `passwordSignIn: all`). Sign-in recovers
-as soon as the IdP answers again, without an API restart.
+Existing sessions remain valid during an IdP outage. The recovery account
+can sign in with its password. Under `passwordSignIn: all`, other enabled,
+enrolled users can also use a known password. OIDC enrollment provides none.
 
-Other refusals look different. An identity that is not attached, or an ID token that
-fails verification, returns `/console/?authError=oidc`; the Console suggests asking an
-administrator to attach the identity, and the audit reason is
-`EXTERNAL_IDENTITY_REJECTED`. A disabled account returns `authReason=account-disabled`.
-If OCE's own database or audit store fails during the callback, the browser returns
-with `authReason=unavailable`.
+For `EXTERNAL_IDENTITY_REJECTED`, the Console can suggest attaching an identity
+at `/console/?authError=oidc`. Token verification can fail the same way.
+Check ID token verification, including signature, issuer, audience, expiry
+and nonce. Confirm the provider instance before changing attachments.
+A disabled account returns `authReason=account-disabled`. A callback failure
+in OCE's database or audit store returns `authReason=unavailable`.
 
 ## Offboard a person
 
