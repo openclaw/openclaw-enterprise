@@ -435,7 +435,7 @@ function repositoryCredentialLines(
           element("span", { className: "resource-id" }, revisionId),
           ` · ${delivery}`,
           committedAt ? ` · replacement committed ${displayDate(committedAt)}` : "",
-          confirmedAt ? ` · activation confirmed ${displayDate(confirmedAt)}` : "",
+          confirmedAt ? ` · last activation seen ${displayDate(confirmedAt)}` : "",
         ),
       ),
     ),

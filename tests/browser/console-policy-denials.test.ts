@@ -262,7 +262,7 @@ test("the repository policy panel shows the repository credential and its delive
   assert.match(
     confirmed,
     new RegExp(
-      `^Revision ${revisionId} · confirmed · replacement committed .+ · activation confirmed .+$`,
+      `^Revision ${revisionId} · confirmed · replacement committed .+ · last activation seen .+$`,
       "m",
     ),
   );
