@@ -8,7 +8,7 @@ An operator enrolls a Codex personal access token (PAT) as a new static Source i
 
 ## Ownership and cutover
 
-An operator stops affected Agents, detaches the old Gateway Sources, and settles pending deployment, withdrawal, or dispatch before retiring the old Provider copies. Cutover can discard unreferenced Credential Gateway Source records and their Source-specific links. It preserves Agents, Namespace Secrets, and inactive revision history. If an old Source can still be used by a draft, active revision, or pending operation, the database refuses the cutover. SQL cannot retire Provider copies.
+An operator stops affected Agents and settles pending deployment, withdrawal, or dispatch under the old owner to retire the Provider copies. Cutover removes obsolete Gateway selections from Agent drafts and deletes the old Source records and their Source-specific links. It preserves Agents, Namespace Secrets, and inactive revision history. Active revisions and unsettled work must finish with their original delivery owner before the upgrade can discard that required state.
 
 For an Agent bound directly to a PAT Secret, the operator re-enters the PAT through ordinary Source enrollment before using hosted Apps. The replacement Source receives a new ID and ordinary Source grants. The operator binds it to the Agent draft and deploys a new revision. Direct PAT Secret and issued ServiceAccount model authentication retain their broker paths. [Codex device login](https://github.com/openclaw/openclaw-enterprise/blob/c561b70b559dbce49d53c0842b30e8d3ca0f319a/specs/rfcs/20261124-credential-design-1-0/codex-device-login.md) remains a separate OAuth path.
 
