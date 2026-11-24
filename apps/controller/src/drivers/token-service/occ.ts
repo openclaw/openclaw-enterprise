@@ -445,8 +445,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
 
   private mintGitHubInstallationToken(
     registration:
-      | (Readonly<CredentialClient> & { readonly tokenServiceInstanceId?: string })
-      | undefined,
+      (Readonly<CredentialClient> & { readonly tokenServiceInstanceId?: string }) | undefined,
     source: {
       readonly namespaceId: string;
       readonly clientId: string;
