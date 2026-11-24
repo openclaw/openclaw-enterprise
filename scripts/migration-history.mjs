@@ -156,6 +156,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 92 && completedCount > 92) {
     return "preRepositorySourceCopies";
   }
+  if (count === 93 && completedCount > 93) {
+    return "preRepositorySourceCopyExpectations";
+  }
   if (count === completedCount) {
     return "completed";
   }

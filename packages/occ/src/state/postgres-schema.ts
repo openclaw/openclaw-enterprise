@@ -2977,6 +2977,9 @@ export const repositorySourceCopies = occSchema.table(
     retirementBlocked: text("retirement_blocked"),
     retirementAttemptedAt: timestamp("retirement_attempted_at", { withTimezone: true }),
     retiredAt: timestamp("retired_at", { withTimezone: true }),
+    // 0094: the version a replacement committed while this copy was unretired.
+    expectedSourceVersion: text("expected_source_version"),
+    expectedAt: timestamp("expected_at", { withTimezone: true }),
   },
   (t) => [
     foreignKey({
@@ -3014,6 +3017,14 @@ export const repositorySourceCopies = occSchema.table(
     check(
       "repository_source_copies_unknown_write_check",
       sql`(${t.unknownWriteVersion} IS NULL) = (${t.unknownWriteAt} IS NULL)`,
+    ),
+    check(
+      "repository_source_copies_expected_source_version_check",
+      sql`${t.expectedSourceVersion} <> ''`,
+    ),
+    check(
+      "repository_source_copies_expected_check",
+      sql`(${t.expectedSourceVersion} IS NULL) = (${t.expectedAt} IS NULL)`,
     ),
     check(
       "repository_source_copies_retirement_check",

@@ -745,6 +745,14 @@
       "tag": "0093_repository_source_copies",
       "breakpoints": true,
       "sha256": "e82e4a636f8307865c7f8589bbd2c436be0e7480f7535701587af38fcc24ea0c"
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1787000000094,
+      "tag": "0094_repository_source_copy_expectations",
+      "breakpoints": true,
+      "sha256": "ca0d037650b095fae81b8aee0366c632f36c91c9ebe82424eed1ef4b01362288"
     }
   ],
   "initialSchemaStates": {
@@ -1024,7 +1032,8 @@
     "preNativeGitDelivery": "d7d57933e74466375e7f243cfbe72c411ac7f33571f5f26bc3094074a06ad8f6",
     "preAgentNetworkProxy": "0ab6fa92112169e58c54a516e5333303417a4b9b3c1f65f625f8d869ab81e31b",
     "preAgentNetworkProxyAdmission": "df92ef74e54d39b560f4b33118a8560b68e57c02636342bde80b8c9309ea07d3",
-    "preRepositorySourceCopies": "38db6291bcefdfd438f397b5dac550104c9f322aa2aec119ca0cc4c7c31acebf"
+    "preRepositorySourceCopies": "38db6291bcefdfd438f397b5dac550104c9f322aa2aec119ca0cc4c7c31acebf",
+    "preRepositorySourceCopyExpectations": "0ce8907890c16226961adfb197dc170950cfd6e0a2d400c5d9251e261bb5e429"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

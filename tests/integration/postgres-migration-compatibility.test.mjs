@@ -1500,6 +1500,7 @@ test(
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preRepositorySourceCopies"],
+      [93, "preRepositorySourceCopyExpectations"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1958,6 +1959,7 @@ test(
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preRepositorySourceCopies"],
+      [93, "preRepositorySourceCopyExpectations"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2523,6 +2525,7 @@ test(
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preRepositorySourceCopies"],
+      [93, "preRepositorySourceCopyExpectations"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2823,6 +2826,7 @@ test(
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preRepositorySourceCopies"],
+      [93, "preRepositorySourceCopyExpectations"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2848,10 +2852,12 @@ test(
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         // Prefix 86 reaches 0087's admission-column ALTER TABLE without a later GRANT.
         // 0093 aborts at its final-retirement trigger, after its table and function exist.
+        // 0094 aborts at its column grant, after its columns exist.
         const rollbackTag =
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [93, "GRANT"],
                 [92, "CREATE TRIGGER"],
                 [91, "ALTER TABLE"],
                 [90, "ALTER TABLE"],
