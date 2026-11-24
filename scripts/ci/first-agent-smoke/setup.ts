@@ -518,6 +518,37 @@ export async function checkMessageDisclosure(
 const runtimeRows = `FROM occ.audit_events
   WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'`;
 
+const apiDeployment = "deployment/openclaw-enterprise-api";
+const queueCommand = "/app/packages/occ/src/state/http-chat-audit-queue.ts";
+
+async function runInApi(stack: InstalledAuditStack, args: string[], input = "") {
+  const pod = ["-n", stack.state.platformNamespace, "exec", "-i", apiDeployment, "-c", "api"];
+  const { stdout } = await kubectl(stack, [...pod, "--", "node", ...args], { input });
+  return stdout.trim();
+}
+
+type QueuedEvent = { id: string; action: string; retry_at: number };
+
+async function pendingHttpAudit(stack: InstalledAuditStack): Promise<QueuedEvent[]> {
+  return JSON.parse(await runInApi(stack, [queueCommand, "status"]));
+}
+
+function queuedRecords(events: QueuedEvent[], expected: string[]) {
+  assert.deepEqual(events.map(({ action }) => action).sort(), expected);
+  return events
+    .map(({ action, id }) => `${action}|${id}`)
+    .sort()
+    .join("\n");
+}
+
+async function waitForDelivery(stack: InstalledAuditStack) {
+  await waitFor(
+    "HTTP chat audit delivery after recovery",
+    async () => ({ done: (await pendingHttpAudit(stack)).length === 0 }),
+    minute,
+  );
+}
+
 export async function checkHttpChatDelivery(
   stack: InstalledAuditStack,
   revisionId: string,
@@ -531,17 +562,17 @@ export async function checkHttpChatDelivery(
   const query = (sql: string, requestId = "") =>
     queryAudit(stack, { revision_id: revisionId, request_id: requestId }, sql);
   const request = "details->'__occAuditMetadata'->>'requestId' = :'request_id'";
-  const records = (table: "audit_events" | "http_chat_audit_queue", requestId: string) =>
+  const records = (requestId: string) =>
     query(
-      `SELECT action, id FROM occ.${table}
+      `SELECT action, id FROM occ.audit_events
       WHERE ${request} AND action <> 'openclaw.api.request.result' ORDER BY action, id`,
       requestId,
     );
 
-  // Keep the ledger unavailable for both admission records and the relay result.
+  // Refuse the receipt, both admissions and the result in PostgreSQL.
   // The same request must still reach the Gateway and get a reply.
   await query(`ALTER TABLE occ.audit_events ADD CONSTRAINT ${constraint} CHECK (NOT (
-    (action = 'openclaw.api.request.admitted' AND details->>'operationId' = 'chatWithAgent')
+    (action IN ('openclaw.api.request.received','openclaw.api.request.admitted') AND details->>'operationId' = 'chatWithAgent')
     OR (${agentAdmission})
     OR (action = 'openclaw.agents.chat.completed' AND details->>'revisionId' = :'revision_id')
   )) NOT VALID`);
@@ -552,61 +583,211 @@ export async function checkHttpChatDelivery(
     reply = await send();
     requests = await countModelRequests();
     const { requestId } = reply;
-    await waitFor(
+    const pending = await waitFor(
       "the deferred HTTP audit write",
-      async () => ({
-        done:
-          (await query(
-            `SELECT count(*) = 3 AND bool_or(retry_at > now())
-        FROM occ.http_chat_audit_queue WHERE ${request}`,
-            requestId,
-          )) === "t",
-      }),
+      async () => {
+        const events = await pendingHttpAudit(stack);
+        return {
+          done: events.length === 4 && events.some((e) => e.retry_at > Date.now()),
+          value: events,
+        };
+      },
       minute,
     );
-    queued = await records("http_chat_audit_queue", requestId);
-    assert.deepEqual(
-      queued.split("\n").map((row) => row.split("|")[0]),
-      [
-        "openclaw.agents.chat.admitted",
-        "openclaw.agents.chat.completed",
-        "openclaw.api.request.admitted",
-      ],
-    );
-    assert.equal(await records("audit_events", requestId), "");
+    assert.ok(pending);
+    queued = queuedRecords(pending, [
+      "openclaw.agents.chat.admitted",
+      "openclaw.agents.chat.completed",
+      "openclaw.api.request.admitted",
+      "openclaw.api.request.received",
+    ]);
+    assert.equal(await records(requestId), "");
   } finally {
     await queryAudit(stack, {}, `ALTER TABLE occ.audit_events DROP CONSTRAINT ${constraint}`, {
       signal: undefined,
     });
   }
   const { requestId } = reply;
-  await waitFor(
-    "HTTP chat audit delivery after recovery",
-    async () => ({
-      done: (await records("http_chat_audit_queue", requestId)) === "",
-    }),
-    minute,
-  );
-  assert.equal(await records("audit_events", requestId), queued, "retry changed the HTTP records");
+  await waitForDelivery(stack);
+  assert.equal(await records(requestId), queued, "retry changed the HTTP records");
   assert.equal(await countModelRequests(), requests, "HTTP audit retry repeated the chat");
 
   // If the queue itself cannot save the admission, the model must receive no request.
-  await query(`ALTER TABLE occ.http_chat_audit_queue ADD CONSTRAINT ${constraint}
-    CHECK (NOT (${agentAdmission})) NOT VALID`);
+  const queueSql = (sql: string) =>
+    runInApi(stack, [
+      "-e",
+      `
+    const db = new (require("node:sqlite").DatabaseSync)(
+      "/var/lib/occ/http-chat-audit/pending/events.sqlite", {timeout: 5000}
+    );
+    db.exec(process.argv[1]);
+    db.close();`,
+      sql,
+    ]);
+  await queueSql(`CREATE TRIGGER ${constraint} BEFORE INSERT ON events
+    WHEN json_extract(NEW.payload, '$.action') = 'openclaw.agents.chat.admitted'
+    BEGIN SELECT RAISE(ABORT, 'test queue failure'); END`);
   try {
     await expectUnavailable();
     assert.equal(await countModelRequests(), requests, "chat ran without a saved admission");
   } finally {
-    await queryAudit(
-      stack,
-      {},
-      `ALTER TABLE occ.http_chat_audit_queue DROP CONSTRAINT ${constraint}`,
-      {
-        signal: undefined,
-      },
-    );
+    await queueSql(`DROP TRIGGER ${constraint}`);
   }
   return reply.turnId;
+}
+
+async function sendWhileOffline(stack: LocalSetup, agent: SmokeAgent, nonce: string) {
+  // Kubernetes can remove an unready API from its Service. Send this request
+  // directly to the running API Pod. Pass the valid test key only on stdin.
+  const stdout = await runInApi(
+    stack,
+    [
+      "--input-type=module",
+      "-e",
+      `
+      import {readFileSync} from 'node:fs';
+      const {data} = JSON.parse(readFileSync(0, "utf8"));
+      const url = "http://" + process.env.OCC_HOST + ":" + process.env.OCC_PORT;
+      const reply = await fetch(url + "/agents/" + process.argv[1] + "/chat", {
+        method: "POST", redirect: "error", signal: AbortSignal.timeout(30000),
+        headers: {"x-api-key": data.key, "content-type": "application/json"},
+        body: JSON.stringify({messages: [{role: "user", content: process.argv[2]}]}),
+      });
+      console.log(reply.status, reply.headers.get("x-request-id"));`,
+      agent.id,
+      nonce,
+    ],
+    await readFile(stack.keyPath, "utf8"),
+  );
+  const [status, id] = stdout.split(" ");
+  assert.equal(status, "503");
+  assert.ok(id && id !== "null");
+  return id;
+}
+
+export async function checkPostgresOutage(
+  stack: LocalSetup,
+  agent: SmokeAgent,
+  revisionId: string,
+) {
+  // Stop only the PostgreSQL instance in the disposable First Agent cluster.
+  assert.equal(stack.state.cluster, clusterName);
+  assert.equal(stack.context, `k3d-${clusterName}`);
+  const cmd = (...args: string[]) => kubectl(stack, ["-n", stack.state.platformNamespace, ...args]);
+  const postgres = "statefulset/postgres";
+  const processBefore = await apiProcess(stack);
+  const nonce = `OCE_SMOKE_${randomUUID()}`;
+  const latest = () =>
+    queryRevision(
+      stack,
+      revisionId,
+      `
+    SELECT details->'__occAuditMetadata'->>'requestId' FROM occ.audit_events
+    WHERE action = 'openclaw.agents.chat.admitted' AND details->>'revisionId' = :'revision_id'
+    ORDER BY occurred_at DESC LIMIT 1`,
+    );
+  const previous = await latest();
+  let requestId;
+  let blockedId;
+  let queued;
+  // Keep the model from answering before PostgreSQL stops. Admission and the
+  // final permission check then use the same request on opposite sides of the outage.
+  await run("docker", ["pause", modelContainer]);
+  try {
+    const response = stack
+      .api(
+        "POST",
+        `/agents/${agent.id}/chat`,
+        {
+          user: randomUUID(),
+          messages: [
+            { role: "user", content: `Reply with exactly this nonce and no other text: ${nonce}` },
+          ],
+        },
+        { response: "chat", signal: AbortSignal.timeout(minute), expectedStatus: 200 },
+      )
+      .then(
+        () => "completed",
+        () => "interrupted",
+      );
+    try {
+      requestId = await waitFor(
+        "HTTP admission before stopping PostgreSQL",
+        async () => {
+          const id = await latest();
+          return { done: !!id && id !== previous, value: id };
+        },
+        minute,
+      );
+      assert.ok(requestId);
+      await cmd("scale", postgres, "--replicas=0");
+      await cmd("wait", "--for=delete", "pod/postgres-0", "--timeout=60s");
+    } finally {
+      await run("docker", ["unpause", modelContainer]);
+    }
+    assert.equal(await response, "interrupted", "permission recheck must fail without PostgreSQL");
+    blockedId = await sendWhileOffline(stack, agent, nonce);
+    assert.notEqual(blockedId, requestId);
+    queued = await waitFor(
+      "both requests recorded on disk while PostgreSQL is down",
+      async () => {
+        const events = await pendingHttpAudit(stack);
+        return { done: events.length >= 3, value: events };
+      },
+      minute,
+    );
+    assert.ok(queued);
+    // Remove the original API before recovery. Only a replacement with access
+    // to the same disk can deliver this record. The model must not run again.
+    await cmd("scale", apiDeployment, "--replicas=0");
+    await cmd(
+      "wait",
+      "--for=delete",
+      "pods",
+      "-l",
+      "app.kubernetes.io/component=api",
+      "--timeout=60s",
+    );
+  } finally {
+    await cmd("scale", postgres, "--replicas=1");
+    await cmd("rollout", "status", postgres, "--timeout=90s");
+    await cmd("scale", apiDeployment, "--replicas=1");
+    await cmd("rollout", "status", apiDeployment, "--timeout=90s");
+  }
+  assert.notEqual((await apiProcess(stack)).podUid, processBefore.podUid);
+  await waitForDelivery(stack);
+  const result = await queryAudit(
+    stack,
+    { request_id: requestId, blocked_id: blockedId },
+    `SELECT action, id FROM occ.audit_events
+     WHERE (action = 'openclaw.agents.chat.interrupted'
+        AND details->'__occAuditMetadata'->>'requestId' = :'request_id')
+        OR details->'__occAuditMetadata'->>'requestId' = :'blocked_id'
+     ORDER BY action, id`,
+  );
+  assert.equal(
+    result,
+    queuedRecords(queued, [
+      "openclaw.agents.chat.interrupted",
+      "openclaw.api.request.received",
+      "openclaw.api.request.result",
+    ]),
+  );
+  // A failed permission check is neither a policy denial nor an authorized turn.
+  const failure = await queryAudit(
+    stack,
+    { blocked_id: blockedId },
+    `
+    SELECT outcome, details->'__occAuditMetadata'->>'reasonCode',
+      details->'__occAuditMetadata'->'actor'->>'unresolved', resource_kind
+    FROM occ.audit_events
+    WHERE action = 'openclaw.api.request.result' AND details->'__occAuditMetadata'->>'requestId' = :'blocked_id'`,
+  );
+  assert.equal(failure, "failure|PERMISSION_CHECK_UNAVAILABLE|true|installation");
+  assert.equal(
+    (await modelEvents()).filter((e) => e.event === "request" && e.text === nonce).length,
+    1,
+  );
 }
 
 export async function withRefusedTurnWrite<T>(

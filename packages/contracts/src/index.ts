@@ -1459,6 +1459,7 @@ export type AuditEventKind =
 export type AuditOutcome = "success" | "denied" | "failure";
 
 export const API_REQUEST_AUDIT_ACTIONS = {
+  received: "openclaw.api.request.received",
   admitted: "openclaw.api.request.admitted",
   result: "openclaw.api.request.result",
 } as const;
@@ -1472,6 +1473,7 @@ export const CONTROLLER_WORK_AUDIT_ACTIONS = {
 } as const;
 
 export type ApiRequestAuditObservation =
+  | { readonly action: typeof API_REQUEST_AUDIT_ACTIONS.received; readonly outcome: "success" }
   | { readonly action: typeof API_REQUEST_AUDIT_ACTIONS.admitted; readonly outcome: "success" }
   | {
       readonly action: typeof API_REQUEST_AUDIT_ACTIONS.result;
@@ -1479,7 +1481,7 @@ export type ApiRequestAuditObservation =
       readonly statusCode: number;
       /** The exact resource returned by a successful, authorized read. */
       readonly readTarget?: ResourceRef;
-      readonly reasonCode?: "COMMIT_OUTCOME_UNKNOWN";
+      readonly reasonCode?: "COMMIT_OUTCOME_UNKNOWN" | "PERMISSION_CHECK_UNAVAILABLE";
     };
 
 export interface AuditEvent extends Scope {

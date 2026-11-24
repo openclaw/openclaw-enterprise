@@ -802,6 +802,8 @@ export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 /** Holds the caller's authority in a unit of work; throws when it is no longer current. */
 export type AuthorityFence = (state: PlatformUnitOfWork) => Promise<void>;
 
+export class AgentChatAccessUnavailableError extends DependencyUnavailableError {}
+
 export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableError {
   constructor() {
     super("The Agent audit disclosure record is unavailable.");
@@ -3439,7 +3441,14 @@ export class OpenClawController {
     readonly revision?: Readonly<AgentRevision>;
     readonly endpoint: AgentChatCompletionsResolution;
   }> {
-    const reference = await this.resolveAgentReference((candidate) => candidate.id === agentId);
+    const reference = await this.resolveAgentReference(
+      (candidate) => candidate.id === agentId,
+    ).catch((error: unknown) => {
+      if (error instanceof DependencyUnavailableError) {
+        throw new AgentChatAccessUnavailableError("The Agent's Namespace could not be checked.");
+      }
+      throw error;
+    });
     if (!reference) {
       throw new ScopeViolationError("The requested Agent was not found.");
     }
@@ -3457,6 +3466,9 @@ export class OpenClawController {
         );
       }
     } catch (error) {
+      if (error instanceof DependencyUnavailableError) {
+        throw new AgentChatAccessUnavailableError("The Agent permission check is unavailable.");
+      }
       if (
         error instanceof AuthorizationDeniedError &&
         (outsideCredentialScope ||

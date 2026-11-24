@@ -29,6 +29,7 @@ import {
   runtimeAuditRowCount,
   expectPersistedRuntimeAudit,
   checkMessageDisclosure,
+  checkPostgresOutage,
   clusterName,
   routeModelProvider,
   setLocalSetupAudit,
@@ -305,6 +306,9 @@ async function smoke() {
       await waitForAuditMode(stack, control.agent, revisionId, "codex", true);
       await chatCodexWithAudit(stack, control.agent, revisionId, controlReader.readAudit);
     });
+    await smokeStep("http-chat-audit-recovery", () =>
+      checkPostgresOutage(stack, embedded.agent, embeddedRevision),
+    );
     assert.equal(auditFailures.length, 0, auditFailures.join("\n"));
   } catch (error) {
     await diagnostics(diagnosticStack);

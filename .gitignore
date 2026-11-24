@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.development/
 
 # Dependency trees and generated artifacts remain machine-local at every depth.
 node_modules/

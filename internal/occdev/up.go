@@ -637,7 +637,12 @@ func (r *runner) ensureAbsent(ctx context.Context, s *developmentState) error {
 		}
 	}
 	// Unlabelled resources with the names Compose would adopt also belong to someone else.
-	for _, resource := range []struct{ kind, name string }{{"volume", "occ_postgres_data"}, {"volume", "occ_configuration_data"}, {"network", "development"}} {
+	for _, resource := range []struct{ kind, name string }{
+		{"volume", "occ_postgres_data"},
+		{"volume", "occ_configuration_data"},
+		{"volume", "occ_http_chat_audit"},
+		{"network", "development"},
+	} {
 		if _, err := r.output(ctx, r.engine, resource.kind, "inspect", s.ComposeProject+"_"+resource.name); err == nil {
 			return fmt.Errorf("Compose resource already exists: %s_%s", s.ComposeProject, resource.name)
 		}

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-24"
-last_updated_session: "authoring-run/e84c6230-3e81-429a-93ee-4459af104384"
+updated: "2026-11-24 11:24"
+last_updated_session: "authoring-run/b6bdb7b2-6bd6-4074-9551-f936deb0ad23"
 ---
 
 # Audit ledger flow
@@ -14,18 +14,16 @@ explains which records an analyst can read.
 
 ## Entry Points
 
-- Trigger: the API admits or answers a resource request, a controller operation
-  appends an event, or internal code lists events in a State unit of work.
+- Trigger: an API request, a controller operation or an internal audit query.
 - Source: `apps/controller/src/index.ts:appendRequestAudit`
 - Source: `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
 - Source: `packages/occ/src/state/postgres-work-queue.ts:INSERT_EVIDENCE_CTE_SQL`
-- Assumptions: PostgreSQL State has a server-owned Installation; request
-  admission and authorization are handled by the calling operation. Repository
-  list is an internal operation, not an authorization or public serving boundary.
+- Assumptions: PostgreSQL State owns the Installation. Each caller checks
+  admission and permission. The repository list is internal.
 
 ## Flow
 
-The diagram describes source behavior, not proof of an installed deployment.
+The diagram shows the current code.
 
 ```mermaid
 graph TD
@@ -98,7 +96,9 @@ graph TD
 
 After bootstrap, Control Plane audit saves `openclaw.api.request.admitted`
 before the handler starts. Failure returns `503`. [HTTP chat](agent-http-chat.md)
-uses a PostgreSQL queue. A route hook records `openclaw.api.request.result`
+also records `openclaw.api.request.received` before authentication.
+The API queues these chat records and results on its persistent volume.
+A route hook records `openclaw.api.request.result`
 before sending a standard API response, including validation and authentication
 errors. Relayed chat responses use separate result records.
 
@@ -109,7 +109,7 @@ request that returns `405` records a `methodNotAllowed` result. Google
 and OIDC sign-in callbacks use their own authentication recorder. Runtime
 log views and downloads use their own disclosure recorder.
 
-Both records carry the API-generated request ID, registered operation,
+The request records carry the API-generated request ID, registered operation,
 HTTP method, and Installation ID. The result adds the HTTP status. The hook
 uses the authenticated actor when identity resolution succeeded. A result
 describes the response OCC prepared. If its append fails, the hook logs
@@ -341,6 +341,8 @@ a hash. The link requires the original session and message IDs.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 11:24: Identify the separate API volume for pending HTTP chat records. (authoring-run/b6bdb7b2-6bd6-4074-9551-f936deb0ad23 - 24f84269c9fa2ae3dc49461b071931b1b27a27fa)
 
 - 2026-11-24 10:21: Identify queued HTTP chat records. (authoring-run/e84c6230-3e81-429a-93ee-4459af104384 - de7a98fdbb33b5ed3ac59b2a8ca004b2aeb5f705)
 

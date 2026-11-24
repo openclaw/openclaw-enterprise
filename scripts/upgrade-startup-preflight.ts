@@ -927,6 +927,13 @@ function job(
   }
   const application = preflightContainer(applicationReference);
   const container: Container = selectFields(application, containerFields);
+  // The preflight does not run chat. The queue disk may still belong to the live API,
+  // and on the first upgrade with a queue, Helm has not created the claim yet.
+  if (component === "api" && container.volumeMounts) {
+    container.volumeMounts = container.volumeMounts.filter(
+      ({ name }) => name !== "http-chat-audit",
+    );
+  }
   // The image entrypoint is node; name it so a chart command cannot change the check.
   container.command = ["node"];
   const volumeReferences = namedReferences(spec.volumes);

@@ -102,10 +102,35 @@ test("the single audit switch configures private Gateway HTTPS and scopes audit 
         resource.metadata.name === "openclaw-enterprise-runtime-audit",
     );
     assert.equal(Boolean(auditService), privateAudit);
+    // Turning off optional logs or routing must leave pending HTTP records recoverable.
+    const claim = findResource(
+      objects,
+      "PersistentVolumeClaim",
+      "openclaw-enterprise-http-chat-audit",
+    );
+    assert.ok(claim, "the API must retain pending HTTP records when settings change");
+    assert.equal(claim.metadata.annotations["helm.sh/resource-policy"], "keep");
+    assert.deepEqual(claim.spec.accessModes, ["ReadWriteOnce"]);
     for (const component of ["api", "worker"]) {
       const { spec } = findResource(objects, "Deployment", `openclaw-enterprise-${component}`);
       const pod = spec.template.spec;
       const container = pod.containers.find((item) => item.name === component);
+      const queue = pod.volumes.find(
+        ({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName === claim.metadata.name,
+      );
+      assert.equal(Boolean(queue), component === "api");
+      if (queue) {
+        assert.equal(spec.replicas, 1);
+        assert.equal(spec.strategy.type, "Recreate");
+        assert.equal(pod.securityContext.fsGroupChangePolicy, "OnRootMismatch");
+        assert.deepEqual(
+          container.volumeMounts.find(({ name }) => name === queue.name),
+          {
+            name: queue.name,
+            mountPath: "/var/lib/occ/http-chat-audit",
+          },
+        );
+      }
       const auditConfig = container.env.find((item) => item.name === "OCC_CHART_RUNTIME_AUDIT");
       assert.equal(Boolean(auditConfig), privateAudit);
       const tlsVolume = pod.volumes.find(({ name }) => name === "runtime-audit-tls");

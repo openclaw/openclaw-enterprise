@@ -28,7 +28,8 @@ before a covered handler starts. The handler still checks permission.
 OCC records `openclaw.api.request.result` before sending a standard API
 response. An invalid or unauthenticated request can have only a result.
 [HTTP chat](../../reference/agent-http-chat.md#kubernetes-configuration-and-audit)
-queues admission and records a separate chat result for a relayed response.
+queues `openclaw.api.request.received` before authentication. A relayed
+response has a separate chat result.
 
 The result hook also covers the registered account, service-key, sign-in,
 recovery, and native administration routes. When a resource API request returns
@@ -126,9 +127,10 @@ without responses. Embedded OpenClaw can miss retries within a call.
 The Gateway queues events locally and sends them in the background.
 Chat continues if PostgreSQL cannot save a runtime event.
 
-OCC must save required HTTP chat records in a
-[separate queue](../agent-http-chat.md#retry-delayed-http-chat-audit-records)
-before it forwards a message. A failed write to the audit log delays delivery.
+For HTTP chat, OCC saves admission records in a
+[queue on the API's persistent volume](../agent-http-chat.md#retry-delayed-http-chat-audit-records).
+OCC can queue a chat result during a PostgreSQL outage. It still needs
+PostgreSQL to check access and the Agent revision.
 
 ### Recover delayed runtime events
 
@@ -181,8 +183,8 @@ rows. It cannot update, delete, or truncate them. Automatic expiry, purge,
 archive, and export are outside the current audit workflow. Use approved
 database access to inspect raw audit rows.
 
-PostgreSQL checks each new Control Plane request, work, audit disclosure, and
-runtime activity record against an 8 KiB limit on its JSON row. At 1 GiB of
+PostgreSQL limits each Control Plane request, HTTP chat, work, audit disclosure
+and runtime activity record to 8 KiB of JSON. At 1 GiB of
 allocated space for the `occ.audit_events` table and its indexes, PostgreSQL
 refuses new records of these types by default. Other event types can still grow
 the table.
@@ -197,7 +199,8 @@ SELECT pg_total_relation_size('occ.audit_events') AS used_bytes,
 ```
 
 If `accepts_new_events` is `false`, the API can block covered requests or
-withhold audit results. The Gateway can still queue [runtime events](#agent-runtime-activity).
+withhold audit results. The [HTTP chat and Gateway queues](#agent-runtime-activity)
+can still accept records until they reach their limits.
 The control plane worker cannot claim covered jobs or save the
 results of audited attempts until space is available. It reports
 `worker.error` with code `AUDIT_CAPACITY_EXCEEDED`. Preserve the existing

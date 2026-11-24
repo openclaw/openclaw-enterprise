@@ -1491,7 +1491,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       denialObserved: boolean;
       resultSelected: boolean;
       readTarget?: ResourceRef;
-      commitOutcomeUnknown?: true;
+      reasonCode?: "COMMIT_OUTCOME_UNKNOWN" | "PERMISSION_CHECK_UNAVAILABLE";
     }
   >();
   const requestAuditSink = options.durableRequestAuditSink;
@@ -1924,6 +1924,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
   }
 
+  function markChatCheckUnavailable(request: FastifyRequest): void {
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined) {
+      audit.reasonCode = "PERMISSION_CHECK_UNAVAILABLE";
+    }
+  }
+
   async function requireRequestAuditAdmission(
     request: FastifyRequest,
     operation: { readonly operationId: string; readonly method: string },
@@ -1977,7 +1984,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           outcome,
           statusCode,
           ...(readTarget === undefined ? {} : { readTarget }),
-          ...(audit.commitOutcomeUnknown === true ? { reasonCode: "COMMIT_OUTCOME_UNKNOWN" } : {}),
+          ...(audit.reasonCode === undefined ? {} : { reasonCode: audit.reasonCode }),
         });
         return payload;
       },
@@ -2237,7 +2244,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         headers: request.headers,
       });
     } catch (error) {
-      throw requestFailure(error);
+      const mapped = requestFailure(error);
+      if (operation.operationId === "chatWithAgent" && mapped.status >= 500) {
+        markChatCheckUnavailable(request);
+      }
+      throw mapped;
     }
 
     if (
@@ -2281,6 +2292,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
       );
     } catch {
+      if (operation.operationId === "chatWithAgent") {
+        markChatCheckUnavailable(request);
+      }
       throw dependencyUnavailable();
     }
 
@@ -2406,6 +2420,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         factory,
         auditSink: options.auditSink,
         gatewayApiKey: options.nativeAdminGatewayApiKey,
+        permissionCheckUnavailable: () => markChatCheckUnavailable(request),
         auditFailure: (error) =>
           logRequestAuditFailure(request, operation, operation.action, error),
         reauthenticate: async () => {
@@ -4870,6 +4885,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 : {}),
         schema,
         onRequest: async (request) => {
+          if (
+            operation.operationId === "chatWithAgent" &&
+            requestAuditSink &&
+            requestAuditState.has(request)
+          ) {
+            // Receipt is an observation. Only admission requires a successful write.
+            await appendRequestAudit(requestAuditSink, request, operation, {
+              action: API_REQUEST_AUDIT_ACTIONS.received,
+              outcome: "success",
+            });
+          }
           await admit(request, operation);
           if (authorizesBeforeBody(operation)) {
             await resolveIdentity(request, operation);
@@ -5268,7 +5294,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       if (error instanceof AuditAppendUnavailableError) {
         logRequestAuditFailure(request, operation, auditAction(operation, request), error);
       } else if (error instanceof PostgresCommitOutcomeUnknownError) {
-        audit.commitOutcomeUnknown = true;
+        audit.reasonCode = "COMMIT_OUTCOME_UNKNOWN";
         app.log.error({
           event: "http.commit_outcome_unknown",
           requestId: request.id,

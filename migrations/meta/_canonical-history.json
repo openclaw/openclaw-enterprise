@@ -702,9 +702,9 @@
       "idx": 88,
       "version": "7",
       "when": 1787000000088,
-      "tag": "0088_http_chat_audit_queue",
+      "tag": "0088_http_chat_audit_limits",
       "breakpoints": true,
-      "sha256": "e7455145a65081e7bff0443a237bdbf2847a47e318387e670b0a27aec555aa9f"
+      "sha256": "7a65182d5b14f40d7417c30735a8f54bce43ba7d8b1d9c644ce7f274173c9edf"
     }
   ],
   "initialSchemaStates": {
@@ -870,18 +870,18 @@
       "e11193234bbb37b54a35b6d85146b127f18a529c9af5e6206bf268d12001842a",
       "e3cd867d361d590cdbbeaa047f6ac8181f5020fbfb13e6b65ea2b76269d1409f"
     ],
-    "cd9e619d737e2fcc8c2645da4b816a7ab367126ad02723fccd0c04903c256e65": [
-      "3bc0146d88d968731e90d75e2eced4cd0dc5aa9399e36ba75e14c67ed72f1e3e",
-      "3e83ea874cbe201bd8c7ee881f141dabb26cfc8f859f48af21258631d1b969ce",
-      "9c13d6bb4a00ae13a49110be608e67008a2a7a8a96e75590e143621fcbd28dff",
-      "e8bf72d7f6bb62465508fc8d95ed9813674bb21ff9be1eed0ac3b6af2429ab19",
-      "f1fce2f2f9bcbc96e5834f433a99c53ae5a3c8af33f0af5f936f0cf658b3fbf4",
-      "f363b2f7e32e68427da0e0812f226fbfabafdadaf8a200b7f4e6ee6b375a86d5",
-      "fd7070b97a69e8158c85cf7a2d1aebdd2b9a62ffa275b28c4526ebd3f48dbb64"
+    "34722cddbb8abec9173870afdc5cc35683ac7091f00a3c317196e49fc4985eed": [
+      "59fc64e653057bbf6cec65f909b007d291bd9dfcc78d9bb0da6295da702aec86",
+      "8379dfc807f4cadf955bb5a5f17c703391902c2030338960cc4cf55249dd9876",
+      "b374c44c35e781667869bf9e36caf9277caeeaa0776a328de07a10843c9d5774",
+      "b67dbdecd0907b298423a121e3753a8bc82f5491eed03867f30a51927e0934aa",
+      "c51a5d554b41fb07ea45bd7133b3f628896b6b6b446f6759aecb2f3392919756",
+      "d74b3d236b5ed11de157adf7ac157304bb7a5a8e38bf42528adf345a75eb3810",
+      "f0060eece838507afff6fa7f823a1a9d7eedd52812b9fc41b69cf69581873229"
     ]
   },
   "catalogs": {
-    "completed": "cd9e619d737e2fcc8c2645da4b816a7ab367126ad02723fccd0c04903c256e65",
+    "completed": "34722cddbb8abec9173870afdc5cc35683ac7091f00a3c317196e49fc4985eed",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -943,7 +943,7 @@
     "preRevisionEgressInstallations": "558b69b0eb318fc085e48f0763c0da4cc6504670bbb8a697c736191a8dc41bb0",
     "preRuntimeAudit": "46b5b1593daa0a0bbfeb8d0b84e2314d0f68f9adc5d598bb6b9e2d3bdc8403d6",
     "preAuditMessageRead": "0b168ef61e2728744aab5c2515ac3dd84d22b437cc7b04366e055d034d488d77",
-    "preHttpChatAuditQueue": "ed6da670f5dfca6faf3e321714c0e8c95e738cccfc95a72b3c49b76230212c46"
+    "preHttpChatAuditLimits": "ed6da670f5dfca6faf3e321714c0e8c95e738cccfc95a72b3c49b76230212c46"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

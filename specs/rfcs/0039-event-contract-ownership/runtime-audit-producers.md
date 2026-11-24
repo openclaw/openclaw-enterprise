@@ -54,11 +54,17 @@ Gateway was about to send work to the Agent. It proves neither permission
 nor execution. This proposal excludes it from the
 [required admission records](index.md#3-reuse-state-and-postgresql).
 For [HTTP chat](../0040-agent-chat-completions.md#iam-trusted-proxy-and-audit),
-OCC must commit its required admission records to a PostgreSQL queue
-before it forwards the message. A failed queue write stops the request.
-OCC sends queued records to the audit log in the background. A failed
-delivery leaves the original event in the queue. OCC must never run
-the turn again to recover a record.
+use a SQLite queue on the API's private persistent volume. With Control
+Plane audit on, record receipt before checking identity or permission.
+If OCC cannot check access, record the failure with the same request ID.
+OCC must save required admission records before it forwards the message.
+If PostgreSQL goes down during a turn, OCC can still queue the result.
+OCC must stop the relay if it cannot verify access or the running revision.
+
+OCC sends these records to the PostgreSQL audit log in the background.
+Keep each record across API Pod replacement until PostgreSQL confirms the
+write. A retry must keep the original event ID and time. OCC must never
+repeat the chat request to recover an event.
 
 The Gateway queues runtime events on the Agent's persistent Gateway volume
 and sends them to OCC in the background. The turn can start without
@@ -79,7 +85,7 @@ Give each execution attempt a new ID. Keep the event ID when retrying
 delivery. OCC accepts identical copies as one record and rejects a different
 record with the same ID. A missing turn result leaves the outcome unknown.
 
-Return the records through the Agent audit API. Keep the exact Agent grant
+Return runtime records through the Agent audit API. Keep the exact Agent grant
 check and save a disclosure record before returning each page. The payload
 contains event metadata. The parent RFC defines the separate work for
 protected prompt and response storage.
@@ -106,3 +112,7 @@ protected prompt and response storage.
    queue and confirm that chat continues with a Gateway warning.
 7. Disable audit and repeat the normal deployment and chat workflow. Confirm
    that the workflow succeeds and creates no runtime audit records.
+8. Stop PostgreSQL during HTTP chat. Send a second request to the API.
+   Confirm that OCC queues the interruption, the second receipt and the
+   failed access check. Replace the API Pod and restore PostgreSQL.
+   Confirm one record per original event ID and no extra model request.

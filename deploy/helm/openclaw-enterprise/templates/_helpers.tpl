@@ -426,7 +426,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "database.caKey" "value" .Values.database.caKey) -}}
 {{- /* The CA is mounted in API, worker, migration and bootstrap. Kubernetes requires each container's mount paths to be unique. */ -}}
-{{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" "/run/openclaw-bootstrap" -}}
+{{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" "/run/openclaw-bootstrap" "/var/lib/occ/http-chat-audit" -}}
 {{- if .Values.executionCluster.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/execution" -}}
 {{- end -}}

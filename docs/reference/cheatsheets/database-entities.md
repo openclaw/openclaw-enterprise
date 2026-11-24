@@ -494,18 +494,6 @@ See the [audit guide](../../guides/topics/audit-log.md).
 - `outcome`
 - `details`
 
-### `http_chat_audit_queue`
-
-Keeps [HTTP chat audit records](../agent-http-chat.md#kubernetes-configuration-and-audit)
-until OCC writes them to `audit_events`. Delivery preserves the event ID
-and time. The queue contains the columns of [`audit_events`](#audit_events)
-and two more columns.
-
-- `installation_id`
-- `retry_at`
-
-See [HTTP chat audit recovery](../../guides/agent-http-chat.md#retry-delayed-http-chat-audit-records).
-
 ### `gateway_runtime_audit_grants`
 
 Identifies the Agent revision and Harness for each Gateway audit credential.

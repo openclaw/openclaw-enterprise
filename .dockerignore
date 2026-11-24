@@ -16,6 +16,7 @@ legacy/
 .env.*
 **/.env
 **/.env.*
+**/.development
 node_modules
 **/node_modules
 dist

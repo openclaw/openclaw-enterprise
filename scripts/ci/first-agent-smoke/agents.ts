@@ -692,7 +692,7 @@ export async function checkHttpTurnAudit(
     countModelRequests,
   );
   log(
-    `${agent.label}: HTTP chat continued during audit delivery failure and all three records arrived once`,
+    `${agent.label}: HTTP chat continued during audit delivery failure and all four records arrived once`,
   );
   const first = await readTurn(1, firstId);
   const sessionId = first.details.sessionId;

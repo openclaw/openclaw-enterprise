@@ -380,7 +380,9 @@ export async function composePostgresDevelopment(
       await checkDatabaseReadiness();
       return { status: "ready" };
     });
-    app.addHook("onReady", async () => state.startHttpChatAuditDelivery());
+    app.addHook("onReady", async () =>
+      state.startHttpChatAuditDelivery(persistedInstallation, "development"),
+    );
     app.addHook("onClose", () => close(state));
     return app;
   } catch (error) {

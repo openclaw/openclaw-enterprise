@@ -47,6 +47,7 @@ it does not use a suite manifest.
 | Read gateway logs and dedicated Agent logs through the CLI.                  | `occ agent logs` returns nonempty logs for the selected sources.                                                                                                                          | Smoke script: `readLogs`.                                                           |
 | Withdraw public Git reader access and deploy a revision without that access. | The old workload and policy are removed and open connections close. The retired revision and the successor without reader access make no further reads; the control Agent retains access. | Smoke script: `proveRetirement`.                                                    |
 | Stop and start both Agents, then chat again.                                 | Stopped Pods terminate, starting the Agents creates new revisions, and both chat turns succeed.                                                                                           | Smoke script: `stopAgent`, `deployAgent`, and `chatTurn`.                           |
+| Stop PostgreSQL during an embedded OpenClaw HTTP turn. Replace the API Pod.  | OCC interrupts the request and keeps the audit record on disk. After recovery, PostgreSQL stores the original ID once. The model receives no extra request.                               | Smoke script, `http-chat-audit-recovery` stage.                                     |
 
 <a id="run-it"></a>
 
@@ -127,13 +128,14 @@ and `before_turn_start`. The first HTTP message must create one session
 record. After the second message, the count must still be one. Creating an
 empty chat must produce one session record and zero turns.
 
-For HTTP chat, the test makes the audit log reject
-`openclaw.api.request.admitted`, `openclaw.agents.chat.admitted`
-and `openclaw.agents.chat.completed`.
-The user must receive a reply. After recovery, the audit log must contain
-each queued ID once. The model must receive no extra request.
-If the OCC queue rejects chat admission, the API must return HTTP 503
-and the model must receive no request.
+When PostgreSQL rejects the [four records for a successful HTTP chat](../../reference/agent-http-chat.md#kubernetes-configuration-and-audit),
+the user must get a reply. Delivery must preserve each ID without another
+model call. If the API queue rejects admission, expect HTTP 503 and no
+model call.
+
+During the outage, a second request goes directly to the API Pod.
+Expect HTTP 503. After recovery, the receipt and result must share a
+request ID. The result must show `PERMISSION_CHECK_UNAVAILABLE`.
 
 Before the second message, the test makes PostgreSQL refuse
 `openclaw.runtime.turn.admitted` for the revision. The user must receive

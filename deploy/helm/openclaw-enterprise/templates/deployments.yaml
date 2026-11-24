@@ -61,11 +61,19 @@ spec:
       {{- end }}
       securityContext:
         {{- include "openclaw.podSecurity" $ | nindent 8 }}
+        {{- if eq $component "api" }}
+        fsGroupChangePolicy: OnRootMismatch
+        {{- end }}
       {{- with $.Values.controlPlane.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if eq $component "api" }}
+        - name: http-chat-audit
+          persistentVolumeClaim:
+            claimName: openclaw-enterprise-http-chat-audit
+        {{- end }}
         {{- if $privateRuntimeAudit }}
         {{- if eq $component "api" }}
         - name: runtime-audit-tls
@@ -503,6 +511,10 @@ spec:
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
             {{- end }}
           volumeMounts:
+            {{- if eq $component "api" }}
+            - name: http-chat-audit
+              mountPath: /var/lib/occ/http-chat-audit
+            {{- end }}
             {{- if $.Values.backend.openshell.clientSecretName }}
             - name: openshell-client
               mountPath: /etc/openclaw/openshell

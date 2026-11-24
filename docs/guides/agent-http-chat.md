@@ -53,49 +53,47 @@ codes, conversation boundaries and audit behavior.
 
 ## Retry delayed HTTP chat audit records
 
-If chat succeeds but an HTTP chat record is missing from the audit log,
-check the OCC queue. A delivery retry never sends the chat request again.
-For a missing Gateway turn record, use the separate
+If an HTTP chat record is missing from the audit log, check the API's
+queue. For a missing Gateway turn record, use the separate
 [Gateway recovery procedure](topics/audit-log.md#recover-delayed-runtime-events).
 
-Each OCC API replica checks the queue at startup and every 15 seconds.
-When OCC adds a record, it also starts delivery in the background.
-After a failure, the record stays in the queue for another attempt.
-After three consecutive failures, that replica pauses delivery for
-15 seconds. No user action is required.
+After PostgreSQL recovers, OCC sends pending records automatically. It
+checks the queue at startup, when it adds a record and every 15 seconds.
+After three consecutive delivery failures, it pauses for 15 seconds.
+**Do not send the chat request again.** A second request can repeat a
+tool action.
 
-An authorized PostgreSQL operator can check the next 20 records with
-`psql`. Use the Installation database.
+For a Helm installation, set `namespace` to the API's Kubernetes
+namespace. You need permission to run commands in the API Pod.
 
-```sql
-SELECT id, action, retry_at
-FROM occ.http_chat_audit_queue
-ORDER BY retry_at, id
-LIMIT 20;
+```sh
+queue=/app/packages/occ/src/state/http-chat-audit-queue.ts
+kubectl exec -n "$namespace" deployment/openclaw-enterprise-api -c api -- node "$queue" status
 ```
 
-Correct the cause of the failure. To make one record ready for the next
-check, enter its ID at the prompt.
+The JSON list shows pending event IDs, Installation IDs, actions and
+retry times. `retry_at` is in milliseconds since the Unix epoch.
+An empty list means no records are waiting. If the file is missing,
+check the API volume. OCC creates the file on the first queue write.
 
-```sql
-\prompt 'Queued event ID: ' event_id
-UPDATE occ.http_chat_audit_queue
-SET retry_at = clock_timestamp()
-WHERE id = :'event_id'
-RETURNING id;
+Check that the API can write to the original Installation database.
+Set `eventId` to a pending ID. Run this command to make that record
+ready for the next check.
+
+```sh
+kubectl exec -n "$namespace" deployment/openclaw-enterprise-api -c api -- node "$queue" retry "$eventId"
 ```
 
-If the update returns no row, OCC may have delivered the record already.
-Check the same ID in the audit log.
+Run `status` again. After delivery, the ID leaves the queue.
+An authorized database operator can confirm the write in `psql`.
 
 ```sql
-SELECT id, action
-FROM occ.audit_events
-WHERE id = :'event_id';
+\prompt 'Event ID: ' event_id
+SELECT id, action FROM occ.audit_events WHERE id = :'event_id';
 ```
 
-This procedure changes only the retry time. Do not edit the event or
-send the message again to recover a record.
+Keep the [API volume](../reference/agent-http-chat.md#queue-storage)
+until delivery finishes. Removing it can lose pending records.
 
 ## Disable HTTP chat
 

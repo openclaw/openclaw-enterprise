@@ -5,10 +5,10 @@ import { request as httpsRequest } from "node:https";
 import { once } from "node:events";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuditEventFactory, AuditSink } from "@openclaw-enterprise/audit";
-import type { OpenClawController } from "@openclaw-enterprise/occ";
+import { AgentChatAccessUnavailableError, type OpenClawController } from "@openclaw-enterprise/occ";
 import type { AdmittedCaller } from "../admission/admission-verifier.ts";
 import type { RequestContext } from "./types.ts";
-import { dependencyUnavailable, failure } from "./errors.ts";
+import { dependencyUnavailable, failure, requestFailure } from "./errors.ts";
 
 export const AGENT_CHAT_BODY_LIMIT = 20 * 1024 * 1024;
 
@@ -23,6 +23,7 @@ interface AgentChatOptions {
   readonly admission: AdmittedCaller;
   readonly gatewayApiKey: (() => Promise<string>) | undefined;
   readonly reauthenticate: () => Promise<void>;
+  readonly permissionCheckUnavailable: () => void;
   readonly auditFailure: (error: unknown) => void;
 }
 
@@ -73,9 +74,21 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
       );
     }
     const { agentId } = request.params as { agentId: string };
-    const selected = await current(
-      controller.resolveAgentChat(context.actorId, agentId, admission.admittedScope.namespaceId),
-    );
+    let checkUnavailable = false;
+    function unavailable() {
+      checkUnavailable = true;
+      options.permissionCheckUnavailable();
+    }
+    const resolveChat = () =>
+      current(
+        controller.resolveAgentChat(context.actorId, agentId, admission.admittedScope.namespaceId),
+      ).catch((error: unknown) => {
+        if (error instanceof AgentChatAccessUnavailableError) {
+          unavailable();
+        }
+        throw error;
+      });
+    const selected = await resolveChat();
     const endpoint = match(selected.endpoint)
       .with({ status: "unsupported" }, () => {
         throw failure(
@@ -151,6 +164,7 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
           action: `openclaw.agents.chat.${outcome}`,
           outcome: outcome === "admitted" || outcome === "completed" ? "success" : "failure",
           requestId: request.id,
+          ...(checkUnavailable ? { reasonCode: "PERMISSION_CHECK_UNAVAILABLE" } : {}),
           admissionDecisionId: context.admissionDecisionId,
           details: {
             revisionId: revision.id,
@@ -183,14 +197,13 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
       }
       const deadline = setTimeout(() => abort.abort(), 5_000);
       inFlightCheck = (async () => {
-        await current(options.reauthenticate());
-        const latest = await current(
-          controller.resolveAgentChat(
-            context.actorId,
-            agent.id,
-            admission.admittedScope.namespaceId,
-          ),
-        );
+        await current(options.reauthenticate()).catch((error: unknown) => {
+          if (!abort.signal.aborted && requestFailure(error).status >= 500) {
+            unavailable();
+          }
+          throw error;
+        });
+        const latest = await resolveChat();
         if (latest.endpoint.status !== "available" || latest.revision?.id !== revision.id) {
           throw dependencyUnavailable();
         }
