@@ -256,6 +256,40 @@ export async function checkRunnerSelectorIsolation(t: TestContext) {
   assert.equal(result.status, 0, result.stderr);
 }
 
+export async function checkKeycloakLaneInputs(t: TestContext) {
+  const root = await createRunnerFixture(t);
+  const lane = parseRunnerRecord(
+    await readFile(
+      new URL("../../scripts/ci/test-suites/keycloak-oidc.json", import.meta.url),
+      "utf8",
+    ),
+    "Keycloak OIDC lane",
+  );
+  const file = "tests/integration/keycloak-inputs.test.mjs";
+  const inputs = {
+    OCC_TEST_BROWSER_EXECUTABLE: "/fixture/chromium",
+    OCC_TEST_KEYCLOAK_HOST_PORT: "45443",
+  };
+  // Run the shipped lane input filter with a child that checks transport, not sign-in.
+  await writeEnvironmentTest(join(root, file), "Keycloak inputs", inputs);
+  await writeRunnerManifest(root, {
+    lanes: { "keycloak-oidc": { ...lane, files: [{ path: file }] } },
+  });
+  const result = runRunnerSync(
+    laneArgs(root, "keycloak-oidc", "state/keycloak.json", "results/keycloak.json"),
+    {
+      ...Object.fromEntries(
+        runnerArray(lane.requiredEnv, "requiredEnv").map((name) => [
+          runnerText(name, "required environment variable name"),
+          "fixture-input",
+        ]),
+      ),
+      ...inputs,
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+}
+
 export async function checkQaLaneInputsAndArtifacts(t: TestContext) {
   const root = await createRunnerFixture(t);
   const qaMatrix = parseRunnerRecord(
@@ -284,6 +318,7 @@ import { selectQaMatrix } from ${JSON.stringify(qaSelectionHelper)};
 test("QA inputs", async () => {
   assert.equal(process.env.OCC_TEST_QA_OPENAI_MODEL, "selected-openai-model");
   assert.equal(process.env.OCC_TEST_QA_CODEX_MODEL, "selected-codex-model");
+  assert.equal(process.env.OCC_TEST_KEYCLOAK_HOST_PORT, "45443");
   assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE, undefined);
   assert.equal(process.env.QA_REPOSITORY_FIXTURE, "isolated");
   assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY, "selected-app-input");
@@ -305,6 +340,7 @@ test("QA inputs", async () => {
     ...Object.fromEntries(lane.requiredEnv.map((name) => [name, "fixture-input"])),
     OCC_TEST_QA_OPENAI_MODEL: "selected-openai-model",
     OCC_TEST_QA_CODEX_MODEL: "selected-codex-model",
+    OCC_TEST_KEYCLOAK_HOST_PORT: "45443",
     OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY: "selected-app-input",
     QA_REPOSITORY_FIXTURE: "isolated",
     OCC_TEST_QA_ARTIFACTS: artifacts,

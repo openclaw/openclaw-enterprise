@@ -142,7 +142,7 @@ async function ownedPostgres() {
     /^openclaw_ci_pg_[a-z0-9_]+$/.test(server.name) && server.name.length <= 63,
     "The PostgreSQL Compose project must have a native CI name.",
   );
-  assert.equal(server.composeFile, join(repositoryRoot, "compose.postgres.yaml"));
+  assert.equal(server.composeFile, join(repositoryRoot, "compose.postgres.ci.yaml"));
   assert.equal(server.port, port);
   const databases = state.resources.filter(
     (resource) => resource.kind === "postgres-database" && resource.name === database,
@@ -173,7 +173,7 @@ async function runCommand(fixture, command, args) {
       ...process.env,
       pnpm_config_verify_deps_before_run: "false",
       OCC_MIGRATION_DATABASE_URL: fixture.migrationUrl,
-      OCC_POSTGRES_PORT: String(fixture.port),
+      OPENCLAW_CI_POSTGRES_PORT: String(fixture.port),
     },
     encoding: "utf8",
     timeout: 180_000,

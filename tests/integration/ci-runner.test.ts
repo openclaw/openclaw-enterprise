@@ -4,6 +4,7 @@ import { registerCompleteLifecycleCases } from "./ci-runner-complete-lifecycle-c
 import {
   checkFileEnvironmentPrecedence,
   checkGatewayRoutingEnvironment,
+  checkKeycloakLaneInputs,
   checkQaLaneInputsAndArtifacts,
   checkRunnerSelectorIsolation,
 } from "./ci-runner-environment-cases.ts";
@@ -44,6 +45,11 @@ test(
 );
 
 registerOpenShellSelectionCases();
+
+test(
+  "Keycloak OIDC lane forwards the selected browser executable and host port",
+  checkKeycloakLaneInputs,
+);
 
 test(
   "QA lane forwards selected models and observer input and retains outcomes at the requested path",

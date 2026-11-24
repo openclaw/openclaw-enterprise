@@ -1,12 +1,12 @@
 // Administrative SQL on a lane's PostgreSQL server (scripts/ci/prepare-postgres.ts and scripts/ci/cleanup.ts):
 // creating, copying and dropping databases and the server's settings. It connects straight
-// to the port the server publishes on 127.0.0.1, as the superuser compose.postgres.yaml
+// to the port the server publishes on 127.0.0.1, as the superuser the PostgreSQL service
 // creates. Each test's database copy and drop used to run `docker compose exec -T postgres
 // psql`: two CLI processes, a Docker API exec and a psql start, about 0.2-0.4 s per call
 // and around 1000 calls per postgres-application run.
 
-// compose.postgres.yaml's POSTGRES_USER and POSTGRES_PASSWORD. The server publishes only on
-// 127.0.0.1 and cleanup removes it with its volume.
+// Match POSTGRES_USER and POSTGRES_PASSWORD in compose.postgres.service.yaml.
+// The server publishes on loopback; cleanup removes the server and its volume.
 export const postgresSuperuser = "postgres";
 export const postgresSuperuserPassword = "openclaw-local-admin";
 

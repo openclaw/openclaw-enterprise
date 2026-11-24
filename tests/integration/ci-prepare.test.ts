@@ -211,9 +211,9 @@ async function laneFakePostgres(
   return postgres;
 }
 
-// Every session reached the lane server as the superuser compose.postgres.yaml creates.
+// Every session reached the lane server as the superuser its Compose service creates.
 async function assertSuperuserSessions(postgres: Awaited<ReturnType<typeof startFakePostgres>>) {
-  const compose = await readFile(join(repositoryRoot, "compose.postgres.yaml"), "utf8");
+  const compose = await readFile(join(repositoryRoot, "compose.postgres.service.yaml"), "utf8");
   const match = compose.match(/POSTGRES_PASSWORD: (\S+)/);
   assert.ok(match?.[1]);
   const password = match[1];
@@ -1805,7 +1805,7 @@ assert.equal(sibling.cleanup, null);
           kind: "compose-postgres",
           owner: "openclaw-ci-local-existing-state",
           name: "openclaw_ci_pg_existing_state_abcdef123456",
-          composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+          composeFile: join(repositoryRoot, "compose.postgres.ci.yaml"),
           port: 51234,
         },
       ],

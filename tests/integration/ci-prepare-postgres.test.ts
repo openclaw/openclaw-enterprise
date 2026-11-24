@@ -107,13 +107,15 @@ for (const [name, response, podmanIds] of [
       root,
       podmanIds === undefined ? "docker" : "podman",
       `case "$1:$6" in
-  version:|compose:down) exit 0 ;;
-  compose:up)
-    [ "\${OCC_POSTGRES_PORT+x}" = x ] || exit 98
+  version:) exit 0 ;;
+  compose:up|compose:down)
+    case "$3" in */compose.postgres.ci.yaml) ;; *) exit 98 ;; esac
+    [ "$OCC_POSTGRES_PORT" = 55449 ] || exit 98
+    [ "\${OPENCLAW_CI_POSTGRES_PORT+x}" = x ] || exit 98
     if [ "$TEST_PODMAN_IDS_SET" = 1 ]; then
-      [ -z "$OCC_POSTGRES_PORT" ] || exit 98
+      [ -z "$OPENCLAW_CI_POSTGRES_PORT" ] || exit 98
     else
-      [ "$OCC_POSTGRES_PORT" = 0 ] || exit 98
+      [ "$OPENCLAW_CI_POSTGRES_PORT" = 0 ] || exit 98
     fi
     exit 0 ;;
   compose:ps)
@@ -121,7 +123,7 @@ for (const [name, response, podmanIds] of [
       printf '%s\\n' 'unrecognized arguments: postgres' >&2
       exit 2
     fi
-    [ "$OCC_POSTGRES_PORT" = 0 ] && [ "$OPENCLAW_CI_POSTGRES_INIT_SQL" = "$TEST_BOOTSTRAP_ROOT/$5-bootstrap/init-local.sql" ] || exit 98
+    [ "$OPENCLAW_CI_POSTGRES_PORT" = 0 ] && [ "$OPENCLAW_CI_POSTGRES_INIT_SQL" = "$TEST_BOOTSTRAP_ROOT/$5-bootstrap/init-local.sql" ] || exit 98
     printf '%s\\n' '${container}'; exit 0 ;;
   ps:*) printf '%s\\n' "$TEST_PODMAN_IDS"; exit 0 ;;
   inspect:) printf '%s\\n' "$TEST_PORT_RESPONSE"; exit 0 ;;
@@ -132,6 +134,7 @@ esac`,
     const env = {
       ...process.env,
       OCC_DOCKER_BIN: engine,
+      OCC_POSTGRES_PORT: "55449",
       OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
       TEST_BOOTSTRAP_ROOT: root,
       TEST_PODMAN_IDS_SET: podmanIds === undefined ? "0" : "1",
@@ -156,6 +159,7 @@ esac`,
     assert.doesNotMatch(prepared.stderr, /private-invalid-json/);
     const resources = await readResources(statePath);
     const { server, compose, directory, name: project } = observedProject(resources);
+    assert.equal(server.composeFile, join(repositoryRoot, "compose.postgres.ci.yaml"));
     const lookup =
       podmanIds === undefined
         ? `${compose} ps -q postgres`

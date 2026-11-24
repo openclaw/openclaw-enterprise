@@ -25,7 +25,8 @@ import { quoteIdentifier, runPostgresAdmin } from "./postgres-admin.ts";
 import { runCommand } from "./command-supervision.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
+const composePostgresFile = join(repositoryRoot, "compose.postgres.ci.yaml");
+const retainedComposePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
 type CleanupResource = Record<string, unknown>;
 type K3dCleanupIdentity = {
   cluster: string;
@@ -293,14 +294,19 @@ function assertOwnedK3dFilesystem(
 
 function composeArgs(resource: CleanupResource, state: CleanupState, ...args: string[]) {
   assertResourceOwner(resource, state);
-  if (resource.composeFile !== composePostgresFile) {
+  if (
+    resource.composeFile !== composePostgresFile &&
+    resource.composeFile !== retainedComposePostgresFile
+  ) {
     throw new Error(`Refusing cleanup with unexpected Compose file: ${resource.composeFile}`);
   }
   assertOwnedName("openclaw_ci_pg_", resource.name, "Compose PostgreSQL project");
   if (Number(resource.port) === 55432) {
     throw new Error("Refusing to clean developer PostgreSQL port 55432.");
   }
-  return ["compose", "-f", resource.composeFile, "-p", resource.name, ...args];
+  // Retained journals can name the old shared file. The CI file keeps the same
+  // project, service and volume names, without applying developer port settings.
+  return ["compose", "-f", composePostgresFile, "-p", resource.name, ...args];
 }
 
 async function cleanupComposePostgres(
@@ -349,9 +355,12 @@ async function cleanupComposePostgres(
       `Refusing unconfirmed PostgreSQL bootstrap SQL ownership: ${resource.directory}`,
     );
   }
-  await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+  const engine = process.env.OCC_DOCKER_BIN ?? "docker";
+  // The journal uses 0 until discovery succeeds, including on Podman.
+  const port = resource.port === 0 && basename(engine) === "podman" ? "" : String(resource.port);
+  await execFile(engine, args, {
     env: {
-      OCC_POSTGRES_PORT: String(resource.port),
+      OPENCLAW_CI_POSTGRES_PORT: port,
       ...(resource.directory === undefined
         ? {}
         : { OPENCLAW_CI_POSTGRES_INIT_SQL: join(resource.directory, "init-local.sql") }),

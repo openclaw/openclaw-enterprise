@@ -1,0 +1,12 @@
+services:
+  postgres:
+    extends:
+      file: compose.postgres.service.yaml
+      service: postgres
+    ports:
+      # Standalone podman-compose cannot interpolate nested defaults. CI selects
+      # this file so it can use an empty port without changing the developer default.
+      - "127.0.0.1:${OPENCLAW_CI_POSTGRES_PORT-}:5432"
+
+volumes:
+  occ_postgres_data:
