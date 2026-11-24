@@ -138,3 +138,4 @@ The companions preserve the submitted proposals. Source ownership and fresh Harn
 - [Worker preparation and activation](worker-credential-configuration.md)
 - [Codex device login and account projection](codex-device-login.md)
 - [Shared GitHub App tokens and Agent repository access](github-app-template-policy.md)
+- Proposed: [Codex PAT Source adoption and Dedicated OpenClaw native Git placement (#7217)](https://github.com/openclaw/openclaw-enterprise/pull/7217)
