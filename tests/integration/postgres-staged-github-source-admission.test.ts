@@ -85,6 +85,12 @@ test(
     assert.equal(createdNamespace.statusCode, 201, createdNamespace.body);
     const namespaceId: string = createdNamespace.json().data.id;
     await controller.handleNamespaceLifecycle(principal.id, namespaceId, "ready");
+    const otherNamespace = await inject("POST", "/namespaces", {
+      name: `Other repository ${randomUUID()}`,
+    });
+    assert.equal(otherNamespace.statusCode, 201, otherNamespace.body);
+    const otherNamespaceId: string = otherNamespace.json().data.id;
+    await controller.handleNamespaceLifecycle(principal.id, otherNamespaceId, "ready");
     const base = `/namespaces/${namespaceId}`;
     const { core, driver } = useInstallationSecretDriver(controller);
     const store = driver.privateSecrets;
@@ -128,14 +134,12 @@ test(
         repositories: registryRepositories.map(({ repository, repositoryRef }) => ({
           repository: repository.split("/")[1]!.toUpperCase(),
           repositoryRef,
-          namespaces: [
-            {
-              namespaceId,
-              profiles: ["github-repository"],
-              nativeGit: "v1",
-              permissions,
-            },
-          ],
+          namespaces: [namespaceId, otherNamespaceId].map((approvedNamespaceId) => ({
+            namespaceId: approvedNamespaceId,
+            profiles: ["github-repository"],
+            nativeGit: "v1",
+            permissions,
+          })),
         })),
       }),
       { mode: 0o644 },
@@ -415,12 +419,73 @@ test(
     assert.equal(client.statusCode, 201);
     assert.equal(client.body.includes("PRIVATE KEY"), false);
     const clientId = client.json().data.id;
+    const registerScopedClient = (displayName: string, scope: string) =>
+      request("POST", "/credential-clients", {
+        kind: "github-app",
+        displayName,
+        namespaceId: scope,
+        appId: fixtureAppId,
+        privateKey: appKey,
+      });
+    const namespaceClient = await registerScopedClient("Namespace GitHub App", namespaceId);
+    assert.equal(namespaceClient.statusCode, 201, namespaceClient.body);
+    const namespaceClientId: string = namespaceClient.json().data.id;
+    const foreignClient = await registerScopedClient(
+      "Other Namespace GitHub App",
+      otherNamespaceId,
+    );
+    assert.equal(foreignClient.statusCode, 201, foreignClient.body);
+    const foreignClientId: string = foreignClient.json().data.id;
+    const listedClients = await request("GET", "/credential-clients");
+    assert.equal(listedClients.statusCode, 200, listedClients.body);
+    assert.deepEqual(
+      listedClients
+        .json()
+        .data.map((entry: { id: string; kind: string; namespaceId?: string; appId: string }) => ({
+          id: entry.id,
+          kind: entry.kind,
+          namespaceId: entry.namespaceId,
+          appId: entry.appId,
+        }))
+        .sort((left: { id: string }, right: { id: string }) => left.id.localeCompare(right.id)),
+      [
+        { id: clientId, kind: "github-app", namespaceId: undefined, appId: fixtureAppId },
+        { id: namespaceClientId, kind: "github-app", namespaceId, appId: fixtureAppId },
+        {
+          id: foreignClientId,
+          kind: "github-app",
+          namespaceId: otherNamespaceId,
+          appId: fixtureAppId,
+        },
+      ].sort((left, right) => left.id.localeCompare(right.id)),
+    );
+    assert.equal(listedClients.body.includes("PRIVATE KEY"), false);
     const sourceInput = {
       name: "Shared GitHub",
       type: "github-app-installation",
       clientId,
       repositoryRefs: repositories.map(({ repositoryRef }) => repositoryRef),
     };
+    // The Repository selection is valid here. A Client owned by another Namespace must
+    // fail before either its private signer or GitHub's authenticated issuer is reached.
+    const readsBeforeCrossNamespace = core.reads;
+    const issuerCallsBeforeCrossNamespace = github.trace.length;
+    const crossNamespaceSource = await request(
+      "POST",
+      `/namespaces/${otherNamespaceId}/credential-sources`,
+      {
+        ...sourceInput,
+        clientId: namespaceClientId,
+      },
+    );
+    assert.equal(crossNamespaceSource.statusCode, 409, crossNamespaceSource.body);
+    assert.equal(crossNamespaceSource.json().error.code, "RESOURCE_CONFLICT");
+    assert.equal(core.reads, readsBeforeCrossNamespace);
+    assert.equal(github.trace.length, issuerCallsBeforeCrossNamespace);
+    assert.deepEqual(
+      await state.read((view) => view.credentialSources.listCredentialSources(otherNamespaceId)),
+      [],
+    );
     const unavailable = await request("POST", `${base}/credential-sources`, {
       ...sourceInput,
       repositoryRefs: ["not-approved"],
@@ -475,6 +540,24 @@ test(
       values: createHarnessConfiguration("codex", "gpt-4.1"),
     });
     assert.equal(config.statusCode, 201, config.body);
+    const readsBeforeCrossNamespaceAgent = core.reads;
+    const issuerCallsBeforeCrossNamespaceAgent = github.trace.length;
+    const crossNamespaceAgent = await request("POST", `${base}/agents`, {
+      name: `Cross Namespace Client ${randomUUID()}`,
+      configurationId: config.json().data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+      credentialSources: [{ sourceId: modelSource.id }],
+      repositoryAccess: {
+        githubAppClientId: foreignClientId,
+        defaultProfile: "github-repository",
+        repositories: [{ repositoryRef: repositories[0]!.repositoryRef, access: "read" }],
+      },
+    });
+    assert.equal(crossNamespaceAgent.statusCode, 409, crossNamespaceAgent.body);
+    assert.equal(crossNamespaceAgent.json().error.code, "RESOURCE_CONFLICT");
+    assert.equal(core.reads, readsBeforeCrossNamespaceAgent);
+    assert.equal(github.trace.length, issuerCallsBeforeCrossNamespaceAgent);
     Reflect.set(core, "secretUid", randomUUID());
     const directKey = await request("POST", `${base}/secrets`, {
       name: "Direct key cannot replace selected Source custody",
@@ -561,6 +644,33 @@ test(
       [`binding-${randomUUID()}`, namespaceId, delegateId, roleId],
     );
     const delegateSession = await signInToControllerApp(app, credentials);
+    const delegateHeaders = {
+      host: new URL(delegateSession.origin).host,
+      ...authenticatedHeaders(delegateSession),
+    };
+    const deniedClientList = await app.inject({
+      method: "GET",
+      url: "/credential-clients",
+      headers: delegateHeaders,
+    });
+    assert.equal(deniedClientList.statusCode, 403, deniedClientList.body);
+    const createsBeforeDeniedRegistration = core.calls.createNamespacedSecret;
+    const issuerCallsBeforeDeniedRegistration = github.trace.length;
+    const deniedClientRegistration = await app.inject({
+      method: "POST",
+      url: "/credential-clients",
+      headers: delegateHeaders,
+      payload: {
+        kind: "github-app",
+        displayName: "Not an Installation administrator",
+        namespaceId,
+        appId: fixtureAppId,
+        privateKey: appKey,
+      },
+    });
+    assert.equal(deniedClientRegistration.statusCode, 403, deniedClientRegistration.body);
+    assert.equal(core.calls.createNamespacedSecret, createsBeforeDeniedRegistration);
+    assert.equal(github.trace.length, issuerCallsBeforeDeniedRegistration);
     const agents = [];
     let gitSourceId: string | undefined;
     for (const access of ["write", "read"] as const) {
@@ -1522,6 +1632,47 @@ test(
     assert.equal(github.issuesOfTokens.length, mintsBeforeSharedFailure + 1);
     assert.equal(deliveryAttempts, attemptsBeforeSharedFailure + 1);
     assert.equal((await readReceipt()).deliveryPending, true);
+
+    // An exact-Namespace Client participates in the same ordinary Agent deployment path;
+    // the already-enrolled Installation Client's Source cannot satisfy this distinct pin.
+    const mintsBeforeScopedDeployment = github.issuesOfTokens.length;
+    const scopedAgent = await request("POST", `${base}/agents`, {
+      name: `Namespace-scoped GitHub App ${randomUUID()}`,
+      configurationId: config.json().data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+      credentialSources: [{ sourceId: modelSource.id }],
+      repositoryAccess: { ...selected("read"), githubAppClientId: namespaceClientId },
+    });
+    assert.equal(scopedAgent.statusCode, 201, scopedAgent.body);
+    assert.equal(github.issuesOfTokens.length, mintsBeforeScopedDeployment);
+    const scopedDeployment = await request(
+      "POST",
+      `${base}/agents/${scopedAgent.json().data.id}/deploy`,
+      {},
+    );
+    assert.equal(scopedDeployment.statusCode, 202, scopedDeployment.body);
+    assert.equal(github.issuesOfTokens.length, mintsBeforeScopedDeployment + 1);
+    const scopedRevision = await state.read((view) =>
+      view.revisions.findRevision(
+        namespaceId,
+        scopedAgent.json().data.id,
+        scopedDeployment.json().data.id,
+      ),
+    );
+    const scopedBinding = scopedRevision?.credentialDeployment?.bindings.find(
+      ({ consumer }) => consumer.kind === "repository",
+    );
+    assert.ok(scopedBinding);
+    assert.notEqual(scopedBinding.sourceRef.id, gitSource.id);
+    const scopedSource = await request(
+      "GET",
+      `${base}/credential-sources/${scopedBinding.sourceRef.id}`,
+    );
+    assert.equal(scopedSource.statusCode, 200, scopedSource.body);
+    assert.equal(scopedSource.json().data.namespaceId, namespaceId);
+    assert.equal(scopedSource.json().data.clientId, namespaceClientId);
+    assert.deepEqual(scopedSource.json().data.scope.repositories, gitSource.scope.repositories);
 
     // Source-backed authorization still uses finite installation credentials. Cross the issuer
     // receipt's expiry after the Worker has shut down so only custody resolution sees this clock.

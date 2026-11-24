@@ -194,11 +194,11 @@ export function renderCredentialClients(
           result.id !== client.id ||
           result.kind !== client.kind ||
           result.displayName !== client.displayName ||
+          result.namespaceId !== client.namespaceId ||
           (client.kind === "github-app" &&
             (result.kind !== "github-app" || result.appId !== client.appId)) ||
           (client.kind === "oauth2" &&
             (result.kind !== "oauth2" ||
-              result.namespaceId !== client.namespaceId ||
               result.issuer !== client.issuer ||
               result.tokenUrl !== client.tokenUrl ||
               result.revocationUrl !== client.revocationUrl ||

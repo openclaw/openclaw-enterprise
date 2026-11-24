@@ -13797,7 +13797,11 @@
                                 "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
-                              "kind": { "const": "github-app", "type": "string" }
+                              "kind": { "const": "github-app", "type": "string" },
+                              "namespaceId": {
+                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
                             },
                             "required": ["kind", "id", "displayName", "appId", "createdAt"],
                             "type": "object"
@@ -13967,6 +13971,10 @@
                       "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
                       "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
                       "kind": { "const": "github-app", "type": "string" },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
                       "privateKey": {
                         "maxLength": 20000,
                         "minLength": 1,
@@ -14071,7 +14079,11 @@
                               "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "github-app", "type": "string" }
+                            "kind": { "const": "github-app", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
                           },
                           "required": ["kind", "id", "displayName", "appId", "createdAt"],
                           "type": "object"
@@ -14441,7 +14453,11 @@
                               "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "github-app", "type": "string" }
+                            "kind": { "const": "github-app", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
                           },
                           "required": ["kind", "id", "displayName", "appId", "createdAt"],
                           "type": "object"

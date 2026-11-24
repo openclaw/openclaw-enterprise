@@ -117,16 +117,19 @@ export const CredentialClientParams = Type.Object(
   { credentialClientId: CredentialClientId },
   strict,
 );
-const registration = {
+const clientRegistration = {
   displayName: DisplayName,
+  namespaceId: Type.Optional(NamespaceId),
+};
+const oauthRegistration = {
+  ...clientRegistration,
   clientId: Type.String({ minLength: 1, maxLength: 256 }),
   tokenEndpointAuthMethod: AuthMethod,
 };
 const createCredentialClient = Type.Object(
   {
     kind: Type.Literal("oauth2"),
-    ...registration,
-    namespaceId: Type.Optional(NamespaceId),
+    ...oauthRegistration,
     issuer: HttpsUrl,
     tokenUrl: HttpsUrl,
     revocationUrl: Type.Optional(HttpsUrl),
@@ -137,7 +140,7 @@ const createCredentialClient = Type.Object(
 const appId = Type.String({ pattern: "^[1-9][0-9]{0,15}$" });
 const privateKey = Type.String({ minLength: 1, maxLength: 20000, writeOnly: true });
 const createGitHubAppClient = Type.Object(
-  { kind: Type.Literal("github-app"), displayName: DisplayName, appId, privateKey },
+  { kind: Type.Literal("github-app"), ...clientRegistration, appId, privateKey },
   strict,
 );
 export const CreateCredentialClientBody = Type.Union([
@@ -172,8 +175,7 @@ const Observed = Type.Object(
 export const OAuthClientSchema = Type.Object(
   {
     kind: Type.Literal("oauth2"),
-    ...registration,
-    namespaceId: Type.Optional(NamespaceId),
+    ...oauthRegistration,
     issuer: HttpsUrl,
     tokenUrl: HttpsUrl,
     revocationUrl: Type.Optional(HttpsUrl),
@@ -186,7 +188,7 @@ const publicGitHubAppClient = Type.Object(
   {
     kind: Type.Literal("github-app"),
     id: CredentialClientId,
-    displayName: DisplayName,
+    ...clientRegistration,
     appId,
     createdAt: Type.String(),
   },

@@ -59,21 +59,14 @@ export type CreateConnectionTemplateInput = TemplateInput & {
 };
 export type UpdateConnectionTemplateInput =
   { readonly displayName: string } | (TemplateInput & { readonly displayName?: string });
-export type CreateCredentialClientInput =
-  | (Pick<
-      OAuthClient,
-      "kind" | "displayName" | "clientId" | "tokenEndpointAuthMethod" | "issuer" | "tokenUrl"
-    > & {
-      readonly namespaceId?: string;
-      readonly revocationUrl?: string;
-      readonly clientSecret?: string;
-    })
-  | {
-      readonly kind: "github-app";
-      readonly displayName: string;
-      readonly appId: string;
-      readonly privateKey: string;
-    };
+export type CreateCredentialClientInput = Pick<CredentialClient, "displayName" | "namespaceId"> &
+  (
+    | (Pick<
+        OAuthClient,
+        "kind" | "clientId" | "tokenEndpointAuthMethod" | "issuer" | "tokenUrl" | "revocationUrl"
+      > & { readonly clientSecret?: string })
+    | { readonly kind: "github-app"; readonly appId: string; readonly privateKey: string }
+  );
 export type RotateCredentialClientInput =
   | { readonly kind: "oauth2"; readonly clientSecret: string }
   | { readonly kind: "github-app"; readonly privateKey: string };
@@ -387,7 +380,12 @@ export function createConnectionAdministration({
       throw new ConnectionTemplateValidationError("displayName", "Provide a client name.");
     }
     const id = `ccr_${crypto.randomUUID()}`;
-    const createdAt = timestamp();
+    const common = {
+      id,
+      displayName: input.displayName,
+      createdAt: timestamp(),
+      ...(input.namespaceId !== undefined && { namespaceId: input.namespaceId }),
+    };
     let client: CredentialClient;
     let material: string | undefined;
     if (input.kind === "github-app") {
@@ -398,11 +396,9 @@ export function createConnectionAdministration({
         throw new ConnectionTemplateValidationError("privateKey", "Provide the App private key.");
       }
       client = {
+        ...common,
         kind: "github-app",
-        id,
-        displayName: input.displayName,
         appId: input.appId,
-        createdAt,
       };
       material = input.privateKey;
     } else {
@@ -434,16 +430,13 @@ export function createConnectionAdministration({
         );
       }
       client = {
+        ...common,
         kind: "oauth2",
-        id,
-        displayName: oauth.displayName,
         clientId: oauth.clientId,
         issuer: oauth.issuer,
         tokenUrl: oauth.tokenUrl,
         tokenEndpointAuthMethod: oauth.tokenEndpointAuthMethod,
         ...(oauth.revocationUrl !== undefined && { revocationUrl: oauth.revocationUrl }),
-        ...(oauth.namespaceId !== undefined && { namespaceId: oauth.namespaceId }),
-        createdAt,
       };
       material = oauth.clientSecret;
     }

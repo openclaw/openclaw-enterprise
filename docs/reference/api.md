@@ -2394,6 +2394,7 @@ Register an OAuth or GitHub App credential client
 | `appId` | `string` | Yes | pattern: `^[1-9][0-9]{0,15}$` |
 | `displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `kind` | `"github-app"` | Yes | — |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `privateKey` | `string` | Yes | min length: 1; max length: 20000 |
 
 Example request

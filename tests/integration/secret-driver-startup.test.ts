@@ -168,12 +168,12 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   const unsupportedClientScope = Object.create(owner);
   Object.defineProperties(unsupportedClientScope, {
     id: { value: "unsupported-client-scope" },
-    clientScopes: { value: { "github-app": ["namespace"] } },
+    clientScopes: { value: { "github-app": ["project"] } },
   });
   assert.throws(() => initial.registerDriver(unsupportedClientScope), /capability contract/);
   assert.deepEqual(owner.clientScopes, {
     oauth2: ["installation", "namespace"],
-    "github-app": ["installation"],
+    "github-app": ["installation", "namespace"],
   });
   const client = {
     kind: "oauth2" as const,
@@ -302,13 +302,6 @@ test("TokenService verifies the GitHub App before private custody and hot key re
     appId: fixtureAppId,
   };
   const firstKey = gh.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  // The common custody identity does not enable an unsupported Client registration scope.
-  await assert.rejects(
-    owner.registerClientSecret({ ...client, namespaceId: "ns_unsupported" }, firstKey, t.signal),
-    ScopeViolationError,
-  );
-  assert.equal(gh.trace.length, 0);
-  assert.equal(core.secrets.size, 0);
   await owner.registerClientSecret(client, firstKey, t.signal);
   assert.deepEqual(
     gh.trace.map(({ method, target }) => ({ method, target })),

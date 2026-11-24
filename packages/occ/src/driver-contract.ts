@@ -31,9 +31,7 @@ function validClientScopes(value: unknown): boolean {
       }
       return (
         new Set(supported).size === supported.length &&
-        supported.every(
-          (scope) => scope === "installation" || (purpose === "oauth2" && scope === "namespace"),
-        )
+        supported.every((scope) => scope === "installation" || scope === "namespace")
       );
     })
   );

@@ -17,9 +17,12 @@ that list, use `client_secret_basic`.
 
 A public client uses `none`. For `client_secret_basic` or `client_secret_post`,
 enter the write-only secret. The selected TokenService keeps the private value.
-Use `POST /credential-clients` to register a client. Supply `kind: "oauth2"` or
-`kind: "github-app"` and the fields for that kind. Use `GET /credential-clients` to
-list registered clients.
+An Installation administrator can register either Client kind for the Installation
+or one Namespace. In the Console, choose **Availability**. With
+`POST /credential-clients`, supply `kind: "oauth2"` or `kind: "github-app"` and the
+fields for that kind. Include `namespaceId` for a Namespace Client. Omit it for
+Installation-wide use. The registration keeps that scope through rotation.
+`GET /credential-clients` lists registered Clients.
 
 Use **Rotate OAuth client secret** or
 `POST /credential-clients/{credentialClientId}/rotate` to replace the secret for the

@@ -23,28 +23,27 @@ export const staticKeyHttpMethodPattern = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$/;
 
 export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
-/** A client may send its credentials only to its configured provider endpoints. */
-export interface OAuthClient {
-  readonly kind: "oauth2";
+interface CredentialClientRegistration {
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
+  readonly createdAt: string;
+}
+
+/** A client may send its credentials only to its configured provider endpoints. */
+export interface OAuthClient extends CredentialClientRegistration {
+  readonly kind: "oauth2";
   readonly issuer: string;
   readonly tokenUrl: string;
   readonly revocationUrl?: string;
   readonly clientId: string;
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
-  readonly createdAt: string;
 }
 
-/** Installation-scoped registration metadata; the signing key never leaves TokenService. */
-export interface GitHubAppClient {
+/** The signing key is used only within the selected TokenService. */
+export interface GitHubAppClient extends CredentialClientRegistration {
   readonly kind: "github-app";
-  readonly id: string;
-  readonly displayName: string;
   readonly appId: string;
-  readonly namespaceId?: never;
-  readonly createdAt: string;
 }
 
 export type CredentialClient = OAuthClient | GitHubAppClient;

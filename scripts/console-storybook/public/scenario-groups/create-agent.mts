@@ -1771,7 +1771,7 @@ export const createAgentProvisioningScenarios = {
   createGitHubClient: {
     ...gitClientPreview,
     name: "GitHub repository access with a registered App",
-    oauthCatalog: "ready",
+    oauthCatalog: "github-app-namespaces",
     repositoryOptions: [
       {
         repositoryRef: "application",
@@ -1783,7 +1783,7 @@ export const createAgentProvisioningScenarios = {
     description:
       "An Installation administrator selects an approved short repository and a registered GitHub App Client. The Agent saves the Client, repository reference and access; OCE prepares a finite credential Source at deployment.",
     steps: [
-      "Confirm application is selected before an owner is known, then choose Repository automation in GitHub App Client.",
+      "Open GitHub App Client. Repository automation is Installation-wide and Engineering repository App belongs to this Namespace. The Research App is unavailable here. Select Engineering repository App.",
       "Save Agent draft. Inspect its repositoryAccess for the Client ID, approved application reference, and read access. No GitHub Source creation request is sent from the Console.",
     ],
     gap: "Simulated Console proof. No GitHub mint, PostgreSQL, IAM, or OpenShell runtime is exercised.",

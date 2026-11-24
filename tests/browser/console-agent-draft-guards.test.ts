@@ -1370,25 +1370,43 @@ test("Console saves, reopens, and edits GitHub repository access through Agent-s
     clock,
   });
   const { fixture, namespaceId, tooling } = setup;
-  const registered = await fixture.request("POST", "/credential-clients", {
-    body: {
-      kind: "github-app",
-      displayName: "Repository App",
-      appId: fixtureAppId,
-      privateKey: github.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-    },
-  });
-  assert.equal(registered.status, 201);
-  const client = resource(registered.data);
+  const otherNamespace = await fixture.createNamespace("Other repository Apps", { ready: true });
+  const privateKey = github.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  async function registerClient(displayName: string, ownerNamespaceId?: string) {
+    const result = await fixture.request("POST", "/credential-clients", {
+      body: {
+        kind: "github-app",
+        displayName,
+        appId: fixtureAppId,
+        privateKey,
+        ...(ownerNamespaceId !== undefined && { namespaceId: ownerNamespaceId }),
+      },
+    });
+    assert.equal(result.status, 201);
+    return String(resource(result.data).id);
+  }
+  const clientId = await registerClient("Repository App", namespaceId);
+  const sharedClientId = await registerClient("Shared repository App");
+  const otherClientId = await registerClient("Other repository App", otherNamespace.id);
   const { page, agents } = await openRepositoryCreate(t, setup);
   await repositoryCheckbox(page, tooling.repository).check();
-  await page.getByLabel("GitHub App Client").selectOption(String(client.id));
+  const clientSelect = page.getByLabel("GitHub App Client");
+  async function checkScopedClientOptions() {
+    const option = (id: string) => clientSelect.locator(`option[value="${id}"]`);
+    await option(clientId).waitFor({ state: "attached" });
+    assert.match((await option(clientId).textContent()) ?? "", /This Namespace/);
+    assert.match((await option(sharedClientId).textContent()) ?? "", /Installation-wide/);
+    assert.equal(await option(otherClientId).count(), 0);
+  }
+  await checkScopedClientOptions();
+  await clientSelect.selectOption(clientId);
   await page.getByLabel(`GitHub access for ${tooling.repository}`).selectOption("read");
   const created = responseTo(page, "POST", `${fixture.origin}${agents}`);
   await page.getByRole("button", { name: "Save Agent draft" }).click();
   const response = await created;
   assert.equal(response.status(), 201, await response.text());
   const agent = (await response.json()).data;
+  assert.equal(agent.repositoryAccess.githubAppClientId, clientId);
   assert.deepEqual(agent.repositoryAccess.repositories, [
     { repositoryRef: "tooling", access: "read" },
   ]);
@@ -1405,6 +1423,8 @@ test("Console saves, reopens, and edits GitHub repository access through Agent-s
         entry.repositoryRef === "tooling" && entry.githubAccess,
     ),
   );
+  await checkScopedClientOptions();
+  assert.equal(await clientSelect.inputValue(), clientId);
   const access = page.getByLabel(`GitHub access for ${tooling.repository}`);
   assert.equal(await access.inputValue(), "read");
   await access.selectOption("write");
@@ -1412,9 +1432,9 @@ test("Console saves, reopens, and edits GitHub repository access through Agent-s
   await page.getByRole("button", { name: "Save repository access" }).click();
   const update = await saved;
   assert.equal(update.status(), 200, await update.text());
-  assert.deepEqual((await update.json()).data.repositoryAccess.repositories, [
-    { repositoryRef: "tooling", access: "write" },
-  ]);
+  const savedAccess = (await update.json()).data.repositoryAccess;
+  assert.equal(savedAccess.githubAppClientId, clientId);
+  assert.deepEqual(savedAccess.repositories, [{ repositoryRef: "tooling", access: "write" }]);
   await page.reload();
   assert.equal(
     await page.getByLabel(`GitHub access for ${tooling.repository}`).inputValue(),

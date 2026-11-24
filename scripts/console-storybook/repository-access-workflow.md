@@ -78,8 +78,11 @@ not create a GitHub credential Source. Uncheck both. Before **Create Agent**,
 check the warning about deployment without a repository policy. Select a repository
 again. The warning disappears and **Save Agent draft** returns. **Access profiles**
 retains its existing hint. Open **GitHub repository access with a registered App**
-(`createGitHubClient`) to inspect the selected Client and short repository name.
-The story simulates saving an Agent; it does not mint a token or deploy a Source.
+(`createGitHubClient`) to inspect the selected application repository. The
+**GitHub App Client** list offers the Installation-wide Client and the Client
+registered in Engineering. Select **Engineering repository App** and save the
+draft. This story simulates the Console. It does not mint a token or deploy a
+Source.
 
 Open **Set permissions on a saved draft** under **Pages / Agent detail**
 (`repositoryPermissionsDraft`). Read the conditional warning before **Deploy new

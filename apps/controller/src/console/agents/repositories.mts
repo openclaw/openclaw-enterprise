@@ -1,4 +1,5 @@
 import type {
+  GitHubAppClient,
   RepositoryAccess,
   RepositoryBindingSelection,
   RepositoryOption as CatalogOption,
@@ -305,7 +306,7 @@ export function createRepositoryFields(
   mode.value = intent?.githubAppClientId || initial.scopedGrants ? "scoped" : "profiles";
   let selectedClientId = intent?.githubAppClientId ?? "";
   let clientState: "idle" | "loading" | "ready" | "failed" = "idle";
-  let clients: { id: string; displayName: string; appId: string }[] = [];
+  let clients: Pick<GitHubAppClient, "id" | "displayName" | "appId" | "namespaceId">[] = [];
   const clientSelect = element("select", { id: "github-app-client" });
   const clientStatus = element("p", { className: "hint", role: "status" });
   const retryClients = button("Retry GitHub App Clients", () => void loadClients());
@@ -346,8 +347,18 @@ export function createRepositoryFields(
         return item.kind === "github-app" &&
           typeof item.id === "string" &&
           typeof item.displayName === "string" &&
-          typeof item.appId === "string"
-          ? [{ id: item.id, displayName: item.displayName, appId: item.appId }]
+          typeof item.appId === "string" &&
+          (item.namespaceId === undefined || item.namespaceId === context.namespaceId)
+          ? [
+              {
+                id: item.id,
+                displayName: item.displayName,
+                appId: item.appId,
+                ...(item.namespaceId === context.namespaceId && {
+                  namespaceId: context.namespaceId,
+                }),
+              },
+            ]
           : [];
       });
       clientState = "ready";
@@ -372,9 +383,14 @@ export function createRepositoryFields(
     if (context.installationAdmin === true && clientState === "idle") {
       void loadClients();
     }
-    const entries = clients.map((item) =>
-      element("option", { value: item.id }, `${item.displayName} (App ${item.appId})`),
-    );
+    const entries = clients.map((item) => {
+      const availability = item.namespaceId === undefined ? "Installation-wide" : "This Namespace";
+      return element(
+        "option",
+        { value: item.id },
+        `${item.displayName} (App ${item.appId}) · ${availability}`,
+      );
+    });
     if (selectedClientId && !clients.some(({ id }) => id === selectedClientId)) {
       entries.push(
         element(

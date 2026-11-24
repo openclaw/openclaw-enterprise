@@ -55,7 +55,9 @@ OCC checks Installation administration and the selected Namespace before saving 
 
 For manual OAuth, OCC accepts the configured settings and destinations. For MCP, it reads protected resource metadata over HTTPS, pins each request to public addresses and contacts the selected advertised authorization server. The version records what OCC discovered, the OAuth resource and the MCP transport destination. An administrator can also edit the installed Google OAuth template and its prefilled Google Workspace destinations.
 
-### 2. Register and maintain the OAuth client
+<a id="2-register-and-maintain-the-oauth-client"></a>
+
+### 2. Register and maintain a credential client
 
 `packages/occ/src/connection-administration.ts:createCredentialClient` and `packages/occ/src/connection-administration.ts:cleanupCredentialClients`
 
@@ -63,9 +65,9 @@ For manual OAuth, OCC accepts the configured settings and destinations. For MCP,
 
 If the save response lacks a valid version, the Console keeps the editor open and disables another save. Close the editor to refresh the catalog and check whether the change was saved before continuing registration.
 
-A client registration records its own scope, issuer and token endpoint. For a confidential client, OCC reserves a hidden row and asks the selected TokenService to store the secret. Public registration needs only the client ID and metadata. OCC publishes the registration and records the audit.
+OCC records the selected Installation or Namespace scope for either Client kind. For an OAuth2 secret or GitHub App key, OCC reserves a hidden row and asks the selected TokenService to store the material under the Client's private address. A public OAuth2 Client needs only metadata. OCC publishes the Client and records the audit.
 
-Rotation replaces the confidential client's secret at the same private reference. Code exchange and renewal read its current value. A pending consent attempt or retained OAuth Source blocks deletion of its client. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
+Rotation replaces the private value at the same address. OAuth2 code exchange and refresh read the current secret. The GitHub issuer uses the current signing key and checks the Client's scope against the Source's Namespace before reading it. A pending consent attempt, Agent repository selection or retained Source can block Client deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
 
 ### 3. Authorize the account in the browser
 

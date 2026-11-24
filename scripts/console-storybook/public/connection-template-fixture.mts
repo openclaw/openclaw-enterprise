@@ -12,7 +12,10 @@ export function createConnectionTemplateFixture(
 ) {
   const issuer = "https://identity.example.com";
   const populated =
-    mode === "ready" || mode === "plugin-consent" || mode === "github-app-verification-failed";
+    mode === "ready" ||
+    mode === "plugin-consent" ||
+    mode === "github-app-verification-failed" ||
+    mode === "github-app-namespaces";
   const templateId = "ctp_00000000-0000-4000-8000-000000000004";
   const templates: Record<string, unknown>[] = populated
     ? [
@@ -122,6 +125,26 @@ export function createConnectionTemplateFixture(
         },
       ]
     : [];
+  if (mode === "github-app-namespaces") {
+    oauthClients.push(
+      {
+        kind: "github-app",
+        id: "ccr_00000000-0000-4000-8000-000000000009",
+        displayName: "Engineering repository App",
+        appId: "12345",
+        namespaceId,
+        createdAt,
+      },
+      {
+        kind: "github-app",
+        id: "ccr_00000000-0000-4000-8000-000000000010",
+        displayName: "Research repository App",
+        appId: "12345",
+        namespaceId: "ns_00000000-0000-4000-8000-000000000002",
+        createdAt,
+      },
+    );
+  }
   return (
     path: string,
     method: string,
@@ -217,6 +240,7 @@ export function createConnectionTemplateFixture(
                 id: nextId("ccr"),
                 displayName: body.displayName,
                 appId: body.appId,
+                ...(typeof body.namespaceId === "string" && { namespaceId: body.namespaceId }),
                 createdAt,
               }
             : {

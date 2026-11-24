@@ -181,7 +181,6 @@ export function openCredentialClientRegistration(
   const oauthFields = element(
     "fieldset",
     { className: "connection-template-fields" },
-    field({ label: "Availability", control: scope }),
     field({ label: "Issuer URL", control: issuer }),
     field({ label: "Token URL", control: tokenUrl }),
     field({ label: "Revocation URL (optional)", control: revocationUrl }),
@@ -216,7 +215,6 @@ export function openCredentialClientRegistration(
   const githubFields = element(
     "fieldset",
     { className: "connection-template-fields" },
-    element("p", { className: "hint" }, "GitHub App clients are available Installation-wide."),
     field({ label: "GitHub App ID", control: appId }),
     keyField,
   );
@@ -225,6 +223,7 @@ export function openCredentialClientRegistration(
     { className: "connection-template-fields" },
     kindField,
     field({ label: "Client name", control: name }),
+    field({ label: "Availability", control: scope }),
     oauthFields,
     githubFields,
   );
@@ -268,7 +267,7 @@ export function openCredentialClientRegistration(
   async function submit() {
     const github = kind.value === "github-app";
     const controls = github
-      ? [name, appId, key]
+      ? [name, scope, appId, key]
       : [name, scope, issuer, tokenUrl, revocationUrl, clientId, method, secret];
     if (pending || uncertain || !validateFields(controls)) {
       return;
@@ -282,15 +281,15 @@ export function openCredentialClientRegistration(
       if (github && privateKey === undefined) {
         return;
       }
+      const client = { displayName, ...(namespaceId && { namespaceId }) };
       const registration = github
-        ? { kind: "github-app", displayName, appId: appId.value.trim(), privateKey }
+        ? { ...client, kind: "github-app", appId: appId.value.trim(), privateKey }
         : {
+            ...client,
             kind: "oauth2",
-            displayName,
             issuer: issuer.value.trim(),
             tokenUrl: tokenUrl.value.trim(),
             ...(revocationUrl.value.trim() && { revocationUrl: revocationUrl.value.trim() }),
-            ...(namespaceId && { namespaceId }),
             clientId: clientId.value.trim(),
             tokenEndpointAuthMethod: method.value,
             ...(method.value !== "none" && { clientSecret: secret.value }),
@@ -309,12 +308,10 @@ export function openCredentialClientRegistration(
       const confirmed =
         !!result.id &&
         result.displayName === displayName &&
+        result.namespaceId === namespaceId &&
         (github
-          ? result.kind === "github-app" &&
-            result.appId === appId.value.trim() &&
-            result.namespaceId === undefined
+          ? result.kind === "github-app" && result.appId === appId.value.trim()
           : result.kind === "oauth2" &&
-            result.namespaceId === namespaceId &&
             result.issuer === issuer.value.trim() &&
             result.tokenUrl === tokenUrl.value.trim() &&
             result.revocationUrl === (revocationUrl.value.trim() || undefined) &&

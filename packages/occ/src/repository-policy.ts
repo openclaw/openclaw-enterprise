@@ -135,6 +135,7 @@ interface RepositoryPolicyDependencies {
   readonly stagedRepositoryCeiling: StagedRepositoryCeiling | undefined;
   readonly prepareStagedRepositorySource: PrepareStagedRepositorySource | undefined;
   readonly validateDeploymentGitHubAppClient: (
+    namespaceId: string,
     clientId: string,
     appId: string | undefined,
     draftState: PlatformUnitOfWork,
@@ -826,7 +827,12 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
     const registration = prepareRepositorySource(agent);
     // Serialize a new or retained reference with Client retirement.
-    await dependencies.validateDeploymentGitHubAppClient(clientId, registration?.appId, state);
+    await dependencies.validateDeploymentGitHubAppClient(
+      agent.namespaceId,
+      clientId,
+      registration?.appId,
+      state,
+    );
   }
 
   function admitRepositoryCredentials(

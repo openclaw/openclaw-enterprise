@@ -2604,7 +2604,7 @@ export const oauthClients = occSchema.table(
           AND ${table.appId} IS NULL
           AND ((${table.tokenEndpointAuthMethod}='none')=(${table.tokenServiceInstanceId} IS NULL))
         WHEN ${table.kind}='github-app' THEN
-          ${table.namespaceId} IS NULL AND ${table.issuer} IS NULL AND ${table.clientId} IS NULL
+          ${table.issuer} IS NULL AND ${table.clientId} IS NULL
           AND ${table.tokenUrl} IS NULL AND ${table.revocationUrl} IS NULL AND ${table.tokenEndpointAuthMethod} IS NULL
           AND CASE WHEN ${table.appId} ~ '^[1-9][0-9]{0,15}$' THEN ${table.appId}::numeric <= 9007199254740991 ELSE false END
           AND ${table.tokenServiceInstanceId} IS NOT NULL

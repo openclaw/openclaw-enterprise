@@ -2928,7 +2928,7 @@ function repositories(
         if (
           client?.kind !== "github-app" ||
           client.cleanupAfter !== undefined ||
-          client.namespaceId !== undefined ||
+          (client.namespaceId !== undefined && client.namespaceId !== source.namespaceId) ||
           client.appId !== source.scope.appId ||
           client.tokenServiceInstanceId !== source.tokenServiceInstanceId
         ) {

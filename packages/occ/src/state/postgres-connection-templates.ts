@@ -101,6 +101,7 @@ function staticVersionFromRow(
 function registrationFromRow(row: Row): Readonly<StoredCredentialClient> {
   const common = {
     id: text(row, "id"),
+    ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
     displayName: text(row, "display_name"),
     createdAt: timestamp(row, "created_at"),
     ...(row.token_service_instance_id === null
@@ -116,7 +117,6 @@ function registrationFromRow(row: Row): Readonly<StoredCredentialClient> {
   return immutableCopy({
     ...common,
     kind: "oauth2",
-    ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
     issuer: text(row, "issuer"),
     clientId: text(row, "client_id"),
     tokenUrl: text(row, "token_url"),
@@ -306,7 +306,7 @@ export function postgresConnectionTemplates(
         [
           registration.id,
           registration.kind,
-          oauth?.namespaceId ?? null,
+          registration.namespaceId ?? null,
           oauth?.issuer ?? null,
           oauth?.clientId ?? null,
           registration.tokenServiceInstanceId ?? null,

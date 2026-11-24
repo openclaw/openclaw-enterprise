@@ -1501,6 +1501,7 @@ test(
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
+      [95, "preNamespaceGitHubAppClients"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1936,6 +1937,7 @@ test(
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
+      [95, "preNamespaceGitHubAppClients"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -2385,6 +2387,117 @@ test(
       { code: "55000" },
     );
     assert.deepEqual(await readSource(), before);
+  },
+);
+
+test(
+  "Namespace GitHub App Clients enforce Source ownership after upgrading 0095",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "github_app_scope", { prefix: 95 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const otherNamespaceId = `ns_${randomUUID()}`;
+    const instanceId = randomUUID();
+    const globalClientId = `ccr_${randomUUID()}`;
+    const namespaceClientId = `ccr_${randomUUID()}`;
+    const appId = "10001";
+    const scope = {
+      appId,
+      installationId: "20001",
+      repositories: [{ repositoryId: "30001", repository: "example/repository" }],
+      permissions: { metadata: "read", contents: "read" },
+    };
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'GitHub fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.namespaces(id,name,status,created_at)
+       VALUES($1,'GitHub owner','ready',now()),($2,'Other owner','ready',now())`,
+      [namespaceId, otherNamespaceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
+       VALUES($1,$2,'occ-token-service','fixture-store')`,
+      [installationId, instanceId],
+    );
+    const insertClient = (id, owner) =>
+      db.app.query(
+        `INSERT INTO occ.oauth_clients
+           (id,kind,namespace_id,display_name,app_id,token_service_instance_id,created_at)
+         VALUES($1,'github-app',$2,'GitHub App',$3,$4,now())`,
+        [id, owner, appId, instanceId],
+      );
+    const insertSource = (owner, clientId) =>
+      db.app.query(
+        `INSERT INTO occ.credential_sources
+           (id,namespace_id,name,type,config,owner_capability,state,created_at,
+            token_service_instance_id,github_app_client_id,github_app_scope)
+         VALUES($1,$2,'GitHub Source','github-app-installation','{}','token_service','ready',
+                now(),$3,$4,$5::jsonb)
+         RETURNING id,namespace_id,github_app_client_id,github_app_scope`,
+        [`cs_${randomUUID()}`, owner, instanceId, clientId, JSON.stringify(scope)],
+      );
+
+    // A real 0095 database has an Installation Client and a Source already using it.
+    await insertClient(globalClientId, null);
+    const retained = (await insertSource(otherNamespaceId, globalClientId)).rows[0];
+    await assert.rejects(insertClient(namespaceClientId, namespaceId), {
+      code: "23514",
+      constraint: "oauth_clients_kind_shape",
+    });
+    const previous = await historyReceipts(db.migrator);
+    assert.deepEqual(await runHistoryCommand(db, "production"), {
+      ok: true,
+      history: "preNamespaceGitHubAppClients",
+    });
+    await assertCompletedHistory(db, previous);
+
+    assert.deepEqual(
+      (
+        await db.app.query(
+          `SELECT id,namespace_id,github_app_client_id,github_app_scope
+           FROM occ.credential_sources WHERE id=$1`,
+          [retained.id],
+        )
+      ).rows,
+      [retained],
+    );
+    await insertClient(namespaceClientId, namespaceId);
+    // Both Clients have the same App ID and TokenService owner. Only the Namespace differs.
+    await assert.rejects(insertSource(otherNamespaceId, namespaceClientId), {
+      code: "23514",
+      message: "Git Source requires a ready GitHub App client",
+    });
+    const scoped = (await insertSource(namespaceId, namespaceClientId)).rows[0];
+    assert.equal(scoped.namespace_id, namespaceId);
+    assert.equal(scoped.github_app_client_id, namespaceClientId);
+
+    // The app may retire a Source but cannot rehome it or repoint it at another Client.
+    assert.equal(
+      (
+        await db.app.query("UPDATE occ.credential_sources SET state='deleting' WHERE id=$1", [
+          scoped.id,
+        ])
+      ).rowCount,
+      1,
+    );
+    await assert.rejects(
+      db.app.query("UPDATE occ.oauth_clients SET namespace_id=$1 WHERE id=$2", [
+        otherNamespaceId,
+        namespaceClientId,
+      ]),
+      { code: "42501" },
+    );
+    await assert.rejects(
+      db.app.query("UPDATE occ.credential_sources SET github_app_client_id=$1 WHERE id=$2", [
+        globalClientId,
+        scoped.id,
+      ]),
+      { code: "42501" },
+    );
   },
 );
 
@@ -2919,6 +3032,7 @@ test(
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
+      [95, "preNamespaceGitHubAppClients"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3056,6 +3170,7 @@ test(
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
+      [95, "preNamespaceGitHubAppClients"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3226,6 +3341,7 @@ test(
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
+      [95, "preNamespaceGitHubAppClients"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3254,6 +3370,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [95, "CREATE FUNCTION"],
                 [94, "ALTER TABLE"],
                 [93, "CREATE TRIGGER"],
                 [92, "CREATE FUNCTION"],
@@ -3292,6 +3409,9 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 95) {
+          // The Source guard follows the Client constraint change in 0096.
+          failAt = "";
         } else if (prefix === 94) {
           // Abort late in the cutover after the validator and the unvalidated constraint exist.
           failAt = `IF NOT EXISTS (

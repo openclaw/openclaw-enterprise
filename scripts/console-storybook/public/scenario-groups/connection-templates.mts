@@ -63,12 +63,12 @@ export const connectionTemplateScenarios = {
   credentialsOAuthClientCatalog: {
     group: "Pages/Credentials",
     name: "Credential client catalog",
-    path: "/console/credentials/credential-clients",
-    oauthCatalog: "ready",
-    description: "OAuth clients and a GitHub App share one administrator-only catalog.",
+    path: "/console/credentials/credential-clients?namespace=ns_00000000-0000-4000-8000-000000000001",
+    oauthCatalog: "github-app-namespaces",
+    description: "The administrator sees Installation-wide and Engineering clients in one catalog.",
     steps: [
-      "Compare each client's kind, issuer or App ID, availability, and authentication. Open a delete confirmation and check the identity, then cancel.",
-      "Choose Register client. Switch between OAuth 2.0 and GitHub App and inspect the relevant write-only fields.",
+      "Compare the Availability cells for Repository automation and Engineering repository App.",
+      "Choose Register client. Switch between OAuth 2.0 and GitHub App and inspect each kind's write-only fields and shared Availability picker.",
     ],
   },
   credentialsDeleteTemplate: {
@@ -132,14 +132,17 @@ export const connectionTemplateScenarios = {
   credentialsRegisterGitHubApp: {
     group: "Pages/Credentials",
     name: "Register GitHub App",
-    path: "/console/credentials/credential-clients",
+    path: "/console/credentials/credential-clients?namespace=ns_00000000-0000-4000-8000-000000000001",
     oauthCatalog: "ready",
     actions: [
       click("Register client"),
       { selector: "#credential-client-kind", value: "github-app" },
     ],
-    description:
-      "The App ID is immutable and the private key file contents are write-only. GitHub App registrations are Installation-wide.",
+    description: "The App ID is immutable and the private key file contents are write-only.",
+    steps: [
+      "Choose Namespace · Engineering in Availability. Enter a sample name and App ID, select an inert .pem file, and register.",
+      "Confirm the catalog shows Namespace · Engineering for the new GitHub App Client.",
+    ],
   },
   credentialsGitHubAppVerificationFailed: {
     group: "Pages/Credentials",
@@ -252,10 +255,16 @@ export const connectionTemplateScenarios = {
       | "/console/secrets"
       | "/console/credentials/connection-templates"
       | `/console/credentials/connection-templates?${string}`
-      | "/console/credentials/credential-clients";
+      | "/console/credentials/credential-clients"
+      | `/console/credentials/credential-clients?${string}`;
     actions?: StoryAction[];
     emptyNamespaces?: true;
-    oauthCatalog?: "ready" | "error" | "unconfirmed-save" | "github-app-verification-failed";
+    oauthCatalog?:
+      | "ready"
+      | "error"
+      | "unconfirmed-save"
+      | "github-app-verification-failed"
+      | "github-app-namespaces";
     readOnlyPermissionSummary?: true;
     description: string;
     steps?: readonly string[];

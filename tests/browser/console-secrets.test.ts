@@ -510,6 +510,7 @@ test("an administrator registers and rotates a verified GitHub App signing key",
   );
   const fixture = await clientConsoleFixture(t, {}, { apiOrigin, ca: tls.cert, clock });
   const namespace = await fixture.createNamespace("Git client owners", { ready: true });
+  const other = await fixture.createNamespace("Other Git clients", { ready: true });
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, secretsUrl(namespace));
   await page
@@ -519,7 +520,9 @@ test("an administrator registers and rotates a verified GitHub App signing key",
   await page.getByRole("button", { name: "Register client" }).click();
   const form = dialog(page, "Register credential client");
   await form.getByLabel("Client type").selectOption("github-app");
-  await form.getByText("GitHub App clients are available Installation-wide.").waitFor();
+  const availability = form.getByLabel("Availability");
+  assert.equal(await availability.inputValue(), "installation");
+  await availability.selectOption(namespace.id);
   await form.getByLabel("Client name").fill("Repository App");
   await form.getByLabel("GitHub App ID").fill(String(Number(fixtureAppId) + 1));
   const privateKey = github.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -554,14 +557,23 @@ test("an administrator registers and rotates a verified GitHub App signing key",
   const client = (await response.json()).data;
   assert.deepEqual(
     { kind: client.kind, appId: client.appId, namespaceId: client.namespaceId },
-    { kind: "github-app", appId: fixtureAppId, namespaceId: undefined },
+    { kind: "github-app", appId: fixtureAppId, namespaceId: namespace.id },
   );
   assert.equal(Object.hasOwn(client, "privateKey"), false);
   const row = page
     .getByRole("row")
     .filter({ has: page.getByRole("rowheader", { name: "Repository App", exact: true }) });
   await row.getByRole("cell", { name: "GitHub App", exact: true }).waitFor();
-  await row.getByRole("cell", { name: "Installation-wide", exact: true }).waitFor();
+  const scope = row.getByRole("cell", { name: "Namespace · Git client owners", exact: true });
+  await scope.waitFor();
+  const namespaceSelector = page.getByRole("combobox", { name: "Namespace", exact: true });
+  await namespaceSelector.selectOption(other.id);
+  await page
+    .getByText("No credential clients are available for this selection.", { exact: true })
+    .waitFor();
+  assert.equal(await row.count(), 0);
+  await namespaceSelector.selectOption(namespace.id);
+  await scope.waitFor();
   await row.getByRole("button", { name: "Rotate Repository App" }).click();
   const rotation = dialog(page, "Rotate GitHub App key");
   // The issuer now recognizes a second real key for the same App; rotation must verify it.
@@ -579,7 +591,9 @@ test("an administrator registers and rotates a verified GitHub App signing key",
     fixture.origin + "/credential-clients/" + client.id + "/rotate",
   );
   await rotation.getByRole("button", { name: "Rotate", exact: true }).click();
-  assert.equal((await replaced).status(), 200);
+  const rotated = await replaced;
+  assert.equal(rotated.status(), 200);
+  assert.equal((await rotated.json()).data.namespaceId, namespace.id);
   await page.getByText("Rotated Repository App.", { exact: true }).waitFor();
   assert.equal((await page.locator("body").innerText()).includes("BEGIN PRIVATE KEY"), false);
 });

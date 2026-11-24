@@ -67,11 +67,12 @@ registry ConfigMap. Set the GitHub Backend's `registryPath` to
 `/etc/openclaw/repository-registry/registry.json`.
 
 1. As Installation administrator, open **Credentials → Credential clients →
-   Register client**. Select **GitHub App**, enter the App ID, and select its
-   PEM signing key. TokenService verifies the key and keeps it private.
+   Register client**. Select **GitHub App**, choose **Installation-wide** or
+   the Agent's Namespace, enter the App ID, and select its PEM signing key.
+   TokenService verifies the key and keeps it private.
 2. In the Agent's **Repositories** settings, choose the approved repositories,
-   their access levels, and the registered GitHub App Client. Selecting or
-   changing the Client requires Installation administration.
+   their access levels, and a GitHub App Client available in that Namespace.
+   Selecting or changing the Client requires Installation administration.
 3. Select the model credential, then save and deploy. Deploy requires permission
    to use an eligible Namespace Source or to create one. TokenService mints a
    finite installation token when needed. Credential Proxy injects it only on

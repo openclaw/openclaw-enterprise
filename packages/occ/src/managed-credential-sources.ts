@@ -315,6 +315,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
   }
 
   async function validateDeploymentGitHubAppClient(
+    namespaceId: string,
     clientId: string,
     appId: string | undefined,
     draftState?: PlatformUnitOfWork,
@@ -327,11 +328,11 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     if (
       client?.kind !== "github-app" ||
       (appId !== undefined && client.appId !== appId) ||
-      client.namespaceId !== undefined ||
+      (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
       client.tokenServiceInstanceId !== currentTokenServiceInstanceId()
     ) {
       throw new ResourceStateConflictError(
-        "Select a registered GitHub App Client for the approved installation and selected TokenService.",
+        "Select a GitHub App Client available in this Namespace for the approved installation and selected TokenService.",
       );
     }
   }
@@ -348,7 +349,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     },
   ): Promise<string> {
     const instanceId = currentTokenServiceInstanceId();
-    await validateDeploymentGitHubAppClient(input.clientId, input.appId);
+    await validateDeploymentGitHubAppClient(namespaceId, input.clientId, input.appId);
     const eligibleSources = await dependencies.transactions.read(async (state) =>
       (await state.credentialSources.listCredentialSources(namespaceId)).filter(
         (source) =>

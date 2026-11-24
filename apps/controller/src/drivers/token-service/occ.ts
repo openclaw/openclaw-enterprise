@@ -165,7 +165,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   readonly implementation = OCCTokenServiceDriver.implementation;
   readonly clientScopes: TokenServiceDriver["clientScopes"] = Object.freeze({
     oauth2: Object.freeze(["installation", "namespace"] as const),
-    "github-app": Object.freeze(["installation"] as const),
+    "github-app": Object.freeze(["installation", "namespace"] as const),
   });
   readonly id: string;
   private readonly installationId: string;
@@ -431,13 +431,19 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   private githubAppSigningKeyRef(
     client: (Readonly<CredentialClient> & { readonly tokenServiceInstanceId?: string }) | undefined,
     {
+      namespaceId,
       clientId,
       scope,
-    }: { readonly clientId: string; readonly scope: Pick<GitHubAppRepositorySelection, "appId"> },
+    }: {
+      readonly namespaceId: string;
+      readonly clientId: string;
+      readonly scope: Pick<GitHubAppRepositorySelection, "appId">;
+    },
   ): PrivateSecretRef {
     if (
       client?.kind !== "github-app" ||
       client.id !== clientId ||
+      (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
       client.appId !== scope.appId ||
       client.tokenServiceInstanceId !== this.tokenServiceInstanceId
     ) {
@@ -491,7 +497,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       // Serialize enrollment with client retirement before issuing against its signing key.
       const key = this.githubAppSigningKeyRef(
         await connectionTemplates.lockCredentialClient(input.clientId),
-        { clientId: input.clientId, scope },
+        { namespaceId: ref.namespaceId, clientId: input.clientId, scope },
       );
       const issued = await this.issueGitHubAppCredential(scope, key, signal);
       const source: GitHubAppInstallationCredentialSource = {
