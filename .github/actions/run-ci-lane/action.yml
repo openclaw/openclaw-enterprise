@@ -261,8 +261,9 @@ runs:
       id: check-go-cli
       if: inputs.lane == 'checks-baseline-1'
       shell: bash
+      # cli:check runs go vet for all packages before the tests.
       # Go's test cache cannot see repository files read by child processes.
-      run: pnpm cli:check && node scripts/ci/go-test.ts --split-stalled-archive -count=1
+      run: pnpm cli:check && node scripts/ci/go-test.ts --split-stalled-archive -count=1 -vet=off
     - name: Typecheck and build workspace output
       id: typecheck-workspace
       # This one compiler run builds the workspace (some part 2 tests read
