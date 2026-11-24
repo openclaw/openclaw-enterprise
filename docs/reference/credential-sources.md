@@ -1,6 +1,6 @@
 # Credential sources
 
-A CredentialSource is a Namespace resource created and maintained by the selected TokenService. It describes either a static credential or an OAuth grant. It has one ID and can reference a Connection Template by ID. Selecting a Source does not grant access or expose credential material.
+A CredentialSource is a Namespace resource. The selected TokenService creates and maintains managed Sources for static credentials and OAuth grants. A Source has one ID and can reference a Connection Template by ID. Selecting a Source does not grant access or expose credential material.
 
 The [credential design](https://github.com/openclaw/openclaw-enterprise/blob/main/specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) proposes one lifecycle for model and plugin credentials. The design is still in progress. The following section describes its intended behavior; [implementation status](#implementation-status) records which parts are available.
 

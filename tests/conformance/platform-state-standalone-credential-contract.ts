@@ -158,7 +158,7 @@ export async function verifyStandaloneCredentialStateContract(
     }),
     refusal,
   );
-  // A Plugin binding must match an exact Plugin selection saved on the owning Agent.
+  // Both adapters refuse a fabricated, unpinned Plugin binding without a saved selection.
   await assert.rejects(
     store.transact(async (transaction) => {
       const revision = await standaloneRevision(transaction, seed);
