@@ -137,6 +137,22 @@ type ErrorCase = readonly [
   expected: Pick<RequestFailure, "status" | "code" | "message" | "details">,
 ];
 
+function dependencyUnavailable(message: string) {
+  return { status: 503, code: "DEPENDENCY_UNAVAILABLE", message } as const;
+}
+
+function resourceConflict(message: string) {
+  return { status: 409, code: "RESOURCE_CONFLICT", message } as const;
+}
+
+function invalidRequest(message: string) {
+  return { status: 400, code: "INVALID_REQUEST", message } as const;
+}
+
+function forbidden(message: string) {
+  return { status: 403, code: "FORBIDDEN", message } as const;
+}
+
 // Many OCC errors subclass ScopeViolationError, ResourceConflictError or
 // AuthorizationDeniedError, so each row also guards the order of the checks in
 // requestFailure: a subclass must keep its own status and text, not its parent's.
@@ -145,16 +161,12 @@ const cases = [
   [
     "a state conflict names what blocks the operation",
     new ResourceStateConflictError(AGENT_NAME_CONFLICT),
-    { status: 409, code: "RESOURCE_CONFLICT", message: AGENT_NAME_CONFLICT },
+    resourceConflict(AGENT_NAME_CONFLICT),
   ],
   [
     "a plain resource conflict keeps the generic text",
     new ResourceConflictError(INTERNAL),
-    {
-      status: 409,
-      code: "RESOURCE_CONFLICT",
-      message: RESOURCE_CONFLICT,
-    },
+    resourceConflict(RESOURCE_CONFLICT),
   ],
   [
     "a stale Configuration generation is marked by its expectedGeneration detail",
@@ -170,11 +182,9 @@ const cases = [
   [
     "a Role still referenced by bindings says to delete them first",
     new IAMRoleInUseError(),
-    {
-      status: 409,
-      code: "RESOURCE_CONFLICT",
-      message: "The IAM Role is referenced by AccessBindings. Delete those AccessBindings first.",
-    },
+    resourceConflict(
+      "The IAM Role is referenced by AccessBindings. Delete those AccessBindings first.",
+    ),
   ],
   [
     "an Agent being deleted",
@@ -335,41 +345,34 @@ const cases = [
   [
     "a service-account binding without the Agent's ChatGPT Backend names the fix",
     new ServiceAccountBackendBindingError("noBinding"),
-    { status: 409, code: "RESOURCE_CONFLICT", message: SERVICE_ACCOUNT_NO_BACKEND_BINDING },
+    resourceConflict(SERVICE_ACCOUNT_NO_BACKEND_BINDING),
   ],
   [
     "a service-account credential from another ChatGPT Backend names the fix",
     new ServiceAccountBackendBindingError("mismatch"),
-    { status: 409, code: "RESOURCE_CONFLICT", message: SERVICE_ACCOUNT_BACKEND_MISMATCH },
+    resourceConflict(SERVICE_ACCOUNT_BACKEND_MISMATCH),
   ],
   [
     "installation-wide access without the OpenShell Proxy preview names the setting",
     new CredentialProxyAdmissionError("installationPreview"),
-    { status: 409, code: "RESOURCE_CONFLICT", message: CREDENTIAL_PROXY_INSTALLATION_PREVIEW },
+    resourceConflict(CREDENTIAL_PROXY_INSTALLATION_PREVIEW),
   ],
   [
     "an OpenShell gateway without the Proxy's middleware names the operator fix",
     new RetryLaterError("proxyRegistration"),
-    { status: 503, code: "DEPENDENCY_UNAVAILABLE", message: PROXY_REGISTRATION_UNAVAILABLE },
+    dependencyUnavailable(PROXY_REGISTRATION_UNAVAILABLE),
   ],
   [
     "a stored credential source that breaks a later Gateway rule names the replacement",
     new StoredCredentialSourceConfigError("token_url"),
-    {
-      status: 409,
-      code: "RESOURCE_CONFLICT",
-      message: storedCredentialSourceConfig("token_url"),
-    },
+    resourceConflict(storedCredentialSourceConfig("token_url")),
   ],
   [
     "a stored openai credential source with removed base_url names the supported replacement and rollout order",
     new StoredCredentialSourceConfigError("base_url"),
-    {
-      status: 409,
-      code: "RESOURCE_CONFLICT",
-      message:
-        "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must permit the destination selected by the Agent revision. Rebind and redeploy Agents, then delete the old source once unused.",
-    },
+    resourceConflict(
+      "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must permit the destination selected by the Agent revision. Rebind and redeploy Agents, then delete the old source once unused.",
+    ),
   ],
   [
     "a config value refused at Gateway registration names its field",
@@ -391,12 +394,9 @@ const cases = [
       "oce-0123456789abcde",
       "service-account-0123456789abcdef0123456789abcdef",
     ),
-    {
-      status: 409,
-      code: "RESOURCE_CONFLICT",
-      message:
-        "Kubernetes Secret oce-0123456789abcde/service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
-    },
+    resourceConflict(
+      "Kubernetes Secret oce-0123456789abcde/service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+    ),
   ],
   [
     "a leftover credential Secret in a long Kubernetes namespace keeps the 256-character cap",
@@ -404,22 +404,11 @@ const cases = [
       "n".repeat(63),
       "service-account-0123456789abcdef0123456789abcdef",
     ),
-    {
-      status: 409,
-      code: "RESOURCE_CONFLICT",
-      message:
-        "Kubernetes Secret service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
-    },
+    resourceConflict(
+      "Kubernetes Secret service-account-0123456789abcdef0123456789abcdef from an earlier issuance blocks this one. An operator must delete it, then retry; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+    ),
   ],
-  [
-    "a Kubernetes API 409",
-    apiError(409),
-    {
-      status: 409,
-      code: "RESOURCE_CONFLICT",
-      message: RESOURCE_CONFLICT,
-    },
-  ],
+  ["a Kubernetes API 409", apiError(409), resourceConflict(RESOURCE_CONFLICT)],
 
   // 400: validation the caller can fix; the text names the field, never a value.
   [
@@ -468,55 +457,38 @@ const cases = [
   [
     "a Configuration that selects no supported Harness",
     new ConfigurationHarnessError("The Configuration does not select a supported Harness."),
-    {
-      status: 400,
-      code: "INVALID_REQUEST",
-      message: "The Configuration does not select a supported Harness.",
-    },
+    invalidRequest("The Configuration does not select a supported Harness."),
   ],
   [
     "an unlisted Harness credential source",
     new AgentCredentialSourceBindingError(),
-    {
-      status: 400,
-      code: "INVALID_REQUEST",
-      message: "The Harness credential source must be listed in the Agent's credentialSources.",
-    },
+    invalidRequest(
+      "The Harness credential source must be listed in the Agent's credentialSources.",
+    ),
   ],
   [
     "Installation-wide repository access next to another binding",
     new RepositoryBindingSelectionError(),
-    {
-      status: 400,
-      code: "INVALID_REQUEST",
-      message:
-        "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.",
-    },
+    invalidRequest(
+      "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.",
+    ),
   ],
   [
     "an invalid requested Secret binding",
     new SecretBindingValidationError("Secret references cannot cross Namespaces."),
-    {
-      status: 400,
-      code: "INVALID_REQUEST",
-      message: "Secret references cannot cross Namespaces.",
-    },
+    invalidRequest("Secret references cannot cross Namespaces."),
   ],
   [
     "a runtime image without native worker support",
     new NativeWorkerSupportError(),
-    { status: 400, code: "INVALID_REQUEST", message: new NativeWorkerSupportError().message },
+    invalidRequest(new NativeWorkerSupportError().message),
   ],
   [
     // A fixed Installation shape: a permanent conflict naming the missing Driver and the next
     // step, not an outage with generic text (findings 1609, 3036).
     "an Installation without a Sandbox Driver that provisions dedicated OpenClaw",
     new DedicatedOpenClawSandboxError(true),
-    {
-      status: 409,
-      code: "RESOURCE_CONFLICT",
-      message: dedicatedOpenClawSandboxRefusal(true),
-    },
+    resourceConflict(dedicatedOpenClawSandboxRefusal(true)),
   ],
   [
     "a plugin selection the selected Plugin Driver does not offer",
@@ -570,30 +542,22 @@ const cases = [
   [
     "plugin selections that alias the same plugin",
     new PluginPolicyValidationError("aliasedPlugin"),
-    {
-      status: 400,
-      code: "INVALID_REQUEST",
-      message: new PluginPolicyValidationError("aliasedPlugin").message,
-    },
+    invalidRequest(new PluginPolicyValidationError("aliasedPlugin").message),
   ],
   [
     "a Preset template rule",
     new PresetValidationError("Preset template.name: must be a string."),
-    { status: 400, code: "INVALID_REQUEST", message: "Preset template.name: must be a string." },
+    invalidRequest("Preset template.name: must be a string."),
   ],
   [
     "an inline model credential names its field",
     new ModelCredentialValueError("/models/providers/openai/apiKey"),
-    {
-      status: 400,
-      code: "INVALID_REQUEST",
-      message: new ModelCredentialValueError("/models/providers/openai/apiKey").message,
-    },
+    invalidRequest(new ModelCredentialValueError("/models/providers/openai/apiKey").message),
   ],
   [
     "other Configuration validation stays generic",
     new ConfigurationValidationError(INTERNAL),
-    { status: 400, code: "INVALID_REQUEST", message: "The supplied configuration is invalid." },
+    invalidRequest("The supplied configuration is invalid."),
   ],
   [
     "a channel credential with the wrong token role",
@@ -793,20 +757,12 @@ const cases = [
   [
     "a Kubernetes API 400",
     apiError(400),
-    {
-      status: 400,
-      code: "INVALID_REQUEST",
-      message: "The request does not match the operation contract.",
-    },
+    invalidRequest("The request does not match the operation contract."),
   ],
   [
     "a body that is not JSON",
     fastifyError("FST_ERR_CTP_INVALID_JSON_BODY"),
-    {
-      status: 400,
-      code: "INVALID_REQUEST",
-      message: "The request does not match the operation contract.",
-    },
+    invalidRequest("The request does not match the operation contract."),
   ],
   [
     "a body over the size limit",
@@ -902,11 +858,7 @@ const cases = [
   [
     "a caller denial without a checked grant stays generic",
     new AuthorizationDeniedError(INTERNAL),
-    {
-      status: 403,
-      code: "FORBIDDEN",
-      message: GENERIC_DENIAL,
-    },
+    forbidden(GENERIC_DENIAL),
   ],
   [
     "a checked grant stays generic when no acting caller is known",
@@ -916,7 +868,7 @@ const cases = [
       { action: "update", resource: agentResource },
       "prn_caller",
     ),
-    { status: 403, code: "FORBIDDEN", message: GENERIC_DENIAL },
+    forbidden(GENERIC_DENIAL),
   ],
   ...[
     "The acting account is disabled.",
@@ -933,11 +885,7 @@ const cases = [
   [
     "a deletion retry owned by another actor names the condition",
     new DeletionRetryOwnedError("prn_initiator", agentResource),
-    {
-      status: 403,
-      code: "FORBIDDEN",
-      message: new DeletionRetryOwnedError("prn_initiator", agentResource).message,
-    },
+    forbidden(new DeletionRetryOwnedError("prn_initiator", agentResource).message),
   ],
   [
     "an Agent principal denial names the Agent's missing grant and who gives it",
@@ -946,20 +894,12 @@ const cases = [
       id: "sec_1",
       namespaceId: "ns_1",
     }),
-    {
-      status: 403,
-      code: "FORBIDDEN",
-      message: agentPrincipalDenied("This Agent", "one of its bound Secrets"),
-    },
+    forbidden(agentPrincipalDenied("This Agent", "one of its bound Secrets")),
   ],
   [
     "a denial from another module copy, matched by name",
     namedError("AuthorizationDeniedError"),
-    {
-      status: 403,
-      code: "FORBIDDEN",
-      message: GENERIC_DENIAL,
-    },
+    forbidden(GENERIC_DENIAL),
   ],
   [
     "a Kubernetes API 401",
@@ -970,15 +910,7 @@ const cases = [
       message: "The caller did not provide valid credentials.",
     },
   ],
-  [
-    "a Kubernetes API 403",
-    apiError(403),
-    {
-      status: 403,
-      code: "FORBIDDEN",
-      message: GENERIC_DENIAL,
-    },
-  ],
+  ["a Kubernetes API 403", apiError(403), forbidden(GENERIC_DENIAL)],
   [
     "a 401 admission failure",
     admissionFailure({ statusCode: 401 }),
@@ -992,21 +924,14 @@ const cases = [
   [
     "a refused admission boundary",
     admissionFailure({ statusCode: 403 }),
-    {
-      status: 403,
-      code: "FORBIDDEN",
-      message: "The request did not satisfy the configured admission boundary.",
-    },
+    forbidden("The request did not satisfy the configured admission boundary."),
   ],
   [
     "a state change without a trusted browser origin",
     admissionFailure({ status: 403, reason: "untrusted_origin" }),
-    {
-      status: 403,
-      code: "FORBIDDEN",
-      message:
-        "A trusted browser origin is required: session-cookie requests that change state must come from the console and send its Origin header.",
-    },
+    forbidden(
+      "A trusted browser origin is required: session-cookie requests that change state must come from the console and send its Origin header.",
+    ),
   ],
 
   // 5xx: the platform, not the request.
@@ -1022,81 +947,55 @@ const cases = [
   [
     "an unknown commit outcome says not to retry automatically",
     new PostgresCommitOutcomeUnknownError(),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message:
-        "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
-    },
+    dependencyUnavailable(
+      "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
+    ),
   ],
   [
     "an unavailable dependency is not a denial",
     new DependencyUnavailableError(INTERNAL),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message: DEPENDENCY_UNAVAILABLE,
-    },
+    dependencyUnavailable(DEPENDENCY_UNAVAILABLE),
   ],
   [
     // #3313: an undecodable row fails closed like any unavailable dependency.
     "a persisted row its reader cannot decode is an unavailable dependency, without its text",
     new PersistedStateInvalidError(INTERNAL),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message: DEPENDENCY_UNAVAILABLE,
-    },
+    dependencyUnavailable(DEPENDENCY_UNAVAILABLE),
   ],
   [
     "a Configuration Secret binding the selected Secret Driver cannot serve names the fix",
     new SecretBindingDriverError(),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message:
-        "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
-    },
+    dependencyUnavailable(
+      "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+    ),
   ],
   [
     "a Harness authentication Secret the selected Secret Driver cannot serve names the fix",
     new HarnessAuthSecretDriverError(),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message:
-        "The selected Secret Driver does not own the Harness authentication Secret. Bind a Secret stored through the selected driver: set harnessAuth to another Secret, or create a new Secret with the key and bind that.",
-    },
+    dependencyUnavailable(
+      "The selected Secret Driver does not own the Harness authentication Secret. Bind a Secret stored through the selected driver: set harnessAuth to another Secret, or create a new Secret with the key and bind that.",
+    ),
   ],
   [
     "an Agent provisioning Secret the selected Secret Driver cannot serve names the fix",
     new ProvisioningSecretDriverError(),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message:
-        "The selected Secret Driver does not own a Secret this Agent provisioning uses. Use only Secrets stored through the selected driver: save replacement Secrets and submit a new provisioning request with them.",
-    },
+    dependencyUnavailable(
+      "The selected Secret Driver does not own a Secret this Agent provisioning uses. Use only Secrets stored through the selected driver: save replacement Secrets and submit a new provisioning request with them.",
+    ),
   ],
   [
     "a Secret update the selected Secret Driver cannot perform names the fix",
     new SecretStorageDriverError("update"),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message:
-        "The selected Secret Driver does not own this Secret, so its value cannot be updated. Create a new Secret with the value through the selected driver and bind it in place of this one.",
-    },
+    dependencyUnavailable(
+      "The selected Secret Driver does not own this Secret, so its value cannot be updated. Create a new Secret with the value through the selected driver and bind it in place of this one.",
+    ),
   ],
   [
     "a Secret delete the selected Secret Driver cannot perform names the fix",
     new SecretStorageDriverError("delete"),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message:
-        "The selected Secret Driver does not own this Secret, so its stored value cannot be deleted. Delete it once the Installation again selects the Secret Driver that stored it.",
-    },
+    dependencyUnavailable(
+      "The selected Secret Driver does not own this Secret, so its stored value cannot be deleted. Delete it once the Installation again selects the Secret Driver that stored it.",
+    ),
   ],
   [
     "a cluster RBAC denial of runtime credentials names the fix, not the namespace",
@@ -1117,49 +1016,26 @@ const cases = [
   [
     "a Configuration ConfigMap OCC does not own",
     new ConfigurationOwnershipError(INTERNAL),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message: DEPENDENCY_UNAVAILABLE,
-    },
+    dependencyUnavailable(DEPENDENCY_UNAVAILABLE),
   ],
   [
     "an unavailable dependency from another module copy, matched by name",
     namedError("DependencyUnavailableError"),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message: DEPENDENCY_UNAVAILABLE,
-    },
+    dependencyUnavailable(DEPENDENCY_UNAVAILABLE),
   ],
   [
     "a device login when OCC cannot reach the issuer",
     new DeviceAuthorizationStartError("unreachable", "ECONNREFUSED"),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message:
-        "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again.",
-    },
+    dependencyUnavailable(
+      "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again.",
+    ),
   ],
   [
     "a device login the sign-in service could not start",
     new DeviceAuthorizationStartError("unavailable", "HTTP_503"),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message: "Device login could not start. Try again.",
-    },
+    dependencyUnavailable("Device login could not start. Try again."),
   ],
-  [
-    "a Kubernetes API 404",
-    apiError(404),
-    {
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message: DEPENDENCY_UNAVAILABLE,
-    },
-  ],
+  ["a Kubernetes API 404", apiError(404), dependencyUnavailable(DEPENDENCY_UNAVAILABLE)],
   [
     "a RequestFailure passes through unchanged",
     new RequestFailure(422, "UNPROCESSABLE", "The route's own sentence.", [
