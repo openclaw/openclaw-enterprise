@@ -15,23 +15,21 @@ author: miguelbranco80
 
 ## Summary
 
-OpenClaw Control Plane (OCC) installs one Channel Driver for each channel
-provider, the same provider-to-Driver set that Kubernetes Compute already
-receives. A directory lookup names its provider, and OCC sends the request only
-to that provider's Driver. A lookup without a provider is a Slack lookup, so
-existing Slack clients keep working. Each Channel Driver declares the schema of
-its provider's lookup fields, and OCC validates a lookup's optional `context`
-against it before any credential read or provider call.
-Installation YAML gets an optional `drivers.channel` list that selects the
-bundled Channel Drivers and carries their configuration. Slack is the only
-bundled provider; the contract prepares OCC for more, such as Microsoft Teams.
+Today OpenClaw Control Plane (OCC) uses one Channel Driver for every channel
+directory lookup, so it cannot serve a second provider such as Microsoft Teams.
+With this change, OCC keeps one Channel Driver for each provider and sends each
+lookup to the Driver of the provider that the request names. A request without a
+provider goes to Slack, so existing clients keep working. Each Driver declares
+the lookup fields that its provider needs, and OCC checks a request against them
+before it reads the credential. An optional `drivers.channel` Installation
+setting selects the Drivers. Slack is the only bundled provider.
 
 ## Motivation
 
-[RFC-20261118-channel-egress](20261118-channel-egress.md) maps each enabled
-provider to exactly one installed Channel Driver for Compute admission and
-egress. OCC still selects a single `channel` Driver for directory lookup and
-credential validation. That shape assumes one provider.
+The [channel egress RFC](20261118-channel-egress.md) already gives Kubernetes
+Compute one Channel Driver for each provider, to allow each Agent's channel
+traffic. OCC does not have that list. It selects one `channel` Driver and uses
+it for every directory lookup and credential check.
 
 Other providers need inputs that Slack does not. A Microsoft Teams directory
 lookup, for example, needs the application ID, the tenant ID and the selected
@@ -41,11 +39,11 @@ end up in the shared API or in the Compute configuration.
 
 ## Goals
 
-- OCC and Compute use the same provider-to-Driver set from trusted composition.
+- OCC and Kubernetes Compute use the same Channel Drivers.
 - A lookup reaches only the Driver of the provider that it names.
-- Each provider defines and validates its own lookup fields.
-- Existing Slack lookup requests, which name no provider, keep working.
-- Channel Driver configuration has one owner: its Driver selection.
+- Each Driver declares its provider's lookup fields, and OCC checks them.
+- Existing Slack lookups, which name no provider, keep working.
+- A Driver's settings belong to its Driver selection, not to other Drivers.
 
 ## Non-goals
 
@@ -54,21 +52,20 @@ end up in the shared API or in the Compute configuration.
 - Third-party Channel Driver packages. Only bundled Drivers are selectable.
 - Typed Secrets. A Secret is not bound to one provider; see
   [Rationale](#rationale-and-alternatives).
-- Changes to destination rules, Envoy enforcement or listener allocation. An
-  [Agent Gateway channel proxy](../../docs/reference/drivers/kubernetes-compute/channel-egress.md#upstream-proxy-configuration)
-  applies to each provider's destinations unchanged; Channel Drivers still
-  declare them.
+- Changes to how channel traffic is allowed. Each Channel Driver still declares
+  its provider's hosts, and Envoy allows only those hosts. An optional
+  [channel proxy](../../docs/reference/drivers/kubernetes-compute/channel-egress.md#upstream-proxy-configuration)
+  only forwards the traffic that Envoy allows.
 
 ## Proposal
 
-### Composition
+### Driver selection
 
-Trusted composition builds one `ChannelProviderDriver` (`{ provider, driver }`)
-for each selected Channel Driver. It gives the same frozen list to Kubernetes
-Compute and to OCC. OCC refuses a list that repeats a provider or a Driver
-identity, as it does for Plugin Drivers.
+At startup, the controller builds a list that maps each provider to its Driver,
+for example `slack` to the Slack Driver. It gives the same list to OCC and to
+Kubernetes Compute. OCC refuses a list that repeats a provider or a Driver.
 
-`drivers.channel` is an optional list of bundled selections:
+The optional `drivers.channel` Installation setting selects the bundled Drivers:
 
 ```yaml
 drivers:
@@ -77,56 +74,52 @@ drivers:
       configuration: {}
 ```
 
-| Selection       | Provider | Configuration         |
-| --------------- | -------- | --------------------- |
-| `slack-channel` | `slack`  | Empty, closed schema. |
+| Selection       | Provider | Configuration |
+| --------------- | -------- | ------------- |
+| `slack-channel` | `slack`  | None.         |
 
-If the list is absent, composition installs every bundled Driver with default
-configuration. If the list is present, composition installs only the listed
-Drivers. Kubernetes Compute refuses an Agent Configuration that enables another
-provider, because no Driver resolves it. Each Driver declares a closed configuration schema, so
-startup refuses unknown fields. The startup configuration inspection reports
-the accepted values, like other Driver selections. A later provider's selection
-can carry its own settings, such as Teams storage hosts.
+Without `drivers.channel`, the controller installs every bundled Driver. With
+it, the controller installs only the listed Drivers, and Kubernetes Compute
+refuses an Agent Configuration that enables another provider. Each Driver's
+configuration has a closed schema, so startup refuses unknown fields. A later
+provider can add its own settings, such as Teams storage hosts.
 
 ### Directory lookup
 
-A request without `provider` is a Slack lookup, so clients written before
-provider selection, including a Console tab open during an upgrade, keep
-working. OCC authorizes the caller and the Secret as it does today, then
-selects the provider's Driver. An uninstalled provider is unavailable, not a
-provider error.
+A lookup request can name its `provider`. A request without one goes to Slack,
+so clients written before this change, including a Console tab that is open
+during an upgrade, keep working. OCC checks the caller and the Secret as it does
+today, then selects the Driver for the provider. If no Driver is installed for
+the provider, OCC returns `501 NOT_IMPLEMENTED`, as it does today when no
+Channel Driver is installed.
 
-Optional `context` carries the provider's own lookup fields, such as a tenant
-ID. The shared API defines only its bounded shape. Each Driver declares its
-provider's fields with `directoryContextSchema()`, a JSON Schema like Driver
-configuration schemas. OCC validates `context`, an absent one as `{}`, against
-it before the Secret read and returns `400 INVALID_REQUEST` with details: a
-missing or malformed field by name, an unknown key as `/context`. Slack declares
-a closed empty schema, so any context is refused. The Driver keeps only checks
-that a schema cannot express, such as a cursor from another lookup, and OCC
-returns their field details too.
+Optional `context` holds the provider's lookup fields, such as a tenant ID. Each
+Driver declares these fields with `directoryContextSchema()`, a closed JSON
+Schema. OCC checks `context` against it before it reads the Secret. A request
+that does not match gets `400 INVALID_REQUEST`, which names a missing or
+malformed field and reports an unknown key as `/context`. Slack declares no
+fields, so any context is refused. A Driver can still refuse input that a schema
+cannot express, such as a cursor from another lookup.
 
-### Credential validation and deployment admission
+### Credential checks at deployment
 
-OCC runs `validateCredentials` for each installed Driver that implements it. A
-validator reads only its own provider's configuration section and returns when
-that section is absent or disabled. Deployment admission records the installed
-Driver list and validator identities that it checked, and it refuses the
-deployment if they changed before the revision is recorded.
+At deployment, OCC runs the credential check of every installed Driver. Each
+Driver checks only its own provider's settings and skips them when the
+provider is off. If an installed Driver or its check changes before the
+revision is recorded, OCC refuses the deployment.
 
 ## Interface changes
 
 ### APIs
 
-| Change  | Operation                                                 | Behavior and contract change                                                                                                                                                                    |
-| ------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Changed | `POST /namespaces/{namespaceId}/channel-directory/lookup` | Search and ID hydration bodies accept optional `provider`; omitted means `slack`. Optional `context` holds at most eight nonsecret strings. An uninstalled provider returns `501 NOT_IMPLEMENTED`. |
+| Change  | Operation                                                 | Behavior and contract change                                                                                                                                                  |
+| ------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Changed | `POST /namespaces/{namespaceId}/channel-directory/lookup` | Optional `provider`; without it, the lookup goes to Slack. Optional `context`: at most eight nonsecret strings. An uninstalled provider returns `501 NOT_IMPLEMENTED`. |
 
 ### IAM
 
-No changes. Lookup still requires the target edit permission and `operate` on
-the exact same-Namespace Secret.
+No changes. A lookup still needs edit permission on its target and `operate` on
+the same-Namespace Secret.
 
 ### Database entities
 
@@ -134,84 +127,74 @@ No changes.
 
 ### Driver contracts
 
-- [`ChannelDriver`](../../packages/contracts/src/drivers/channel/index.ts)
-  gains the required `directoryContextSchema(): JSONSchema`. It describes the
-  provider's lookup fields as a closed object schema; OCC validates `context`
-  against it. OCC refuses to install a Channel Driver without one, or with a
-  schema that is open or does not compile.
-- `ChannelDirectoryLookupInput` gains the validated
-  `context?: Readonly<Record<string, string>>`, and no `provider` field.
-- `ChannelDirectoryError` gains the `invalid_request` reason, with optional
-  field details, which OCC returns as `400 INVALID_REQUEST`.
-- `ChannelProviderDriver` moves to the contracts package's top-level index.
-- `installChannelDrivers` replaces single-Driver `channel` selection.
-- `validateCredentials` must read only the Driver's own provider section.
+- [`ChannelDriver`](../../packages/contracts/src/drivers/channel/index.ts) gets
+  the required `directoryContextSchema(): JSONSchema`, a closed object schema
+  for the provider's lookup fields. OCC refuses to install a Driver without it,
+  or with a schema that is open or does not compile.
+- `ChannelDirectoryLookupInput` gets the checked
+  `context?: Readonly<Record<string, string>>`. It does not get `provider`.
+- `ChannelDirectoryError` gets the `invalid_request` reason, with optional field
+  details. OCC returns it as `400 INVALID_REQUEST`.
+- `ChannelProviderDriver` moves to the top-level index of the contracts package.
+- `installChannelDrivers` replaces the single `channel` Driver selection.
+- `validateCredentials` must read only its own provider's settings.
 
 ## Simplifications
 
-OCC reuses the provider mapping that Compute already has, instead of a
-composite Driver that dispatches internally and reports every provider's
-destinations as its own.
+OCC uses the provider list that Compute already has. It does not need a combined
+Driver that forwards each request to the correct provider.
 
 ## Acceptance Criteria
 
-- **AC-1 — Lookup reaches one provider:** Given two installed providers, when
-  an authorized caller looks up one provider through the real API, then only
-  that provider's Driver receives the request, with its context. A lookup for
-  an uninstalled provider returns `501 NOT_IMPLEMENTED`. Verify with the OCC
-  API channel directory integration test.
-- **AC-2 — Provider-less requests stay Slack:** When a caller omits `provider`
-  in a search or ID hydration request, then the Slack Driver serves it. Verify
-  with the OCC API channel directory integration test.
-- **AC-3 — Drivers declare their lookup fields:** When a lookup omits a field
-  that its provider's Driver declares as required, or sends a value that the
-  schema refuses, OCC returns `400 INVALID_REQUEST` naming the field, without
-  reading the Secret or calling the provider. A Slack lookup, with or without `provider`,
-  that has any context is refused the same way. Verify with the OCC API channel
-  directory integration test.
-- **AC-4 — Selection controls installation:** Given an empty `drivers.channel`
-  list, when an Agent Configuration enables Slack, then the API refuses to save
-  it. Unknown or malformed configuration fails startup. Verify with the Channel
-  Driver startup integration test.
-- **AC-5 — Every installed validator gates deployment:** Given two installed
-  providers, when deployment admission runs, then both validators run, and a
-  change to either Driver or validator before the revision is recorded refuses
-  the deployment. Verify with the ordinary deployment admission integration
-  test.
+- **AC-1 — A lookup reaches one provider:** With two providers installed, a
+  lookup through the API reaches only the named provider's Driver, with its
+  context. A lookup for an uninstalled provider returns `501 NOT_IMPLEMENTED`.
+- **AC-2 — Requests without a provider go to Slack:** A search or saved-ID
+  lookup without `provider` reaches the Slack Driver.
+- **AC-3 — OCC checks declared lookup fields:** A lookup that misses a required
+  field, or sends a value the schema refuses, gets `400 INVALID_REQUEST` that
+  names the field. OCC does not read the Secret or call the provider. Any
+  context on a Slack lookup is refused the same way.
+- **AC-4 — Selection controls installation:** With an empty `drivers.channel`,
+  the API refuses to save an Agent Configuration that enables Slack. Unknown or
+  malformed settings stop startup.
+- **AC-5 — Every installed credential check gates deployment:** With two
+  providers installed, deployment runs both checks. A change to either Driver
+  or its check before the revision is recorded refuses the deployment.
 
 ## Delivery and verification
 
-The [implementation plan](../plans/20261120-channel-provider-drivers.md)
-records delivery. AC-1 to AC-3 pass through the real Fastify API, OCC and the
-Slack Driver, with an HTTP fixture at the Slack boundary; AC-4 passes through
-the real Installation loader and API; AC-5 through the real deployment admission.
+The [implementation plan](../plans/20261120-channel-provider-drivers.md) records
+delivery and the tests for each criterion. AC-1 to AC-3 run through the real API,
+OCC and Slack Driver, with an HTTP stand-in for Slack. AC-4 runs through the
+real Installation loader and API. AC-5 runs through real deployment admission.
 
 ## Rationale and alternatives
 
-- **Provider field in the Driver input.** Every Driver would receive a field
-  that composition already decides. It also needs a composite Driver to
-  dispatch. Rejected.
-- **Require `provider` in the API.** Existing Slack clients omit it; requiring
-  it turns their searches and saved-ID lookups into `400` responses after an
-  upgrade. Rejected after maintainer review.
-- **Typed provider fields in the API.** The API and OCC would change for each
-  new provider. Rejected.
-- **Drivers check their own context in code.** Each Driver repeats key and
-  format checks, and nothing can read which fields a provider requires.
-  Rejected after maintainer review.
-- **One schema for the whole channel setup,** including Agent configuration
-  and Secret bindings. The native plugin already owns the `channels.*` schema,
-  and the Console editors cannot be rendered from it, so nothing would read it.
-  A later proposal can extend the method if a caller needs it.
-- **Name `provideConfiguration()`.** It suggests the Driver's Installation
-  configuration; `directoryContextSchema()` states what it covers.
-- **Bind a Secret to one provider.** Secrets are untyped. A caller with
-  `operate` on a Secret can already bind it into any provider's Agent
-  configuration and deploy it, so a lookup with another provider grants no new
-  authority. A Secret type is a separate decision.
+- **Add `provider` to the Driver input.** Each Driver would get a field that the
+  controller already decides, and a combined Driver would have to forward each
+  request. Rejected.
+- **Require `provider` in the API.** Existing Slack clients do not send it, so
+  their lookups would fail with `400` after an upgrade. Rejected after
+  maintainer review.
+- **A separate API body for each provider.** The API and OCC would change for
+  each new provider. Rejected.
+- **Drivers check `context` in their own code.** Each Driver repeats the same
+  checks, and nothing can read which fields a provider needs. Rejected after
+  maintainer review.
+- **One schema for the whole channel setup,** including Agent configuration and
+  Secret bindings. The native plugin already owns the `channels.*` schema, and
+  the Console editors cannot be built from such a schema, so nothing would use
+  it. A later proposal can extend the method if something needs it.
+- **Name the method `provideConfiguration()`.** That name suggests the Driver's
+  Installation settings. `directoryContextSchema()` says what it covers.
+- **Bind a Secret to one provider.** Secrets have no type. A caller with
+  `operate` on a Secret can already use it in any provider's Agent
+  configuration, so a lookup with another provider gives no new access. A
+  Secret type is a separate decision.
 
 ## References
 
 - [Driver selection](../../docs/reference/drivers/selection.md)
-- [Plugin Driver installation](../../packages/occ/src/index.ts), the existing
-  multi-Driver precedent (`installPluginDrivers`)
+- [Plugin Driver installation](../../packages/occ/src/index.ts), an existing
+  case of one Driver for each entry (`installPluginDrivers`)
