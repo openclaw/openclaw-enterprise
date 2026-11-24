@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-23"
-last_updated_session: "authoring-run/834fd8d9-74c1-4639-91e3-d87ff63bc9ef"
+last_updated_session: "authoring-run/33927adf-1105-42ee-be57-c37d2132a624"
 ---
 
 # Agent sandbox policy flow
@@ -13,7 +13,7 @@ denials and recommendations.
 
 ## Entry Points
 
-- Trigger: console Policy denials tab or `occ agent policy`.
+- Trigger: [Repositories](../guides/topics/agent-sandbox-policy.md#repository-access), Policy denials or `occ agent policy`.
 - Source: `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` and
   `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` / `applyAgentSandboxPolicy`.
 - Assumptions: ready Namespace, active Agent, exact grants, editing enabled for
@@ -105,20 +105,21 @@ of pending applications. The Worker records the expected provider version
 and settles the application as `applied` or `failed`. Deleting the Agent
 removes its policy and exact IAM access.
 
-The [editor](../reference/sandbox-policies.md#repository-network-policy) shows grants
-and the Namespace ceiling. Save before deploy. Initial `[]` denies all. Omission
-retains grants without returning them. For `[]`, OCC checks SandboxPolicy read
-before lookup. A reader can withdraw after Driver loss with both lists empty.
+The [editor](../reference/sandbox-policies.md#repository-network-policy)
+compares saved and deployed versions. Initial `[]` denies all. Omission preserves
+grants without returning them. Withdrawal after Driver loss requires both lists
+empty. For `[]`, OCC checks SandboxPolicy read before lookup.
 
-PUT starts a Read Committed transaction before waiting for the IAM lock.
-Authorization sees revocations committed during the wait.
+PUT uses Read Committed to observe revocations during IAM lock waits.
 
-`apps/controller/src/console/agents/sandbox-policy.mts:renderAgentSandboxPolicy`
-uses the GET hint and Namespace limits. Refresh updates version and limits.
-Refresh and rejected saves preserve drafts while saved grants match. Otherwise, discard them. PUT validates the list and the editor checks
-the returned Agent, Namespace, version and grants. Confirm deny-all and withdrawal.
-After unscoped deployment, save policy on a new Agent before deploy. A compatible
-controller and Worker must stop an unreadable revision.
+`apps/controller/src/console/agents/sandbox-policy.mts:repositoryApiEditor`
+previews role, Namespace and Agent limits. Refresh and rejected saves retain
+drafts if saved grants match. Otherwise, discard them. PUT validates the list.
+The editor confirms Agent, Namespace, version
+and grants, including limits. First deployment review shows API limits beside each role.
+Deny-all and withdrawal require confirmation.
+Unscoped history requires a new Agent. Unreadable revisions require a compatible
+controller and Worker to stop.
 
 Deployment rechecks Repo scope, proxy and Driver identities before credential
 access and revision insertion. PostgreSQL binds version, grants and identity,
@@ -267,6 +268,8 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 20:32: Trace Console API limits. (authoring-run/33927adf-1105-42ee-be57-c37d2132a624 - 7402e100f1)
 
 - 2026-11-23 20:29: Trace Agent API limits. (authoring-run/834fd8d9-74c1-4639-91e3-d87ff63bc9ef - 9c5e29d947)
 
