@@ -638,7 +638,11 @@ test(
               command: [
                 "node",
                 "-e",
-                "require('node:net').createServer(s=>s.end('READY')).listen(18080,'0.0.0.0')",
+                // Kubelet's TCP readiness probe disconnects immediately. Do not
+                // write a greeting to that closed socket or lose the listener.
+                "require('node:net').createServer(s=>s.on('error',()=>s.destroy())).listen(" +
+                  deniedPort +
+                  ",'0.0.0.0')",
               ],
               securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
               readinessProbe: { tcpSocket: { port: deniedPort } },
@@ -683,12 +687,17 @@ test(
         deniedPort +
         "," +
         JSON.stringify(ip) +
-        "); s.setTimeout(3000); s.on('data',(d)=>process.stdout.write(d));" +
-        "s.on('error',()=>process.stdout.write('BLOCKED')); s.on('timeout',()=>{s.destroy();process.stdout.write('BLOCKED');});"
+        ");" +
+        "const finish=result=>{clearTimeout(timer);s.destroy();process.stdout.write(result)};" +
+        "const timer=setTimeout(()=>finish('TIMEOUT'),3000);" +
+        "s.once('connect',()=>finish('CONNECTED'));s.once('error',err=>finish(err.code));"
       );
     }
-    assert.equal(await exec(probe, "listener", connect("127.0.0.1")), "READY");
-    assert.equal(await exec(first.pod, "agent", connect(podIp)), "BLOCKED");
+    // Bracket the negative observation with successful connections to the
+    // same Pod IP. A refused port or a dead listener cannot pass as a timeout.
+    assert.equal(await exec(probe, "listener", connect(podIp)), "CONNECTED");
+    assert.equal(await exec(first.pod, "agent", connect(podIp)), "TIMEOUT");
+    assert.equal(await exec(probe, "listener", connect(podIp)), "CONNECTED");
     await kube.resource("deployment", gatewayName(agent.id), placement);
     const [gatewayPod] = await resources(
       "pods",
