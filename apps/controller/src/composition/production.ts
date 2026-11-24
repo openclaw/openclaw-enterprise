@@ -11,7 +11,7 @@ import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "./installation-config.ts";
-import { installTokenServiceDriver, scheduleGitSourceMaintenance } from "./token-service.ts";
+import { installTokenServiceDriver, scheduleTokenServiceMaintenance } from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
@@ -241,7 +241,9 @@ export async function composeProduction(
       controller,
       config.drivers,
       state,
-      dependencies.githubAppIssuerOptions,
+      dependencies.githubAppIssuerOptions === undefined
+        ? undefined
+        : { githubAppIssuerOptions: dependencies.githubAppIssuerOptions },
     );
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
@@ -384,12 +386,11 @@ export async function composeProduction(
       await checkDatabaseReadiness();
       return { status: "ready" };
     });
-    const stopGitMaintenance =
-      tokenService && config.drivers.repositoryRegistry
-        ? scheduleGitSourceMaintenance(app, tokenService, config.logger)
-        : undefined;
+    const stopTokenMaintenance = tokenService
+      ? scheduleTokenServiceMaintenance(app, tokenService, config.logger)
+      : undefined;
     app.addHook("onClose", async () => {
-      await stopGitMaintenance?.();
+      await stopTokenMaintenance?.();
       await close(state);
     });
     phaseCompleted("routes");

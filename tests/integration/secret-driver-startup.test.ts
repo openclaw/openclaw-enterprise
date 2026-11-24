@@ -105,7 +105,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     deliveredCredential = (await resolveCredential()).credential;
   };
 
-  async function start(secretId: string) {
+  async function start(secretId: string, role: "api" | "worker" = "api") {
     const base = createCredentialProxyInstallationConfiguration();
     base.drivers.secret.id = secretId;
     const configuration = {
@@ -119,17 +119,20 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     Reflect.set(drivers.secretDriver, "client", Promise.resolve(core));
     const proxy = drivers.credentialDeliveryRegistration?.require("credential_proxy_delivery");
     assert.ok(proxy);
-    if (initialDrivers === undefined) {
+    if (initialDrivers === undefined && role === "api") {
       initialDrivers = drivers;
     }
     // Control only the delivery boundary; production composition must bind this registered Proxy
     // before the controller has selected its Sandbox or delivery capability.
     assert.equal(Reflect.set(proxy, "notifyCredentialUpdated", notify), true);
     const controller = new OpenClawController(installation, { state });
-    await installTokenServiceDriver(controller, drivers, state);
+    await installTokenServiceDriver(controller, drivers, state, { role });
     return controller;
   }
 
+  // Worker startup must never initialize private custody using its read/delete role.
+  await assert.rejects(start("secret-a", "worker"), SecretBackendUnavailableError);
+  assert.equal(core.secrets.size, 0);
   const initial = await start("secret-a");
   const initialInstance = initial.currentTokenServiceInstanceId();
   // An API restart can reuse the same loaded native registration and replace its resolver.
@@ -137,7 +140,10 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   const restartedApi = new OpenClawController(installation, { state });
   await installTokenServiceDriver(restartedApi, initialDrivers, state);
   assert.equal(restartedApi.currentTokenServiceInstanceId(), initialInstance);
-  assert.equal((await start("secret-a")).currentTokenServiceInstanceId(), initialInstance);
+  assert.equal(
+    (await start("secret-a", "worker")).currentTokenServiceInstanceId(),
+    initialInstance,
+  );
   assert.equal(core.secrets.size, 1);
 
   const namespaceId = `ns_${randomUUID()}`;
@@ -170,7 +176,9 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     "github-app": ["installation"],
   });
   const client = {
-    sourceRef: { kind: "oauth_client" as const, namespaceId, id: `ccr_${randomUUID()}` },
+    kind: "oauth2" as const,
+    namespaceId,
+    id: `ccr_${randomUUID()}`,
     tokenServiceInstanceId: initialInstance,
     tokenUrl: "https://issuer.example.org/token",
   };
@@ -189,11 +197,9 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     ),
     SecretBackendUnavailableError,
   );
+  const { namespaceId: _namespace, ...unscopedClient } = client;
   await assert.rejects(
-    owner.resolveClientSecret(
-      { ...client, sourceRef: { kind: "oauth_client", id: client.sourceRef.id } },
-      AbortSignal.timeout(5_000),
-    ),
+    owner.resolveClientSecret(unscopedClient, AbortSignal.timeout(5_000)),
     SecretBackendUnavailableError,
   );
   await assert.rejects(
@@ -208,7 +214,8 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   await assert.rejects(
     owner.registerClientSecret(
       {
-        sourceRef: { kind: "github_app_client", id: `ccr_${randomUUID()}` },
+        kind: "github-app",
+        id: `ccr_${randomUUID()}`,
         tokenServiceInstanceId: initialInstance,
         appId: "123",
       },
@@ -281,7 +288,7 @@ test("TokenService verifies the GitHub App before private custody and hot key re
   const owner = new OCCTokenServiceDriver(
     "occ",
     installationId,
-    secretDriver.installationSecrets,
+    secretDriver.privateSecrets,
     instanceId,
     new InMemoryPlatformState(),
     undefined,
@@ -289,11 +296,19 @@ test("TokenService verifies the GitHub App before private custody and hot key re
     { apiOrigin: gh.origin, ca: gh.tls.ca },
   );
   const client = {
-    sourceRef: { kind: "github_app_client" as const, id: `ccr_${randomUUID()}` },
+    kind: "github-app" as const,
+    id: `ccr_${randomUUID()}`,
     tokenServiceInstanceId: instanceId,
     appId: fixtureAppId,
   };
   const firstKey = gh.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  // The common custody identity does not enable an unsupported Client registration scope.
+  await assert.rejects(
+    owner.registerClientSecret({ ...client, namespaceId: "ns_unsupported" }, firstKey, t.signal),
+    ScopeViolationError,
+  );
+  assert.equal(gh.trace.length, 0);
+  assert.equal(core.secrets.size, 0);
   await owner.registerClientSecret(client, firstKey, t.signal);
   assert.deepEqual(
     gh.trace.map(({ method, target }) => ({ method, target })),
@@ -314,7 +329,7 @@ test("TokenService verifies the GitHub App before private custody and hot key re
   const untrustedOwner = new OCCTokenServiceDriver(
     "occ",
     installationId,
-    secretDriver.installationSecrets,
+    secretDriver.privateSecrets,
     instanceId,
     new InMemoryPlatformState(),
     undefined,

@@ -114,7 +114,7 @@ async function clientConsoleFixture(
   const controller = fixture.controller;
   assert.ok(controller instanceof OpenClawController);
   assert.ok(state);
-  const store = controller.selectedDriver("secret").installationSecrets;
+  const store = controller.selectedDriver("secret").privateSecrets;
   assert.ok(store);
   const instance = await controller.activateTokenServiceInstance("console-clients", randomUUID());
   const owner = new OCCTokenServiceDriver(

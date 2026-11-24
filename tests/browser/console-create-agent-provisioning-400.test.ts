@@ -221,7 +221,7 @@ async function modelSourceFixture(
   await fixture.bootstrap();
   const controller = controllerOf(fixture);
   const { driver } = useInstallationSecretDriver(controller);
-  assert.ok(driver.installationSecrets);
+  assert.ok(driver.privateSecrets);
   assert.ok(state);
   const instanceId = await controller.activateTokenServiceInstance(
     "console-token-service",
@@ -230,7 +230,7 @@ async function modelSourceFixture(
   const owner = new OCCTokenServiceDriver(
     "console-token-service",
     controller.installation.id,
-    driver.installationSecrets,
+    driver.privateSecrets,
     instanceId,
     state,
   );

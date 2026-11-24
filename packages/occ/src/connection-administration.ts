@@ -343,26 +343,18 @@ export function createConnectionAdministration({
   }
 
   function clientInstance(client: StoredCredentialClient): CredentialClientSecretInstance {
-    const owner = client.tokenServiceInstanceId;
-    if (!owner) {
+    const tokenServiceInstanceId = client.tokenServiceInstanceId;
+    if (!tokenServiceInstanceId) {
       throw new ResourceStateConflictError("This client has no private material.");
     }
-    if (client.kind === "github-app") {
-      return {
-        sourceRef: { kind: "github_app_client", id: client.id },
-        tokenServiceInstanceId: owner,
-        appId: client.appId,
-      };
-    }
-    return {
-      sourceRef: {
-        kind: "oauth_client",
-        id: client.id,
-        ...(client.namespaceId !== undefined && { namespaceId: client.namespaceId }),
-      },
-      tokenServiceInstanceId: owner,
-      tokenUrl: client.tokenUrl,
+    const owner = {
+      id: client.id,
+      tokenServiceInstanceId,
+      ...(client.namespaceId !== undefined && { namespaceId: client.namespaceId }),
     };
+    return client.kind === "github-app"
+      ? { ...owner, kind: client.kind, appId: client.appId }
+      : { ...owner, kind: client.kind, tokenUrl: client.tokenUrl };
   }
 
   function signal() {

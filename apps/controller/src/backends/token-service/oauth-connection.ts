@@ -9,7 +9,8 @@ import type {
   OAuthAccountRef,
   TokenResolveOptions,
   OAuthConnectionStatus,
-  SecretDriver,
+  PrivateSecretRef,
+  PrivateSecretStore,
 } from "@openclaw-enterprise/contracts";
 import {
   BrowserAuthorizationError,
@@ -24,6 +25,7 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "./codex-oauth-preset.ts";
 
 type OAuthConnectionCustody = Pick<OAuthTokenCustody, "sourceId" | "secret">;
+type OAuthCustodyRef = OAuthAccountRef & { readonly secret: PrivateSecretRef };
 
 type OAuthGrantRefresh = (
   grant: Parameters<typeof refreshPinnedOAuthGrant>[0],
@@ -189,46 +191,23 @@ function failure(failureCode: string): FailedRefresh {
   };
 }
 
-/** Only the Token Service holds this private Secret. Its CAS fences refresh across API and worker replicas. */
+/** The TokenService uses one private store. Its CAS fences refresh across API replicas. */
 export class OAuthGrantStore {
-  private readonly secrets: SecretDriver;
+  private readonly secrets: PrivateSecretStore;
 
   private readonly refreshGrant: typeof refreshPinnedOAuthGrant;
 
-  constructor(secrets: SecretDriver, refreshGrant: typeof refreshPinnedOAuthGrant) {
+  constructor(secrets: PrivateSecretStore, refreshGrant: typeof refreshPinnedOAuthGrant) {
     this.refreshGrant = refreshGrant;
     this.secrets = secrets;
   }
 
-  private driver(driverId: string, signal: AbortSignal) {
+  async create(custody: OAuthConnectionCustody, grant: ApprovedGrant, signal: AbortSignal) {
     signal.throwIfAborted();
-    if (driverId !== this.secrets.id || !this.secrets.withValue || !this.secrets.compareAndSwap) {
-      throw new Error(
-        "OAuth token custody requires its original Secret Driver with atomic updates.",
-      );
-    }
-    return this.secrets;
-  }
-
-  async create(ref: OAuthAccountRef, grant: ApprovedGrant, signal: AbortSignal) {
-    const driver = this.driver(this.secrets.id, signal);
     const initial = ready(grant);
-    const identity = {
-      id: `sec_${randomUUID()}`,
-      namespaceId: ref.namespaceId,
-      name: "OAuth connection custody",
-    };
-    const backendRef = await driver.create(identity, JSON.stringify(initial));
+    await this.secrets.create(custody.secret, JSON.stringify(initial));
     return {
-      custody: {
-        sourceId: ref.sourceId,
-        secret: {
-          ...identity,
-          backendRef,
-          driverId: driver.id,
-          createdAt: new Date().toISOString(),
-        },
-      },
+      custody,
       schedule: {
         version: initial.version,
         nextRefreshAt: initial.renewAt,
@@ -238,25 +217,23 @@ export class OAuthGrantStore {
   }
 
   observe(custody: OAuthConnectionCustody, signal: AbortSignal, minimumValidityMs?: number) {
-    return this.driver(custody.secret.driverId, signal).withValue!(
-      custody.secret,
-      async (value) => {
-        signal.throwIfAborted();
-        const stored = material(value);
-        return {
-          status: status(stored),
-          token:
-            minimumValidityMs === undefined ? undefined : eligibleToken(stored, minimumValidityMs),
-          phase: stored.phase,
-          version: stored.phase !== "failed" ? stored.version : undefined,
-          renewAt: stored.phase !== "failed" ? Date.parse(stored.renewAt) : undefined,
-          renewalDeadline:
-            stored.phase === "renewing" || stored.phase === "renewing_unavailable"
-              ? Date.parse(stored.renewalDeadline)
-              : undefined,
-        };
-      },
-    );
+    signal.throwIfAborted();
+    return this.secrets.withValue(custody.secret, async (value) => {
+      signal.throwIfAborted();
+      const stored = material(value);
+      return {
+        status: status(stored),
+        token:
+          minimumValidityMs === undefined ? undefined : eligibleToken(stored, minimumValidityMs),
+        phase: stored.phase,
+        version: stored.phase !== "failed" ? stored.version : undefined,
+        renewAt: stored.phase !== "failed" ? Date.parse(stored.renewAt) : undefined,
+        renewalDeadline:
+          stored.phase === "renewing" || stored.phase === "renewing_unavailable"
+            ? Date.parse(stored.renewalDeadline)
+            : undefined,
+      };
+    });
   }
 
   async renew(
@@ -265,8 +242,8 @@ export class OAuthGrantStore {
     resolveClient: () => Promise<OAuthIssuerClient>,
     scheduledVersion?: string,
   ): Promise<OAuthConnectionStatus & { readonly credentialUpdated?: true }> {
-    const driver = this.driver(custody.secret.driverId, signal);
-    const previous = await driver.withValue!(custody.secret, async (value) => value);
+    signal.throwIfAborted();
+    const previous = await this.secrets.withValue(custody.secret, async (value) => value);
     const current = material(previous);
     const observed = status(current);
     if (current.phase === "failed") {
@@ -279,7 +256,7 @@ export class OAuthGrantStore {
       // A lost issuer response may have rotated the grant. A final CAS fences the owner and
       // never replays its request. If its result already won, use that result for scheduling.
       const unknown = failure("refresh_outcome_unknown");
-      const fenced = await driver.compareAndSwap!(
+      const fenced = await this.secrets.compareAndSwap(
         custody.secret,
         previous,
         JSON.stringify(unknown),
@@ -313,7 +290,7 @@ export class OAuthGrantStore {
       // No request reached the issuer. Preserve this grant and schedule a bounded retry,
       // including when a downstream credential store or the registration itself is unavailable.
       const next = retryClient(current, "client_unavailable");
-      return (await driver.compareAndSwap!(custody.secret, previous, JSON.stringify(next)))
+      return (await this.secrets.compareAndSwap(custody.secret, previous, JSON.stringify(next)))
         ? status(next)
         : (await this.observe(custody, signal)).status;
     }
@@ -324,14 +301,14 @@ export class OAuthGrantStore {
       phase: current.phase === "ready" ? "renewing" : "renewing_unavailable",
       renewalDeadline: new Date(deadline).toISOString(),
     });
-    if (!(await driver.compareAndSwap!(custody.secret, previous, intent))) {
+    if (!(await this.secrets.compareAndSwap(custody.secret, previous, intent))) {
       return { state: "pending" };
     }
     const remaining = deadline - Date.now();
     if (signal.aborted || remaining <= 0) {
       // The custody claim completed after cancellation. No issuer request was sent, so this
       // owner can restore the original grant if its intent still owns the Secret.
-      await driver.compareAndSwap!(custody.secret, intent, previous);
+      await this.secrets.compareAndSwap(custody.secret, intent, previous);
       signal.throwIfAborted();
       return { state: "pending" };
     }
@@ -380,7 +357,7 @@ export class OAuthGrantStore {
     }
     // Publish the access token and any rotated refresh token together. Retirement or a new
     // owner winning this CAS prevents a late issuer response from reinstating its grant.
-    if (!(await driver.compareAndSwap!(custody.secret, intent, JSON.stringify(next)))) {
+    if (!(await this.secrets.compareAndSwap(custody.secret, intent, JSON.stringify(next)))) {
       return { state: "pending" };
     }
     return {
@@ -391,7 +368,8 @@ export class OAuthGrantStore {
   }
 
   async delete(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<void> {
-    await this.driver(custody.secret.driverId, signal).delete(custody.secret);
+    signal.throwIfAborted();
+    await this.secrets.delete(custody.secret);
   }
 }
 
@@ -428,28 +406,43 @@ export class OAuthAccountTokens {
   private readonly notifyRenewed:
     ((ref: OAuthAccountRef, version: string, signal: AbortSignal) => Promise<void>) | undefined;
   private readonly renewing = new Map<string, Promise<OAuthConnectionStatus>>();
+  private readonly role: "api" | "worker";
 
   constructor(
     state: PlatformStateStore,
-    secrets: SecretDriver,
+    secrets: PrivateSecretStore,
     resolveClient: (
       ref: OAuthAccountRef,
       registrationSource?: Readonly<OAuthCredentialSource>,
     ) => Promise<OAuthConnectionClient>,
     codexRefresh?: OAuthGrantRefresh,
     notifyRenewed?: (ref: OAuthAccountRef, version: string, signal: AbortSignal) => Promise<void>,
+    role: "api" | "worker" = "api",
   ) {
     this.state = state;
     this.grants = new OAuthGrantStore(secrets, refreshPinnedOAuthGrant);
     this.client = resolveClient;
     this.codexRefresh = codexRefresh;
     this.notifyRenewed = notifyRenewed;
+    this.role = role;
   }
 
-  private custody(ref: OAuthAccountRef) {
-    return this.state.read((view) =>
+  private async custody(ref: OAuthCustodyRef) {
+    const custody = await this.state.read((view) =>
       view.oauthCredentials.findTokenCustody(ref.namespaceId, ref.sourceId),
     );
+    return this.checkCustody(ref, custody);
+  }
+
+  private checkCustody<T extends OAuthTokenCustody>(ref: OAuthCustodyRef, custody: T | undefined) {
+    if (
+      custody !== undefined &&
+      (custody.secret.installationId !== ref.secret.installationId ||
+        custody.secret.id !== ref.secret.id)
+    ) {
+      throw new ResourceStateConflictError("OAuth custody does not match its Source.");
+    }
+    return custody;
   }
 
   private async resolveClient(
@@ -484,17 +477,17 @@ export class OAuthAccountTokens {
 
   /** Publish the ready Source and its usable private grant as one database mutation. */
   async registerSource(
+    ref: OAuthCustodyRef,
     source: OAuthCredentialSource,
     grant: OAuthConnectionGrant,
     signal: AbortSignal,
   ): Promise<OAuthCredentialSource> {
-    const ref: OAuthAccountRef = {
-      kind: "oauth_refresh_token",
-      namespaceId: source.namespaceId,
-      sourceId: source.id,
-    };
     await this.resolveClient(ref, source);
-    const { custody, schedule } = await this.grants.create(ref, grant, signal);
+    const { custody, schedule } = await this.grants.create(
+      { sourceId: ref.sourceId, secret: ref.secret },
+      grant,
+      signal,
+    );
     try {
       signal.throwIfAborted();
       return await this.state.transact(async (unit) => {
@@ -525,7 +518,7 @@ export class OAuthAccountTokens {
       // A lost commit acknowledgement cannot justify deleting custody that the database owns.
       await this.custody(ref)
         .then(async (published) => {
-          if (published?.secret.id !== custody.secret.id) {
+          if (published === undefined) {
             await this.grants.delete(custody, AbortSignal.timeout(RENEWAL_BUDGET_MS));
           }
         })
@@ -534,19 +527,19 @@ export class OAuthAccountTokens {
     }
   }
 
-  async status(ref: OAuthAccountRef, signal: AbortSignal): Promise<OAuthConnectionStatus> {
+  async status(ref: OAuthCustodyRef, signal: AbortSignal): Promise<OAuthConnectionStatus> {
     const custody = await this.custody(ref);
     return custody ? (await this.grants.observe(custody, signal)).status : { state: "pending" };
   }
 
-  async retire(ref: OAuthAccountRef, signal: AbortSignal) {
+  async retire(ref: OAuthCustodyRef, signal: AbortSignal) {
     const custody = await this.custody(ref);
     if (custody) {
       await this.grants.delete(custody, signal);
     }
   }
 
-  private activeCustody(ref: OAuthAccountRef) {
+  private activeCustody(ref: OAuthCustodyRef) {
     return this.state.read(async (view) => {
       const source = await view.credentialSources.findCredentialSource(
         ref.namespaceId,
@@ -561,7 +554,10 @@ export class OAuthAccountTokens {
       ) {
         return undefined;
       }
-      return view.oauthCredentials.findTokenCustody(ref.namespaceId, ref.sourceId);
+      return this.checkCustody(
+        ref,
+        await view.oauthCredentials.findTokenCustody(ref.namespaceId, ref.sourceId),
+      );
     });
   }
 
@@ -649,16 +645,19 @@ export class OAuthAccountTokens {
     return attempt;
   }
 
-  async refresh(ref: OAuthAccountRef, signal: AbortSignal) {
+  async refresh(ref: OAuthCustodyRef, signal: AbortSignal, mode: "forced" | "due" = "forced") {
+    if (this.role === "worker") {
+      throw new ResourceStateConflictError("OAuth renewal requires the API process.");
+    }
     const custody = await this.activeCustody(ref);
     signal.throwIfAborted();
-    if (!custody) {
+    if (!custody || (mode === "due" && !custody.due)) {
       return undefined;
     }
     return this.renew(ref, custody, custody.scheduledVersion);
   }
 
-  async resolve(ref: OAuthAccountRef, options: TokenResolveOptions) {
+  async resolve(ref: OAuthCustodyRef, options: TokenResolveOptions) {
     const { signal } = options;
     let firstVersion: string | undefined;
     while (!signal.aborted && Date.now() < Date.parse(options.deadlineAt)) {
@@ -673,24 +672,20 @@ export class OAuthAccountTokens {
       if (current.token) {
         // Disconnect can commit while the Secret Driver reads an otherwise usable token.
         const active = await this.activeCustody(ref);
-        if (
-          !active ||
-          active.secret.id !== custody.secret.id ||
-          signal.aborted ||
-          Date.now() >= Date.parse(options.deadlineAt)
-        ) {
+        if (!active || signal.aborted || Date.now() >= Date.parse(options.deadlineAt)) {
           return undefined;
         }
         if (Date.parse(current.token.expiresAt) <= Date.now() + options.minimumValidityMs) {
           continue;
         }
-        if (current.phase === "ready" && current.renewAt! <= Date.now()) {
-          // A failed wake leaves the durable schedule available to the worker.
+        if (this.role === "api" && current.phase === "ready" && current.renewAt! <= Date.now()) {
+          // A failed wake leaves the durable schedule available to API maintenance.
           void this.renew(ref, custody, current.version).catch(() => undefined);
         }
         return current.token;
       }
       if (
+        this.role === "worker" ||
         (firstVersion !== undefined && current.version !== firstVersion) ||
         (current.phase !== "ready" && current.phase !== "renewing" && current.renewAt! > Date.now())
       ) {

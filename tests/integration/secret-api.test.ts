@@ -1213,7 +1213,7 @@ test("credential source writes commit one value-free audit row each", async (t) 
   const fixture = await createFixture();
   const namespace = await bootstrapNamespace(fixture);
   const controller = fixture.controller();
-  const store = fixture.secretDriver.installationSecrets;
+  const store = fixture.secretDriver.privateSecrets;
   const instanceId = await controller.activateTokenServiceInstance("audit-owner", randomUUID());
   const owner = new OCCTokenServiceDriver(
     "audit-owner",

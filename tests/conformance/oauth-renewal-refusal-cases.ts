@@ -61,12 +61,12 @@ export function registerOAuthRenewalRefusalCases({
     assert.ok(accepted);
     t.mock.timers.setTime(Date.parse(accepted.nextRefreshAt));
     const stop = new AbortController();
-    const swap = driver.compareAndSwap.bind(driver);
+    const swap = driver.privateSecrets.compareAndSwap.bind(driver.privateSecrets);
     // The control plane cancels while the Secret Driver is committing the intent.
     t.mock.method(
-      driver,
+      driver.privateSecrets,
       "compareAndSwap",
-      async (...args: Parameters<TestSecretDriver["compareAndSwap"]>) => {
+      async (...args: Parameters<TestSecretDriver["privateSecrets"]["compareAndSwap"]>) => {
         stop.abort(new Error("Worker stopped during the custody claim."));
         return swap(...args);
       },
@@ -156,11 +156,13 @@ export function registerOAuthRenewalRefusalCases({
     assert.equal(unavailable.mock.callCount(), 1);
     assert.equal(requests, 0);
     // Source metadata, not private token custody, chooses the registered client and endpoint.
-    const retryMaterial = driver.valueFor(custody.secret);
-    assert.ok(retryMaterial);
+    const retryMaterial = await driver.privateSecrets.withValue(
+      custody.secret,
+      async (value) => value,
+    );
     const record = asRecord(JSON.parse(retryMaterial));
     assert.ok(record);
-    await driver.update(
+    await driver.privateSecrets.update(
       custody.secret,
       JSON.stringify({
         ...record,
@@ -189,8 +191,10 @@ export function registerOAuthRenewalRefusalCases({
       (await worker.renew(custody, t.signal, resolveClient, refusedAgain.schedule.version)).state,
       "ready",
     );
-    const renewedMaterial = driver.valueFor(custody.secret);
-    assert.ok(renewedMaterial);
+    const renewedMaterial = await driver.privateSecrets.withValue(
+      custody.secret,
+      async (value) => value,
+    );
     assert.ok(!renewedMaterial.includes(currentSecret));
     // A definitive grant refusal is terminal, even with a working client credential.
     revoked = true;

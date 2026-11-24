@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from "node:util";
 
 import type {
   GitHubAppInstallationCredentialSource,
-  InstallationSecretRef,
   ResolvedCredential,
 } from "@openclaw-enterprise/contracts";
 import { ResourceStateConflictError, TokenServiceSourceInputError } from "@openclaw-enterprise/occ";
@@ -20,25 +19,6 @@ interface GitHubAppSourceReceipt extends Required<
 > {
   readonly providerExpiresAt: string;
   readonly deliveryPending?: true;
-}
-
-/** Shared by Client administration and the selected TokenService issuer. */
-export function githubAppClientSigningKeyRef(
-  installationId: string,
-  tokenServiceInstanceId: string,
-  clientId: string,
-  appId: string,
-): InstallationSecretRef {
-  return {
-    installationId,
-    id: JSON.stringify([
-      "token_service",
-      tokenServiceInstanceId,
-      "github_app_client",
-      clientId,
-      appId,
-    ]),
-  };
 }
 
 function parseJsonRecord(value: string): Record<string, unknown> | undefined {

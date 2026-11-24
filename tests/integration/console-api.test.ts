@@ -1642,7 +1642,7 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   editor.permissions.push({ action: "update", resourceKind: "agent" });
   assert.ok(fixture.controller instanceof OpenClawController && state);
   const { driver: privateSecrets } = useInstallationSecretDriver(fixture.controller);
-  assert.ok(privateSecrets.installationSecrets);
+  assert.ok(privateSecrets.privateSecrets);
   fixture.controller.selectDriver("secret", secretDriver.id);
   const instance = await fixture.controller.activateTokenServiceInstance(
     "answer-tokens",
@@ -1651,7 +1651,7 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   const tokens = new OCCTokenServiceDriver(
     "answer-tokens",
     fixture.controller.installation.id,
-    privateSecrets.installationSecrets,
+    privateSecrets.privateSecrets,
     instance,
     state,
   );

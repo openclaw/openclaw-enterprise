@@ -84,19 +84,19 @@ test(
     await controller.applyIAMConfiguration();
     // PostgreSQL, Native IAM, and both concrete Drivers are real; only the Kubernetes API transport is simulated.
     const { core, driver } = useInstallationSecretDriver(controller);
-    assert.ok(driver.installationSecrets);
+    assert.ok(driver.privateSecrets);
     const ownerId = "staged-token-service";
     const instanceId = await controller.activateTokenServiceInstance(ownerId, randomUUID());
     const owner = new OCCTokenServiceDriver(
       ownerId,
       controller.installation.id,
-      driver.installationSecrets,
+      driver.privateSecrets,
       instanceId,
       state,
       undefined,
       new OAuthAccountTokens(
         state,
-        driver,
+        driver.privateSecrets,
         controller.resolveConnectionClient.bind(controller),
         refreshCodexOAuthGrant,
       ),

@@ -100,7 +100,7 @@ Sandbox compiles HTTP and managed MCP bindings. MCP checks exact RPCs and select
 
 `apps/controller/src/worker.ts:authorizedCredentialDeployment`, `apps/controller/src/drivers/compute/kubernetes/index.ts:activateRevision`
 
-Worker selects the Agent revision and checks Source authorization again before each activation attempt. Sandbox starts the Harness. Compute waits for authenticated runtime readiness and workspace-node enrollment before publishing user chat and delegated browser routes. A pending readiness result leaves activation pending; a terminal error fails the operation.
+Worker selects the Agent revision and checks Source authorization again before each activation attempt. OAuth preparation waits for eligible custody and a matching Provider version. The Worker uses the prepared readiness receipt before activating a new or recovering revision. Sandbox starts the Harness. Compute waits for authenticated runtime readiness and workspace-node enrollment before publishing user chat and delegated browser routes. A pending readiness result leaves activation pending; a terminal error fails the operation.
 
 On Stop, Compute deletes the Sandbox, then asks Proxy to remove or confirm absence of the revision's binding. It retains the saved target until cleanup succeeds. If a cleanup operation instead keeps the Sandbox, Sandbox must remove the policy's reference to the Provider before Proxy detaches it. Proxy attempts to delete its owned Provider and profile after cleanup; an attached-Provider refusal means it retains the shared copy until the last detach. The TokenService Source remains available for another deployment.
 
@@ -133,9 +133,9 @@ API composition binds the selected Proxy to trusted Source Namespace placement. 
 
 Delivery failure leaves committed material in custody. PATCH audits the update and failure separately and returns `503 DEPENDENCY_UNAVAILABLE`. OAuth leaves the old schedule due and retries the committed version without exchanging the rotated grant again.
 
-`apps/controller/src/composition/token-service.ts:scheduleGitSourceMaintenance`, `apps/controller/src/drivers/token-service/occ.ts:maintainSources`
+`apps/controller/src/composition/token-service.ts:scheduleTokenServiceMaintenance`, `apps/controller/src/drivers/token-service/occ.ts:maintainGitSources`
 
-The API scans ready GitHub App Sources every five seconds. When a token is within 45 seconds of expiry, TokenService reads the current Client key, commits a replacement, and notifies Proxy. A pending receipt retries the same committed version across API restarts. Shutdown joins the current pass before closing PostgreSQL.
+The API scans ready GitHub App Sources every five seconds. When a token is within 45 seconds of expiry, TokenService reads the current Client key, commits a replacement, and notifies Proxy. A pending receipt retries the same committed version across API restarts. The [OAuth scan](connection-templates.md#5-renew-the-grant) runs independently. Shutdown drains both scans before closing PostgreSQL.
 
 #### Retry delivery
 
@@ -149,7 +149,7 @@ OCC sends Proxy each authorized Source reference and TokenService-bound resolver
 
 #### Retire the Source
 
-OCC checks Agent, revision, deployment, provisioning and Plugin slot references before retirement. A blocking reference returns `409`. After withdrawal and reference removal, OCC records any OAuth revocation intent and asks Proxy to retire its copies before TokenService removes custody. Proxy failure returns `503` and retains custody for retry. The OAuth Worker also retries pending retirement. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
+OCC checks Agent, revision, deployment, provisioning and Plugin slot references before retirement. A blocking reference returns `409`. After withdrawal and reference removal, OCC records any OAuth revocation intent and asks Proxy to retire its copies before TokenService removes custody. Proxy failure returns `503` and retains custody for retry. The Worker also retries pending OAuth retirement. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
 
 ### 7. Enroll a Codex PAT Source
 

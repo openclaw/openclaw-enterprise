@@ -196,10 +196,8 @@ export function registerDeviceAuthorizationAgentCases(): void {
       custody,
     );
     assert.equal(
-      fixture.secretDriver.calls.some(
-        (call) => call.operation === "delete" && call.secret.id === custody.secret.id,
-      ),
-      false,
+      await fixture.secretDriver.privateSecrets.withValue(custody.secret, async () => true),
+      true,
     );
     assertNoCredentials(fixture);
   });

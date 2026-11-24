@@ -1,5 +1,4 @@
-import { immutableCopy } from "@openclaw-enterprise/utils";
-import type { Secret } from "@openclaw-enterprise/contracts";
+import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { DependencyUnavailableError } from "../errors.ts";
 import type { OAuthCredentialRepository } from "../ports/oauth-credentials.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
@@ -20,15 +19,15 @@ export function postgresOAuthCredentials(client: PostgresQueryClient): OAuthCred
       if (!row) {
         return undefined;
       }
-      const secret = row.secret_ref as Readonly<Secret>;
+      const ref = asRecord(row.secret_ref);
       if (
-        secret?.namespaceId !== namespaceId ||
-        !secret.id ||
-        !secret.driverId ||
-        !secret.backendRef?.uid
+        !isNonEmptyString(ref?.installationId) ||
+        !isNonEmptyString(ref?.id) ||
+        Object.keys(ref).length !== 2
       ) {
         invalid();
       }
+      const secret = { installationId: ref.installationId, id: ref.id };
       return immutableCopy({
         namespaceId,
         sourceId,
@@ -67,10 +66,10 @@ export function postgresOAuthCredentials(client: PostgresQueryClient): OAuthCred
         );
       }
     },
-    listDueOAuthSources: async (installationId, limit, afterSourceId) => {
+    listDueOAuthSources: async (tokenServiceInstanceId, limit, afterSourceId) => {
       const { rows } = await client.query(
-        "SELECT s.namespace_id,s.id FROM occ.credential_sources s JOIN occ.connection_token_custody c ON c.namespace_id=s.namespace_id AND c.credential_source_id=s.id JOIN occ.token_service_instances i ON i.id=s.token_service_instance_id WHERE i.installation_id=$1 AND s.type='oauth2-refresh-token' AND s.state='ready' AND s.oauth_revocation_requested_by IS NULL AND c.next_refresh_at<=now() AND s.id>$2 ORDER BY s.id LIMIT $3",
-        [installationId, afterSourceId ?? "", limit],
+        "SELECT s.namespace_id,s.id FROM occ.credential_sources s JOIN occ.connection_token_custody c ON c.namespace_id=s.namespace_id AND c.credential_source_id=s.id WHERE s.token_service_instance_id=$1 AND s.type='oauth2-refresh-token' AND s.state='ready' AND s.oauth_revocation_requested_by IS NULL AND c.next_refresh_at<=now() AND s.id>$2 ORDER BY s.id LIMIT $3",
+        [tokenServiceInstanceId, afterSourceId ?? "", limit],
       );
       return Object.freeze(
         rows.map((value) => {

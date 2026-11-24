@@ -214,10 +214,8 @@ test("deleting a completed Codex Source retires native delivery before erasing T
     "failed delivery retirement retains refresh custody for the normal retry",
   );
   assert.equal(
-    fixture.secretDriver.calls.some(
-      (call) => call.operation === "delete" && call.secret.id === custody.secret.id,
-    ),
-    false,
+    await fixture.secretDriver.privateSecrets.withValue(custody.secret, async () => true),
+    true,
   );
   unavailable = false;
   const retry = await fixture.request("DELETE", path);
@@ -229,11 +227,9 @@ test("deleting a completed Codex Source retires native delivery before erasing T
     ),
     undefined,
   );
-  assert.equal(
-    fixture.secretDriver.calls.some(
-      (call) => call.operation === "delete" && call.secret.id === custody.secret.id,
-    ),
-    true,
+  await assert.rejects(
+    fixture.secretDriver.privateSecrets.withValue(custody.secret, async () => true),
+    { message: /Secret does not exist\./u },
   );
   assert.ok(calls.includes("providers") && calls.includes("profiles"));
 });

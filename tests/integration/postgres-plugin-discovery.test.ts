@@ -202,18 +202,22 @@ test(
       installationId: controller.installation.id,
     });
     const { core, driver } = useInstallationSecretDriver(controller);
-    assert.ok(driver.installationSecrets);
+    assert.ok(driver.privateSecrets);
     const ownerId = "occ";
     const storeIdentity = randomUUID();
     const instanceId = await controller.activateTokenServiceInstance(ownerId, storeIdentity);
     const owner = new OCCTokenServiceDriver(
       ownerId,
       controller.installation.id,
-      driver.installationSecrets,
+      driver.privateSecrets,
       instanceId,
       state,
       undefined,
-      new OAuthAccountTokens(state, driver, controller.resolveConnectionClient.bind(controller)),
+      new OAuthAccountTokens(
+        state,
+        driver.privateSecrets,
+        controller.resolveConnectionClient.bind(controller),
+      ),
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", ownerId);
@@ -499,7 +503,7 @@ test(
     const unavailableOwner = new OCCTokenServiceDriver(
       "unavailable-owner",
       native.installation.id,
-      driver.installationSecrets,
+      driver.privateSecrets,
       instanceId,
       state,
     );

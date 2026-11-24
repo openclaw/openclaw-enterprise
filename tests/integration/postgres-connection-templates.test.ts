@@ -42,12 +42,12 @@ async function installClientOwner(
   worker = false,
 ) {
   const { core, driver } = useInstallationSecretDriver(controller);
-  assert.ok(driver.installationSecrets);
+  assert.ok(driver.privateSecrets);
   const ownerId = "template-client-token-service";
   const storeIdentity = clientStoreIdentity;
   if (worker) {
     // A separately composed Worker discovers the same selected private-store identity at startup.
-    await driver.installationSecrets.create(
+    await driver.privateSecrets.create(
       {
         installationId: controller.installation.id,
         id: `token-service-store-identity:${driver.id}`,
@@ -59,7 +59,7 @@ async function installClientOwner(
   const owner = new OCCTokenServiceDriver(
     ownerId,
     controller.installation.id,
-    driver.installationSecrets,
+    driver.privateSecrets,
     instanceId,
     state,
   );

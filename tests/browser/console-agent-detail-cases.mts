@@ -4124,7 +4124,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const controller: unknown = fixture.controller;
     assert.ok(controller instanceof OpenClawController && state);
     const { driver } = useInstallationSecretDriver(controller);
-    const store = driver.installationSecrets;
+    const store = driver.privateSecrets;
     assert.ok(store);
     const instance = await controller.activateTokenServiceInstance("occ", randomUUID());
     const owner = new OCCTokenServiceDriver(
@@ -4311,7 +4311,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const controller: unknown = fixture.controller;
     assert.ok(controller instanceof OpenClawController && state);
     const { driver } = useInstallationSecretDriver(controller);
-    const store = driver.installationSecrets;
+    const store = driver.privateSecrets;
     assert.ok(store);
     const instance = await controller.activateTokenServiceInstance("occ", randomUUID());
     const owner = new OCCTokenServiceDriver(

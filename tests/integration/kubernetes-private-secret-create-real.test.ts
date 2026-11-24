@@ -408,7 +408,7 @@ test(
     );
     controller.registerDriver(driver);
     controller.selectDriver("secret", driver.id);
-    assert.ok(driver.installationSecrets);
+    assert.ok(driver.privateSecrets);
     const instanceId = await controller.activateTokenServiceInstance(
       "private-real-token-service",
       randomUUID(),
@@ -416,7 +416,7 @@ test(
     const owner = new OCCTokenServiceDriver(
       "private-real-token-service",
       installation.id,
-      driver.installationSecrets,
+      driver.privateSecrets,
       instanceId,
       state,
     );

@@ -7,6 +7,7 @@ import type {
   CredentialProxyDriver,
   CredentialSource,
   CredentialSourceDeviceAuthorization,
+  CredentialClient,
   CredentialClientSecretInstance,
   OAuthClientSecretInstance,
   OAuthCredentialSource,
@@ -15,8 +16,8 @@ import type {
   ErrorDetail,
   GitHubAppInstallationCredentialSource,
   GitHubAppInstallationScope,
-  InstallationSecretRef,
-  InstallationSecretStore,
+  PrivateSecretRef,
+  PrivateSecretStore,
   JSONSchema,
   ResolvedCredential,
   SourceLifecycleConfig,
@@ -59,7 +60,6 @@ import type { GitHubRepositoryRegistry } from "../repo/github/access/registry.ts
 import {
   admitGitHubAppSourceScope,
   decodeGitHubAppSourceCredential,
-  githubAppClientSigningKeyRef,
   isGitHubAppSourceScopeCurrent,
   resolveGitHubAppSourceCredential,
 } from "./github-app-source.ts";
@@ -131,6 +131,24 @@ function encodeGitHubAppCredential(
   return { stored, version };
 }
 
+function sourceMaintenanceResult(
+  sources: ReadonlyArray<{ readonly id: string }>,
+  limit: number,
+  outcomes: readonly PromiseSettledResult<unknown>[],
+) {
+  return {
+    cursor: sources.length === limit ? sources.at(-1)?.id : undefined,
+    failed: outcomes.some(
+      (outcome) =>
+        outcome.status === "rejected" && !(outcome.reason instanceof CredentialDeliveryFailedError),
+    ),
+    deliveryFailed: outcomes.some(
+      (outcome) =>
+        outcome.status === "rejected" && outcome.reason instanceof CredentialDeliveryFailedError,
+    ),
+  };
+}
+
 export class OCCTokenServiceDriver implements TokenServiceDriver {
   static readonly implementation = "occ/token-service";
   static readonly configurationSchema: JSONSchema = Object.freeze({
@@ -151,7 +169,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   });
   readonly id: string;
   private readonly installationId: string;
-  private readonly store: InstallationSecretStore;
+  private readonly store: PrivateSecretStore;
   private readonly tokenServiceInstanceId: string;
   private readonly state: PlatformStateStore;
   private readonly oauth: OAuthAccountTokens | undefined;
@@ -164,7 +182,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   constructor(
     id: string,
     installationId: string,
-    store: InstallationSecretStore,
+    store: PrivateSecretStore,
     tokenServiceInstanceId: string,
     state: PlatformStateStore,
     credentialProxy?: Pick<CredentialProxyDriver, "notifyCredentialUpdated">,
@@ -212,7 +230,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     return found?.ownerCapability === "token_service" ? found : undefined;
   }
 
-  private storageRef(ref: CredentialSourceReference): InstallationSecretRef {
+  private storageRef(ref: CredentialSourceReference): PrivateSecretRef {
     return {
       installationId: this.installationId,
       id: JSON.stringify([
@@ -225,47 +243,53 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     };
   }
 
-  private clientSecretRef(client: CredentialClientSecretInstance): InstallationSecretRef {
-    const ref = client.sourceRef;
+  private oauthAccount(ref: CredentialSourceReference) {
+    return {
+      kind: "oauth_refresh_token" as const,
+      namespaceId: ref.namespaceId,
+      sourceId: ref.id,
+      secret: this.storageRef(ref),
+    };
+  }
+
+  private clientSecretRef(client: CredentialClientSecretInstance): PrivateSecretRef {
+    const { id, kind, namespaceId, tokenServiceInstanceId } = client;
+    const scope = namespaceId === undefined ? "installation" : "namespace";
     if (
-      client.tokenServiceInstanceId !== this.tokenServiceInstanceId ||
-      !isNonEmptyString(ref.id)
+      tokenServiceInstanceId !== this.tokenServiceInstanceId ||
+      !isNonEmptyString(id) ||
+      (namespaceId !== undefined && !isNonEmptyString(namespaceId)) ||
+      !this.clientScopes[kind]?.includes(scope)
     ) {
       throw new ScopeViolationError("The client secret is not owned by this TokenService.");
     }
+
+    let purpose: string;
     let authority: string;
-    if (ref.kind === "oauth_client" && "tokenUrl" in client) {
-      if (
-        (ref.namespaceId !== undefined && !isNonEmptyString(ref.namespaceId)) ||
-        !/^https:\/\/[^/?#@\s\\]+(?:[/?][^#\s\\]*)?$/.test(client.tokenUrl) ||
-        !URL.canParse(client.tokenUrl)
-      ) {
-        throw new ScopeViolationError("The client secret is not owned by this TokenService.");
-      }
-      authority = client.tokenUrl;
-    } else if (
-      ref.kind === "github_app_client" &&
-      ref.namespaceId === undefined &&
-      "appId" in client &&
-      parseGitHubNumericId(client.appId) !== undefined
+    if (
+      kind === "oauth2" &&
+      /^https:\/\/[^/?#@\s\\]+(?:[/?][^#\s\\]*)?$/.test(client.tokenUrl) &&
+      URL.canParse(client.tokenUrl)
     ) {
-      return githubAppClientSigningKeyRef(
-        this.installationId,
-        this.tokenServiceInstanceId,
-        ref.id,
-        client.appId,
-      );
+      purpose = "oauth_client";
+      authority = client.tokenUrl;
+    } else if (kind === "github-app" && parseGitHubNumericId(client.appId) !== undefined) {
+      purpose = "github_app_client";
+      authority = client.appId;
     } else {
-      throw new ScopeViolationError("The client secret is not owned by this TokenService.");
+      throw new ScopeViolationError("The client secret authority is invalid.");
     }
+    // Keep existing opaque addresses. OAuth Installations already use an explicit empty
+    // Namespace slot. A Namespace registration always includes its actual Namespace.
+    const owner = kind === "github-app" && namespaceId === undefined ? [] : [namespaceId ?? null];
     return {
       installationId: this.installationId,
       id: JSON.stringify([
         "token_service",
-        this.tokenServiceInstanceId,
-        ref.kind,
-        ref.namespaceId ?? null,
-        ref.id,
+        tokenServiceInstanceId,
+        purpose,
+        ...owner,
+        id,
         authority,
       ]),
     };
@@ -288,7 +312,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     signal: AbortSignal,
   ): Promise<void> {
     this.assertClientSecret(secret);
-    if (client.sourceRef.kind === "github_app_client" && "appId" in client) {
+    if (client.kind === "github-app") {
       try {
         await this.githubAppIssuer.verifySigningKey(client.appId, secret, signal);
       } catch {
@@ -325,7 +349,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     signal: AbortSignal,
   ): Promise<string> {
     signal.throwIfAborted();
-    if (client.sourceRef.kind !== "oauth_client") {
+    if (client.kind !== "oauth2") {
       throw new ScopeViolationError("Only an OAuth client secret can be resolved.");
     }
     return withComputeAbortSignal(signal, () =>
@@ -393,18 +417,10 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   }
 
   private issueGitHubAppCredential(
-    {
-      clientId,
-      scope,
-    }: { readonly clientId: string; readonly scope: GitHubAppRepositorySelection },
+    scope: GitHubAppRepositorySelection,
+    keyRef: PrivateSecretRef,
     signal: AbortSignal,
   ) {
-    const keyRef = githubAppClientSigningKeyRef(
-      this.installationId,
-      this.tokenServiceInstanceId,
-      clientId,
-      scope.appId,
-    );
     return withComputeAbortSignal(signal, () =>
       this.store.withValue(keyRef, (privateKey) =>
         this.githubAppIssuer.issue(scope, privateKey, signal),
@@ -412,23 +428,25 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     );
   }
 
-  private assertGitHubAppClient(
-    candidate: unknown,
+  private githubAppSigningKeyRef(
+    client: (Readonly<CredentialClient> & { readonly tokenServiceInstanceId?: string }) | undefined,
     {
       clientId,
       scope,
     }: { readonly clientId: string; readonly scope: Pick<GitHubAppRepositorySelection, "appId"> },
-  ): void {
-    const client = asRecord(candidate);
+  ): PrivateSecretRef {
     if (
       client?.kind !== "github-app" ||
       client.id !== clientId ||
       client.appId !== scope.appId ||
-      client.namespaceId !== undefined ||
       client.tokenServiceInstanceId !== this.tokenServiceInstanceId
     ) {
       throw new ResourceStateConflictError("The GitHub App client is unavailable for this Source.");
     }
+    return this.clientSecretRef({
+      ...client,
+      tokenServiceInstanceId: client.tokenServiceInstanceId,
+    });
   }
 
   private assertCurrentGitHubAppRegistryScope(
@@ -452,7 +470,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     const client = await this.state.read(({ connectionTemplates }) =>
       connectionTemplates.findCredentialClient(source.clientId),
     );
-    this.assertGitHubAppClient(client, source);
+    this.githubAppSigningKeyRef(client, source);
   }
 
   private async createGitHubAppSource(
@@ -471,14 +489,11 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         throw new ResourceStateConflictError("The credential source Namespace is not ready.");
       }
       // Serialize enrollment with client retirement before issuing against its signing key.
-      this.assertGitHubAppClient(await connectionTemplates.lockCredentialClient(input.clientId), {
-        clientId: input.clientId,
-        scope,
-      });
-      const issued = await this.issueGitHubAppCredential(
+      const key = this.githubAppSigningKeyRef(
+        await connectionTemplates.lockCredentialClient(input.clientId),
         { clientId: input.clientId, scope },
-        signal,
       );
+      const issued = await this.issueGitHubAppCredential(scope, key, signal);
       const source: GitHubAppInstallationCredentialSource = {
         id: ref.id,
         namespaceId: ref.namespaceId,
@@ -585,7 +600,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     } else {
       source = { ...common, consent: { ...input.consent, ...scopes } };
     }
-    return oauth.registerSource(source, input.grant, signal);
+    return oauth.registerSource(this.oauthAccount(ref), source, input.grant, signal);
   }
 
   async updateSource(
@@ -668,10 +683,11 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       throw new ResourceStateConflictError("The credential source is unavailable.");
     }
     if (found.type === "oauth2-refresh-token") {
-      const token = await this.oauth?.resolve(
-        { kind: "oauth_refresh_token", namespaceId: ref.namespaceId, sourceId: ref.id },
-        { signal, deadlineAt: new Date(Date.now() + 30_000).toISOString(), minimumValidityMs: 0 },
-      );
+      const token = await this.oauth?.resolve(this.oauthAccount(ref), {
+        signal,
+        deadlineAt: new Date(Date.now() + 30_000).toISOString(),
+        minimumValidityMs: 0,
+      });
       if (!token) {
         throw new ResourceStateConflictError("The OAuth credential is unavailable.");
       }
@@ -709,10 +725,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       if (!this.oauth) {
         throw new ResourceStateConflictError("OAuth custody is unavailable.");
       }
-      await this.oauth.refresh(
-        { kind: "oauth_refresh_token", namespaceId: ref.namespaceId, sourceId: ref.id },
-        signal,
-      );
+      await this.oauth.refresh(this.oauthAccount(ref), signal);
       return { ...source, operationId: randomUUID() };
     }
     if (found.type === "github-app-installation") {
@@ -724,8 +737,31 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     );
   }
 
+  async maintainOAuthSources(limit: number, afterId?: string) {
+    const oauth = this.oauth;
+    if (!oauth) {
+      return { cursor: undefined, failed: false, deliveryFailed: false };
+    }
+    const sources = await this.state.read(({ oauthCredentials }) =>
+      oauthCredentials.listDueOAuthSources(this.tokenServiceInstanceId, limit, afterId),
+    );
+    const outcomes = await Promise.allSettled(
+      sources.map(({ id, namespaceId }) =>
+        oauth.refresh(
+          this.oauthAccount({ kind: "credential_source", namespaceId, id }),
+          AbortSignal.timeout(30_000),
+          "due",
+        ),
+      ),
+    );
+    return sourceMaintenanceResult(sources, limit, outcomes);
+  }
+
   /** Process one page independently of Agent deployments. */
-  async maintainSources(limit: number, afterId?: string) {
+  async maintainGitSources(limit: number, afterId?: string) {
+    if (!this.githubApp) {
+      return { cursor: undefined, failed: false, deliveryFailed: false };
+    }
     const sources = await this.state.read(({ credentialSources }) =>
       credentialSources.scanReadyTokenServiceSourceIds(
         "github-app-installation",
@@ -746,18 +782,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         ),
       ),
     );
-    return {
-      cursor: sources.length === limit ? sources.at(-1)?.id : undefined,
-      failed: outcomes.some(
-        (outcome) =>
-          outcome.status === "rejected" &&
-          !(outcome.reason instanceof CredentialDeliveryFailedError),
-      ),
-      deliveryFailed: outcomes.some(
-        (outcome) =>
-          outcome.status === "rejected" && outcome.reason instanceof CredentialDeliveryFailedError,
-      ),
-    };
+    return sourceMaintenanceResult(sources, limit, outcomes);
   }
 
   private async renewGitHubAppSource(
@@ -823,11 +848,11 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
               : undefined;
           }
         }
-        this.assertGitHubAppClient(
+        const key = this.githubAppSigningKeyRef(
           await connectionTemplates.findCredentialClient(current.clientId),
           current,
         );
-        const issued = await this.issueGitHubAppCredential(current, signal);
+        const issued = await this.issueGitHubAppCredential(current.scope, key, signal);
         const replacement = encodeGitHubAppCredential(issued, this.credentialProxy !== undefined);
         await withComputeAbortSignal(signal, () => this.store.update(stored, replacement.stored));
         return { version: replacement.version, minted: true };
@@ -877,10 +902,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       throw new ResourceStateConflictError("The credential source is unavailable.");
     }
     if (found.type === "oauth2-refresh-token") {
-      const status = await this.oauth?.status(
-        { kind: "oauth_refresh_token", namespaceId: ref.namespaceId, sourceId: ref.id },
-        signal,
-      );
+      const status = await this.oauth?.status(this.oauthAccount(ref), signal);
       if (!status) {
         throw new ResourceStateConflictError("OAuth custody is unavailable.");
       }
@@ -910,7 +932,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
 
   private async retireGitHubAppCredential(
     scope: GitHubAppInstallationScope,
-    stored: InstallationSecretRef,
+    stored: PrivateSecretRef,
     signal: AbortSignal,
   ): Promise<void> {
     const current = await withComputeAbortSignal(signal, () =>
@@ -949,10 +971,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         if (!this.oauth) {
           throw new ResourceStateConflictError("OAuth custody is unavailable.");
         }
-        await this.oauth.retire(
-          { kind: "oauth_refresh_token", namespaceId: ref.namespaceId, sourceId: ref.id },
-          signal,
-        );
+        await this.oauth.retire(this.oauthAccount(ref), signal);
         await this.state.transact((unit) =>
           unit.credentialSources.confirmOAuthRevocation(
             ref.namespaceId,

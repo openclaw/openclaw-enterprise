@@ -1739,11 +1739,7 @@ export type {
   IAMConfiguredPolicyChanges,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
-export type {
-  InstallationSecretRef,
-  InstallationSecretStore,
-  SecretDriver,
-} from "./drivers/secret/index.ts";
+export type { PrivateSecretRef, PrivateSecretStore, SecretDriver } from "./drivers/secret/index.ts";
 export type {
   CredentialGatewayDriver,
   CredentialGatewayContext,
@@ -1951,7 +1947,6 @@ export type {
   CredentialClientPurpose,
   CredentialClientScope,
   TokenServiceClientScopes,
-  OAuthClientSecretRef,
   OAuthClientSecretInstance,
   GitHubAppClientSecretInstance,
   CredentialClientSecretInstance,

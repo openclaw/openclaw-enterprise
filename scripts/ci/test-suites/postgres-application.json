@@ -136,7 +136,8 @@
       "expectedTests": [
         "manual Agent push fully preflights deployed Source authority and recovers a stale serving copy",
         "standalone activation commits the prepared revision and delivers an active Source PATCH",
-        "standalone activation refuses a source grant removed during preparation"
+        "standalone activation refuses a source grant removed during preparation",
+        "the Worker activates an eligible OAuth grant but refuses expired custody without renewing it"
       ]
     },
     {

@@ -305,7 +305,7 @@ test("a staged credential source refuses an ungranted Agent principal before rev
   assert.ok(sourceState);
   const namespace = await fixture.createNamespace("Staged principal denial", { ready: true });
   const { driver } = useInstallationSecretDriver(fixture.controller);
-  assert.ok(driver.installationSecrets);
+  assert.ok(driver.privateSecrets);
   const instanceId = await fixture.controller.activateTokenServiceInstance(
     "selected-owner",
     randomUUID(),
@@ -313,7 +313,7 @@ test("a staged credential source refuses an ungranted Agent principal before rev
   const owner = new OCCTokenServiceDriver(
     "selected-owner",
     fixture.controller.installation.id,
-    driver.installationSecrets,
+    driver.privateSecrets,
     instanceId,
     sourceState,
   );

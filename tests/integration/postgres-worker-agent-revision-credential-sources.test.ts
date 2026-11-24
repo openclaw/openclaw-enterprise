@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, type TestContext } from "node:test";
+import { revisionCredentialSourceSnapshot } from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
   ComputeDriver,
@@ -10,6 +11,7 @@ import type {
   ResolvedCredential,
 } from "../../packages/contracts/src/index.ts";
 import {
+  ActivationPendingError,
   OpenClawController,
   CredentialDeploymentFailedError,
   ResourceStateConflictError,
@@ -26,6 +28,7 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import type {
   OpenShellGatewayClient,
   OpenShellProviderCreateRequest,
@@ -43,6 +46,7 @@ import type { RevisionFixture } from "../helpers/postgres-worker-refused-candida
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
 import {
@@ -256,11 +260,12 @@ async function stagedCredentialScenario(
   fixture: RevisionFixture,
   context: TestContext,
   extendCompute: (compute: ComputeDriver) => ComputeDriver,
+  credential: "static" | "builtin_codex" = "static",
 ) {
   const grant = {
     id: "model-egress",
-    binary: "/app/bin/model-client",
-    host: "api.openai.com",
+    binary: credential === "builtin_codex" ? OPEN_SHELL_CODEX_BINARIES[0] : "/app/bin/model-client",
+    host: credential === "builtin_codex" ? "chatgpt.com" : "api.openai.com",
     ports: [{ from: 443, to: 443 }],
   };
   const installation = buildSandboxInstallation();
@@ -290,8 +295,10 @@ async function stagedCredentialScenario(
     binding: DeploymentCredentialBinding;
     credential: ResolvedCredential;
   }[] = [];
+  let configureCalls = 0;
   const proxy = registration.require("credential_proxy_delivery");
   proxy.configureDeployment = async (deploymentContext, input) => {
+    configureCalls += 1;
     const supplied = input.bindings[0];
     assert.ok(supplied && input.bindings.length === 1);
     deliveries.push({
@@ -314,9 +321,10 @@ async function stagedCredentialScenario(
   const placedName = `placed-${randomUUID().slice(0, 8)}`;
   const compute = extendCompute({
     ...fixture.compute,
-    resolveHarnessConfiguration: () => ({
-      modelProvider: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" },
-    }),
+    resolveHarnessConfiguration: () =>
+      credential === "builtin_codex"
+        ? {}
+        : { modelProvider: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" } },
     validateExecutionAdmission() {},
     async resolveSandboxNamespace(namespace) {
       return { ...namespace, name: placedName };
@@ -347,36 +355,68 @@ async function stagedCredentialScenario(
   controller.registerDriver(compute);
   controller.selectDriver("compute", compute.id);
   installSelectedSandboxDrivers(controller, runtime);
-  const { driver: secretDriver } = useInstallationSecretDriver(controller);
+  const { core, driver: secretDriver } = useInstallationSecretDriver(controller);
   await installTokenServiceDriver(controller, { ...runtime, secretDriver }, fixture.state);
   const namespaceId = fixture.namespace.id;
   const actorId = fixture.actor.id;
   const enrolledCredential = randomUUID();
-  const source = await controller.createManagedCredentialSource(
-    actorId,
-    namespaceId,
-    {
-      type: "static",
-      name: `Activation source ${randomUUID()}`,
-      lifecycleConfig: { settings: {} },
-      secret: enrolledCredential,
-      providerPreset: "openai",
-    },
-    (ref, phase) => ({
-      ...auditEvent(
-        fixture.installation.id,
-        namespaceId,
-        actorId,
-        phase ? "openclaw.credential_sources.create.started" : "openclaw.credential_sources.create",
-        ref,
-      ),
-      ...(phase ? { details: { phase } } : {}),
-    }),
-  );
+  const source =
+    credential === "builtin_codex"
+      ? await (async () => {
+          // The selected TokenService receives this synthetic grant at the same trusted
+          // post-exchange boundary used by the built-in device authorization flow.
+          const registered = await controller.selectedDriver("token_service").createSource(
+            {
+              type: "oauth2-refresh-token",
+              namespaceId,
+              name: `Activation source ${randomUUID()}`,
+              consent: {
+                kind: "builtin_codex",
+                ownerPrincipalId: actorId,
+                account: { accountId: "fixture-account", planType: "plus", isFedramp: false },
+              },
+              grant: {
+                accessToken: enrolledCredential,
+                refreshToken: randomUUID(),
+                expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+                requestedScopes: ["openid"],
+                grantedScopes: ["openid"],
+              },
+            },
+            context.signal,
+          );
+          return controller.readCredentialSource(actorId, namespaceId, registered.id);
+        })()
+      : await controller.createManagedCredentialSource(
+          actorId,
+          namespaceId,
+          {
+            type: "static",
+            name: `Activation source ${randomUUID()}`,
+            lifecycleConfig: { settings: {} },
+            secret: enrolledCredential,
+            providerPreset: "openai",
+          },
+          (ref, phase) => ({
+            ...auditEvent(
+              fixture.installation.id,
+              namespaceId,
+              actorId,
+              phase
+                ? "openclaw.credential_sources.create.started"
+                : "openclaw.credential_sources.create",
+              ref,
+            ),
+            ...(phase ? { details: { phase } } : {}),
+          }),
+        );
   const configuration = await controller.createConfiguration(actorId, {
     namespaceId,
     kind: "agent",
-    values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+    values: createHarnessConfiguration(
+      credential === "builtin_codex" ? "codex" : "openclaw",
+      "gpt-4.1",
+    ),
   });
   const owner = await controller.createAgent(
     actorId,
@@ -428,6 +468,9 @@ async function stagedCredentialScenario(
     deliveries,
     placedName,
     gatewayTransport,
+    secretDriver,
+    core,
+    configureCalls: () => configureCalls,
     currentAgent: () => fixture.currentAgent(owner),
   };
 }
@@ -458,6 +501,8 @@ async function attachActiveSource(
     workspace: placedName,
     namespaceId,
     binding: revision.credentialDeployment!.bindings[0]!,
+    requireCurrentVersion:
+      revisionCredentialSourceSnapshot(revision, source.id)?.sourceType === "oauth2-refresh-token",
     resolveCredential: () => tokenService.resolveCredential(sourceInstance, signal),
     signal,
   });
@@ -538,6 +583,212 @@ async function grantOperator(
     resourceId,
   });
 }
+
+cases.revisionTest(
+  "the Worker activates an eligible OAuth grant but refuses expired custody without renewing it",
+  async (fixture, context) => {
+    const sandboxId = randomUUID();
+    let activations = 0;
+    // A forbidden issuer request must fail locally instead of sending synthetic grant material.
+    const issuer = context.mock.method(globalThis, "fetch", async () => {
+      throw new Error("The Worker must not contact the OAuth issuer.");
+    });
+    const scenario = await stagedCredentialScenario(
+      fixture,
+      context,
+      (compute) => ({
+        ...compute,
+        maintenanceIntervalMs: 3_600_000,
+        async prepareRevision(revision, revisionContext) {
+          assert.ok(revisionContext?.configureCredentialDeployment);
+          try {
+            await revisionContext.configureCredentialDeployment(
+              {
+                targetRef: {
+                  namespaceId: revision.namespaceId,
+                  agentId: revision.agentId,
+                  revisionId: revision.id,
+                  sandboxId,
+                },
+                configurationId: revision.configurationId,
+              },
+              context.signal,
+            );
+          } catch (error) {
+            if (
+              !(error instanceof ActivationPendingError) ||
+              error.code !== "CREDENTIAL_ACTIVATION_PENDING"
+            ) {
+              throw error;
+            }
+            // Kubernetes reports incomplete readiness without the preparation marker when
+            // credential configuration is pending; the Worker must not release activation.
+            return {
+              namespaceId: revision.namespaceId,
+              agentId: revision.agentId,
+              revisionId: revision.id,
+              ready: false,
+              pendingReason: error.code,
+            };
+          }
+          return compute.prepareRevision(revision, revisionContext);
+        },
+        async activateRevision() {
+          activations += 1;
+        },
+      }),
+      "builtin_codex",
+    );
+    const { controller, source, owner, namespaceId, actorId, secretDriver, core } = scenario;
+    const compareAndSwap = context.mock.method(
+      secretDriver.privateSecrets,
+      "compareAndSwap",
+      secretDriver.privateSecrets.compareAndSwap.bind(secretDriver.privateSecrets),
+    );
+    assert.equal(source.type, "oauth2-refresh-token");
+    const custody = await fixture.state.read((view) =>
+      view.oauthCredentials.findTokenCustody(namespaceId, source.id),
+    );
+    assert.ok(custody);
+    assert.deepEqual(custody.secret, {
+      installationId: fixture.installation.id,
+      id: JSON.stringify([
+        "token_service",
+        controller.currentTokenServiceInstanceId(),
+        "credential_source",
+        namespaceId,
+        source.id,
+      ]),
+    });
+    const registeredGrant = await secretDriver.privateSecrets.withValue(
+      custody.secret,
+      async (value) => JSON.parse(value) as Record<string, unknown>,
+    );
+    assert.equal(registeredGrant.accessToken, scenario.enrolledCredential);
+    // Renewal is due in both custody and PostgreSQL, but the access grant is still
+    // eligible. Worker activation must read it without claiming API-owned renewal.
+    await secretDriver.privateSecrets.update(
+      custody.secret,
+      JSON.stringify({ ...registeredGrant, renewAt: new Date(Date.now() - 1_000).toISOString() }),
+    );
+    await fixture.state.transact((unit) =>
+      unit.oauthCredentials.recordTokenSchedule(namespaceId, source.id, "due"),
+    );
+    const writesAfterEnrollment = core.calls.replaceNamespacedSecret;
+
+    const first = await controller.deployAgent(
+      actorId,
+      { namespaceId, agentId: owner.id },
+      resolveApprovedHarness,
+    );
+    await fixture.work(
+      { id: first.id, idempotencyKey: `agent_revision:${first.id}:reconcile` },
+      "succeeded",
+    );
+    assert.equal((await scenario.currentAgent())?.activeRevisionId, first.id);
+    assert.equal(activations, 1);
+    assert.equal(scenario.configureCalls(), 1);
+    assert.equal(scenario.deliveries[0]?.credential.credential, scenario.enrolledCredential);
+    assert.equal(core.calls.replaceNamespacedSecret, writesAfterEnrollment);
+    assert.equal(compareAndSwap.mock.callCount(), 0);
+    assert.equal(issuer.mock.callCount(), 0);
+    assert.equal(
+      (
+        await fixture.state.read((view) =>
+          view.oauthCredentials.findTokenCustody(namespaceId, source.id),
+        )
+      )?.due,
+      true,
+    );
+
+    const expiredOwner = await controller.createAgent(
+      actorId,
+      {
+        namespaceId,
+        name: `Expired OAuth activation ${randomUUID()}`,
+        configurationId: owner.configurationId,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId: source.id },
+        credentialSources: [{ sourceId: source.id }],
+      },
+      resolveApprovedHarness,
+    );
+    await controller.TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing(
+      actorId,
+      namespaceId,
+      expiredOwner.id,
+      "networking",
+      true,
+    );
+    await controller.updateAgentSandboxPolicy(
+      actorId,
+      namespaceId,
+      expiredOwner.id,
+      "networking",
+      1,
+      [
+        {
+          id: "model-egress",
+          binary: OPEN_SHELL_CODEX_BINARIES[0],
+          host: "chatgpt.com",
+          ports: [{ from: 443, to: 443 }],
+        },
+      ],
+    );
+    // Move only the already-registered private grant's clock state; the API scheduler is
+    // absent, so the queued Worker must refuse rather than claim or renew it.
+    const expiredGrant = JSON.stringify({
+      ...registeredGrant,
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      renewAt: new Date(Date.now() - 2_000).toISOString(),
+    });
+    await secretDriver.privateSecrets.update(custody.secret, expiredGrant);
+    const writesAfterExpiry = core.calls.replaceNamespacedSecret;
+    const waitForPending = (key: string) =>
+      waitFor("expired OAuth Work to be refused", async () => {
+        const { rows } = await fixture.observerPool.query<{ state: string; reason_code: string }>(
+          `SELECT work.state, event.details->>'reasonCode' AS reason_code
+           FROM occ.controller_work work JOIN occ.audit_events event
+             ON event.details->>'workId'=work.idempotency_key
+           WHERE work.idempotency_key=$1 AND event.action='reconcile'
+             AND event.details->>'reasonCode'='CREDENTIAL_ACTIVATION_PENDING'`,
+          [key],
+        );
+        const row = rows[0];
+        return row?.state === "claimed" ? undefined : row;
+      });
+    const maintenance = (await fixture.advanceMaintenance(first)).rows[0];
+    assert.ok(maintenance, "activation scheduled ordinary revision maintenance");
+    assert.equal((await waitForPending(maintenance.idempotency_key)).state, "failed_permanent");
+    const continued = await fixture.observerPool.query<{ count: number }>(
+      `SELECT count(*)::integer AS count FROM occ.controller_work
+       WHERE revision_id=$1 AND state='queued' AND idempotency_key LIKE $2 AND idempotency_key<>$3`,
+      [first.id, `agent_revision:${first.id}:maintenance:%`, maintenance.idempotency_key],
+    );
+    assert.equal(continued.rows[0]?.count, 1);
+    assert.equal((await scenario.currentAgent())?.activeRevisionId, first.id);
+    assert.equal(activations, 1, "active repair cannot reactivate expired OAuth custody");
+    const refused = await controller.deployAgent(
+      actorId,
+      { namespaceId, agentId: expiredOwner.id },
+      resolveApprovedHarness,
+    );
+    const key = `agent_revision:${refused.id}:reconcile`;
+    const attempted = await waitForPending(key);
+    assert.equal(attempted.state, "queued");
+    assert.equal(attempted.reason_code, "CREDENTIAL_ACTIVATION_PENDING");
+    assert.equal((await fixture.currentAgent(expiredOwner))?.activeRevisionId, undefined);
+    assert.equal(activations, 1);
+    assert.equal(scenario.configureCalls(), 1);
+    assert.equal(core.calls.replaceNamespacedSecret, writesAfterExpiry);
+    assert.equal(compareAndSwap.mock.callCount(), 0);
+    assert.equal(issuer.mock.callCount(), 0);
+    assert.equal(
+      await secretDriver.privateSecrets.withValue(custody.secret, async (value) => value),
+      expiredGrant,
+    );
+  },
+);
 
 cases.revisionTest(
   "a terminal Credential Proxy failure permanently fails Work with its exact code",

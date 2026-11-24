@@ -4,10 +4,12 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { scheduleTokenServiceMaintenance } from "../../apps/controller/src/composition/token-service.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { managedCliInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
+import type { PrivateSecretRef } from "../../packages/contracts/src/index.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
   CredentialDeliveryFailedError,
@@ -368,15 +370,15 @@ test(
 
     // The API and Token Service use the fixture Secret store. Keycloak authenticates the
     // registration and issues actual tokens without OpenShell or a Credential Refresh Driver.
-    const secretOptions: { createError?: unknown } = {};
     const secretDriver = {
-      ...createTestSecretDriver(secretOptions),
+      ...createTestSecretDriver(),
       capability: "secret" as const,
     };
+    const privateStore = secretDriver.privateSecrets;
     const serverUrl = "https://api.connections.test/mcp";
     let discoveredResource = serverUrl;
     const tokenUrl = `${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
-    const { app, controller, state, principal, inject, pool, adminAccount } =
+    const { app, createApp, controller, state, principal, inject, pool, adminAccount } =
       await createPostgresAgentApp(t, {
         label: "saved-account",
         poolOptions: { max: 1, connectionTimeoutMillis: 5000 },
@@ -402,7 +404,7 @@ test(
       });
     const resolveClient = controller.resolveConnectionClient.bind(controller);
     const storeIdentity = randomUUID();
-    await secretDriver.installationSecrets.create(
+    await privateStore.create(
       {
         installationId: controller.installation.id,
         id: `token-service-store-identity:${secretDriver.id}`,
@@ -413,11 +415,11 @@ test(
     const tokenOwner = new OCCTokenServiceDriver(
       "oauth-owner",
       controller.installation.id,
-      secretDriver.installationSecrets,
+      privateStore,
       instanceId,
       state,
       undefined,
-      new OAuthAccountTokens(state, secretDriver, resolveClient),
+      new OAuthAccountTokens(state, privateStore, resolveClient),
     );
     controller.registerDriver(tokenOwner);
     controller.selectDriver("token_service", tokenOwner.id);
@@ -542,7 +544,9 @@ test(
       custodyFailure.json().data.authorizationUrl,
       secrets.users.alice.password,
     );
-    secretOptions.createError = new DependencyUnavailableError("Secret store unavailable");
+    const unavailableCreate = t.mock.method(privateStore, "create", async () => {
+      throw new DependencyUnavailableError("Secret store unavailable");
+    });
     try {
       const failedCallback = await inject("GET", failedCallbackPath);
       assert.match(String(failedCallback.headers.location), /connection=failed/);
@@ -559,7 +563,7 @@ test(
         "failed custody cannot produce a ready Source",
       );
     } finally {
-      delete secretOptions.createError;
+      unavailableCreate.mock.restore();
     }
     const mcpConfig = {
       displayName: "Scope selection",
@@ -918,17 +922,28 @@ test(
     assert.equal((await reader("GET", base)).statusCode, 403);
     assert.equal((await reader("GET", sources)).statusCode, 403);
     assert.equal((await reader("DELETE", source)).statusCode, 403);
-    const custody = await pool.query(
+    const custody = await pool.query<{
+      secret_ref: PrivateSecretRef;
+      driver_id: string | null;
+      token_service_instance_id: string;
+    }>(
       `SELECT custody.secret_ref, source.driver_id, source.token_service_instance_id FROM occ.connection_token_custody custody
        JOIN occ.credential_sources source ON source.namespace_id = custody.namespace_id AND source.id = custody.credential_source_id
        WHERE custody.namespace_id=$1 AND custody.credential_source_id=$2`,
       [namespaceId, id],
     );
     assert.equal(custody.rowCount, 1);
-    assert.equal(custody.rows[0].driver_id, null);
-    assert.equal(custody.rows[0].token_service_instance_id, instanceId);
-    const privateRef = custody.rows[0].secret_ref;
-    assert.ok(secretDriver.has(privateRef));
+    const [custodyRow] = custody.rows;
+    assert.ok(custodyRow);
+    assert.equal(custodyRow.driver_id, null);
+    assert.equal(custodyRow.token_service_instance_id, instanceId);
+    const privateRef = custodyRow.secret_ref;
+    assert.equal(privateRef.installationId, controller.installation.id);
+    assert.equal(await privateStore.withValue(privateRef, async () => true), true);
+    const tenantSecrets = await inject("GET", `${base}/secrets`);
+    assert.equal(tenantSecrets.statusCode, 200, tenantSecrets.body);
+    assert.deepEqual(tenantSecrets.json().data, []);
+    assert.deepEqual(secretDriver.calls, [], "OAuth consent uses only the private store");
     assert.deepEqual(
       [
         savedConsent.oauthClientId,
@@ -1004,12 +1019,24 @@ test(
 
     // Lose access to the operator's registration before dispatch. The scheduler must back off
     // without losing the user's grant, and the owner can retry as soon as access returns.
-    const unavailable = t.mock.method(secretDriver.installationSecrets, "withValue", async () => {
-      throw new Error("registration store unavailable");
-    });
-    assert.equal((await owner("POST", source + "/rotate")).statusCode, 503);
+    const readPrivate = privateStore.withValue.bind(privateStore);
+    const unavailable = t.mock.method(
+      privateStore,
+      "withValue",
+      async <T>(ref: PrivateSecretRef, use: (value: string) => Promise<T>) => {
+        if (ref.id !== privateRef.id) {
+          throw new Error("registration store unavailable");
+        }
+        return readPrivate(ref, use);
+      },
+    );
+    try {
+      assert.equal((await owner("POST", source + "/rotate")).statusCode, 503);
+    } finally {
+      unavailable.mock.restore();
+    }
     // Source metadata remains readable when TokenService cannot inspect its private custody.
-    const unavailableCustody = t.mock.method(secretDriver, "withValue", async () => {
+    const unavailableCustody = t.mock.method(privateStore, "withValue", async () => {
       throw new DependencyUnavailableError("Secret store unavailable");
     });
     try {
@@ -1019,7 +1046,6 @@ test(
     } finally {
       unavailableCustody.mock.restore();
     }
-    unavailable.mock.restore();
     const unavailableStatus = (await owner("GET", source)).json().data.status.refresh;
     assert.deepEqual(
       [unavailableStatus.state, unavailableStatus.failureCode, unavailableStatus.recoveryAction],
@@ -1130,7 +1156,7 @@ test(
     const renewed = await prepared();
     assert.equal(renewed !== original, true);
     assert.equal(await subject(renewed), alice);
-    // Let this short-lived token actually expire before any worker starts. A normal resolve
+    // Let this short-lived token actually expire before maintenance starts. A normal API resolve
     // must obtain its replacement with the current client secret and the original user's grant.
     await setIssuedLifetime(300);
     const expiring = rotated.json().data.status.refresh;
@@ -1157,45 +1183,42 @@ test(
       mcpConfig,
     );
     assert.equal(restoreMcp.statusCode, 200, restoreMcp.body);
-    // Publish the due schedule used for rotation but make no resolve request. A separate worker
-    // must use the saved account's refresh grant and publish a new version before it is read.
+    // Make the saved grant due before starting the API lifecycle. With no Worker or resolve
+    // request in flight, the API must renew the grant and publish the new schedule.
     const prior = await state.read((view) =>
       view.oauthCredentials.findTokenCustody(namespaceId, id),
     );
+    assert.ok(prior?.scheduledVersion);
     await state.transact((unit) =>
       unit.oauthCredentials.recordTokenSchedule(namespaceId, id, "due"),
     );
-    async function startAccountWorker() {
-      const fixture = await createBackendFixture(t);
-      const { worker } = fixture.startWorker({
-        backends: [],
-        secretDriver,
-        tokenServiceDriverId: tokenOwner.id,
+    const maintenanceApp = createApp(controller);
+    const stopMaintenance = scheduleTokenServiceMaintenance(maintenanceApp, tokenOwner);
+    maintenanceApp.addHook("onClose", stopMaintenance);
+    try {
+      await maintenanceApp.ready();
+      await waitFor("API renewal to publish a new scheduled version", async () => {
+        const current = await state.read((view) =>
+          view.oauthCredentials.findTokenCustody(namespaceId, id),
+        );
+        return current?.scheduledVersion && current.scheduledVersion !== prior.scheduledVersion
+          ? true
+          : undefined;
       });
-      await worker.start();
-      return worker;
+      const background = await prepared();
+      assert.notEqual(background, afterExpiry);
+      assert.equal(await subject(background), alice);
+    } finally {
+      await maintenanceApp.close();
     }
-    const worker = await startAccountWorker();
-    await waitFor("background renewal to publish a new scheduled version", async () => {
-      const current = await state.read((view) =>
-        view.oauthCredentials.findTokenCustody(namespaceId, id),
-      );
-      return current?.scheduledVersion && current.scheduledVersion !== prior?.scheduledVersion
-        ? true
-        : undefined;
-    });
-    const background = await prepared();
-    assert.notEqual(background, afterExpiry);
-    assert.equal(await subject(background), alice);
-    await worker.stop();
     const observed = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-    const read = secretDriver.withValue.bind(secretDriver);
+    t.after(() => release.resolve());
     const slowRead = t.mock.method(
-      secretDriver,
+      privateStore,
       "withValue",
-      async (...args: Parameters<typeof read>) => {
-        const selected = await read(...args);
+      async (...args: Parameters<typeof readPrivate>) => {
+        const selected = await readPrivate(...args);
         observed.resolve();
         await release.promise;
         return selected;
@@ -1206,7 +1229,7 @@ test(
     await observed.promise;
     // The SQL revocation survives a transient custody failure. A worker with the same
     // Secret store and Token Service finishes it after the API request has returned.
-    const unavailableDelete = t.mock.method(secretDriver, "delete", async () => {
+    const unavailableDelete = t.mock.method(privateStore, "delete", async () => {
       throw new DependencyUnavailableError("Secret store unavailable");
     });
     const bindingsBeforeRetirement = await pool.query<{ id: string }>(
@@ -1230,13 +1253,19 @@ test(
     assert.equal(revokingExact.json().data.connectionTemplateId, input.connectionTemplateId);
     assert.equal(Object.hasOwn(revokingExact.json().data, "connectionTemplateVersion"), false);
     assert.equal(Object.hasOwn(revokingExact.json().data, "config"), false);
-    assert.ok(secretDriver.has(privateRef));
+    assert.equal(await privateStore.withValue(privateRef, async () => true), true);
     // Releasing a read after OCC committed revocation must withhold the already-read bearer.
     release.resolve();
     await assert.rejects(resolving, ResourceStateConflictError);
     slowRead.mock.restore();
     unavailableDelete.mock.restore();
-    await startAccountWorker();
+    const recovery = await createBackendFixture(t);
+    const { worker } = recovery.startWorker({
+      backends: [],
+      secretDriver,
+      tokenServiceDriverId: tokenOwner.id,
+    });
+    await worker.start();
 
     await waitFor("the worker to retire the disconnected account", async () => {
       const remaining = await state.read((view) =>
@@ -1267,7 +1296,10 @@ test(
       ).rowCount,
       0,
     );
-    assert.equal(secretDriver.has(privateRef), false);
+    await assert.rejects(
+      privateStore.withValue(privateRef, async () => true),
+      /Secret does not exist/,
+    );
     // A second issuer becomes eligible after the first browser obtained its code. Even after the
     // template changes, callbacks from both usable versions could still be in flight.
     const pending = await begin();

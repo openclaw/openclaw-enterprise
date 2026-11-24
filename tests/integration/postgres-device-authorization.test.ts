@@ -111,7 +111,7 @@ test(
     const second = await createPostgresAgentApp(t, options);
     await first.controller.applyIAMConfiguration();
     const storeIdentity = randomUUID();
-    await secretDriver.installationSecrets.create(
+    await secretDriver.privateSecrets.create(
       {
         installationId: first.controller.installation.id,
         id: `token-service-store-identity:${secretDriver.id}`,
@@ -135,13 +135,13 @@ test(
       const owner = new OCCTokenServiceDriver(
         "device-oauth-owner",
         controller.installation.id,
-        secretDriver.installationSecrets,
+        secretDriver.privateSecrets,
         current,
         state,
         undefined,
         new OAuthAccountTokens(
           state,
-          secretDriver,
+          secretDriver.privateSecrets,
           controller.resolveConnectionClient.bind(controller),
           refreshCodexOAuthGrant,
         ),
@@ -235,6 +235,7 @@ test(
       assert.equal(result.rowCount, 1);
       return result.rows[0];
     }
+    const privateCreates = t.mock.method(secretDriver.privateSecrets, "create");
     const { id, userCode, verificationUrl } = await start();
     const pending = await row(id);
     assert.equal(pending.device_source_id, null, "pending login has no Source result");
@@ -247,7 +248,8 @@ test(
       0,
       "starting device login creates no Source",
     );
-    assert.equal(secretDriver.calls.length, 0, "pending login state never reaches a Secret Driver");
+    assert.equal(privateCreates.mock.callCount(), 0, "pending login creates no private custody");
+    assert.equal(secretDriver.calls.length, 0, "pending login creates no tenant Secret");
     assert.equal(
       pending.duplicated_source,
       false,
@@ -473,29 +475,29 @@ test(
     assert.equal(abandonedRow.encrypted_challenge, null);
     const expired = await second.inject("POST", `${path}/${abandoned}/poll`, {});
     assert.equal(expired.statusCode, 409, expired.body);
-    assert.ok(
-      secretDriver.calls.some((call) => call.operation === "create"),
-      "successful OAuth grant enters custody",
+    assert.ok(privateCreates.mock.callCount() > 0, "successful OAuth grant enters private custody");
+    const readyCustody = await first.state.read((view) =>
+      view.oauthCredentials.findTokenCustody(namespaceId, ready.device_source_id),
     );
+    assert.ok(readyCustody);
     assert.equal(
-      JSON.stringify(secretDriver.calls).includes("CODE-12345"),
+      await secretDriver.privateSecrets.withValue(readyCustody.secret, async (value) =>
+        value.includes("CODE-12345"),
+      ),
       false,
       "the user challenge does not enter custody",
     );
 
     // Deleting the new Source retires custody; Namespace finalization removes temporary sessions.
     const namespacePath = `/namespaces/${namespaceId}`;
-    const custodyDeletesBefore = secretDriver.calls.filter(
-      (call) => call.operation === "delete",
-    ).length;
     const deleted = await first.inject(
       "DELETE",
       `${namespacePath}/credential-sources/${ready.device_source_id}`,
     );
     assert.equal(deleted.statusCode, 204, deleted.body);
-    assert.equal(
-      secretDriver.calls.filter((call) => call.operation === "delete").length,
-      custodyDeletesBefore + 1,
+    await assert.rejects(
+      secretDriver.privateSecrets.withValue(readyCustody.secret, async () => true),
+      { message: /Secret does not exist\./u },
       "deleting a new OAuth Source removes its private grant from custody",
     );
     const removedTemplate = await first.inject(
@@ -693,7 +695,7 @@ test(
       view.oauthCredentials.findTokenCustody(namespaceId, sourceId),
     );
     assert.ok(custody);
-    const custodySecretId = custody.secret.id;
+    const custodySecret = custody.secret;
     async function assertReferencedSourceRetained() {
       const blocked = await app.inject("DELETE", sourcePath);
       assert.equal(blocked.statusCode, 409, blocked.body);
@@ -712,10 +714,8 @@ test(
         custody,
       );
       assert.equal(
-        secretDriver.calls.some(
-          (call) => call.operation === "delete" && call.secret.id === custodySecretId,
-        ),
-        false,
+        await secretDriver.privateSecrets.withValue(custodySecret, async () => true),
+        true,
       );
     }
     await assertReferencedSourceRetained();

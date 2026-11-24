@@ -1252,7 +1252,7 @@ async function repositoryPolicyConsole(
   controller.installDriver(owner, ["sandbox", "credential_proxy", "credential_proxy_delivery"]);
   controller.registerDriver(repositoryAdmission.policy);
   controller.selectDriver("repo", repositoryAdmission.policy.id);
-  const store = controller.selectedDriver("secret").installationSecrets;
+  const store = controller.selectedDriver("secret").privateSecrets;
   assert.ok(store);
   const instance = await controller.activateTokenServiceInstance(
     "console-model-owner",

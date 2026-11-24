@@ -2103,23 +2103,22 @@ function repositories(
         }
       }
     },
-    listDueOAuthSources: async (installationId, limit, afterSourceId) =>
-      snapshot.installation?.id !== installationId
-        ? []
-        : [...snapshot.credentialSources.values()]
-            .filter(
-              (s) =>
-                s.ownerCapability === "token_service" &&
-                s.type === "oauth2-refresh-token" &&
-                s.state === "ready" &&
-                !s.consent.revocationRequestedBy &&
-                s.id > (afterSourceId ?? "") &&
-                (snapshot.connectionTokenCustody.get(agentKey(s.namespaceId, s.id))
-                  ?.nextRefreshAt ?? "~") <= new Date().toISOString(),
-            )
-            .sort((a, b) => a.id.localeCompare(b.id))
-            .slice(0, limit)
-            .map(({ namespaceId, id }) => ({ namespaceId, id })),
+    listDueOAuthSources: async (tokenServiceInstanceId, limit, afterSourceId) =>
+      [...snapshot.credentialSources.values()]
+        .filter(
+          (s) =>
+            s.ownerCapability === "token_service" &&
+            s.type === "oauth2-refresh-token" &&
+            s.tokenServiceInstanceId === tokenServiceInstanceId &&
+            s.state === "ready" &&
+            !s.consent.revocationRequestedBy &&
+            s.id > (afterSourceId ?? "") &&
+            (snapshot.connectionTokenCustody.get(agentKey(s.namespaceId, s.id))?.nextRefreshAt ??
+              "~") <= new Date().toISOString(),
+        )
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .slice(0, limit)
+        .map(({ namespaceId, id }) => ({ namespaceId, id })),
     listRevokingOAuthSources: async (installationId, limit, afterSourceId) =>
       snapshot.installation?.id !== installationId
         ? []

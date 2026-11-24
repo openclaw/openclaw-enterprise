@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 
+import { revisionCredentialSourceSnapshot } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   AgentRevision,
@@ -574,6 +575,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
               workspace: initialTarget.workspace,
               namespaceId: context.namespace.id,
               binding,
+              requireCurrentVersion:
+                revisionCredentialSourceSnapshot(context.revision, binding.sourceRef.id)
+                  ?.sourceType === "oauth2-refresh-token",
               resolveCredential: async () => {
                 const target = await this.readSandboxTarget(context, input);
                 if (repositoryPolicy) {

@@ -8,7 +8,7 @@ import type {
   CredentialSourceReference,
   ResolvedCredential,
 } from "@openclaw-enterprise/contracts";
-import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { ActivationPendingError, DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import {
   MANAGED_BY,
@@ -307,6 +307,7 @@ export async function prepareOccTokenServiceProviderCopy(input: {
   readonly workspace: string;
   readonly namespaceId: string;
   readonly binding: DeploymentCredentialBinding;
+  readonly requireCurrentVersion: boolean;
   readonly resolveCredential: () => Promise<ResolvedCredential>;
   readonly signal: AbortSignal;
 }): Promise<OpenShellPushedProvider> {
@@ -345,7 +346,25 @@ export async function prepareOccTokenServiceProviderCopy(input: {
   // Another deployment may have completed initialization while the profile was being imported.
   const prior = existing ?? (await client.getProvider(workspace, profile.id, signal));
   if (prior) {
-    return checkProvider(prior, binding.sourceRef, profile.id, workspace, owner.id, profileVersion);
+    const prepared = checkProvider(
+      prior,
+      binding.sourceRef,
+      profile.id,
+      workspace,
+      owner.id,
+      profileVersion,
+    );
+    if (
+      input.requireCurrentVersion &&
+      prepared.sourceVersion !== (await input.resolveCredential()).version
+    ) {
+      // API renewal can commit a new grant before the Proxy acknowledges delivery.
+      throw new ActivationPendingError(
+        "CREDENTIAL_ACTIVATION_PENDING",
+        "The OpenShell Provider is waiting for the current OAuth credential.",
+      );
+    }
+    return prepared;
   }
   let resolved: ResolvedCredential;
   try {

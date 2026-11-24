@@ -6,7 +6,7 @@ import {
   credentialSourceMatchesSnapshot,
   isNativeStagedRepositoryRevision,
   revisionCredentialSourceSnapshot,
-  type InstallationSecretStore,
+  type PrivateSecretStore,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialDeliveryFailedError,
@@ -30,16 +30,20 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The marker belongs to the selected Secret Driver's private store ownership. */
 async function credentialStoreIdentity(
-  store: InstallationSecretStore,
+  store: PrivateSecretStore,
   installationId: string,
   secretDriverId: string,
+  role: "api" | "worker",
 ): Promise<string> {
   const ref = { installationId, id: `token-service-store-identity:${secretDriverId}` };
   const read = () => store.withValue(ref, async (value) => value);
   let value: string;
   try {
     value = await read();
-  } catch {
+  } catch (error) {
+    if (role === "worker") {
+      throw error;
+    }
     try {
       await store.create(ref, randomUUID());
     } catch {
@@ -58,7 +62,10 @@ export async function installTokenServiceDriver(
   controller: OpenClawController,
   drivers: InstallationRuntimeDrivers | undefined,
   state: PlatformStateStore,
-  githubAppIssuerOptions?: GitHubAppIssuerOptions,
+  options: {
+    readonly role?: "api" | "worker";
+    readonly githubAppIssuerOptions?: GitHubAppIssuerOptions;
+  } = {},
 ): Promise<OCCTokenServiceDriver | undefined> {
   const selection = drivers?.installation.drivers.token_service;
   if (!selection || !drivers) {
@@ -129,14 +136,16 @@ export async function installTokenServiceDriver(
     controller.selectDriver("token_service", owner.id);
     return;
   }
-  const store = drivers.secretDriver.installationSecrets;
+  const store = drivers.secretDriver.privateSecrets;
+  const role = options.role ?? "api";
   if (!store) {
-    throw new Error("The OCC TokenService requires an installation-private credential store.");
+    throw new Error("The OCC TokenService requires a private credential store.");
   }
   const storeIdentity = await credentialStoreIdentity(
     store,
     controller.installation.id,
     drivers.secretDriver.id,
+    role,
   );
   const instanceId = await controller.activateTokenServiceInstance(selection.id, storeIdentity);
   const owner: OCCTokenServiceDriver = new OCCTokenServiceDriver(
@@ -148,10 +157,10 @@ export async function installTokenServiceDriver(
     delivery,
     new OAuthAccountTokens(
       state,
-      drivers.secretDriver,
+      store,
       controller.resolveConnectionClient.bind(controller),
       refreshCodexOAuthGrant,
-      delivery === undefined
+      role === "worker" || delivery === undefined
         ? undefined
         : async (ref, version, signal) => {
             const sourceRef = {
@@ -176,8 +185,9 @@ export async function installTokenServiceDriver(
               throw new CredentialDeliveryFailedError();
             }
           },
+      role,
     ),
-    githubAppIssuerOptions,
+    options.githubAppIssuerOptions,
     drivers.repositoryRegistry === undefined ? undefined : { registry: drivers.repositoryRegistry },
   );
   controller.registerDriver(owner);
@@ -293,8 +303,8 @@ export async function installTokenServiceDriver(
   return owner;
 }
 
-/** The API owns the Installation-private update, and drains an in-flight page before closing. */
-export function scheduleGitSourceMaintenance(
+/** The API renews Sources in the private store and drains in-flight exchanges before closing. */
+export function scheduleTokenServiceMaintenance(
   app: FastifyInstance,
   owner: OCCTokenServiceDriver,
   logger?: OccLogger,
@@ -302,7 +312,10 @@ export function scheduleGitSourceMaintenance(
   const stop = new AbortController();
   let running: Promise<void> | undefined;
   app.addHook("onReady", async () => {
-    running = maintainGitSources(owner, stop.signal, logger);
+    running = Promise.all([
+      maintainSources(owner.maintainGitSources.bind(owner), "git-source", stop.signal, logger),
+      maintainSources(owner.maintainOAuthSources.bind(owner), "oauth-source", stop.signal, logger),
+    ]).then(() => undefined);
   });
   return async () => {
     stop.abort();
@@ -310,20 +323,24 @@ export function scheduleGitSourceMaintenance(
   };
 }
 
-async function maintainGitSources(
-  owner: OCCTokenServiceDriver,
+async function maintainSources(
+  maintain: OCCTokenServiceDriver["maintainGitSources"],
+  kind: "git-source" | "oauth-source",
   stop: AbortSignal,
   logger: OccLogger | undefined,
 ): Promise<void> {
   const batchSize = 4;
+  const renewalFailed =
+    kind === "git-source" ? "GIT_SOURCE_RENEWAL_FAILED" : "OAUTH_SOURCE_RENEWAL_FAILED";
+  const scanFailed = kind === "git-source" ? "GIT_SOURCE_SCAN_FAILED" : "OAUTH_SOURCE_SCAN_FAILED";
   let cursor: string | undefined;
   while (!stop.aborted) {
     try {
-      const result = await owner.maintainSources(batchSize, cursor);
+      const result = await maintain(batchSize, cursor);
       if (logger && (result.failed || result.deliveryFailed)) {
         emitOccLogEvent(logger, {
-          event: "git-source.maintenance-failed",
-          code: result.failed ? "GIT_SOURCE_RENEWAL_FAILED" : "CREDENTIAL_DELIVERY_FAILED",
+          event: `${kind}.maintenance-failed`,
+          code: result.failed ? renewalFailed : "CREDENTIAL_DELIVERY_FAILED",
         });
       }
       cursor = result.cursor;
@@ -333,8 +350,8 @@ async function maintainGitSources(
     } catch {
       if (logger) {
         emitOccLogEvent(logger, {
-          event: "git-source.maintenance-failed",
-          code: "GIT_SOURCE_SCAN_FAILED",
+          event: `${kind}.maintenance-failed`,
+          code: scanFailed,
         });
       }
     }

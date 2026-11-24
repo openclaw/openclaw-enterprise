@@ -246,13 +246,13 @@ async function createFixture(t: TestContext) {
   const tokenOwner = new OCCTokenServiceDriver(
     "durable-oauth",
     controller.installation.id,
-    secretDriver.installationSecrets,
+    secretDriver.privateSecrets,
     instanceId,
     state,
     undefined,
     new OAuthAccountTokens(
       state,
-      secretDriver,
+      secretDriver.privateSecrets,
       controller.resolveConnectionClient.bind(controller),
     ),
   );

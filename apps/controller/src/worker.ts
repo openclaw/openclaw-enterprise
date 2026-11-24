@@ -99,6 +99,7 @@ import {
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RepositorySessionWithdrawnError,
+  ResourceStateConflictError,
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   ScopeViolationError,
@@ -1153,7 +1154,7 @@ function validObservation(value: unknown, namespaceId: string, target: "ready" |
     : typeof observation.namespaceDeleted === "boolean";
 }
 
-function credentialActivationPending(
+function credentialActivationPrepared(
   observation: Readonly<ComputeReadiness>,
   revision: Readonly<AgentRevision>,
   compute: ComputeDriver,
@@ -1165,6 +1166,7 @@ function credentialActivationPending(
     compute.activationOrder !== "beforeCommit" &&
     typeof compute.activateRevision === "function" &&
     !observation.ready &&
+    observation.preparedForCredentialActivation === true &&
     observation.pendingReason === "CREDENTIAL_ACTIVATION_PENDING" &&
     observation.runtimeFailure === undefined
   );
@@ -1187,8 +1189,7 @@ function validRevisionObservation(
   }
   if (
     observation.preparedForCredentialActivation !== undefined &&
-    (observation.preparedForCredentialActivation !== true ||
-      !credentialActivationPending(value as ComputeReadiness, revision, compute))
+    !credentialActivationPrepared(value as ComputeReadiness, revision, compute)
   ) {
     return false;
   }
@@ -1372,7 +1373,7 @@ export class ControllerWorker {
   private readonly sandbox: SandboxDriver | undefined;
   private connectionRevocationCursor: string | undefined;
   private connectionRevocationScanAfter = 0;
-  private connectionMaintenance: Promise<void> | undefined;
+  private authenticationStateCleanup: Promise<void> | undefined;
   private nextClientCleanup = 0;
   private readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
@@ -1731,7 +1732,9 @@ export class ControllerWorker {
       }
     }
     provisioning.installPluginDrivers(this.pluginDrivers);
-    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers, this.state);
+    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers, this.state, {
+      role: "worker",
+    });
     this.provisioningController = provisioning;
     const compute = this.compute;
     if (typeof compute.preflight === "function") {
@@ -1754,7 +1757,7 @@ export class ControllerWorker {
       ...(this.sandbox === undefined ? {} : { sandboxDriverId: this.sandbox.id }),
     });
     this.loop = this.run();
-    this.connectionMaintenance = this.maintainConnections(provisioning, installation.id);
+    this.authenticationStateCleanup = this.expireAuthenticationStates(provisioning);
   }
 
   /**
@@ -1767,8 +1770,7 @@ export class ControllerWorker {
       this.stopping = true;
       this.abort.abort();
     }
-    // Let an in-flight OAuth exchange persist a rotated grant before closing its dependencies.
-    await Promise.all([this.loop, this.connectionMaintenance]);
+    await Promise.all([this.loop, this.authenticationStateCleanup]);
     // A claim's heartbeat starts health checks that the loop does not await.
     await this.pendingHealth;
   }
@@ -1932,54 +1934,15 @@ export class ControllerWorker {
       });
   }
 
-  /** Renewal must continue while a long Agent deployment or shutdown owns the work loop. */
-  private async maintainConnections(
-    controller: OpenClawController,
-    installationId: string,
-  ): Promise<void> {
-    const canRenew = this.tokenServiceDrivers?.installation.drivers.token_service !== undefined;
-    const intervalMs = 5_000;
-    const batchSize = 4;
-    let cursor: string | undefined;
-    let nextCleanupAt = 0;
+  private async expireAuthenticationStates(controller: OpenClawController): Promise<void> {
     while (!this.stopping) {
-      if (Date.now() >= nextCleanupAt) {
-        // Attempts still need cleanup when connection renewal is disabled.
-        nextCleanupAt = Date.now() + intervalMs;
-        try {
-          await controller.expireAuthenticationStates(32);
-        } catch {
-          this.emit({ event: "worker.error", code: "AUTHENTICATION_STATE_CLEANUP_FAILED" });
-        }
-      }
-      if (canRenew && !this.stopping) {
-        try {
-          const accounts = await this.state.read((view) =>
-            view.oauthCredentials.listDueOAuthSources(installationId, batchSize, cursor),
-          );
-          if (this.stopping) {
-            return;
-          }
-          // Advance past unhealthy accounts so later sources can renew in the same scan.
-          const outcomes = await Promise.allSettled(
-            accounts.map(({ namespaceId, id }) =>
-              controller.refreshTokenServiceSource(namespaceId, id),
-            ),
-          );
-          if (outcomes.some(({ status }) => status === "rejected")) {
-            this.emit({ event: "worker.error", code: "CONNECTION_TOKEN_MAINTENANCE_FAILED" });
-          }
-          if (accounts.length === batchSize) {
-            cursor = accounts[batchSize - 1]!.id;
-            continue;
-          }
-          cursor = undefined;
-        } catch {
-          this.emit({ event: "worker.error", code: "CONNECTION_TOKEN_MAINTENANCE_FAILED" });
-        }
+      try {
+        await controller.expireAuthenticationStates(32);
+      } catch {
+        this.emit({ event: "worker.error", code: "AUTHENTICATION_STATE_CLEANUP_FAILED" });
       }
       try {
-        await delay(intervalMs, undefined, { signal: this.abort.signal });
+        await delay(5_000, undefined, { signal: this.abort.signal });
       } catch (error) {
         if (!this.stopping) {
           throw error;
@@ -5395,6 +5358,8 @@ export class ControllerWorker {
           // A predecessor's or a stopped Agent's revision stop yielded to other Work; the next
           // pass repeats it.
           result = { outcome: "pending", code: stopYieldedCode(error)! };
+        } else if (error instanceof ActivationPendingError) {
+          result = activationPendingResult(error);
         } else if (dependencyFailure !== undefined) {
           // A dependency that recovers by itself must not spend the attempt budget:
           // five quick retries end long before a Gateway route, an API server
@@ -5564,7 +5529,7 @@ export class ControllerWorker {
       resultData = pluginWarningsResultData(
         computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]),
       );
-      if (!observation.ready && !credentialActivationPending(observation, revision, compute)) {
+      if (!observation.ready && !credentialActivationPrepared(observation, revision, compute)) {
         await this.finalizeActiveRevision(
           claim,
           revision,
@@ -6064,9 +6029,7 @@ export class ControllerWorker {
         observation.runtimeFailure === undefined;
       // Staged preparation verifies policy and Provider readiness. The active pass starts
       // the Harness after OCC publishes this revision.
-      const credentialPrepared =
-        credentialActivationPending(observation, revision, this.compute) &&
-        observation.preparedForCredentialActivation === true;
+      const credentialPrepared = credentialActivationPrepared(observation, revision, this.compute);
       if (!observation.ready && !held && !credentialPrepared) {
         const runtimeFailure = runtimeFailureFromObservation(observation);
         return {
@@ -6304,23 +6267,6 @@ export class ControllerWorker {
       ) {
         throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
       }
-      if (source.type === "oauth2-refresh-token") {
-        const custody = await this.state.read((view) =>
-          view.oauthCredentials.findTokenCustody(revision.namespaceId, source.id),
-        );
-        if (!custody) {
-          throw new DependencyUnavailableError("The staged OAuth grant is unavailable.");
-        }
-        if (custody.due) {
-          const status = await this.provisioningController.refreshTokenServiceSource(
-            revision.namespaceId,
-            source.id,
-          );
-          if (status.state !== "ready") {
-            throw new DependencyUnavailableError("The staged OAuth grant is not ready.");
-          }
-        }
-      }
       sources.set(source.id, source);
     }
     signal.throwIfAborted();
@@ -6406,46 +6352,59 @@ export class ControllerWorker {
         throw new DependencyUnavailableError("The staged configuration operation has ended.");
       }
     };
+    const bindings = current.bindings.map((binding) => ({
+      binding,
+      resolveCredential: async () => {
+        requireOpen();
+        const source = current.sources.get(binding.sourceRef.id);
+        if (
+          !source ||
+          source.ownerCapability !== "token_service" ||
+          source.tokenServiceInstanceId !== current.instanceId
+        ) {
+          throw new DependencyUnavailableError("The authorized staged source is unavailable.");
+        }
+        let value = resolved.get(binding.sourceRef.id);
+        if (!value) {
+          value = current.owner.resolveCredential(
+            {
+              sourceRef: binding.sourceRef,
+              tokenServiceInstanceId: current.instanceId,
+            },
+            signal,
+          );
+          resolved.set(binding.sourceRef.id, value);
+        }
+        const credential = await value;
+        requireOpen();
+        return credential;
+      },
+    }));
     try {
+      // A Proxy can reuse a Provider copy. Check OAuth custody before allowing that reuse;
+      // if the grant is expired, only the API can renew it and the next attempt can proceed.
+      for (const binding of bindings) {
+        if (current.sources.get(binding.binding.sourceRef.id)?.type !== "oauth2-refresh-token") {
+          continue;
+        }
+        try {
+          await binding.resolveCredential();
+        } catch (error) {
+          if (!(error instanceof ResourceStateConflictError)) {
+            throw error;
+          }
+          throw new ActivationPendingError(
+            "CREDENTIAL_ACTIVATION_PENDING",
+            "Deployment is waiting for a usable OAuth credential.",
+          );
+        }
+      }
       const result = await proxy.configureDeployment(
-        {
-          namespace,
-          revision,
-          signal,
-        } satisfies CredentialDeploymentContext,
+        { namespace, revision, signal } satisfies CredentialDeploymentContext,
         {
           ...expected,
           injectionPolicies: current.policy.injectionPolicies,
-          bindings: current.bindings.map((binding) => ({
-            binding,
-            resolveCredential: async () => {
-              requireOpen();
-              const source = current.sources.get(binding.sourceRef.id);
-              if (
-                !source ||
-                source.ownerCapability !== "token_service" ||
-                source.tokenServiceInstanceId !== current.instanceId
-              ) {
-                throw new DependencyUnavailableError(
-                  "The authorized staged source is unavailable.",
-                );
-              }
-              let value = resolved.get(binding.sourceRef.id);
-              if (!value) {
-                value = current.owner.resolveCredential(
-                  {
-                    sourceRef: binding.sourceRef,
-                    tokenServiceInstanceId: current.instanceId,
-                  },
-                  signal,
-                );
-                resolved.set(binding.sourceRef.id, value);
-              }
-              const credential = await value;
-              requireOpen();
-              return credential;
-            },
-          })),
+          bindings,
         },
       );
       if (

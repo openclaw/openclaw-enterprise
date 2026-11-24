@@ -91,10 +91,17 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
  */
 async function oauthCustody(grant, signal) {
   const driver = createTestSecretDriver();
-  const service = new OAuthGrantStore(driver, refreshPinnedOAuthGrant);
-  const worker = new OAuthGrantStore(driver, refreshPinnedOAuthGrant);
+  const store = driver.privateSecrets;
+  const service = new OAuthGrantStore(store, refreshPinnedOAuthGrant);
+  const worker = new OAuthGrantStore(store, refreshPinnedOAuthGrant);
   const { custody, schedule } = await service.create(
-    { namespaceId: "ns_test", sourceId: "source" },
+    {
+      sourceId: "source",
+      secret: {
+        installationId: "ins_test",
+        id: JSON.stringify(["token_service", "instance", "credential_source", "ns_test", "source"]),
+      },
+    },
     grant,
     signal,
   );
@@ -174,7 +181,7 @@ test("the Token Service keeps the first access token in custody and serializes r
     registration: request,
     readSecret: async () => rotatedClientSecret,
   });
-  const stored = driver.valueFor(custody.secret);
+  const stored = await driver.privateSecrets.withValue(custody.secret, async (value) => value);
   assert.ok(!stored.includes(clientSecret));
   assert.equal(Object.hasOwn(JSON.parse(stored), "clientSecret"), false);
   const accepted = (await worker.observe(custody, t.signal, 0)).token;
@@ -200,9 +207,9 @@ test("the Token Service keeps the first access token in custody and serializes r
   // The custody CAS takes four seconds, then the issuer takes twelve. A second worker must
   // neither replay the grant nor fence its owner at the shorter issuer-only timeout.
   t.mock.timers.tick(65_000);
-  const compareAndSwap = driver.compareAndSwap.bind(driver);
+  const compareAndSwap = driver.privateSecrets.compareAndSwap.bind(driver.privateSecrets);
   t.mock.method(
-    driver,
+    driver.privateSecrets,
     "compareAndSwap",
     (...args) => {
       t.mock.timers.tick(4_000);
@@ -251,7 +258,12 @@ test("the Token Service keeps the first access token in custody and serializes r
   await worker.renew(custody, t.signal, resolveClient, renewed.version);
   assert.equal(requests.length, 3, "even an operator rotation cannot replay a refused grant");
   await service.delete(custody, t.signal);
-  assert.equal(driver.has(custody.secret), false);
+  await assert.rejects(
+    driver.privateSecrets.withValue(custody.secret, async () => true),
+    {
+      message: /Secret does not exist\./u,
+    },
+  );
 });
 
 /** @import { OAuthConnectionGrant, OAuthConnectionRegistration } from "@openclaw-enterprise/contracts" */
@@ -314,6 +326,11 @@ test("disconnect fences an in-flight OAuth refresh response", async (t) => {
   // Retire the exact custody identity after the issuer consumed the old refresh token and before its reply.
   await service.delete(custody, t.signal);
   respond.resolve();
-  await assert.rejects(refreshing, { message: "Secret does not exist." });
-  assert.equal(driver.has(custody.secret), false);
+  await assert.rejects(refreshing, /Secret does not exist/u);
+  await assert.rejects(
+    driver.privateSecrets.withValue(custody.secret, async () => true),
+    {
+      message: /Secret does not exist\./u,
+    },
+  );
 });

@@ -8027,10 +8027,22 @@ export class KubernetesComputeDriver implements ComputeDriver {
               }
             }
           }
-          const { credentialProjections } = await context!.configureCredentialDeployment!(
+          const configured = await context!.configureCredentialDeployment!(
             configuration,
             signal,
-          );
+          ).catch((error: unknown) => {
+            if (
+              error instanceof ActivationPendingError &&
+              error.code === "CREDENTIAL_ACTIVATION_PENDING"
+            ) {
+              return undefined;
+            }
+            throw error;
+          });
+          if (configured === undefined) {
+            return incomplete("CREDENTIAL_ACTIVATION_PENDING");
+          }
+          const { credentialProjections } = configured;
           const projected = new Set(credentialProjections.map(({ bindingRef }) => bindingRef));
           if (
             projected.size !== credentialProjections.length ||

@@ -1,10 +1,10 @@
-import type { OAuthCredentialSource, Secret } from "@openclaw-enterprise/contracts";
+import type { OAuthCredentialSource, PrivateSecretRef } from "@openclaw-enterprise/contracts";
 
 /** Private OAuth custody and refresh scheduling, keyed only by the canonical Source. */
 export interface OAuthTokenCustody {
   readonly namespaceId: string;
   readonly sourceId: string;
-  readonly secret: Readonly<Secret>;
+  readonly secret: PrivateSecretRef;
   readonly scheduledVersion?: string;
   readonly nextRefreshAt?: string;
 }
@@ -15,7 +15,7 @@ export interface OAuthCredentialReadRepository {
     sourceId: string,
   ): Promise<Readonly<OAuthTokenCustody & { due: boolean }> | undefined>;
   listDueOAuthSources(
-    installationId: string,
+    tokenServiceInstanceId: string,
     limit: number,
     afterSourceId?: string,
   ): Promise<readonly Readonly<Pick<OAuthCredentialSource, "namespaceId" | "id">>[]>;

@@ -15,7 +15,6 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { composeProduction } from "../helpers/password-hasher.ts";
 import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
-import { githubAppClientSigningKeyRef } from "../../apps/controller/src/drivers/token-service/github-app-source.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
@@ -88,7 +87,7 @@ test(
     await controller.handleNamespaceLifecycle(principal.id, namespaceId, "ready");
     const base = `/namespaces/${namespaceId}`;
     const { core, driver } = useInstallationSecretDriver(controller);
-    const store = driver.installationSecrets;
+    const store = driver.privateSecrets;
     assert.ok(store);
 
     const permissions = { metadata: "read", contents: "write", issues: "read" };
@@ -367,7 +366,7 @@ test(
       undefined,
       new OAuthAccountTokens(
         state,
-        driver,
+        driver.privateSecrets,
         nativeController.resolveConnectionClient.bind(nativeController),
         refreshCodexOAuthGrant,
       ),
@@ -1319,6 +1318,7 @@ test(
       workspace,
       namespaceId,
       binding: gitBinding,
+      requireCurrentVersion: false,
       resolveCredential: () => owner.resolveCredential(installedSource, t.signal),
       signal: t.signal,
     });
@@ -1332,12 +1332,18 @@ test(
         gitSource.id,
       ]),
     };
-    const signerStorage = githubAppClientSigningKeyRef(
-      controller.installation.id,
-      instanceId,
-      clientId,
-      fixtureAppId,
-    );
+    // Read the deployed Installation Client's stable address to catch accidental signer
+    // re-keying when changes affect shared custody or the renewal path.
+    const signerStorage = {
+      installationId: controller.installation.id,
+      id: JSON.stringify([
+        "token_service",
+        instanceId,
+        "github_app_client",
+        clientId,
+        fixtureAppId,
+      ]),
+    };
     const signerBefore = await store.withValue(signerStorage, async (value) => value);
     const receiptBefore = await store.withValue(sourceStorage, async (value) => JSON.parse(value));
     await store.update(

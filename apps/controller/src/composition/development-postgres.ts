@@ -5,7 +5,7 @@ import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "./installation-config.ts";
-import { installTokenServiceDriver, scheduleGitSourceMaintenance } from "./token-service.ts";
+import { installTokenServiceDriver, scheduleTokenServiceMaintenance } from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
@@ -357,12 +357,11 @@ export async function composePostgresDevelopment(
       await checkDatabaseReadiness();
       return { status: "ready" };
     });
-    const stopGitMaintenance =
-      tokenService && drivers?.repositoryRegistry
-        ? scheduleGitSourceMaintenance(app, tokenService, config.logger)
-        : undefined;
+    const stopTokenMaintenance = tokenService
+      ? scheduleTokenServiceMaintenance(app, tokenService, config.logger)
+      : undefined;
     app.addHook("onClose", async () => {
-      await stopGitMaintenance?.();
+      await stopTokenMaintenance?.();
       await close(state);
     });
     return app;

@@ -32,7 +32,7 @@ import type {
   CredentialProxyDriver,
   CredentialSourceReference,
   CredentialUpdateNotification,
-  InstallationSecretStore,
+  PrivateSecretStore,
   ResolvedCredential,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -409,11 +409,11 @@ test(
     // The selected owner and Secret Driver are concrete; only the Kubernetes API transport is simulated.
     const { core, driver } = useInstallationSecretDriver(controller);
     // Controlled pre-write supplier failures exercise the privacy boundary; normal custody uses the concrete Secret Driver.
-    const privateStore = driver.installationSecrets;
+    const privateStore = driver.privateSecrets;
     assert.ok(privateStore);
     let controlledStoreFailure: Error | undefined;
     const sourceCountsBeforeCustody: number[] = [];
-    const ownerStore: InstallationSecretStore = {
+    const ownerStore: PrivateSecretStore = {
       create: async (ref, value) => {
         // An independent connection must not see an OCC reservation before TokenService takes custody.
         const existing = await pool.query(
@@ -431,6 +431,7 @@ test(
         }
         await privateStore.update(ref, value);
       },
+      compareAndSwap: (ref, expected, value) => privateStore.compareAndSwap(ref, expected, value),
       withValue: (ref, use) => privateStore.withValue(ref, use),
       delete: (ref) => privateStore.delete(ref),
     };
@@ -466,7 +467,7 @@ test(
       { notifyCredentialUpdated: notify },
       new OAuthAccountTokens(
         state,
-        driver,
+        ownerStore,
         controller.resolveConnectionClient.bind(controller),
         refreshCodexOAuthGrant,
       ),
@@ -1321,7 +1322,7 @@ test(
     const replacement = new OCCTokenServiceDriver(
       "replacement-owner",
       controller.installation.id,
-      driver.installationSecrets,
+      driver.privateSecrets,
       instanceId,
       state,
     );
@@ -1919,10 +1920,7 @@ test(
       state.read((view) => view.oauthCredentials.findTokenCustody(namespaceId, oauth.id));
     const custody = await readCustody();
     assert.ok(custody);
-    const { namespaceName, name } = custody.secret.backendRef;
-    const secretKey = `${namespaceName}/${name}`;
-    const storedGrant = structuredClone(core.secrets.get(secretKey));
-    assert.ok(storedGrant);
+    const storedGrant = await privateStore.withValue(custody.secret, async (value) => value);
     nativeTransport.seed(oauth.id);
 
     nativeTransport.refused = true;
@@ -1936,7 +1934,10 @@ test(
     assert.equal(retiringOAuth.json().data.consent.revocationRequestedBy, principal.id);
     assert.equal(retiringOAuth.json().data.consent.revokedAt, undefined);
     assert.deepEqual(await readCustody(), custody);
-    assert.deepEqual(core.secrets.get(secretKey), storedGrant);
+    assert.equal(
+      await privateStore.withValue(custody.secret, async (value) => value === storedGrant),
+      true,
+    );
     assert.ok(await readProvider(oauthDeliveryName));
     assert.ok(await readProfile(oauthDeliveryName));
 
@@ -1949,7 +1950,12 @@ test(
     assert.equal(await readProfile(oauthDeliveryName), undefined);
     assert.equal(remember(await inject("GET", oauthPath, undefined, nativeApp)).statusCode, 404);
     assert.equal(await readCustody(), undefined);
-    assert.equal(core.secrets.has(secretKey), false);
+    await assert.rejects(
+      privateStore.withValue(custody.secret, async () => true),
+      {
+        message: "The Kubernetes Secret backend is unavailable.",
+      },
+    );
 
     const networking = `${base}/agents/${dedicatedId}/sandbox-policy/networking`;
     const editing = await inject("PATCH", `${networking}/editing`, { enabled: true }, nativeApp);

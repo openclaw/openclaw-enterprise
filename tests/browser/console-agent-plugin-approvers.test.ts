@@ -261,7 +261,7 @@ async function savedCodexPluginFixture(
   const native = controller(fixture);
   const { core, driver: secrets } = useInstallationSecretDriver(native);
   core.addNamespace(namespace.id);
-  assert.ok(secrets.installationSecrets && state);
+  assert.ok(secrets.privateSecrets && state);
   const instance = await native.activateTokenServiceInstance(
     "console-pat-tokens",
     crypto.randomUUID(),
@@ -269,7 +269,7 @@ async function savedCodexPluginFixture(
   const tokens = new OCCTokenServiceDriver(
     "console-pat-tokens",
     native.installation.id,
-    secrets.installationSecrets,
+    secrets.privateSecrets,
     instance,
     state,
   );
@@ -893,7 +893,7 @@ async function managedSlackPluginFixture(t: TestContext, withSibling = false) {
   const native = controller(fixture);
   const { core, driver } = useInstallationSecretDriver(native);
   core.addNamespace(namespace.id);
-  assert.ok(driver.installationSecrets);
+  assert.ok(driver.privateSecrets);
   assert.ok(state);
   const instance = await native.activateTokenServiceInstance(
     "console-mcp-tokens",
@@ -902,7 +902,7 @@ async function managedSlackPluginFixture(t: TestContext, withSibling = false) {
   const tokens = new OCCTokenServiceDriver(
     "console-mcp-tokens",
     native.installation.id,
-    driver.installationSecrets,
+    driver.privateSecrets,
     instance,
     state,
   );

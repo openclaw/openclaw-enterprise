@@ -98,7 +98,7 @@ test(
     native.registerDriver(runtime.computeDriver);
     native.selectDriver("compute", runtime.computeDriver.id);
     const selectedSecret = controller.selectedDriver("secret");
-    const store = selectedSecret.installationSecrets;
+    const store = selectedSecret.privateSecrets;
     assert.ok(store);
     const storeIdentity = randomUUID();
     const instanceId = await native.activateTokenServiceInstance("occ", storeIdentity);

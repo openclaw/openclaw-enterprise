@@ -87,9 +87,9 @@ After exchange, OCC sends the grant and consent details to the selected TokenSer
 
 ### 5. Renew the grant
 
-`apps/controller/src/worker.ts:maintainConnections` and `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
+`apps/controller/src/composition/token-service.ts:scheduleTokenServiceMaintenance` and `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
 
-The Worker checks for due OAuth Sources every five seconds and processes all due batches in a scan. Trusted consumers resolve credentials through the selected TokenService. It can also renew a due grant on demand, including after a short-lived access token expires. Template-backed renewal uses the Source's original consent version and client registration, including the registration's current client secret. A Template update changes the version available for a later Agent admission; it does not widen the original OAuth grant or change its refresh endpoint. TokenService records the next renewal and any narrower granted scopes.
+The API checks for due OAuth Sources on a five-second schedule independent of Git maintenance. The selected TokenService can also renew during an authorized API read. The Worker resolves only an eligible current access token and can retry deployment after API renewal. Template-backed renewal uses the Source's original consent version and the registered Client's current secret. A Template update can affect later admission. The existing grant keeps its issuer endpoint and scope ceiling. TokenService records the next renewal and any narrower granted scopes.
 
 Built-in Codex device login uses no Connection Template. See the [Credential source lifecycle](credential-source-lifecycle.md#1-register-a-source).
 

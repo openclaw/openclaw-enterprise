@@ -16,27 +16,21 @@ export type TokenServiceClientScopes = Readonly<
   Partial<Record<CredentialClientPurpose, readonly CredentialClientScope[]>>
 >;
 
-export type OAuthClientSecretRef =
-  | { readonly kind: "oauth_client"; readonly id: string; readonly namespaceId?: never }
-  | { readonly kind: "oauth_client"; readonly id: string; readonly namespaceId: string };
-
-/** OAuth confidential material remains bound to its approved token endpoint and owner. */
-export interface OAuthClientSecretInstance {
-  readonly sourceRef: OAuthClientSecretRef;
+type CredentialClientSecretOwner = Pick<CredentialClient, "id" | "namespaceId"> & {
   readonly tokenServiceInstanceId: string;
+};
+
+/** OAuth material is available only for the approved client's token endpoint. */
+export type OAuthClientSecretInstance = CredentialClientSecretOwner & {
+  readonly kind: "oauth2";
   readonly tokenUrl: string;
-}
+};
 
-/** GitHub App signing material is Installation-private and cannot be resolved as OAuth material. */
-export interface GitHubAppClientSecretInstance {
-  readonly sourceRef: {
-    readonly kind: "github_app_client";
-    readonly id: string;
-    readonly namespaceId?: never;
-  };
-  readonly tokenServiceInstanceId: string;
+/** GitHub App signing material is used by its issuer inside TokenService. */
+export type GitHubAppClientSecretInstance = CredentialClientSecretOwner & {
+  readonly kind: "github-app";
   readonly appId: string;
-}
+};
 
 export type CredentialClientSecretInstance =
   OAuthClientSecretInstance | GitHubAppClientSecretInstance;

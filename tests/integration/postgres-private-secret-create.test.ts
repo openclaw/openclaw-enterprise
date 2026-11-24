@@ -96,7 +96,7 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
   controller.registerDriver(iam);
   controller.selectDriver("iam", iam.id);
   const { core, driver } = useInstallationSecretDriver(controller);
-  assert.ok(driver.installationSecrets);
+  assert.ok(driver.privateSecrets);
   const instanceId = await controller.activateTokenServiceInstance(
     "private-client-token-service",
     "private-client-store",
@@ -104,7 +104,7 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
   const owner = new OCCTokenServiceDriver(
     "private-client-token-service",
     installation.id,
-    driver.installationSecrets,
+    driver.privateSecrets,
     instanceId,
     state,
   );

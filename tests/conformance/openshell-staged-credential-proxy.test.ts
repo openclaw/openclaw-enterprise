@@ -32,6 +32,7 @@ import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-
 import { bindWireServer } from "./openshell-gateway-wire-fixture.ts";
 import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
 import {
+  ActivationPendingError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
@@ -1085,11 +1086,12 @@ test("native Proxy prepares one Codex account Provider for the three fixed model
       },
     },
   };
-  const result = await f.proxy.configureDeployment(context, {
+  const codexInput = {
     ...configuration,
     injectionPolicies: policies,
     bindings: [{ binding: codexBinding, resolveCredential: f.suppliedBinding.resolveCredential }],
-  });
+  };
+  const result = await f.proxy.configureDeployment(context, codexInput);
   assert.deepEqual(result.credentialProjections, [
     { bindingRef: "model", environment: "CODEX_ACCESS_TOKEN", placeholder: { kind: "runtime" } },
   ]);
@@ -1097,6 +1099,34 @@ test("native Proxy prepares one Codex account Provider for the three fixed model
   assert.deepEqual(record(f.state.creates[0]?.provider).credentials, {
     CODEX_ACCESS_TOKEN: "synthetic-material",
   });
+
+  // Custody can commit while delivery still holds the previous version. A second
+  // held Sandbox must wait for delivery before it can attach that Provider.
+  const next = addSecondSandboxTarget(f);
+  const nextContext = {
+    ...context,
+    revision: {
+      ...context.revision,
+      agentId: next.context.revision.agentId,
+      id: next.context.revision.id,
+      configurationId: next.context.revision.configurationId,
+    },
+  };
+  const nextInput = { ...codexInput, ...secondConfiguration };
+  f.setResolvedCredential("synthetic-replacement", "source-v2");
+  await assert.rejects(f.proxy.configureDeployment(nextContext, nextInput), {
+    name: ActivationPendingError.name,
+    code: "CREDENTIAL_ACTIVATION_PENDING",
+  });
+  assert.deepEqual(next.sandbox.spec.providers, []);
+  assert.equal(f.state.updates.length, 0, "preparation must leave renewal delivery to the API");
+
+  f.sandbox.status.configuration_activated = false;
+  await f.notify("source-v2");
+  assert.deepEqual(await f.proxy.configureDeployment(nextContext, nextInput), result);
+  assert.equal(f.state.creates.length, 1);
+  assert.equal(f.state.updates.length, 1);
+  assert.equal(next.sandbox.spec.providers.length, 1);
 });
 
 test("native Proxy delivers a managed Slack MCP binding and rejects broadened policy readback", async (t) => {
