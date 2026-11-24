@@ -1559,7 +1559,10 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     .waitFor();
   // The dialog names its target Agent as text, and in its accessible description.
   await dialog.getByText("Stop Candidate", { exact: true }).waitFor();
-  assert.equal(await accessibleDescription(dialog), `Agent: Stop Candidate ${STOP_CONFIRMATION}`);
+  assert.equal(
+    await accessibleDescription(dialog),
+    `Agent: Stop Candidate Agent ID: ${agent.id} ${STOP_CONFIRMATION}`,
+  );
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);

@@ -1530,6 +1530,7 @@ async function prepareLane({
     case "postgres":
     case "postgres-application":
     case "postgres-auth":
+    case "openshell-token-service":
     case "postgres-platform":
       // Verify the same workspace that the file's migrator will use.
       await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", [
