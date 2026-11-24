@@ -9,6 +9,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
+import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type { OpenShellProviderResponse } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
@@ -33,6 +34,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -97,6 +99,7 @@ import {
 import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
+import { jsonLineDestination } from "../helpers/json-lines.ts";
 
 // Legacy resource fields enter the suite as unknown; the checks below narrow them.
 type NamespaceFixture = {
@@ -1084,7 +1087,11 @@ test("Agent policy under protected execution offers only removal of saved networ
   );
 });
 
-async function repositoryPolicyConsole(t: TestContext, native = false) {
+async function repositoryPolicyConsole(
+  t: TestContext,
+  native = false,
+  logger?: ReturnType<typeof createOccLogger>,
+) {
   const namespaceId = `ns_${crypto.randomUUID()}`;
   const app = { repository: "example/application", access: "read" } as const;
   const tooling = { repository: "example/tooling", access: "write" } as const;
@@ -1176,6 +1183,7 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
   };
   const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
   const fixture = await createConsoleAppFixture(t, {
+    logger,
     createId(kind: ResourceKind) {
       if (kind === "namespace" && createdNamespaces++ === 1) {
         return namespaceId;
@@ -1192,7 +1200,15 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
     repositoryNetworkPolicyCeiling: native ? [...grants, limited] : grants,
     repositoryCredentials: true,
     agentProvisioning: native,
-    ...(native ? { provisionedPeople: [] } : {}),
+    ...(native
+      ? {
+          provisionedPeople: [],
+          configurationDriver: createTestConfigurationDriver({
+            id: "console-configuration",
+            exact: true,
+          }),
+        }
+      : {}),
     namespaceLifecycleBindings,
     driverConfigurations: [
       {
@@ -1287,16 +1303,31 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
   };
 }
 
-async function openRepositoryCreate(t: TestContext) {
-  const setup = await repositoryPolicyConsole(t, true);
+async function openRepositoryCreate(
+  t: TestContext,
+  modelAuth: "api_key" | "codex_pat" = "api_key",
+  logger?: ReturnType<typeof createOccLogger>,
+) {
+  const setup = await repositoryPolicyConsole(t, true, logger);
   const { fixture, namespaceId, secret } = setup;
+  const modelSecret =
+    modelAuth === "codex_pat"
+      ? await fixture.createSecret(namespaceId, "console-pat", "synthetic-console-pat")
+      : secret;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const agents = `/namespaces/${namespaceId}/agents`;
   await login(page, fixture, `/console/agents/new?namespace=${namespaceId}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Scoped assistant");
-  await selectSecret(page, "API key Secret", secret);
+  if (modelAuth === "codex_pat") {
+    await page.getByLabel("Authentication method").selectOption(modelAuth);
+  }
+  await selectSecret(
+    page,
+    modelAuth === "codex_pat" ? "Service account token Secret" : "API key Secret",
+    modelSecret,
+  );
   const model = page.getByLabel("Model ID", { exact: true });
   if (!(await model.isVisible())) {
     await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
@@ -1305,24 +1336,81 @@ async function openRepositoryCreate(t: TestContext) {
   await model.press("Tab");
   const mode = page.getByLabel("Repository access mode");
   await mode.waitFor();
-  return { ...setup, page, requests, agents, mode };
+  return { ...setup, page, requests, agents, mode, modelSecret };
 }
 
 test("Create Agent requests ordinary provisioning when eligible GitHub repositories stay unchecked", async (t) => {
-  const { fixture, page, mode, agents } = await openRepositoryCreate(t);
-  assert.equal(await mode.inputValue(), "scoped");
-  const create = page.getByRole("button", { name: "Create Agent", exact: true });
-  await waitForEnabled(create);
-  const provisioned = responseTo(page, "POST", fixture.origin + agents + "/provision");
-  await create.click();
-  const response = await provisioned;
-  // This local fixture has no durable provisioning queue. Check the real
-  // provisioning refusal and submitted intent without claiming a deployment.
-  assert.equal(response.status(), 503, await response.text());
-  assert.equal(record(record(await response.json()).error).code, "DEPENDENCY_UNAVAILABLE");
-  const body = record(response.request().postDataJSON());
-  assert.deepEqual(record(body.repositoryAccess).repositories, []);
-  assert.equal(Object.hasOwn(body, "repositoryNetworkPolicy"), false);
+  for (const { method, type, field } of [
+    { method: "api_key", type: "openai", field: "api_key" },
+    { method: "codex_pat", type: "codex-pat", field: "access_token" },
+  ] as const) {
+    await t.test(type, async (t) => {
+      const logs: unknown[] = [];
+      const logger = createOccLogger({
+        component: "occ-api",
+        level: "warn",
+        destination: jsonLineDestination(logs),
+      });
+      const { fixture, page, mode, agents, namespaceId, modelSecret, requests } =
+        await openRepositoryCreate(t, method, logger);
+      assert.equal(await mode.inputValue(), "scoped");
+      const create = page.getByRole("button", { name: "Create Agent", exact: true });
+      await waitForEnabled(create);
+      const provisionUrl = `${fixture.origin}${agents}/provision`;
+      const provisioned = responseTo(page, "POST", provisionUrl);
+      await create.click();
+      const response = await provisioned;
+      const body = record(response.request().postDataJSON());
+      const auth = record(body.harnessAuth);
+      assert.equal(
+        auth.method,
+        "credential_source",
+        `provisioning must use a Gateway Source ID (HTTP ${response.status()})`,
+      );
+      // The HTTP response hides the cause. The matching operator event confirms the
+      // request passed admission and reached the durable provisioning boundary.
+      assert.equal(response.status(), 503, await response.text());
+      const { error, meta } = record(await response.json());
+      assert.equal(record(error).code, "DEPENDENCY_UNAVAILABLE");
+      const requestId = text(record(meta).requestId);
+      const unavailable = logs
+        .map(record)
+        .find(
+          (line) => line.event === "http.dependency_unavailable" && line.requestId === requestId,
+        );
+      assert.equal(
+        unavailable?.message,
+        "Agent provisioning requires durable PostgreSQL state for checkpoints.",
+      );
+      assert.deepEqual(record(body.repositoryAccess).repositories, []);
+      assert.equal(Object.hasOwn(body, "repositoryNetworkPolicy"), false);
+
+      const sources = `/namespaces/${namespaceId}/credential-sources`;
+      const [validation] = pathRequests(requests, "POST", `${agents}/validate`);
+      const [registration] = pathRequests(requests, "POST", sources);
+      assert.ok(validation && registration);
+      assert.deepEqual(record(validation.body).harnessAuth, { method });
+      assert.ok(requests.indexOf(validation) < requests.indexOf(registration));
+      const source = await fixture.request("GET", `${sources}/${text(auth.sourceId)}`);
+      assert.equal(source.status, 200);
+      const saved = record(source.data);
+      assert.equal(saved.ownerCapability, "credential_gateway");
+      assert.equal(saved.state, "ready");
+      assert.equal(saved.type, type);
+      assert.deepEqual(saved.secrets, { [field]: modelSecret.ref });
+
+      // Retrying the same provisioning request preserves the saved Source and request ID.
+      const retry = page.getByRole("button", { name: "Retry provisioning request", exact: true });
+      await waitForEnabled(retry);
+      const retried = responseTo(page, "POST", provisionUrl);
+      await retry.click();
+      const repeated = await retried;
+      assert.equal(repeated.status(), 503, await repeated.text());
+      assert.deepEqual(repeated.request().postDataJSON(), body);
+      assert.equal(pathRequests(requests, "POST", sources).length, 1);
+      assert.equal(pathRequests(requests, "POST", agents).length, 0);
+    });
+  }
 });
 
 test("Create Agent saves GitHub grants before the first deployment and rolls back a refused draft", async (t) => {

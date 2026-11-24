@@ -62,7 +62,10 @@ policy through `apps/controller/src/console/agents/harness-auth.mts:configuredHa
 
 The Slack modal saves tokens through `POST /namespaces/:namespaceId/secrets` before Agent creation, then clears them. Apply stages references and environment bindings; Cancel retains created Secrets. Model discovery does not save its API key or service account token. After preflight, Create Agent saves the credential as a Namespace Secret, clears the input, and reuses its reference on retries. Bound Presets retain their credential/provider. Recover a lost Secret-save response before retrying.
 
-Console registers the model Secret as directed by the Credential Gateway catalog before provisioning. [Recovery](../reference/console/create-and-deploy.md) reuses confirmed sources or retries uncertain registration. Installation discovery preserves catalog metadata.
+When the Credential Gateway offers the selected login method, Console registers
+the model Secret after preflight and sends the returned Source ID to provisioning.
+Retries reuse a confirmed Source. If registration has an unknown outcome, Console
+stops provisioning and asks the operator to check Credential Sources.
 
 Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
 

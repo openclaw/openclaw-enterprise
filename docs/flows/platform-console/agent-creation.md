@@ -157,7 +157,8 @@ stale grants with HTTP 409.
 
 Otherwise, eligible Dedicated runtimes can [provision](../agent-provisioning.md)
 with inline Configuration, optional repository access, and Secret references.
-The worker reauthorizes, grants access, and deploys. Console opens the deployed version.
+When the Gateway offers model enrollment, Console registers the Secret and
+includes the returned Source ID in the provisioning request.
 With **Credential Source** storage, Console validates the Agent, then submits the
 OpenAI API key to TokenService through the Namespace's `credential-sources` collection.
 Console clears the key and opens a draft that binds the returned static Source ID.

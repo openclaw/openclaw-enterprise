@@ -94,10 +94,9 @@ type CreateRequest = (
 ) => Promise<unknown>;
 type CredentialReference = SecretReference | CredentialSourceReference;
 type Repositories = ReturnType<typeof createRepositoryFields>;
-type RegisteredCredential = {
-  id: string;
-  owner: "token_service" | "credential_gateway";
-};
+type RegisteredCredential = { id: string } & (
+  { owner: "token_service" } | { owner: "credential_gateway"; repositoryDraft: boolean }
+);
 type SavedAgent = Pick<Agent, "id" | "name" | "configurationId">;
 type SavedConfiguration = Pick<Configuration, "id" | "secretBindings">;
 
@@ -2712,20 +2711,28 @@ function renderAgentForm(
   }
   const usesRepositoryModelSecret = () =>
     repositories.scoped() && (binding?.method ?? authMethod.value) === "api_key";
-  // TODO: Remove Gateway model enrollment when per-repository GitHub access uses TokenService.
-  function repositoryModelType() {
-    if (harness.value !== "codex" || mode.value !== "dedicated") {
+  // TODO: Remove Gateway model enrollment when its remaining consumers use TokenService.
+  function gatewayModelType() {
+    const method = binding?.method ?? authMethod.value;
+    const scoped = repositories.scoped();
+    if (
+      mode.value !== "dedicated" ||
+      (!scoped && !provisionableExecutionModes.has(mode.value)) ||
+      (method !== "api_key" && method !== "codex_pat") ||
+      (scoped && (harness.value !== "codex" || method !== "api_key"))
+    ) {
       return undefined;
     }
-    return installationCapabilities?.credentialSources?.types.find(
+    const candidates = installationCapabilities?.credentialSources?.types.filter(
       (type) =>
-        type.type === "openai" &&
+        (!scoped || type.type === "openai") &&
         type.harnessAuth?.modelProvider === nativeProvider.value &&
-        type.harnessAuth.loginMode === "api_key" &&
+        type.harnessAuth.loginMode === method &&
         !type.config.some((field) => field.required) &&
         type.secrets.length === 1 &&
         type.secrets[0]?.required,
     );
+    return candidates?.length === 1 ? candidates[0] : undefined;
   }
   const usesManagedStatic = () =>
     savedCredentialSource?.owner === "token_service" ||
@@ -2736,10 +2743,12 @@ function renderAgentForm(
       mode.value === "dedicated" &&
       authMethod.value === "api_key" &&
       credentialStorage.value === "source");
-  // Keep Source enrollment and per-repository GitHub access on the draft path.
+  const savedRepositoryModel = () =>
+    savedCredentialSource?.owner === "credential_gateway" && savedCredentialSource.repositoryDraft;
+  // TokenService enrollment and per-repository GitHub access use the draft path.
   const shouldProvision = () =>
     !repositories.scoped() &&
-    !savedCredentialSource &&
+    !savedRepositoryModel() &&
     !usesManagedStatic() &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
     mode.value === "dedicated" &&
@@ -2749,7 +2758,7 @@ function renderAgentForm(
   const provisioningWaitsForNamespace = () =>
     Boolean(notReady) &&
     (shouldProvision() ||
-      (!savedCredentialSource && (usesManagedStatic() || usesRepositoryModelSecret())));
+      (!savedCredentialSource && (usesManagedStatic() || gatewayModelType() !== undefined)));
   // A Namespace that takes no new Agent, draft or not: an adopted one still provisioning, which
   // becomes ready by waiting, or one that turned failed or deleting, or went missing, while the
   // form was open, which never does (finding 2022). A refocus still rechecks it.
@@ -2886,7 +2895,6 @@ function renderAgentForm(
       return;
     }
     runtimeBindingChecked = true;
-    const harnessAuth = plannedHarnessAuth(false);
     try {
       await request(`${namespacePath(namespaceId)}/agents/validate`, {
         method: "POST",
@@ -2894,7 +2902,7 @@ function renderAgentForm(
         body: {
           configuration: { kind: "agent", values },
           executionMode: mode.value,
-          ...(harnessAuth ? { harnessAuth } : {}),
+          harnessAuth: binding,
         },
       });
     } catch (error) {
@@ -3088,7 +3096,7 @@ function renderAgentForm(
         !modeUnavailable &&
         notReady &&
         !savedCredentialSource &&
-        (usesManagedStatic() || usesRepositoryModelSecret())
+        (usesManagedStatic() || gatewayModelType() !== undefined)
       ) {
         nextStatus =
           "Credential Sources require a ready Namespace. Saving the Agent is unavailable until then.";
@@ -3788,10 +3796,10 @@ function renderAgentForm(
       }
     }
   }
-  // Validate the planned login method before creating credential material. The exact Source ID
-  // becomes available after TokenService creates the Source.
+  // Validate the planned login method before enrollment returns a Source ID.
   function plannedHarnessAuth(
     usesOAuth: boolean,
+    enrollingGatewayModel: boolean,
   ): HarnessAuthBinding | { method: "api_key" | "codex_pat" } | undefined {
     if (usesOAuth) {
       return undefined;
@@ -3800,14 +3808,15 @@ function renderAgentForm(
     if (binding?.method === "runtime") {
       return binding;
     }
-    if (binding) {
-      return binding;
-    }
     if (savedCredentialSource) {
       return { method: "credential_source", sourceId: savedCredentialSource.id };
     }
-    if (usesManagedStatic()) {
-      return { method: "api_key" };
+    if (enrollingGatewayModel || usesManagedStatic()) {
+      const method = binding?.method ?? authMethod.value;
+      return method === "api_key" || method === "codex_pat" ? { method } : undefined;
+    }
+    if (binding) {
+      return binding;
     }
     const source = passwordAuth ? savedSecret?.ref : modelCredentialSource;
     if (source?.kind === "secret") {
@@ -3942,8 +3951,8 @@ function renderAgentForm(
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
     };
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
-    const repositorySourceType = usesRepositoryModelSecret() ? repositoryModelType() : undefined;
-    if (savedCredentialSource?.owner === "credential_gateway" && !repositories.scoped()) {
+    const gatewaySourceType = usesManagedStatic() ? undefined : gatewayModelType();
+    if (savedRepositoryModel() && !repositories.scoped()) {
       feedback.textContent =
         "Select per-repository GitHub access to reuse the saved model credential.";
       return;
@@ -3956,7 +3965,7 @@ function renderAgentForm(
     if (
       repositories.scoped() &&
       ((binding?.method ?? authMethod.value) === "codex_pat" ||
-        (usesRepositoryModelSecret() && !savedCredentialSource && !repositorySourceType))
+        (usesRepositoryModelSecret() && !savedCredentialSource && !gatewaySourceType))
     ) {
       feedback.textContent =
         "Per-repository GitHub access needs a Dedicated Codex Agent and an OpenAI API-key Secret offered by the Credential Gateway.";
@@ -4006,10 +4015,11 @@ function renderAgentForm(
     // before it saves a Configuration, with its own rules, so it needs no preflight, except
     // before this form saves credential material. The preflight checks the planned login method
     // so an Installation that cannot place a Dedicated Agent refuses it before custody.
-    const plannedAuth = plannedHarnessAuth(usesOAuth);
+    const plannedAuth = plannedHarnessAuth(usesOAuth, gatewaySourceType !== undefined);
     const savesFirst =
       !usesOAuth &&
-      ((passwordAuth && !savedSecret) || (usesManagedStatic() && !savedCredentialSource));
+      ((passwordAuth && !savedSecret) ||
+        (!savedCredentialSource && (usesManagedStatic() || gatewaySourceType !== undefined)));
     if (
       !savedConfiguration &&
       !savedAgent &&
@@ -4130,15 +4140,15 @@ function renderAgentForm(
       } else {
         const selected = passwordAuth && !usesOAuth ? savedSecret?.ref : modelCredentialSource;
         harnessAuth = binding ?? selectedHarnessAuth(authMethod.value, selected);
-        if (repositorySourceType) {
+        if (gatewaySourceType) {
           const secret = "source" in harnessAuth ? harnessAuth.source : undefined;
-          const field = repositorySourceType.secrets[0]?.name;
+          const field = gatewaySourceType.secrets[0]?.name;
           if (secret?.kind !== "secret" || !field) {
-            throw new Error("Choose a model credential Secret for per-repository GitHub access.");
+            throw new Error("Choose a model credential Secret offered by the Credential Gateway.");
           }
           const enrollment = {
             name: `${body.name.slice(0, 150)} model ${provisioningRequestId}`,
-            type: repositorySourceType.type,
+            type: gatewaySourceType.type,
             config: {},
             secrets: { [field]: secret },
           };
@@ -4164,7 +4174,11 @@ function renderAgentForm(
           ) {
             throw new Error("The response did not confirm the requested ready Credential Source.");
           }
-          savedCredentialSource = { id: source.id, owner: "credential_gateway" };
+          savedCredentialSource = {
+            id: source.id,
+            owner: "credential_gateway",
+            repositoryDraft: repositories.scoped(),
+          };
           creatingSource = false;
           if (!context.isCurrent()) {
             return;
