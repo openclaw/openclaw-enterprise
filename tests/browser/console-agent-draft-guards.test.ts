@@ -1546,7 +1546,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
     const view = await read();
     assert.equal(view.repositoryNetworkPolicySaveSupported, true, JSON.stringify(view));
     assert.equal(Object.hasOwn(record(view.policy), "repositoryNetworkPolicy"), false);
-    const deploy = async () => {
+    function grantModel() {
       fixture.policy.identities.push({
         kind: "service_principal",
         id: agent.servicePrincipalId,
@@ -1559,7 +1559,11 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
         permissions: { credential_source: ["operate"] },
         resource: { kind: "credential_source", id: source.id },
       });
-      const response = await fixture.request("POST", `${path}/deploy`);
+    }
+    const deploy = async (expectedRepositoryPolicyVersion?: null) => {
+      const response = await fixture.request("POST", `${path}/deploy`, {
+        body: { expectedRepositoryPolicyVersion },
+      });
       assert.equal(response.status, 202, JSON.stringify(response.body));
       const revisions = await controller.transact((unit) =>
         unit.revisions.listRevisions(namespaceId, agent.id),
@@ -1569,7 +1573,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
       assert.equal(revisions[0].id, resource(response.data).id);
       return revisions[0];
     };
-    return { agent, base, read, deploy };
+    return { agent, base, path, read, grantModel, deploy };
   }
 
   const { page } = await newPage(t, fixture);
@@ -1743,6 +1747,17 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   const emptyAgent = await createAgent("Deny all on first save", [
     { repositoryRef: "application", profile: "github-repository" },
   ]);
+  // A second tab submits a legacy draft before the first list exists.
+  // Deliver its POST only after the policy editor has saved deny-all.
+  emptyAgent.grantModel();
+  const { page: draft } = await newPage(t, fixture);
+  await login(draft, fixture, detailUrl(fixture, namespaceId, emptyAgent.agent.id, "draft"));
+  const deploy = draft.getByRole("button", { name: "Deploy new version" });
+  await waitForEnabled(deploy);
+  const deployUrl = fixture.origin + emptyAgent.path + "/deploy";
+  const heldDeploy = await holdRequests(t, draft, deployUrl, { once: true, method: "POST" });
+  await deploy.click();
+  await heldDeploy.requested;
   await page.goto(detailUrl(fixture, namespaceId, emptyAgent.agent.id, "draft", "policy").href);
   await manage.click();
   await panel.getByRole("button", { name: "Deny all repositories", exact: true }).click();
@@ -1753,6 +1768,22 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.equal((await initialEmpty).status(), 200);
   const denyAll = record((await emptyAgent.read()).policy);
   assert.deepEqual(denyAll.repositoryNetworkPolicy, []);
+  const staleDeployment = responseTo(draft, "POST", deployUrl);
+  heldDeploy.release();
+  const conflict = await staleDeployment;
+  assert.equal(record(conflict.request().postDataJSON()).expectedRepositoryPolicyVersion, null);
+  assert.equal(conflict.status(), 409, await conflict.text());
+  await draft.getByText(/The saved GitHub access changed/).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.deepEqual(
+    await controller.transact((unit) =>
+      unit.revisions.listRevisions(namespaceId, emptyAgent.agent.id),
+    ),
+    [],
+  );
+  await draft.reload();
+  await draft.getByRole("button", { name: "Review saved GitHub access" }).click();
+  await draft.getByText("Saved GitHub access: No repositories allowed").waitFor();
   await page.reload();
   await manage.click();
   await panel
@@ -1774,13 +1805,18 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
     fixture.request("POST", `/namespaces/${namespaceId}/agents/${legacy.agent.id}/deploy`, {
       body: { expectedRepositoryPolicyVersion: 1 },
     });
-  const deniedRead = restrict(fixture.policy, "read", "sandbox_policy", { namespaceId });
-  assert.equal((await guardedDeploy()).status, 403);
-  liftRestriction(fixture.policy, deniedRead);
   const missing = await guardedDeploy();
   assert.equal(missing.status, 409, JSON.stringify(missing.body));
   assert.match(JSON.stringify(missing.body), /saved GitHub access changed/);
-  const previous = await legacy.deploy();
+  const deniedRead = restrict(fixture.policy, "read", "sandbox_policy", { namespaceId });
+  assert.equal((await guardedDeploy()).status, 403);
+  const hidden = await fixture.request("POST", `${emptyAgent.path}/deploy`, {
+    body: { expectedRepositoryPolicyVersion: null },
+  });
+  assert.equal(hidden.status, 403);
+  legacy.grantModel();
+  const previous = await legacy.deploy(null);
+  liftRestriction(fixture.policy, deniedRead);
   assert.equal(previous.sandboxPolicy?.repositoryNetworkPolicy, undefined);
   const legacyView = await legacy.read();
   assert.equal(legacyView.repositoryNetworkPolicySaveSupported, false);

@@ -76,10 +76,9 @@ export const AgentDeploymentBody = Type.Object(
   {
     harnessOverrides: Type.Optional(HarnessSettings),
     expectedRepositoryPolicyVersion: Type.Optional(
-      Type.Integer({
-        ...SandboxPolicyVersion,
+      Type.Union([SandboxPolicyVersion, Type.Null()], {
         description:
-          "Requires SandboxPolicy read. Deployment returns HTTP 409 if no repository policy is saved or the networking policy version differs from the one reviewed.",
+          "Send the reviewed networking policy version to require a saved repository policy at that version. Send null to require no saved repository policy. Omit to skip this check. A version or a saved repository policy requires SandboxPolicy read. An authorized mismatch returns HTTP 409.",
       }),
     ),
   },

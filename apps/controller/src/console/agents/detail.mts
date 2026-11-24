@@ -4491,12 +4491,6 @@ export async function renderAgentDetail(
         let submitted = false;
         try {
           const harnessOverrides = requestedHarnessOverrides();
-          // The Policy tab or another editor can save a first list without
-          // changing the Agent's bindings. Reopen that draft for review.
-          if (firstGitHubDraft && !reviewRepositories && (await hasRepositoryPolicy())) {
-            deployReloadMessage = "Repository access changed. Reload this draft before deploying.";
-            return;
-          }
           const freshAgent = await readAgent();
           if (!context.isCurrent()) {
             return;
@@ -4577,8 +4571,9 @@ export async function renderAgentDetail(
               method: "POST",
               body: {
                 harnessOverrides,
-                ...(repositoryReview
-                  ? { expectedRepositoryPolicyVersion: repositoryReview.version }
+                // Adding a first policy need not change these bindings.
+                ...(repositoryReview || firstGitHubDraft
+                  ? { expectedRepositoryPolicyVersion: repositoryReview?.version ?? null }
                   : {}),
               },
             }),
@@ -4611,8 +4606,12 @@ export async function renderAgentDetail(
             return;
           }
           const failure = requestFailure(error);
-          if (reviewRepositories && submitted && failure.status === 409) {
-            repositoryReview = undefined;
+          if (submitted && failure.status === 409) {
+            if (reviewRepositories) {
+              repositoryReview = undefined;
+            } else if (firstGitHubDraft && failure.code === "RESOURCE_CONFLICT") {
+              deployReloadMessage = "Reload this draft before deploying again.";
+            }
           }
           // A caller's own denial names no bound Secret: an older API's says nothing, and a named
           // one (finding 2534) names no ID the request did not send. When the Secret operate
