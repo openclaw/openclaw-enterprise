@@ -162,7 +162,11 @@ type Phase =
   | "channel-proxy-helm-wait"
   | "channel-proxy-envoy-trust-rollout"
   | "channel-proxy-api-rollout"
-  | "channel-proxy-host-route-readiness";
+  | "channel-proxy-host-route-readiness"
+  | "channel-proxy-initial-deploy"
+  | "channel-proxy-move-deploy"
+  | "channel-proxy-clear-deploy"
+  | "channel-proxy-tls-control-deploy";
 
 interface TimingRow {
   name: string | undefined;
@@ -199,6 +203,10 @@ export function createStepRecorder(now = () => performance.now()) {
     ["channel-proxy-envoy-trust-rollout", "channel proxy Envoy CA-mount rollout"],
     ["channel-proxy-api-rollout", "channel proxy API Deployment rollout"],
     ["channel-proxy-host-route-readiness", "channel proxy API host-route readiness"],
+    ["channel-proxy-initial-deploy", "channel proxy initial Agent deployments"],
+    ["channel-proxy-move-deploy", "channel proxy move deployment"],
+    ["channel-proxy-clear-deploy", "channel proxy clear deployment"],
+    ["channel-proxy-tls-control-deploy", "channel proxy TLS control deployment"],
   ]);
   const parents = new Map<Phase, Phase>([
     ["admit-embedded", "initial-admissions"],
@@ -208,6 +216,10 @@ export function createStepRecorder(now = () => performance.now()) {
     ["channel-proxy-envoy-trust-rollout", "controlled-channel-proxy"],
     ["channel-proxy-api-rollout", "controlled-channel-proxy"],
     ["channel-proxy-host-route-readiness", "controlled-channel-proxy"],
+    ["channel-proxy-initial-deploy", "controlled-channel-proxy"],
+    ["channel-proxy-move-deploy", "controlled-channel-proxy"],
+    ["channel-proxy-clear-deploy", "controlled-channel-proxy"],
+    ["channel-proxy-tls-control-deploy", "controlled-channel-proxy"],
   ]);
 
   async function step<T>(

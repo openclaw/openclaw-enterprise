@@ -779,10 +779,9 @@ export async function proveControlledChannelProxy(
       enableSlack(stack, a, "a", http),
       enableSlack(stack, b, "b", https),
     ]);
-    const [aRevision, bRevision] = await Promise.all([
-      deployAgent(stack, a.agent),
-      deployAgent(stack, b.agent),
-    ]);
+    const [aRevision, bRevision] = await smokeStep("channel-proxy-initial-deploy", () =>
+      Promise.all([deployAgent(stack, a.agent), deployAgent(stack, b.agent)]),
+    );
     await Promise.all([waitSocket("A"), waitSocket("B")]);
     const admissionEvents = await modelEvents();
     for (const caller of ["A", "B"]) {
@@ -916,7 +915,9 @@ export async function proveControlledChannelProxy(
       aGateway,
       "editing the Agent replaced its running Gateway before redeploy",
     );
-    const movedRevision = await deployAgent(stack, a.agent);
+    const movedRevision = await smokeStep("channel-proxy-move-deploy", () =>
+      deployAgent(stack, a.agent),
+    );
     assert.notEqual(movedRevision, aRevision, "proxy edit did not create a new revision");
     await waitFor(
       "old HTTP proxy tunnels to retire",
@@ -929,7 +930,9 @@ export async function proveControlledChannelProxy(
     await stack.api("PATCH", base, { networkProxy: null });
     const aSocketsBeforeClear = await socketCount("A");
     const proxiesBeforeClear = proxyCounts(proxies);
-    const directRevision = await deployAgent(stack, a.agent);
+    const directRevision = await smokeStep("channel-proxy-clear-deploy", () =>
+      deployAgent(stack, a.agent),
+    );
     await waitSocket("A", aSocketsBeforeClear);
     assert.deepEqual(
       proxyCounts(proxies),
@@ -953,7 +956,9 @@ export async function proveControlledChannelProxy(
     await stack.api("PATCH", base, {
       networkProxy: { url: bad.url, credentialSecretId: badCredential.id },
     });
-    const badRevision = await deployAgent(stack, a.agent);
+    const badRevision = await smokeStep("channel-proxy-tls-control-deploy", () =>
+      deployAgent(stack, a.agent),
+    );
     const badGateway = await readyGateway(stack, a.agent.id, badRevision);
     assert.equal(
       await rawConnect(stack, badGateway, "slack.com:443"),
