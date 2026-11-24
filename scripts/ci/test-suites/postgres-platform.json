@@ -221,7 +221,7 @@
     {
       "path": "tests/integration/postgres-staged-github-source-admission.test.ts",
       "expectedTests": [
-        "two Codex OAuth Agents admit distinct repository grants against one GitHub App Source"
+        "Agent deployment enrolls one shared GitHub App Source and freezes each Agent's Repository grants"
       ]
     },
     {
