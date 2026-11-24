@@ -683,6 +683,9 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             allowedProfiles: ["git-read"],
           },
         ];
+        if (scenario.repositoryDescriptionsPending === false) {
+          return response(options);
+        }
         const requestedDescriptions = new Set(
           url.searchParams.get("descriptionRefs")?.split(",") ?? [],
         );

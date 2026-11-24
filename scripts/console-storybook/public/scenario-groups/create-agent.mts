@@ -80,7 +80,7 @@ type CreateAgentScenario = {
   provisioningCancelledByStop?: true;
   provisioningNamesDeploymentWait?: true;
   readOnlyPermissionSummary?: true;
-  repositoryDescriptionsPending?: true;
+  repositoryDescriptionsPending?: boolean;
   repositoryNotConfigured?: true;
   sandboxDriverUnavailable?: true;
   secretCreateNotPermitted?: true;
@@ -1659,6 +1659,31 @@ export const createAgentProvisioningScenarios = {
     ],
     description:
       "The picker shows bidi controls and stray joiners as escapes. It preserves a single joiner between letters, marks, or symbols, and the England, Scotland, and Wales flag sequences. In the Team row, the joiner between A and B is present even if it looks like plain AB.",
+  },
+  createGitHubRepositoryGrants: {
+    group: "Pages/Create Agent",
+    name: "GitHub repository access",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    repositoryDescriptionsPending: false,
+    repositoryOptions: ["application", "tooling"].map((name) => ({
+      repositoryRef: name,
+      ...(name === "application" ? { description: "Customer portal and API." } : {}),
+      githubAccess: {
+        repository: `example/${name}`,
+        access: name === "tooling" ? "write" : "read",
+      },
+      displayName: `example/${name}`,
+      allowedProfiles: ["github-repository"],
+    })),
+    actions: [
+      ...managedStaticForm.slice(0, -1),
+      { selector: 'input[data-repository-ref="application"]', click: true },
+      { selector: 'input[data-repository-ref="tooling"]', click: true },
+      { selector: "#provider-credential-secret", value: "sec_demo_model" },
+    ],
+    description:
+      "Selecting a GitHub repository shows the model Secret picker and changes the action to Save Agent draft. Application allows only Read-only. Tooling starts at Contributor. Change tooling to Read-only, remove it and undo the removal to check that the narrower choice stays selected. The preview shows the form before saving. Saving and deployment require a supporting Installation.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",

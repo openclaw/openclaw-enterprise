@@ -177,6 +177,10 @@ export const RepositoryDescriptionsPending = story("createRepositoriesDescriptio
 export const RepositoryHiddenCharacters = story("createRepositoriesHiddenCharacters");
 export const RepositoryLocaleSearch = story("createRepositoriesLocaleSearch");
 export const RepositoryNoMatches = story("createRepositoriesNoMatches");
+export const GitHubRepositoryGrants = {
+  ...story("createGitHubRepositoryGrants"),
+  name: "GitHub repository access",
+};
 export const RepositoryContributor = {
   ...story("createRepositoriesContributor"),
   name: "Contributor without issue management",
