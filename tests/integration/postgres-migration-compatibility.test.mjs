@@ -2966,6 +2966,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [94, "GRANT"],
                 [92, "CREATE FUNCTION"],
                 [91, "ALTER TABLE"],
                 [90, "ALTER TABLE"],
@@ -3002,6 +3003,12 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 94) {
+          // Abort 0095 at its grant after the device Source column and owner check exist.
+          failAt = `IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conrelid='occ.authentication_states'::regclass
+              AND conname='authentication_states_device_source_owner'
+          ) THEN RETURN; END IF;`;
         } else if (prefix === 92) {
           // Fail replacement of the policy validator after the action check and grants exist.
           failAt =
