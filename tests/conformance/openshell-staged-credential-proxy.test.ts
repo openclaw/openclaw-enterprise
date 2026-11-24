@@ -1421,6 +1421,18 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
   );
   f.sandbox.spec.policy = sourcePolicyFrom(reduced.policy);
   record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(reduced.policy);
+  const admission = record(record(f.sandbox.status).configuration_admission);
+  const currentProviderEnvironment = String(f.state.config!.provider_env_revision);
+  const previousProviderEnvironment = String(BigInt(currentProviderEnvironment) - 1n);
+  // Provider detach advances the desired environment before the supervisor reports it.
+  admission.provider_env_revision = previousProviderEnvironment;
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "pending" });
+  admission.provider_env_revision = String(BigInt(currentProviderEnvironment) + 1n);
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
+    state: "failed",
+    code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
+  });
+  admission.provider_env_revision = currentProviderEnvironment;
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "ready" });
 
   // The post-detach effective policy must not reopen the withdrawn path as a public route.
@@ -1430,10 +1442,12 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
     endpoints: [{ ...discoveryEndpoint, path: pluginEndpoint.path, rules: pluginEndpoint.rules }],
   };
   record(reduced.policy.network_policies).stale = staleRule;
+  admission.provider_env_revision = previousProviderEnvironment;
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
     state: "failed",
     code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
   });
+  admission.provider_env_revision = currentProviderEnvironment;
 
   // A retained credential route for the withdrawn Provider is never accepted as readiness.
   staleRule.endpoints = [pluginEndpoint];

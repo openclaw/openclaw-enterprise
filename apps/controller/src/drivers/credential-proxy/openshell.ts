@@ -541,7 +541,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         !positiveRevision(config.config_revision) ||
         admission.config_revision !== config.config_revision ||
         !positiveRevision(config.provider_env_revision) ||
-        admission.provider_env_revision !== config.provider_env_revision ||
+        !positiveRevision(admission.provider_env_revision) ||
         !config.provider_attachment_epoch ||
         config.provider_attachment_epoch !== target.sandbox.spec?.provider_attachment_epoch ||
         !/^[0-9a-f]{64}$/.test(String(revision.policy_hash)) ||
@@ -561,6 +561,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             ),
         )
       ) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      if (admission.provider_env_revision !== config.provider_env_revision) {
+        if (BigInt(admission.provider_env_revision) < BigInt(config.provider_env_revision)) {
+          return { state: "pending" };
+        }
         throw new OpenShellCredentialDeliveryRefusedError();
       }
       for (const { binding, provider } of providers) {
