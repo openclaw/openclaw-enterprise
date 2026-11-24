@@ -2066,17 +2066,21 @@ test(
       false,
       "a Plugin credential injection requires a request selector",
     );
-    const duplicate = structuredClone(mixedSpec);
-    duplicate.credential_deployment.bindings.push({
+    const duplicatePluginConsumer = structuredClone(mixedSpec);
+    duplicatePluginConsumer.credential_deployment.bindings.push({
       ...pluginBinding,
       bindingRef: "duplicate",
       projection: { environment: "OTHER_TOKEN", presentation: "bearer" },
     });
-    duplicate.credential_deployment.injectionPolicies.push({
+    duplicatePluginConsumer.credential_deployment.injectionPolicies.push({
       bindingRef: "duplicate",
       allowedRequests: [pluginRequest],
     });
-    assert.equal(await structurallyValid(duplicate), false, "Plugin consumer keys must be unique");
+    assert.equal(
+      await structurallyValid(duplicatePluginConsumer),
+      false,
+      "Plugin consumer keys must be unique",
+    );
 
     // A second admitted Agent uses the same Source and native Provider. The following setup
     // controls only deployment transport state; both drafts and immutable revisions are real.
