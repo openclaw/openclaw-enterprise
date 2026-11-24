@@ -10,7 +10,10 @@ const clusterArn = "arn:aws:eks:us-west-2:123456789012:cluster/oce-test";
 const endpoint = "https://eks.example.test";
 const ca = Buffer.from("fixture authority").toString("base64");
 
-async function inventory(t: TestContext, fault: "wrong-ca" | "ec2-page" | "preferences-managed") {
+async function rejectedInventory(
+  t: TestContext,
+  fault: "wrong-ca" | "ec2-page" | "preferences-managed",
+) {
   const directory = await mkdtemp(join(tmpdir(), "oce-address-inventory-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const awsLog = join(directory, "provider-reads");
@@ -90,14 +93,14 @@ process.stdout.write(JSON.stringify({
     },
   );
   assert.ifError(result.error);
-  return { ...result, awsLog, proxyLog };
+  assert.equal(result.status, 2, result.stderr);
+  assert.equal(result.stdout, "");
+  return { stderr: result.stderr, awsLog, proxyLog };
 }
 
 test("EKS inventory refuses mixed-cluster and partial provider observations", async (t) => {
   await t.test("wrong-ca", async (child) => {
-    const { status, stdout, stderr, awsLog, proxyLog } = await inventory(child, "wrong-ca");
-    assert.equal(status, 2, stderr);
-    assert.equal(stdout, "");
+    const { stderr, awsLog, proxyLog } = await rejectedInventory(child, "wrong-ca");
     assert.match(stderr, /eks-cluster-identity:.*TLS endpoint or CA/u);
     assert.match(
       stderr,
@@ -108,9 +111,7 @@ test("EKS inventory refuses mixed-cluster and partial provider observations", as
     await assert.rejects(readFile(proxyLog), { code: "ENOENT" });
   });
   await t.test("ec2-page", async (child) => {
-    const { status, stdout, stderr, awsLog } = await inventory(child, "ec2-page");
-    assert.equal(status, 2, stderr);
-    assert.equal(stdout, "");
+    const { stderr, awsLog } = await rejectedInventory(child, "ec2-page");
     assert.match(stderr, /webhook-addresses:.*inventory is incomplete/u);
     assert.equal(
       await readFile(awsLog, "utf8"),
@@ -120,9 +121,7 @@ test("EKS inventory refuses mixed-cluster and partial provider observations", as
 });
 
 test("EKS inventory requires the credential owner's opt-in before provider or API reads", async (t) => {
-  const { status, stdout, stderr, awsLog, proxyLog } = await inventory(t, "preferences-managed");
-  assert.equal(status, 2, stderr);
-  assert.equal(stdout, "");
+  const { stderr, awsLog, proxyLog } = await rejectedInventory(t, "preferences-managed");
   assert.match(stderr, /requires explicit KUBECTL_KUBERC=false/u);
   await assert.rejects(readFile(awsLog), { code: "ENOENT" });
   await assert.rejects(readFile(proxyLog), { code: "ENOENT" });

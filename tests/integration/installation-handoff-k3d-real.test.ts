@@ -368,18 +368,17 @@ test(
     const policyName = "middleware-egress";
     const secretName = "middleware-tls";
     const serverName = "middleware.example.test";
-    const otherName = "other.example.test";
     const servicePort = 9443;
     const targetPort = "https";
     const labels = { app: serviceName };
-    await applyManifest(
-      JSON.stringify({
-        apiVersion: "v1",
-        kind: "Service",
-        metadata: { name: serviceName, namespace },
-        spec: { selector: labels, ports: [{ port: servicePort, targetPort }] },
-      }),
-    );
+    const applyService = (name: string, spec: object) =>
+      applyManifest(
+        JSON.stringify({ apiVersion: "v1", kind: "Service", metadata: { name, namespace }, spec }),
+      );
+    await applyService(serviceName, {
+      selector: labels,
+      ports: [{ port: servicePort, targetPort }],
+    });
     const cidr = `${(await resource("service", serviceName)).spec.clusterIP}/32`;
     const namespaceSelector = { matchLabels: { "kubernetes.io/metadata.name": namespace } };
     const podSelector = { matchLabels: labels };
@@ -434,6 +433,13 @@ test(
       Buffer.from(expired.cert).toString("base64"),
       "BEGIN CERTIFICATE",
     ];
+    const replacementLeaf = (name: string, dnsName?: string) =>
+      signedLeaf(dir, ca, {
+        name,
+        commonName: serverName,
+        subjectAltName: dnsName === undefined ? undefined : `DNS:${dnsName}`,
+        keyPem: expired.key,
+      });
     async function setLeaf(pem: string) {
       const encoded = Buffer.from(pem).toString("base64");
       protectedValues.push(pem, encoded);
@@ -450,51 +456,48 @@ test(
         patch,
       );
     }
-    const readVersions = () =>
-      Promise.all(
-        (
-          [
-            ["Service", "service", serviceName],
-            ["NetworkPolicy", "networkpolicy", policyName],
-            ["Secret", "secret", secretName],
-          ] as const
-        ).map(async ([kind, resourceKind, name]) => {
-          const output = String(
-            await kubectl(
-              "-n",
-              namespace,
-              "get",
-              resourceKind,
-              name,
-              "--no-headers",
-              "-o",
-              "custom-columns=UID:.metadata.uid,RV:.metadata.resourceVersion",
-            ),
-          );
-          const [uid, resourceVersion] = output.trim().split(/\s+/u);
-          assert.ok(uid && resourceVersion);
-          return { kind, namespace, name, uid, resourceVersion };
-        }),
+    async function readVersion(kind: string, name: string) {
+      const output = String(
+        await kubectl(
+          "-n",
+          namespace,
+          "get",
+          kind.toLowerCase(),
+          name,
+          "--no-headers",
+          "-o",
+          "custom-columns=UID:.metadata.uid,RV:.metadata.resourceVersion",
+        ),
       );
-    const dependency = {
+      const [uid, resourceVersion] = output.trim().split(/\s+/u);
+      assert.ok(uid && resourceVersion);
+      return { kind, namespace, name, uid, resourceVersion };
+    }
+    const readVersions = () =>
+      Promise.all([
+        readVersion("Service", serviceName),
+        readVersion("NetworkPolicy", policyName),
+        readVersion("Secret", secretName),
+      ]);
+    const egressOnly = {
       service: { namespace, name: serviceName, port: servicePort },
       policy: { namespace, name: policyName },
-      tls: { secretName, serverName },
     };
+    const dependency = { ...egressOnly, tls: { secretName, serverName } };
     const dependencyPlan = { ...config, serviceDependency: dependency };
-    const egressOnly = { service: dependency.service, policy: dependency.policy };
     // A misspelled optional selection must not silently remove the requested checks.
-    const unknownSelection = { ...config, serviceDependecy: dependency };
-    const unknownRoot = await invokeDiagnostic(unknownSelection, protectedValues);
-    assert.equal(unknownRoot.status, 2);
-    assert.equal(unknownRoot.stdout, "");
-    assert.match(unknownRoot.stderr, /only supported top-level fields/u);
-
-    const typoPlan = { ...config, serviceDependency: { ...egressOnly, tsl: dependency.tls } };
-    const typo = await invokeDiagnostic(typoPlan, protectedValues);
-    assert.equal(typo.status, 2);
-    assert.equal(typo.stdout, "");
-    assert.match(typo.stderr, /serviceDependency accepts only service, policy and tls/u);
+    for (const [invalidPlan, message] of [
+      [{ ...config, serviceDependecy: dependency }, /only supported top-level fields/u],
+      [
+        { ...config, serviceDependency: { ...egressOnly, tsl: dependency.tls } },
+        /serviceDependency accepts only service, policy and tls/u,
+      ],
+    ] as const) {
+      const result = await invokeDiagnostic(invalidPlan, protectedValues);
+      assert.equal(result.status, 2);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, message);
+    }
 
     async function checkDependency() {
       const versions = await readVersions();
@@ -518,12 +521,7 @@ test(
 
     // Split selectors create two broad peers and do not establish the combined edge.
     await setPolicy(cidr, [{ namespaceSelector }, { podSelector }]);
-    const wrongSan = await signedLeaf(dir, ca, {
-      name: "wrong-san",
-      commonName: serverName,
-      subjectAltName: `DNS:${otherName}`,
-      keyPem: expired.key,
-    });
+    const wrongSan = await replacementLeaf("wrong-san", "other.example.test");
     await setLeaf(wrongSan.cert);
     const split = await checkDependency();
     assert.equal(split.egress?.status, "failed");
@@ -535,12 +533,7 @@ test(
 
     await setPolicy(cidr, [{ namespaceSelector, podSelector }]);
     // Repair the certificate to match the intended client's unchanged server name.
-    const repaired = await signedLeaf(dir, ca, {
-      name: "repaired",
-      commonName: serverName,
-      subjectAltName: `DNS:${serverName}`,
-      keyPem: expired.key,
-    });
+    const repaired = await replacementLeaf("repaired", serverName);
     await setLeaf(repaired.cert);
     const corrected = await checkDependency();
     assert.equal(corrected.egress?.status, "passed");
@@ -556,18 +549,11 @@ test(
     // supply the ClusterIP and Pod edges that the check requires.
     for (const hasPort of [false, true]) {
       const name = hasPort ? "alias-with-port" : "alias-without-port";
-      await applyManifest(
-        JSON.stringify({
-          apiVersion: "v1",
-          kind: "Service",
-          metadata: { name, namespace },
-          spec: {
-            type: "ExternalName",
-            externalName: "middleware.example.test",
-            ports: hasPort ? [{ port: servicePort }] : undefined,
-          },
-        }),
-      );
+      await applyService(name, {
+        type: "ExternalName",
+        externalName: serverName,
+        ports: hasPort ? [{ port: servicePort }] : undefined,
+      });
       const observed = await resource("service", name);
       assert.equal(observed.spec.ports?.[0]?.port, hasPort ? servicePort : undefined);
       const alias = await diagnose({
@@ -588,11 +574,7 @@ test(
       ]);
     }
 
-    const commonNameOnly = await signedLeaf(dir, ca, {
-      name: "common-name-only",
-      commonName: serverName,
-      keyPem: expired.key,
-    });
+    const commonNameOnly = await replacementLeaf("common-name-only");
     const commonNameLeaf = new X509Certificate(commonNameOnly.cert);
     assert.equal(commonNameLeaf.subjectAltName, undefined);
     assert.equal(commonNameLeaf.checkHost(serverName), serverName);

@@ -30,6 +30,13 @@ type ApiRequest = {
   tlsServerName: unknown;
 };
 
+function kubernetesStatus(code: number, reason: string): Reply {
+  return {
+    status: code,
+    body: { kind: "Status", apiVersion: "v1", status: "Failure", reason, code },
+  };
+}
+
 // Serve the discovery and named reads used by genuine kubectl over loopback.
 // Neither endpoint needs a Kubernetes cluster or any real credential.
 function api(
@@ -47,16 +54,6 @@ function api(
       tlsServerName: "servername" in request.socket ? request.socket.servername : undefined,
     };
     requests.push(received);
-    const status = (code: number, reason: string): Reply => ({
-      status: code,
-      body: {
-        kind: "Status",
-        apiVersion: "v1",
-        status: "Failure",
-        reason,
-        code,
-      },
-    });
     let reply = resource(received);
     if (reply === undefined) {
       if (path === "/api") {
@@ -95,7 +92,7 @@ function api(
           },
         };
       } else {
-        reply = status(404, "NotFound");
+        reply = kubernetesStatus(404, "NotFound");
       }
     }
     // Status zero leaves the API request pending for the interruption case.
@@ -314,16 +311,7 @@ test(
         return apiSlicesReply;
       }
       if (denyDependency && [servicePath, secretPath].includes(requestPath)) {
-        return {
-          status: 403,
-          body: {
-            apiVersion: "v1",
-            kind: "Status",
-            status: "Failure",
-            reason: "Forbidden",
-            code: 403,
-          },
-        };
+        return kubernetesStatus(403, "Forbidden");
       }
       if (requestPath === servicePath) {
         return dependencyReply;
@@ -952,6 +940,12 @@ esac
             await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
 
             const optedIn = { ...environment, KUBECTL_KUBERC: "false" };
+            async function expectInventoryFailure(reason: RegExp, inventoryArgs = args) {
+              const { code, stdout, stderr } = await collect(optedIn, true, inventoryArgs).result;
+              assert.equal(code, 2, stderr);
+              assert.equal(stdout, "");
+              assert.match(stderr, reason);
+            }
             // An opt-in never authorizes the plugin for a different cluster or CA.
             const mismatches = [
               {
@@ -969,26 +963,26 @@ esac
             ];
             for (const mismatch of mismatches) {
               await writeFile(path, mismatch.kubeconfig, { mode: 0o600 });
-              const rejected = await collect(optedIn, true, mismatch.args).result;
-              assert.equal(rejected.code, 2, rejected.stderr);
-              assert.equal(rejected.stdout, "");
-              assert.match(rejected.stderr, /eks-cluster-identity/u);
+              await expectInventoryFailure(/eks-cluster-identity/u, mismatch.args);
               assert.equal(httpsRequests.length + httpRequests.length, 0);
               await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
             }
 
+            function assertAuthenticatedReads() {
+              assert.ok(httpsRequests.length > 0);
+              assert.ok(
+                httpsRequests.every(
+                  ({ bearer, tlsServerName }) =>
+                    bearer === "Bearer " + token && tlsServerName === dnsName,
+                ),
+              );
+              assert.equal(httpRequests.length, 0);
+            }
             const diagnosed = await observations(awsConfig(), 1, optedIn);
             for (const id of ["eks-cluster-identity", "webhook-addresses", "kubernetes-api"]) {
               assert.equal(diagnosed.get(id)?.status, "passed");
             }
-            assert.ok(httpsRequests.length > 0);
-            assert.ok(
-              httpsRequests.every(
-                ({ bearer, tlsServerName }) =>
-                  bearer === "Bearer " + token && tlsServerName === dnsName,
-              ),
-            );
-            assert.equal(httpRequests.length, 0);
+            assertAuthenticatedReads();
             await stat(pluginMarker);
             httpsRequests.length = 0;
 
@@ -1040,13 +1034,7 @@ esac
                 ],
               );
 
-              assert.ok(
-                httpsRequests.every(
-                  ({ bearer, tlsServerName }) =>
-                    bearer === "Bearer " + token && tlsServerName === dnsName,
-                ),
-              );
-              assert.equal(httpRequests.length, 0);
+              assertAuthenticatedReads();
 
               // Valid IPv4 replies cannot conceal a structurally invalid or unrelated item.
               for (const extra of [
@@ -1069,19 +1057,13 @@ esac
                 },
               ]) {
                 apiSlicesReply = { status: 200, body: { ...body, items: [...body.items, extra] } };
-                const invalid = await collect(optedIn, true, args).result;
-                assert.equal(invalid.code, 2, invalid.stderr);
-                assert.equal(invalid.stdout, "");
-                assert.match(invalid.stderr, /EndpointSlice inventory is incomplete/u);
+                await expectInventoryFailure(/EndpointSlice inventory is incomplete/u);
               }
               apiSlicesReply = { status: 200, body };
               apiServiceReply = object("Service", "kubernetes", {
                 spec: { clusterIP: "10.32.0.1", clusterIPs: ["10.32.0.1", "invalid"] },
               });
-              const invalidService = await collect(optedIn, true, args).result;
-              assert.equal(invalidService.code, 2, invalidService.stderr);
-              assert.equal(invalidService.stdout, "");
-              assert.match(invalidService.stderr, /Service address inventory is incomplete/u);
+              await expectInventoryFailure(/Service address inventory is incomplete/u);
               apiServiceReply = undefined;
 
               redirect = {
@@ -1089,10 +1071,7 @@ esac
                 location: endpoint.plaintext.server + secretPath,
               };
               try {
-                const redirected = await collect(optedIn, true, args).result;
-                assert.equal(redirected.code, 2);
-                assert.equal(redirected.stdout, "");
-                assert.match(redirected.stderr, /unexpected redirect/u);
+                await expectInventoryFailure(/unexpected redirect/u);
                 assert.equal(httpRequests.length, 0);
               } finally {
                 redirect = undefined;
@@ -1102,25 +1081,10 @@ esac
                 status: 200,
                 body: { ...body, metadata: { continue: "unread-next-page" } },
               };
-              const incomplete = await collect(optedIn, true, args).result;
-              assert.equal(incomplete.code, 2);
-              assert.equal(incomplete.stdout, "");
-              assert.match(incomplete.stderr, /EndpointSlice inventory is incomplete/u);
+              await expectInventoryFailure(/EndpointSlice inventory is incomplete/u);
 
-              apiSlicesReply = {
-                status: 403,
-                body: {
-                  apiVersion: "v1",
-                  kind: "Status",
-                  status: "Failure",
-                  reason: "Forbidden",
-                  code: 403,
-                },
-              };
-              const denied = await collect(optedIn, true, args).result;
-              assert.equal(denied.code, 2);
-              assert.equal(denied.stdout, "");
-              assert.match(denied.stderr, /not authorized.*read/u);
+              apiSlicesReply = kubernetesStatus(403, "Forbidden");
+              await expectInventoryFailure(/not authorized.*read/u);
             } finally {
               apiServiceReply = undefined;
               apiSlicesReply = undefined;
@@ -1269,16 +1233,7 @@ esac
         return check;
       };
       try {
-        const missing = await collectSecret({
-          status: 404,
-          body: {
-            apiVersion: "v1",
-            kind: "Status",
-            status: "Failure",
-            reason: "NotFound",
-            code: 404,
-          },
-        });
+        const missing = await collectSecret(kubernetesStatus(404, "NotFound"));
         assert.equal(missing.status, "failed");
         assert.match(missing.summary, /does not exist/u);
         const intermediary = await collectSecret({

@@ -832,6 +832,15 @@ function exactLabels(selector: LabelSelector | undefined, labels: Record<string,
   );
 }
 
+function resourceFailure(resources: ResourceObservation[]) {
+  return (summary: string, action: string): CheckResult => ({
+    status: "failed",
+    summary,
+    action,
+    resources,
+  });
+}
+
 async function serviceEgress(
   selection: ServiceDependency,
   service: ApiService | null,
@@ -847,34 +856,24 @@ async function serviceEgress(
     };
   }
   const resources = [observeResource("Service", selection.service, service.metadata)];
+  const failure = resourceFailure(resources);
   if (service.metadata?.deletionTimestamp) {
-    return {
-      status: "failed",
-      summary: "The selected Service is terminating.",
-      action: serviceAction,
-      resources,
-    };
+    return failure("The selected Service is terminating.", serviceAction);
   }
   const spec = service.spec;
-  if (
-    !isObject(spec) ||
-    (spec.type !== undefined &&
-      spec.type !== "ClusterIP" &&
-      spec.type !== "NodePort" &&
-      spec.type !== "LoadBalancer" &&
-      spec.type !== "ExternalName")
-  ) {
+  if (!isObject(spec)) {
     throw new DiagnosticError("The response lacks a complete Service spec.");
   }
   if (spec.type === "ExternalName") {
-    return {
-      status: "failed",
-      summary: "The selected Service is an ExternalName alias and has no ClusterIP.",
-      action: serviceAction,
-      resources,
-    };
+    return failure(
+      "The selected Service is an ExternalName alias and has no ClusterIP.",
+      serviceAction,
+    );
   }
-  if (!Array.isArray(spec.ports)) {
+  if (
+    (spec.type !== undefined && !["ClusterIP", "NodePort", "LoadBalancer"].includes(spec.type)) ||
+    !Array.isArray(spec.ports)
+  ) {
     throw new DiagnosticError("The response lacks a complete Service spec.");
   }
   const addresses = spec.clusterIPs ?? [spec.clusterIP];
@@ -896,13 +895,10 @@ async function serviceEgress(
     !spec.selector ||
     Object.keys(spec.selector).length === 0
   ) {
-    return {
-      status: "failed",
-      summary:
-        "The selected Service must have one IPv4 ClusterIP, the selected TCP port and a Pod selector.",
-      action: serviceAction,
-      resources,
-    };
+    return failure(
+      "The selected Service must have one IPv4 ClusterIP, the selected TCP port and a Pod selector.",
+      serviceAction,
+    );
   }
   const { selector } = spec;
   if (!isObject(selector) || Object.values(selector).some((value) => typeof value !== "string")) {
@@ -915,21 +911,11 @@ async function serviceEgress(
   }
   const policy = await readPolicy();
   if (policy === null) {
-    return {
-      status: "failed",
-      summary: "The selected NetworkPolicy does not exist.",
-      action: policyAction,
-      resources,
-    };
+    return failure("The selected NetworkPolicy does not exist.", policyAction);
   }
   resources.push(observeResource("NetworkPolicy", selection.policy, policy.metadata));
   if (policy.metadata?.deletionTimestamp) {
-    return {
-      status: "failed",
-      summary: "The selected NetworkPolicy is terminating.",
-      action: policyAction,
-      resources,
-    };
+    return failure("The selected NetworkPolicy is terminating.", policyAction);
   }
   const policySpec = policy.spec;
   if (!isObject(policySpec?.podSelector) || !Array.isArray(policySpec.policyTypes)) {
@@ -967,23 +953,26 @@ async function serviceEgress(
       }) &&
       exactLabels(peer.podSelector, selector),
   );
-  const missing = [
-    ...(!serviceGrant ? [`${cidr} TCP/${selection.service.port}`] : []),
-    ...(!podGrant
-      ? [`${selection.service.namespace} Service-selected Pods TCP/${targetPort}`]
-      : []),
-  ];
+  const missing: string[] = [];
+  if (!serviceGrant) {
+    missing.push(`${cidr} TCP/${selection.service.port}`);
+  }
+  if (!podGrant) {
+    missing.push(`${selection.service.namespace} Service-selected Pods TCP/${targetPort}`);
+  }
+  if (missing.length) {
+    return {
+      status: "failed",
+      summary: "The selected NetworkPolicy lacks a required Service egress grant.",
+      action:
+        "Reconcile the exact Service /32 and destination Pod grants through the NetworkPolicy owner.",
+      missing,
+      resources,
+    };
+  }
   return {
-    status: missing.length ? "failed" : "passed",
-    summary: missing.length
-      ? "The selected NetworkPolicy lacks a required Service egress grant."
-      : "The selected NetworkPolicy has both required Service egress grants.",
-    ...(missing.length
-      ? {
-          action:
-            "Reconcile the exact Service /32 and destination Pod grants through the NetworkPolicy owner.",
-        }
-      : {}),
+    status: "passed",
+    summary: "The selected NetworkPolicy has both required Service egress grants.",
     missing,
     resources,
   };
@@ -1003,12 +992,7 @@ function servingCertificate(
     };
   }
   const resources = [observeResource("Secret", { namespace, name: secretName }, secret.metadata)];
-  const failure = (summary: string, action: string): CheckResult => ({
-    status: "failed",
-    summary,
-    action,
-    resources,
-  });
+  const failure = resourceFailure(resources);
   if (secret.metadata?.deletionTimestamp) {
     return failure("The selected TLS Secret is terminating.", secretAction);
   }
