@@ -103,6 +103,14 @@ export function createSandboxDriverWorkloadFixtures({
         path: "token",
         readOnly: true,
       },
+      retainedDirectories: [
+        {
+          purpose: "workspace",
+          name: "workspace",
+          path: "/home/node/workspace",
+          environment: "OPENCLAW_WORKSPACE_DIR",
+        },
+      ],
       workspaceMounts: [codexWorkspaceMount()],
       credentialAttachments: [],
       environment: [...codexAppServerEnvironment(), ...environment],
@@ -160,6 +168,29 @@ export function createSandboxDriverWorkloadFixtures({
       loginMode: "api_key",
       image: "openclaw-runtime@sha256:synthetic",
       command: harnessRuntimeCommand('console.error("harness runtime");'),
+      retainedDirectories: [
+        {
+          purpose: "workspace",
+          name: "workspace",
+          path: "/home/node/workspace",
+          environment: "OPENCLAW_WORKSPACE_DIR",
+        },
+        {
+          purpose: "node-state",
+          name: "workspace-node-codex",
+          path: "/home/node/.openclaw-node",
+          environment: "OPENCLAW_NODE_STATE_DIR",
+        },
+        ...(harnessId === "codex"
+          ? [
+              {
+                purpose: "sessions" as const,
+                name: "codex-sessions",
+                path: "/home/node/.codex/sessions",
+              },
+            ]
+          : []),
+      ],
       workspaceMounts: [
         codexWorkspaceMount(),
         {

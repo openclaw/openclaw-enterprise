@@ -1,3 +1,6 @@
+import { ManagedOpenShellSandbox } from "../../apps/controller/src/drivers/sandbox/openshell/managed.ts";
+import { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
+import { backendFor } from "./sandbox-driver-openshell-fixture.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -127,16 +130,47 @@ export function registerDedicatedCodexProviderCase(): void {
 }
 
 export function registerInitialWorkspaceCases(): void {
-  for (const harnessId of ["codex", "openclaw"]) {
-    test(`OpenShell delivers ${harnessId} initial workspace files privately after supervisor readiness`, async (t) => {
+  for (const [harnessId, integrationMode] of [
+    ["codex", "legacy"],
+    ["openclaw", "legacy"],
+    ["codex", "service"],
+    ["openclaw", "service"],
+  ] as const) {
+    test(`OpenShell ${integrationMode} delivers ${harnessId} initial workspace files privately after supervisor readiness`, async (t) => {
       const gatewayClient = workspaceGatewayClient();
-      const driver = openShellDriver(gatewayClient);
+      const base = buildSandboxInstallation().drivers.sandbox.configuration;
+      const managed = integrationMode === "service";
+      const { userNamespaces: _userNamespaces, ...kubernetes } = base.kubernetes;
+      const configuration: OpenShellSandboxDriverOptions = managed
+        ? {
+            ...base,
+            integrationMode,
+            gateway: {},
+            kubernetes: {
+              ...kubernetes,
+              sandboxDataMount: {
+                ...kubernetes.sandboxDataMount,
+                mountPath: "/sandbox/oce/workspace",
+              },
+            },
+          }
+        : base;
+      const driver = managed
+        ? new ManagedOpenShellSandbox(configuration, {
+            id: "openshell-sandbox",
+            implementation: "openshell",
+            backend: backendFor(gatewayClient),
+          })
+        : openShellDriver(gatewayClient, configuration);
       const {
         context,
         revision: fixtureRevision,
         requirements,
         prepared,
       } = runtimeSandboxFixture(driver, { harnessId });
+      if (managed) {
+        requirements.workspaceMounts = [];
+      }
       const revision = completeWorkspaceRevision(fixtureRevision, requirements);
       const setup = {
         id: "initial-workspace",
@@ -188,14 +222,26 @@ export function registerInitialWorkspaceCases(): void {
 
       await provision();
       assert.equal(executions.length, 0, "private initialization waits for supervisor readiness");
-      assert.equal(prepared.length, harnessId === "openclaw" ? 1 : 0);
+      assert.equal(prepared.length, harnessId === "openclaw" && !managed ? 1 : 0);
       assert.ok(sandbox, "provisioning created the Sandbox before readiness");
       sandbox = { ...sandbox, phase: "SANDBOX_PHASE_READY" };
       await provision();
       const execution = executions[0];
       assert.ok(execution, "the ready Sandbox receives its initializer request");
       assert.deepEqual(JSON.parse(execution.stdin), setup);
-      assert.equal(execution.environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/enterprise");
+      assert.equal(
+        execution.environment.OPENCLAW_WORKSPACE_DIR,
+        managed ? "/sandbox/oce/workspace" : "/sandbox/enterprise",
+      );
+      const home = managed ? "/opt/oce/managed/private/home" : "/sandbox/.openclaw-runtime/home";
+      assert.equal(execution.environment.HOME, home);
+      assert.equal(execution.environment.OPENCLAW_STATE_DIR, `${home}/.openclaw`);
+      setup.completed = true;
+      setupData["setup.json"] = Buffer.from(JSON.stringify(setup)).toString("base64");
+      await provision();
+      assert.equal(JSON.parse(executions.at(-1)!.stdin).completed, true);
+      setup.completed = false;
+      setupData["setup.json"] = Buffer.from(JSON.stringify(setup)).toString("base64");
       assert.equal(JSON.stringify(execution.command).includes(setup.files["AGENTS.md"]), false);
       assert.equal(JSON.stringify(sandbox).includes(setup.files["AGENTS.md"]), false);
       assert.equal(

@@ -1,5 +1,5 @@
 import test from "node:test";
-import { assertSameAnswer, refusedAnswer } from "./credential-source-occ-refusals.ts";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.ts";
 import { administrator, fixture, zeroGrant } from "./credential-source-occ-fixture.ts";
 
 export function registerSourceDisclosureCase(): void {

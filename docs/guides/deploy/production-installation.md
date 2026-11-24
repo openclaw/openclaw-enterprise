@@ -19,7 +19,10 @@ once, [authenticate to the API](#authenticate-to-the-production-api), and
 Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
 [requirements below](#requirements), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
-Private routing is enabled by default. The chart does not install Envoy Gateway,
+Private routing and managed channel egress are enabled by default. Prepare the
+[channel prerequisites](channel-egress.md)
+and matching Installation settings before installing the chart. Set
+`channelEgress.enabled: false` explicitly when channels are disabled. The chart does not install Envoy Gateway,
 Gateway API or Envoy CRDs, cert-manager, or the GatewayClass. Prepare those
 controllers first; create the service-key Secret and match Helm and Installation
 settings in [Prepare workspace access](#prepare-workspace-access) before Helm installation.
@@ -87,7 +90,7 @@ only when not using profiles. Continue through the shared checks and workspace a
 ### Shared credential and configuration checks
 
 First complete the [configuration setup](production-installation-preparation.md#configure-the-installation)
-for the intended protected input directory and prepare or select the YAML as directed there.
+and [prepare any retained values](#prepare-retained-values-for-a-fresh-install) in a new private directory.
 In the same Bash shell, run the complete [shared checks](production-installation-preparation.md#shared-bootstrap-pvc-and-configuration-checks),
 keep their validated exports, and continue to workspace access.
 
@@ -196,6 +199,46 @@ The chart projects its two keys read-only into bootstrap on installation only.
 Migration, API, and worker containers receive neither credential. Upgrades do not
 require the Secret. Editing it does not rotate credentials. Protect the retained
 source files or Secret according to your credential-retention policy.
+
+### Prepare retained values for a fresh install
+
+For profile-generated values, [render a new pair from the original JSON](installation-profiles.md#use-rendered-files).
+
+If manual values contain `bootstrap.password` or `bootstrap.serviceKey`, use a
+target chart version with Secret-backed bootstrap and its matching OCC CLI.
+This chart ignores the retired settings and skips PVC credential file output.
+Direct Helm reports this in its install notes. A plain `helm template` shows
+the rendered manifests without the note. OCC warns before recording intent.
+
+If the retained file lacks `bootstrap.credentials.secretName`, set it in a
+separate copy. Set `OCC_LEGACY_VALUES` to the protected file with that selection.
+Use an unused Secret name for OCC generation. For existing mode or direct
+Helm, [provision both Secret keys](production-installation-preparation.md#optional-supply-bootstrap-credentials)
+with credentials prepared for the fresh install. Keep any old PVC output files
+for recovery of the original Installation.
+
+Run the preview from the target release checkout with Helm installed. The command takes a local chart directory and a values file
+of at most 4 MiB. Use one YAML mapping with unique string keys and simple block
+entries for the retired settings. The command refuses anchors, aliases, merge
+keys, and explicit tags.
+
+```sh
+occ installation migrate-values --release oce --kube-namespace openclaw-system \
+  --chart deploy/helm/openclaw-enterprise --values "$OCC_LEGACY_VALUES"
+```
+
+After `Preview passed`, create a directory with mode `0700` outside the chart.
+Set `OCC_INPUT_DIRECTORY` to that directory and repeat with
+`--out "$OCC_INPUT_DIRECTORY/values.yaml"`.
+The command repeats the checks with the current inputs before it saves the
+`0600` file. Rendered resources, hooks and CRDs must match. It refuses an existing output path. If both
+retired settings are already absent, it reports that and creates no file. Pair the verified values
+with the reviewed `installation.yaml` and complete
+[configuration and workspace access checks](#configure-the-installation).
+
+Keep original values and receipts. Preserve older bootstrap recovery storage
+through [upgrade verification and the rollback window](production-upgrade.md#prepare-the-release).
+The offline command prepares a fresh install and leaves release state untouched.
 
 ### Install the control plane
 

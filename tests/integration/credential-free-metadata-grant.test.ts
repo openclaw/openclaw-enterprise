@@ -9,7 +9,7 @@ import {
   type Namespace,
 } from "../../packages/contracts/src/index.ts";
 import type { OpenClawController } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { parseJson } from "../helpers/egress-observation-values.ts";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";

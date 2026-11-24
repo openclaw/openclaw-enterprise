@@ -141,7 +141,7 @@ done <<< "$source_args"
 ```
 
 Keep this shell for the build. CI and development launchers resolve the manifest
-automatically. [Local checkout tests](../../docs/testing/openshell.md) use their selected source.
+automatically.
 
 ## Verify runtime source
 
@@ -187,7 +187,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/82b682c627ba8bfc2c2bd51cf46ad8f51c583857/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
@@ -195,8 +195,10 @@ existing core dependencies.
 The custom npm-distribution packer rejects that combination because it requires
 one shared dependency version.
 
-Node bases require 24.22.1 on Bookworm. See the
-[worker-termination repair](node/README.md) for validation and provenance.
+The Bookworm bases supply stock Node.js 24.22.1+ in the 24 series. On 24.22.1,
+terminating a worker during synchronous CommonJS-to-ESM loading can abort the
+Gateway and interrupt active turns. Native qualification must check Gateway
+shutdown and restart.
 
 The Dedicated command and bundled plugin both resolve the same
 [Codex 0.164.0](https://github.com/openai/codex/releases/tag/rust-v0.164.0) installation.

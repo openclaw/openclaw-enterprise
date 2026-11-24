@@ -23,19 +23,21 @@ import { registerAndSelectDrivers } from "../helpers/development.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   codexRuntimeOffProvider,
+  dedicatedOpenClawSandboxRefusal,
+  keepRuntime,
+  OPENCLAW_ONLY,
+  runtimeIdRequired,
+  runtimePoliciesConflict,
+} from "../helpers/refusal-text.mjs";
+import {
   BOTH_RUNTIMES,
   CODEX_MODEL_ONLY,
   CODEX_NEEDS_DEDICATED,
-  dedicatedOpenClawSandboxRefusal,
-  keepRuntime,
   noRunnableRuntime,
-  OPENCLAW_ONLY,
-  runtimeIdRequired,
   runtimeIdRequiredNextStep,
-  runtimePoliciesConflict,
   selectablePrimaryRuntimeNextStep,
   selectablePrimaryRuntimeRequired,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-configuration-runtime.ts";
 
 // A missing provisioning Sandbox Driver is a permanent conflict (409). An outage is temporary
 // (503). The refusal names the Driver and offers a next step the Agent can use.

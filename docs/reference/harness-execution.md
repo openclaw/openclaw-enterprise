@@ -35,9 +35,9 @@ selection at `AgentRevision.harness`. All three properties are required.
 
 <a id="resolver"></a>
 
-| Method                                                                          | Requirement | Caller and result                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| <a id="method-harness-resolver"></a>`HarnessResolver(harnessId, executionMode)` | Required    | At deployment, OCC asks the [resolver](../../packages/occ/src/index.ts) for an approved descriptor. The [bundled implementation](../../apps/controller/src/composition/production-harness.ts) returns an ID and version for a recognized pair, or `undefined` otherwise. OCC rejects an unapproved pair before it queues work. |
+| Method                                                                          | Requirement | Caller and result                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| <a id="method-harness-resolver"></a>`HarnessResolver(harnessId, executionMode)` | Required    | At deployment, OCC asks the [resolver](../../packages/occ/src/agent-harness-topology.ts) for an approved descriptor. The [bundled implementation](../../apps/controller/src/composition/production-harness.ts) returns an ID and version for a recognized pair, or `undefined` otherwise. OCC rejects an unapproved pair before it queues work. |
 
 ### Supported topology
 
@@ -66,12 +66,12 @@ The worker rechecks authority and source ownership before runtime effects.
 An Agent draft can have an empty `harnessAuth`; deployment requires an
 [explicit binding](../../packages/contracts/src/harness-auth.ts).
 
-| Binding                                | Authority and delivery                                                                                                                                                                                                                                                                                                                                                                                                  |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `api_key` or `codex_pat` from a Secret | The caller and Agent service principal need `operate` on the exact Secret. On Kubernetes the embedded process or dedicated Harness receives the key. PAT login is for dedicated Codex.                                                                                                                                                                                                                                  |
-| `codex_pat` from a ServiceAccount      | The caller needs `read` on the exact ServiceAccount. OCC checks the private Backend binding and records the account's credential reference. Dedicated Codex receives the PAT.                                                                                                                                                                                                                                           |
-| `credential_source`                    | The caller and Agent principal need `operate` on the source. Dedicated OpenClaw or Codex receives a placeholder for proxy-based API-key authentication; the paired Credential Gateway and OpenShell inject the key on egress. Dedicated Codex also supports [external ChatGPT authentication](drivers/credential-gateway.md#external-chatgpt-authentication). All required attachments must be ready before activation. |
-| `runtime`                              | SSH embedded OpenClaw uses operator-managed credentials; gateway readiness excludes model probes. Kubernetes requires protected Dedicated Codex and a qualified Credential Proxy, even without sources or repositories. Deployment saves a plan with no inference route; Proxy refusal saves no revision. Agent provisioning rejects this method.                                                                       |
+| Binding                                | Authority and delivery                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `api_key` or `codex_pat` from a Secret | The caller and Agent service principal need `operate` on the exact Secret. On Kubernetes the embedded process or dedicated Harness receives the key. PAT login is for dedicated Codex.                                                                                                                                                                     |
+| `codex_pat` from a ServiceAccount      | The caller needs `read` on the exact ServiceAccount. OCC checks the private Backend binding and records the account's credential reference. Dedicated Codex receives the PAT.                                                                                                                                                                              |
+| `credential_source`                    | The caller and Agent principal need Source `operate`. Dedicated OpenClaw or Codex receives a placeholder; the paired Credential Proxy or legacy Gateway delivers the key on egress. Dedicated Codex also supports [external ChatGPT authentication](drivers/credential-gateway.md#external-chatgpt-authentication). Activation requires prepared delivery. |
+| `runtime`                              | SSH embedded OpenClaw uses operator-managed credentials; gateway readiness excludes model probes. Kubernetes requires protected Dedicated Codex and a qualified Credential Proxy, even without sources or repositories. Deployment saves a plan with no inference route; Proxy refusal saves no revision. Agent provisioning rejects this method.          |
 
 For embedded OpenClaw, Kubernetes projects the Secret as `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, or `OCE_MODEL_API_KEY`. A custom provider must reference
@@ -192,16 +192,18 @@ Configuration takes effect on the next deployment.
 
 ### Native runtime selection
 
-Select `provider/model` (model IDs may contain slashes) and `agentRuntime.id`
-(`openclaw` or `codex`). Agent entries must agree on primary model and Harness.
-Fallbacks must use that provider and Harness; admission preserves their order.
+Agent entries must agree on the primary `provider/model` and Harness. Fallbacks
+share both provider and Harness and retain their order.
 
-The [model policy resolver](../../packages/occ/src/configured-harness.ts) selects
-OpenClaw for no model or an unambiguous built-in provider. OpenAI, Codex, custom
-and plugin-routed providers require explicit runtime policy. Catalog entries
-accept full references or IDs after the first slash; each must be a selected
-primary or fallback. Codex accepts `codex`, or `openai` with the Codex plugin
-enabled for WebSocket app-server transport.
+The [resolver](../../packages/occ/src/configured-harness.ts) defaults to
+OpenClaw for unambiguous built-ins or no selection. OpenAI, Codex, custom
+and plugin-routed providers require `agentRuntime.id` (`openclaw` or `codex`).
+Codex accepts `codex`, or `openai` with the Codex WebSocket app-server plugin enabled.
+
+Catalog rows accept primary and fallback references or IDs. Alternatives require
+IDs without the provider prefix, such as `vendor/model`. Use the primary's provider.
+Set both models' `agentRuntime.id` to `codex` in `agents.defaults.models`.
+Include the alternative's exact reference in `agents.defaults.modelPolicy.allow` if set.
 
 On Kubernetes, a dedicated Codex Gateway with a workspace-node ID or binding
 path keeps `reasoning`, `thinkingLevelMap`, and

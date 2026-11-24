@@ -57,10 +57,13 @@ that a file is still missing after a transient failure. **Needs attention** retu
 to **Missing**, while the editor stays empty and ready to create the file.
 
 The editor reads each supported file by name; the response must name that file and
-include its contents. For an existing file, **Save** becomes available
-when the text differs from that baseline. The comparison uses LF line endings, so
-it does not rewrite an untouched CRLF file. A fresh read checks access before
-restoring a draft, including an empty edit. **Reload** replaces those edits.
+include its contents. For an existing file, **Save** becomes available when the
+text differs from the latest read. The comparison uses LF line endings, so it
+does not rewrite an untouched CRLF file. A fresh read checks access before
+restoring a draft, including an empty edit. The draft retains its original
+editing baseline for an overwrite warning that repeats across restores while the
+latest file differs from that baseline. Matching the latest read clears the
+warning and disables Save. **Reload** replaces those edits.
 
 Returning to these parked editors applies the newest Agent operate answer the page has
 read (Logs can read a newer one meanwhile): a grant makes the files editable; a revocation

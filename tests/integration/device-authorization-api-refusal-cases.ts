@@ -14,11 +14,12 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { DEVICE_ACCESS_TOKEN } from "../helpers/device-credential-gateway.mjs";
+import { DEVICE_ACCESS_TOKEN } from "../helpers/device-credential-gateway.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
-import { createDenied, DEVICE_LOGIN_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
+import { DEVICE_LOGIN_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
+import { createDenied } from "../helpers/refusal-access.ts";
 import {
   assertNoCredentials,
   createFixture,

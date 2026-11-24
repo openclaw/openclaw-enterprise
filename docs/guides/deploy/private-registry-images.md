@@ -40,20 +40,55 @@ for this publication; never replace an existing tag. See
 [ECR tag immutability](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-tag-mutability.html).
 The ECR account and Region must be the ones approved for the cluster.
 
-Set the values from the publication record and the target registry. The source
-references must be the published **index** digests, not architecture-specific
-child manifests. Replace all placeholders:
+Set the values from the publication record and the target registry. Use the
+published **index** digests for GHCR source references. Replace all placeholders.
 
 ```bash
 export AWS_REGION='<aws-region>'
 export ECR_REGISTRY='<aws-account-id>.dkr.ecr.<aws-region>.amazonaws.com'
 export SOURCE_CONTROLLER='ghcr.io/openclaw/openclaw-enterprise-controller@sha256:<64-hex-digest>'
-export SOURCE_RUNTIME='ghcr.io/openclaw/openclaw-enterprise-runtime@sha256:<64-hex-digest>'
-export RUNTIME_SOURCE="docker://$SOURCE_RUNTIME"
 export ECR_CONTROLLER="$ECR_REGISTRY/openclaw-enterprise/controller"
 export ECR_RUNTIME="$ECR_REGISTRY/openclaw-enterprise/runtime"
 export ECR_TAG='<unique-release-tag>'
+unset RUNTIME_SOURCE RUNTIME_INDEX
 ```
+
+### Select the runtime source
+
+Before starting Bash, select exactly one runtime source in the parent shell.
+For GHCR, set and export the following pair, then continue at
+[Copy and verify the destination](#copy-and-verify-the-destination). For a local
+image, continue at [Use a qualified local runtime](#use-a-qualified-local-runtime).
+Keep the parent shell open for copy retries.
+
+```bash
+SOURCE_RUNTIME='ghcr.io/openclaw/openclaw-enterprise-runtime@sha256:<64-hex-digest>'
+export RUNTIME_SOURCE="docker://$SOURCE_RUNTIME" RUNTIME_INDEX="${SOURCE_RUNTIME##*@}"
+```
+
+### Use a qualified local runtime
+
+If you built and qualified the runtime locally, you can use its OCI archive as
+the source for the runtime copy. Use the root index digest recorded during
+qualification. An index can include a platform image and a provenance attestation
+even when the runtime supports only one architecture. A platform-specific export
+can omit the attestation and change the digest.
+
+Use the qualified `rootDigest` and a new absolute archive path in your private
+build directory. Export the source and index only after the archive is saved.
+
+```bash
+unset RUNTIME_SOURCE RUNTIME_INDEX
+ROOT_DIGEST='<qualified-rootDigest>'
+RUNTIME_ARCHIVE='<absolute-path-to-new-runtime.tar>'
+[[ "$RUNTIME_ARCHIVE" == /* ]] &&
+  ( umask 077; set -o noclobber; docker image save "$ROOT_DIGEST" > "$RUNTIME_ARCHIVE" ) &&
+  export RUNTIME_SOURCE="oci-archive:$RUNTIME_ARCHIVE" RUNTIME_INDEX="$ROOT_DIGEST"
+```
+
+If selection fails, stop. Reuse the saved archive for copy retries.
+
+### Copy and verify the destination
 
 Start a dedicated Bash shell for registry authentication and copying. Its
 cleanup trap removes the credential file when the shell exits or is interrupted;
@@ -71,6 +106,11 @@ lookup below can return the expected `ImageNotFoundException`.
 ```bash
 {
   set -o pipefail
+  [[ -n "${RUNTIME_SOURCE:-}" && -n "${RUNTIME_INDEX:-}" ]] || exit 1
+  if [[ "$RUNTIME_SOURCE" == oci-archive:* ]]; then
+    archive_hash=$(skopeo inspect --raw "$RUNTIME_SOURCE" | sha256sum) || exit 1
+    [[ "sha256:${archive_hash%% *}" == "$RUNTIME_INDEX" ]] || exit 1
+  fi
   umask 077
   REGISTRY_AUTH="$(mktemp "${TMPDIR:-/tmp}/oce-registry-auth.XXXXXXXX")" || exit 1
   export REGISTRY_AUTH
@@ -82,6 +122,9 @@ lookup below can return the expected `ImageNotFoundException`.
     skopeo login --authfile "$REGISTRY_AUTH" --username AWS --password-stdin "$ECR_REGISTRY"
 }
 ```
+
+If the archive's raw index digest differs from the qualified digest, recover the
+complete index and its referenced manifests from the build's image store.
 
 Run `aws sts get-caller-identity` and confirm the selected account before writing
 to ECR. The temporary auth file contains registry credentials. The ECR login
@@ -100,37 +143,12 @@ aws ecr describe-images --region "$AWS_REGION" \
   --query 'imageDetails[0].imageDigest' --output text
 ```
 
-Repeat the tag lookup for `openclaw-enterprise/runtime`. If a tag exists,
-compare its digest with the source and use it only if it matches. Stop on a
-conflicting digest. The repository's immutability policy protects against
-overwrites but does not replace this readback or coordination with other writers.
-
-### Use a qualified local runtime
-
-If you built and qualified the runtime locally, you can use its OCI archive as
-the source for the runtime copy. Use the root index digest recorded during
-qualification. An index can include a platform image and a provenance attestation
-even when the runtime supports only one architecture. A platform-specific export
-can omit the attestation and change the digest.
-
-In the dedicated Bash shell above, select a new archive path in your private
-build directory. Export the complete image and compare the archive's raw index
-with the qualification record before copying it to ECR.
-
-```bash
-RUNTIME_INDEX='sha256:<qualified-runtime-index-digest>'
-RUNTIME_ARCHIVE='<absolute-path-to-new-runtime.tar>'
-( set -o noclobber; docker image save "$RUNTIME_INDEX" > "$RUNTIME_ARCHIVE" ) || exit 1
-RUNTIME_SOURCE="oci-archive:$RUNTIME_ARCHIVE"
-archive_hash=$(skopeo inspect --raw "$RUNTIME_SOURCE" | sha256sum) || exit 1
-[[ "sha256:${archive_hash%% *}" == "$RUNTIME_INDEX" ]] || exit 1
-```
-
-If the digest differs, recover the complete index and its referenced manifests
-from the build's image store. Use the same qualified index digest for the
-destination readback.
-
-### Copy and verify the destination
+Repeat the tag lookup for `openclaw-enterprise/runtime`. For tag lookup,
+destination verification and retry, the expected controller index is
+`${SOURCE_CONTROLLER##*@}` from the publication receipt and the expected runtime
+index is `$RUNTIME_INDEX`. Use an existing tag only if its digest matches the
+expected index. Stop on a conflicting digest. Immutable tags protect against
+overwrites. You must still verify the digest and coordinate with other writers.
 
 Copy each absent tag and verify the destination digest before continuing. Run
 each command separately and stop on an error:
@@ -147,14 +165,16 @@ skopeo inspect --raw --authfile "$REGISTRY_AUTH" \
   "docker://$ECR_RUNTIME:$ECR_TAG" | sha256sum
 ```
 
-Compare each printed hash, prefixed with `sha256:`, to the corresponding
-index digest in the receipt. Hashing the raw manifest checks the index itself,
-rather than selecting a platform-specific manifest. `--all` copies the
-platform manifests, and `--preserve-digests` fails if the registry cannot preserve them. If a copy times out or fails, read
-back that exact target tag before retrying: accept a matching digest, stop on
-a different digest, and retry only an absent tag after resolving the error.
-If readback itself fails, the outcome is unknown. Inspect both destinations,
-since one copy can succeed while the other fails.
+Prefix each printed hash with `sha256:` and compare it with the expected index.
+Hashing the raw manifest checks the index itself. `--all` copies the platform
+manifests, and `--preserve-digests` fails if the registry cannot preserve them.
+
+If a copy fails or times out, exit the dedicated shell. Start a fresh copy shell
+from the same parent shell and authenticate again. Look up both exact target
+tags because one copy can succeed while the other fails. Accept a digest that
+matches the expected index. Stop on a conflicting digest or an unknown outcome.
+Retry only a tag confirmed absent by
+`ImageNotFoundException` after resolving the error.
 
 Record the source and destination references with the chart and receipt. Exit
 the dedicated shell; its trap removes the auth file. In the original shell,

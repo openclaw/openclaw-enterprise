@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   pluginRuntimeEnvironment,
@@ -26,6 +25,7 @@ import {
 
 export async function verifyNativeThread(
   image: string,
+  harness: string,
   seccompOptions: SeccompOptions,
   syntheticCodexApiKey: string,
 ) {
@@ -104,7 +104,7 @@ export async function verifyNativeThread(
     ],
     { timeout: cpuScaledImageTimeoutMs(120_000) },
     JSON.stringify({
-      entrypointArguments: nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT),
+      entrypointArguments: nodeProgramArguments(harness),
       environment: pluginRuntimeEnvironment(runtime),
       brokerConfiguration,
       syntheticApiKey: syntheticCodexApiKey,

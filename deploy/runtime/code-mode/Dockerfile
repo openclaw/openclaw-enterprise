@@ -73,7 +73,7 @@ RUN --mount=type=bind,source=scripts/build-runtime-assets.ts,target=/tmp/build-r
     --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp/lib/runtime-download-clients.ts \
     --mount=type=bind,source=deploy/runtime/additional-download-clients.json,target=/tmp/additional-download-clients.json \
     node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime \
-      /usr/local/share/oce-node/provenance.json /tmp/additional-download-clients.json
+      /tmp/additional-download-clients.json
 USER node
 RUN --network=none --mount=type=bind,source=deploy/runtime/code-mode/verify.mjs,target=/tmp/verify-code-mode.mjs \
     node /tmp/verify-code-mode.mjs

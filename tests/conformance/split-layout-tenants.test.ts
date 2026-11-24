@@ -8,11 +8,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { listen } from "../helpers/listen.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 import {
   createTenantReaderFixture,
   tenantRequest as request,

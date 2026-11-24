@@ -1,17 +1,17 @@
 ---
-rfc: ../rfcs/0044-channel-egress.md
+rfc: ../rfcs/20261118-channel-egress.md
 ---
 
 # Implementation plan: Per-Agent channel egress
 
-- **ID:** RFC-0044
+- **ID:** RFC-20261118-channel-egress
 - **Delivery status:** In progress (implementation and local verification complete; final review pending)
 - **Owner:** kevinlin-openai
 - **Source baseline:** `b401e36cb8754af762120e28cbf150e379482fef`
-- **Authority:** [RFC-0044](../rfcs/0044-channel-egress.md), submitted in [PR #6507](https://github.com/openclaw/openclaw-enterprise/pull/6507).
+- **Authority:** [RFC-20261118-channel-egress](../rfcs/20261118-channel-egress.md), submitted in [PR #6507](https://github.com/openclaw/openclaw-enterprise/pull/6507).
 
-The proposal was submitted as RFC-0043 in PR #6507. Its number is now RFC-0044;
-this existing plan retains its filename under the specification process.
+PR #6507 submitted the proposal as RFC-0043. It briefly used RFC-0044 before
+adopting its submission date. This plan retains its filename.
 
 ## Outcome and scope
 
@@ -22,7 +22,7 @@ routing. Remove the custom Slack proxy after both consumers use Envoy.
 
 The scope includes Slack and different destination policies, not a Microsoft
 Teams Driver, customer upstream proxies, workload identity, or automatic sharding.
-The [acceptance criteria](../rfcs/0044-channel-egress.md#acceptance-criteria)
+The [acceptance criteria](../rfcs/20261118-channel-egress.md#acceptance-criteria)
 define required proof. Fixture success does not establish runtime acceptance.
 
 ## Qualification gate
@@ -154,14 +154,14 @@ workflow tests.
 
 ## Verification
 
-| Criterion | Supported proof | Status |
-| --- | --- | --- |
-| AC-1 | Helm-installed API, worker and PostgreSQL; Slack validation, users/channels directory, genuine message/reply and native Codex correlation | Passed |
-| AC-2 | Distinct Agent policies and no-channel Agent; allowed public destinations; denied cross-listener, Harness, unlisted target and direct access | Passed |
-| AC-3 | Envoy absent, rejected policy and exhausted capacity; OCC stays usable | Passed, including final outage/model/recovery repeat |
-| AC-4 | Replacement, disable, delete, worker restart, concurrent allocation, changed Driver retry, tunnel termination and port reuse | Passed with final drain and source-workload checks |
-| AC-5 | Malformed targets, boundary lookalikes, explicit IP/CIDR, public/private/mixed DNS answers and IPv4/IPv6 restrictions | Passed |
-| AC-6 | Packaged Slack proxy removal, private routing and dedicated model turns before and after cutover | Passed on native amd64; native multi-architecture check pending |
+| Criterion | Supported proof                                                                                                                              | Status                                                          |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| AC-1      | Helm-installed API, worker and PostgreSQL; Slack validation, users/channels directory, genuine message/reply and native Codex correlation    | Passed                                                          |
+| AC-2      | Distinct Agent policies and no-channel Agent; allowed public destinations; denied cross-listener, Harness, unlisted target and direct access | Passed                                                          |
+| AC-3      | Envoy absent, rejected policy and exhausted capacity; OCC stays usable                                                                       | Passed, including final outage/model/recovery repeat            |
+| AC-4      | Replacement, disable, delete, worker restart, concurrent allocation, changed Driver retry, tunnel termination and port reuse                 | Passed with final drain and source-workload checks              |
+| AC-5      | Malformed targets, boundary lookalikes, explicit IP/CIDR, public/private/mixed DNS answers and IPv4/IPv6 restrictions                        | Passed                                                          |
+| AC-6      | Packaged Slack proxy removal, private routing and dedicated model turns before and after cutover                                             | Passed on native amd64; native multi-architecture check pending |
 
 Use the existing Kubernetes integration workflow with a disposable cluster and
 enforcing NetworkPolicies. Private Pod addresses are negative cases. Test model

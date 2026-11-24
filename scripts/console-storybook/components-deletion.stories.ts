@@ -12,6 +12,7 @@ export const DeletionRetryConfirm = {
   ...story("deletionRetryConfirm"),
   name: "Repeat cleanup confirmation",
 };
+export const DeletionRetryDenied = story("deletionRetryDenied");
 export const DeletionRetryUnknown = {
   ...story("deletionRetryUnknown"),
   name: "Repeat cleanup outcome unknown",

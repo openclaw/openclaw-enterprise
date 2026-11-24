@@ -43,6 +43,7 @@
       "expectedTests": [
         "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns",
         "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner",
+        "runtime image embedded Gateway serves a new turn after its child dies mid-turn",
         "a new Gateway Pod starts on state whose previous Gateway was stopped during startup admission",
         "a new Gateway Pod starts on state whose previous Gateway was stopped while it took its Gateway lock",
         "a Gateway that exits beside a live Gateway on the same state leaves that Gateway's lock in place"
@@ -70,8 +71,10 @@
       "expectedTests": [
         "OpenShell reconciles renewed codex workspace-node setup into its revision provider",
         "OpenShell reconciles renewed openclaw workspace-node setup into its revision provider",
-        "OpenShell delivers codex initial workspace files privately after supervisor readiness",
-        "OpenShell delivers openclaw initial workspace files privately after supervisor readiness",
+        "OpenShell legacy delivers codex initial workspace files privately after supervisor readiness",
+        "OpenShell legacy delivers openclaw initial workspace files privately after supervisor readiness",
+        "OpenShell service delivers codex initial workspace files privately after supervisor readiness",
+        "OpenShell service delivers openclaw initial workspace files privately after supervisor readiness",
         "native initializer serializes retries and preserves later edits",
         "configured protected OpenShell Git admits only the selected execution and network policy",
         "stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence"

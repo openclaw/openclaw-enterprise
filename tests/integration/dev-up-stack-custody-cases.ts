@@ -4,15 +4,8 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { parseDevUpResourceState } from "../helpers/dev-up-k3d-commands.ts";
-import {
-  createFixture,
-  prepareLifecycleCommands,
-  readJsonLines,
-  runCommand,
-  runDevDown,
-  runDevUp,
-  serviceKey,
-} from "../helpers/dev-up.mjs";
+import { readJsonLines, runCommand, runDevDown, runDevUp } from "../helpers/dev-up-commands.ts";
+import { createFixture, prepareLifecycleCommands, serviceKey } from "../helpers/dev-up.mjs";
 import { requireLogRecord } from "../helpers/json-lines.ts";
 
 type LifecycleScenario = NonNullable<Parameters<typeof prepareLifecycleCommands>[1]>;

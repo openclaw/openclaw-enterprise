@@ -58,7 +58,7 @@ test(
     const directory = await mkdtemp(join(tmpdir(), "occ-receipt-production-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const occ = join(directory, "occ");
-    execFileSync("go", ["build", "-o", occ, "./cmd/occ"]);
+    execFileSync("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
 
     // This proxy forwards real Kubernetes requests with the selected fixture
     // credentials. Holding a Secret create or the observer's successful GET

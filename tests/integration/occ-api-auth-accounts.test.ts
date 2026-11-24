@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { signInWithEmailPassword } from "../helpers/auth-session.ts";
 import { registerAuthAccountCases } from "./occ-api-auth-account-cases.ts";
 import {
   configuredController,

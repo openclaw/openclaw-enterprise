@@ -7,7 +7,6 @@ import {
   type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
-  type SandboxWorkspaceMount,
   requireConfiguration,
   ConfigurationValidationError,
 } from "../../packages/contracts/src/index.ts";
@@ -437,26 +436,24 @@ export function checkGatewayStoragePlacement() {
   );
   const namespace = kubernetesNamespaceName(tenant.id);
   const ownership = { namespaceId: tenant.id, agentId: "agent-node-selector" };
-  const gateway = driver["deployment"](
-    "gateway",
+  const gateway = driver["deployment"]({
+    name: "gateway",
     ownership,
-    { name: namespace, plane: "execution" },
-    "gateway:local",
-    "gateway",
-    "gateway",
-    {},
-    "info",
-    driver["gatewayConfiguration"](
+    namespace: { name: namespace, plane: "execution" },
+    images: "gateway:local",
+    serviceAccountName: "gateway",
+    role: "gateway",
+    environment: {},
+    loggingLevel: "info",
+    configuration: driver["gatewayConfiguration"](
       routedRevision(driver, {
         agentId: ownership.agentId,
       }),
       undefined,
       { name: namespace, plane: "execution" },
     ),
-    false,
-    undefined,
-    preparedAuth(driver, namespace, false),
-  );
+    harnessAuth: preparedAuth(driver, namespace, false),
+  });
   const template = gateway.spec?.template;
   assert.ok(template && typeof template === "object" && "spec" in template);
   const pod = template.spec;
@@ -559,20 +556,19 @@ export function checkGatewayAndHarnessStorage() {
   );
   const workspaceSetup = driver["options"].images.gateway;
   const gatewayDeployment = (embedded: boolean, configuration = config) =>
-    driver["deployment"](
-      "gateway",
+    driver["deployment"]({
+      name: "gateway",
       ownership,
       namespace,
-      { runtime: "gateway:local", workspaceSetup },
-      "gateway",
-      "gateway",
-      {},
-      "info",
+      images: { runtime: "gateway:local", workspaceSetup },
+      serviceAccountName: "gateway",
+      role: "gateway",
+      environment: {},
+      loggingLevel: "info",
       configuration,
       embedded,
-      undefined,
-      preparedAuth(driver, name, embedded),
-    );
+      harnessAuth: preparedAuth(driver, name, embedded),
+    });
   for (const embedded of [false, true]) {
     const gateway = gatewayDeployment(embedded);
     const rendered = storagePod(gateway);
@@ -646,20 +642,17 @@ export function checkGatewayAndHarnessStorage() {
     assert.equal(resourceRecord(gateway.spec?.strategy, "strategy").type, "Recreate");
   }
 
-  const harness = driver["deployment"](
-    "agent",
-    { ...ownership, revisionId: "revision-render" },
+  const harness = driver["deployment"]({
+    name: "agent",
+    ownership: { ...ownership, revisionId: "revision-render" },
     namespace,
-    { runtime: "agent:local", workspaceSetup },
-    "agent",
-    "agent",
-    {},
-    "info",
-    undefined,
-    undefined,
-    undefined,
-    preparedAuth(driver, name, false),
-  );
+    images: { runtime: "agent:local", workspaceSetup },
+    serviceAccountName: "agent",
+    role: "agent",
+    environment: {},
+    loggingLevel: "info",
+    harnessAuth: preparedAuth(driver, name, false),
+  });
   const rendered = storagePod(harness);
   assert.deepEqual(rendered.cacheEnv, []);
   assert.ok(!JSON.stringify(harness).includes(claim.metadata.name));
@@ -703,16 +696,13 @@ export function checkGatewayAndHarnessStorage() {
     assert.deepEqual(security, rendered.security);
     assert.match(initialization, /chmodSync\(path, 0o700\)/);
     assert.ok(initialization.includes(`/harness-workspace-state/${nodeName}`));
-    const sandboxMounts: readonly SandboxWorkspaceMount[] = driver["sandboxWorkspaceMounts"](
-      volumes,
-      mounts,
-      true,
-    );
-    assert.ok(sandboxMounts.every(({ claimName }) => claimName === workspaceClaim));
+    const sandboxMounts = mounts.filter(({ name }) => name === workspace);
+    const persistentVolume = volumes.find(({ name }) => name === workspace);
+    assert.deepEqual(persistentVolume?.persistentVolumeClaim, { claimName: workspaceClaim });
     const node = sandboxMounts.at(-1);
     assert.ok(node && node.mountPath === "/home/node/.openclaw-node");
     assert.equal(node.readOnly, false);
-    assert.ok(node.subPath && !node.subPath.includes("/"));
+    assert.ok(typeof node.subPath === "string" && !node.subPath.includes("/"));
     return { mounts: sandboxMounts, node };
   };
   const original = withNode(revision);

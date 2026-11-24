@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { tenantRequest as request } from "../helpers/tenant-reader-app.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import { bootstrap, createFixture, field, responseError } from "./occ-api-security-fixture.ts";
 
 export function registerAuthenticationCases() {

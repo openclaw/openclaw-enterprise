@@ -14,17 +14,16 @@ Configuration ownership, immutable `kind: "agent"`, generation, creation time,
 normalized Secret bindings, and server-generated `cfg_` identity are persisted by
 [PostgreSQL platform state](../../../packages/occ/src/state/postgres-state.ts);
 the live configuration document is not duplicated into Configuration metadata.
-OCC owns API-level native Configuration validation before it calls the selected
-bundled or installed Configuration Driver: model provider settings,
-`requireDeployableRoster` in
-[the roster rules](../../../packages/occ/src/openclaw-roster.ts), which refuses
-an `agents` roster, a model or fallback that is not `<provider>/<model>`
-(OpenClaw's `openrouter:auto` included), a fallback on another provider than
-its primary's, a `models.providers.<id>.models` entry that names no selected
-model, or model and runtime settings that conflict (`requireConsistentModelPolicy`,
-which runs the deployment resolver itself, in its order, and leaves a draft
-without a model or runtime to deployment), all of which every deployment refuses,
-with deployment's own text, and [the settings rules](../../../packages/occ/src/configuration-settings.ts).
+Before calling the bundled or installed Configuration Driver, OCC validates model
+provider settings and applies [the roster rules](../../../packages/occ/src/openclaw-roster.ts).
+`requireDeployableRoster` rejects invalid `agents` rosters, models outside the
+`<provider>/<model>` format (including `openrouter:auto`) and fallbacks on
+another provider. `requireConsistentModelPolicy` runs the deployment resolver.
+It rejects conflicting runtime settings and catalog rows without a matching
+[primary, fallback, or selectable Codex model](../../reference/harness-execution.md#native-runtime-selection).
+Save and deployment report these errors in the same order. A draft can still
+omit a required model or runtime until deployment.
+OCC also applies [the settings rules](../../../packages/occ/src/configuration-settings.ts).
 These rules reject unsupported Codex approval policies, a literal
 `gateway.auth.password` or a password SecretRef OpenClaw cannot read
 (`gatewayPasswordRequirement`), and retired settings such as `security.preset`.
@@ -34,7 +33,7 @@ Kubernetes, this check refuses unsupported channels, model credentials outside t
 authentication binding, and model selections or provider `apiKey`s off the
 primary model's provider. Configuration create and update, Agent provisioning and
 Preset save run this one set (`validateConfigurationContent` in
-[OCC](../../../packages/occ/src/index.ts)); a Preset value that waits on a
+[OCC](../../../packages/occ/src/configuration-operations.ts)); a Preset value that waits on a
 variable is checked as far as its written text goes, and in full once filled.
 Preset save skips the catalog and runtime checks; its launch's Configuration runs them.
 Create, update and provisioning first ask the Driver's optional
@@ -117,10 +116,10 @@ prerequisites.
 
 ### 5. Resolve the Agent reference and save the deployment configuration
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
 `createAgent` and `updateAgent` in
-[OCC](../../../packages/occ/src/index.ts) separately authorize and verify the
+[OCC](../../../packages/occ/src/agent-drafts.ts) separately authorize and verify the
 Agent's exact same-Namespace `configurationId` and ensure its Configuration kind
 is `"agent"`. They also run deployment's checks of the Agent against that
 Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-save)):
@@ -233,11 +232,11 @@ graph TD
   F -->|yes| G["Commit revision 1,<br/>receipt digest, and work"]
 ```
 
-`packages/occ/src/index.ts:OpenClawController.deployAgentFirst` and
-`OpenClawController.recoverAgentFirstDeployment` capture the Namespace, Agent, key, Configuration ID, and
+`packages/occ/src/agent-deployment-requests.ts:deployAgentFirst` and
+`recoverAgentFirstDeployment` capture the Namespace, Agent, key, Configuration ID, and
 generation on entry. They use those values for the digest and each permission check.
 The first admission read checks exact receipt authority through
-`authorizeFirstDeploymentReceipt`, then reads
+`deployment-authorization.ts:authorizeFirstDeploymentReceipt`, then reads
 the receipt, matching draft metadata, and history in one snapshot. PostgreSQL uses
 REPEATABLE READ. On a receipt miss, an Agent without `active` lifecycle status
 returns `409 AGENT_DELETING` before channel preparation. A changed Agent binding
@@ -266,7 +265,7 @@ cannot match. A match remains recoverable after Agent deletion starts.
 On a locked miss, admission checks `active` lifecycle status before propagating a
 saved preparation error; deletion returns `409 AGENT_DELETING`. It then checks stopped desired state, empty history, binding,
 generation, and equality with the validated Configuration. It rechecks Secret and
-other ordinary admission permissions. `assertPreparedDeploymentDrivers` checks the
+other ordinary admission permissions. `deployment-channels.ts:assertPreparedDeploymentDrivers` checks the
 actual selected Configuration and Channel instances after locking and immediately
 before revision insertion: database locks do not freeze process-local selections.
 Any drift refuses admission and queues no work.

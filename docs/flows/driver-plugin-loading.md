@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-12
-last_updated_session: 01a117f8-113d-7610-83db-37431b054e44
+updated: 2026-11-20
+last_updated_session: authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d
 ---
 
 # Installation Driver Package Loading Flow
@@ -59,10 +59,14 @@ graph TD
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
 `apps/controller/src/composition/driver-packages.ts:loadDriverPackage`
 
-The API, worker, and Helm Installation check load the bundled OpenShell
-implementation when validating its Credential Proxy or constructing its Sandbox.
-An Installation with Kubernetes Compute and neither OpenShell selection skips
-those imports.
+The API, worker, and Helm Installation check validate and construct the bundled
+OpenShell Drivers only when selected. Kubernetes Compute also imports managed
+OpenShell classes to select the Harness runtime. These imports do not load gRPC.
+`apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:startListener`
+and `apps/controller/src/drivers/egress-proxy/openshell-exchange-binding.ts:bindOpenShellMiddleware`
+load the authority transport when starting their selected listeners. An
+Installation without OpenShell can therefore pass startup and the Helm upgrade
+check when the OpenShell transport is unavailable.
 
 Each process reads the same trusted startup YAML. Configuration, IAM, Compute,
 and optional Sandbox selections may name an operator-installed package;
@@ -190,7 +194,7 @@ forwards each selected identity and its retained redacted snapshot to the regist
 The registry keeps no raw startup input. Later startup-file edits do not change
 these values; there are no Driver projection callbacks.
 
-`packages/occ/src/index.ts:OpenClawController.discoverConfigurations` checks
+`packages/occ/src/setup-discovery.ts:SetupDiscovery.discoverConfigurations` checks
 Installation `administer` before returning these projections as
 `startupConfiguration`. The Console renders them in expandable Driver sections.
 Agent discovery retains its resource-owned actions and does not return startup
@@ -227,6 +231,10 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
+
+- 2026-11-17 19:59: Defer authority transport imports until selected listeners start in the accompanying startup fix. (authoring-run/99088afe-0245-41c6-a780-56606a3d8e0c - ac11ec583a723a11044f1037c935b58a78704f32)
 
 - 2026-11-12 15:38: Document when startup loads the bundled OpenShell transport. (01a117f8-113d-7610-83db-37431b054e44 - d9233e2cde)
 

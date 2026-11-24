@@ -6,13 +6,34 @@ from the reviewed release checkout root after completing the
 Use the [chart procedure](production-upgrade.md#apply-other-installation-changes)
 for protected Installation settings.
 
+The offline plan rejects [preprovisioned Namespace canaries](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md)
+because their chart omits the initialization Job. Manage their database upgrades separately.
+
 Create an owner-only JSON profile outside the checkout. Set `context` to the
 name of a kubeconfig context whose cluster has an HTTPS `server` URL. Keep
 the kubeconfig in an owner-only regular file under a directory protected
 from other writers. Set `installationDirectory` to the protected directory that contains `values.yaml` and `installation.yaml`
 from the [installation profile renderer](installation-profiles.md#render-files).
-Relative paths inside the profile resolve from the profile's directory.
-Relative expert paths resolve from the release checkout.
+Relative paths for the kubeconfig, rendered Installation, and CLI resolve from
+the profile directory. Relative expert paths resolve from the release checkout.
+
+For a published release, open the approved, successful
+[Enterprise Containers run](published-images.md#check-publication-and-source)
+for the checkout commit on `main`. In the run's artifacts, select
+`container-publication-<run-id>-<attempt>` for the approved attempt. Extract it
+into a fresh directory. Confirm that `runId`, `attempt`, and `sourceSha` in
+both entries of `publication.json` match the run you selected. The CLI trusts
+the receipt you supply.
+
+Save the receipt beside the profile and set `imagePublication` to the filename
+alone. You or root must own the directory and regular receipt file. Group and
+others must have no write access to either. Modes `0600` and `0644` both work
+for the receipt. The CLI requires the controller entry to name
+`ghcr.io/openclaw/openclaw-enterprise-controller` and the runtime entry to name
+`ghcr.io/openclaw/openclaw-enterprise-runtime`. It checks the SHA-256 format
+of both digests, the shared run and attempt, and the source and tag against
+`sourceRevision`. Review both images and the Agent redeployment in the plan
+before approving `apply`.
 
 ```bash
 umask 077
@@ -24,27 +45,43 @@ cat > /secure/occ/upgrade.json <<'JSON'
   "release": "oce",
   "installationDirectory": "rendered",
   "sourceRevision": "<full-reviewed-40-character-git-sha>",
-  "occ": "bin/occ",
-  "images": {
-    "controller": "registry.example/controller@sha256:<64-lowercase-hex>"
-  }
+  "imagePublication": "publication.json"
 }
 JSON
 ```
 
-Select one or more `controller`, `broker`, or `runtime` images by digest. Keep
-credentials outside the profile. For image upgrades, set `OCC_URL`,
+Set `images.broker` to a digest when repository credentials are enabled. Omit it
+when they are disabled. With `imagePublication`, do not set `images.controller`
+or `images.runtime`. For another registry or package destination, omit
+`imagePublication` and set the verified destination digests explicitly in
+`images.controller` and `images.runtime`. Without `imagePublication`, you can
+select one or more `controller`, `broker`, or `runtime` digests in `images`.
+Repository-enabled upgrades require both controller and broker digests. Keep
+credentials outside the profile.
+For image upgrades, set `OCC_URL`,
 `OCC_SERVICE_KEY_FILE`, and, if needed, `OCC_CA_BUNDLE` as described in the
 [upgrade guide](production-upgrade.md#prepare-the-release). The optional `occ`
-field selects the matching CLI file. Omit it to use `occ` on `PATH`.
+field selects the matching CLI file. Omit it to use `occ` on `PATH`. The documented
+build writes `bin/occ` under the release checkout. To use that file from a profile
+outside the checkout, set `occ` to its absolute path or copy it into the profile
+directory and use the copied file's relative path.
+
+The receipt source, `sourceRevision`, and checkout HEAD must match. An older
+matching checkout might not support `imagePublication`. Use that checkout's
+documented explicit image selection. Keep the command, chart and selected images
+on the same source commit.
 
 ## Run the image upgrade
 
 `plan` checks `HELM_DRIVER` offline and requires it to be unset or `secret`.
-Apply, preflight, migration check, and resume read Helm release history from
-Kubernetes Secrets in the selected cluster. If your release uses SQL or
-ConfigMaps, stop here and keep the existing store. `status` reads local evidence.
-Preflight cleanup uses Kubernetes directly.
+Apply, preflight, migration check, migration apply, and resume read Helm history
+from Kubernetes Secrets in the selected cluster. If your release uses SQL or
+ConfigMaps, stop here and keep the existing store. For these commands, unset
+`HELM_KUBETOKEN`, `HELM_KUBEASUSER`, and `HELM_KUBEASGROUPS`. Configure
+credentials and any required impersonation in the selected kubeconfig so Helm
+and kubectl use the same settings.
+
+`status` reads local evidence. Preflight cleanup uses Kubernetes directly.
 
 Review the selected kubeconfig, context, release, and image digests:
 
@@ -71,6 +108,13 @@ before you approve. Plan, apply, and preflight refuse changes to protected
 settings that they can detect in local files. Current cluster state and
 migration history remain unknown until the upgrade checks the cluster.
 
+With `--controller-compatibility-results FILE`, `plan` and a new `apply` check
+the PostgreSQL report and the selected controller digest before approval.
+If the check fails, rerun [controller qualification](../../testing/postgresql.md#released-controller-compatibility)
+for the installed and selected images. Retry with the passing report.
+Live preflight must still match the report to the installed controller.
+Qualify [recovery](production-upgrade-recovery.md) separately.
+
 Before the first `apply` or `preflight`,
 [bind the Installation Secret](production-upgrade.md#bind-the-installation-once).
 For an optional advance rehearsal, run:
@@ -83,8 +127,18 @@ Confirm that preflight checks and cleanup succeeded. Preflight leaves writers
 running. If it reports that retained Agent revisions require their original
 worker and exits 1, resolve the blocker through the
 [maintenance handoff](production-upgrade.md#rehearse-before-the-maintenance-window).
-Follow that handoff before applying. Use fresh evidence and the same reviewed
-inputs and expert options for `apply`:
+Follow that handoff before applying.
+
+If preparation needs different data in an immutable Installation Secret,
+[stage a successor](immutable-installation-upgrade.md) and select it with
+`--candidate-values`. If a prepared attempt still needs to write to the
+recorded immutable Secret, [keep the maintenance freeze and stop](#stop-when-the-recorded-installation-secret-is-immutable).
+
+If Certificate admission fails, inspect `preflight-certificates.err` in the
+attempt's protected evidence. For a webhook timeout, check the cert-manager
+webhook Service, its endpoints, and reachability from the Kubernetes API server.
+
+Use fresh evidence and the same reviewed inputs and expert options for `apply`:
 
 ```bash
 occ installation upgrade apply --profile /secure/occ/upgrade.json
@@ -96,9 +150,9 @@ automation or redirected output, pass `--auto-approve`. The upgrade checks
 startup and migration compatibility and confirms preflight cleanup before it
 stops writers.
 Profiled commands use a private kubeconfig copy for Kubernetes requests.
-Apply and resume recheck the kubeconfig and any explicit CA after approval.
+Apply, migration apply, and resume recheck the kubeconfig and any explicit CA after approval.
 The CLI embeds the checked bytes from a CA file in the copy. Client credential
-references and commands use their original locations. Resume and cleanup bind
+references and commands use their original locations. Migration apply, resume, and cleanup bind
 the recorded kubeconfig and explicit CA bytes. When the context uses system roots,
 changes to the host trust store can affect later recovery commands.
 
@@ -118,12 +172,19 @@ If `apply` reports a separate database migration pause and exits with status
 migration history. Keep the maintenance window active, other writers and
 autoscalers fenced, and the original evidence in place.
 
-[Deploy and verify the database](separate-database-upgrade.md#deploy-the-database)
-with the selected controller image and the dedicated migrator credential.
-Require a successful `--require-current` check that reports `migration.checked`
-with history `completed`. After the Jobs and their Pods are gone, use
-[the original run to resume](#recover-an-interrupted-run). Repeat the original
-expert options after `--` and add `--migration-history-checked`.
+Use [migration apply](separate-database-upgrade.md#apply-and-verify-the-prepared-migration)
+with the original run and profile:
+
+```bash
+occ installation upgrade migration apply /path/to/original/evidence \
+  --profile /secure/occ/upgrade.json
+```
+
+Repeat the original expert options after `--`. Review the original run and
+the warning about irreversible SQL. Type `yes` at a terminal or pass
+`--auto-approve` before `--`. After verification and Job cleanup,
+[resume the original run](#recover-an-interrupted-run) with the same expert
+options and `--migration-history-checked`.
 
 ## Check database migration compatibility
 
@@ -175,6 +236,10 @@ upgrade evidence. Use the same checkout, profile, and evidence path:
 occ installation upgrade resume /path/to/original/evidence --profile /secure/occ/upgrade.json
 ```
 
+For a publication profile, resume and separate migration apply use the pair
+recorded in the original run. You can recover if the local publication file
+moves or changes.
+
 Resume previews the selected trust mode and the writes that may still occur.
 It can write the recorded local `installation.yaml`, replace data in the live
 mutable Installation Secret, or switch the Helm release to the recorded
@@ -211,3 +276,15 @@ recovery. Before returning to an earlier controller, check its compatibility
 with committed database and authentication state.
 Follow [stopped authentication maintenance](auth-maintenance.md) for
 authentication changes.
+
+### Stop when the recorded Installation Secret is immutable
+
+If a prepared upgrade still needs to write different data to the recorded
+Installation Secret and that Secret is now immutable, stop. Resume requires the
+original candidate and recorded Secret UID, so replacing the Secret or changing
+the candidate cannot resolve the refusal.
+
+Keep the maintenance freeze and preserve the original inputs and evidence.
+The API or worker may already be stopped. Have the release owner reconcile
+the state of the writers, the Helm release, and the database migration before
+choosing a separate recovery.

@@ -1,3 +1,9 @@
+import { registerManagedOpenShellStartupCases } from "./sandbox-driver-managed-startup-cases.ts";
+import {
+  stagedManagedMcpPolicy,
+  verifyStagedHarnessActivation,
+  verifyStagedModelPolicyObservation,
+} from "./sandbox-driver-staged-harness-cases.ts";
 import {
   registerDedicatedCodexProviderCase,
   registerInitialWorkspaceCases,
@@ -42,6 +48,20 @@ import {
 } from "./sandbox-driver-startup-orchestration.ts";
 
 registerSandboxDriverStartupWiringCases(credentialGatewayOverProviders);
+
+test(
+  "OpenShell observes and applies the canonical model-only staged policy",
+  verifyStagedModelPolicyObservation,
+);
+
+test("OpenShell qualifies and stages the managed MCP session and selected tool policy", async () => {
+  await stagedManagedMcpPolicy();
+});
+
+test(
+  "OpenShell adopts an idle Sandbox and activates with model and Google Provider placeholders",
+  verifyStagedHarnessActivation,
+);
 
 registerManagedPluginPolicyCases(credentialGatewayOverProviders);
 
@@ -158,3 +178,5 @@ registerSandboxDriverNamespaceGatewayCleanupCases({
   sandboxInstallation,
   openShellDriver,
 });
+
+registerManagedOpenShellStartupCases();

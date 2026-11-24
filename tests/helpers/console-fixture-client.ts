@@ -1,19 +1,8 @@
-import type {
-  AccessBinding,
-  Group,
-  GroupMembership,
-  Identity,
-  Permission,
-  Role,
-  SecretBindings,
-  SecretReference,
-} from "../../packages/contracts/src/index.ts";
-import type { IAMAccessBindingWire } from "../../packages/contracts/src/api/resources.ts";
+import type { SecretBindings } from "../../packages/contracts/src/index.ts";
 import type { CreateAgentInput, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "./console-app.mjs";
 
 type ConsoleApp = Awaited<ReturnType<typeof createConsoleAppFixture>>;
-type CreatedAgent = Awaited<ReturnType<ConsoleApp["createAgent"]>>;
 type ConfigurationOptions = { secretBindings?: SecretBindings | undefined };
 type AgentOptions = ConfigurationOptions & {
   [Field in "backendId" | "harnessAuth" | "credentialSources" | "executionMode"]?:
@@ -22,14 +11,7 @@ type AgentOptions = ConfigurationOptions & {
 
 type ConsoleFixtureClient = Omit<
   ConsoleApp,
-  | "request"
-  | "createConfiguration"
-  | "updateConfiguration"
-  | "createAgent"
-  | "addedAccessBindings"
-  | "grantAgentSecretOperate"
-  | "policy"
-  | "controller"
+  "request" | "createConfiguration" | "updateConfiguration" | "createAgent" | "controller"
 > & {
   request(
     ...args: Parameters<ConsoleApp["request"]>
@@ -51,22 +33,6 @@ type ConsoleFixtureClient = Omit<
     values?: object,
     options?: AgentOptions,
   ): ReturnType<ConsoleApp["createAgent"]>;
-  addedAccessBindings(namespaceId: string): Promise<IAMAccessBindingWire[]>;
-  grantAgentSecretOperate(
-    agent: CreatedAgent | Pick<CreatedAgent, "id" | "namespaceId" | "servicePrincipalId">,
-    source: SecretReference | Pick<SecretReference, "id">,
-    options?: { listed?: boolean | undefined; modelGrant?: boolean | undefined },
-  ): Promise<void>;
-  policy: Omit<
-    ConsoleApp["policy"],
-    "identities" | "groups" | "memberships" | "roles" | "bindings"
-  > & {
-    identities: Identity[];
-    groups: Group[];
-    memberships: GroupMembership[];
-    roles: (Omit<Role, "permissions"> & { permissions: Permission[] })[];
-    bindings: AccessBinding[];
-  };
   controller: OpenClawController | undefined;
 };
 

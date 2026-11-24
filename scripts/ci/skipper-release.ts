@@ -147,8 +147,13 @@ export function skipperOperationDiagnostic(value: unknown) {
   const gatewayChatPhase = skipperGatewayChatPhases.find(
     (phase) => phase === diagnostic.gatewayChatPhase,
   );
-  const { runtimeSignal, modelRequestObservation, gatewayTransportCause, helperEntered } =
-    diagnostic;
+  const {
+    runtimeSignal,
+    modelRequestObservation,
+    gatewayTransportCause,
+    gatewayListener,
+    helperEntered,
+  } = diagnostic;
   const attributed = operation === "gateway-chat" && gatewayChatPhase !== undefined;
   const timedTransport =
     gatewayCategory === "transport" &&
@@ -156,6 +161,16 @@ export function skipperOperationDiagnostic(value: unknown) {
       gatewayTransportCause === "connection-reset" ||
       gatewayTransportCause === "headers-timeout");
   return {
+    ...(attributed &&
+    gatewayChatPhase === "native-git" &&
+    httpStatus === 0 &&
+    timedTransport &&
+    gatewayTransportCause === "socket-closed" &&
+    (gatewayListener === "responding" ||
+      gatewayListener === "unreachable" ||
+      gatewayListener === "unavailable")
+      ? { gatewayListener }
+      : {}),
     ...(attributed &&
     gatewayChatPhase === "native-git" &&
     httpStatus === 0 &&

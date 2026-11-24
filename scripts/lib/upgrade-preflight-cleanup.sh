@@ -21,6 +21,7 @@ read_preflight_identity() {
     ' >"$2" 2>/dev/null
 }
 cleanup_preflight() {
+  local job_cleanup_mode=${1:-delete}
   local entry resource name uri delete_options errors uid deadline remaining child child_name child_uid
   local consumers_stopped=1 cleanup_failed=0
   ((preflight_consumer_unknown == 0)) || consumers_stopped=0
@@ -37,7 +38,8 @@ cleanup_preflight() {
       continue
     fi
     uri="/apis/batch/v1/namespaces/$namespace/jobs/$name"
-    if ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
+    if [[ "$job_cleanup_mode" == delete ]] &&
+      ! errors=$("${kube[@]}" --request-timeout=15s delete --raw="$uri" -f - \
       <<<"$delete_options" 2>&1 >/dev/null); then
       # A prior cleanup may have deleted the original. Re-read instead of
       # interpreting kubectl's error text; child settlement is still required.

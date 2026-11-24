@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Record preflight create boundaries and inspect identities for cleanup only."""
+"""Journal read-only preflight and irreversible migration Job intent and ownership."""
 
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import sys
 import tempfile
@@ -17,6 +19,10 @@ MIGRATION_ATTEMPT = re.compile(r"migration-preflight(?:-resume)?\.[A-Za-z0-9]+")
 RESUME_ATTEMPT = re.compile(r"upgrade-preflight-resume\.[A-Za-z0-9]+")
 JOURNAL = "preflight-journal.json"
 PLAN = "preflight-plan.json"
+MIGRATION_FORMAT = "upgrade-migration-v1"
+MIGRATION_ATTEMPT_PREFIX = "migration-deploy-"
+MIGRATION_STAGE = re.compile(r"apply|verify(?:-[1-9][0-9]*)?")
+VERIFICATION_FAILED = "verificationFailed"
 JOBS = ("api", "worker", "migration")
 KINDS = {"networkpolicy": "networkpolicy.networking.k8s.io", "secret": "secret",
          **{slot: "job.batch" for slot in JOBS}}
@@ -80,8 +86,9 @@ def unique_keys(pairs):
     return result
 
 
-def read(path, acknowledgement=False):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+def read(path, acknowledgement=False, *, parent=None):
+    name = path if parent is None else path.name
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
     try:
         info = os.fstat(fd)
         require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
@@ -97,7 +104,8 @@ def read(path, acknowledgement=False):
             require(info.st_nlink == 1, "unexpected evidence hardlink")
         with os.fdopen(os.dup(fd), "r", encoding="utf-8") as source:
             value = json.load(source, object_pairs_hook=unique_keys)
-        require(identity(path.lstat()) == identity(info), "evidence changed while reading")
+        require(identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == identity(info),
+                "evidence changed while reading")
         # A valid final receipt observed after an interrupted publisher becomes
         # durable before cleanup is authorized. Missing receipts remain unknown.
         os.fsync(fd)
@@ -274,6 +282,192 @@ def valid_uid(value):
         character.isspace() for character in value)
 
 
+def migration_path(root):
+    # Restoring the main evidence directory must not erase a Job submission.
+    return root.with_name(root.name + ".migration-state.json")
+
+
+@contextmanager
+def migration_parent(root, required):
+    path = migration_path(root)
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            present = True
+        except FileNotFoundError:
+            present = False
+        if required or present:
+            info = os.fstat(parent)
+            # Apply the same parent policy as the dispatch journal before
+            # reading the sibling or publishing either create witness.
+            require(info.st_uid in (0, os.geteuid())
+                    and (not info.st_mode & 0o022 or info.st_mode & stat.S_ISVTX),
+                    "the migration journal's parent must protect files from other users")
+        yield parent, present
+    finally:
+        os.close(parent)
+
+
+def write_migration_journal(root, parent, state, replace):
+    name = migration_path(root).name
+    staged = "." + name + "." + secrets.token_hex(12)
+    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(encoded(state))
+            output.flush()
+            os.fsync(output.fileno())
+        if replace:
+            os.replace(staged, name, src_dir_fd=parent, dst_dir_fd=parent)
+        else:
+            os.link(staged, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+            os.unlink(staged, dir_fd=parent)
+        os.fsync(parent)
+    finally:
+        try:
+            os.unlink(staged, dir_fd=parent)
+        except FileNotFoundError:
+            pass
+
+
+def migration_binding(root):
+    return digest({
+        "parameters": read(root / "parameters.json"),
+        "handoff": read(root / "database-migration-handoff.json"),
+        "secrets": read(root / "migration-secret-identities.json"),
+    })
+
+
+def migration_receipt(path, kind, name=None):
+    if not os.path.lexists(path):
+        return None
+    record = read(path, acknowledgement=True)
+    require(isinstance(record, dict) and set(record) == {"kind", "name", "uid"}
+            and record["kind"] == kind and is_name(record["name"])
+            and (name is None or record["name"] == name) and valid_uid(record["uid"]),
+            "invalid migration Job or Pod acknowledgement")
+    return record
+
+
+def migration_state(root, parent, present):
+    state = None
+    order = []
+    if present:
+        state = read(migration_path(root), parent=parent)
+        require(isinstance(state, dict) and set(state) == {"format", "binding", "stages"}
+                and state["format"] == MIGRATION_FORMAT and state["binding"] == migration_binding(root)
+                and isinstance(state["stages"], dict) and "apply" in state["stages"],
+                "migration journal does not match the original handoff")
+        order = ["apply"] + ["verify" if index == 1 else f"verify-{index}"
+                             for index in range(1, len(state["stages"]))]
+        require(set(order) == set(state["stages"]), "migration verification attempts are out of order")
+    stages = state["stages"] if state is not None else {}
+    progress = {}
+    for attempt in root.iterdir():
+        if not attempt.name.startswith(MIGRATION_ATTEMPT_PREFIX):
+            continue
+        name = attempt.name.removeprefix(MIGRATION_ATTEMPT_PREFIX)
+        require(MIGRATION_STAGE.fullmatch(name), "invalid migration attempt name")
+        if name not in stages:
+            directory(attempt)
+            require(not any(os.path.lexists(attempt / name) for name in (
+                "migration-intent.json", "preflight-migration-identity.json",
+                "preflight-migration-pod-identity.json")),
+                "migration Job evidence exists without its original sibling journal")
+    for index, stage in enumerate(order):
+        kind = "verify" if index else "apply"
+        if kind == "verify":
+            require(progress["apply"]["state"] == "cleaned",
+                    "migration verification precedes apply cleanup")
+            previous = progress.get("verify")
+            require(previous is None or (previous["state"] == "cleaned"
+                                         and previous["history"] == VERIFICATION_FAILED),
+                    "a verification retry requires a cleaned failed attempt")
+        attempt = root / (MIGRATION_ATTEMPT_PREFIX + stage)
+        attempt, physical = directory(attempt)
+        record = stages[stage]
+        require(isinstance(record, dict)
+                and set(record) == {"directory", "name", "state", "job", "pod", "history"}
+                and record["directory"] == physical and is_name(record["name"])
+                and record["state"] in ("creating", "settled", "cleaning", "cleaned"),
+                "invalid migration stage or restored attempt directory")
+        intent = read(attempt / "migration-intent.json")
+        require(intent == {"directory": physical, "name": record["name"]},
+                "migration intent differs from its sibling journal")
+        job = migration_receipt(attempt / "preflight-migration-identity.json", "job.batch", record["name"])
+        pod = migration_receipt(attempt / "preflight-migration-pod-identity.json", "pod")
+        require(pod is None or job is not None, "migration Pod has no acknowledged Job")
+        if record["state"] == "creating":
+            require(record["job"] is None and record["pod"] is None and record["history"] is None,
+                    "unsettled migration contains a result receipt")
+        else:
+            require(job is not None and pod is not None
+                    and record["job"] == job and record["pod"] == pod
+                    and valid_migration_history(kind, record["history"]),
+                    "settled migration identity or result evidence changed")
+        progress[kind] = {"attempt": stage, "index": index, "history": record["history"],
+                          "name": record["name"], "state": record["state"], "job": job, "pod": pod}
+        sync_directory(attempt)
+    if present:
+        os.fsync(parent)
+    return state, progress
+
+
+def valid_migration_history(stage, history):
+    if stage == "verify":
+        return history in ("completed", VERIFICATION_FAILED)
+    return (isinstance(history, str) and history != "empty"
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,79}", history) is not None)
+
+
+def update_migration(root, parent, present, action, stage, *args):
+    require(MIGRATION_STAGE.fullmatch(stage), "invalid migration stage")
+    kind = "apply" if stage == "apply" else "verify"
+    state, progress = migration_state(root, parent, present)
+    observed = progress.get(kind)
+    if action == "migration-begin":
+        require(len(args) == 1 and is_name(args[0]), "invalid migration Job name")
+        if kind == "apply":
+            require(observed is None, "migration apply create already recorded")
+        else:
+            require(progress.get("apply", {}).get("state") == "cleaned",
+                    "migration verification precedes apply cleanup")
+            expected = "verify"
+            if observed is not None:
+                require(observed["state"] == "cleaned" and observed["history"] == VERIFICATION_FAILED,
+                        "migration verification create already recorded")
+                expected = f"verify-{observed['index'] + 1}"
+            require(stage == expected, "migration verification attempt is out of order")
+        name = args[0]
+        attempt, physical = directory(root / (MIGRATION_ATTEMPT_PREFIX + stage))
+        if state is None:
+            state = {"format": MIGRATION_FORMAT, "binding": migration_binding(root), "stages": {}}
+        state["stages"][stage] = {"directory": physical, "name": name, "state": "creating",
+                                  "job": None, "pod": None, "history": None}
+        # Persist both witnesses before Kubernetes can receive the POST. Either
+        # witness alone means the create boundary must be reconciled.
+        write(attempt / "migration-intent.json", {"directory": physical, "name": name})
+        sync_directory(root)
+        write_migration_journal(root, parent, state, replace=present)
+        return
+    transitions = {"migration-settled": ("creating", "settled"),
+                   "migration-cleaning": ("settled", "cleaning"),
+                   "migration-cleaned": ("cleaning", "cleaned")}
+    previous, following = transitions[action]
+    require(observed is not None and observed["attempt"] == stage and observed["state"] == previous
+            and observed.get("job") is not None and observed.get("pod") is not None,
+            "migration stage has not reached the required outcome")
+    if action == "migration-settled":
+        require(len(args) == 1 and valid_migration_history(kind, args[0]), "invalid migration result")
+        state["stages"][stage]["history"] = args[0]
+    else:
+        require(not args, "unexpected migration stage arguments")
+    state["stages"][stage].update(state=following, job=observed["job"], pod=observed["pod"])
+    write_migration_journal(root, parent, state, replace=True)
+
+
 def main():
     action, root_name, *args = sys.argv[1:]
     root, physical = directory(root_name)
@@ -305,6 +499,12 @@ def main():
               {"planSha256": state["attempts"][name]["planSha256"], "slot": slot})
     elif action == "inspect" and len(args) == 4:
         print(json.dumps(inspect(root, *args), separators=(",", ":")))
+    elif action == "migration-status" and args in ([], ["--require-protected-parent"]):
+        with migration_parent(root, required=bool(args)) as (parent, present):
+            print(json.dumps(migration_state(root, parent, present)[1], separators=(",", ":")))
+    elif action in ("migration-begin", "migration-settled", "migration-cleaning", "migration-cleaned") and args:
+        with migration_parent(root, required=True) as (parent, present):
+            update_migration(root, parent, present, action, *args)
     else:
         raise InvalidEvidence("invalid preflight state command")
 

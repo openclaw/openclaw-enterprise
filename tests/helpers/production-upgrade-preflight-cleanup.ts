@@ -63,6 +63,21 @@ type FixtureOptions = {
     uid?: string;
   };
   preflightResults?: { api?: PreflightResult; worker: PreflightResult };
+  environment?: NodeJS.ProcessEnv;
+};
+
+// Cases whose Job child or dependency never goes away end at the cleanup's own 30 s
+// deadline. Bash imports this sleep function from the environment: each one-second poll
+// in cleanup_preflight sleeps 0.1 s and moves the script's SECONDS clock 10 s ahead, so
+// the unchanged deadline check passes after three polls instead of 30 s of waiting.
+// The function shadows the fixture's PATH sleep shim and reaches it through
+// `command sleep`, so every other sleep runs as before. It depends on the cleanup
+// polling with exactly `sleep 1` on the script's SECONDS clock inside
+// cleanup_preflight: if that interval or clock changes, these four cases silently
+// wait the real 30 s again. They stay correct; they are only slow.
+const fastCleanupDeadline = {
+  "BASH_FUNC_sleep%%":
+    '() { if [[ ${FUNCNAME[1]-} == cleanup_preflight && $* == 1 ]]; then SECONDS=$((SECONDS + 10)); set -- 0.1; fi; command sleep "$@"; }',
 };
 
 type UpgradeFixture = {
@@ -350,6 +365,7 @@ export function registerPreflightCleanupTests(
       controllerOnly: true,
       preflightPolicy: true,
       preflightFault: { target: "secret", mode: "interrupt" },
+      environment: fastCleanupDeadline,
     });
     await runForFailure(f, "--preflight-only");
     const path = join(f.directory, "state.json");
@@ -420,6 +436,7 @@ export function registerPreflightCleanupTests(
       controllerOnly: true,
       preflightPolicy: true,
       preflightFault: { target: "api", mode: "absent-job-retained-child" },
+      environment: fastCleanupDeadline,
     });
     // The Job's NotFound reply does not establish that its original Pod stopped.
     const failure = await runForFailure(f, "--preflight-only");
@@ -462,6 +479,7 @@ export function registerPreflightCleanupTests(
       controllerOnly: true,
       preflightPolicy: true,
       preflightFault: { target: "secret", mode: "retained-dependency" },
+      environment: fastCleanupDeadline,
     });
     const failure = await runForFailure(f, "--preflight-only");
     assert.match(failure.stderr, /startup preflight cleanup is incomplete/);
@@ -917,6 +935,7 @@ export function registerPreflightCleanupTests(
       controllerOnly: true,
       preflightPolicy: true,
       preflightFault: { target: "api", mode: "retained-child" },
+      environment: fastCleanupDeadline,
     });
     const failure = await runForFailure(f, "--preflight-only");
     assert.equal(failure.code, 1);

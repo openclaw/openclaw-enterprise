@@ -1335,7 +1335,9 @@ test("Codex runtime helper rejects catalog drift before app grants and readiness
               return codexReadResponse(readCount === 1 ? {} : installedDetail);
             }
             if (method === "config/batchWrite") {
-              policyWritten = configEdits(params).some((edit) => edit.keyPath === "apps");
+              if (configEdits(params).some((edit) => edit.keyPath === "apps")) {
+                policyWritten = true;
+              }
               return { status: "ok", version: "test-config-1" };
             }
             if (method === "plugin/install") {

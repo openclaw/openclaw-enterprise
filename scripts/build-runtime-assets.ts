@@ -419,7 +419,6 @@ async function packageRuntime(root: string, output: string, manifestPath: string
 async function inventoryFinalImage(
   root: string,
   output: string,
-  nodeProvenancePath: string,
   downloadClientSelectionPath: string,
 ): Promise<void> {
   const { parseRuntimeDownloadClientSelection, readRuntimeDownloadClients } =
@@ -428,30 +427,16 @@ async function inventoryFinalImage(
     await readFile(downloadClientSelectionPath, "utf8"),
   );
   const downloadClients = await readRuntimeDownloadClients(selection);
-  const installedNode = downloadClients["/usr/local/bin/node"];
-  const node = await readJsonObject(nodeProvenancePath);
-  if (
-    !installedNode ||
-    node.version !== process.versions.node ||
-    node.architecture !== process.arch ||
-    node.platform !== process.platform ||
-    installedNode.resolvedBinary !== (await realpath(process.execPath)) ||
-    node.sha256 !== installedNode.binarySha256
-  ) {
-    throw new Error("Node provenance must identify the executable inventorying the final image.");
-  }
   const contents = await writeRuntimeInventory(root, output);
   const provenancePath = join(output, "provenance.json");
   const provenance = await readJsonObject(provenancePath);
   provenance.runtimeContentsSha256 = hash(contents);
   provenance.codex = await readCodexRuntimeIdentity(root);
-  provenance.node = node;
   provenance.downloadClients = downloadClients;
   await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`);
 }
 
-const [command, sourceRoot, output, manifestPath, downloadClientSelectionPath] =
-  process.argv.slice(2);
+const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);
 const usage = "Expected inputs, package, or inventory with source root and output directory.";
 if (sourceRoot === undefined || output === undefined) {
   throw new Error(usage);
@@ -466,12 +451,9 @@ if (command === "inputs") {
   await packageRuntime(root, output, manifestPath);
 } else if (command === "inventory") {
   if (manifestPath === undefined) {
-    throw new Error("Runtime inventory requires the installed Node provenance path");
-  }
-  if (downloadClientSelectionPath === undefined) {
     throw new Error("Runtime inventory requires the download client selection path");
   }
-  await inventoryFinalImage(root, output, manifestPath, downloadClientSelectionPath);
+  await inventoryFinalImage(root, output, manifestPath);
 } else {
   throw new Error(usage);
 }

@@ -113,9 +113,13 @@ type PrepareOptions = HelmTarget &
     agentNativeAdminDomain: string;
     installationName: string;
     bootstrapCredentials?: "generate" | "existing";
+    useChartResourceDefaults?: boolean;
     apiClients: readonly PodPeer[];
     channelEgress?: ChannelEgressOptions | undefined;
+    slackProxy?: { enabled: boolean } | undefined;
     databaseName?: string | undefined;
+    databaseUpgradeMigration?: "hook" | "separate" | undefined;
+    createPostgresResource?: ((resource: PostgresResource) => Promise<unknown>) | undefined;
     databaseTLS?:
       | {
           caSecretName: string;
@@ -136,6 +140,49 @@ type PrepareOptions = HelmTarget &
   };
 
 type FixtureResource = V1Secret | V1PersistentVolumeClaim | V1Pod | V1Service;
+type PostgresResource = (V1PersistentVolumeClaim | V1Pod | V1Service) & {
+  kind: "PersistentVolumeClaim" | "Pod" | "Service";
+  metadata: { name: string; namespace: string; labels: Labels };
+};
+
+async function installPostgresChart({
+  selection,
+  namespace,
+  release,
+  directory,
+  run,
+  postgresResources,
+}: HelmTarget & {
+  directory: string;
+  run: FixtureRun;
+  postgresResources: readonly PostgresResource[];
+}) {
+  // PostgreSQL is a real Helm-installed fixture dependency. Credentials stay in
+  // the separately provisioned Secret, outside chart files and Helm values.
+  const postgresChart = join(directory, "postgres-chart");
+  await mkdir(join(postgresChart, "templates"), { recursive: true });
+  await writeFile(
+    join(postgresChart, "Chart.yaml"),
+    "apiVersion: v2\nname: proof-postgres\nversion: 0.1.0\n",
+    { mode: 0o600 },
+  );
+  await writeFile(
+    join(postgresChart, "templates", "resources.yaml"),
+    postgresResources.map((object) => JSON.stringify(object)).join("\n---\n"),
+    { mode: 0o600 },
+  );
+  await run("helm", [
+    "install",
+    `${release}-postgres`,
+    postgresChart,
+    "--kubeconfig",
+    selection.kubeconfigPath,
+    "--kube-context",
+    selection.kubernetesContext,
+    "--namespace",
+    namespace,
+  ]);
+}
 
 function firstRecord(value: unknown) {
   if (!Array.isArray(value)) {
@@ -146,7 +193,38 @@ function firstRecord(value: unknown) {
 }
 
 // The caller owns the disposable namespace and registers its cleanup before installation.
-export async function prepareProductionHelmControlPlane({
+export async function prepareProductionHelmControlPlane(options: PrepareOptions) {
+  return prepareProductionHelmFixture(options);
+}
+
+async function buildOcc(run: FixtureRun, occ: string) {
+  await run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
+}
+
+async function prepareProductionHelmFixture(options: PrepareOptions, occ?: string) {
+  const { databaseName = "openclaw_enterprise", databaseTLS, run } = options;
+  assert.match(databaseName, /^[a-z][a-z0-9_]+$/);
+  if (databaseTLS) {
+    assert.match(databaseTLS.caSecretName, /^[a-z0-9-]+$/);
+    assert.match(databaseTLS.serverSecretName, /^[a-z0-9-]+$/);
+    assert.notEqual(databaseTLS.caSecretName, databaseTLS.serverSecretName);
+  }
+  const preparation = preparePostgresAndValues({ ...options, databaseName });
+  if (occ === undefined) {
+    return preparation;
+  }
+  // Both operations must settle before the caller can clean up the fixture.
+  const [prepared, built] = await Promise.allSettled([preparation, buildOcc(run, occ)]);
+  if (prepared.status === "rejected") {
+    throw prepared.reason;
+  }
+  if (built.status === "rejected") {
+    throw built.reason;
+  }
+  return prepared.value;
+}
+
+async function preparePostgresAndValues({
   selection,
   images,
   namespace: system,
@@ -157,20 +235,24 @@ export async function prepareProductionHelmControlPlane({
   authBaseURL,
   agentNativeAdminDomain,
   installationName,
+  useChartResourceDefaults,
   apiClients,
   channelEgress,
+  slackProxy,
   repositoryCredentials,
   gatewayRouting,
   controlPlane,
   executionCluster,
   metrics,
-  databaseName = "openclaw_enterprise",
+  databaseName,
+  databaseUpgradeMigration,
+  createPostgresResource,
   databaseTLS,
   run,
   kubernetes,
   createSecretValue,
   bootstrapCredentials = "existing",
-}: PrepareOptions) {
+}: PrepareOptions & { databaseName: string }) {
   // The values this installation creates, so a failure diagnostic can redact them.
   const secretValues: string[] = [];
   const secret = () => {
@@ -178,12 +260,6 @@ export async function prepareProductionHelmControlPlane({
     secretValues.push(value);
     return value;
   };
-  assert.match(databaseName, /^[a-z][a-z0-9_]+$/);
-  if (databaseTLS) {
-    assert.match(databaseTLS.caSecretName, /^[a-z0-9-]+$/);
-    assert.match(databaseTLS.serverSecretName, /^[a-z0-9-]+$/);
-    assert.notEqual(databaseTLS.caSecretName, databaseTLS.serverSecretName);
-  }
   const { kubectl } = kubernetes;
   const apply = (object: FixtureResource) =>
     run("kubectl", kubernetes.kubectlArguments(["apply", "-f", "-"]), {
@@ -198,7 +274,7 @@ export async function prepareProductionHelmControlPlane({
   });
   const createSecret = (name: string, stringData: Record<string, string>) =>
     apply({ apiVersion: "v1", kind: "Secret", metadata: metadata(name), stringData });
-  const postgresResources: FixtureResource[] = [];
+  const postgresResources: PostgresResource[] = [];
   const createClaim = (name: string) =>
     postgresResources.push({
       apiVersion: "v1",
@@ -360,31 +436,21 @@ export async function prepareProductionHelmControlPlane({
     metadata: metadata("postgres"),
     spec: { selector: { app: "postgres" }, ports: [{ port: 5432 }] },
   });
-  // PostgreSQL is a real Helm-installed fixture dependency. Credentials stay in
-  // the separately provisioned Secret, outside chart files and Helm values.
-  const postgresChart = join(directory, "postgres-chart");
-  await mkdir(join(postgresChart, "templates"), { recursive: true });
-  await writeFile(
-    join(postgresChart, "Chart.yaml"),
-    "apiVersion: v2\nname: proof-postgres\nversion: 0.1.0\n",
-    { mode: 0o600 },
-  );
-  await writeFile(
-    join(postgresChart, "templates", "resources.yaml"),
-    postgresResources.map((object) => JSON.stringify(object)).join("\n---\n"),
-    { mode: 0o600 },
-  );
-  await run("helm", [
-    "install",
-    `${release}-postgres`,
-    postgresChart,
-    "--kubeconfig",
-    selection.kubeconfigPath,
-    "--kube-context",
-    selection.kubernetesContext,
-    "--namespace",
-    system,
-  ]);
+  if (createPostgresResource) {
+    // The rehearsal records each UID at creation and uses it to guard later database operations.
+    for (const resource of postgresResources) {
+      await createPostgresResource(resource);
+    }
+  } else {
+    await installPostgresChart({
+      selection,
+      namespace: system,
+      release,
+      directory,
+      run,
+      postgresResources,
+    });
+  }
   await waitPod("postgres");
   const postgres = asRecord(await get("pod", "postgres"));
   const postgresIP = asRecord(postgres?.status)?.podIP;
@@ -414,22 +480,23 @@ export async function prepareProductionHelmControlPlane({
   assert.ok(typeof endpointIP === "string" && endpointIP, "Expected the Kubernetes endpoint IP");
   assert.ok(typeof endpointPort === "number", "Expected the Kubernetes endpoint port");
   const adminEmail = `admin-${suffix}@example.invalid`;
+  const channelSettings =
+    channelEgress === undefined
+      ? { enabled: false }
+      : {
+          ...channelEgress,
+          enabled: true,
+          gatewayClassName: gatewayRouting?.gatewayClassName ?? "eg",
+        };
   const values = {
     images: { controller: images.controller },
-    ...(channelEgress
-      ? {
-          channelEgress: {
-            ...channelEgress,
-            enabled: true,
-            gatewayClassName: gatewayRouting?.gatewayClassName ?? "eg",
-          },
-        }
-      : {}),
+    ...(slackProxy ? { slackProxy } : { channelEgress: channelSettings }),
     installation: { name: installationName },
     auth: { baseUrl: authBaseURL },
     agentNativeAdmin: { domain: agentNativeAdminDomain },
     bootstrap: { adminEmail, credentials: { secretName: "occ-bootstrap-credentials" } },
     database: {
+      ...(databaseUpgradeMigration ? { upgradeMigration: databaseUpgradeMigration } : {}),
       cidrs: [`${postgresIP}/32`],
       ...(databaseTLS && {
         caSecretName: databaseTLS.caSecretName,
@@ -444,7 +511,7 @@ export async function prepareProductionHelmControlPlane({
     api: {
       clients: apiClients,
     },
-    resources,
+    ...(useChartResourceDefaults ? {} : { resources }),
     // Callers without prepared routing exercise the supported direct-access installation.
     gatewayRouting: gatewayRouting === undefined ? { enabled: false } : gatewayRouting,
     repositoryCredentials,
@@ -489,15 +556,14 @@ export async function installProductionHelmControlPlane(
     record,
   } = options;
   const mode = options.bootstrapCredentials ?? "generate";
-  const prepared = await prepareProductionHelmControlPlane({
-    ...options,
-    bootstrapCredentials: mode,
-  });
-  if (mode === "generate") {
-    const occ = join(options.directory, "occ");
+  const occ = mode === "generate" ? join(options.directory, "occ") : undefined;
+  const prepared = await prepareProductionHelmFixture(
+    { ...options, bootstrapCredentials: mode },
+    occ,
+  );
+  if (occ !== undefined) {
     const receipt = join(options.directory, "install-receipt");
     const state = join(options.directory, "installer-state");
-    await run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
     async function retainedInputs() {
       const record: unknown = JSON.parse(
         await readFile(join(receipt, "bootstrap-secret.json"), "utf8"),

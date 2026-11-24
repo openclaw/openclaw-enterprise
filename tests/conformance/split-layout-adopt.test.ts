@@ -16,7 +16,7 @@ import {
   revertAdoption,
   storageNamespaceName,
 } from "../../scripts/split-layout-adopt.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 // The script drives a cluster only through kubectl. This fake answers the kubectl commands it
 // issues from an in-memory object store and models the API-server and controller behaviour the

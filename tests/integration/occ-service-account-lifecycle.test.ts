@@ -19,7 +19,7 @@ import {
   type HarnessAuthBinding,
   type ServiceAccountCredential,
 } from "../../packages/contracts/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   callerDenied,

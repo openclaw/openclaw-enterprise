@@ -6,7 +6,7 @@ import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createNativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 
 function createApp() {
   const installationId = `ins_${randomUUID()}`;

@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { decodeOtlpLogs } from "../helpers/production-observability-collector.ts";
 import {
   installObservabilityControlPlane,
   observabilitySelection,
+  waitForObservabilityNamespaces,
 } from "../helpers/production-observability-k3d.ts";
 import { verifyInstalledWorkerRestarts } from "../helpers/worker-termination-installed.ts";
+
+// Both tests' test Namespaces must be gone before the file passes.
+after(waitForObservabilityNamespaces);
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);

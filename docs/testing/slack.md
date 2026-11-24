@@ -12,6 +12,12 @@ Run live Slack integration checks with the [Kubernetes runtime](kubernetes.md#ku
 
 ## Slack
 
+Run the credential-free final-authority filter proof with Docker:
+`OCC_TEST_CHANNEL_ENVOY_REAL=1 node --test tests/integration/channel-egress-envoy-authority-real.test.ts`.
+It executes the product filter chain in the pinned Envoy image and checks CIDR,
+excluded-IP, and alternate numeric authority denials before proxy contact. It
+does not prove an Agent deployment or a live Slack connection.
+
 The [QA matrix](ci/qa-advisory.md) checks live ingress and a threaded reply. The focused test below checks root replies, credential placement, proxy isolation, and Socket Mode. Prepare an authorized model credential.
 
 Use an authorized test channel in one Slack workspace. The gateway bot and the authorized sender must join it. Use a distinct authorized sender bot. Use an existing Socket Mode app and compatible controller, Gateway, and Codex app-server images. CI builds the controller and the runtime with the pinned OpenClaw source, Codex, and Slack plugin when image overrides are absent. To select existing runtime images, supply both `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` as digest references; omit both to use the CI build. Direct test execution requires the imported immutable image references from [runtime preparation](kubernetes.md#kubernetes-model-turns-and-secrets). Run the [image smoke](docker.md#images-and-helm) first; version output alone does not prove compatibility.
@@ -30,16 +36,17 @@ model turns across revision cutover plus Slack delivery. PostgreSQL uses the
 repository's pinned fixture image unless `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`
 selects another qualified immutable reference.
 
-Before provisioning the Slack-enabled topology or posting, the focused test checks each bot’s existing `conversations.info` response. Each response must identify the exact configured public or private channel and explicitly report boolean `false` for both `is_im` and `is_mpim`. This rule also applies to legacy private channels. The test rejects malformed or contradictory type flags. The separate membership check reports which bot needs a channel invitation.
+Before provisioning the Slack-enabled topology or posting, the test uses the Gateway bot's `conversations.info` response to identify the exact public or private channel. The response must explicitly report `false` for both `is_im` and `is_mpim`, including for legacy private channels. The Gateway bot's paginated `conversations.members` response must include both bot users. The distinct sender must independently read channel history. The sender does not need channel-read scope.
 
 Put these settings in the private environment file:
 
-| Variable                          | Value                                                                            |
-| --------------------------------- | -------------------------------------------------------------------------------- |
-| `OCC_TEST_SLACK_CHANNEL_ID`       | Shared test channel.                                                             |
-| `SLACK_APP_TOKEN`                 | Gateway Socket Mode token, starting with `xapp-`.                                |
-| `SLACK_BOT_TOKEN`                 | Gateway bot token, starting with `xoxb-`.                                        |
-| `OCC_TEST_SLACK_SENDER_BOT_TOKEN` | Distinct sender bot token, starting with `xoxb-`; it stays with the test runner. |
+| Variable                          | Value                                                                                   |
+| --------------------------------- | --------------------------------------------------------------------------------------- |
+| `OCC_TEST_SLACK_CHANNEL_ID`       | Shared test channel.                                                                    |
+| `SLACK_APP_TOKEN`                 | Gateway Socket Mode token, starting with `xapp-`.                                       |
+| `SLACK_BOT_TOKEN`                 | Gateway bot token, starting with `xoxb-`.                                               |
+| `OCC_TEST_SLACK_SENDER_BOT_TOKEN` | Distinct sender bot token, starting with `xoxb-`; it stays with the test runner.        |
+| `OCC_TEST_CODEX_TOKEN_FILE`       | Optional private Codex service-account PAT file for the focused dedicated suites below. |
 
 ```sh
 OCC_TEST_SLACK_LIVE=1 \
@@ -49,6 +56,14 @@ OCC_TEST_SLACK_LIVE=1 \
 `OCC_TEST_SLACK_EVIDENCE_PATH` optionally retains the nonsecret delivery receipt
 outside the checkout. The test verifies the sender against Slack history and
 correlates the reply with one completed native Codex turn.
+
+`OCC_TEST_CODEX_TOKEN_FILE` selects Codex PAT authentication only for
+`harness-topology-k3d-slack-real.test.mjs` and
+`channel-egress-kubernetes-real.test.ts`. Use an owner-only mode-0600 file that
+passes the protected-file checks. Only the dedicated Harness receives the PAT;
+the Gateway does not. Dedicated startup performs a bounded model authentication
+probe even when a case requests no chat turn. The full Helm Slack runner still
+requires API-key authentication and does not accept this option.
 
 The same lane runs `channel-egress-kubernetes-real.test.ts` through normal Agent
 APIs and real workers. It covers distinct Driver generations, concurrent
@@ -77,3 +92,16 @@ issuance that never committed. The next issuance and account deletion reclaim
 the leftover Secret and credential. Ending a session during reclamation must
 preserve a later issuance. The provider and Secret store are in-memory; conformance
 tests cover their behavior. Use the [PostgreSQL setup](postgresql.md).
+
+## One-off channel upgrade proof
+
+Use the explicit `channel-egress-upgrade` QA scenario with Kubernetes and Codex.
+Its [upgrade case](../../tests/integration/channel-egress-upgrade-helm-real.test.ts)
+shares the real workflow with the fresh-install case. Supply the Slack lane inputs plus `OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE` and `OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART` for the matching pre-PR-6529 source. Supply
+`OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE` for the subsequent ordinary image
+upgrade; that image must be built from the target source commit with a different
+image digest. This operator-selected scenario runs the actual script and regular Agent workflow; it is outside the default advisory matrix.
+
+Run the one-off scenario once with `OCC_TEST_CHANNEL_EGRESS_DATABASE_MODE=hook`
+and once with `separate`. The separate case executes the chart-selected migrator
+and its require-current check during each handoff.

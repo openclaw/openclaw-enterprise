@@ -12,7 +12,7 @@ import {
   googleUpgradeSettings,
   oidcUpgradeSettings,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { postgresSignInState } from "../helpers/postgres-sign-in-installation.ts";
 import {

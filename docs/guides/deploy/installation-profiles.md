@@ -323,6 +323,11 @@ Both failures exit nonzero and leave no YAML outputs.
 
 ## Use rendered files
 
+To prepare a fresh install from a previous profile, keep the original input
+JSON and checked YAML pair. Review the JSON for the target release, then render
+into a new private directory. Compare any hand edits with the new pair before
+installing. Update the JSON and render again for settings that the profile owns.
+
 Set `OCC_INPUT_DIRECTORY` to the output directory, then complete the
 [production shell and context setup](production-installation.md#configure-the-installation).
 That setup reads the cluster kubeconfig from `$OCC_INPUT_DIRECTORY/kubeconfig`:
@@ -369,8 +374,9 @@ the install as ready:
 - For Codex, the configured localhost seccomp profile installed and verified on
   every node selected by `runtime.nodeSelector`.
 - For Slack, [managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md)
-  with EnvoyPatchPolicy support. `channels.managedEgress: true` and
-  `channels.excludedCidrs` produce matching Helm and Compute settings. Supply
+  with EnvoyPatchPolicy support. `channels.managedEgress` defaults to true;
+  explicit false disables the fleet. `channels.excludedCidrs` produces matching
+  Helm and Compute settings. Supply
   actual Pod, Service and node ranges, including public node addresses. Rendering
   the fleet does not enable channel consumers. Slack Agents require dedicated
   Codex execution; customer upstream proxies are not supported.

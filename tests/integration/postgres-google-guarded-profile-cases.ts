@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import type { Pool } from "pg";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import {
   authRowCounts,
   currentSession,

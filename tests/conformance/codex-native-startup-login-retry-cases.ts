@@ -7,8 +7,8 @@ import type {
   NativeStep,
   StartupExpectation,
 } from "../fixtures/codex-native-startup-types.ts";
+import type { Ready } from "./codex-native-startup-retry-cases.ts";
 
-type Ready = StartupExpectation & { readonly code: "READY" };
 type LoginFailure = StartupExpectation & {
   readonly check: "login";
   readonly code: LoginFailureCode;

@@ -4,19 +4,29 @@ import { Check } from "typebox/value";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
+  AgentReadResponse,
+  AgentResponse,
+  AgentRevisionListResponse,
+  AgentRevisionResponse,
+  type AgentRevisionWire,
   type AgentWire,
+  NamespaceListResponse,
+  NamespaceResponse,
   ErrorResponse,
   type InstallationWire,
   type NamespaceWire,
   type Permission,
 } from "../../packages/contracts/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { BOOTSTRAP_DEFAULT_NAMESPACE_NAME } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.ts";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { AGENT_NAME_CONFLICT, NAMESPACE_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   type createInjectedControllerFixture,
+  bindHarnessKey,
   bootstrapInstallation,
+  createConfiguration,
   checkedInjectedBody,
   createAgent as createFixtureAgent,
   createNamespace as createFixtureNamespace,
@@ -715,4 +725,209 @@ export async function runNamespaceIsolation({
     `/namespaces/${absentNamespaceId}`,
   );
   assertReadError(authorizedAbsent, 404, "NOT_FOUND", "authorized missing Namespace");
+}
+
+type ConfigureLifecycleController = (
+  options?: Pick<Parameters<typeof createInjectedControllerFixture>[0], "recordOperations">,
+) => Promise<Controller>;
+
+export async function runAgentDeletionMutationBoundary({
+  configuredController,
+  AgentDeletingError,
+  deletingMessage,
+}: {
+  configuredController: ConfigureLifecycleController;
+  AgentDeletingError: typeof import("../../packages/occ/src/index.ts").AgentDeletingError;
+  deletingMessage: string;
+}) {
+  const controller = await configuredController({ recordOperations: true });
+  const { fixture, request } = controller;
+  await bootstrapInstallation(controller);
+  const namespace = await createFixtureNamespace(controller, "deletion-race");
+  const agent = await createFixtureAgent(controller, namespace.id, "deletion-race-agent");
+  const occ = fixture.controller;
+  assert(occ, "bootstrap must create the controller");
+  const principalId = fixture.principal.id;
+  await occ.handleNamespaceLifecycle(principalId, namespace.id, "ready");
+  await bindHarnessKey(fixture, namespace.id, agent);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  assert.equal((await request("POST", `${agentPath}/deploy`)).status, 202);
+  const deletion = await request("DELETE", agentPath);
+  const { data: deletedAgent } = checkedInjectedBody(deletion, 202, AgentReadResponse);
+  assert.equal(deletedAgent.status, "deleting");
+  assert.equal(deletedAgent.desiredRuntimeState, "stopped");
+
+  // Repeated deletion must reuse the existing teardown through the memory work lookup.
+  const repeatedDeletion = await request("DELETE", agentPath);
+  const repeatedAgent = checkedInjectedBody(repeatedDeletion, 202, AgentReadResponse).data;
+  assert.equal(repeatedAgent.status, "deleting");
+  const platformState = fixture.platformState;
+  assert(platformState);
+  await platformState.read(async (view) => {
+    const key = `agent:${agent.id}:reconcile:deleted`;
+    const work = await view.operations.findWork(key);
+    assert.ok(work);
+    assert.equal(work.idempotencyKey, key);
+    assert.equal(work.agentId, agent.id);
+    assert.equal(work.namespaceId, namespace.id);
+    assert.equal(work.actorId, principalId);
+    assert.equal(work.agentTarget, "deleted");
+    assert.equal(await view.operations.findWork(`${key}:undefined`), undefined);
+    const teardowns = (await view.operations.list()).filter(
+      (operation) =>
+        operation.kind === "agent" &&
+        operation.resourceId === agent.id &&
+        operation.namespaceId === namespace.id &&
+        operation.action === "reconcile" &&
+        operation.target === "deleted",
+    );
+    assert.equal(teardowns.length, 1);
+  });
+  for (const mutation of [
+    () => request("PATCH", agentPath, { body: { configurationId: agent.configurationId } }),
+    () => request("POST", `${agentPath}/deploy`),
+  ]) {
+    const rejected = await mutation();
+    assertApiError(rejected, 409, "AGENT_DELETING");
+    assert.equal(checkedInjectedBody(rejected, 409, ErrorResponse).error.message, deletingMessage);
+  }
+  // Credential provisioning and workspace routing are intentionally absent
+  // from this API fixture, so prove their admission barriers directly before
+  // either unavailable dependency is consulted.
+  await assert.rejects(
+    occ.provisionAgentRuntimeCredentials(principalId, namespace.id, agent.id, {}),
+    AgentDeletingError,
+  );
+  await assert.rejects(
+    occ.getOperableActiveAgentRevision(principalId, namespace.id, agent.id),
+    AgentDeletingError,
+  );
+  const revisions = await request("GET", `${agentPath}/revisions`);
+  const admitted = checkedInjectedBody(revisions, 200, AgentRevisionListResponse).data;
+  assert.equal(admitted.length, 1, "no mutation may admit work after deletion starts");
+}
+
+export async function prepareNamespaceLifecycle(
+  configuredController: ConfigureLifecycleController,
+) {
+  const controller = await configuredController();
+  const { fixture, request } = controller;
+  await bootstrapInstallation(controller, "Lifecycle installation");
+  const namespaceA = await createFixtureNamespace(controller, "lifecycle-a");
+  const namespaceB = await createFixtureNamespace(controller, "lifecycle-b");
+  const originalConfiguration = await createConfiguration(controller, namespaceA.id, {
+    model: "original",
+  });
+  const created = await request("POST", `/namespaces/${namespaceA.id}/agents`, {
+    body: { name: "lifecycle-agent-a", configurationId: originalConfiguration.id },
+  });
+  const agentA = checkedInjectedBody(created, 201, AgentResponse);
+  assert.equal(agentA.data.configurationId, originalConfiguration.id);
+  const firstConfiguration = await createConfiguration(controller, namespaceA.id, {
+    model: "first",
+    temperature: "0",
+  });
+  const agentPath = `/namespaces/${namespaceA.id}/agents/${agentA.data.id}`;
+  const replacedReference = await request("PATCH", agentPath, {
+    body: { configurationId: firstConfiguration.id },
+  });
+  const replacedAgent = checkedInjectedBody(replacedReference, 200, AgentResponse).data;
+  assert.equal(replacedAgent.configurationId, firstConfiguration.id);
+  assert.deepEqual(fixture.computeCalls.ensureNamespace, []);
+  assertApiError(await request("POST", `${agentPath}/deploy`), 409, "NAMESPACE_NOT_READY");
+  const occ = fixture.controller;
+  assert(occ, "bootstrap must create the controller");
+  await occ.handleNamespaceLifecycle(fixture.principal.id, namespaceA.id, "ready");
+  await occ.handleNamespaceLifecycle(fixture.principal.id, namespaceB.id, "ready");
+  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.id, namespaceB.id]);
+  await bindHarnessKey(fixture, namespaceA.id, {
+    ...agentA.data,
+    configurationId: firstConfiguration.id,
+  });
+  const revisionResponse = (response: Awaited<ReturnType<typeof request>>) => ({
+    status: response.status,
+    ...checkedInjectedBody(response, 202, AgentRevisionResponse),
+  });
+  const readyDeployment = revisionResponse(await request("POST", `${agentPath}/deploy`));
+
+  async function admitSecondRevision() {
+    assert.deepEqual(readyDeployment.data.harness, {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {},
+    });
+    assert.deepEqual(readyDeployment.data.compute, {
+      id: "compute-integration",
+      implementation: "deterministic-test",
+    });
+    assert.equal(readyDeployment.data.revision, 1);
+    assert.equal(Object.hasOwn(readyDeployment.data, "servicePrincipalId"), false);
+    const secondConfiguration = await createConfiguration(controller, namespaceA.id, {
+      model: "second",
+      temperature: "1",
+    });
+    const nextReference = await request("PATCH", agentPath, {
+      body: { configurationId: secondConfiguration.id },
+    });
+    assert.equal(nextReference.status, 200);
+    const historical = await request("GET", `${agentPath}/revisions/${readyDeployment.data.id}`);
+    const historicalRevision = checkedInjectedBody(historical, 200, AgentRevisionResponse).data;
+    assert.deepEqual(historicalRevision, readyDeployment.data);
+    const nextDeployment = revisionResponse(await request("POST", `${agentPath}/deploy`));
+    assert.equal(nextDeployment.data.revision, 2);
+    return nextDeployment;
+  }
+
+  async function verifyTombstone(nextDeployment: Awaited<ReturnType<typeof admitSecondRevision>>) {
+    const revisions = await request("GET", `${agentPath}/revisions`);
+    const list = checkedInjectedBody(revisions, 200, AgentRevisionListResponse);
+    // The list returns summaries, newest first, on one page.
+    const summary = (revision: AgentRevisionWire) => ({
+      id: revision.id,
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revision: revision.revision,
+      backendId: revision.backendId,
+      configurationId: revision.configurationId,
+      configurationGeneration: revision.configurationGeneration,
+      harness: revision.harness,
+      createdAt: revision.createdAt,
+      // This in-memory API records no deployment work.
+      deploymentStatus: null,
+      deploymentErrorCode: null,
+    });
+    assert.deepEqual(list.data, [summary(nextDeployment.data), summary(readyDeployment.data)]);
+    assert.equal(list.meta.nextCursor, null);
+    assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.id, namespaceB.id]);
+    const namespaceBPath = `/namespaces/${namespaceB.id}`;
+    const deleting = await request("DELETE", namespaceBPath);
+    assert.equal(checkedInjectedBody(deleting, 202, NamespaceResponse).data.status, "deleting");
+    const rejectedChild = await request("POST", `${namespaceBPath}/agents`, {
+      body: { name: "too-late", configurationId: firstConfiguration.id },
+    });
+    assert.equal(rejectedChild.status, 409);
+    assert(occ);
+    await occ.handleNamespaceLifecycle(fixture.principal.id, namespaceB.id, "deleted");
+    assert.deepEqual(fixture.computeCalls.deleteNamespace, [namespaceB.id]);
+    assert.equal((await request("GET", namespaceBPath)).status, 404);
+    const collection = await request("GET", "/namespaces");
+    const listed = checkedInjectedBody(collection, 200, NamespaceListResponse);
+    assert.deepEqual(
+      listed.data.map(({ name }) => name),
+      [BOOTSTRAP_DEFAULT_NAMESPACE_NAME, "lifecycle-a"],
+    );
+    const stillReady = await request("GET", `/namespaces/${namespaceA.id}`);
+    assert.equal(checkedInjectedBody(stillReady, 200, NamespaceResponse).data.status, "ready");
+    // The tombstone keeps its name: a new Namespace cannot reuse it, and the 409 says the name
+    // belongs to a deleted Namespace rather than one the caller could find in the list.
+    const reused = await request("POST", "/namespaces", { body: { name: "lifecycle-b" } });
+    assertApiError(reused, 409, "RESOURCE_CONFLICT");
+    assert.equal(
+      checkedInjectedBody(reused, 409, ErrorResponse).error.message,
+      "This name belongs to a deleted Namespace and cannot be reused. Choose a different name.",
+    );
+  }
+  return { agentA, firstConfiguration, readyDeployment, admitSecondRevision, verifyTombstone };
 }

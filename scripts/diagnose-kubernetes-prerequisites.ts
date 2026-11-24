@@ -32,7 +32,16 @@ type PlanInput = {
   eks?: { clusterArn?: unknown; webhookCidrs?: unknown };
 };
 
+type EksTarget = { clusterArn: string; region: string; account: string; cluster: string };
+type InventoryPlan = {
+  mode: "inventory";
+  kubeconfig: string;
+  context: string;
+  eks: EksTarget;
+};
+
 type DiagnosticPlan = {
+  mode: "diagnose";
   kubeconfig: string;
   context: string;
   namespace: string;
@@ -42,16 +51,7 @@ type DiagnosticPlan = {
   apiCidrs: string[];
   serviceDependency: ServiceDependency | undefined;
   peakAdditional: PeakAdditional | undefined;
-  eks:
-    | {
-        // Keep the original JSON value for strict comparison and reporting.
-        clusterArn: unknown;
-        webhookCidrs: string[];
-        region: string;
-        account: string;
-        cluster: string;
-      }
-    | undefined;
+  eks: (EksTarget & { webhookCidrs: string[] }) | undefined;
 };
 
 type KubernetesMetadata = { uid?: string; generation?: number; deletionTimestamp?: string };
@@ -95,6 +95,8 @@ type KubeconfigView = {
 };
 
 type ApiService = {
+  apiVersion?: string;
+  kind?: string;
   metadata?: NamedMetadata;
   spec: {
     type?: string;
@@ -124,11 +126,6 @@ type NetworkPolicy = {
 };
 
 type KubernetesList<T> = { metadata?: { continue?: string }; items: T[] };
-
-type EndpointSlice = {
-  addressType: string;
-  endpoints: { addresses: string[] }[];
-};
 
 type CustomResourceDefinition = {
   metadata?: KubernetesMetadata;
@@ -199,6 +196,14 @@ type CheckResult = {
 };
 
 type CheckReport = CheckResult & { id: string };
+// The address fields have the same shape as the prerequisite plan.
+type AddressInventory = {
+  context: string;
+  checkedAt: string;
+  apiCidrs: string[];
+  eks: { clusterArn: string; webhookCidrs: string[] };
+};
+
 type DiagnosticReport = {
   expectedClusterArn?: unknown;
   context: string;
@@ -263,6 +268,20 @@ function requirePeakCount(count: unknown): number {
     );
   }
   return count;
+}
+
+function requireEksTarget(clusterArn: unknown): EksTarget {
+  const arn =
+    typeof clusterArn === "string"
+      ? /^arn:(aws|aws-us-gov|aws-cn):eks:([a-z0-9-]+):(\d{12}):cluster\/([A-Za-z0-9][A-Za-z0-9_-]{0,99})$/.exec(
+          clusterArn,
+        )
+      : null;
+  const [, , region, account, cluster] = arn ?? [];
+  if (typeof clusterArn !== "string" || !region || !account || !cluster) {
+    throw new DiagnosticError("eks.clusterArn must identify the intended EKS cluster");
+  }
+  return { clusterArn, region, account, cluster };
 }
 
 function serviceDependency(value: unknown): ServiceDependency | undefined {
@@ -374,18 +393,12 @@ function validateConfig(value: unknown): DiagnosticPlan {
   let eks: DiagnosticPlan["eks"];
   if (config.eks !== undefined) {
     const { clusterArn, webhookCidrs } = config.eks;
-    const arn =
-      /^arn:(aws|aws-us-gov|aws-cn):eks:([a-z0-9-]+):(\d{12}):cluster\/([A-Za-z0-9][A-Za-z0-9_-]{0,99})$/.exec(
-        String(clusterArn ?? ""),
-      );
-    const [, , region, account, cluster] = arn ?? [];
-    if (!region || !account || !cluster) {
-      throw new DiagnosticError("eks.clusterArn must identify the intended EKS cluster");
-    }
+    const target = requireEksTarget(clusterArn);
     requireCidrs(webhookCidrs, "eks.webhookCidrs");
-    eks = { clusterArn, webhookCidrs, region, account, cluster };
+    eks = { ...target, webhookCidrs };
   }
   return {
+    mode: "diagnose",
     kubeconfig,
     context,
     namespace,
@@ -615,11 +628,9 @@ async function kubernetesGet<T>(
       ).once("error", reject);
     });
     const code = response.statusCode ?? 0;
-    if (code !== 200) {
+    const optionalNotFound = code === 404 && optional;
+    if (code !== 200 && !optionalNotFound) {
       response.destroy();
-      if (code === 404 && optional) {
-        return null;
-      }
       if (code >= 300 && code < 400) {
         throw new DiagnosticError("The selected endpoint returned an unexpected redirect.");
       }
@@ -647,6 +658,21 @@ async function kubernetesGet<T>(
       chunks.push(chunk);
     }
     const resource = parseJson<unknown>(Buffer.concat(chunks).toString());
+    if (optionalNotFound) {
+      if (
+        isObject(resource) &&
+        resource.apiVersion === "v1" &&
+        resource.kind === "Status" &&
+        resource.status === "Failure" &&
+        resource.reason === "NotFound" &&
+        resource.code === 404
+      ) {
+        return null;
+      }
+      throw new DiagnosticError(
+        "The selected endpoint did not confirm that the resource is absent.",
+      );
+    }
     if (
       !isObject(resource) ||
       typeof resource.apiVersion !== "string" ||
@@ -683,7 +709,7 @@ function parseJson<T>(output: string): T {
 }
 
 async function readSelectedKubeconfig(
-  config: DiagnosticPlan,
+  config: Pick<DiagnosticPlan, "kubeconfig" | "context">,
   deadline: number,
   signal: AbortSignal,
 ): Promise<KubeconfigView> {
@@ -1043,11 +1069,77 @@ function quantity(value: unknown) {
   };
 }
 
+function ipv4HostCidrs(addresses: string[]): string[] {
+  return [...new Set(addresses)].sort().map((address) => `${address}/32`);
+}
+
+function apiServiceIpv4({ spec }: ApiService): string[] {
+  const addresses = spec?.clusterIPs === undefined ? [spec?.clusterIP] : spec.clusterIPs;
+  if (
+    !Array.isArray(addresses) ||
+    addresses.length === 0 ||
+    addresses[0] !== spec?.clusterIP ||
+    addresses.some((address: unknown) => typeof address !== "string" || isIP(address) === 0)
+  ) {
+    throw new DiagnosticError("The Kubernetes Service address inventory is incomplete.");
+  }
+  return addresses.filter((address) => isIP(address) === 4);
+}
+
+function apiEndpointSliceIpv4(list: unknown): string[] {
+  const incomplete = "The API EndpointSlice inventory is incomplete.";
+  if (
+    !isObject(list) ||
+    list.apiVersion !== "discovery.k8s.io/v1" ||
+    list.kind !== "EndpointSliceList" ||
+    !isObject(list.metadata) ||
+    (list.metadata.continue !== undefined && list.metadata.continue !== "") ||
+    !Array.isArray(list.items)
+  ) {
+    throw new DiagnosticError(incomplete);
+  }
+
+  const ipv4: string[] = [];
+  for (const slice of list.items) {
+    if (
+      !isObject(slice) ||
+      !isObject(slice.metadata) ||
+      typeof slice.metadata.name !== "string" ||
+      !namePattern.test(slice.metadata.name) ||
+      slice.metadata.namespace !== "default" ||
+      !isObject(slice.metadata.labels) ||
+      slice.metadata.labels["kubernetes.io/service-name"] !== "kubernetes" ||
+      (slice.addressType !== "IPv4" && slice.addressType !== "IPv6") ||
+      !Array.isArray(slice.endpoints)
+    ) {
+      throw new DiagnosticError(incomplete);
+    }
+
+    const family = slice.addressType === "IPv4" ? 4 : 6;
+    for (const endpoint of slice.endpoints) {
+      if (
+        !isObject(endpoint) ||
+        !Array.isArray(endpoint.addresses) ||
+        endpoint.addresses.length === 0 ||
+        endpoint.addresses.some(
+          (address: unknown) => typeof address !== "string" || isIP(address) !== family,
+        )
+      ) {
+        throw new DiagnosticError(incomplete);
+      }
+      if (family === 4) {
+        ipv4.push(...endpoint.addresses);
+      }
+    }
+  }
+  return ipv4;
+}
+
 async function diagnose(
-  config: DiagnosticPlan,
+  config: DiagnosticPlan | InventoryPlan,
   directory: string,
   signal: AbortSignal,
-): Promise<DiagnosticReport> {
+): Promise<DiagnosticReport | AddressInventory> {
   const deadline = performance.now() + 120_000;
   const kubeconfig = join(directory, "kubeconfig.json");
   const checks: CheckReport[] = [];
@@ -1074,13 +1166,13 @@ async function diagnose(
       process.env.KUBERC !== "off" &&
       process.env.KUBECTL_KUBERC !== "false"
     ) {
-      // Suppressing kuberc must not bypass a credential-plugin policy that
-      // already applies or appears after the selected context is resolved.
+      // Require the operator to opt out before running an exec plugin with
+      // kuberc disabled, even if no policy exists when the context is resolved.
       localFailure = {
         status: "failed",
         summary: "The selected exec plugin requires explicitly disabled kubectl preferences.",
         action:
-          "Follow the credential owner's procedure. Set KUBERC=off only if that procedure permits using the plugin without kubectl preferences.",
+          "Set KUBECTL_KUBERC=false for this command only if the credential owner permits using this plugin without kubectl preferences.",
       };
     } else if (
       !selectedEndpoint ||
@@ -1181,6 +1273,7 @@ async function diagnose(
     };
   }
 
+  let webhookCidrs: string[] | undefined;
   const eks = config.eks;
   if (eks) {
     const aws = async <T>(...args: string[]) =>
@@ -1285,7 +1378,7 @@ async function diagnose(
             `Name=description,Values=Amazon EKS ${eks.cluster}`,
           );
           if (result.NextToken) {
-            throw new Error("incomplete EC2 page");
+            throw new DiagnosticError("The EKS webhook interface inventory is incomplete.");
           }
           const addresses = result.NetworkInterfaces.flatMap((item) => {
             if (!item.PrivateIpAddresses.length) {
@@ -1294,12 +1387,14 @@ async function diagnose(
             return item.PrivateIpAddresses.map((address) => address.PrivateIpAddress);
           });
           if (addresses.length === 0 || addresses.some((address) => isIP(address) !== 4)) {
-            throw new Error("incomplete webhook inventory");
+            throw new DiagnosticError(
+              "The EKS webhook interface inventory has no complete IPv4 address set.",
+            );
           }
-          return comparison(
-            eks.webhookCidrs,
-            addresses.map((address) => `${address}/32`),
-          );
+          webhookCidrs = ipv4HostCidrs(addresses);
+          return "webhookCidrs" in eks
+            ? comparison(eks.webhookCidrs, webhookCidrs)
+            : { status: "passed", summary: "Collected the selected EKS webhook addresses." };
         },
       );
     } else {
@@ -1330,7 +1425,10 @@ async function diagnose(
       }
       service = await kube<ApiService>(`${namespaced(apiV1, "default")}/services/kubernetes`);
       if (
-        !service?.metadata?.uid ||
+        service?.apiVersion !== "v1" ||
+        service.kind !== "Service" ||
+        typeof service.metadata?.uid !== "string" ||
+        !service.metadata.uid ||
         service.metadata.namespace !== "default" ||
         service.metadata.name !== "kubernetes"
       ) {
@@ -1348,6 +1446,45 @@ async function diagnose(
     (localFailure || (api.status === "unknown" && /endpoint|target|deadline/.test(api.summary)))
   ) {
     blocker = { id: "kubernetes-api", summary: api.summary };
+  }
+
+  async function readApiCidrs(): Promise<string[]> {
+    if (api.status !== "passed") {
+      throw new DiagnosticError(api.summary);
+    }
+    if (!service) {
+      throw new Error("missing observed API Service");
+    }
+    const serviceIPs = apiServiceIpv4(service);
+    const endpoints = apiEndpointSliceIpv4(
+      await kube<unknown>(
+        "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dkubernetes",
+      ),
+    );
+    if (!serviceIPs.length || !endpoints.length) {
+      throw new DiagnosticError(
+        "The Kubernetes Service or EndpointSlices have no complete IPv4 address set.",
+      );
+    }
+    return ipv4HostCidrs([...serviceIPs, ...endpoints]);
+  }
+
+  if (config.mode === "inventory") {
+    const incomplete = checks.find((check) => check.status !== "passed");
+    if (incomplete) {
+      const next = incomplete.action ? `\n  Next: ${incomplete.action}` : "";
+      throw new DiagnosticError(`${incomplete.id}: ${incomplete.summary}${next}`);
+    }
+    if (!webhookCidrs) {
+      throw new DiagnosticError("The EKS webhook interface inventory is incomplete.");
+    }
+    const apiCidrs = await readApiCidrs();
+    return {
+      context: config.context,
+      checkedAt: new Date().toISOString(),
+      apiCidrs,
+      eks: { clusterArn: config.eks.clusterArn, webhookCidrs },
+    };
   }
 
   for (const crd of config.crds) {
@@ -1456,34 +1593,7 @@ async function diagnose(
     api.status === "passed"
       ? "Refresh the selected API Service and EndpointSlice inventory; reconcile the expected /32s and infrastructure-owned policies before installation."
       : "Resolve kubernetes-api before comparing API addresses.",
-    async () => {
-      if (api?.status !== "passed") {
-        throw new DiagnosticError(api.summary);
-      }
-      const slices = await kube<KubernetesList<EndpointSlice>>(
-        "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3Dkubernetes",
-      );
-      if (!slices || slices.metadata?.continue) {
-        throw new Error("incomplete EndpointSlice list");
-      }
-      if (!service) {
-        throw new Error("missing observed API Service");
-      }
-      const serviceIPs = (service.spec.clusterIPs ?? [service.spec.clusterIP]).filter(
-        (ip) => isIP(ip) === 4,
-      );
-      const endpoints = slices.items
-        .filter((slice) => slice.addressType === "IPv4")
-        .flatMap((slice) => slice.endpoints.flatMap((endpoint) => endpoint.addresses));
-      if (!serviceIPs.length || !endpoints.length || endpoints.some((ip) => isIP(ip) !== 4)) {
-        throw new Error("incomplete IPv4 API inventory");
-      }
-      const addresses = [...serviceIPs, ...endpoints];
-      return comparison(
-        config.apiCidrs,
-        addresses.map((address) => `${address}/32`),
-      );
-    },
+    async () => comparison(config.apiCidrs, await readApiCidrs()),
   );
 
   const dependency = config.serviceDependency;
@@ -1631,18 +1741,46 @@ const terminate = stopCollection(143);
 process.on("SIGHUP", hangup);
 process.on("SIGINT", interrupt);
 process.on("SIGTERM", terminate);
-try {
+
+async function main(): Promise<void> {
   const { values } = parseArgs({
-    options: { config: { type: "string" }, json: { type: "boolean", default: false } },
+    options: {
+      config: { type: "string" },
+      json: { type: "boolean", default: false },
+      "inventory-eks": { type: "string" },
+      kubeconfig: { type: "string" },
+      context: { type: "string" },
+    },
   });
-  if (!values.config) {
+  let config: DiagnosticPlan | InventoryPlan;
+  if (values["inventory-eks"] !== undefined && values.config === undefined && !values.json) {
+    // Pinning this read requires disabling preferences. Require the caller's
+    // choice before a mutable kubeconfig can select a credential plugin.
+    if (process.env.KUBECTL_KUBERC !== "false") {
+      throw new DiagnosticError(
+        "EKS address collection requires explicit KUBECTL_KUBERC=false. Proceed only if the credential owner permits running without kubectl preferences.",
+      );
+    }
+    config = {
+      mode: "inventory",
+      kubeconfig: requireSelection(values.kubeconfig, "kubeconfig"),
+      context: requireSelection(values.context, "context"),
+      eks: requireEksTarget(values["inventory-eks"]),
+    };
+  } else if (
+    values.config &&
+    values["inventory-eks"] === undefined &&
+    values.kubeconfig === undefined &&
+    values.context === undefined
+  ) {
+    config = validateConfig(JSON.parse(await readFile(values.config, "utf8")));
+  } else {
     throw new DiagnosticError(
-      "Usage: node scripts/diagnose-kubernetes-prerequisites.ts --config FILE [--json]",
+      "Usage: node scripts/diagnose-kubernetes-prerequisites.ts --config FILE [--json] or --inventory-eks CLUSTER_ARN --kubeconfig FILE --context NAME",
     );
   }
-  const config = validateConfig(JSON.parse(await readFile(values.config, "utf8")));
   const directory = await mkdtemp(join(tmpdir(), "oce-prerequisites-"));
-  let report: DiagnosticReport;
+  let report: DiagnosticReport | AddressInventory;
   let cleanupFailed = false;
   try {
     report = await diagnose(config, directory, cancellation.signal);
@@ -1660,6 +1798,10 @@ try {
     throw new DiagnosticError("The private kubeconfig cleanup failed.");
   }
   cancellation.signal.throwIfAborted();
+  if (!("checks" in report)) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
   if (values.json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
@@ -1687,12 +1829,16 @@ try {
   } else if (report.checks.some((check) => check.status === "unknown")) {
     process.exitCode = 2;
   }
+}
+
+try {
+  await main();
 } catch (error) {
   if (signalExitCode !== undefined) {
     process.exitCode = signalExitCode;
   } else {
     process.stderr.write(
-      `Prerequisite diagnosis could not start: ${error instanceof DiagnosticError ? error.message : "check command options and the readable JSON plan"}\n`,
+      `Prerequisite command failed: ${error instanceof DiagnosticError ? error.message : "check command options and required inputs; a read may have returned incomplete data"}\n`,
     );
     process.exitCode = 2;
   }

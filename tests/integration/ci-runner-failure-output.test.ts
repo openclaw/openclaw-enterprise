@@ -273,16 +273,22 @@ test("the reporter forwards a failed file's output tail and whole stack only", a
     "SyntaxError: Unexpected token '}'",
   );
   // A message the reporter cut at 16 KiB still loses its possibly split tail after
-  // the raw pass has shortened it.
+  // the raw pass has shortened it. A run without spaces that reaches the cut can be a
+  // split token, so it goes whole.
   const cutMessage = `Bearer abcdefgh leak-value\n${"x".repeat(16_384 - 27 - 11)}jobonlyopaq`;
   assert.equal(cutMessage.length, 16_384);
-  const cutDetail = redactFailureDetail({ message: cutMessage }, secrets, "/repo")?.message;
-  assert(typeof cutDetail === "string", "missing redacted clipped message");
-  assert(
-    /^\[redacted credential-bearing line\]\nx+$/.test(cutDetail),
-    "clipped message must retain its safe prefix",
+  assert.equal(
+    redactFailureDetail({ message: cutMessage }, secrets, "/repo")?.message,
+    "[redacted credential-bearing line]\n",
   );
-  assert(!/jobonly|leak-value/.test(cutDetail), "clipped message must omit secret fragments");
+  // With spaces in it, the same message keeps its safe prefix: all but the last 256
+  // characters of the redacted text.
+  const cutWords = `Bearer abcdefgh leak-value\n${"x ".repeat(8_173)}jobonlyopaq`;
+  assert.equal(cutWords.length, 16_384);
+  assert.equal(
+    redactFailureDetail({ message: cutWords }, secrets, "/repo")?.message,
+    `[redacted credential-bearing line]\n${"x ".repeat(8_173).slice(0, -253)}`,
+  );
   // A control character inside a private key header cannot keep its body.
   const keyDetail = redactFailureDetail(
     {

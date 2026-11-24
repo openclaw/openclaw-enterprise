@@ -39,6 +39,7 @@ export const unconfiguredGateway = {
   updateProviderCredentials: unexpectedRpc("updateProviderCredentials"),
   updateProviderConfig: unexpectedRpc("updateProviderConfig"),
   getProviderCredential: unexpectedRpc("getProviderCredential"),
+  attachSandboxProvider: unexpectedRpc("attachSandboxProvider"),
   detachSandboxProvider: unexpectedRpc("detachSandboxProvider"),
   getSandboxProviderStatus: unexpectedRpc("getSandboxProviderStatus"),
   configureProviderRefresh: unexpectedRpc("configureProviderRefresh"),

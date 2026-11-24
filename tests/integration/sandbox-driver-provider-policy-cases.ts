@@ -10,10 +10,14 @@ import type {
   OpenShellGatewayClient,
   OpenShellSandboxCreateRequest,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { openShellPluginPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts";
 import type {
   AgentRevision,
   CredentialSource,
   CredentialSourceInput,
+  HarnessWorkloadRequirements,
+  ProxyPlan,
+  RepositoryRevisionState,
   SandboxNetworkGrant,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -422,6 +426,83 @@ export function registerManagedPluginPolicyCases(
     );
     assert.equal(asRecord(detachedPolicy.network_middlewares)?.[registration], undefined);
     assert.equal(detachedNetworks["oce-google-requests"], undefined);
+  });
+
+  // The launch policy takes network_middlewares from the egress policy or the plugin guard,
+  // never both: only this refusal keeps the two maps apart.
+  test("a managed Google plugin is refused with repository credentials, proxy wiring or an egress plan", () => {
+    const { revision: fixture, requirements } = runtimeSandboxFixture(
+      openShellDriver(workspaceGatewayClient()),
+      { harnessId: "openclaw" },
+    );
+    const sourceId = "cs_00000000-0000-4000-8000-000000000005";
+    const revision: AgentRevision = {
+      ...completeSandboxRevision(fixture),
+      plugins: {
+        driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+        plugins: {
+          [managedGoogleInstall.id]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: managedGoogleInstall.releaseSha256,
+              credentials: { account: sourceId },
+            },
+          },
+        },
+      },
+    };
+    const admitted = {
+      ...requirements,
+      credentialAttachments: [
+        {
+          sourceId,
+          ref: openShellProviderName(sourceId),
+          requestScope: {
+            host: "gmail.googleapis.com",
+            port: 443,
+            path: "/gmail/v1/users/me/messages",
+            scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+          },
+        },
+      ],
+    };
+    const endpoint = "https://authority.test:443";
+    assert.ok(openShellPluginPolicy(revision, admitted, endpoint, [])?.middlewares);
+    const repositoryCredentials: RepositoryRevisionState = {
+      driver: { id: "repository", implementation: "github" },
+      deadlineWallMs: Date.now() + 600_000,
+      bindings: [],
+    };
+    const plan: ProxyPlan = {
+      id: "00000000-0000-4000-8000-000000000001",
+      generation: 1,
+      routes: [],
+      sandboxDriverId: "openshell",
+      egressDriverId: "openshell",
+      execution: {
+        installationId: "ins_fixture",
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        servicePrincipalId: revision.servicePrincipalId,
+        revisionId: revision.id,
+        executionId: "00000000-0000-4000-8000-000000000002",
+      },
+    };
+    const cases: Array<[string, AgentRevision, HarnessWorkloadRequirements]> = [
+      ["repository credentials", { ...revision, repositoryCredentials }, admitted],
+      ["proxy wiring", revision, { ...admitted, proxyWiring: { plan, configuration: {} } }],
+      ["an egress plan", { ...revision, egressPlan: plan }, admitted],
+    ];
+    for (const [condition, refused, launch] of cases) {
+      assert.throws(
+        () => openShellPluginPolicy(refused, launch, endpoint, []),
+        {
+          code: "SANDBOX_HARNESS_UNSUPPORTED",
+          message: /requires its selected OpenShell provider, the dedicated OpenClaw worker/,
+        },
+        `A managed Google plugin must be refused with ${condition}.`,
+      );
+    }
   });
 
   test("OpenShell builds managed MCP rules for the declared endpoint and upstream tool name", () => {

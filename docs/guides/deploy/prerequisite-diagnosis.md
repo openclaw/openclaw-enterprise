@@ -7,6 +7,37 @@ namespace and prerequisite controllers through your infrastructure workflow firs
 The command does not create resources, update policies, change your current
 context, or run commands inside Pods.
 
+## Collect EKS addresses
+
+Use the cluster ARN from your infrastructure outputs and the intended kubeconfig
+and context. This works before the OCE namespace and prerequisite controllers
+exist. You need AWS CLI access to call `sts get-caller-identity`,
+`eks describe-cluster`, and `ec2 describe-network-interfaces`. The Kubernetes
+identity needs to read the `default/kubernetes` Service and list its EndpointSlices.
+
+Address collection pins the verified server and CA in a private temporary
+kubeconfig. It requires `KUBECTL_KUBERC=false` for the command, including for
+token and client certificate credentials. This disables all `kuberc` rules,
+including credential plugin rules. Use the command only with a trusted
+kubeconfig and context and the credential owner's permission. If policy requires
+kubectl preferences, collect the addresses through the infrastructure workflow.
+Set `TMPDIR` to an existing private directory before running the command.
+
+```bash
+KUBECTL_KUBERC=false TMPDIR=/secure/occ/prerequisite-run node scripts/diagnose-kubernetes-prerequisites.ts \
+  --inventory-eks "$EKS_CLUSTER_ARN" --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
+```
+
+Success prints JSON with `apiCidrs` for API egress and `eks.webhookCidrs` for
+webhook ingress. Each address is IPv4 with a `/32` prefix. API address
+collection omits IPv6 and requires an IPv4 Service address and at least one
+IPv4 endpoint. It refuses malformed or incomplete replies. Review the addresses
+against the infrastructure policies and use the reviewed values in the plan
+below. The reads take place in sequence. Repeat them if the infrastructure
+changes.
+A failed or incomplete read exits with status 2 and leaves stdout empty. It
+writes the reason and any available `Next:` guidance to stderr.
+
 ## Select the resources and expected addresses
 
 Save a JSON plan outside the checkout. Use the names of your installed controller
@@ -120,11 +151,15 @@ Use an exec plugin, token or client certificate in place of a built-in
 kubeconfig `auth-provider`. The command refuses built-in providers before
 making requests because their refresh can replace credentials in a kubeconfig.
 
-The command disables kubectl preferences so their defaults cannot change the
-verified target after resolution. To use a kubeconfig exec plugin, follow the
-credential owner's procedure. If it permits running the plugin without kubectl
-preferences, set `KUBERC=off` or `KUBECTL_KUBERC=false` for this command. If it
-requires a kubectl credential-plugin policy, use a different approved credential.
+Diagnosis disables all kubectl preferences so defaults cannot change the
+verified target. An approved token or client certificate works without an
+exec plugin exception. For an exec plugin, follow the credential owner's
+procedure. If it permits running the plugin without kubectl preferences for
+the trusted kubeconfig and context, prefix this command with
+`KUBECTL_KUBERC=false`. The command does not apply any `kuberc` rules,
+including a credential plugin policy. If policy requires those rules for
+the plugin, use an approved credential without a plugin. If policy requires
+kubectl preferences for every call, use the infrastructure workflow.
 
 The operator needs named reads of the GatewayClass, Deployments,
 CRDs, namespace and `default/kubernetes` Service, and list access to that
@@ -135,33 +170,31 @@ check needs named `get` access to the resources it selects.
 ## Run and interpret the checks
 
 Set `RUN_DIR` to an existing private directory that contains `prerequisites.json`.
+Use the command-local `KUBECTL_KUBERC=false` prefix when approved for an exec plugin.
 
 ```bash
 RUN_DIR=/secure/occ/prerequisite-run
-diagnosis_tmp=$(mktemp -d "$RUN_DIR/prerequisite-tmp.XXXXXX") || exit 2
-diagnosis_status=0
-TMPDIR="$diagnosis_tmp" node scripts/diagnose-kubernetes-prerequisites.ts \
-  --config "$RUN_DIR/prerequisites.json" || diagnosis_status=$?
-rmdir -- "$diagnosis_tmp"
-printf 'Diagnostic exit status: %s\n' "$diagnosis_status"
+TMPDIR="$RUN_DIR" node scripts/diagnose-kubernetes-prerequisites.ts \
+  --config "$RUN_DIR/prerequisites.json"
 ```
 
 To save a machine-readable report, add `--json` to the command and redirect
 its stdout to `"$RUN_DIR/prerequisite-result.json"`.
 
-Use a private temporary path short enough for Unix sockets. Linux with procfs
-also supports longer paths. If the process is forcibly
-killed or reports a cleanup error, its `oce-prerequisites-*` child directory
-can still hold the credential-bearing `kubeconfig.json`. Once the process
-stops, remove the exact child directory for that run, then remove the empty parent.
-Keep their contents private.
+For both modes, use a private `TMPDIR` with a path short enough for Unix sockets.
+Linux with procfs also supports longer paths. The command creates a private
+`oce-prerequisites-*` child directory under `TMPDIR` and removes it before
+writing its result. After a forced termination or cleanup error, check `TMPDIR`
+for that run's child directory. It can contain a credential-bearing
+`kubeconfig.json`. Once the process has stopped, remove that exact directory
+and keep its contents private during removal.
 
 Each result is `passed`, `failed`, or `unknown`, with a next action for failed or
 unknown checks. Exit status is `0` when all requested checks passed, `1` when any
 failed, and `2` when none failed but evidence is incomplete, or the plan is invalid.
 A failed check can coexist with unknown checks; inspect the complete report.
-A check reports a resource absent after HTTP `404`. Invalid responses leave the
-check unknown.
+A check reports a resource absent when Kubernetes returns `NotFound` with
+HTTP `404`. Invalid responses leave the check unknown.
 
 | Check                              | What it establishes                                                                                                                                              |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |

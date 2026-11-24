@@ -266,6 +266,20 @@ branch list for `github-repository`; it does not promise every administrative
 operation. Access is finite by default. Change selections and deploy a new revision
 to change access; do not rewrite a narrow grant into a broader one in place.
 
+### Work with GitHub issues and pull requests
+
+The runtime bundles a [GitHub REST skill](../../../deploy/runtime/repository-credentials/github-repository-rest/SKILL.md)
+in Codex’s standard skill directory. Deploy an image containing the skill and
+ask the Agent to work on a configured repository. Codex can discover the
+instructions automatically.
+
+The skill shows how to choose a REST endpoint and call it with `gh api`.
+The deployed binding and network policy determine which requests succeed.
+For example, posting a conversation comment on a PR requires permission to
+write to the issue comments endpoint. A grant limited to reading issues and
+opening PRs excludes commenting. For a ref-constrained draft, keep using the
+[designated client](../../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+
 ### Plan for request limits
 
 Unmodified OpenShell 0.1.6 buffers complete requests. These are byte limits, not

@@ -182,7 +182,8 @@ function openShellSandboxDriver(gatewayClient: OpenShellGatewayClient) {
   });
   return new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {

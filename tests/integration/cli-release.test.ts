@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { appendFile, cp, mkdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type ReleasePlatform = {
   os: "darwin" | "linux";

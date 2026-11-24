@@ -10,7 +10,7 @@ import {
   fixtureOidcIssuer,
   memoryLogger,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";

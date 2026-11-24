@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import type { ModelDiscoveryFixture } from "./secret-api.test.ts";
 
 export function registerModelDiscoveryCases({

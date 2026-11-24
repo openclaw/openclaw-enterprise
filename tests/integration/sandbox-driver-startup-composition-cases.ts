@@ -186,7 +186,7 @@ export async function verifyManagedNamespaceRejectsMutation({
 }) {
   const events: KubernetesMutation[] = [];
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
-  configuration.gateway.workspaceMode = "managed";
+  configuration.integrationMode = "service";
   Object.assign(configuration.gateway, {
     operatorWorkspaceResources: [
       { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "must-not-be-applied" } },
@@ -199,7 +199,7 @@ export async function verifyManagedNamespaceRejectsMutation({
 
   await assert.rejects(
     driver.ensureNamespace(context),
-    /managed workspace mode is not implemented; cannot ensure a Namespace/,
+    /service integration requires the service Sandbox implementation; cannot ensure a Namespace/,
   );
   assert.deepEqual(events, []);
   assert.deepEqual(gatewayClient.calls, []);
