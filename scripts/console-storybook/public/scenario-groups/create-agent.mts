@@ -1723,6 +1723,11 @@ export const createAgentProvisioningScenarios = {
     ],
     description:
       "Check a repository to select it. Application allows only Read-only. Tooling starts at Contributor. Only application has a description. Change tooling to Read-only, press its × button and undo the removal to check that the narrower choice stays selected. Saving and deployment require a supporting Installation.",
+    steps: [
+      "With application and tooling selected, check that the action says Save Agent draft and the deployment warning is absent.",
+      "Uncheck both repositories. Before Create Agent, read the warning about deployment without a repository policy and the need for a new Agent to add Per-repository access later.",
+      "Switch to Access profiles and check its existing warning. Return to Per-repository access and select application again; Save Agent draft returns and the deployment warning disappears.",
+    ],
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",
