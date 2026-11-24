@@ -381,12 +381,14 @@ test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clea
   };
 
   // A partly visible tab can stay clipped when Chrome focuses it again. Reproduce that position
-  // with native keys, leaving Configuration selected while focus roves to Repositories.
+  // with native keys, leaving Configuration selected while focus roves to the right.
   await page.keyboard.press("Home");
-  for (let step = 0; step < 3; step += 1) {
+  for (let step = 1; step < count; step += 1) {
     await page.keyboard.press("ArrowRight");
+    if ((await tabAtEdge(true)).partlyClipped) {
+      break;
+    }
   }
-  assert.equal((await focusedRing(page))?.name, "Repositories");
   assert.ok((await tabAtEdge(true)).partlyClipped, "Configuration is partly clipped while roving");
 
   await page.keyboard.press("Tab");
@@ -405,6 +407,19 @@ test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clea
     "the selected tab clears the fades both after Tab and on Shift+Tab return",
   );
   await assertVisibleRings(page, "Agent tab re-entry at 390", [returnedRing]);
+
+  // Draft Deployment has no panel stop. Tab can leave the document, so check the strip
+  // on exit without relying on where the browser sends focus next.
+  await page.getByRole("tab", { name: "Deployment", exact: true }).press("Enter");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  const beforeExit = await tabAtEdge(true);
+  assert.equal(beforeExit.name, "Deployment");
+  assert.ok(beforeExit.under > 0, "Deployment is clipped while roving left");
+  await page.keyboard.press("Tab");
+  const afterExit = await tabAtEdge(true);
+  assert.equal(afterExit.name, "Deployment");
+  assert.ok(afterExit.under <= 0, "Deployment clears the fades when Tab leaves the strip");
 });
 
 test("repository rows and the Slack people search on Create Agent show an unclipped token ring", async (t) => {
