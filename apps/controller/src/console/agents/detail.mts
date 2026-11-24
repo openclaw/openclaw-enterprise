@@ -81,13 +81,17 @@ import {
   VERSION_UNAVAILABLE,
 } from "./access-reasons.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
-import { readableRepositoryGrants } from "./sandbox-policy.mjs";
+import {
+  readableRepositoryGrants,
+  renderAgentSandboxPolicy,
+  repositoryRestrictionText,
+} from "./sandbox-policy.mjs";
 import {
   githubAccessLabel,
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
-import { createRepositoryFields } from "./repositories.mjs";
+import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
@@ -958,6 +962,13 @@ export async function renderAgentDetail(
   let visibleRevisionsLoaded = false;
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
+  let configureRepositories =
+    tab === "repositories" && url.searchParams.get("repositoryAccess") === "1";
+  const isDedicatedCodex = (values: OpenClawConfigurationDocument) =>
+    agent.executionMode === "dedicated" && configuredHarnessId(values) === "codex";
+  const hasRepositoryPermissions = (values: OpenClawConfigurationDocument) =>
+    isDedicatedCodex(values) &&
+    agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
   // Sharing policy reads need Installation administration and a denial is audited, so the
   // Access tab is left out (not disabled) when the session probe already showed that access is
   // missing (spec 3.8). It is about the whole Agent, so every version's strip has it, last.
@@ -1070,8 +1081,14 @@ export async function renderAgentDetail(
     JSON.stringify([namespaceId, target(revision, tab)]);
   // A link to one of this Agent's version tabs that brings the tab into view once it opens.
   // With `deploy`, a draft link brings that draft's Deploy new version into view instead.
-  function versionLink(label: string, revision: string, tab: string, { deploy = false } = {}) {
-    const node = element("a", { href: context.pageUrl(target(revision, tab)) }, label);
+  function versionLink(
+    label: string,
+    revision: string,
+    tab: string,
+    { deploy = false, permissions = false } = {},
+  ) {
+    const destination = target(revision, tab) + (permissions ? "&repositoryAccess=1" : "");
+    const node = element("a", { href: context.pageUrl(destination) }, label);
     node.addEventListener("click", (event) => {
       if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
         return;
@@ -1095,7 +1112,7 @@ export async function renderAgentDetail(
       }
       // The load this navigation starts is the next one.
       linkedVersionView = { key: linkedKey(revision, tab), load: consoleLoads + 1, deploy };
-      context.navigate(target(revision, tab));
+      context.navigate(destination);
     });
     return node;
   }
@@ -3490,6 +3507,11 @@ export async function renderAgentDetail(
     const executionMode = agent.executionMode;
     let deployPending = false;
     let deployReloadMessage = "";
+    const repositoryDeploymentWarning = element(
+      "p",
+      { className: "hint", hidden: true },
+      FIRST_REPOSITORY_DEPLOYMENT_WARNING,
+    );
     // A normal Agent link has no creation receipt. The same GitHub credential
     // profile supports legacy access and saved grants, including deny-all.
     const firstGitHubDraft =
@@ -4244,8 +4266,25 @@ export async function renderAgentDetail(
       // while one of them shows (finding 2878).
       const deployReason = deployStatus.textContent ? deployStatus : deployFeedback;
       setUnavailable(deploy, deployUnavailable, deployReason);
-      if (deploy.ariaDescription !== pendingDeploymentHint) {
-        deploy.ariaDescription = pendingDeploymentHint;
+      // An empty visible history can hide earlier versions. Bindings can also be empty
+      // with a saved policy, so the guidance describes the consequence conditionally.
+      const showRepositoryWarning =
+        !deployUnavailable &&
+        !reviewRepositories &&
+        callerPermissions?.deploy === true &&
+        callerPermissions.sandboxPolicyRead &&
+        isDedicatedCodex(values) &&
+        visibleRevisions.length === 0 &&
+        !currentRevisionId &&
+        currentRuntimeState === "stopped" &&
+        formerCurrent.size === 0 &&
+        !acceptedHiddenVersion(0);
+      setHidden(repositoryDeploymentWarning, !showRepositoryWarning);
+      const deployDescription = showRepositoryWarning
+        ? FIRST_REPOSITORY_DEPLOYMENT_WARNING
+        : pendingDeploymentHint;
+      if (deploy.ariaDescription !== deployDescription) {
+        deploy.ariaDescription = deployDescription;
       }
       updateChecklist();
     }
@@ -4283,7 +4322,9 @@ export async function renderAgentDetail(
       ...checklistSteps.map((step) => step.item),
     );
     const confirmation = element("p", { className: "hint", role: "status" });
-    const adjustRepositories = versionLink("Open draft repositories", "draft", "repositories");
+    const adjustRepositories = hasRepositoryPermissions(values)
+      ? versionLink("Edit repository permissions", "draft", "repositories", { permissions: true })
+      : versionLink("Open draft repositories", "draft", "repositories");
     const reviewAccess = button("Review saved GitHub access", async () => {
       const generation = repositoryReviewGeneration;
       const current = () =>
@@ -4355,7 +4396,12 @@ export async function renderAgentDetail(
             ? "GitHub access saved at creation"
             : "Saved GitHub access";
         const grants = repositoryReview.grants
-          .map(({ repository, access }) => `${repository} (${githubAccessLabel(access)})`)
+          .map((grant) => {
+            const { repository, access } = grant;
+            const level = githubAccessLabel(access);
+            const restrictions = repositoryRestrictionText(grant);
+            return `${repository} (${level}${restrictions ? ` · ${restrictions}` : ""})`;
+          })
           .join(", ");
         setText(confirmation, `${label}: ${grants || "No repositories allowed"}`);
       } else {
@@ -4513,6 +4559,7 @@ export async function renderAgentDetail(
         deploy.disabled = true;
         deploy.removeAttribute("aria-description");
         deployPending = true;
+        setHidden(repositoryDeploymentWarning, true);
         deployInFlight = true;
         content.toggleAttribute("inert", true);
         updateNavigationControls();
@@ -4788,10 +4835,21 @@ export async function renderAgentDetail(
       "section",
       { className: "card agent-draft-actions" },
       draftActionsHeading,
+      !reviewRepositories && hasRepositoryPermissions(values)
+        ? element(
+            "p",
+            { className: "hint" },
+            versionLink("Set repository permissions", "draft", "repositories"),
+            currentRevisionId || visibleRevisions.length
+              ? " for the next deployment."
+              : " before the first deployment to control this Agent’s access.",
+          )
+        : null,
       checklist,
       reviewRepositories ? confirmation : null,
       reviewRepositories ? reviewAccess : null,
       reviewRepositories ? adjustRepositories : null,
+      repositoryDeploymentWarning,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
       deployFeedback,
@@ -5246,6 +5304,10 @@ export async function renderAgentDetail(
       // The deployment may have settled while this tab was parked.
       renderVersionNotice();
       retained.resumeDrafts?.();
+      if (configureRepositories && tab === "repositories") {
+        configureRepositories = false;
+        content.querySelector<HTMLButtonElement>("#manage-repository-permissions")?.click();
+      }
       // So may a permission answer that changes Configuration access (finding 2421).
       redrawConfigurationAccessViews();
       return;
@@ -5550,6 +5612,26 @@ export async function renderAgentDetail(
       statusBlock("info", null, versionNotice(), [], { className: "version-selection-notice" }),
     );
     if (selectedTab === "repositories" && draft) {
+      if (hasRepositoryPermissions(values)) {
+        content.append(
+          renderAgentSandboxPolicy(context, {
+            agent,
+            revisionId: selected,
+            repositoryEditor: {
+              openOnLoad: configureRepositories ? revealed : undefined,
+              policyReadable: () => rereadPermissions().then((fresh) => fresh?.sandboxPolicyRead),
+              canOpen: () => {
+                if (draftEditorBlocksNavigation()) {
+                  showLeaveBlock();
+                  return false;
+                }
+                return true;
+              },
+            },
+          }),
+        );
+      }
+      configureRepositories = false;
       content.append(renderRepositoryTab(context, data));
     } else if (selectedTab === "plugins") {
       const plugins = renderAgentPlugins(context, {
@@ -6382,7 +6464,11 @@ export async function renderAgentDetail(
           "div",
           { className: "agent-toolbar-actions" },
           versionLink("Draft credentials", "draft", "credentials"),
-          versionLink("Draft repositories", "draft", "repositories"),
+          hasRepositoryPermissions(values)
+            ? versionLink("Edit repository permissions", "draft", "repositories", {
+                permissions: true,
+              })
+            : versionLink("Draft repositories", "draft", "repositories"),
         );
         // A URL without a revision can show a different active version on Back.
         for (const link of draftLinks.querySelectorAll("a")) {
@@ -7313,6 +7399,8 @@ export async function renderAgentDetail(
       repositoryReviewGeneration += 1;
       repositoryReview = undefined;
     }
+    configureRepositories =
+      nextTab === "repositories" && next.searchParams.get("repositoryAccess") === "1";
     selectedTab = nextTab;
     showTabNotice(unavailableTabNotice(requestedTab));
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.

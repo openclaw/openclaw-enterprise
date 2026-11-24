@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-24
-last_updated_session: authoring-run/a0be62f9-adfa-426c-865d-043a3e34121f
+last_updated_session: authoring-run/db58f110-6136-4b7e-8004-11d32e9e2509
 ---
 
 # Console Agent creation
@@ -29,7 +29,7 @@ graph TD
   A["Create Agent form"] --> B["Plugins, model, and repository choices"]
   B -->|repository access required and missing| H["Explain the requirement before provisioning"]
   B -->|eligible Dedicated<br/>No repository policy| C["Queue provisioning with inline Configuration"]
-  C --> D["Worker creates resources, grants and first deployment"]
+  C --> D["Worker creates resources and grants<br/>Requests first deployment"]
   B -->|ordinary draft or<br/>per-repository grants| E["Save Configuration"]
   E --->|Confirmed| Y["Agent POST"]
   E -->|Unknown| X["Creation locked<br/>No Agent POST"]
@@ -138,51 +138,56 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 ### 3. Load repository options
 
 `agents/repositories.mts:createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
-which authorizes Agent create. Create Agent holds this read until the permission answer allows
-Agent create, or the Installation read succeeds without an answer; after a known refusal it
-reads none and says so, without a retry. After the read it requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
-submitted `repositoryAccess`. Retained drafts keep selections through failed
-discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
-or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
-failures block submission.
+which authorizes Agent create. The form waits for permission to allow Agent create,
+or a successful Installation read without an answer. A known refusal prevents the read
+and offers no retry. Discovery requests optional descriptions for visible refs.
+[Repository admission](../agent-repository-credentials.md) resolves submitted
+`repositoryAccess`. Failed discovery retains draft selections; retries recheck current
+policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` or `meta.notConfigured` (no
+`repository` settings), with no retained selections, permits creation without bindings.
+Other failures block submission.
 
-The credential catalog includes ordinary Gateway sources even when a Git Proxy
-is selected. Repository access remains optional in the form. An ordinary Gateway
-source without protected sources or repository bindings needs no Proxy admission.
-Source-free deployment follows the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
+The credential catalog includes ordinary Gateway sources with a Git Proxy selected.
+Repository access remains optional. Without protected sources or repository bindings,
+an ordinary Gateway source needs no Proxy admission. Source-free deployment follows the
+[protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
 
 ### 4. Submit provisioning or an ordinary draft
 
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
 [Per-repository access](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
-defaults to delegated limits. Selections require **Save Agent draft**,
-even on Dedicated runtimes. The POST saves the Agent and `repositoryNetworkPolicy`
-atomically. Console confirms grants before checking credentials. If unconfirmed,
-do not deploy. **Recheck saved GitHub access** rereads the draft without repeating
-creation. Under the Namespace lock, OCC rejects stale reviewed policy versions (HTTP 409).
+defaults to delegated limits. Selections require **Save Agent draft**.
+The POST saves the Agent and `repositoryNetworkPolicy` atomically without deploying.
+Console confirms grants before credential checks. If unconfirmed, do not deploy.
+**Recheck saved GitHub access** rereads without repeating creation.
+OCC rejects stale policy versions under the Namespace lock (HTTP 409).
 
-Without per-repository grants, Console omits the policy. Eligible Dedicated runtimes submit
-inline Configuration, optional repository access and Secret references for
-[provisioning](../agent-provisioning.md), even after `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
-The worker reauthorizes, creates resources and exact grants, then requests deployment.
-When repository restrictions require native enforcement, deployment needs a saved policy. Console polls and opens the saved version. When Embedded OpenClaw is unavailable,
-placement refusals show only the missing setting.
+For eligible Dedicated provisioning, an enabled, unsaved, unlocked **Create Agent**
+form warns if eligible scoped choices exist but none are selected. After deployment without a policy, per-repository access
+requires a new Agent.
 
-Installation capabilities omit Compute support for operator-managed Preset `runtime` bindings.
-After reading capabilities, `checkRuntimeBinding` preflights the binding.
-A `harnessAuth.method` refusal disables the submit button and identifies the
-administrator’s remedy. The form cannot change the binding or mode.
+[Provisioning](../agent-provisioning.md) takes inline Configuration, optional
+repository access and Secret references. The worker reauthorizes, creates
+resources and exact Secret grants, then requests deployment. Registrations requiring network policy
+or grants with API limits require a saved repository policy and native enforcement. Console polls and opens the
+saved version. Without Embedded OpenClaw, placement refusals name only the
+missing setting.
+
+Installation capabilities omit Compute support for operator-managed Preset
+`runtime` bindings. `checkRuntimeBinding` preflights them. A `harnessAuth.method`
+refusal disables submission and shows the administrator’s remedy. Neither binding nor mode is editable.
 
 Before writes, `namespaces.mts:namespaceNameProblem` checks the name.
-Console uses `agents/workspace.mts:workspaceFileProblem` to identify invalid
-initial files and opens Advanced settings. Denied `operate` on a readable Secret disables the Preset’s
-**Create new Secret** and blocks typed model keys. New Secrets lack that grant.
+`agents/workspace.mts:workspaceFileProblem` flags invalid initial files in Advanced settings.
+Denied `operate` on a readable Secret blocks typed model keys and the Preset’s
+**Create new Secret**. New Secrets lack that grant.
 
-`POST /namespaces/:namespaceId/agents/validate` preflights the name, draft values, staged
-channel `secretBindings`, plugins and `harnessAuth` before Secret creation or source
-registration. For a new model Secret or a source registered with a Credential Gateway,
-Console sends only the planned method. For ChatGPT sign-in, preflight omits `harnessAuth`.
+For unsaved drafts, `POST /namespaces/:namespaceId/agents/validate` checks
+the name, values, channel `secretBindings`, plugins and `harnessAuth`.
+Dedicated provisioning preflights only before creating a model Secret or
+registering a Credential Source. For either, preflight sends only the planned method.
+ChatGPT sign-in omits `harnessAuth`.
 OCC authorizes Agent creation, rejects cross-Namespace bindings, checks
 Configuration size, content and required Driver admission, then plugins, topology
 and name conflicts (`409`). Unbound channel tokens return `400`. Slack requires
@@ -285,6 +290,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-24 05:48: Preserve repository checks. (authoring-run/db58f110-6136-4b7e-8004-11d32e9e2509 - e2ba60f263b4bf30ee07051791a9367c20daf243)
+- 2026-11-24 04:58: Trace the first-deployment repository warning and draft action. (authoring-run/02daa2dc-277c-444c-bb4d-5589ee0579e9 - 840798ada6c310271e26b3004c25bd7b253d042c)
 - 2026-11-24 03:41: Clarify deployment admission. (authoring-run/a0be62f9-adfa-426c-865d-043a3e34121f - b6555dada1415cff47cdfec9b5af33222ce4f387)
 - 2026-11-24 02:29: Show the repository grant check on the saved draft. (authoring-run/ba9ea959-8a2b-4cab-830f-387425ba3574 - e2d257fbd92637a19042477ef2ad8c6ecf3f9fdf)
 - 2026-11-23 14:21: Clarify creation locks and bindings. (authoring-run/c19f29e8-5721-43ff-bada-5264ccb9b4ea - 54922275aed4dd2c5d6c23901fb0a2ff42a54136)

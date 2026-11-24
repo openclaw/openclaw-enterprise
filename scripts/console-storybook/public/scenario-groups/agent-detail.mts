@@ -87,6 +87,7 @@ type AgentDetailScenario = {
   harnessId?: "openclaw";
   credentialSources?: AgentCredentialSourceBinding[];
   configurationChangedElsewhere?: { values: OpenClawConfigurationDocument };
+  policyState?: "repositoryPermissions" | "repositoryPermissionsLimited";
   repositoryBindings?: RepositoryBindingSelection[];
   repositoryAccess?: RepositoryAccess;
   repositoryOptions?: RepositoryOption[];
@@ -157,6 +158,47 @@ export function createAgentDetailScenarios({
     deploymentStatus: "queued",
     deploymentErrorCode: null,
   };
+
+  const repositoryPermissionsDraft = {
+    group: "Pages/Agent detail",
+    name: "Set permissions on a saved draft",
+    path: draft,
+    policyState: "repositoryPermissions",
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application", profile: "github-repository" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "github-repository" }],
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        allowedProfiles: ["github-repository"],
+      },
+    ],
+    description:
+      "The saved Agent has a selected repository and no deployment or repository policy.",
+    steps: [
+      "Before Deploy new version, read the conditional warning about deploying without a repository policy and the need for a new Agent to add Per-repository access later.",
+      "Choose Set repository permissions above Deploy new version. In Repositories, choose Manage permissions.",
+      "Choose Enable policy editing, then Add access. Contributor is selected and Advanced is closed.",
+      "Expand Advanced, set Issues to Read-only, and save. Reopen the policy and check that Pull requests still uses the role.",
+    ],
+    gap: "The policy and deployment records are simulated. This preview cannot confirm runtime access.",
+  } satisfies AgentDetailScenario;
+
+  const repositoryPermissions = {
+    ...repositoryPermissionsDraft,
+    name: "Edit repository permissions after deployment",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    description: "The deployed Agent has a saved Contributor policy for example/application.",
+    steps: [
+      "Choose Edit repository permissions. Check that the saved policy matches the active version. Expand Advanced and set Pull requests to No access.",
+      "Save the policy. Confirm the new policy is pending. Reopen Manage permissions and check that Issues still uses the role.",
+      "Change Contributor to Read-only and save. Reopen Manage permissions to check your choice.",
+    ],
+  } satisfies AgentDetailScenario;
 
   const configurationConflictDraft = {
     group: "Pages/Agent detail",
@@ -1699,6 +1741,40 @@ export function createAgentDetailScenarios({
         ],
         description:
           "The new version draft names Contributor and Read-only access and shows write limits.",
+      },
+      repositoryPermissionsDraft,
+      repositoryPermissions,
+      repositoryPermissionsLimited: {
+        ...repositoryPermissions,
+        name: "Block unlisted API resources",
+        policyState: "repositoryPermissionsLimited",
+        description:
+          "The saved limits allow both listed resources. Namespace permissions currently block issue creation.",
+        steps: [
+          "Choose Edit repository permissions. Check that unlisted API resources are blocked.",
+          "Open Advanced. Issues allows Read and create, but current permissions limit it to Read-only.",
+          "Set Issues to Read-only and save. Reopen the pending policy. Select Reset to role defaults to remove all API limits.",
+        ],
+      },
+      repositoryPermissionsDenied: {
+        ...repositoryPermissions,
+        path: `${draft}&tab=repositories`,
+        name: "Repository policy read denied",
+        readOnlyPermissionSummary: true,
+        description: "The viewer can read this draft but cannot read the repository policy.",
+        steps: [
+          "Choose Manage permissions. Check the permission guidance. The Console shows no policy or save controls.",
+        ],
+      },
+      repositoryPermissionsLoading: {
+        ...repositoryPermissions,
+        path: `${draft}&tab=repositories`,
+        name: "Repository permissions loading",
+        rules: [{ suffix: "/sandbox-policy/networking", hold: true }],
+        description: "The policy read stays pending until the Console times out.",
+        steps: [
+          "Choose Manage permissions. Check the loading message and wait for the read error.",
+        ],
       },
       repositoryEditor: {
         group: "Pages/Agent detail",

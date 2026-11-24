@@ -94,10 +94,15 @@ function resolverPort(runtime: Runtime): {
 const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
 const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
 
+type ApiLimits = NonNullable<
+  (typeof registry.repositories)[number]["namespaces"][number]["apiLimits"]
+>;
+
 // example/outside is bound without a saved grant unless `outside` says otherwise.
 type ScopedRest = {
+  limits?: Record<string, ApiLimits>;
+  agentLimits?: Record<string, ApiLimits>;
   permissions: Record<string, string>;
-  optedRepository?: string;
   outside?: "read" | "unbound";
 };
 
@@ -126,7 +131,7 @@ async function selectedV5(
     });
   }
   const selectedRegistry =
-    native &&
+    (native || rest !== undefined) &&
     validateGitHubRepositoryRegistry(
       {
         ...registry,
@@ -136,17 +141,15 @@ async function selectedV5(
             {
               namespaceId: "namespace-a",
               profiles: ["github-repository"],
-              ...(native && { nativeGit: "v1" }),
+              nativeGit: "v1",
               permissions: {
                 metadata: "read",
                 contents: "write",
                 ...rest?.permissions,
               },
-              ...(rest &&
-                (rest.optedRepository === undefined ||
-                  rest.optedRepository === repo.repository) && {
-                  scopedRest: "v1",
-                }),
+              ...(rest?.limits?.[repo.repository] && {
+                apiLimits: rest.limits[repo.repository],
+              }),
             },
           ],
         })),
@@ -206,7 +209,7 @@ async function selectedV5(
       boundGitRule: f.runtime.boundGitRule.bind(f.runtime),
     },
   );
-  const profile = native ? "github_repository" : "repository_git";
+  const profile = selectedRegistry ? "github_repository" : "repository_git";
   const admitted = await proxy.sourceControl.assertAvailable(
     t.signal,
     profile,
@@ -232,11 +235,15 @@ async function selectedV5(
     bindings,
     ...(deadlineWallMs !== undefined && { deadlineWallMs }),
   };
-  const grants = [
+  const ceiling = [
     { repository: repositories[0]!.repository, access: "read" },
     { repository: repositories[1]!.repository, access: "write" },
     ...(rest?.outside === "read" ? [{ repository: "example/outside", access: "read" }] : []),
   ] as const;
+  const grants = ceiling.map((grant) => {
+    const apiLimits = rest?.agentLimits?.[grant.repository];
+    return apiLimits ? { ...grant, apiLimits } : grant;
+  });
   if (selectedRegistry) {
     f.owner.readOpenShellMaterial = async (_revisionId, _signal, _route, scope) => {
       assert.equal(scope, native ? "network-policy" : "github-repository");
@@ -263,7 +270,7 @@ async function selectedV5(
         version: 1,
         defaults: {},
         additions: [],
-        repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
+        repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, ceiling),
       },
     }),
     executionAdmission: { version: native ? 9 : 5, mode: "protected" },
@@ -274,10 +281,13 @@ async function selectedV5(
       repositoryGit: repositoryCredentials,
     },
   } as unknown as AgentRevision;
-  assert.equal(revision.repositoryCredentials!.bindings.length, native ? repositories.length : 1);
+  assert.equal(
+    revision.repositoryCredentials!.bindings.length,
+    selectedRegistry ? repositories.length : 1,
+  );
   assert.equal(
     revision.repositoryCredentials!.bindings[0]!.profile,
-    native ? "github-repository" : "git-write",
+    selectedRegistry ? "github-repository" : "git-write",
   );
   const prepare = (
     runtime = f.runtime,
@@ -616,7 +626,11 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, 
     await f.runtime.observeHeldPreview(revision.id, startupId, t.signal, async (path) => {
       activity.probes += 1;
       assert.equal(native, false);
-      assert.ok(path.startsWith(String(aclOrLegacyEndpoint.path).slice(0, -2)));
+      if (revision.repositoryCredentials!.bindings[0]!.profile === "github-repository") {
+        assert.ok(path.startsWith("/oce-observe-request/"));
+      } else {
+        assert.ok(path.startsWith(String(aclOrLegacyEndpoint.path).slice(0, -2)));
+      }
       assert.match(path, /\/oce-observe-request\/[a-f0-9]{32}\.git\/info\/refs$/);
       assert.equal(f.calls.material, 0);
       const request: OpenShellOnlineHttpRequest = {
@@ -687,6 +701,8 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, 
         },
       });
     },
+    removeLoadedGitRule: () =>
+      Reflect.deleteProperty(effectivePolicy.network_policies, gitRule.name),
     resetLoadedGitRule: () => {
       Object.assign(effectivePolicy.network_policies, { [gitRule.name]: loadedGitRule });
     },
@@ -3593,7 +3609,7 @@ test("a second Worker withdrawing Git during signing prevents the launcher POST"
   assert.equal(posts, 0);
 });
 
-test("native scoped REST intersects the selected permissions, registry opt-in and frozen Git ACL", async (t) => {
+test("native scoped REST intersects the selected permissions, API limits and frozen Git ACL", async (t) => {
   const apiRules = async (rest?: ScopedRest, hasAdmittedRoute = false) => {
     const held = await heldGit(t, true, undefined, rest);
     // Any admitted API route, reads or creation, leaves the host to the stock policy alone.
@@ -3669,7 +3685,7 @@ test("native scoped REST intersects the selected permissions, registry opt-in an
     allGranted.some((r) => r.method === "GET" && r.path === "/repos/example/outside/pulls"),
   );
   const mixed = await apiRules(
-    { permissions: { issues: "write", pull_requests: "write" }, outside: "unbound" },
+    { permissions: { issues: "read", pull_requests: "write" }, outside: "unbound" },
     true,
   );
   assert.deepEqual(
@@ -3684,17 +3700,81 @@ test("native scoped REST intersects the selected permissions, registry opt-in an
       ...pullReads.slice(pullReads.length / 2),
     ],
   );
+  const permissions = { issues: "write", pull_requests: "write" };
+  const createIssue = { method: "POST", path: "/repos/example/delivery/issues" };
+  // Outside is bound but ungranted, so #7135 withholds PR creation. Only B has Write.
+  const bound = await apiRules(
+    { permissions, limits: { "example/outside": { default: "none" } } },
+    true,
+  );
+  assert.deepEqual(
+    bound.filter(({ method }) => method !== "GET"),
+    [createIssue],
+  );
+  assert.deepEqual(
+    bound.filter(({ method }) => method === "GET"),
+    mixed.filter(({ method }) => method === "GET"),
+  );
+  // Disabling B's issue creation leaves its independently granted PR creation intact.
   assert.deepEqual(
     await apiRules(
-      { permissions: { issues: "read" }, optedRepository: "example/application" },
+      {
+        permissions,
+        outside: "unbound",
+        limits: { "example/delivery": { issues: "read" } },
+      },
       true,
     ),
-    issues.filter(({ path }) => path?.startsWith("/repos/example/application/")),
+    mixed,
+  );
+  const both = await apiRules({ permissions, outside: "unbound" }, true);
+  assert.deepEqual(
+    both.filter(({ method }) => method !== "GET"),
+    [...create, createIssue],
+  );
+  // Denying all API routes on A keeps B's eligible PR routes. B cannot exceed
+  // its Namespace's Issues Read or bypass the ungranted-head safeguard.
+  const limited: ScopedRest = {
+    permissions,
+    limits: { "example/delivery": { issues: "read" } },
+    agentLimits: {
+      "example/application": { default: "none" },
+      "example/delivery": { issues: "write" },
+    },
+  };
+  const deliveryRules = mixed.filter(({ path }) => path?.startsWith("/repos/example/delivery/"));
+  assert.deepEqual(await apiRules({ ...limited, outside: "unbound" }, true), deliveryRules);
+  assert.deepEqual(
+    await apiRules(limited, true),
+    deliveryRules.filter(({ method }) => method === "GET"),
+  );
+  const limitBoth = (limits: ApiLimits) => ({
+    "example/application": limits,
+    "example/delivery": limits,
+  });
+  assert.deepEqual(
+    await apiRules(
+      { permissions, outside: "unbound", limits: limitBoth({ issues: "none" }) },
+      true,
+    ),
+    pulls,
   );
   assert.deepEqual(
-    await apiRules({ permissions: { issues: "read" }, optedRepository: "example/outside" }),
-    [],
+    await apiRules(
+      {
+        permissions,
+        outside: "unbound",
+        limits: limitBoth({ default: "none", pull_requests: "read" }),
+      },
+      true,
+    ),
+    pullReads,
   );
+  assert.deepEqual(await apiRules({ permissions, limits: limitBoth({ default: "none" }) }), []);
+  // Explicit Write includes reads, but cannot raise a saved Read grant or the token permissions.
+  const limits = limitBoth({ default: "none", issues: "write", pull_requests: "write" });
+  assert.deepEqual(await apiRules({ permissions, limits, outside: "unbound" }, true), both);
+  assert.deepEqual(await apiRules({ permissions: { issues: "read" }, limits }, true), issues);
 });
 
 test("a persisted v9 Git-only binding cannot inherit issue network access", async () => {
@@ -3707,13 +3787,18 @@ test("a persisted v9 Git-only binding cannot inherit issue network access", asyn
   } as const;
   const registration = { ...registry.repositories[0]!, namespaces: [namespace] };
   const { installationAccess: _installationAccess, ...registryInput } = registry;
-  const gitOnly = validateGitHubRepositoryRegistry({
+  const enabled = validateGitHubRepositoryRegistry({
     ...registryInput,
     repositories: [registration],
   });
-  const enabled = validateGitHubRepositoryRegistry({
+  const gitOnly = validateGitHubRepositoryRegistry({
     ...registryInput,
-    repositories: [{ ...registration, namespaces: [{ ...namespace, scopedRest: "v1" }] }],
+    repositories: [
+      {
+        ...registration,
+        namespaces: [{ ...namespace, permissions: { metadata: "read", contents: "write" } }],
+      },
+    ],
   });
   const execution = {
     installationId: "ins_00000000-0000-4000-8000-000000000003",
@@ -3816,9 +3901,17 @@ test("a persisted v9 Git-only binding cannot inherit issue network access", asyn
   assert.deepEqual(revision.repositoryCredentials, repositoryCredentials);
   assert.deepEqual(revision.executionAdmission, { version: 9, mode: "protected" });
 
-  const { delivery } = createGitHubRepositoryDeliveryResolver(gitOnly)(revision);
+  const gitBinding = resolveGitHubRepositoryBinding(gitOnly, {
+    namespaceId,
+    repositoryRef: "application",
+    profile: "github-repository",
+  });
+  const { delivery } = createGitHubRepositoryDeliveryResolver(gitOnly)({
+    ...revision,
+    repositoryCredentials: { ...repositoryCredentials, bindings: [gitBinding] },
+  });
   assert.ok("scope" in delivery && delivery.scope === "github-repository");
-  assert.equal(delivery.permissions.issues, "read");
+  assert.equal(delivery.permissions.issues, undefined);
   assert.equal(Object.hasOwn(delivery, "scopedRest"), false);
   const rule = compileOpenShellBoundGitRule(
     revision.sandboxPolicy.repositoryNetworkPolicy.grants,
@@ -4090,20 +4183,19 @@ async function verifyScopedRestReadback(
   return bound;
 }
 
-test("a Worker upgrade keeps saved bindings current and releases nothing to a Sandbox loaded without pull request routes", async (t) => {
+test("a Worker refuses prior REST grants and a loaded policy missing newly authorized routes", async (t) => {
   const held = await heldGit(t, true, undefined, {
     permissions: { issues: "write", pull_requests: "write" },
   });
-  // Pinned identities for these repositories and permissions. The routes derived for a
-  // binding are not part of its identity, so a change in them leaves saved bindings current.
-  assert.deepEqual(
-    held.revision.repositoryCredentials!.bindings.map((b) => b.grant.grantId),
-    [
-      "sha256:1373e0773c7511721ef345b008db21b53559f92b71b291a1c4b9bd5a54d39925",
-      "sha256:292d3fddbc9c9dfb93300157fd1f90a4f146ccfe40de1a595caeb377b7f818ee",
-      "sha256:daeb7d280763db55e3a36d7dc4693c7a1f8cfb8ddcfc7c23436e66a8a200fd8c",
-    ],
-  );
+  // These identities were issued for the same configured permissions with the old REST selector.
+  const prior = [
+    "sha256:1373e0773c7511721ef345b008db21b53559f92b71b291a1c4b9bd5a54d39925",
+    "sha256:292d3fddbc9c9dfb93300157fd1f90a4f146ccfe40de1a595caeb377b7f818ee",
+    "sha256:daeb7d280763db55e3a36d7dc4693c7a1f8cfb8ddcfc7c23436e66a8a200fd8c",
+  ];
+  for (const binding of held.revision.repositoryCredentials!.bindings) {
+    assert.ok(!prior.includes(binding.grant.grantId));
+  }
   // The predecessor loaded issue routes only. This Worker expects the pull request routes too:
   // the loaded policy differs, so the Sandbox keeps what it has and receives no material.
   const loaded = held.loadedGitRule.endpoints.filter(({ host }) => host === "api.github.com");
@@ -4538,6 +4630,91 @@ test("native Git refuses obsolete or standalone admissions before Provider work"
   assert.deepEqual(f.calls, calls);
   assert.equal(store.rows.size, rows);
   noCredentials();
+});
+
+test("API limits require native delivery at first issuance and renewal even without REST permissions", async (t) => {
+  for (const limit of [{ default: "none" }, { issues: "write" }] as const) {
+    const rest = { permissions: {}, limits: { "example/delivery": limit } };
+    // No saved policy selects online authorization. Refuse before even reserving a Provider.
+    const online = await selectedV5(t, false, undefined, rest);
+    await assert.rejects(online.prepare(), /API limits require a native repository network policy/);
+    assert.equal(online.store.rows.size, 0);
+    online.noCredentials();
+
+    const held = await heldGit(t, true, undefined, rest);
+    for (const updates of [0, 1]) {
+      // The second pass offers fresh material to the same installed Provider.
+      held.f.owner.material = {
+        ...held.f.owner.material,
+        materialVersion: randomUUID(),
+        preparationAttemptId: randomUUID(),
+        value: `controlled-version-${updates}`,
+      };
+      const reads = held.f.calls.material;
+      held.removeLoadedGitRule();
+      await held.reconcile();
+      assert.equal(held.f.calls.material, reads);
+      assert.equal(held.activity.updates, updates);
+      held.resetLoadedGitRule();
+      await held.reconcile();
+      assert.equal(held.activity.updates, updates + 1);
+      assert.equal(held.activity.probes, 0);
+    }
+  }
+});
+
+test("Agent API restrictions block issuance and renewal if a forbidden route is loaded", async (t) => {
+  const held = await heldGit(t, true, undefined, {
+    permissions: { issues: "write" },
+    agentLimits: {
+      "example/application": { default: "none" },
+      "example/delivery": { issues: "read" },
+    },
+  });
+  // A has no API access. B remains writable over Git but cannot POST.
+  const endpoints = held.loadedGitRule.endpoints.filter(({ host }) => host === "api.github.com");
+  assert.equal(endpoints.length, 1);
+  const [endpoint] = endpoints;
+  assert.ok(endpoint && "rules" in endpoint && endpoint.path === "/repos/example/delivery/**");
+  const { rules } = endpoint;
+  assert.ok(rules.some(({ allow }) => allow.path === "/repos/example/delivery/issues"));
+  assert.ok(rules.every(({ allow }) => allow.method === "GET"));
+  for (const updates of [0, 1]) {
+    held.f.owner.material = {
+      ...held.f.owner.material,
+      materialVersion: randomUUID(),
+      preparationAttemptId: randomUUID(),
+      value: `controlled-version-${updates}`,
+    };
+    // A stale supervisor policy with the Namespace's broader authority must
+    // never receive material, including a new token for the same execution.
+    const reads = held.f.calls.material;
+    Object.assign(endpoint, {
+      rules: [...rules, { allow: { method: "POST", path: "/repos/example/delivery/issues" } }],
+    });
+    await held.reconcile();
+    assert.equal(held.f.calls.material, reads);
+    assert.equal(held.activity.updates, updates);
+    Object.assign(endpoint, { rules });
+    await held.reconcile();
+    assert.equal(held.activity.updates, updates + 1);
+    assert.equal(held.activity.probes, 0);
+  }
+});
+
+test("omitted API limits preserve online delivery without a saved native policy", async (t) => {
+  const held = await heldGit(t, false, undefined, { permissions: {} });
+  await held.reconcile();
+  assert.equal(held.activity.updates, 1);
+  held.f.owner.material = {
+    ...held.f.owner.material,
+    materialVersion: randomUUID(),
+    preparationAttemptId: randomUUID(),
+    value: "controlled-renewed-token",
+  };
+  await held.reconcile();
+  assert.equal(held.activity.updates, 2);
+  assert.equal(held.activity.probes, 1);
 });
 
 test("native Git registration refuses an online authorization plan before Provider work", async (t) => {
