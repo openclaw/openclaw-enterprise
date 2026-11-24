@@ -918,6 +918,13 @@ syncBuiltinESMExports();
         const overlongComponent = `${maxComponent}a`;
         const maxPath = `dir/${"/".repeat(4_096 - "dir/companion.txt".length)}companion.txt`;
         const projections = [
+          { name: "NUL in present companion", sibling: "sibling\0file", status: "failed" },
+          {
+            name: "absent optional key creates no path",
+            sibling: "sibling\0file",
+            omitCompanion: true,
+            status: "passed",
+          },
           { name: "255-byte leaf", leaf: maxComponent, status: "passed" },
           { name: "256-byte leaf", leaf: overlongComponent, status: "failed" },
           { name: "255-byte directory", sibling: `${maxComponent}/data`, status: "passed" },

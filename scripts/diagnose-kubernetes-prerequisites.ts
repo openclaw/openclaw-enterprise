@@ -95,7 +95,7 @@ type TlsSecret = NamedObject & { data?: Record<string, unknown> };
 type ClientWorkload = NamedObject & { spec?: unknown };
 type SecretVolumeMapping = {
   optional: boolean;
-  items: { key: string; path: string; exceedsPathLimits: boolean }[];
+  items: { key: string; path: string; invalidPath: boolean }[];
 };
 
 type KubeConnection = {
@@ -387,7 +387,7 @@ function clientCertificate(value: unknown): ClientCertificate | undefined {
   if (
     (kind !== "Deployment" && kind !== "StatefulSet") ||
     typeof name !== "string" ||
-    !isDnsName(name) ||
+    !isResourceName(name) ||
     typeof namespace !== "string" ||
     !dnsLabel.test(namespace) ||
     typeof container !== "string" ||
@@ -1094,7 +1094,7 @@ function inspectCertificate(
   if (volume) {
     const itemPathAction = "Ask the workload owner to correct the Secret volume's item paths.";
     const paths = new Set<string>();
-    for (const { key, path, exceedsPathLimits } of volume.items) {
+    for (const { key, path, invalidPath } of volume.items) {
       const value = data && Object.hasOwn(data, key) ? data[key] : undefined;
       if (value === undefined && volume.optional) {
         continue;
@@ -1105,9 +1105,9 @@ function inspectCertificate(
           secretAction,
         );
       }
-      if (exceedsPathLimits) {
+      if (invalidPath) {
         return failure(
-          "A mapped item in the selected Secret volume exceeds Kubernetes path length limits.",
+          "A mapped item in the selected Secret volume has a NUL byte or exceeds the filesystem path length limit.",
           itemPathAction,
         );
       }
@@ -1278,7 +1278,11 @@ function mountedClientSecret(
   }
   const matchingVolumes = volumes.filter((volume) => volume.name === mount.name);
   const secret = matchingVolumes.length === 1 ? matchingVolumes[0]?.secret : undefined;
-  if (!isObject(secret) || typeof secret.secretName !== "string" || !isDnsName(secret.secretName)) {
+  if (
+    !isObject(secret) ||
+    typeof secret.secretName !== "string" ||
+    !isResourceName(secret.secretName)
+  ) {
     return undefined;
   }
   const items = objectList(secret.items ?? []);
@@ -1315,10 +1319,11 @@ function mountedClientSecret(
       certificateMapped = true;
     }
     // The Kubernetes atomic writer measures raw paths before normalizing them.
-    const exceedsPathLimits =
+    const invalidPath =
+      itemPath.includes("\0") ||
       Buffer.byteLength(itemPath) > 4_096 ||
       itemPath.split("/").some((component) => Buffer.byteLength(component) > 255);
-    mappedItems.push({ key, path: target, exceedsPathLimits });
+    mappedItems.push({ key, path: target, invalidPath });
   }
   return certificateMapped ? { ...volume, items: mappedItems } : undefined;
 }

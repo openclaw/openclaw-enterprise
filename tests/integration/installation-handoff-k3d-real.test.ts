@@ -618,7 +618,7 @@ test(
     }
 
     const clientName = "gateway-client";
-    const clientSecret = "mounted-client";
+    const clientSecret = "mounted-client".padEnd(64, "s");
     const detachedSecret = "detached-client";
     const detachedItem = "detached-only.pem";
     const clientLeaf = await signedLeaf(dir, ca, {
