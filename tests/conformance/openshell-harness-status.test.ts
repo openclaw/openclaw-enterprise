@@ -1,25 +1,28 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { createServer, Server as HttpServer } from "node:http";
+import * as fs from "node:fs";
+import { mkdtempSync, rmSync, type PathLike } from "node:fs";
+import { createServer, type OutgoingHttpHeaders } from "node:http";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 import {
   assertCodexHeldFailure,
   assertHeldServiceHost,
   codexHeldCases,
   codexProbeResult,
   registerOpenShellCodexReadinessCases,
+  type CodexProcessResult,
 } from "./openshell-harness-codex-readiness-cases.ts";
 import {
   assertHarnessDiagnostics,
@@ -30,6 +33,10 @@ import {
   readHarnessEvent,
   registerNativeStatusCases,
   registerOpenShellServiceTransportCases,
+  type HarnessCall,
+  type HarnessHandler,
+  type HarnessServer,
+  type NativeEntrypointOptions,
 } from "./openshell-harness-service-transport-cases.ts";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
@@ -40,23 +47,28 @@ import {
 const nodeRequire = createRequire(import.meta.url);
 const TOKEN = "fixture-transport-token";
 const serviceUrl = "http://tenant--sandbox.openshell.localhost:8080/";
-const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
 registerOpenShellCodexReadinessCases(TOKEN, serviceUrl);
 
-function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
+interface CodexEntrypointOptions {
+  env: Record<string, string>;
+  login?: CodexProcessResult;
+  probe?: CodexProcessResult;
+  http?: Pick<typeof import("node:http"), "createServer">;
+}
+
+function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }: CodexEntrypointOptions) {
   const directory = mkdtempSync(join(tmpdir(), "openshell-held-failure-"));
-  /** @type {import("./openshell-harness-service-transport-cases.ts").HarnessServer[]} */
-  const servers = [];
-  /** @type {unknown[]} */
-  const diagnostics = [];
+  const servers: HarnessServer[] = [];
+  const diagnostics: unknown[] = [];
   let appServerStarts = 0;
   const sandbox = {
     URL,
     Buffer,
     setTimeout() {},
     setInterval() {},
-    console: { error: (message) => diagnostics.push(message) },
+    console: { error: (message: unknown) => diagnostics.push(message) },
     process: {
       env: {
         CODEX_HOME: join(directory, "codex"),
@@ -71,26 +83,32 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
         assert.fail("startup must hold its failure or start the app server");
       },
     },
-    require(specifier) {
+    require(specifier: string): unknown {
       if (specifier === "node:http") {
         return {
-          /** @param {import("./openshell-harness-service-transport-cases.ts").HarnessHandler} handler */
-          createServer(handler) {
-            /** @type {import("./openshell-harness-service-transport-cases.ts").HarnessServer} */
-            const server = { handler, listening: undefined };
+          createServer(handler: HarnessHandler) {
+            const server: HarnessServer = { handler, listening: undefined };
             servers.push(server);
             if (http !== undefined) {
-              /** @type {unknown} */
-              const real = http.createServer(handler);
-              assert.ok(real instanceof HttpServer, "expected the real HTTP server");
+              const real = http.createServer((request, response) => {
+                assert.ok(typeof request.method === "string");
+                assert.ok(typeof request.url === "string");
+                const { authorization } = request.headers;
+                handler(
+                  {
+                    method: request.method,
+                    url: request.url,
+                    headers: authorization === undefined ? {} : { authorization },
+                  },
+                  response,
+                );
+              });
               server.real = real;
               return {
-                /** @param {"error"} event @param {(error: Error & { code?: string }) => void} listener */
-                on(event, listener) {
+                on(event: "error", listener: (error: Error & { code?: string }) => void) {
                   real.on(event, listener);
                 },
-                /** @param {number} port @param {string} host */
-                listen(port, host) {
+                listen(port: number, host: string) {
                   server.listening = { port, host };
                   // The kernel picks a free loopback port, so no other socket can take it
                   // between the pick and the bind; the test reads it once listening.
@@ -99,14 +117,12 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
               };
             }
             return {
-              /** @param {"error"} event @param {(error: Error & { code?: string }) => void} listener */
-              on(event, listener) {
+              on(event: "error", listener: (error: Error & { code?: string }) => void) {
                 if (event === "error") {
                   server.onError = listener;
                 }
               },
-              /** @param {number} port @param {string} host */
-              listen(port, host) {
+              listen(port: number, host: string) {
                 server.listening = { port, host };
               },
             };
@@ -126,13 +142,13 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
       }
       if (specifier === "node:child_process") {
         return {
-          spawnSync(_command, args) {
+          spawnSync(_command: string, args: string[]) {
             if (args.includes("login")) {
               return login;
             }
             return probe;
           },
-          spawn(_command, args) {
+          spawn(_command: string, args: string[]) {
             assert.ok(args.includes("app-server"));
             appServerStarts++;
             return { on() {}, kill() {}, stderr: undefined };
@@ -150,15 +166,12 @@ function runCodexEntrypoint({ env, login = { status: 0 }, probe, http }) {
   return { servers, diagnostics, appServerStarts };
 }
 
-/**
- * @param {import("./openshell-harness-service-transport-cases.ts").HarnessHandler} handler
- * @param {Parameters<import("./openshell-harness-service-transport-cases.ts").HarnessCall>[1]} options
- */
-function call(handler, { method = "GET", url = "/openclaw/runtime/status", authorization }) {
-  /** @type {number | undefined} */
-  let status;
-  /** @type {import("node:http").OutgoingHttpHeaders | undefined} */
-  let headers;
+function call(
+  handler: HarnessHandler,
+  { method = "GET", url = "/openclaw/runtime/status", authorization }: Parameters<HarnessCall>[1],
+): ReturnType<HarnessCall> {
+  let status: number | undefined;
+  let headers: OutgoingHttpHeaders | undefined;
   let body = "";
   handler(
     {
@@ -176,26 +189,21 @@ function call(handler, { method = "GET", url = "/openclaw/runtime/status", autho
       },
     },
   );
-  /** @type {unknown} */
-  const decoded = JSON.parse(body);
+  const decoded: unknown = JSON.parse(body);
   return { status, headers, body: readHarnessRecord(decoded) };
 }
 
 const providerEnv = { APP_TOKEN_SHA: sha256(TOKEN) };
 
 test("a provider-owned Codex Harness serves its held startup failure only to the transport token holder", async (t) => {
-  for (const [name, options, expected] of [
-    ...codexHeldCases(
-      codexProbeResult("stream error: model unavailable"),
-      codexProbeResult("unexpected status 401 Unauthorized: invalid api key"),
-    ),
-  ]) {
+  for (const [name, options, expected] of codexHeldCases(
+    codexProbeResult("stream error: model unavailable"),
+    codexProbeResult("unexpected status 401 Unauthorized: invalid api key"),
+  )) {
     await t.test(name, () => {
       const { servers, diagnostics, appServerStarts } = runCodexEntrypoint({
         env: providerEnv,
-        login: options.login,
-        probe: options.probe,
-        http: undefined,
+        ...options,
       });
       assertHarnessDiagnostics(diagnostics);
       assertCodexHeldFailure(
@@ -219,7 +227,6 @@ test("a Compute-owned Codex Harness keeps its held failure on the private status
       OPENCLAW_POD_UID: "pod-fixture",
     },
     probe: codexProbeResult("stream error: model unavailable"),
-    http: undefined,
   });
   assert.equal(appServerStarts, 0);
   assert.deepEqual(
@@ -233,7 +240,6 @@ test("a provider-owned Codex Harness with a working model starts the app-server 
   const { servers, appServerStarts } = runCodexEntrypoint({
     env: providerEnv,
     probe: codexProbeResult(),
-    http: undefined,
   });
   assert.equal(appServerStarts, 1);
   assert.deepEqual(
@@ -264,7 +270,6 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
     const { servers } = runCodexEntrypoint({
       env: providerEnv,
       probe: codexProbeResult("stream error: model unavailable"),
-      http: undefined,
     });
     const listening = servers.find((server) => server.listening !== undefined);
     assert.ok(listening);
@@ -297,7 +302,6 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
         OPENCLAW_POD_UID: "pod-fixture",
       },
       probe: codexProbeResult("stream error: model unavailable"),
-      http: undefined,
     });
     const listening = servers.find((server) => server.listening !== undefined);
     assert.ok(listening);
@@ -315,7 +319,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
     "the dedicated OpenClaw worker readiness port answers before any route check",
     () => {
       const stop = new Error("stop after the readiness server starts");
-      let handler;
+      let handler: HarnessHandler | undefined;
       const directory = temporaryDirectorySync(t, "native-worker-readiness-");
       assert.throws(
         () =>
@@ -335,10 +339,10 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
                 OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
               },
             },
-            require(specifier) {
+            require(specifier: string): unknown {
               if (specifier === "node:http") {
                 return {
-                  createServer(value) {
+                  createServer(value: HarnessHandler) {
                     handler = value;
                     return { on() {}, listen() {} };
                   },
@@ -348,7 +352,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
                 // The worker starts its readiness server, then prepares its private TMPDIR
                 // with mkdirSync; stopping there leaves only the readiness server running.
                 return {
-                  ...nodeRequire("node:fs"),
+                  ...fs,
                   mkdirSync() {
                     throw stop;
                   },
@@ -359,8 +363,8 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
           }),
         (error) => error === stop,
       );
-      assert.equal(typeof handler, "function");
-      let status;
+      assert.ok(typeof handler === "function");
+      let status: number | undefined;
       let body = "";
       handler(
         { method: "GET", url: "//", headers: {} },
@@ -389,13 +393,13 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
     const real = held.real;
     t.after(() => close(real));
     if (!real.listening) {
-      await new Promise((resolve) => real.once("listening", resolve));
+      await new Promise<void>((resolve) => real.once("listening", resolve));
     }
     const address = real.address();
     assert.ok(address !== null && typeof address !== "string");
     const heldPort = address.port;
     // The request line carries "//" verbatim; HTTP clients would normalize it.
-    const raw = await new Promise((resolve, reject) => {
+    const raw = await new Promise<string>((resolve, reject) => {
       const socket = connect(heldPort, "127.0.0.1");
       let text = "";
       socket.setEncoding("utf8");
@@ -426,22 +430,23 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
 // A provider-owned dedicated OpenClaw worker (finding 1642) holds a failed model
 // check the same way: it never connects its node, so without this nothing reports
 // the hold and the revision waits for its deadline as WORKSPACE_NODE_PENDING.
-/** @param {import("./openshell-harness-service-transport-cases.ts").NativeEntrypointOptions} options */
-function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout, probeStatus }) {
+function runNativeWorkerEntrypoint({
+  env = {},
+  upfrontStatus = 3,
+  upfrontStdout,
+  probeStatus,
+}: NativeEntrypointOptions) {
   const directory = mkdtempSync(join(tmpdir(), "native-held-failure-"));
-  /** @type {import("./openshell-harness-service-transport-cases.ts").HarnessServer[]} */
-  const servers = [];
-  /** @type {unknown[]} */
-  const diagnostics = [];
+  const servers: HarnessServer[] = [];
+  const diagnostics: unknown[] = [];
   let connectStarts = 0;
-  const realFs = nodeRequire("node:fs");
   const sandbox = {
     URL,
     Buffer,
     AbortSignal,
     setTimeout() {},
     setInterval() {},
-    console: { error: (message) => diagnostics.push(message) },
+    console: { error: (message: unknown) => diagnostics.push(message) },
     process: {
       execPath: process.execPath,
       env: {
@@ -467,23 +472,19 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
         assert.fail("a held failure never exits the worker");
       },
     },
-    require(specifier) {
+    require(specifier: string): unknown {
       if (specifier === "node:http") {
         return {
-          /** @param {import("./openshell-harness-service-transport-cases.ts").HarnessHandler} handler */
-          createServer(handler) {
-            /** @type {import("./openshell-harness-service-transport-cases.ts").HarnessServer} */
-            const server = { handler, listening: undefined };
+          createServer(handler: HarnessHandler) {
+            const server: HarnessServer = { handler, listening: undefined };
             servers.push(server);
             return {
-              /** @param {"error"} event @param {(error: Error & { code?: string }) => void} listener */
-              on(event, listener) {
+              on(event: "error", listener: (error: Error & { code?: string }) => void) {
                 if (event === "error") {
                   server.onError = listener;
                 }
               },
-              /** @param {number} port @param {string} host */
-              listen(port, host) {
+              listen(port: number, host: string) {
                 server.listening = { port, host };
               },
             };
@@ -494,11 +495,11 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
         // The image asset trees exist and are non-empty; everything else is real
         // under the fixture directory.
         return {
-          ...realFs,
-          existsSync: (path) => String(path).startsWith("/app/") || realFs.existsSync(path),
-          lstatSync: (path) =>
-            String(path).startsWith("/app/") ? { isDirectory: () => true } : realFs.lstatSync(path),
-          readdirSync: (path) => (String(path).startsWith("/app/") ? ["asset"] : []),
+          ...fs,
+          existsSync: (path: PathLike) => String(path).startsWith("/app/") || fs.existsSync(path),
+          lstatSync: (path: PathLike) =>
+            String(path).startsWith("/app/") ? { isDirectory: () => true } : fs.lstatSync(path),
+          readdirSync: (path: PathLike) => (String(path).startsWith("/app/") ? ["asset"] : []),
           cpSync() {},
           chmodSync() {},
         };
@@ -511,7 +512,7 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
           // invalid_api_key, 5 missing_api_key, 6 insufficient_permissions); its
           // stdout is `upfrontStdout`, the 401 body's closed-set tokens. The full
           // probe, when reached, reports `probeStatus` for the model.
-          spawnSync(command, args) {
+          spawnSync(command: string, args: string[]) {
             if (args[0] === "-e") {
               assert.equal(command, process.execPath);
               return { status: upfrontStatus, stdout: upfrontStdout };
@@ -519,7 +520,9 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
             assert.equal(command, "node");
             // The CLI loads the CPU window preload from its own probe directory.
             assert.equal(args[0], "--require");
-            assert.match(args[1], /\/openclaw-auth-probe-[^/]+\/cpu-window\.cjs$/);
+            const preload = args[1];
+            assert.ok(preload);
+            assert.match(preload, /\/openclaw-auth-probe-[^/]+\/cpu-window\.cjs$/);
             assert.equal(args[2], "/app/openclaw.mjs");
             return {
               status: 0,
@@ -565,9 +568,14 @@ const nativeProviderEnv = { APP_TOKEN_SHA: sha256(TOKEN), APP_SERVER_PORT: "1879
 
 test("a provider-owned native OpenClaw worker serves its held model-check failure to the transport token holder", async (t) => {
   const hostile = "sk-proj-HostileFixtureKey0123456789abcdef";
-  for (const [name, upfrontStatus, providerCode, responseHeaderMarker, upfrontStdout, body] of [
-    ...nativeHeldCases(hostile),
-  ]) {
+  for (const [
+    name,
+    upfrontStatus,
+    providerCode,
+    responseHeaderMarker,
+    upfrontStdout,
+    body,
+  ] of nativeHeldCases(hostile)) {
     await t.test(name, () => {
       const { servers, diagnostics, events, connectStarts } = runNativeWorkerEntrypoint({
         env: nativeProviderEnv,

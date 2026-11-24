@@ -4,10 +4,19 @@ import test from "node:test";
 import {
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
+  type KubernetesComputeDriver,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-
+import type {
+  AgentRevision,
+  SecretEnvironmentProjection,
+} from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
+import {
+  podTemplate,
+  resourceRecord,
+  resourceRecords,
+} from "../helpers/kubernetes-rendered-resources.ts";
 
 const tenant = {
   id: "ns_00000000-0000-4000-8000-000000000014",
@@ -16,21 +25,30 @@ const tenant = {
   createdAt: "2026-08-28T00:00:00.000Z",
 };
 
-function options(overrides = {}) {
-  return {
-    ...conformanceKubernetesOptions({
+function createDriver() {
+  return createKubernetesComputeDriver(
+    conformanceKubernetesOptions({
       gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
       runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
     }),
-    ...overrides,
-  };
+  );
 }
 
-function revision(driver, overrides = {}) {
+function revision(
+  driver: KubernetesComputeDriver,
+  overrides: Partial<
+    Pick<
+      AgentRevision,
+      "id" | "agentId" | "servicePrincipalId" | "configuration" | "secretBindings"
+    >
+  > = {},
+) {
   const native = createHarnessConfiguration("openclaw", "gpt-4.1");
-  delete native.gateway.auth;
+  const { auth: _auth, ...gateway } = native.gateway;
   return {
     id: "revision-secret-gateway-delivery-1",
+    backendId: null,
+    executionAdmission: { version: 2, mode: "unprotected" },
     namespaceId: tenant.id,
     agentId: "agent-secret-gateway-delivery",
     revision: 1,
@@ -40,6 +58,7 @@ function revision(driver, overrides = {}) {
     gatewayManagedMode: true,
     configuration: {
       ...native,
+      gateway,
       logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
       diagnostics: { otel: { logs: false } },
     },
@@ -52,7 +71,13 @@ function revision(driver, overrides = {}) {
       },
       secretDriverId: "secret-kubernetes",
     },
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harness: {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {},
+    },
     compute: { id: driver.id, implementation: driver.implementation },
     servicePrincipalId: "service-principal-secret-gateway-delivery",
     secretDriverId: "secret-kubernetes",
@@ -67,10 +92,12 @@ function revision(driver, overrides = {}) {
     },
     createdAt: tenant.createdAt,
     ...overrides,
-  };
+  } satisfies AgentRevision;
 }
 
-function projection(overrides = {}) {
+function projection(
+  overrides: Partial<SecretEnvironmentProjection> = {},
+): SecretEnvironmentProjection {
   return {
     name: "EXTERNAL_SERVICE_TOKEN",
     secretId: "sec_00000000-0000-4000-8000-000000000014",
@@ -86,12 +113,35 @@ function projection(overrides = {}) {
   };
 }
 
+function environmentVariables(entries: unknown) {
+  return new Map(
+    resourceRecords(entries, "environment variables").map((entry) => {
+      assert.ok(typeof entry.name === "string", "environment variable must have a name");
+      return [entry.name, entry];
+    }),
+  );
+}
+
+function secretKeyRef(environment: ReadonlyMap<string, Record<string, unknown>>, name: string) {
+  const source = resourceRecord(environment.get(name)?.valueFrom, `${name} valueFrom`);
+  return resourceRecord(source.secretKeyRef, `${name} secretKeyRef`);
+}
+
+function environmentValue(
+  environment: ReadonlyMap<string, Record<string, unknown>>,
+  name: string,
+): string {
+  const value = environment.get(name)?.value;
+  assert.ok(typeof value === "string", `${name} must have a string value`);
+  return value;
+}
+
 test("secret-gateway-delivery renders exact bound Namespace Secret env only into the gateway", () => {
-  const driver = createKubernetesComputeDriver(options());
+  const driver = createDriver();
   const candidate = revision(driver);
   const namespace = kubernetesNamespaceName(tenant.id);
   const suffix = createHash("sha256").update(candidate.agentId).digest("hex").slice(0, 12);
-  const secretEnvironment = driver.secretEnvironmentForRevision(
+  const secretEnvironment = driver["secretEnvironmentForRevision"](
     candidate,
     {
       secretEnvironment: [projection()],
@@ -99,22 +149,23 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
     { name: namespace, plane: "execution" },
   );
 
-  const gateway = driver.deployment({
+  const configuration = driver["gatewayConfiguration"](candidate);
+  const gateway = driver["deployment"]({
     name: `gateway-${suffix}`,
     ownership: { namespaceId: tenant.id, agentId: candidate.agentId },
     namespace: { name: namespace, plane: "execution" },
     images: {
       runtime: "openclaw-enterprise/gateway-fixture:local",
-      workspaceSetup: driver.options.images.gateway,
+      workspaceSetup: driver["options"].images.gateway,
     },
     serviceAccountName: `agent-${suffix}`,
     role: "gateway",
     environment: {},
-    loggingLevel: driver.gatewayConfiguration(candidate).loggingLevel,
-    configuration: driver.gatewayConfiguration(candidate),
+    loggingLevel: configuration.loggingLevel,
+    configuration,
     embedded: true,
     workloadServicePrincipalId: candidate.servicePrincipalId,
-    harnessAuth: driver.harnessAuthForRevision(
+    harnessAuth: driver["harnessAuthForRevision"](
       candidate,
       {
         harnessAuth: {
@@ -126,29 +177,30 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
     ),
     secretEnvironment,
   });
-  const environment = Object.fromEntries(
-    gateway.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
-  );
+  const pod = resourceRecord(podTemplate(gateway).spec, "Pod spec");
+  const [container] = resourceRecords(pod.containers, "Pod containers");
+  assert.ok(container, "Gateway deployment must have a container");
+  const environment = environmentVariables(container.env);
 
   // Generic gateway credentials and harness credentials remain independently bound.
-  assert.deepEqual(environment.EXTERNAL_SERVICE_TOKEN.valueFrom.secretKeyRef, {
+  assert.deepEqual(secretKeyRef(environment, "EXTERNAL_SERVICE_TOKEN"), {
     name: "stored-service-key",
     key: "value",
     optional: false,
   });
-  assert.equal(environment.OPENAI_API_KEY.valueFrom.secretKeyRef.name, "stored-model-key");
-  assert.equal(environment.APP_SERVER_TOKEN, undefined);
-  assert.equal(environment.CODEX_ACCESS_TOKEN, undefined);
+  assert.equal(secretKeyRef(environment, "OPENAI_API_KEY").name, "stored-model-key");
+  assert.equal(environment.get("APP_SERVER_TOKEN"), undefined);
+  assert.equal(environment.get("CODEX_ACCESS_TOKEN"), undefined);
 
   assert.throws(
     () =>
-      driver.deployment({
+      driver["deployment"]({
         name: `agent-${suffix}`,
         ownership: { namespaceId: tenant.id, agentId: candidate.agentId, revisionId: candidate.id },
         namespace: { name: namespace, plane: "execution" },
         images: {
           runtime: "openclaw-enterprise/agent-fixture:local",
-          workspaceSetup: driver.options.images.gateway,
+          workspaceSetup: driver["options"].images.gateway,
         },
         serviceAccountName: `agent-${suffix}`,
         role: "agent",
@@ -165,7 +217,7 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
     servicePrincipalId: "service-principal-secret-gateway-delivery-shared",
   });
   assert.deepEqual(
-    driver.secretEnvironmentForRevision(
+    driver["secretEnvironmentForRevision"](
       sharedConsumer,
       {
         secretEnvironment: [projection({ agentId: sharedConsumer.agentId })],
@@ -177,13 +229,15 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
 });
 
 test("secret-gateway-delivery rejects missing, foreign, and reserved model projections", () => {
-  const driver = createKubernetesComputeDriver(options());
+  const driver = createDriver();
   const candidate = revision(driver);
+  const serviceBinding = candidate.secretBindings.EXTERNAL_SERVICE_TOKEN;
+  assert.ok(serviceBinding);
   const namespace = kubernetesNamespaceName(tenant.id);
 
   assert.throws(
     () =>
-      driver.secretEnvironmentForRevision(candidate, undefined, {
+      driver["secretEnvironmentForRevision"](candidate, undefined, {
         name: namespace,
         plane: "execution",
       }),
@@ -191,7 +245,7 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
   );
   assert.throws(
     () =>
-      driver.secretEnvironmentForRevision(
+      driver["secretEnvironmentForRevision"](
         candidate,
         {
           secretEnvironment: [projection({ agentId: "another-agent" })],
@@ -202,7 +256,7 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
   );
   assert.throws(
     () =>
-      driver.secretEnvironmentForRevision(
+      driver["secretEnvironmentForRevision"](
         candidate,
         {
           secretEnvironment: [projection({ backendRef: { ...projection().backendRef, name: "" } })],
@@ -213,9 +267,9 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
   );
   assert.throws(
     () =>
-      driver.secretEnvironmentForRevision(
+      driver["secretEnvironmentForRevision"](
         revision(driver, {
-          secretBindings: { OPENAI_API_KEY: candidate.secretBindings.EXTERNAL_SERVICE_TOKEN },
+          secretBindings: { OPENAI_API_KEY: serviceBinding },
         }),
         { secretEnvironment: [projection({ name: "OPENAI_API_KEY" })] },
         { name: namespace, plane: "execution" },
@@ -224,7 +278,7 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
   );
   assert.throws(
     () =>
-      driver.secretEnvironmentForRevision(
+      driver["secretEnvironmentForRevision"](
         revision(driver, {
           secretBindings: {
             APP_SERVER_TOKEN: {
@@ -246,7 +300,7 @@ test("secret-gateway-delivery rejects missing, foreign, and reserved model proje
 // A configured provider must consume the admitted model Secret, never an ambient
 // vendor credential or an independently bound gateway Secret.
 test("embedded custom providers retain model identity and exact Secret ownership", () => {
-  const driver = createKubernetesComputeDriver(options());
+  const driver = createDriver();
   const environmentName = "OCE_MODEL_API_KEY";
   const providerId = "router";
   const model = "vendor/model";
@@ -271,7 +325,12 @@ test("embedded custom providers retain model identity and exact Secret ownership
     },
   };
   const candidate = revision(driver, { configuration });
-  const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const serviceBinding = candidate.secretBindings.EXTERNAL_SERVICE_TOKEN;
+  assert.ok(serviceBinding);
+  const namespace: Parameters<KubernetesComputeDriver["harnessAuthForRevision"]>[2] = {
+    name: kubernetesNamespaceName(tenant.id),
+    plane: "execution",
+  };
   const context = {
     harnessAuth: {
       ...candidate.harnessAuth,
@@ -279,21 +338,30 @@ test("embedded custom providers retain model identity and exact Secret ownership
     },
   };
   driver.validateHarnessAuth(candidate.harness, candidate.harnessAuth, configuration, {});
-  const prepared = driver.harnessAuthForRevision(candidate, context, namespace);
-  const environment = Object.fromEntries(prepared.environment.map((entry) => [entry.name, entry]));
-  assert.deepEqual(environment[environmentName].valueFrom.secretKeyRef, {
+  const prepared = driver["harnessAuthForRevision"](candidate, context, namespace);
+  const environment = environmentVariables(prepared.environment);
+  assert.deepEqual(secretKeyRef(environment, environmentName), {
     name: "stored-model-key",
     key: "value",
   });
-  assert.equal(environment.OPENAI_API_KEY, undefined);
-  assert.equal(environment.ANTHROPIC_API_KEY, undefined);
-  assert.equal(environment.OPENCLAW_HARNESS_MODEL.value, modelRef);
-  assert.equal(environment.OPENCLAW_HARNESS_PROVIDER.value, providerId);
-  assert.equal(environment.OPENCLAW_HARNESS_CREDENTIAL_ENV.value, environmentName);
-  const probe = JSON.parse(environment.OPENCLAW_HARNESS_PROBE_CONFIG.value);
-  assert.deepEqual(probe.models.providers[providerId].apiKey, apiKey);
-  assert.equal(probe.models.providers[providerId].models[0].id, model);
-  assert.equal(probe.agents.defaults.model, modelRef);
+  assert.equal(environment.get("OPENAI_API_KEY"), undefined);
+  assert.equal(environment.get("ANTHROPIC_API_KEY"), undefined);
+  assert.equal(environmentValue(environment, "OPENCLAW_HARNESS_MODEL"), modelRef);
+  assert.equal(environmentValue(environment, "OPENCLAW_HARNESS_PROVIDER"), providerId);
+  assert.equal(environmentValue(environment, "OPENCLAW_HARNESS_CREDENTIAL_ENV"), environmentName);
+  const probe: unknown = JSON.parse(environmentValue(environment, "OPENCLAW_HARNESS_PROBE_CONFIG"));
+  const probeRecord = resourceRecord(probe, "probe configuration");
+  const providers = resourceRecord(
+    resourceRecord(probeRecord.models, "models").providers,
+    "providers",
+  );
+  const provider = resourceRecord(providers[providerId], "selected provider");
+  assert.deepEqual(provider.apiKey, apiKey);
+  assert.equal(resourceRecords(provider.models, "provider models")[0]?.id, model);
+  assert.equal(
+    resourceRecord(resourceRecord(probeRecord.agents, "agents").defaults, "defaults").model,
+    modelRef,
+  );
   assert.deepEqual(configuration.models.providers[providerId].apiKey, apiKey);
 
   // Both native adapters use the same source contract without rewriting model IDs.
@@ -301,8 +369,15 @@ test("embedded custom providers retain model identity and exact Secret ownership
   messages.models.providers.router.api = "anthropic-messages";
   driver.validateHarnessAuth(candidate.harness, candidate.harnessAuth, messages, {});
   for (const invalidKey of [undefined, "${OPENAI_API_KEY}", { ...apiKey, id: "OTHER_KEY" }]) {
-    const invalid = structuredClone(configuration);
-    invalid.models.providers.router.apiKey = invalidKey;
+    const { apiKey: _apiKey, ...provider } = configuration.models.providers[providerId];
+    const invalid = {
+      ...configuration,
+      models: {
+        providers: {
+          [providerId]: invalidKey === undefined ? provider : { ...provider, apiKey: invalidKey },
+        },
+      },
+    };
     assert.throws(
       () => driver.validateHarnessAuth(candidate.harness, candidate.harnessAuth, invalid, {}),
       /models.providers.router.apiKey.*OCE_MODEL_API_KEY/,
@@ -319,10 +394,10 @@ test("embedded custom providers retain model identity and exact Secret ownership
   }
   assert.throws(
     () =>
-      driver.secretEnvironmentForRevision(
+      driver["secretEnvironmentForRevision"](
         {
           ...candidate,
-          secretBindings: { [environmentName]: candidate.secretBindings.EXTERNAL_SERVICE_TOKEN },
+          secretBindings: { [environmentName]: serviceBinding },
         },
         { secretEnvironment: [projection({ name: environmentName })] },
         namespace,
@@ -331,7 +406,7 @@ test("embedded custom providers retain model identity and exact Secret ownership
   );
   assert.throws(
     () =>
-      driver.harnessAuthForRevision(
+      driver["harnessAuthForRevision"](
         candidate,
         {
           harnessAuth: {
@@ -345,7 +420,7 @@ test("embedded custom providers retain model identity and exact Secret ownership
   );
   assert.throws(
     () =>
-      driver.harnessAuthForRevision(
+      driver["harnessAuthForRevision"](
         {
           ...candidate,
           harness: { ...candidate.harness, mode: "dedicated" },
@@ -355,8 +430,7 @@ test("embedded custom providers retain model identity and exact Secret ownership
       ),
     /compatible model provider/,
   );
-  const missing = structuredClone(configuration);
-  delete missing.models.providers.router;
+  const missing = { ...configuration, models: { providers: {} } };
   assert.throws(
     () => driver.validateHarnessAuth(candidate.harness, candidate.harnessAuth, missing, {}),
     /compatible model provider/,
