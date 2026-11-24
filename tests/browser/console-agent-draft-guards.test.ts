@@ -192,23 +192,26 @@ function secretFields(value: unknown): SecretMetadata {
   };
 }
 
+function checkedPolicy({ fixture, namespace, agent, base }: PolicyConsoleFixture) {
+  return { fixture, namespace: resource(namespace), agent: agentFields(agent), base };
+}
+
+function seededRevision({ revision }: { revision: unknown }) {
+  return revisionFields(revision);
+}
+
 for (const width of [1440, 390]) {
   test(`Agent policy keyboard focus follows added and removed port ranges at ${width}px`, async (t) => {
-    const {
-      fixture,
-      namespace: rawNamespace,
-      agent: rawAgent,
-      base,
-    }: PolicyConsoleFixture = await createPolicyConsole(t, [
-      {
-        id: "policy-focus-control",
-        binary: "/usr/bin/python3.11",
-        host: "example.org",
-        ports: [{ from: 443, to: 443 }],
-      },
-    ]);
-    const namespace = resource(rawNamespace);
-    const agent = agentFields(rawAgent);
+    const { fixture, namespace, agent, base } = checkedPolicy(
+      await createPolicyConsole(t, [
+        {
+          id: "policy-focus-control",
+          binary: "/usr/bin/python3.11",
+          host: "example.org",
+          ports: [{ from: 443, to: 443 }],
+        },
+      ]),
+    );
     const original = await fixture.request("GET", base);
     assert.equal(original.status, 200);
     const { page } = await newPage(t, fixture, {
@@ -300,14 +303,7 @@ for (const width of [1440, 390]) {
 }
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-    base,
-  }: PolicyConsoleFixture = await createPolicyConsole(t);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
+  const { fixture, namespace, agent, base } = checkedPolicy(await createPolicyConsole(t));
   // No operator ceiling delegates access. The actual OCC admission path must reject the preview;
   // no response interception or provider behavior is substituted for that decision.
   const { page } = await newPage(t, fixture, {
@@ -396,11 +392,7 @@ test("Policy denials says once that the Installation selects no Sandbox Driver",
       { executionMode: "dedicated" },
     ),
   );
-  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
-    namespace.id,
-    created.id,
-  );
-  const revision = revisionFields(rawRevision);
+  const revision = seededRevision(await fixture.seedActiveAgentRevision(namespace.id, created.id));
   const base = `/namespaces/${namespace.id}/agents/${created.id}/sandbox-policy/networking`;
   // The real API answers the policy read with no capability and its cause, and every policy
   // change gives the same cause: turning editing on is refused up front (D774).
@@ -463,18 +455,8 @@ test("Policy denials says once that the Installation selects no Sandbox Driver",
 // A version a Sandbox Driver provisioned names it in its snapshot, so the Policy denials tab reads
 // its Sandbox log. Only a version without one skips the read (finding 2484).
 test("Policy denials reads the Sandbox log of a version a Sandbox Driver provisioned", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-  }: PolicyConsoleFixture = await createPolicyConsole(t);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
-  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
-    namespace.id,
-    agent.id,
-  );
-  const revision = revisionFields(rawRevision);
+  const { fixture, namespace, agent } = checkedPolicy(await createPolicyConsole(t));
+  const revision = seededRevision(await fixture.seedActiveAgentRevision(namespace.id, agent.id));
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const snapshot = await fixture.request("GET", `${agentPath}/revisions/${revision.id}`);
   assert.equal(record(snapshot.data).sandboxDriverId, "policy-openshell");
@@ -505,18 +487,8 @@ test("Policy denials reads the Sandbox log of a version a Sandbox Driver provisi
 // grants. An administrator whose Restriction denies Agent administer on this Agent is told who
 // can change it, not "You do not have permission" (finding D753).
 test("A refused policy editing change says who can change it", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-  }: PolicyConsoleFixture = await createPolicyConsole(t);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
-  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
-    namespace.id,
-    agent.id,
-  );
-  const revision = revisionFields(rawRevision);
+  const { fixture, namespace, agent } = checkedPolicy(await createPolicyConsole(t));
+  const revision = seededRevision(await fixture.seedActiveAgentRevision(namespace.id, agent.id));
   restrict(fixture.policy, "administer", "agent", {
     namespaceId: namespace.id,
     resourceId: agent.id,
@@ -538,13 +510,7 @@ test("A refused policy editing change says who can change it", async (t) => {
 // ask again for the same answer (finding 2060). With a permission answer the console skips the
 // read instead (finding 2454), so the answer is withheld here to reach the API's refusal.
 test("A refused policy read offers no Retry", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-  }: PolicyConsoleFixture = await createPolicyConsole(t);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
+  const { fixture, namespace, agent } = checkedPolicy(await createPolicyConsole(t));
   const member = await fixture.createAccountWithPolicy("policy-member", (principal) => {
     fixture.policy.roles.push({
       id: "role-policy-member",
@@ -560,11 +526,7 @@ test("A refused policy read offers no Retry", async (t) => {
       roleId: "role-policy-member",
     });
   });
-  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
-    namespace.id,
-    agent.id,
-  );
-  const revision = revisionFields(rawRevision);
+  const revision = seededRevision(await fixture.seedActiveAgentRevision(namespace.id, agent.id));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
@@ -599,13 +561,7 @@ test("A refused policy read offers no Retry", async (t) => {
 // remembered denial with a fresh answer, which is not audited, so the policy shows on the first
 // visit instead of only after a reload (finding 2454).
 test("A policy read grant after the page loaded shows the policy on the first visit", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-  }: PolicyConsoleFixture = await createPolicyConsole(t);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
+  const { fixture, namespace, agent } = checkedPolicy(await createPolicyConsole(t));
   const role: { id: string; namespaceId: string; permissions: Permission[] } = {
     id: "role-policy-granted-later",
     namespaceId: namespace.id,
@@ -631,11 +587,7 @@ test("A policy read grant after the page loaded shows the policy on the first vi
       roleId: role.id,
     });
   });
-  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
-    namespace.id,
-    agent.id,
-  );
-  const revision = revisionFields(rawRevision);
+  const revision = seededRevision(await fixture.seedActiveAgentRevision(namespace.id, agent.id));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const answer = page.waitForResponse((r) => r.url().endsWith(`/agents/${agent.id}/permissions`));
@@ -669,13 +621,7 @@ test("A policy read grant after the page loaded shows the policy on the first vi
 // tab says so instead of telling every reader to deploy. It reads no Sandbox log, so the denial
 // window's count and controls, which could only show nothing, are hidden (finding 2509).
 test("Policy denials on the draft says where denials and suggestions come from", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-  }: PolicyConsoleFixture = await createPolicyConsole(t);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
+  const { fixture, namespace, agent } = checkedPolicy(await createPolicyConsole(t));
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
   const tab = page.locator(".sandbox-policy");
@@ -729,21 +675,12 @@ const delegatedPolicyGrant = {
 };
 
 test("Agent policy proposals save separately or atomically request application to the current revision", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-    base,
-  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
+  const { fixture, namespace, agent, base } = checkedPolicy(
+    await createPolicyConsole(t, [delegatedPolicyGrant]),
+  );
   // A real admitted revision is activated for presentation. This proves browser/HTTP/IAM
   // admission and the pending application record, not worker dispatch or provider enforcement.
-  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
-    namespace.id,
-    agent.id,
-  );
-  const revision = revisionFields(rawRevision);
+  const revision = seededRevision(await fixture.seedActiveAgentRevision(namespace.id, agent.id));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
@@ -870,14 +807,7 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
     id: "unicode-tool",
     binary: `/${Array(6).fill("𐐀".repeat(45)).join("/")}/tool`,
   };
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-    base,
-  }: PolicyConsoleFixture = await createPolicyConsole(t, [grant]);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
+  const { fixture, namespace, agent, base } = checkedPolicy(await createPolicyConsole(t, [grant]));
   const initial = policyFields(record((await fixture.request("GET", base)).data).policy);
   assert.equal(initial.version, 1);
   const accepted = await fixture.request("POST", `${base}/validate`, {
@@ -975,14 +905,9 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
 });
 
 test("Agent policy under protected execution offers only removal of saved network rules", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-    base,
-  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
+  const { fixture, namespace, agent, base } = checkedPolicy(
+    await createPolicyConsole(t, [delegatedPolicyGrant]),
+  );
   // Rules saved before protected execution applied block every protected deploy. This fixture
   // selects no Credential Proxy, so only the view's protectedExecution flag is set on the read;
   // the removal itself goes through real HTTP, IAM and OCC admission.
@@ -2253,19 +2178,10 @@ test("protected execution can withdraw saved repository grants using the current
 });
 
 test("Agent policy combined save preserves the original policy when the revision stops after review", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-    base,
-  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
-  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
-    namespace.id,
-    agent.id,
+  const { fixture, namespace, agent, base } = checkedPolicy(
+    await createPolicyConsole(t, [delegatedPolicyGrant]),
   );
-  const revision = revisionFields(rawRevision);
+  const revision = seededRevision(await fixture.seedActiveAgentRevision(namespace.id, agent.id));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
@@ -2319,14 +2235,9 @@ test("Agent policy combined save preserves the original policy when the revision
 });
 
 test("Agent policy conflict reload retains the draft and revalidates the new version", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-    base,
-  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
+  const { fixture, namespace, agent, base } = checkedPolicy(
+    await createPolicyConsole(t, [delegatedPolicyGrant]),
+  );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
   await page.getByRole("button", { name: "Manage rules", exact: true }).click();
@@ -2365,19 +2276,10 @@ test("Agent policy conflict reload retains the draft and revalidates the new ver
 });
 
 test("overlapping policy refreshes retain the newest read and continue pending polling", async (t) => {
-  const {
-    fixture,
-    namespace: rawNamespace,
-    agent: rawAgent,
-    base,
-  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(rawAgent);
-  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
-    namespace.id,
-    agent.id,
+  const { fixture, namespace, agent, base } = checkedPolicy(
+    await createPolicyConsole(t, [delegatedPolicyGrant]),
   );
-  const revision = revisionFields(rawRevision);
+  const revision = seededRevision(await fixture.seedActiveAgentRevision(namespace.id, agent.id));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
@@ -2456,19 +2358,10 @@ for (const c of [
   },
 ]) {
   test(`a failed policy application (${c.reason}) says why and what to do next`, async (t) => {
-    const {
-      fixture,
-      namespace: rawNamespace,
-      agent: rawAgent,
-      base,
-    }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
-    const namespace = resource(rawNamespace);
-    const agent = agentFields(rawAgent);
-    const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
-      namespace.id,
-      agent.id,
+    const { fixture, namespace, agent, base } = checkedPolicy(
+      await createPolicyConsole(t, [delegatedPolicyGrant]),
     );
-    const revision = revisionFields(rawRevision);
+    const revision = seededRevision(await fixture.seedActiveAgentRevision(namespace.id, agent.id));
     assert.equal(
       (
         await fixture.request("PUT", base, {
@@ -4222,11 +4115,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
     t,
     "Rejected credential",
   );
-  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
-    namespace.id,
-    agent.id,
-  );
-  const revision = revisionFields(rawRevision);
+  const revision = seededRevision(await fixture.seedActiveAgentRevision(namespace.id, agent.id));
   const { page } = await newPage(t, fixture);
   const failure = await routeFailedDeployment(page, fixture, {
     namespaceId: namespace.id,
