@@ -36,91 +36,119 @@
   ],
   "files": [
     {
-      "path": "tests/browser/console-agents.test.ts"
+      "path": "tests/browser/console-agents.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agents-2.test.ts"
+      "path": "tests/browser/console-agents-2.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-codex-oauth.test.ts"
+      "path": "tests/browser/console-codex-oauth.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-form-fields.test.ts"
+      "path": "tests/browser/console-form-fields.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-form-fields-2.test.ts"
+      "path": "tests/browser/console-form-fields-2.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-draft-guards.test.ts"
+      "path": "tests/browser/console-agent-draft-guards.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-policy-denials.test.ts"
+      "path": "tests/browser/console-policy-denials.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-state.test.ts"
+      "path": "tests/browser/console-agent-state.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-presets.test.ts"
+      "path": "tests/browser/console-agent-presets.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-channels.test.ts"
+      "path": "tests/browser/console-agent-channels.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-dialogs.test.ts"
+      "path": "tests/browser/console-dialogs.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-create-agent-provisioning-400.test.ts"
+      "path": "tests/browser/console-create-agent-provisioning-400.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-repository-dedicated.test.ts"
+      "path": "tests/browser/console-repository-dedicated.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-repository-picker-network.test.ts"
+      "path": "tests/browser/console-repository-picker-network.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-runtime-credentials.test.ts"
+      "path": "tests/browser/console-runtime-credentials.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
       "path": "tests/integration/ci-impact.test.ts"
     },
     {
-      "path": "tests/browser/console-agent-saves.test.ts"
+      "path": "tests/browser/console-agent-saves.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-save-refusals.test.ts"
+      "path": "tests/browser/console-agent-save-refusals.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-deploy-focus.test.ts"
+      "path": "tests/browser/console-agent-deploy-focus.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agents-list-return.test.ts"
+      "path": "tests/browser/console-agents-list-return.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-refocus-focus.test.ts"
+      "path": "tests/browser/console-refocus-focus.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-focus-ring.test.ts"
+      "path": "tests/browser/console-focus-ring.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-drafts-kept.test.ts"
+      "path": "tests/browser/console-drafts-kept.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-button-hierarchy.test.ts"
+      "path": "tests/browser/console-button-hierarchy.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-status-block.test.ts"
+      "path": "tests/browser/console-status-block.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-page-header.test.ts"
+      "path": "tests/browser/console-page-header.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-next-steps.test.ts"
+      "path": "tests/browser/console-next-steps.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-disabled-reasons.test.ts"
+      "path": "tests/browser/console-disabled-reasons.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-secret-picker-refresh.test.ts"
+      "path": "tests/browser/console-secret-picker-refresh.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     }
   ]
 }
