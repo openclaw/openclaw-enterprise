@@ -90,9 +90,8 @@ uses selected Namespace permissions and saved grants. Admission passes saved or 
 `read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-binds rules to the Provider. Namespace `apiLimits` narrow REST routes. Issuance and renewal
-require native enforcement for any explicit limit. OCE skips body validation
-([limits](../reference/repository-credentials/access-levels.md#known-limits)).
+applies Namespace `apiLimits` to REST routes. Limits require native enforcement
+at issuance and renewal. [Bodies remain unchecked](../reference/repository-credentials/access-levels.md#known-limits).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
 and version in the save transaction. The only facet is `networking`.
