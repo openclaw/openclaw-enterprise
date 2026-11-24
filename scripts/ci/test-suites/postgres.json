@@ -2,7 +2,10 @@
   "prepare": {
     "postgres": true,
     "requiresPreparedStateForFile": true,
-    "selfProvisionedFiles": ["tests/integration/ci-prepare-postgres-real.test.ts"]
+    "selfProvisionedFiles": [
+      "tests/integration/ci-prepare-postgres-real.test.ts",
+      "tests/integration/postgres-migration-version.test.ts"
+    ]
   },
   "files": [
     {
