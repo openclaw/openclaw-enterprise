@@ -78,8 +78,8 @@ Catalog discovery does not verify current app connections, and OCE does not
 gate deployment on them. Configure access before deployment:
 
 1. Open [ChatGPT workspace plugins](https://chatgpt.com/admin/plugins?catalog=GLOBAL)
-   and select the same workspace as the PAT. A workspace administrator must enable
-   plugin and app access for the token's user or service account.
+   and select the workspace linked to the PAT or signed-in OAuth account. A
+   workspace administrator must enable plugin and app access for that account.
 2. For service-account app credentials, open [OpenAI Admin](https://admin.openai.com/),
    select that workspace and service account, and configure its app connections.
    Workspace enablement and service-account credentials are separate requirements.

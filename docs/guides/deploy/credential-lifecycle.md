@@ -145,9 +145,10 @@ For API clients, the start response includes a `session` handle with `id` and
 `namespaceId`. Use the same device-authorizations route that started the login:
 send `POST …/{id}/poll` to check it or `DELETE …/{id}` to cancel.
 
-A pending login expires at the provider deadline. A completed login handle
-expires after 24 hours. **Close login** closes the session; a completed Source
-remains available. No Source is created before the issuer authorizes the grant.
+A pending login expires at the provider deadline; choose **Cancel login** to
+close it. A completed login handle expires after 24 hours; **Clear selection**
+closes it without deleting its Source. No Source is created before the issuer
+authorizes the grant.
 Deleting a Source that an Agent or revision still references returns `409`; withdraw and
 remove those references first.
 
