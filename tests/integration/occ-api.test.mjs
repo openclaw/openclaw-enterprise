@@ -814,6 +814,14 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
     driver: { id: driver.id, implementation: driver.implementation },
     plugins,
   });
+
+  // A credential-free selection must remain removable when its old Driver is unavailable.
+  controller.fixture.controller.installPluginDrivers([]);
+  const removedWithoutDriver = await controller.request("PATCH", path, {
+    body: { configurationId: configuration.id, plugins: {} },
+  });
+  assert.equal(removedWithoutDriver.status, 200, JSON.stringify(removedWithoutDriver.body));
+  assert.deepEqual(removedWithoutDriver.data.plugins, {});
 });
 
 registerOpenClawPluginPolicyCases(configuredController);

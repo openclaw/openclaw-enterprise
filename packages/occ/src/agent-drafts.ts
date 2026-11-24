@@ -891,7 +891,11 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       );
       let selectedSourceIds: readonly string[] = [];
       let stagedPluginIds: ReadonlySet<string>;
-      if (plugins !== undefined && agent.plugins && Object.keys(agent.plugins).length > 0) {
+      if (
+        plugins !== undefined &&
+        agent.plugins &&
+        Object.values(agent.plugins).some((selection) => selection.driverPolicy !== undefined)
+      ) {
         const previousDriver = dependencies
           .pluginDrivers()
           .find(
