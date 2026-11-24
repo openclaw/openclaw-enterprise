@@ -99,8 +99,7 @@ Mount the edited registry as `registry.json` in an immutable versioned ConfigMap
 In the OCE Helm values set `repositoryCredentials.registryConfigMapName` to that
 ConfigMap, `backendId: repository-backend`, `authority: prepared-git`, and
 `enabled: false`. Set `appKeySecretName` and `preparedCustodySecretName` to the
-operator-managed worker-only Secrets, and `upstreamCidrs` to the
-[worker GitHub API ranges](#allow-the-worker-to-reach-github).
+operator-managed worker-only Secrets.
 Preserve the custody key across restarts. Never put keys in Agent JSON.
 
 Complete [the request-phase service setup](../../reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service):

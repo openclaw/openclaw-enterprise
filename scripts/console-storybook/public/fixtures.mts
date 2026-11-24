@@ -55,6 +55,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     namespaceDeleteRetryStatusFailure?: "unavailable" | "invalid";
     oauthExpired?: boolean;
     oauthPending?: boolean;
+    oauthPollCreateDenied?: boolean;
     observabilityUrl?: string;
     repositoryOptions?: readonly RepositoryOption[];
     pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
@@ -211,6 +212,8 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   const credentials: Parameters<typeof createAgentLifecycle>[1]["credentials"] = new Map();
   const credentialSources = new Map<string, StoredCredentialSource>();
   const deviceLogins = new Map<string, DeviceLogin>();
+  const cancelledDeviceLogins = new Set<string>();
+  let deniedDeviceSourceCreate = false;
   const secrets = new Map<string, ReturnType<typeof secretMetadata>>();
   const roles: StoredIdentity[] = [];
   const bindings: StoredIdentity[] = [];
@@ -650,6 +653,22 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           return error(404);
         }
         if (poll && method === "POST") {
+          if (cancelledDeviceLogins.has(id ?? "")) {
+            return error(
+              409,
+              "RESOURCE_CONFLICT",
+              "Device login expired or was cancelled. Connect again.",
+            );
+          }
+          if (scenario.oauthPollCreateDenied && !deniedDeviceSourceCreate) {
+            deniedDeviceSourceCreate = true;
+            cancelledDeviceLogins.add(id ?? "");
+            return error(
+              403,
+              "FORBIDDEN",
+              "Not authorized: this needs CredentialSource create in this Namespace. Ask an Installation administrator to grant it.",
+            );
+          }
           if (!scenario.oauthPending) {
             login.status = "ready";
             login.source ??= { kind: "credential_source", namespaceId, id: nextId("cs") };

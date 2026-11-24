@@ -219,8 +219,10 @@ export function createDeviceLogin({
 
   function fail(cause: unknown, step: DeviceLoginStep) {
     const failure = requestFailure(cause);
+    const denial = namedDenial(cause);
+    const sourceCreationDenied = step === "poll" && denial?.includes("CredentialSource create");
     if (step === "poll") {
-      pollDenied = failure.status === 403;
+      pollDenied = failure.status === 403 && !sourceCreationDenied;
     }
     if (failure.status === 401) {
       context.onExpired();
@@ -228,7 +230,12 @@ export function createDeviceLogin({
       const fallback = deviceLoginDenied(step, agentId !== undefined);
       error =
         step === "poll"
-          ? withRequestId(namedDenial(cause) ?? fallback, failure.requestId)
+          ? withRequestId(
+              sourceCreationDenied
+                ? `${denial} Cancel this login and start a new login after access is restored.`
+                : (denial ?? fallback),
+              failure.requestId,
+            )
           : fallback;
     } else {
       error =

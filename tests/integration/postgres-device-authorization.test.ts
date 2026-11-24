@@ -561,6 +561,7 @@ test(
       authSecret,
       controllerOptions: {
         ...installationControllerOptions(runtime.installation),
+        recordOperations: true,
         namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
         credentialSourceDelivery: credentialSourceDeliveryBinding(runtime),
         sandboxNetworkPolicyCeiling: [grant],
@@ -693,38 +694,49 @@ test(
       view.oauthCredentials.findTokenCustody(namespaceId, sourceId),
     );
     assert.ok(custody);
-    const blocked = await app.inject("DELETE", sourcePath);
-    assert.equal(blocked.statusCode, 409, blocked.body);
-    const retained = await app.state.read((view) =>
-      view.credentialSources.findCredentialSource(namespaceId, sourceId),
-    );
-    assert.ok(
-      retained?.ownerCapability === "token_service" && retained.type === "oauth2-refresh-token",
-    );
-    assert.equal(retained.state, "ready");
-    assert.equal(retained.consent.revocationRequestedBy, undefined);
-    assert.deepEqual(
-      await app.state.read((view) => view.oauthCredentials.findTokenCustody(namespaceId, sourceId)),
-      custody,
-    );
-    assert.equal(
-      secretDriver.calls.some(
-        (call) => call.operation === "delete" && call.secret.id === custody.secret.id,
-      ),
-      false,
-    );
+    const custodySecretId = custody.secret.id;
+    async function assertReferencedSourceRetained() {
+      const blocked = await app.inject("DELETE", sourcePath);
+      assert.equal(blocked.statusCode, 409, blocked.body);
+      const retained = await app.state.read((view) =>
+        view.credentialSources.findCredentialSource(namespaceId, sourceId),
+      );
+      assert.ok(
+        retained?.ownerCapability === "token_service" && retained.type === "oauth2-refresh-token",
+      );
+      assert.equal(retained.state, "ready");
+      assert.equal(retained.consent.revocationRequestedBy, undefined);
+      assert.deepEqual(
+        await app.state.read((view) =>
+          view.oauthCredentials.findTokenCustody(namespaceId, sourceId),
+        ),
+        custody,
+      );
+      assert.equal(
+        secretDriver.calls.some(
+          (call) => call.operation === "delete" && call.secret.id === custodySecretId,
+        ),
+        false,
+      );
+    }
+    await assertReferencedSourceRetained();
 
-    // This app fixture disables work recording, so the 202 proves admission only. No Worker
-    // ran and this revision never became active. Clear the saved draft references
-    // before retiring the unbound Source; the Agent and Configuration remain in the disposable
-    // CI Namespace because finalizing those resources requires the separate Worker lifecycle.
+    // Clearing the saved selection cannot revoke the credential still held by the actual
+    // admitted revision's queued deployment work.
     const detached = await app.inject("PATCH", agentPath, {
       configurationId: configuration.json().data.id,
       harnessAuth: null,
       credentialSources: [],
     });
     assert.equal(detached.statusCode, 200, detached.body);
-    const removed = await app.inject("DELETE", sourcePath);
-    assert.equal(removed.statusCode, 204, removed.body);
+    assert.equal(detached.json().data.harnessAuth, null);
+    assert.deepEqual(detached.json().data.credentialSources ?? [], []);
+    const queued = await app.pool.query(
+      `SELECT state, revision_id FROM occ.controller_work
+       WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3`,
+      [namespaceId, agent.id, revision.id],
+    );
+    assert.deepEqual(queued.rows, [{ state: "queued", revision_id: revision.id }]);
+    await assertReferencedSourceRetained();
   },
 );

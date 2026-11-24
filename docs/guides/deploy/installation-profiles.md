@@ -18,11 +18,11 @@ PluginDriver. Operators select plugins manually or through the API. Embedded
 OpenClaw cannot enable external Slack channels; the Standard OpenClaw preset
 must leave channels disabled.
 
-Use `codex` for dedicated Codex Agents with the bundled Codex PluginDriver. By
-default, hosted plugin discovery and Codex runtime authentication both use a
-`codex_pat` token that you supply later: add a same-Namespace Secret or enter
-the PAT during Agent creation. The renderer does not create the token or make
-catalog discovery ready.
+Use `codex` for dedicated Codex Agents with the bundled Codex PluginDriver.
+Hosted plugin discovery and runtime authentication accept a `codex_pat` token
+(a same-Namespace Secret or a PAT entered during Agent creation) or a Codex OAuth
+Source from ChatGPT sign-in. Rendering supplies neither the credential nor a
+ready catalog.
 
 Both profiles enable:
 
@@ -370,9 +370,10 @@ the install as ready:
   actual Pod, Service and node ranges, including public node addresses. Rendering
   the fleet does not enable channel consumers. Slack Agents require dedicated
   Codex execution; customer upstream proxies are not supported.
-- For Codex hosted plugin discovery and runtime authentication, a
-  same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
-  See [discovery egress](#hosted-discovery-egress).
+- For Codex hosted plugin discovery and runtime authentication, a same-Namespace
+  `codex_pat` token Secret, a PAT entered during Agent creation, or a Codex OAuth
+  Source created by successful ChatGPT sign-in. See
+  [hosted discovery connectivity](#hosted-discovery-connectivity).
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed

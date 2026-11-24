@@ -37,6 +37,7 @@ type CredentialScenario = Pick<
   deployed?: boolean;
   harnessGrantMissing?: boolean;
   oauthPending?: boolean;
+  oauthPollCreateDenied?: boolean;
   observabilityDenied?: boolean;
   readOnlyPermissionSummary?: boolean;
   secretCreateNotPermitted?: boolean;
@@ -97,19 +98,9 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       deployed: true,
       auth: "oauth",
       actions: [{ selector: "#harness-auth-method", value: "device_login" }],
-      rules: [
-        {
-          suffix: "/poll",
-          method: "POST",
-          once: true,
-          status: 403,
-          code: "FORBIDDEN",
-          message:
-            "Not authorized: this needs CredentialSource operate on a CredentialSource this request uses. Ask an Installation administrator to grant it.",
-        },
-      ],
+      oauthPollCreateDenied: true,
       description:
-        "Choose Sign in with OAuth. The first poll shows the missing permission and a request ID. Choose Retry login check to finish the same login. The fixture simulates restored access.",
+        "Choose Sign in with OAuth. The first poll refuses Source creation and cancels the attempt. Choose Cancel login, then start a new login after access is restored. The fixture simulates the restored grant.",
     },
     authOAuthStartTabSwitchRefused: {
       group: "Components/Credentials",
