@@ -264,7 +264,7 @@ export function createAgentDetailPolicyScenarios({
                 description:
                   "The Namespace delegates repository access. An earlier version was deployed without a repository policy.",
                 steps: [
-                  "Open View network limits. Check that example/application is Read-only and example/tooling is Contributor.",
+                  "Open View network limits. Check for example/application · read and example/tooling · write.",
                   "Open Manage rules. Check the guidance to create a new Agent and verify that no repository save controls appear.",
                 ],
               }
