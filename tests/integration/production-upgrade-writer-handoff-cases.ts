@@ -334,21 +334,21 @@ exec "$real_python" "$@"
             "Agent operation records",
           );
           assert.equal(field(agent, "stop"), "complete");
-          assert.deepEqual(await f.events(), [
+          const refusalEvents = access
+            ? ["worker-patch-access-review"]
+            : ["worker-patch-access-review", "writer-preview-worker"];
+          const beforeResume = await f.events();
+          assert.deepEqual(beforeResume, [
             "worker-patch-access-review",
             "writer-preview-worker",
             "writer-preview-api",
             "channel-agent-stop",
-            "worker-patch-access-review",
-            ...(!access ? ["writer-preview-worker"] : []),
+            ...refusalEvents,
           ]);
           await assert.rejects(run("--resume"), diagnostic);
           assert.equal(await readFile(journal, "utf8"), originalJournal);
           const heldEvents = await f.events();
-          assert.deepEqual(heldEvents.slice(access ? 5 : 6), [
-            "worker-patch-access-review",
-            ...(!access ? ["writer-preview-worker"] : []),
-          ]);
+          assert.deepEqual(heldEvents, [...beforeResume, ...refusalEvents]);
           assert.deepEqual(writerMutations(heldEvents), []);
           const held = await f.state();
           assert.deepEqual([held.api, held.worker, held.version, held.dispatches], [1, 1, 1, 0]);
