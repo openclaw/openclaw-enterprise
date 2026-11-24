@@ -8,7 +8,7 @@ author: stevenlee-oai
 
 **RFC-20261124-credential-design-1-0** · [Original proposal #7223](https://github.com/openclaw/openclaw-enterprise/pull/7223) · Created 2026-11-24
 
-An Agent may need model, GitHub, and Plugin credentials. An operator selects each Agent's credentials and approved access. The OpenClaw Control Plane (OCC) admits those choices into each Agent's revision. TokenService keeps the credential, and the Credential Proxy injects it into permitted requests. The Harness makes requests with a placeholder.
+An operator selects credentials and approved access for an Agent. The OpenClaw Control Plane (OCC) admits those choices into the Agent revision. TokenService keeps credentials. The Credential Proxy injects them into permitted Harness requests with placeholders.
 
 This target consolidates amendments to [RFC-0023](../0023-egress-proxy-credential-lifecycle/index.md) and [RFC-0027](../0027-agent-oauth-connections/index.md). The [Credential Sources implementation status](../../../docs/reference/credential-sources.md#implementation-status) records which paths are currently available.
 
@@ -21,15 +21,15 @@ This target consolidates amendments to [RFC-0023](../0023-egress-proxy-credentia
 | GitHubAppClient     | OCC records the App ID. TokenService uses its signing key to mint installation tokens.                                                                            |
 | CredentialSource    | Identifies an enrolled credential in a Namespace. TokenService owns its lifecycle and any Template or client references. OCC exposes metadata and authorizes use. |
 
-Templates and clients are independent. For example, an Installation-wide OAuth Template can be used with a compatible client registered in the user's Namespace. TokenService declares which client scopes it supports for each purpose. OpenShell supports Namespace-scoped OAuth clients through its Workspace. GitHub App clients have Installation scope.
+Templates and clients are independent. An Installation-wide OAuth Template can use a compatible Namespace client. TokenService declares supported client scopes per purpose. OpenShell supports Namespace-scoped OAuth clients through its Workspace. GitHub App clients have Installation scope.
 
-The Installation selects one TokenService instance to own its Sources and private client material. The OCC implementation uses SecretDriver for storage. OpenShell can own the credential in its native provider. OCC privately binds registrations to that instance, preventing a replacement store from resolving existing Sources under a reused Driver name. Rotating an App key changes the next mint while its cached installation tokens remain usable until renewal.
+The Installation selects one TokenService instance to own its Sources and private client material. OCC stores material with SecretDriver. OpenShell can instead own a native Provider. OCC privately binds registrations to that instance so another store cannot resolve existing Sources under a reused Driver name. App key rotation affects the next mint. Cached tokens remain usable until renewal.
 
 ## From enrollment to an Agent revision
 
 An authorized caller enrolls a static or account credential. For browser OAuth, the caller selects a compatible Template and OAuth2Client. OCC completes consent and the initial authorization-code exchange, then gives the resulting grant to TokenService. For Codex, TokenService uses a fixed issuer and public client and creates the Source after successful authorization.
 
-The operator selects a Source for model authentication or a named Plugin connection. PluginDriver describes the selected Plugin's tools, network requirements, and credential connections. OCC checks that the deployer and Agent principal can operate each exact Source, applies the Installation ceiling, and derives one admitted binding list for the revision. A shared Git token also uses a Source binding. Separate Repository grants constrain its use.
+The operator selects a Source for model authentication or a named Plugin connection. PluginDriver declares the selected Plugin's tools, network needs, and connections. OCC checks that the deployer and Agent principal can operate each exact Source, applies the Installation ceiling, and derives one admitted binding list for the revision. A shared Git Source binding also requires separate Repository grants.
 
 For a Template-backed Plugin Source, OCC checks and freezes the current compatible Template version in the revision. The Source retains the Template ID. An OAuth Source also retains its consent version, client, and granted scopes. Existing revisions keep their policy after a Template update.
 
@@ -71,7 +71,7 @@ flowchart TB
 
 Compute prepares an idle Sandbox and arranges the tools and credential delivery required by the revision. SandboxDriver applies network access and containment. CredentialProxyDriver configures each binding's injection policy and returns a credential projection descriptor. For OCC custody, the Proxy resolves the exact Source to initialize delivery. For OpenShell custody, it attaches the native Provider.
 
-Compute checks that the required policies and delivery resources are ready. The Worker rechecks Agent and Source authorization before activation. The runtime installs a fresh placeholder when Sandbox starts the Harness. Compute exposes user routes after authenticated readiness. Unsupported required rules prevent startup.
+Compute checks that the required policies and delivery resources are ready. The Worker rechecks Agent and Source authorization before activation. The runtime installs a fresh placeholder at Harness startup. Compute exposes user routes after authenticated readiness. Unsupported required rules prevent startup.
 
 ## Make a credentialed request
 
@@ -103,38 +103,39 @@ OCC derives injection authority from the Source and the consumer's requested ope
 
 TokenService owns issuance and renewal. After committing a replacement credential, it notifies the Proxy with the Source reference and version when known. If a delivery resource exists, the Proxy resolves the current value, updates that resource, and acknowledges success after every required serving copy can use the resolved version. Otherwise, notification succeeds without resolving material or creating a resource. OpenShell can renew a provider it owns internally.
 
-If delivery fails after the commit, the replacement credential remains authoritative. OCC reports the delivery failure separately from issuance or refresh status, and an authorized operator can retry the push. Automatic recovery is deferred in 1.0.
+If delivery fails after commit, the replacement remains authoritative. OCC reports delivery separately from issuance or refresh, and an authorized operator can retry the push. The [cutover candidate](https://github.com/openclaw/openclaw-enterprise/pull/7224) schedules Git renewal. It automatically retries recorded pending delivery using the committed version without minting again. This narrows the earlier [automatic-retry deferral](token-service-instance-and-updates.md#notify-the-proxy-when-a-credential-changes). Detecting missed notifications without a pending record and broad reconciliation remain deferred.
 
 Withdrawal detaches the Agent binding and removes its request authority. Other Agents can still use the Source. Stop removes the deployment and leaves the Source registered. When the last binding is removed, the Proxy retires its delivery resource. OCC refuses deletion while blocking references remain. After delivery cleanup, TokenService removes the Source and its authoritative material.
 
 ## Examples
 
-| Use          | How the design applies                                                                                                                                                                                                                                           |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Model preset | Select an API-key Source. The model provider's reviewed profile supplies the inference destination and credential header.                                                                                                                                        |
-| Codex OAuth  | Complete device login, then select the resulting Source. Dedicated Codex receives a placeholder and the account context needed for its login state.                                                                                                              |
-| GitHub App   | Select an App installation and approved repositories. At deployment, OCC authorizes Source creation or reuse. TokenService resolves a matching Namespace Source for the approved repository set. Agents share its cached token under separate read/write grants. |
-| Plugin OAuth | Connect an account with a Template and OAuth2Client, then select the Source for a named Plugin connection. The request rule and granted OAuth scopes constrain the operation.                                                                                    |
-| Static HTTP  | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                                                                                  |
-| MCP          | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                                                                         |
+| Use                  | How the design applies                                                                                                                                                                                                                                           |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model preset         | Select an API-key Source. The model provider's reviewed profile supplies the inference destination and credential header.                                                                                                                                        |
+| Codex OAuth          | Complete device login, then select the resulting Source. Dedicated Codex receives a placeholder and the account context needed for its login state.                                                                                                              |
+| Codex PAT (proposed) | Enroll a new static Codex PAT Source, or issue a fresh ChatGPT ServiceAccount PAT into TokenService. OCC returns a Source reference. The ServiceAccount Driver retains issuer-side revocation. Obsolete PAT bindings need no recovery.                           |
+| GitHub App           | Select an App installation and approved repositories. At deployment, OCC authorizes Source creation or reuse. TokenService resolves a matching Namespace Source for the approved repository set. Agents share its cached token under separate read/write grants. |
+| Plugin OAuth         | Connect an account with a Template and OAuth2Client, then select the Source for a named Plugin connection. The request rule and granted OAuth scopes constrain the operation.                                                                                    |
+| Static HTTP          | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                                                                                  |
+| MCP                  | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                                                                         |
 
 Multiple accounts need distinct projections and a Plugin that selects the account per invocation.
 
 ## Shared Git policy
 
-An Agent revision using a shared TokenService Source records the approved Repository grant, which remains valid until the OpenClaw Control Plane withdraws it or its explicit deadline passes. Each native Git request still requires a valid credential from the selected Source and must match the saved Repository policy. Legacy Repository sessions keep their configured deadlines, and under this design TokenService renews the separate GitHub installation token, which typically expires after one hour. See [RFC #7217](https://github.com/openclaw/openclaw-enterprise/blob/20d876c940bd15b3e0f3593de69afc51bef64fd7/specs/rfcs/20261124-credential-cutover-pat-and-native-git/index.md#lifetime-of-source-backed-repository-policy).
+An Agent revision using a shared TokenService Source records the approved Repository grant, which remains valid until the OpenClaw Control Plane withdraws it or its explicit deadline passes. Each native Git request still requires a valid credential from the selected Source and must match the saved Repository policy. Legacy Repository sessions keep their configured deadlines, and under this design TokenService renews the separate GitHub installation token, which typically expires after one hour. See [RFC #7217](https://github.com/openclaw/openclaw-enterprise/blob/1284f025f8f951a4c03a97ba3dd1785ffff96fd5/specs/rfcs/20261124-credential-cutover-pat-and-native-git/index.md#lifetime-of-source-backed-repository-policy).
 
 The shared-token path excludes pull request creation until it can authorize the head and base repositories. Existing PR-capable and stronger ref modes remain available. Per-Agent token downscoping is future work.
 
 ## 1.0 scope and tradeoffs
 
 - OCC TokenService can use OpenShell's embedded Proxy or a compatible standalone Proxy such as iron-proxy, with routing enforced by the Sandbox. OpenShell TokenService uses native OpenShell delivery. Each composition requires qualification.
-- Sandbox delivery uses push or native providers. Request-time credential pulls, automatic push recovery, and embedded Harness adoption are deferred. Trusted Console and OpenClaw Gateway consumers use separately authorized access to supported Sources.
+- Sandbox delivery uses push or native providers. Request-time credential pulls and embedded Harness adoption are deferred. Trusted Console and OpenClaw Gateway consumers require separate Source authorization.
 - Credential Gateway and Credential Refresh Drivers retire after their consumers migrate. The OpenClaw Gateway continues to serve the Agent.
 
 ## Detailed decisions
 
-The companions preserve the submitted proposals. Source ownership and fresh Harness amendments supersede earlier registration and startup decisions. The Codex companion also records the separate release fence for the existing held Git launcher.
+Companions preserve historical decisions, including superseded registration and startup rules. The Codex companion retains the held Git launcher's release fence.
 
 - [Client registration, custody, and rotation](client-registration-and-custody.md) from the original proposal
 - [OAuth client selection and consent](oauth-client-associations.md)
@@ -144,4 +145,4 @@ The companions preserve the submitted proposals. Source ownership and fresh Harn
 - [Worker preparation and activation](worker-credential-configuration.md)
 - [Codex device login and account projection](codex-device-login.md)
 - [Shared GitHub App tokens and Agent repository access](github-app-template-policy.md)
-- Proposed: [Codex PAT Source adoption and Dedicated OpenClaw native Git placement (#7217)](https://github.com/openclaw/openclaw-enterprise/pull/7217)
+- Proposed: [Fresh Codex PAT enrollment](https://github.com/openclaw/openclaw-enterprise/blob/1284f025f8f951a4c03a97ba3dd1785ffff96fd5/specs/rfcs/20261124-credential-cutover-pat-and-native-git/codex-static-pat.md) and [Dedicated OpenClaw native Git placement (#7217)](https://github.com/openclaw/openclaw-enterprise/pull/7217)
