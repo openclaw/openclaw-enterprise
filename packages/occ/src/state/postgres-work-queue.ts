@@ -252,6 +252,11 @@ function transferRepositoryCleanupSql(
       WHERE source.state = 'failed_permanent'
         AND NOT ${repositoryCleanupSql("source")}
         AND NOT (${continuingRevision})
+        -- An ordinary revision claim owns cleanup only under its exact operation key.
+        AND (source.revision_id IS NULL OR source.agent_target IS NOT NULL
+          OR source.idempotency_key = 'agent_revision:' || source.revision_id || ':reconcile'
+          OR source.idempotency_key ~
+            ('^agent_revision:' || source.revision_id || ':maintenance:(0|[1-9][0-9]*)$'))
     ), cleanup_namespaces AS MATERIALIZED (
       SELECT namespace.id, namespace.status
       FROM occ.namespaces AS namespace

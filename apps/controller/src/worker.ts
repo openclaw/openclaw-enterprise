@@ -3209,7 +3209,15 @@ export class ControllerWorker {
       return;
     }
     if (claim.revisionId !== undefined) {
-      await this.processRevision(claim);
+      const maintenancePrefix = `agent_revision:${claim.revisionId}:maintenance:`;
+      const maintenance =
+        claim.idempotencyKey.startsWith(maintenancePrefix) &&
+        /^(0|[1-9][0-9]*)$/.test(claim.idempotencyKey.slice(maintenancePrefix.length));
+      if (!isCandidateDeployment(claim) && !maintenance) {
+        await this.finalize(claim, undefined, { outcome: "permanent", code: "INVALID_TARGET" });
+        return;
+      }
+      await this.processRevision(claim, maintenance);
       return;
     }
     if (claim.agentTarget !== undefined) {
@@ -4883,7 +4891,7 @@ export class ControllerWorker {
     );
   }
 
-  private async processRevision(claim: ClaimedWork): Promise<void> {
+  private async processRevision(claim: ClaimedWork, maintenance: boolean): Promise<void> {
     // Maintenance, cleanup and stop work are not deployments.
     if (claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`) {
       this.deployTimings.beginPass(claim.idempotencyKey);
@@ -4983,9 +4991,6 @@ export class ControllerWorker {
         });
         return;
       }
-      const maintenance = claim.idempotencyKey.startsWith(
-        `agent_revision:${revision.id}:maintenance:`,
-      );
       const repositoryWithdrawal =
         revision.repositoryCredentials !== undefined &&
         agent.activeRevisionId === revision.id &&

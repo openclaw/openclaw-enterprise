@@ -52,6 +52,7 @@ type AdmittedRevision = Awaited<ReturnType<RevisionFixture["revision"]>>;
 type ReplacementFixture = Pick<
   RevisionFixture,
   | "actor"
+  | "advanceMaintenance"
   | "agent"
   | "compute"
   | "controller"
@@ -184,12 +185,22 @@ async function enqueueMaintenance(
   fixture: ReplacementFixture,
   owner: AgentIdentity,
   revision: AgentIdentity,
+  bucket = 0,
 ): Promise<WorkIdentity> {
+  const due = await fixture.advanceMaintenance(revision);
+  const scheduled = due.rows[0];
+  if (scheduled !== undefined) {
+    assert.equal(due.rowCount, 1, "expected one scheduled maintenance pass");
+    assert.equal(scheduled.actor_id, fixture.actor.id, "scheduled maintenance keeps its actor");
+    return { id: revision.id, idempotencyKey: scheduled.idempotency_key };
+  }
+
+  // The fixture uses buckets 0 and 1 for extra passes, below the scheduler's clock buckets.
   const maintenance = {
     id: revision.id,
-    idempotencyKey: `agent_revision:${revision.id}:maintenance:${randomUUID()}`,
+    idempotencyKey: `agent_revision:${revision.id}:maintenance:${bucket}`,
   };
-  await fixture.state.transactWithQueue((_unit, queue) =>
+  const work = await fixture.state.transactWithQueue((_unit, queue) =>
     queue.enqueue({
       idempotencyKey: maintenance.idempotencyKey,
       namespaceId: fixture.namespace.id,
@@ -199,6 +210,7 @@ async function enqueueMaintenance(
       availableAt: new Date(0),
     }),
   );
+  assert.equal(work.state, "queued", "expected a new maintenance pass");
   return maintenance;
 }
 
@@ -247,7 +259,7 @@ revisionTest(
     assert.equal(stopping.startedAt, pending.startedAt);
     assert.ok(stopping.stoppingAt);
     assert.deepEqual(await record("pre-stop"), stopping, "a retry must not reopen committed stop");
-    const laterMaintenance = await enqueueMaintenance(fixture, owner, first);
+    const laterMaintenance = await enqueueMaintenance(fixture, owner, first, 1);
     await fixture.start(driver.compute);
     await fixture.work(laterMaintenance, "succeeded");
     assert.equal(driver.preparations(first), before, "maintenance must not recreate stopped work");
@@ -339,7 +351,7 @@ revisionTest(
     assert.equal(driver.count(first), 1, "pending passes must not repeat the predecessor stop");
 
     for (let index = 0; index < 2; index += 1) {
-      await fixture.work(await enqueueMaintenance(fixture, owner, replacement), "succeeded");
+      await fixture.work(await enqueueMaintenance(fixture, owner, replacement, index), "succeeded");
     }
     assert.equal(driver.count(first), 1, "maintenance must not repeat the predecessor stop");
 

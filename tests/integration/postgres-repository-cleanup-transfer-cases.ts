@@ -218,7 +218,7 @@ export function registerRepositoryCleanupTransferCases(): void {
           const before = await readRepositoryAttempts(pool, owner.revisionId);
           const siblingBefore = await readRepositoryAttempts(pool, sibling.revisionId);
           const unrelatedBefore = await readRepositoryAttempts(pool, unrelated.revisionId);
-          const sourceKey = `queue-cleanup:${transition}:café:雪:${randomUUID()}`;
+          const sourceKey = `agent_revision:${owner.revisionId}:reconcile`;
           const actorId = `principal-source-${randomUUID()}`;
           await queue.enqueue({
             ...revisionWork(namespaceId, sourceKey, agentId, owner.revisionId),
@@ -356,7 +356,7 @@ export function registerRepositoryCleanupTransferCases(): void {
       assert.ok(agentId);
       const owner = await createRepositoryRevision(pool, namespaceId, agentId);
       const successor = await createRepositoryRevision(pool, namespaceId, agentId, ["open"], 2);
-      const sourceKey = `queue-cleanup-rollback:${randomUUID()}`;
+      const sourceKey = `agent_revision:${owner.revisionId}:reconcile`;
       await queue.enqueue(revisionWork(namespaceId, sourceKey, agentId, owner.revisionId));
       const claim = await claimExpected(queue, sourceKey);
       const before = await readRepositoryAttempts(pool, owner.revisionId);
@@ -424,7 +424,7 @@ export function registerRepositoryCleanupTransferCases(): void {
         } = await createResources(pool);
         assert.ok(agentId);
         const owner = await createRepositoryRevision(pool, namespaceId, agentId);
-        const sourceKey = `queue-cleanup-persistent:${randomUUID()}`;
+        const sourceKey = `agent_revision:${owner.revisionId}:reconcile`;
         await queue.enqueue(revisionWork(namespaceId, sourceKey, agentId, owner.revisionId));
         const source = await claimExpected(queue, sourceKey);
         if (purpose === "terminal-runtime") {
