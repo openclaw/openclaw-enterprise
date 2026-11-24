@@ -93,34 +93,12 @@ custody and recipient checks remain unchanged. Comments, reviews, PR updates or
 merges, other issue-write routes, GraphQL, and direct access to ungranted
 repositories remain denied. See [Known limits](#known-limits) for indirect effects.
 
-<a id="api-action-restrictions"></a>
+#### API action restrictions
 
-#### Native GitHub API actions
-
-**For one Agent**, edit its [repository network policy](../sandbox-policies.md#repository-network-policy).
-If the draft offers **Repositories → Manage permissions**, start there.
-Choose **Read-only** (Read) or **Contributor** (Write), save the policy, and deploy.
-A Contributor can push, open pull requests, and create issues when each operation
-is approved for that repository.
-
-**For every Agent using the registration**, set `apiActions` in that repository’s
-Namespace entry. The checklist generates the setting; it does not read or save
-your configuration. Leave the filter out for full permitted access. Use **Advanced**
-only to make exceptions:
-
-- **Include new eligible actions automatically** (default): uncheck what to deny.
-  If OCE adds an action later, it is eligible only if the Agent’s grant and the
-  approved permissions also allow it.
-- **Fixed list:** turn off that option. Only checked actions can become eligible,
-  even if every action shown today is checked. Choose **Git only** to allow none.
-
-Filters limit **direct requests**. For example, turning off PR reads does not
-hide PRs returned by an issue read. See [known limits](#known-limits) and
-[when PR creation is blocked](#pull-request-creation).
-
-<div data-repository-actions></div>
-
-A filter takes exactly one key, `allow` or `deny`, with an array of unique action IDs:
+On a repository's selected native Namespace registration, optional `apiActions`
+can narrow the routes already eligible under Namespace permissions and the
+Agent's saved grant. Use exactly one of `allow` or `deny` with an array of
+unique action IDs:
 
 | Action ID              | Direct GitHub routes                      |
 | ---------------------- | ----------------------------------------- |
@@ -143,6 +121,28 @@ filter even if no API permission is configured. Active filters require a saved
 repository network ACL and enforceable native policy. If either is missing,
 credential delivery is refused rather than falling back to broader online
 authorization. Withdrawal and Stop remain available.
+
+#### Native GitHub API actions
+
+**For one Agent**, edit its [repository network policy](../sandbox-policies.md#repository-network-policy).
+If the draft offers **Repositories → Manage permissions**, start there.
+Choose **Read-only** (Read) or **Contributor** (Write), save the policy, and deploy.
+
+**For every Agent using the registration**, set `apiActions` in that repository’s
+Namespace entry. The checklist generates the setting without saving it.
+For full permitted access, leave the filter out. Otherwise, open **Advanced**:
+
+- **Include new eligible actions automatically** (default): uncheck what to deny.
+  If OCE adds an action later, it is eligible only if the Agent’s grant and the
+  approved permissions also allow it.
+- **Fixed list:** turn off that option. Only checked actions can become eligible,
+  even if every action shown today is checked. Choose **Git only** to allow none.
+
+Filters limit **direct requests**. For example, turning off PR reads does not
+hide PRs returned by an issue read. See [known limits](#known-limits) and
+[when PR creation is blocked](#pull-request-creation).
+
+<div data-repository-actions></div>
 
 #### Issue creation
 
