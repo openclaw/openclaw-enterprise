@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       publication_run_id:
-        description: Successful Enterprise Containers publication run ID
+        description: Successful Enterprise Containers or Release OCE publication run ID
         required: true
         type: string
       publication_attempt:

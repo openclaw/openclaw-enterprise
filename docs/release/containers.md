@@ -1,7 +1,8 @@
 # Enterprise container publication
 
-The [OCC CLI release](cli-publication.md) publishes matching versioned command
-line binaries through a separate protected workflow.
+For images, a Helm chart, and matching OCC CLI binaries in one run, use
+[Release OCE](README.md). Use the standalone workflow below for image
+preparation or independent image publication.
 
 [`container-publish.yml`](../../.github/workflows/container-publish.yml) prepares the existing
 controller (`Dockerfile`, target `runtime`) and combined gateway/Agent runtime
@@ -204,10 +205,8 @@ use their own evidence. For local use, follow the
    `container-publication-<run-id>-<attempt>` receipt for deployment. Each image
    receives an immutable `sha-<source-sha>` tag, the selected mutable alias,
    and, only with `publish_chart: true`, an OCE version tag matching the chart.
-   The image-only `container-publication` receipt records the source tags and alias for
-   promotion and recovery. Existing source and version tags cannot be replaced
-   by different bytes. Publication does not create a Git tag, GitHub release,
-   or deployment.
+   The image receipt records source tags and the alias for
+   promotion and recovery. Conflicting source or version tags stop publication.
 
 Image publication defaults to `publish_chart: false` and needs no chart package.
 For a versioned chart release, also select `publish_chart: true` and follow
@@ -250,6 +249,9 @@ a later successful publication updates the selected alias for both images.
 Recovery restores source tags only and does not move aliases.
 
 ## Recover a partial publication
+
+For a **Release OCE** run, follow [Recover a partial release](README.md#recover-a-partial-release).
+The source-tag recovery below applies to standalone **Enterprise Containers** runs.
 
 Preserve the original seven-day OCI artifacts. Do not rerun their producer: its
 attempt identity must remain unchanged. If those archives have expired, this

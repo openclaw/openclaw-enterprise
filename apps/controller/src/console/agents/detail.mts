@@ -5161,16 +5161,30 @@ export async function renderAgentDetail(
         applyOperateAnswer(permissions?.operate, reread);
         nativeAdmin.launch.inert =
           permissions?.administer === false && permissions.operate === false;
+        const redrawnTab = mountedTab;
         if (
           channelsTab &&
           tabBounds &&
           tabBounds.bottom > 0 &&
-          tabBounds.top < window.innerHeight
+          tabBounds.top < window.innerHeight &&
+          redrawnTab
         ) {
-          const moved = channelsTab.getBoundingClientRect().top - tabBounds.top;
-          if (Math.abs(moved) >= 1) {
-            window.scrollBy({ top: moved, behavior: "instant" });
-          }
+          // A redraw from settled details releases the panel's height hold in a microtask.
+          // Correct after that continuation in the same turn, before the next user input.
+          queueMicrotask(() => {
+            if (
+              !context.isCurrent() ||
+              mountedTab !== redrawnTab ||
+              redrawnTab.loading ||
+              appliedReread !== reread
+            ) {
+              return;
+            }
+            const moved = channelsTab.getBoundingClientRect().top - tabBounds.top;
+            if (Math.abs(moved) >= 1) {
+              window.scrollBy({ top: moved, behavior: "instant" });
+            }
+          });
         }
       }
       return callerPermissions;
@@ -7171,7 +7185,20 @@ export async function renderAgentDetail(
         editorError.show(diagnostic.message);
         feedback.textContent = "";
         feedbackLocked = true;
-        editor.focus();
+        if (diagnostic.kind === "invalid-json" && diagnostic.offset !== undefined) {
+          // Set the caret before focus so the browser scrolls it into view.
+          editor.setSelectionRange(diagnostic.offset, diagnostic.offset);
+          editor.focus();
+          const editorTop = editor.getBoundingClientRect().top;
+          const messageBottom = editorError.node.getBoundingClientRect().bottom;
+          const viewportHeight = document.documentElement.clientHeight;
+          // Keep the caret in view when the editor and diagnostic cannot fit together.
+          if (messageBottom > viewportHeight && messageBottom - editorTop <= viewportHeight) {
+            editorError.node.scrollIntoView({ block: "nearest", inline: "nearest" });
+          }
+        } else {
+          editor.focus();
+        }
       }
       return undefined;
     }

@@ -1,0 +1,156 @@
+name: Publish qualified OCE release
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      image_tag:
+        type: string
+      producer_run_id:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  evidence:
+    name: Recheck release evidence and CLI destination
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: container-publish
+    # GitHub requires write access to see all draft release assets.
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      cli_digest: ${{ steps.manifest.outputs.cli_digest }}
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+      VERSION: ${{ inputs.version }}
+      RECOVERY_RUN_ID: ${{ github.event.inputs.recovery_run_id }}
+      PUBLISH: ${{ github.event.inputs.publish }}
+    steps:
+      - name: Require the official release entry point
+        env:
+          CALLER: ${{ github.workflow_ref }}
+          PRODUCER: ${{ inputs.producer_run_id }}
+        run: |
+          test "$CALLER" = openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$PUBLISH" = true
+          test "$PRODUCER" = "${RECOVERY_RUN_ID:-$GITHUB_RUN_ID}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.producer_run_id }}
+          name: qualified-release-${{ inputs.producer_run_id }}-1
+          path: ${{ runner.temp }}/evidence
+      - name: Verify the original qualification and artifact identities
+        id: manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/release-oce.ts verify "$RUNNER_TEMP/evidence"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.producer_run_id }}
+          name: occ-cli-${{ inputs.producer_run_id }}-1
+          path: ${{ runner.temp }}/cli
+      - name: Check all existing release assets before registry writes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLI_SHA256SUMS_DIGEST: ${{ steps.manifest.outputs.cli_digest }}
+        run: node scripts/ci/cli-release.ts preflight "$RUNNER_TEMP/cli"
+
+  registry:
+    name: Inspect registry
+    needs: evidence
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    uses: ./.github/workflows/release-registry.yml
+    with:
+      phase: preflight
+      source_sha: ${{ inputs.source_sha }}
+      image_tag: ${{ inputs.image_tag }}
+      producer_run_id: ${{ inputs.producer_run_id }}
+      producer_attempt: "1"
+
+  immutable:
+    name: Immutable
+    needs: registry
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    uses: ./.github/workflows/release-registry.yml
+    with:
+      phase: immutable
+      source_sha: ${{ inputs.source_sha }}
+      image_tag: ${{ inputs.image_tag }}
+      producer_run_id: ${{ inputs.producer_run_id }}
+      producer_attempt: "1"
+
+  cli:
+    name: Publish CLI
+    needs: [evidence, immutable]
+    permissions:
+      actions: read
+      contents: write
+    uses: ./.github/workflows/cli-release-publish.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      artifact_run_id: ${{ inputs.producer_run_id }}
+      artifact_name: occ-cli-${{ inputs.producer_run_id }}-1
+      sha256sums_digest: ${{ needs.evidence.outputs.cli_digest }}
+
+  aliases:
+    name: Aliases
+    needs: cli
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    uses: ./.github/workflows/release-registry.yml
+    with:
+      phase: aliases
+      source_sha: ${{ inputs.source_sha }}
+      image_tag: ${{ inputs.image_tag }}
+      producer_run_id: ${{ inputs.producer_run_id }}
+      producer_attempt: "1"
+
+  summary:
+    name: Report publication outcomes
+    if: always()
+    needs: [evidence, registry, immutable, cli, aliases]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - env:
+          ORIGIN: ${{ inputs.producer_run_id }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          {
+            echo '## Release publication'
+            printf 'Original qualified run: %s, attempt 1.\n\n' "$ORIGIN"
+            jq -r 'to_entries[] | "- \(.key): \(.value.result)"' <<< "$RESULTS"
+            echo 'Check each job summary for verified destinations. After a partial write, start a fresh release with the original inputs and recovery_run_id.'
+          } >> "$GITHUB_STEP_SUMMARY"

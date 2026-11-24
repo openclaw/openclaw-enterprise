@@ -184,6 +184,20 @@ interface TimingRow {
 export type Step = <T>(name: string, operation: Operation<T>) => Promise<T>;
 export type SmokeStep = <T>(phase: Phase, operation: Operation<T>) => Promise<T>;
 
+export async function waitForChannelProxyReadiness(
+  envoyTrust: Promise<unknown>,
+  apiReady: Promise<void>,
+): Promise<void> {
+  // Cleanup must wait for both branches. Preserve Envoy failure as the primary diagnostic.
+  const [envoy, api] = await Promise.allSettled([envoyTrust, apiReady]);
+  if (envoy.status === "rejected") {
+    throw envoy.reason;
+  }
+  if (api.status === "rejected") {
+    throw api.reason;
+  }
+}
+
 export function createStepRecorder(now = () => performance.now()) {
   const origin = now();
   const timings: TimingRow[] = [];

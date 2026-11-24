@@ -481,7 +481,7 @@ async function verifiedPair(previousPath: string, candidatePath: string, forPull
     candidate.selected.controller,
     "Require distinct controller digests.",
   );
-  return { previous, candidate };
+  return { root: pair.candidate.root, previous, candidate };
 }
 
 async function verifyPair(previousPath: string, candidatePath: string, directory: string) {
@@ -553,8 +553,7 @@ function stagedInput(
   return { reference, revision: publication.sourceSha, ...seal };
 }
 
-async function pullPair(previousPath: string, candidatePath: string, directory: string) {
-  const pair = await verifiedPair(previousPath, candidatePath, true);
+async function pullPair(pair: Awaited<ReturnType<typeof verifiedPair>>, directory: string) {
   const previousController = stagedInput(pair.previous, "controller");
   const candidateController = stagedInput(pair.candidate, "controller");
   const fixedRuntime = stagedInput(pair.previous, "runtime");
@@ -691,6 +690,40 @@ function signinBuildInputs(root: string, revision: string) {
   return createHash("sha256").update(projection).digest("hex");
 }
 
+function signinCompatibility(root: string, previousSha: string, currentSha: string) {
+  const known = signinReferences.map(({ source, version }) => ({
+    source,
+    version,
+    digest: signinBuildInputs(root, source),
+  }));
+  const select = (source: string, side: "previous" | "candidate") => {
+    const digest = signinBuildInputs(root, source);
+    const origin = known.find((entry) => entry.digest === digest);
+    assert.ok(
+      origin,
+      `Unclassified sign-in reader (${side}): review the changed controller inputs before running this case.`,
+    );
+    return { source, version: origin.version, reviewedSource: origin.source, buildInputs: digest };
+  };
+  const previous = select(previousSha, "previous");
+  const candidate = select(currentSha, "candidate");
+  assert.equal(candidate.version, 3, "Select an activated candidate.");
+  const reference = signinReferences[0].source;
+  const tree = (source: string) => git(root, ["rev-parse", source + ":migrations"]).trim();
+  const migrationTree = tree(reference);
+  assert.equal(
+    tree(previousSha),
+    migrationTree,
+    "Previous migration tree differs from the reviewed history.",
+  );
+  assert.equal(
+    tree(currentSha),
+    migrationTree,
+    "Candidate migration tree differs from the reviewed history.",
+  );
+  return { previous, candidate, migrationTree };
+}
+
 async function signinPlan(directory: string, producedHash: string | undefined) {
   assert.ok(
     producedHash?.length === 64 && /^[a-f0-9]{64}$/.test(producedHash),
@@ -760,37 +793,13 @@ async function signinPlan(directory: string, producedHash: string | undefined) {
     assert.notEqual(images.previousController[key], images.candidateController[key]);
   }
 
-  const known = signinReferences.map(({ source, version }) => ({
-    source,
-    version,
-    digest: signinBuildInputs(root, source),
-  }));
-  const select = (source: string) => {
-    const digest = signinBuildInputs(root, source);
-    const origin = known.find((entry) => entry.digest === digest);
-    assert.ok(
-      origin,
-      "Unclassified sign-in reader: review the changed controller inputs before running this case.",
-    );
-    return { source, version: origin.version, reviewedSource: origin.source, buildInputs: digest };
-  };
-  const previous = select(previousSha);
-  const candidate = select(currentSha);
-  assert.equal(candidate.version, 3, "Select an activated candidate.");
-  const reference = signinReferences[0].source;
-  const tree = (source: string) => git(root, ["rev-parse", source + ":migrations"]).trim();
-  const migrationTree = tree(reference);
-  assert.equal(tree(previousSha), migrationTree);
-  assert.equal(tree(currentSha), migrationTree);
-  const manifestPath = reference + ":migrations/meta/_canonical-history.json";
-  const catalogManifest = JSON.parse(git(root, ["cat-file", "blob", manifestPath]));
+  const compatibility = signinCompatibility(root, previousSha, currentSha);
+  const manifestPath = compatibility.migrationTree + ":meta/_canonical-history.json";
   const plan = {
     kind: "signin-rehearsal-expectations",
     fixture: "v3-to-v3",
-    previous,
-    candidate,
-    migrationTree,
-    catalogManifest,
+    ...compatibility,
+    catalogManifest: JSON.parse(git(root, ["cat-file", "blob", manifestPath])),
     stagedImagesSha256: producedHash,
     workflowSha: env.GITHUB_WORKFLOW_SHA,
     installation: env.STAGING_INSTALLATION,
@@ -938,15 +947,21 @@ async function main() {
         path && candidatePath && extra.length === 0,
         "Require the previous and candidate archive directories.",
       );
-      if (command === "prepare-signin") {
-        // Never adopt an existing receipt. Its exclusive writer must succeed in this
-        // invocation, then the planner must see exactly the bytes that writer returned.
-        const producedHash = await pullPair(path, candidatePath, env.RUNNER_TEMP);
-        await signinPlan(env.RUNNER_TEMP, producedHash);
-      } else if (command === "pull-pair") {
-        console.log(await pullPair(path, candidatePath, env.RUNNER_TEMP));
-      } else {
+      if (command === "verify-pair") {
         await verifyPair(path, candidatePath, env.RUNNER_TEMP);
+      } else {
+        const pair = await verifiedPair(path, candidatePath, true);
+        if (command === "prepare-signin") {
+          signinCompatibility(pair.root, pair.previous.sourceSha, pair.candidate.sourceSha);
+        }
+        const producedHash = await pullPair(pair, env.RUNNER_TEMP);
+        if (command === "prepare-signin") {
+          // Require the receipt written exclusively by this invocation and recheck
+          // the source pair before handing the plan to the installed harness.
+          await signinPlan(env.RUNNER_TEMP, producedHash);
+        } else {
+          console.log(producedHash);
+        }
       }
     } else if (command === "pull") {
       assert.ok(path, "Publication receipt path is required.");
