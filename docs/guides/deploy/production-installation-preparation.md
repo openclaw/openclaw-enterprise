@@ -303,14 +303,14 @@ Protect both configuration files:
 chmod 600 "$OCC_INPUT_DIRECTORY/values.yaml" "$OCC_INPUT_DIRECTORY/installation.yaml"
 ```
 
-For profiles, change `$OCC_PROFILE_INPUT` and rerender instead of editing
-`values.yaml` or `installation.yaml`. For manual installs, edit the copied YAML
-before the checks:
+Edit `$OCC_PROFILE_INPUT` and rerender, or edit the manual YAML copies:
 
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
-  control-plane node selector, database CA, DNS, API clients, and bootstrap
-  credential Secret name (`bootstrap.credentials.secretName`). The keys default
-  to `admin-password` and `admin-service-key`. Keep native admin enabled for the password profile, and gateway
+  control-plane node selector, database CA, DNS, API clients, and
+  `bootstrap.credentials.secretName`. Use an unused name for OCC generation.
+  For OCC existing mode or direct Helm, prepare the Secret with both keys.
+  See [Choose bootstrap credential preparation](production-installation.md#choose-bootstrap-credential-preparation).
+  Keys default to `admin-password` and `admin-service-key`. Keep native admin enabled for the password profile, and gateway
   routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
   `auth.baseUrl` that breaks the
   [`OCC_AUTH_BASE_URL` rules](../../reference/settings/production.md#required-production-controller-environment)
@@ -337,18 +337,13 @@ For Slack Agents, prepare the [managed channel egress fleet](channel-egress.md)
 and matching Helm and Installation settings before deployment. For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
 
-`images.controller` must be an approved immutable image reference with a lowercase
-`sha256` digest.
+Pin `images.controller` to an approved image reference with a lowercase `sha256` digest. For older values, [prepare a copy for the fresh install](production-installation.md#prepare-retained-values-for-a-fresh-install).
 
-Before running this block, confirm that `OCC_INPUT_DIRECTORY` points to the
-intended protected directory containing your prepared `values.yaml`
-and `installation.yaml`. In a new shell, restore that
-[setup](#configure-the-installation) first.
+Check both YAML files in `OCC_INPUT_DIRECTORY`. In new shells,
+[restore the setup](#configure-the-installation).
 
-Run this block before provisioning the password profile. If it fails, correct the
-named check before continuing. After the directory check, each run invalidates
-the previous render. Image, credential Secret, database CA, and manifest-path exports are set
-only after every check succeeds:
+Render before provisioning the password profile. Fix any failed check. After checking the directory, the block invalidates the previous render.
+It exports settings only on success. Rendering cannot verify Secret existence or contents.
 
 ```bash
 {
@@ -427,9 +422,10 @@ and outside the checkout; its default is `$HOME/.local/state`.
 
 ### Optional: supply bootstrap credentials
 
-Automatic setup refuses a pre-existing bootstrap credential Secret. Skip this
-section for automatic setup. Reuse a deliberately provisioned Secret. Otherwise,
-generate once with Node.js from the matching checkout. Existing files stay intact.
+Skip this section for OCC generation. Existing mode and direct Helm require
+a precreated Secret with both keys. Generate inputs once with Node.js from
+the matching checkout or use deliberately provisioned inputs. The script
+refuses existing files.
 
 ```bash
 node --input-type=module <<'JS'

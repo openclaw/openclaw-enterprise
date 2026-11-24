@@ -131,15 +131,15 @@ mode, selected version and queued or claimed deployment work.
 
 ## Installation handoff
 
-All three commands require `--kubeconfig`, `--context`, `--kube-namespace` and
-`--release`. Use the CLI matching the chart. Output is text.
+Install, doctor and plan require `--kubeconfig`, `--context`, `--kube-namespace` and
+`--release`. Use the matching CLI. All output is text.
 
-- `occ installation install` requires Helm, `kubectl`, local `--chart`
-  (directory/archive, at most 64 MiB, no symlinks), `--values` (at most 4 MiB),
-  and a new `--receipt`. Default `--bootstrap-credentials=generate` retains
-  private inputs and creates their Secret before Helm. Existing Secrets refuse
-  generation; `--bootstrap-credentials=existing` uses deliberately provisioned
-  inputs. Recovery files are `0600`, directories `0700`, under
+- `occ installation install` needs Helm, `kubectl`, local `--chart` (directory or
+  archive, 64 MiB maximum, no symlinks), `--values` (4 MiB maximum), and a new
+  `--receipt`. Both modes render offline before recording intent.
+  Default `--bootstrap-credentials=generate` requires an unused Secret name and
+  creates the Secret from retained inputs. For preprovisioned inputs use
+  `--bootstrap-credentials=existing`. Recovery files are `0600`, directories `0700`, under
   `${XDG_STATE_HOME:-$HOME/.local/state}/occ/installation-credentials/`, outside
   the checkout. Prepared keys are not authenticated access.
   Use Secret release storage, unset `HELM_KUBE*`, and use noninteractive credentials.
@@ -149,6 +149,8 @@ All three commands require `--kubeconfig`, `--context`, `--kube-namespace` and
   install marker and captured UID for exit zero on completion. Alternatively,
   `--expect-job-uid` pins a recorded UID. Without either, completion describes
   only the current Job. Report-write failures fail these commands.
+- [`occ installation migrate-values`](../guides/deploy/production-installation.md#prepare-retained-values-for-a-fresh-install)
+  previews or writes a values copy offline.
 
 See [receipt handoff and recovery](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff)
 for durable dispatch, interrupted writes and output failures. Never replay an

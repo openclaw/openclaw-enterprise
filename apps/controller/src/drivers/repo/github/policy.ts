@@ -118,6 +118,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         Object.freeze({
           repositoryRef: repository.repositoryRef,
           displayName: repository.repository,
+          ...(policy.nativeGit === "v1" ? { githubRepository: repository.repository } : {}),
           allowedProfiles: Object.freeze([...policy.profiles]),
         }),
       );
