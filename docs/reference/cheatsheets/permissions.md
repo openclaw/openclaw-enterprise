@@ -15,7 +15,7 @@ override grants, and one action never implies another. See
 | `update`     | Change a resource or its credential.                                                                                                                                                                   |
 | `delete`     | Request deletion of the exact resource.                                                                                                                                                                |
 | `deploy`     | Create an Agent revision or recover its exact first-deployment receipt.                                                                                                                                |
-| `operate`    | Submit an Agent HTTP turn or chat in its browser UI, stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source. |
+| `operate`    | Submit an Agent HTTP turn or browser chat, stop an Agent, retry credential delivery, provision runtime credentials, write workspace files, read its runtime status, or use a bound Secret or a Source. |
 | `administer` | Run Installation administration, access the exact Agent’s native admin UI, or read its runtime log text. It does not imply `read`, `deploy`, or other actions.                                         |
 | `read_logs`  | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                                                                             |
 | `read_audit` | Read selected audit metadata for one Agent. Requires a direct AccessBinding on the Agent and a human session.                                                                                          |
@@ -62,8 +62,9 @@ authorized Installation-scoped service key. A Namespace-scoped key cannot access
 another Namespace or Installation endpoints. An Installation-scoped key still
 needs its principal’s own grants; it does not inherit the issuer’s. See
 [service key scope](../authentication/service-api-keys.md#request-admission-and-scope).
-An account created with the Installation administrator `roleId` holds only
-`installation:administer` and `installation:read`; see
+The direct binding for an account created with the Installation administrator
+`roleId` grants only `installation:administer` and `installation:read`. Configured
+Group and other bindings can add access. See
 [Appoint an administrator](../../guides/topics/iam.md#appoint-an-administrator).
 
 ## Configured Roles
@@ -76,19 +77,27 @@ creator as the `ownerRole`. See
 
 ## Denial messages
 
-A `403 FORBIDDEN` for a grant you lack names it and who grants it, for example
+A `403 FORBIDDEN` can name the required action and safe scope, for example
 `Not authorized: this needs Agent deploy on Agent agt_1. Ask an Installation
-administrator to grant it.` The Namespace policy API cannot grant create, so a
-create denial names its Namespace and says only an Installation administrator
-can create it. The message does not mention [configured Roles](#configured-roles),
-which can also grant create. The
-message names a resource ID only when your request sent it in the path or an ID
-field, or you can already read that resource, never a binding, Role or
-Restriction. A Secret or credential source that an Agent, Configuration or
-credential source binds is named only when you can also read the record that
-binds it. Log text needs `Agent read_logs (or Agent administer)`. A Restriction, a missing grant and
-a resource that does not exist get the same message. A denial about your own
-account, session or provisioning job says so: `The acting account is disabled.`,
+administrator to grant it.` Ordinary create and Namespace delete denials
+end with `Review this permission with whoever manages IAM.`
+[Configured Roles](#configured-roles) can grant permissions that the exact
+Namespace policy API cannot issue.
+
+A message names a resource ID only when your request sent it in the path or an
+ID field, or you can already read that resource. It does not name a binding,
+Role, Restriction ID, or another principal. A Secret or credential source that
+an Agent, Configuration, or credential source binds is named only when you can
+also read the record that binds it. Log text needs
+`Agent read_logs (or Agent administer)`.
+Ordinary denials do not distinguish a matching Restriction from a missing grant
+or disclose whether an unreadable resource exists. The exception is an actual
+non-Namespace create refused to a confirmed Installation administrator when OCC
+has matching Restriction evidence. That denial says a Restriction denies create
+without naming its ID. Advisory permission booleans do not provide that evidence.
+
+A denial about your own account, session or provisioning job says so:
+`The acting account is disabled.`,
 `The acting identity is unavailable.`, `The human administrator session is no
 longer current.`, `The assigning session is no longer current.`, `Only the
 initiating actor can retry provisioning.` or `Only the initiating actor can read
@@ -128,6 +137,9 @@ operation was not authorized.`
   bound Secret and `credential_source:operate` on each source. The deploy
   [writes the missing grants](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
   for each source the caller can operate.
+- Selecting or changing an [Agent Gateway channel proxy credential](../agents/network-proxy.md)
+  requires `secret:operate` on that exact same-Namespace Secret. Deployment also
+  checks the Agent principal's exact Secret grant.
 - Creating an Agent with [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode)
   off or changing the setting also requires `installation:administer`.
 - [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or
@@ -135,6 +147,9 @@ operation was not authorized.`
   also requires `secret:operate` on each Secret it reads.
 - [Withdrawing a credential source](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw)
   from an Agent requires `agent:operate`; the worker rechecks it before revoking.
+- [Retrying credential delivery](../api.md#post-namespacesnamespaceidagentsagentidcredentialspush)
+  requires exact `agent:operate` and `credential_source:update` on every selected
+  deployed Source. The Agent service principal also needs `credential_source:operate`.
 - [First-deployment receipt recovery](../agents/deployment.md#guarded-first-deployment)
   requires current exact Agent `deploy` and reviewed Configuration `read`.
   It does not grant Agent revision `read`; deployment-status access needs that

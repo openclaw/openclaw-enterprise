@@ -22,7 +22,7 @@ import {
 } from "./kubernetes-real.ts";
 import { createNativeTopologyConfiguration } from "./topology-launch-configuration.ts";
 import { slackApi } from "./slack-web-api.ts";
-import { assertSlackChannelDestination, verifySingleSlackDelivery } from "./slack-delivery.ts";
+import { verifySlackChannelAccess, verifySingleSlackDelivery } from "./slack-delivery.ts";
 import { gatewaySlackEvidence } from "./slack-native-evidence.ts";
 import { probeChannelConnect } from "./channel-egress-probe.ts";
 import { productionTuiProxyCommand, productionTuiProxyData } from "./production-tui-proxy.ts";
@@ -85,11 +85,13 @@ export async function runHelmChannelScenario(t: TestContext, { upgrade }: { upgr
   const senderIdentity = await slackApi("auth.test", slack.senderBotToken);
   assert.equal(targetIdentity.team_id, senderIdentity.team_id);
   assert.notEqual(targetIdentity.user_id, senderIdentity.user_id);
-  for (const token of [slack.botToken, slack.senderBotToken]) {
-    const info = await slackApi("conversations.info", token, { channel: slack.channelId });
-    assertSlackChannelDestination(info, slack.channelId);
-    assert.equal(object(info.channel).is_member, true);
-  }
+  await verifySlackChannelAccess({
+    channelId: slack.channelId,
+    gatewayToken: slack.botToken,
+    senderToken: slack.senderBotToken,
+    gatewayIdentity: targetIdentity,
+    senderIdentity,
+  });
   const suffix = randomBytes(5).toString("hex");
   const namespace = `oce-channel-helm-${suffix}`;
   const release = `channel-${suffix}`;

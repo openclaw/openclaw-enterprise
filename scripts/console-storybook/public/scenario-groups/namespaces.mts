@@ -137,7 +137,7 @@ export const namespacesScenarios = {
     path: "/console/namespaces",
     namespaceDeleteDenied: true,
     description:
-      "A member's advisory permission answer refuses deletion. The trash icon looks disabled and its reason says only an Installation administrator can delete a Namespace.",
+      "A member's advisory permission answer refuses deletion. The trash icon is disabled. Its reason says Namespace delete is required and asks the member to have an Installation administrator check their access.",
   },
   namespaceDeleteRestricted: {
     group: "Pages/Namespaces",
@@ -145,7 +145,7 @@ export const namespacesScenarios = {
     path: "/console/namespaces",
     namespaceDeleteRestricted: true,
     description:
-      "An Installation administrator whom a deny Restriction keeps from deleting the Namespace. The reason names the Restriction and who can lift it, not an administrator to ask.",
+      "A simulated Restriction blocks an Installation administrator from deleting the Namespace. The advisory result names Namespace delete and asks them to check their access and whether an IAM Restriction applies.",
     gap: "The permission answer is advisory. The controller still authorizes each delete.",
   },
   namespaceDeleteRefused: {
@@ -158,7 +158,7 @@ export const namespacesScenarios = {
       { click: "Delete Namespace" },
     ],
     description:
-      "A write can still be refused after the advisory read. The row shows the reason and request ID.",
+      "A write can still be refused after the advisory read. The row shows the access guidance and request ID.",
   },
   namespaceDeletePending: {
     group: "Pages/Namespaces",

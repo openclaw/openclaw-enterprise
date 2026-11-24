@@ -1,3 +1,4 @@
+import { repositoryGitRestOperations } from "../access/delivery.ts";
 import { hasControlCharacter } from "../access/client-contracts.ts";
 import type {
   ErrorDetail,
@@ -24,7 +25,11 @@ import {
 function selectedRepositoryGitNetworkGrants({
   repositories,
   permissions,
+  mixedNativeGit,
 }: ReturnType<typeof resolveSelectedRepositoryScope>): readonly RepositoryNetworkGrant[] {
+  if (mixedNativeGit) {
+    return [];
+  }
   const access = permissions.contents;
   return access === "read" || access === "write"
     ? Object.freeze(repositories.map(({ repository }) => Object.freeze({ repository, access })))
@@ -114,6 +119,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         Object.freeze({
           repositoryRef: repository.repositoryRef,
           displayName: repository.repository,
+          ...(policy.nativeGit === "v1" ? { githubRepository: repository.repository } : {}),
           allowedProfiles: Object.freeze([...policy.profiles]),
         }),
       );
@@ -185,12 +191,19 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       const selected = bindings.some((binding) => binding.profile === "github-repository")
         ? resolveSelectedRepositoryScope(this.#registry, input.namespaceId, bindings)
         : undefined;
+      const selectedGrants = selected && selectedRepositoryGitNetworkGrants(selected);
       return Object.freeze({
         bindings,
         sessionDurationSeconds: this.#duration,
-        ...(selected === undefined
-          ? {}
-          : { selectedRepositoryNetworkGrants: selectedRepositoryGitNetworkGrants(selected) }),
+        ...(selected &&
+          selectedGrants && {
+            requiresNetworkPolicy: selected.requiresNetworkPolicy,
+            selectedRepositoryNetworkGrants: selectedGrants,
+            ...(selected.nativeGit && {
+              nativeGit: selected.nativeGit,
+              repositoryApiMaxima: repositoryGitRestOperations(selectedGrants, selected.scopedRest),
+            }),
+          }),
       });
     } catch {
       throw new ScopeViolationError(

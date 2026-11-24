@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Locator, Page } from "playwright";
+import type { Locator, Page, Route } from "playwright";
 
 import {
   NamespaceCallerPermissionsResponse,
@@ -26,7 +26,7 @@ import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_NOT_FOUND,
-  SECRET_CREATE_DENIED,
+  SECRET_CREATE_MEMBER_DENIED,
   SECRET_NAME_CONFLICT,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
@@ -166,6 +166,81 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
   );
   await page.getByRole("button", { name: "Create connection template" }).click();
   assert.equal(await editor.getByLabel("Template availability").inputValue(), "");
+});
+
+test("an administrator manages static Bearer templates without OAuth client registration", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Static template owners");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/secrets?namespace=${namespace.id}`);
+  await page
+    .getByRole("navigation", { name: "Credential sections" })
+    .getByRole("link", { name: "Connection templates" })
+    .click();
+  await page.getByRole("button", { name: "Create connection template" }).click();
+  const editor = dialog(page, "Create connection template");
+  const authentication = editor.getByLabel("Authentication method");
+  // This is the missing production control on the previous OAuth-only editor.
+  assert.equal(await authentication.count(), 1);
+  await authentication.selectOption({ label: "Static Bearer" });
+  await editor.getByLabel("Template name").fill("Reports API");
+  const destinations = editor.getByRole("table", { name: "HTTP destinations" });
+  await destinations.getByLabel("Method", { exact: true }).fill("REPORT-1");
+  await destinations.getByLabel("Host", { exact: true }).fill("reports.example.test");
+  await destinations.getByLabel("Path", { exact: true }).fill("/reports/**");
+  assert.equal(await editor.getByLabel("OAuth client", { exact: true }).isVisible(), false);
+  const posted = responseTo(page, "POST", fixture.origin + "/connection-templates");
+  await editor.getByRole("button", { name: "Create template", exact: true }).click();
+  const created = await posted;
+  assert.equal(created.status(), 201, await created.text());
+  const template = (await created.json()).data;
+  assert.equal(template.current.mode, "static_bearer");
+  assert.deepEqual(template.current.destinations, [
+    { method: "REPORT-1", host: "reports.example.test", port: 443, path: "/reports/**" },
+  ]);
+  await page.getByText("Saved Reports API, version 1.", { exact: true }).waitFor();
+  const row = () =>
+    page
+      .getByRole("row")
+      .filter({ has: page.getByRole("rowheader", { name: "Reports API", exact: true }) });
+  await row().getByRole("cell", { name: "Static Bearer", exact: true }).waitFor();
+
+  // A rename preserves the template version; editing a destination advances it.
+  await row().getByRole("button", { name: "Edit Reports API" }).click();
+  const edit = dialog(page, "Edit connection template");
+  await edit.getByLabel("Template name").fill("Reporting service");
+  await edit.getByRole("button", { name: "Save changes" }).click();
+  await page.getByText("Saved Reporting service, version 1.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Edit Reporting service" }).click();
+  await edit
+    .getByRole("table", { name: "HTTP destinations" })
+    .getByLabel("Path", { exact: true })
+    .fill("/reports/export");
+  await edit.getByRole("button", { name: "Save changes" }).click();
+  await page.getByText("Saved Reporting service, version 2.", { exact: true }).waitFor();
+
+  // OAuth registration remains a separate caller and must never offer a static template.
+  const sections = page.getByRole("navigation", { name: "Credential sections" });
+  await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
+  await page.getByRole("button", { name: "Register OAuth client" }).click();
+  const registration = dialog(page, "Register OAuth client");
+  assert.equal(
+    await registration
+      .getByLabel("Connection template")
+      .getByRole("option", { name: /Reporting service/ })
+      .count(),
+    0,
+  );
+  await registration.getByRole("button", { name: "Cancel" }).click();
+  await sections.getByRole("link", { name: "Connection templates", exact: true }).click();
+  await page.getByRole("button", { name: /Delete Reporting service/ }).click();
+  const deletion = dialog(page, "Delete connection template");
+  await deletion
+    .getByText("This permanently deletes the template and its saved versions.", { exact: true })
+    .waitFor();
+  assert.equal(await deletion.getByText("Its registered OAuth clients stay available.").count(), 0);
+  await deletion.getByRole("button", { name: "Delete connection template", exact: true }).click();
+  await page.getByText("Deleted Reporting service.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Edit Reporting service" }).count(), 0);
 });
 
 test("a template needs an explicit availability when the administrator has no Namespace", async (t) => {
@@ -988,7 +1063,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   // Without Secret create the page never offers creation that the API would refuse after the
   // dialog is filled in (finding 2365): Create Secret is disabled and the note names why.
   const createSecret = page.getByRole("button", { name: "Create Secret", exact: true });
-  const createReason = page.getByRole("status").filter({ hasText: SECRET_CREATE_DENIED });
+  const createReason = page.getByRole("status").filter({ hasText: SECRET_CREATE_MEMBER_DENIED });
   await createReason.waitFor();
   assert.equal(await createSecret.isDisabled(), true);
   assert.equal(
@@ -1151,10 +1226,8 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       "a denied write must not reach the Secret Driver",
     );
     assert.equal(storage.valueFor(secret), storedValue);
-    await form
-      .getByRole("alert")
-      .filter({ hasText: /Your access does not include/ })
-      .waitFor();
+    const expected = creating ? SECRET_CREATE_MEMBER_DENIED : /Your access does not include/;
+    await form.getByRole("alert").filter({ hasText: expected }).waitFor();
     assert.equal(await submit.isDisabled(), true);
     const close = form.getByRole("button", { name: "Close" });
     if (method !== "DELETE") {
@@ -1190,11 +1263,71 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       data: { ...body.data, secrets: { create: true } },
     })),
   );
+  // The POST response can carry arbitrary text. A named denial must not echo
+  // the submitted value or replace the local description of the refused controls.
+  const canary = "synthetic-post-response-canary";
+  const inventedAdvice = "Follow the invented recovery step.";
+  const reflected = `Not authorized: reflected ${canary}. ${inventedAdvice}`;
+  const postRequests = apiRequests(page, fixture.origin);
+  const requestMask = `**${secretPath(namespace)}`;
+  const interceptCreate = async (route: Route) => {
+    if (route.request().method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    assert.equal(route.request().postDataJSON().value, canary);
+    await route.fulfill(apiErrorResponse(403, "FORBIDDEN", reflected));
+  };
+  await page.route(requestMask, interceptCreate);
+  await page.reload();
+  await createSecret.click();
+  const createName = form.getByLabel("Secret name");
+  const submitCreate = form.getByRole("button", { name: "Create Secret", exact: true });
+  await createName.fill("Synthetic response check");
+  await value.fill(canary);
+  const post = responseTo(page, "POST", collection);
+  await submitCreate.click();
+  const returned = await post;
+  assert.equal(returned.status(), 403);
+  const reflectedBody: ErrorResponse = await returned.json();
+  assert.equal(reflectedBody.error.code, "FORBIDDEN");
+  assert.equal(reflectedBody.error.message, reflected);
+  const closeCreate = form.getByRole("button", { name: "Close" });
+  await closeCreate.waitFor();
+  const alert = form.getByRole("alert");
+  assert.equal(await alert.textContent(), SECRET_CREATE_MEMBER_DENIED);
+  assert.equal(await value.inputValue(), "");
+  assert.equal(await hasFocus(closeCreate), true);
+  for (const control of [
+    submitCreate,
+    createName,
+    value,
+    form.getByRole("button", { name: "Show value" }),
+  ]) {
+    const description = await accessibleDescription(control);
+    assert.ok(description.endsWith(SECRET_CREATE_MEMBER_DENIED), description);
+    assert.equal(description.includes(canary), false);
+    assert.equal(description.includes(inventedAdvice), false);
+    assert.equal(await control.isDisabled(), true);
+    await expectReachableReason(page, control, description);
+  }
+  await submitCreate.focus();
+  await page.keyboard.press("Enter");
+  await submitCreate.click({ force: true });
+  assert.equal(pathRequests(postRequests, "POST", secretPath(namespace)).length, 1);
+  await closeCreate.click();
+  await page.unroute(requestMask, interceptCreate);
+
   await page.reload();
   await createSecret.click();
   await form.getByLabel("Secret name").fill("Reader cannot create this");
   await value.fill("synthetic-denied-create");
   await expectDenied("Create Secret", "POST", "create");
+  await expectReachableReason(
+    page,
+    createSecret,
+    `${SECRET_CREATE_MEMBER_DENIED} Then select Refresh.`,
+  );
 
   async function openAction(name: string) {
     await page.getByRole("button", { name: secret.name, exact: true }).click();

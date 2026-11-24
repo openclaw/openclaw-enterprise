@@ -509,12 +509,21 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     if (
       enrollment &&
       (Object.keys(enrollment).some(
-        (key) => !["configurationId", "bootstrapRevision", "hook", "release"].includes(key),
+        (key) =>
+          !["configurationId", "bootstrapRevision", "hook", "nativeStartupId", "release"].includes(
+            key,
+          ),
       ) ||
         !/^[a-f0-9]{64}$/.test(enrollment.configurationId) ||
         !/^[1-9]\d*$/.test(enrollment.bootstrapRevision) ||
         !["held", "sending", "acknowledged"].includes(enrollment.release) ||
-        (enrollment.release !== "held" && !enrollment.hook) ||
+        (enrollment.release !== "held" && !enrollment.hook && !enrollment.nativeStartupId) ||
+        (Object.hasOwn(enrollment, "nativeStartupId") &&
+          (enrollment.hook ||
+            hook ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+              enrollment.nativeStartupId ?? "",
+            ))) ||
         (enrollment.hook &&
           (Object.keys(enrollment.hook).length !== 2 ||
             !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(

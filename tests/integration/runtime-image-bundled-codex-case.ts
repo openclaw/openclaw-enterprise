@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
-import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
+import { gatewayLogsThroughReady } from "../helpers/runtime-image-gateway-observations.ts";
 import { runGatewaySmoke, runtimeImageModel } from "../helpers/runtime-image-startup.ts";
 import {
   assertBundledPluginLoaded,
@@ -143,10 +143,9 @@ export async function verifyBundledCodexStartup(
     entrypoint,
     collectPlugins: true,
   });
-  const { logs, containerName } = gateway;
+  const { containerName } = gateway;
   const pluginList: unknown = gateway.pluginList;
-  assert.ok(typeof logs === "string");
-  const entries: unknown[] = jsonLogEntries(logs);
+  const { logs, entries } = await gatewayLogsThroughReady(containerName);
   assertGatewayReadyLog(entries);
   assertGatewayModelLog(entries, `codex/${runtimeImageModel}`);
   assertBundledPluginLoaded(pluginList, "codex");

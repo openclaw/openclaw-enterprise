@@ -371,11 +371,11 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
             null);
       const storesRepositoryPolicy = state.sandboxPolicies.supportsRepositoryNetworkPolicy === true;
       const canWithdraw = storesRepositoryPolicy && policy.repositoryNetworkPolicy !== undefined;
-      const firstSave =
+      const edit =
         storesRepositoryPolicy &&
-        !canWithdraw &&
         unavailableReason === undefined &&
-        (await state.revisions.listRevisionMetadata(namespaceId, agentId)).length === 0
+        (canWithdraw ||
+          (await state.revisions.listRevisionMetadata(namespaceId, agentId)).length === 0)
           ? await dependencies.qualifyRepositoryEdit(
               state,
               agent,
@@ -386,6 +386,10 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
             )
           : undefined;
       const repositoryNetworkPolicyCeiling = dependencies.repositoryCeiling(namespaceId);
+      const supported = edit?.supports(repositoryNetworkPolicyCeiling) === true;
+      const repositoryApiMaxima = supported
+        ? edit.apiMaxima(repositoryNetworkPolicyCeiling)
+        : undefined;
       return {
         policy,
         configuration: await policyConfigurationDescriptor(
@@ -402,8 +406,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
         repositoryNetworkPolicyCeiling,
-        repositoryNetworkPolicySaveSupported:
-          canWithdraw || firstSave?.supports(repositoryNetworkPolicyCeiling) === true,
+        ...(repositoryApiMaxima && { repositoryApiMaxima }),
+        repositoryNetworkPolicySaveSupported: canWithdraw || supported,
         defaults,
         // A fresh deploy carries the saved version into its Sandbox; no application is
         // requested for it (D773).
@@ -964,12 +968,24 @@ export async function deploymentSandboxPolicy(
   principalId: string,
   namespaceId: string,
   agentId: string,
+  expectedRepositoryPolicyVersion?: number | null,
 ): Promise<Readonly<SandboxPolicy> | undefined> {
   const policy = await state.sandboxPolicies.find(namespaceId, agentId);
-  if (policy?.repositoryNetworkPolicy !== undefined) {
+  const savedVersion = policy?.repositoryNetworkPolicy === undefined ? null : policy.version;
+  // Expecting no list must preserve legacy deploy permissions. Authorize read
+  // before reporting any mismatch, including a newly saved deny-all list.
+  if (savedVersion !== null || typeof expectedRepositoryPolicyVersion === "number") {
     const target = { kind: "agent", id: agentId, namespaceId } as const;
     const resource = policyResource(namespaceId, agentId);
     await authority.authorize(principalId, "read", resource);
+    if (
+      expectedRepositoryPolicyVersion !== undefined &&
+      expectedRepositoryPolicyVersion !== savedVersion
+    ) {
+      throw new ResourceStateConflictError(
+        "The saved GitHub access changed. Review the current repository policy before deploying.",
+      );
+    }
     await authority.authorize(principalId, "manage_policy", target);
     await authority.authorize(principalId, "update", resource);
   }

@@ -13,7 +13,7 @@ import {
 import type { NamespacePageContext } from "./namespaces.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
 import { describeFailure } from "./agents/list.mjs";
-import { NAMESPACE_DELETE_DENIED, namespaceDeleteDenied } from "./agents/access-reasons.mjs";
+import { NAMESPACE_DELETE_REFUSED, namespaceDeleteDenied } from "./agents/access-reasons.mjs";
 
 interface DeletionContext extends NamespacePageContext {
   /** `refocus`: a requested check found it removed while its Refresh held focus. */
@@ -46,9 +46,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   // Set when a requested check disables the focused Refresh status, so focus returns to the row.
   let refocus = false;
   let denied = false;
-  // Why delete is refused, from the last permission answer: an Installation administrator is
-  // refused only by a Restriction (finding 2861).
-  let deniedReason = NAMESPACE_DELETE_DENIED;
+  // The last advisory answer can report that deletion is unavailable without giving its cause.
+  let deniedReason = namespaceDeleteDenied();
   let accessEnded = false;
   let removed = false;
   let poll: ReturnType<typeof setTimeout> | undefined;
@@ -514,7 +513,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         requestId = error.requestId;
         if (error.status === 403) {
           denied = true;
-          message = error.serverMessage ?? deniedReason;
+          // A delete can check more than Namespace delete, such as Preset delete during cleanup.
+          message = error.serverMessage ?? NAMESPACE_DELETE_REFUSED;
         } else if (error.status === 400 || error.status === 409 || error.status === 429) {
           message = describeFailure(cause, { mutation: true });
         } else {

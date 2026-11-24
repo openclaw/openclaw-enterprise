@@ -47,7 +47,9 @@ import { asRecord } from "../../packages/utils/src/objects.ts";
 import { unexpectedNodeEnrollment } from "./kubernetes-namespace-placement-cases.ts";
 
 import {
+  policyRules,
   podTemplate,
+  type Labels,
   resourceRecord,
   resourceRecords,
 } from "../helpers/kubernetes-rendered-resources.ts";
@@ -68,7 +70,7 @@ type TrustedProxyRefusalOptions = {
   trustedProxies?: readonly string[];
 };
 
-export function trustedProxyRefusalConfiguration({
+function trustedProxyRefusalConfiguration({
   unsupportedField,
   userHeader = "x-occ-identity",
   allowUsers = ["occ-workspace-files"],
@@ -129,7 +131,646 @@ export function twoClusterOptions() {
   };
 }
 
-export function checkGatewayConfigurationMounts(
+export function checkPeerAndNodeSelectors() {
+  // Node selectors reach the API server only in a deployment's Deployment, after a dedicated
+  // deployment stopped its predecessors (finding 2357).
+  // Startup names the selector's own path.
+  type SelectorProbe = readonly [
+    description: string,
+    configure: (
+      configured: KubernetesComputeDriverOptions,
+      labels: Labels,
+    ) => KubernetesComputeDriverOptions,
+    path?: string,
+  ];
+  const nodeSelector = (setting: "nodeSelector" | "gatewayNodeSelector"): SelectorProbe => [
+    `runtime.${setting}`,
+    (configured, labels) => ({
+      ...configured,
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        [setting]: labels,
+      },
+    }),
+    `/runtime/${setting}`,
+  ];
+  const peers: readonly SelectorProbe[] = [
+    nodeSelector("nodeSelector"),
+    nodeSelector("gatewayNodeSelector"),
+    [
+      "DNS peer",
+      (configured, podLabels) => ({
+        ...configured,
+        network: { ...configured.network, dns: { ...configured.network.dns, podLabels } },
+      }),
+    ],
+    [
+      "Gateway client",
+      (configured, podLabels) => {
+        const [client, ...otherClients] = configured.network.gatewayClients ?? [];
+        assert.ok(client);
+        return {
+          ...configured,
+          network: {
+            ...configured.network,
+            gatewayClients: [{ ...client, podLabels }, ...otherClients],
+          },
+        };
+      },
+    ],
+    [
+      "Repository credential gateway",
+      (configured, podLabels) => ({
+        ...configured,
+        network: {
+          ...configured.network,
+          repositoryCredentials: { namespace: "controller", podLabels, port: 8443 },
+        },
+      }),
+    ],
+    [
+      "Provider Harness gateway",
+      (configured, podLabels) => ({
+        ...configured,
+        network: {
+          ...configured.network,
+          providerHarness: { namespace: "provider", podLabels, address: "127.0.0.1", port: 8443 },
+        },
+      }),
+    ],
+  ];
+  for (const [description, configure, path] of peers) {
+    const invalidLabels: readonly Labels[] = [
+      { app: "kube/dns" },
+      { app: "a".repeat(64) },
+      { app: "value\n" },
+      { "k8s.io/name/extra": "dns" },
+      { "example.com/": "dns" },
+      { "Example.com/Name": "dns" },
+      { ["a".repeat(64)]: "dns" },
+      { [`${"a".repeat(254)}/Name`]: "dns" },
+      { "example.com\n/Name": "dns" },
+    ];
+    for (const podLabels of invalidLabels) {
+      const configured = configure(options(), podLabels);
+      assert.throws(
+        () => createKubernetesComputeDriver(configured),
+        (error) => {
+          assert.ok(error instanceof SharedConfigurationValidationError, description);
+          if (path !== undefined) {
+            assert.deepEqual(
+              error.error.details.map((detail) => detail.path),
+              [path],
+              description,
+            );
+          }
+          return true;
+        },
+      );
+    }
+    // Kubernetes accepts empty values and DNS-subdomain key prefixes up to253
+    // characters; the prefix need not follow Namespace's single-label rule.
+    const validLabels: readonly Labels[] = [
+      { app: "" },
+      { "example.com/Name": "v.1_A-2" },
+      { [`example.com/${"a".repeat(63)}`]: "b".repeat(63) },
+      { [`${"a".repeat(253)}/Name`]: "" },
+      { 123: "0" },
+    ];
+    for (const podLabels of validLabels) {
+      const configured = configure(options(), podLabels);
+      assert.doesNotThrow(() => createKubernetesComputeDriver(configured), description);
+    }
+  }
+}
+
+export function checkNetworkPolicyPeerNamespaces() {
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  const base = options({ runtime });
+  const [client] = base.network.gatewayClients ?? [];
+  assert.ok(client);
+  const peers: Readonly<
+    Record<string, (namespace: string) => KubernetesComputeDriverOptions["network"]>
+  > = {
+    "DNS peer": (namespace) => ({
+      ...base.network,
+      dns: { ...base.network.dns, namespace },
+    }),
+    "Gateway client 0": (namespace) => ({
+      ...base.network,
+      gatewayClients: [{ ...client, namespace }],
+    }),
+    "Repository credential gateway": (namespace) => ({
+      ...base.network,
+      repositoryCredentials: { namespace, podLabels: { app: "repository" }, port: 8443 },
+    }),
+    "Provider Harness gateway": (namespace) => ({
+      ...base.network,
+      providerHarness: {
+        namespace,
+        podLabels: { app: "openshell-gateway" },
+        address: "10.43.0.50",
+        port: 8080,
+      },
+    }),
+  };
+  // Each peer becomes a kubernetes.io/metadata.name selector, which only ever holds a
+  // Namespace name: a DNS label of at most 63 characters. Anything else selects no Pods.
+  for (const [description, peer] of Object.entries(peers)) {
+    for (const namespace of ["openclaw-system", "a", "1abc", "a".repeat(63)]) {
+      assert.doesNotThrow(
+        () => createKubernetesComputeDriver({ ...base, network: peer(namespace) }),
+        `${description} ${namespace}`,
+      );
+    }
+    for (const namespace of [
+      "a".repeat(64),
+      "a".repeat(253),
+      "kube.system",
+      "Kube-System",
+      "-system",
+      "system-",
+      "kube/system",
+      "foo_bar",
+    ]) {
+      assert.throws(
+        () => createKubernetesComputeDriver({ ...base, network: peer(namespace) }),
+        SharedConfigurationValidationError,
+      );
+    }
+    assert.throws(
+      () => createKubernetesComputeDriver({ ...base, network: peer("") }),
+      SharedConfigurationValidationError,
+    );
+  }
+  // The execution cluster's DNS peer goes through the same check.
+  const twoCluster = twoClusterOptions();
+  assert.doesNotThrow(() => createKubernetesComputeDriver(twoCluster));
+  assert.throws(
+    () =>
+      createKubernetesComputeDriver({
+        ...twoCluster,
+        executionCluster: {
+          ...twoCluster.executionCluster,
+          network: {
+            ...twoCluster.executionCluster.network,
+            dns: { ...twoCluster.executionCluster.network.dns, namespace: "kube.system" },
+          },
+        },
+      }),
+    SharedConfigurationValidationError,
+  );
+}
+
+function isConfigurationObject(
+  value: OpenClawConfigurationValue | undefined,
+): value is OpenClawConfigurationDocument {
+  return asRecord(value) !== undefined;
+}
+
+export function checkHttpCompletionResolution() {
+  const configured = routedOptions({
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+  });
+  const driver = createKubernetesComputeDriver(configured);
+  const admitted = routedRevision(driver);
+  const authoredGateway = admitted.configuration.gateway;
+  assert.ok(isConfigurationObject(authoredGateway));
+  const authoredAuth = authoredGateway.auth;
+  assert.ok(isConfigurationObject(authoredAuth));
+  const auth: Record<string, OpenClawConfigurationValue> = { ...authoredAuth };
+  const gateway: Record<string, OpenClawConfigurationValue> = { ...authoredGateway, auth };
+  const revision: AgentRevision = {
+    ...admitted,
+    configuration: { ...admitted.configuration, gateway },
+  };
+
+  // Auth and HTTP defaults are derived from the saved admission, not required in authored settings.
+  delete auth.mode;
+  assert.equal(driver.getChatCompletionsEndpoint(revision).status, "available");
+  const { admission: _admission, ...oldCompute } = revision.compute;
+  assert.deepEqual(driver.getChatCompletionsEndpoint({ ...revision, compute: oldCompute }), {
+    status: "unavailable",
+  });
+  const chatCompletions = { enabled: false };
+  gateway.http = { endpoints: { chatCompletions } };
+  auth.mode = "token";
+  // Opt-out cannot qualify an incompatible authentication mode.
+  assert.deepEqual(driver.getChatCompletionsEndpoint(revision), { status: "unsupported" });
+  auth.mode = "trusted-proxy";
+  assert.deepEqual(driver.getChatCompletionsEndpoint(revision), { status: "disabled" });
+  chatCompletions.enabled = true;
+  const endpoint = driver.getChatCompletionsEndpoint(revision);
+  assert.equal(endpoint.status, "available");
+  assert.equal(endpoint.model, "openclaw:main");
+  assert.equal(
+    new URL(endpoint.url).pathname,
+    `/http-chat/namespaces/${tenant.id}/agents/${revision.agentId}/revisions/${revision.id}/v1/chat/completions`,
+  );
+  const replacement = driver.getChatCompletionsEndpoint({
+    ...revision,
+    id: "replacement-revision",
+  });
+  assert.notEqual("url" in replacement ? replacement.url : undefined, endpoint.url);
+  assert.ok(configured.runtime);
+  assert.deepEqual(
+    createKubernetesComputeDriver(
+      options({ runtime: configured.runtime }),
+    ).getChatCompletionsEndpoint(revision),
+    { status: "unavailable" },
+  );
+}
+
+export async function checkGatewayEndpointsAndRoutes() {
+  const driver = createKubernetesComputeDriver(routedOptions());
+  const revision = routedRevision(driver);
+  const namespace: NamespaceAddress = {
+    name: kubernetesNamespaceName(tenant.id),
+    plane: "execution",
+  };
+  const routePath = `/namespaces/${tenant.id}/agents/${revision.agentId}`;
+  const name = `gateway-${digest(revision.agentId)}`;
+  const ownership = { namespaceId: tenant.id, agentId: revision.agentId };
+  const nodeEgress = driver["workspaceNodeNetworkPolicy"]({ namespaceId: tenant.id }, namespace);
+  assert.equal(nodeEgress.metadata.annotations?.["openclaw.dev/namespace-id"], tenant.id);
+  assert.deepEqual(nodeEgress.spec, {
+    podSelector: {
+      matchLabels: { "openclaw.dev/workload-role": "agent" },
+      matchExpressions: [
+        {
+          key: "openclaw.dev/network-profile",
+          operator: "In",
+          values: ["broad-egress-v1", "provider-fenced-v1"],
+        },
+      ],
+    },
+    policyTypes: ["Egress"],
+    egress: [
+      {
+        to: [
+          {
+            namespaceSelector: {
+              matchLabels: { "kubernetes.io/metadata.name": gatewayRouting.envoyNamespace },
+            },
+            podSelector: {
+              matchLabels: {
+                "app.kubernetes.io/component": "proxy",
+                "app.kubernetes.io/managed-by": "envoy-gateway",
+                "app.kubernetes.io/name": "envoy",
+                "gateway.envoyproxy.io/owning-gateway-namespace": gatewayRouting.gatewayNamespace,
+                "gateway.envoyproxy.io/owning-gateway-name": gatewayRouting.gatewayName,
+              },
+            },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: 10443 }],
+      },
+    ],
+  });
+  const customPortDriver = createKubernetesComputeDriver(
+    routedOptions({
+      gatewayRouting: { ...gatewayRouting, envoyHttpsTargetPort: 11443 },
+    }),
+  );
+  const [customEgress] = policyRules(
+    customPortDriver["workspaceNodeNetworkPolicy"]({ namespaceId: tenant.id }, namespace),
+    "egress",
+  );
+  assert.ok(customEgress);
+  assert.deepEqual(customEgress.ports, [{ protocol: "TCP", port: 11443 }]);
+  const renderedService = driver["service"](name, ownership, namespace, {
+    "app.kubernetes.io/name": name,
+  });
+  const kind = renderedService.kind;
+  assert.equal(kind, "Service");
+  const service = { ...renderedService, kind };
+  service.metadata.uid = "gateway-service-uid";
+
+  assert.equal(driver.getGatewayEndpoint(revision), `wss://${gatewayRouting.hostname}${routePath}`);
+  const alternateEndpointDriver = createKubernetesComputeDriver(
+    routedOptions({ gatewayRouting: { ...gatewayRouting, endpointPort: 18443 } }),
+  );
+  const alternateEndpointRevision = routedRevision(alternateEndpointDriver);
+  assert.equal(
+    alternateEndpointDriver.getGatewayEndpoint(alternateEndpointRevision),
+    `wss://${gatewayRouting.hostname}:18443/namespaces/${tenant.id}/agents/${alternateEndpointRevision.agentId}`,
+  );
+  assert.deepEqual(
+    alternateEndpointDriver["gatewayRoute"](
+      alternateEndpointRevision,
+      ownership,
+      namespace,
+      service,
+    )?.spec?.hostnames,
+    [gatewayRouting.hostname],
+  );
+
+  const route = driver["gatewayRoute"](revision, ownership, namespace, service);
+  assert.ok(route);
+  assert.equal(route.apiVersion, "gateway.networking.k8s.io/v1");
+  assert.equal(route.kind, "HTTPRoute");
+  assert.equal(route.metadata.name, name);
+  assert.equal(route.metadata.namespace, namespace.name);
+  assert.equal(route.metadata.labels?.["openclaw.dev/agent"], revision.agentId);
+  assert.equal(
+    route.metadata.annotations?.["openclaw.dev/agent-revision"],
+    String(revision.revision),
+  );
+  assert.equal(route.metadata.annotations?.["openclaw.dev/agent-revision-id"], revision.id);
+  assert.deepEqual(route.metadata.ownerReferences, [
+    {
+      apiVersion: "v1",
+      kind: "Service",
+      name,
+      uid: "gateway-service-uid",
+      controller: false,
+      blockOwnerDeletion: false,
+    },
+  ]);
+  const spec = route.spec;
+  assert.ok(spec);
+  assert.deepEqual(spec.hostnames, [gatewayRouting.hostname]);
+  assert.deepEqual(spec.parentRefs, [
+    {
+      group: "gateway.networking.k8s.io",
+      kind: "Gateway",
+      namespace: gatewayRouting.gatewayNamespace,
+      name: gatewayRouting.gatewayName,
+      sectionName: "https",
+    },
+  ]);
+  const [exactRule, prefixRule] = resourceRecords(spec.rules, "operator route rules");
+  assert.ok(exactRule && prefixRule);
+  assert.deepEqual(exactRule.matches, [{ path: { type: "Exact", value: routePath } }]);
+  assert.deepEqual(prefixRule.matches, [{ path: { type: "PathPrefix", value: `${routePath}/` } }]);
+  const gatewayBackend = [{ group: "", kind: "Service", name, port: 8080 }];
+  assert.deepEqual(exactRule.backendRefs, gatewayBackend);
+  assert.deepEqual(prefixRule.backendRefs, gatewayBackend);
+  const operatorHeaderFilter = {
+    type: "RequestHeaderModifier",
+    requestHeaderModifier: {
+      set: [
+        { name: "x-occ-identity", value: "occ-workspace-files" },
+        // The machine identity's exact grant: required by the Gateway once humans are
+        // admitted, and never left to a client header (finding 2183).
+        { name: "x-openclaw-scopes", value: "operator.admin" },
+        { name: "x-real-ip", value: "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%" },
+      ],
+      remove: ["authorization", "cookie", "forwarded", "x-forwarded-for", "x-occ-browser-key"],
+    },
+  };
+  assert.deepEqual(exactRule.filters, [
+    {
+      type: "URLRewrite",
+      urlRewrite: { path: { type: "ReplaceFullPath", replaceFullPath: "/" } },
+    },
+    operatorHeaderFilter,
+  ]);
+  assert.deepEqual(prefixRule.filters, [
+    {
+      type: "URLRewrite",
+      urlRewrite: {
+        path: { type: "ReplacePrefixMatch", replacePrefixMatch: "/" },
+      },
+    },
+    operatorHeaderFilter,
+  ]);
+
+  // Node enrollment and worker admission authenticate inside OpenClaw, while
+  // worker bundles use their own one-time bearer token instead of the administrative API key.
+  const nodeRoute = driver["gatewayRoute"](revision, ownership, namespace, service, "node");
+  const nodeRules = resourceRecords(nodeRoute?.spec?.rules, "node route rules");
+  assert.equal(nodeRules.length, 5);
+  const [nodeRoot, workerRoute, hookRoute, bundleRoute, transferRoute] = nodeRules;
+  assert.ok(nodeRoot && workerRoute && hookRoute && bundleRoute && transferRoute);
+  assert.deepEqual(nodeRoot.matches, [{ path: { type: "Exact", value: `${routePath}/node` } }]);
+  const nodeFilters = resourceRecords(nodeRoot.filters, "node route filters");
+  const nodeHeaderFilter = nodeFilters.find((filter) => filter.type === "RequestHeaderModifier");
+  const nodeHeaders = resourceRecord(nodeHeaderFilter?.requestHeaderModifier, "node route headers");
+  const nodeSetHeaders = resourceRecords(nodeHeaders.set, "node route set headers");
+  assert.equal(
+    nodeSetHeaders.some(({ name }) => name === "x-occ-identity"),
+    false,
+  );
+  const isArray: (value: unknown) => value is readonly unknown[] = Array.isArray;
+  const nodeRemovedHeaders = nodeHeaders.remove;
+  assert.ok(isArray(nodeRemovedHeaders));
+  const sharedRemovedHeaders = ["cookie", "x-occ-identity", "x-api-key", "x-openclaw-scopes"];
+  for (const header of ["authorization", ...sharedRemovedHeaders, "tailscale-user-login"]) {
+    assert.ok(nodeRemovedHeaders.includes(header), `node route must strip ${header}`);
+  }
+  assert.deepEqual(workerRoute, {
+    matches: [
+      {
+        path: {
+          type: "Exact",
+          value: `${routePath}/node/__openclaw__/worker`,
+        },
+      },
+    ],
+    filters: [
+      {
+        type: "URLRewrite",
+        urlRewrite: {
+          path: { type: "ReplaceFullPath", replaceFullPath: "/__openclaw__/worker" },
+        },
+      },
+      nodeFilters[1],
+    ],
+    backendRefs: gatewayBackend,
+  });
+  assert.deepEqual(hookRoute.matches, [
+    {
+      method: "POST",
+      path: {
+        type: "PathPrefix",
+        value: `${routePath}/node/__openclaw__/native-hook/`,
+      },
+    },
+  ]);
+  const hookFilters = resourceRecords(hookRoute.filters, "hook route filters");
+  assert.deepEqual(hookFilters[0], {
+    type: "URLRewrite",
+    urlRewrite: {
+      path: { type: "ReplacePrefixMatch", replacePrefixMatch: "/__openclaw__/native-hook/" },
+    },
+  });
+  const hookHeaders = resourceRecord(hookFilters[1]?.requestHeaderModifier, "hook route headers");
+  const hookRemovedHeaders = hookHeaders.remove;
+  assert.ok(isArray(hookRemovedHeaders));
+  assert.equal(hookRemovedHeaders.includes("authorization"), false);
+  for (const header of [...sharedRemovedHeaders, "tailscale-user-login"]) {
+    assert.ok(hookRemovedHeaders.includes(header), `hook route must strip ${header}`);
+  }
+  for (const [rule, transferPath] of [
+    [bundleRoute, "worker-bundle/v1"],
+    [transferRoute, "worker-transfer/v1"],
+  ] as const) {
+    assert.deepEqual(rule.matches, [
+      {
+        path: {
+          type: "PathPrefix",
+          value: `${routePath}/node/__openclaw__/${transferPath}/`,
+        },
+      },
+    ]);
+    const filters = resourceRecords(rule.filters, "transfer route filters");
+    assert.deepEqual(filters[0], {
+      type: "URLRewrite",
+      urlRewrite: {
+        path: {
+          type: "ReplacePrefixMatch",
+          replacePrefixMatch: `/__openclaw__/${transferPath}/`,
+        },
+      },
+    });
+    const headers = resourceRecord(filters[1]?.requestHeaderModifier, "transfer route headers");
+    const removedHeaders = headers.remove;
+    assert.ok(isArray(removedHeaders));
+    assert.equal(removedHeaders.includes("authorization"), false);
+    for (const header of sharedRemovedHeaders) {
+      assert.ok(removedHeaders.includes(header), `transfer route must strip ${header}`);
+    }
+  }
+
+  const ingress = resourceRecords(
+    driver["networkPolicies"](ownership, namespace),
+    "Gateway network policies",
+  ).find(({ metadata }) => asRecord(metadata)?.name === "allow-gateway-ingress");
+  assert.deepEqual(asRecord(ingress?.spec)?.ingress, [
+    {
+      from: [
+        {
+          namespaceSelector: {
+            matchLabels: { "kubernetes.io/metadata.name": gatewayRouting.envoyNamespace },
+          },
+          podSelector: {
+            matchLabels: {
+              "gateway.envoyproxy.io/owning-gateway-namespace": gatewayRouting.gatewayNamespace,
+              "gateway.envoyproxy.io/owning-gateway-name": gatewayRouting.gatewayName,
+            },
+          },
+        },
+      ],
+      ports: [{ protocol: "TCP", port: 8080 }],
+    },
+  ]);
+
+  const omittedHostnameRouting = {
+    gatewayName: gatewayRouting.gatewayName,
+    gatewayNamespace: gatewayRouting.gatewayNamespace,
+    envoyNamespace: gatewayRouting.envoyNamespace,
+  };
+  const emptyHostnameRouting = { ...gatewayRouting, hostname: "" };
+  const alternateNamespaceRouting = {
+    ...omittedHostnameRouting,
+    gatewayNamespace: "openclaw-alt",
+  };
+  const derivedOutputs: { endpoint: string; hostnames: unknown }[] = [];
+  for (const routing of [omittedHostnameRouting, emptyHostnameRouting, alternateNamespaceRouting]) {
+    const derivedDriver = createKubernetesComputeDriver(routedOptions({ gatewayRouting: routing }));
+    const derivedRevision = routedRevision(derivedDriver);
+    const expectedHostname = `occ-gateway-${digest(`${routing.gatewayNamespace}/${routing.gatewayName}`)}.${routing.envoyNamespace}.svc`;
+    const endpoint = derivedDriver.getGatewayEndpoint(derivedRevision);
+    const hostnames = derivedDriver["gatewayRoute"](derivedRevision, ownership, namespace, service)
+      ?.spec?.hostnames;
+    assert.equal(
+      endpoint,
+      `wss://${expectedHostname}/namespaces/${tenant.id}/agents/${derivedRevision.agentId}`,
+    );
+    assert.deepEqual(hostnames, [expectedHostname]);
+    derivedOutputs.push({ endpoint, hostnames });
+  }
+  const [defaultOutput, , alternateOutput] = derivedOutputs;
+  assert.ok(defaultOutput && alternateOutput);
+  assert.notEqual(defaultOutput.endpoint, alternateOutput.endpoint);
+  assert.notDeepEqual(defaultOutput.hostnames, alternateOutput.hostnames);
+
+  checkGatewayConfigurationMounts(driver, revision);
+
+  const refusals: readonly [OpenClawConfigurationDocument, RegExp][] = [
+    [{ gateway: null }, /setting gateway must be an object/i],
+    [{ gateway: [] }, /setting gateway must be an object/i],
+    [{ gateway: { auth: null } }, /gateway\.auth must be an object/i],
+    [{ gateway: { auth: [] } }, /gateway\.auth must be an object/i],
+    [
+      {
+        gateway: {
+          auth: {
+            trustedProxy: null,
+          },
+        },
+      },
+      /trustedProxy/i,
+    ],
+    [
+      {
+        gateway: {
+          auth: {
+            identityScopes: null,
+          },
+        },
+      },
+      /identityScopes/i,
+    ],
+    [
+      {
+        gateway: {
+          auth: { mode: "oauth" },
+          allowRealIpFallback: true,
+          trustedProxies: ["10.42.0.0/16"],
+        },
+      },
+      /trusted-proxy/i,
+    ],
+    [
+      trustedProxyRefusalConfiguration({ unsupportedField: true }),
+      /gateway\.auth\.unsupportedField is not a supported/i,
+    ],
+    [trustedProxyRefusalConfiguration({ userHeader: "x-openclaw-operator" }), /userHeader/i],
+    [trustedProxyRefusalConfiguration({ allowUsers: ["another-user"] }), /allowUsers/i],
+    [trustedProxyRefusalConfiguration({ allowLoopback: true }), /allowLoopback/i],
+    [trustedProxyRefusalConfiguration({ allowLoopback: "false" }), /allowLoopback/i],
+    [trustedProxyRefusalConfiguration({ identityScopes: ["operator.read"] }), /identityScopes/i],
+    [trustedProxyRefusalConfiguration({ allowRealIpFallback: false }), /allowRealIpFallback/i],
+    [trustedProxyRefusalConfiguration({ trustedProxies: [] }), /trustedProxies/i],
+  ];
+  for (const [configuration, expected] of refusals) {
+    // Routed native access must come from the driver-rendered immutable native configuration.
+    await assert.rejects(
+      driver.prepareRevision({
+        ...revision,
+        configuration: { ...revision.configuration, ...configuration },
+      }),
+      expected,
+    );
+  }
+
+  await checkGatewayRefusalsBeforeClusterAccess(revision.configuration);
+
+  const multiProxyDriver = createKubernetesComputeDriver(
+    routedOptions({
+      network: { gatewayTrustedProxyCidrs: ["10.42.0.0/16", "10.43.0.0/16"] },
+    }),
+  );
+  const gateway = revision.configuration.gateway;
+  assert.ok(isConfigurationObject(gateway));
+  const multiProxyRevision = routedRevision(multiProxyDriver, {
+    configuration: {
+      ...revision.configuration,
+      gateway: {
+        ...gateway,
+        trustedProxies: ["10.43.0.0/16", "10.42.0.0/16"],
+      },
+    },
+  });
+  assert.doesNotThrow(() =>
+    multiProxyDriver["gatewayConfiguration"](multiProxyRevision, undefined, namespace),
+  );
+}
+
+function checkGatewayConfigurationMounts(
   plainDriver: KubernetesComputeDriver,
   plainRevision: AgentRevision,
 ) {
@@ -223,7 +864,7 @@ export function checkGatewayConfigurationMounts(
   }
 }
 
-export async function checkGatewayRefusalsBeforeClusterAccess(
+async function checkGatewayRefusalsBeforeClusterAccess(
   configuration: OpenClawConfigurationDocument,
 ) {
   const invalid: readonly [OpenClawConfigurationDocument, RegExp][] = [

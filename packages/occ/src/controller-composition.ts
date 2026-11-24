@@ -72,6 +72,7 @@ import type {
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
   CredentialProxyDriver,
+  CredentialSourceReference,
   DeploymentPolicy,
   Installation,
   InstallationDeploymentInventory,
@@ -109,6 +110,7 @@ import {
   ScopeViolationError,
 } from "./errors.ts";
 import { createAgentCredentialWithdrawal } from "./agent-credential-withdrawal.ts";
+import { createAgentCredentialRetry } from "./agent-credential-retry.ts";
 import { createAgentTermination } from "./agent-termination.ts";
 import { enabledChannelEntries, requireChannelSecretBindings } from "./channel-secret-bindings.ts";
 import {
@@ -166,14 +168,23 @@ export interface ControllerOptions {
     readonly gateway: CredentialGatewayDriver;
     readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
   };
+  /** Code-only binding for Source-scoped cleanup owned by the selected delivery Proxy. */
+  readonly credentialSourceDelivery?:
+    | ((
+        proxy: CredentialProxyDriver,
+        namespace: Readonly<Namespace>,
+        source: CredentialSourceReference,
+        signal: AbortSignal,
+      ) => Promise<void>)
+    | undefined;
   readonly preparedTokens?: TokenService | undefined;
   readonly modelCredentialPreset?: (input: {
     readonly presetId: string;
     readonly configuration: Readonly<Record<string, unknown>>;
     readonly harness: RevisionHarnessDescriptor;
   }) => ModelCredentialPreset | undefined;
-  /** Composition reviews the selected implementations for this first managed-model policy. */
-  readonly supportsModelCredentialDeployment?: (input: {
+  /** Composition qualifies the selected implementations against the complete deployment policy. */
+  readonly supportsCredentialDeployment?: (input: {
     readonly sandbox: SandboxDriver;
     readonly proxy: CredentialProxyDriver;
     readonly policy: DeploymentPolicy;
@@ -481,6 +492,7 @@ function createCredentialServices({
   drivers,
   publicController,
   preparedTokens,
+  credentialSourceDelivery,
   deviceCipher,
   canUseNativeAuthorization,
 }: {
@@ -500,6 +512,7 @@ function createCredentialServices({
     | "finishConnectionRevocation"
   >;
   preparedTokens: TokenService | undefined;
+  credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
   deviceCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   canUseNativeAuthorization: boolean;
 }) {
@@ -568,6 +581,22 @@ function createCredentialServices({
         sourceDrivers: credentialSourceDrivers,
         iamPolicy,
         selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
+        retireDelivery: async (namespace, source, signal) => {
+          if (!drivers.hasSelection("credential_proxy_delivery")) {
+            return;
+          }
+          if (!credentialSourceDelivery) {
+            throw new DependencyUnavailableError(
+              "The selected credential delivery Proxy cannot retire this Source.",
+            );
+          }
+          await credentialSourceDelivery(
+            publicController.selectedDriver("credential_proxy_delivery"),
+            namespace,
+            source,
+            signal,
+          );
+        },
         clock: resourceValues.now,
         timestamp: resourceValues.timestamp,
         tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
@@ -735,6 +764,7 @@ export function createControllerComposition(
     drivers,
     publicController,
     preparedTokens,
+    credentialSourceDelivery: options.credentialSourceDelivery,
     deviceCipher,
     canUseNativeAuthorization: !authorization,
   });
@@ -745,6 +775,13 @@ export function createControllerComposition(
     egressAdmission,
     managedCredentialSources,
   } = credentials;
+  const agentCredentialRetry = createAgentCredentialRetry({
+    transactions,
+    authority,
+    proxy: () => publicController.selectedDriver("credential_proxy_delivery"),
+    tokenService: (instanceId) => managedCredentialSources.ownedTokenServiceDriver(instanceId),
+    timeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+  });
   const readAgentAuditEvents = createAgentAuditReader({
     installationId: admittedInstallation.id,
     platformState,
@@ -841,6 +878,7 @@ export function createControllerComposition(
   const credentialProxyCapacity: CredentialProxyCapacity = capacity.capacity;
   const backendMap: ReadonlyMap<string, BackendDefinition> = backendDefinitionMap(backends);
   const repositoryPolicy = createRepositoryPolicyOperations({
+    installationId: admittedInstallation.id,
     configurationDriver: configurationOperations.selectedDriver,
     selectedProxyOwner: () => drivers.selectedProxyOwner(),
     credentialSourceOwner: credentialSourceDrivers.credentialSourceOwner,
@@ -994,6 +1032,7 @@ export function createControllerComposition(
       publicController.updateConfiguration(actorId, input),
     installationId: admittedInstallation.id,
     selectedCompute: () => drivers.selection("compute")?.driver as ComputeDriver | undefined,
+    ownedSecretDriver: secretOperations.ownedSecretDriver,
     refuseRepositoryNetworkOverlap: (actorId, policy) =>
       sandboxPolicyOperations.refuseRepositoryNetworkOverlap(actorId, policy),
     bindCreator: iamPolicy.bindCreator,
@@ -1067,12 +1106,13 @@ export function createControllerComposition(
     configuration: configurationOperations,
     modelPolicyAgent,
     modelCredentialPreset: options.modelCredentialPreset,
-    supportsModelCredentialDeployment: options.supportsModelCredentialDeployment,
+    supportsCredentialDeployment: options.supportsCredentialDeployment,
     sandboxNetworkPolicyCeiling,
     ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     credentialAccess: agentCredentialAccess,
     secretDriver: secretOperations.secretDriver,
+    ownedSecretDriver: secretOperations.ownedSecretDriver,
     validateComputeConfiguration,
     timestamp: resourceValues.timestamp,
     nextIdentifier: resourceValues.nextIdentifier,
@@ -1136,6 +1176,7 @@ export function createControllerComposition(
   }
   return {
     installation: admittedInstallation,
+    agentCredentialRetry,
     agentCredentialWithdrawal,
     agentDrafts,
     agentQueries,

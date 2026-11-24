@@ -33,8 +33,9 @@ removed after activation or Agent deletion. Pending inputs have no read/update
 API; correction requires deleting and recreating the Agent.
 
 The optional `workspaceDefaultsId` is a SHA-256 defaults identity. Console sends
-all four rendered `2026.9.9` defaults with this identity. A stale identity rejects
-creation with `409 RESOURCE_CONFLICT`; runtime mismatch blocks initial setup.
+the contents of all four files, including any edits, and the identity of the
+defaults it loaded. The controller rejects a stale identity with
+`409 RESOURCE_CONFLICT`. A runtime mismatch blocks initial setup.
 See the [workspace guide](../../guides/topics/workspace-files.md) and
 [setup flow](../../flows/workspace-files.md) for recovery and runtime requirements.
 
@@ -52,9 +53,12 @@ in an Agent's live workspace:
 | `GET`  | Read the file              | `read`           | `{ name, content }` |
 | `PUT`  | Create or replace the file | `operate`        | `{ name, size }`    |
 
-Authenticate with a session or scoped service API key. Session-authenticated
-writes must pass the [CSRF checks](../authentication.md). The Agent must have a
-selected version and a reachable gateway.
+Authenticate with a session or scoped service API key. Session `GET` and `PUT`
+reject `Sec-Fetch-Site` set to `cross-site`. Session `PUT` also follows the
+[CSRF checks](../authentication.md). It requires an `Origin` header that exactly
+matches the configured public origin and, when supplied, `Sec-Fetch-Site` set to
+`same-origin`. Scoped service API keys are exempt from these checks. The Agent
+must have a selected version and a reachable gateway.
 
 Embedded OpenClaw sole rosters follow the Gateway-announced default ID.
 Other rosters retain the explicit main target; dedicated deployment requires it.

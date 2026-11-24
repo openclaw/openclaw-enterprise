@@ -113,11 +113,13 @@ type PrepareOptions = HelmTarget &
     agentNativeAdminDomain: string;
     installationName: string;
     bootstrapCredentials?: "generate" | "existing";
+    useChartResourceDefaults?: boolean;
     apiClients: readonly PodPeer[];
     channelEgress?: ChannelEgressOptions | undefined;
     slackProxy?: { enabled: boolean } | undefined;
     databaseName?: string | undefined;
     databaseUpgradeMigration?: "hook" | "separate" | undefined;
+    createPostgresResource?: ((resource: PostgresResource) => Promise<unknown>) | undefined;
     databaseTLS?:
       | {
           caSecretName: string;
@@ -138,6 +140,49 @@ type PrepareOptions = HelmTarget &
   };
 
 type FixtureResource = V1Secret | V1PersistentVolumeClaim | V1Pod | V1Service;
+type PostgresResource = (V1PersistentVolumeClaim | V1Pod | V1Service) & {
+  kind: "PersistentVolumeClaim" | "Pod" | "Service";
+  metadata: { name: string; namespace: string; labels: Labels };
+};
+
+async function installPostgresChart({
+  selection,
+  namespace,
+  release,
+  directory,
+  run,
+  postgresResources,
+}: HelmTarget & {
+  directory: string;
+  run: FixtureRun;
+  postgresResources: readonly PostgresResource[];
+}) {
+  // PostgreSQL is a real Helm-installed fixture dependency. Credentials stay in
+  // the separately provisioned Secret, outside chart files and Helm values.
+  const postgresChart = join(directory, "postgres-chart");
+  await mkdir(join(postgresChart, "templates"), { recursive: true });
+  await writeFile(
+    join(postgresChart, "Chart.yaml"),
+    "apiVersion: v2\nname: proof-postgres\nversion: 0.1.0\n",
+    { mode: 0o600 },
+  );
+  await writeFile(
+    join(postgresChart, "templates", "resources.yaml"),
+    postgresResources.map((object) => JSON.stringify(object)).join("\n---\n"),
+    { mode: 0o600 },
+  );
+  await run("helm", [
+    "install",
+    `${release}-postgres`,
+    postgresChart,
+    "--kubeconfig",
+    selection.kubeconfigPath,
+    "--kube-context",
+    selection.kubernetesContext,
+    "--namespace",
+    namespace,
+  ]);
+}
 
 function firstRecord(value: unknown) {
   if (!Array.isArray(value)) {
@@ -190,6 +235,7 @@ async function preparePostgresAndValues({
   authBaseURL,
   agentNativeAdminDomain,
   installationName,
+  useChartResourceDefaults,
   apiClients,
   channelEgress,
   slackProxy,
@@ -200,6 +246,7 @@ async function preparePostgresAndValues({
   metrics,
   databaseName,
   databaseUpgradeMigration,
+  createPostgresResource,
   databaseTLS,
   run,
   kubernetes,
@@ -227,7 +274,7 @@ async function preparePostgresAndValues({
   });
   const createSecret = (name: string, stringData: Record<string, string>) =>
     apply({ apiVersion: "v1", kind: "Secret", metadata: metadata(name), stringData });
-  const postgresResources: FixtureResource[] = [];
+  const postgresResources: PostgresResource[] = [];
   const createClaim = (name: string) =>
     postgresResources.push({
       apiVersion: "v1",
@@ -389,31 +436,21 @@ async function preparePostgresAndValues({
     metadata: metadata("postgres"),
     spec: { selector: { app: "postgres" }, ports: [{ port: 5432 }] },
   });
-  // PostgreSQL is a real Helm-installed fixture dependency. Credentials stay in
-  // the separately provisioned Secret, outside chart files and Helm values.
-  const postgresChart = join(directory, "postgres-chart");
-  await mkdir(join(postgresChart, "templates"), { recursive: true });
-  await writeFile(
-    join(postgresChart, "Chart.yaml"),
-    "apiVersion: v2\nname: proof-postgres\nversion: 0.1.0\n",
-    { mode: 0o600 },
-  );
-  await writeFile(
-    join(postgresChart, "templates", "resources.yaml"),
-    postgresResources.map((object) => JSON.stringify(object)).join("\n---\n"),
-    { mode: 0o600 },
-  );
-  await run("helm", [
-    "install",
-    `${release}-postgres`,
-    postgresChart,
-    "--kubeconfig",
-    selection.kubeconfigPath,
-    "--kube-context",
-    selection.kubernetesContext,
-    "--namespace",
-    system,
-  ]);
+  if (createPostgresResource) {
+    // The rehearsal records each UID at creation and uses it to guard later database operations.
+    for (const resource of postgresResources) {
+      await createPostgresResource(resource);
+    }
+  } else {
+    await installPostgresChart({
+      selection,
+      namespace: system,
+      release,
+      directory,
+      run,
+      postgresResources,
+    });
+  }
   await waitPod("postgres");
   const postgres = asRecord(await get("pod", "postgres"));
   const postgresIP = asRecord(postgres?.status)?.podIP;
@@ -474,7 +511,7 @@ async function preparePostgresAndValues({
     api: {
       clients: apiClients,
     },
-    resources,
+    ...(useChartResourceDefaults ? {} : { resources }),
     // Callers without prepared routing exercise the supported direct-access installation.
     gatewayRouting: gatewayRouting === undefined ? { enabled: false } : gatewayRouting,
     repositoryCredentials,

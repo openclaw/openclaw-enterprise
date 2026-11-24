@@ -82,12 +82,27 @@ jobs:
           const labels = new Set((event.pull_request?.labels ?? []).map(({ name }) => name.toLowerCase()));
           const full = process.env.GITHUB_EVENT_NAME !== 'pull_request' || labels.has('full-qa');
           const focused = !full;
-          const select = (lane, requested) => {
+          const select = (lane, requested, prioritizeLargest = false) => {
             const files = JSON.parse(readFileSync(`scripts/ci/test-suites/${lane}.json`, 'utf8')).files;
             const paths = requested ?? files.map(({ path }) => path);
             assert(requested !== undefined || paths.length > 0, 'A full selection requires a nonempty manifest.');
             assert(paths.every((path) => files.filter((file) => file.path === path).length === 1), 'Each selected file must occur once in its manifest.');
             assert.equal(new Set(paths).size, paths.length, 'Selected files must be unique.');
+            if (prioritizeLargest && requested === undefined) {
+              // Give the first shard with the most declared cases an early slot without shifting other shards.
+              let largest = 0;
+              let largestCount = 0;
+              for (const [index, { expectedTests }] of files.entries()) {
+                const count = Array.isArray(expectedTests) ? expectedTests.length : 0;
+                if (count > largestCount) {
+                  largest = index;
+                  largestCount = count;
+                }
+              }
+              if (largest > 0) {
+                [paths[0], paths[largest]] = [paths[largest], paths[0]];
+              }
+            }
             return paths.map((file) => ({ file, shard: basename(file).replace(/\.test\.(mjs|ts)$/, '') }));
           };
           let openshellFiles = [];
@@ -114,7 +129,7 @@ jobs:
             }
           }
           const groups = {
-            openshell: select('openshell', openshellFiles),
+            openshell: select('openshell', openshellFiles, process.env.GITHUB_EVENT_NAME === 'schedule'),
             installation: select('dev-up-k3d', installationFiles),
             qa,
           };

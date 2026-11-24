@@ -94,6 +94,7 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.ts";
 import {
+  AGENT_CREATE_ACCESS_CHECK,
   AGENT_SAVE_DENIED,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
@@ -102,7 +103,6 @@ import {
 } from "../helpers/refusal-text.mjs";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
-  AGENT_CREATE_DENIED,
   createDenied,
   AGENT_CREATE_PERMISSIONS_UNREAD,
   REPOSITORY_CHOICES_CREATE_DENIED,
@@ -2225,7 +2225,8 @@ test("Agent creation explains a denied capability check instead of offering a re
   // A known denial replaces the form with the refusal a fresh load shows (finding 2908).
   permissions = { agents: { create: false } };
   await page.getByRole("button", { name: "Retry permission check" }).click();
-  await expectCreateRefused(page, AGENT_CREATE_DENIED);
+  // This permission fixture omits Installation administration, so the guidance is neutral.
+  await expectCreateRefused(page, AGENT_CREATE_ACCESS_CHECK);
 
   // A transient failure still offers the retry.
   status = 503;

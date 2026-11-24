@@ -167,6 +167,7 @@ export function createTopologyPresetTemplate(
   mode: "embedded" | "dedicated",
   modelSecret: SecretReference,
   secretBindings: SecretBindings,
+  modelAuthenticationMethod: "api_key" | "codex_pat" = "api_key",
 ) {
   const templateValues = structuredClone(launchValues);
   const modelReference = templateValues.agents.defaults.model;
@@ -185,7 +186,7 @@ export function createTopologyPresetTemplate(
       name: "{{ vars.name }}",
       executionMode: mode,
       harnessAuth: {
-        method: "api_key",
+        method: modelAuthenticationMethod,
         source: { ...modelSecret, id: "{{ vars.secretId }}" },
       },
     },

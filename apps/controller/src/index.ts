@@ -64,6 +64,7 @@ import {
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
+  CredentialDeliveryFailedError,
   DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   PostgresCommitOutcomeUnknownError,
@@ -112,6 +113,7 @@ import type { ControllerWorkspaceFilesAccess } from "./gateway/contracts.ts";
 import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
+import { createDeviceAuthorizationHandlers } from "./http/device-authorization.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
@@ -1225,6 +1227,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       rejectDeployment: (request, context) =>
         rejectedMutation(context.operation, request, context, "NAMESPACE_NOT_READY"),
     }),
+    ...createDeviceAuthorizationHandlers({
+      auditSink: options.auditSink,
+      // Start phases belong in the factory input, before audit details are sanitized and frozen.
+      startEvent: ({ context, request }, resource, details) =>
+        event(context.operation, request, resource, "mutation", context, undefined, {
+          outcome: "success",
+          details,
+        }),
+    }),
     ...createWorkspaceFileHandlers({
       access: options.workspaceFilesAccess,
       timeoutMs: workspaceFileRequestTimeoutMs,
@@ -1622,19 +1633,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       validateConfiguration(body);
     }
 
-    // TODO(RFC-0034): Remove this admission guard with the named provider implementation.
-    // Older handlers would otherwise ignore a requested provider or credential destination.
-    if (
-      body?.mode === "static_bearer" &&
-      (operation.operationId === "createConnectionTemplate" ||
-        operation.operationId === "updateConnectionTemplate")
-    ) {
-      throw failure(
-        501,
-        "NOT_IMPLEMENTED",
-        "Static Connection Templates are unavailable on this controller.",
-      );
-    }
+    // TODO(RFC-0034): Remove this guard when the ModelProvider implementation is available.
     if (
       (body &&
         "modelProviderId" in body &&
@@ -1917,71 +1916,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         return deleting;
       });
       reply.status(202).send({ data: namespace, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (
-      operation.operationId === "startAgentDeviceAuthorization" ||
-      operation.operationId === "startSavedAgentDeviceAuthorization" ||
-      operation.operationId === "pollAgentDeviceAuthorization" ||
-      operation.operationId === "pollSavedAgentDeviceAuthorization" ||
-      operation.operationId === "cancelAgentDeviceAuthorization" ||
-      operation.operationId === "cancelSavedAgentDeviceAuthorization"
-    ) {
-      const agentId = params.agentId;
-      let result;
-      if (operation.operationId.startsWith("start")) {
-        result = await controller.startAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          body?.harnessId as string,
-          agentId,
-          (source, phase) =>
-            event(
-              operation,
-              request,
-              phase === "session_pending"
-                ? { kind: "agent", id: agentId ?? namespaceId, namespaceId }
-                : source.ref,
-              "mutation",
-              context,
-              undefined,
-              { outcome: "success", details: { phase, sourceId: source.id } },
-            ),
-        );
-      } else if (operation.operationId.startsWith("poll")) {
-        result = await controller.pollAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          params.sessionId as string,
-          agentId,
-        );
-      } else {
-        await controller.cancelAgentDeviceAuthorization(
-          context.actorId,
-          namespaceId,
-          params.sessionId as string,
-          agentId,
-        );
-      }
-      // Clients poll on the provider interval; audit the transition, not every pending poll.
-      if (!operation.operationId.startsWith("start") && result?.status !== "pending") {
-        await options.auditSink.append(
-          event(
-            operation,
-            request,
-            { kind: "agent", id: agentId ?? namespaceId, namespaceId },
-            "mutation",
-            context,
-          ),
-        );
-      }
-      reply.header("cache-control", "no-store");
-      if (result === undefined) {
-        reply.status(204).send();
-      } else {
-        reply.send({ data: result, meta: { requestId: request.id } });
-      }
       return;
     }
 
@@ -3711,10 +3645,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.setErrorHandler(async (error, request, reply) => {
     // A caller's own denial names a resource ID only when this request carried it or the caller
     // may already read that resource.
-    const actorId = contexts.get(request)?.actorId;
+    const requestContext = contexts.get(request);
+    const actorId = requestContext?.actorId;
+    const credentialRetry = requestContext?.operation.operationId === "pushAgentCredentials";
+    const sent = requestedValues(request);
+    const sources = credentialRetry
+      ? (request.body as { readonly sources?: unknown } | undefined)?.sources
+      : undefined;
+    // This operation's explicit Source selection is a reference list. "all" does not name IDs.
+    const requested = Array.isArray(sources)
+      ? (value: string) => sent(value) || sources.includes(value)
+      : sent;
     let mapped = requestFailure(error, {
-      requested: await nameableIds(error, actorId, requestedValues(request), routeOwners(request)),
+      requested: await nameableIds(error, actorId, requested, routeOwners(request)),
       ...(actorId === undefined ? {} : { actorId }),
+      ...(credentialRetry ? { agentPrincipalRecovery: "retry_credential_delivery" as const } : {}),
       ...((await administratorRestricted(error, actorId)) ? { administratorRestricted: true } : {}),
     });
     if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
@@ -3765,7 +3710,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               undefined,
               undefined,
               {
-                decisionReason: error.message,
+                decisionReason: credentialRetry
+                  ? "Grant the Agent service principal credential_source:operate on the Source, then retry credential delivery."
+                  : error.message,
                 reasonCode: "AGENT_PRINCIPAL_NOT_AUTHORIZED",
                 details: {
                   servicePrincipalId: error.principalId,
@@ -3841,7 +3788,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         failure: error.failure,
       });
     }
-    if (
+    if (error instanceof CredentialDeliveryFailedError) {
+      const params = request.params as { namespaceId?: string; credentialSourceId?: string };
+      app.log.warn({
+        event: "credential.delivery_failed",
+        requestId: request.id,
+        namespaceId: params.namespaceId,
+        credentialSourceId: params.credentialSourceId,
+        code: "CREDENTIAL_DELIVERY_FAILED",
+      });
+    } else if (
       mapped.status === 503 &&
       mapped.code === "DEPENDENCY_UNAVAILABLE" &&
       error instanceof Error &&
