@@ -1714,7 +1714,7 @@ async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
   fromRefresh = false,
-  confirmAgentPermissions = reuseView && !fromNavigation,
+  confirmAgentPermissions: confirmOnLoad = reuseView && !fromNavigation,
   // Set only by Back and Forward (popstate).
   restoreHistory = null,
   openingAgent = false,
@@ -1739,6 +1739,17 @@ async function loadPage({
   const resumingView = reuseView && !fromNavigation;
   const linkedSecretId = takeLinkedSecret(fromNavigation);
   const current = route();
+  // A Retry must keep confirming draft Channels access even if Refresh fails before reading the
+  // Agent. Resolve an implicit revision from the mounted route until the fresh Agent is read.
+  const confirmForAgent = (agent: AgentRead | null | undefined) =>
+    confirmOnLoad ||
+    (fromRefresh &&
+      Boolean(current.agentId) &&
+      current.url.searchParams.get("tab") === "channels" &&
+      (current.url.searchParams.get("revision") ?? agent?.activeRevisionId ?? "draft") === "draft");
+  let confirmAgentPermissions = confirmForAgent(
+    mountedRouteKey === routeKey(current) ? mountedAgent : null,
+  );
   const privatePage = hasKey(pages, current.feature) ? current.feature : null;
   const nativeIntent = takeNativeFragment(current);
   if (fromNavigation && nativeIntent === null) {
@@ -2230,7 +2241,6 @@ async function loadPage({
         ? `${namespacePath}/agents/${encodeURIComponent(current.agentId)}`
         : null;
     const agentPermissionsPath = agentPath === null ? null : `${agentPath}/permissions`;
-    const confirmDetailPermissions = confirmAgentPermissions && agentPermissionsPath !== null;
     const itemsPath = collectionPath(current.feature, namespacePath);
     const permissionsRead =
       !scopedNamespaceUnavailable &&
@@ -2247,6 +2257,7 @@ async function loadPage({
     if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (agentPath !== null) {
         firstAgent = (await request(agentPath)) as AgentRead;
+        confirmAgentPermissions = confirmForAgent(firstAgent);
       } else if (itemsPath !== null) {
         if (current.feature === "backends") {
           // Backends need Installation administration, like the probe. A caller this load knows
@@ -2282,6 +2293,7 @@ async function loadPage({
         replaceUrl(pageUrl(current.target, selectedNamespace));
       }
     }
+    const confirmDetailPermissions = agentPermissionsPath !== null && confirmAgentPermissions;
     if (permissionsRead) {
       firstPermissions = await permissionsRead;
       if (!lifetime.isCurrent(active)) {
@@ -3382,6 +3394,15 @@ async function revalidateMountedAgent(current: Route) {
   const recoveryFocus = focused?.matches('#configuration-editor-feedback[role="status"]')
     ? watchFocus()
     : undefined;
+  // An opted-in panel can outlive its focused action. Capture its tab before inert.
+  const focusPanel = focused?.closest('[role="tabpanel"][data-restore-panel-focus]');
+  const focusPanelLabel = focusPanel?.getAttribute("aria-labelledby");
+  const panelFocus = focusPanelLabel ? watchFocus() : undefined;
+  if (panelFocus) {
+    window.addEventListener("blur", () => panelFocus.abort(), {
+      signal: AbortSignal.any([panelFocus.signal, lifetime.signal]),
+    });
+  }
   let editorFocus = deferredFocus;
   if (
     focused instanceof HTMLTextAreaElement &&
@@ -3408,6 +3429,18 @@ async function revalidateMountedAgent(current: Route) {
     if (!focused || !document.hasFocus() || document.activeElement !== document.body) {
       return;
     }
+    const restorePanel = !afterRetry && panelFocus;
+    if (
+      restorePanel &&
+      (restorePanel.signal.aborted ||
+        document.hidden ||
+        document.getSelection()?.isCollapsed === false ||
+        mountedViewState !== state ||
+        !isCurrent() ||
+        focusPanel?.getAttribute("aria-labelledby") !== focusPanelLabel)
+    ) {
+      return;
+    }
     const target = focused.isConnected
       ? focused
       : afterRetry && mountedRouteKey === key && focused.id
@@ -3416,11 +3449,14 @@ async function revalidateMountedAgent(current: Route) {
     if (!target?.closest(".content") || !target.checkVisibility()) {
       // A permission recheck can hide the focused control while this Agent view is inert.
       // If its panel is still visible, return to the tab that labels it.
-      const panel = target?.closest('[role="tabpanel"]');
+      const panel = target?.closest('[role="tabpanel"]') ?? (restorePanel ? focusPanel : null);
       if (panel && view.contains(panel) && panel.checkVisibility()) {
         const tab = document.getElementById(panel.getAttribute("aria-labelledby") ?? "");
-        if (tab?.checkVisibility()) {
-          tab.focus();
+        if (
+          tab?.checkVisibility() &&
+          (!restorePanel || tab.getAttribute("aria-selected") === "true")
+        ) {
+          tab.focus(restorePanel ? { preventScroll: true } : undefined);
           return;
         }
       }
@@ -3826,6 +3862,7 @@ async function revalidateMountedAgent(current: Route) {
       editorFocus?.cancel.abort();
     }
     recoveryFocus?.abort();
+    panelFocus?.abort();
   }
 }
 

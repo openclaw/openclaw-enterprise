@@ -3854,6 +3854,29 @@ export function createAgentDetailScenarios({
     } satisfies Record<string, AgentDetailScenario>,
 
     layout: {
+      channelsAccessUnconfirmedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Channels access could not be checked on tab return",
+        path: `${draft}&tab=channels`,
+        slack: true,
+        rules: [
+          {
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
+            method: "GET",
+            skip: 1,
+            once: true,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "Channels opens with editing available. When you return to the browser tab, the Agent's permission check fails once.",
+        steps: [
+          "Open the preview in its own tab. Use the keyboard to open Edit Slack, then Cancel. Check that focus returns to Edit Slack.",
+          "Switch to another browser tab and return. Channels stays selected and receives focus. Read the access-check message and Refresh guidance. Edit Slack and Deploy new version are unavailable.",
+          "Choose Refresh in the page header. Channels stays selected, the access-check message clears, and Edit Slack is available again.",
+        ],
+      },
       agentDetailLayout: {
         group: "Pages/Agent detail",
         name: "Agent detail layout",
