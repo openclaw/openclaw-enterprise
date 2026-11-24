@@ -77,8 +77,16 @@ or host probe contradicts that diagnosis.
 On each distinct eligible node configuration, create a disposable probe Pod
 using your approved runtime digest, `RuntimeDefault`, UID/GID 1000, dropped
 capabilities, `allowPrivilegeEscalation: false`, and a read-only root filesystem.
-Set size limits for its writable workspace, home, and temporary volumes. Do not
-include Agent credentials or persistent data. Keep the default kubeconfig unchanged.
+Use this setup for both the baseline Pod and the profile check below.
+
+- Set `spec.automountServiceAccountToken: false` and `spec.securityContext.fsGroup: 1000`.
+- Mount separate size-limited `emptyDir` volumes at `/workspace`, `/home/node`, and
+  `/tmp`. Set `CODEX_HOME=/home/node/.codex`.
+- Name the container `probe`. Set its `command` to
+  `["node", "-e", "setInterval(()=>{},1000)"]` to keep it running.
+
+Do not include credentials or persistent data. Keep the default kubeconfig
+unchanged. Wait until the container is Ready before you inspect it.
 
 Through your authorized host-management channel, capture only the running
 probe container's effective seccomp policy. On a containerd node with `crictl`
@@ -151,11 +159,10 @@ eligibility.
 ## Verify the sandbox boundary
 
 Create a second [restricted disposable Pod](#capture-and-generate-the-profile)
-on the node. Disable ServiceAccount token mounting. Keep the Pod on
-`RuntimeDefault`. Name the container `probe` and
-select the installed `Localhost` profile for that container. Verify its running
-image digest and effective OCI policy. Set `CODEX_HOME=/home/node/.codex` and
-use empty, writable volumes at `/home/node`, `/workspace`, and `/tmp`.
+on the same node with the same container command and volume settings.
+Keep the Pod on `RuntimeDefault`. Select the installed `Localhost` profile
+for the `probe` container. Wait until it is Ready. Verify its running image
+digest and effective OCI policy before you run the probe.
 **Never use an Agent Pod or persistent data.** The probe deletes and rewrites
 fixed marker files in the home directory and workspace.
 
