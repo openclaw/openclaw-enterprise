@@ -212,14 +212,6 @@ export function registerDatabaseCaCases({
           "openshell-system",
         "egressAuthority.clients[0].podSelector.matchLabels.app": "openshell-gateway",
       };
-      const custodyValues = {
-        ...authorityValues,
-        "preparedGitHub.custodySecretName": "prepared-github-custody",
-      };
-      const issuerCaValues = {
-        ...custodyValues,
-        "preparedGitHub.issuerCaConfigMapName": "prepared-github-issuer-ca",
-      };
       const optionalFeatures = {
         ...repositoryCredentialValues,
         ...gatewayRoutingValues,
@@ -229,7 +221,7 @@ export function registerDatabaseCaCases({
       for (const features of [
         {},
         optionalFeatures,
-        { ...issuerCaValues, "backend.openshell.clientSecretName": "dedicated-openshell-admin" },
+        { ...authorityValues, "backend.openshell.clientSecretName": "dedicated-openshell-admin" },
       ]) {
         const objects = await resources((await render(features)).stdout);
         // Derive the existing mounts from shipped workloads, independently of the validation list.
@@ -283,8 +275,6 @@ export function registerDatabaseCaCases({
         "/etc/openclaw/openshell",
         "/etc/openclaw/egress/tls",
         "/etc/openclaw/egress/issuer",
-        "/etc/openclaw/prepared-github",
-        "/etc/openclaw/prepared-github-issuer",
         "/etc/openclaw/execution",
         "/etc/openclaw/repository-registry",
         "/etc/openclaw/repository-ca",
@@ -301,12 +291,6 @@ export function registerDatabaseCaCases({
       ]) {
         await render({ ...databaseCaValues, "database.caMountPath": mountPath });
       }
-      // Custody does not reserve an issuer CA directory unless the issuer CA is mounted.
-      await render({
-        ...custodyValues,
-        ...databaseCaValues,
-        "database.caMountPath": "/etc/openclaw/prepared-github-issuer",
-      });
       const ordinary = (await render()).stdout;
       await render({
         ...externalGatewayRoutingValues,

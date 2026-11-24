@@ -163,7 +163,6 @@
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.ts",
-    "tests/integration/egress-prepared-github-metadata.test.mjs",
     "tests/integration/protected-source-refusals.test.ts",
     "tests/integration/refusal-answers.test.ts",
     "tests/integration/namespace-deletion-console-api.test.ts",
@@ -1061,9 +1060,6 @@
     },
     {
       "path": "tests/integration/egress-installation-exchange.test.ts"
-    },
-    {
-      "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
     },
     {
       "path": "tests/integration/protected-source-refusals.test.ts"

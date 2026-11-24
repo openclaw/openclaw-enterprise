@@ -4,7 +4,12 @@ import type { TestContext } from "node:test";
 import pg from "pg";
 import { Check } from "typebox/value";
 
-import type { Agent, EgressInstallation, Namespace } from "../../packages/contracts/src/index.ts";
+import type {
+  Agent,
+  EgressInstallation,
+  Namespace,
+  SecretReference,
+} from "../../packages/contracts/src/index.ts";
 import { AgentSchema } from "../../packages/contracts/src/api/resources.ts";
 import type { InstalledDriver, OpenClawController } from "../../packages/occ/src/index.ts";
 import type { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
@@ -28,12 +33,12 @@ type SourceAdmissionInput = {
   agent: Pick<Agent, "id" | "configurationId">;
   namespace: Pick<Namespace, "id">;
   path: string;
+  secret: { ref: SecretReference };
   origin: string;
   countSecretReads(): number;
 };
 type LostDispatchOptions = {
   proxyDriverId?: string;
-  preparedGitHub?: object;
   admitSource?: (
     input: SourceAdmissionInput,
   ) => Promise<{ agent: { id: string }; source: { id: string } }>;

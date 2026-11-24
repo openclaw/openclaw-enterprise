@@ -671,7 +671,6 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     },
     proxy: {
       id: "openshell-sandbox",
-      preparedProviders: [],
       configuration: {
         middlewareName: "oce-prepared-git",
         repositoryMiddlewareName: "oce-prepared-git",

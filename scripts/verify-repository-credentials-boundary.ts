@@ -184,23 +184,6 @@ const reviewedImports: ReviewedModules = {
     "node:crypto": ["randomUUID"],
     "node:util": ["isDeepStrictEqual"],
   },
-  // The prepared owner reads only the Installation custody mount. The App issuer comes
-  // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
-  "drivers/repo/github/access/prepared-lifecycle.ts": {
-    // Wait for an existing issuance claim within this request’s deadline.
-    "node:timers/promises": ["setTimeout"],
-    "node:crypto": ["createHash", "createPrivateKey", "randomUUID"],
-    "node:fs/promises": ["readFile"],
-    "node:util": ["isDeepStrictEqual"],
-    "@openclaw-enterprise/contracts": [
-      "githubMetadataGrant",
-      "preparedGitHubProviderRef",
-      "preparedGitHubSourceFromRoute",
-    ],
-    // Bind the admitted source and its exact current version on the send transaction; the error
-    // class only reports an unsettled withdrawal and carries no material or I/O authority.
-    "@openclaw-enterprise/occ": ["CredentialTokenUnsettledError", "postgresPreparedGitHubProof"],
-  },
   // AES-GCM binds encrypted material to family and attempt; readiness selects no sealed bytes.
   "drivers/repo/github/access/prepared-postgres.ts": {
     // Reuse the platform transaction's metadata predicates; no new material or I/O authority.

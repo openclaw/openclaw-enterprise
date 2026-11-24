@@ -179,73 +179,26 @@ the record `deleting` for retry.
 
 ### 6. Issue and renew a GitHub installation token
 
-`apps/controller/src/drivers/repo/github/access/prepared-owner.ts:createGitHubPreparationOwner`
+The selected OCC TokenService uses the registered GitHub App Client key to sign
+an App JWT. It requests an installation token for the Source's exact repository
+and permission scope, then verifies the returned scope and expiry. The Source
+keeps the short-lived token in private TokenService custody. The App key stays
+with the Client.
 
-The Token Service records `issuing`, signs a five-minute App JWT and rechecks ownership before issuance.
+The API runs Git maintenance every five seconds and considers renewal 45 seconds
+before expiry. After committing a replacement, TokenService pushes its version
+through the selected Credential Proxy. A failed delivery retries that committed
+version. Agent Repository grants retain their own approval, expiry and withdrawal.
 
-Issuer diagnostics record the first failure stage. `requestEndCalled` indicates a possible send.
-
-```mermaid
-graph TD
-  W["<b>Token Service</b><br/>Reads registered App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
-  G -->|Installation token| W
-  W -->|Verify and commit| P[("<b>PostgreSQL</b><br/>Encrypted token")]
-  P -->|Eligible token| R["<b>OCC and resolver</b>"]
-  R -->|Credential header| S["<b>Metadata sender</b><br/>Needs a send permit"]
-  classDef owner fill:#e7f1ec,stroke:#789884,color:#263e33
-  classDef issuer fill:#f0eaf6,stroke:#9584ab,color:#392c42
-  classDef stored fill:#e8eff6,stroke:#8498a9,color:#283746
-  class W,R,S owner
-  class G issuer
-  class P stored
-  linkStyle default stroke:#89919a
-```
-
-OCC registers `github_app_installation` with the scoped grant and signing-key reference. PostgreSQL encrypts tokens with a persistent 32-byte key. Authorized metadata requests reuse valid tokens or join issuance until their deadline. Native Git uses its [private broker](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
-
-`provider-transport/request-options.ts:prepareProviderScope` freezes scope. The issuer captures before validation, retaining expiry bounds locally. Transport clears synchronously borrowed bytes; publication requires successful close and current signing authority/admission. `github-installation` inherits scope with `{}`. OCC [rechecks the grant and version](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send) before sending.
-
-| Limit                                | Effect                                                                                                                                                                                                              |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Repository approval (Git)            | Removal or expiry stops new authorizations. [Standing approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent) permits another finite session for the same running Agent and scope. |
-| Execution's repository session (Git) | The session ends at its deadline even if the token is fresh.                                                                                                                                                        |
-| Local cutoff (`usableUntil`)         | Readers stop selecting the token 60 seconds before GitHub expiry. A request may require more remaining time.                                                                                                        |
-| GitHub expiry (`expires_at`)         | GitHub sets a one-hour [installation token lifetime](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).               |
-
-Metadata reads share both token limits. Withdrawing the credential-source
-binding stops new authorizations. A previously authorized send can finish.
-
-**Key rotation and withdrawal.** When the signing key changes version, the worker
-advances the owner epoch and retires old material before publishing its replacement.
-Deleting the Agent blocks use and renewal immediately. On its next pass, the
-worker disables the Agent-bound metadata family and retires the token. GitHub
-revocation can outlast Agent deletion. Source deletion waits up to 25 seconds
-for revocation, returning `409` if custody remains unsettled.
-
-**Uncertain outcomes.** Lost receipts block replay; readback can recover eligible committed material. [The parser](repository-credentials.md#4-reserve-acquire-and-dispatch)
-retains unique cleanup tokens despite ambiguous scope; duplicate root tokens leave none. Capture and definite refusals survive transport errors.
-Retirement claims precede `DELETE /installation/token`. Complete 204 and successful close confirm revocation, separately from durable
-settlement. Expiry plus skew can settle uncertainty without confirming revocation. See [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
-
-`apps/controller/src/backends/token-service/retirement.ts:retireToken` clears
-detached bytes before settling the original receipt; combined errors name stages.
-
-`apps/controller/src/drivers/repo/github/access/prepared-postgres.ts:store`
-clears publication buffers on success/failure. Callers own detached reads; clearing cannot revoke tokens.
+See the [Repository credential flow](repository-credentials.md) for normal native
+delivery and the separately qualified protected Git transport.
 
 ## Debugging and Verification
 
-- `node --test tests/integration/repository-credentials-github-prepared.test.ts`
-  exercises producer → transaction commit → warm consumer over loopback HTTPS,
-  with a generated App key and actual JWT signature verification. It covers
-  renewal overlap, duplicate attempts, latest-admission fences, rejected provider
-  scope/expiry, cancellation, and transaction failures before/after commit.
-  Its serializable in-memory fixture reconnects owners to shared committed state;
-  it is not production durability, process-crash, live-provider, installed-runtime,
-  cluster or regular Agent workflow proof.
-  `postgres-prepared-github-lifecycle.test.ts` exercises the durable lifecycle,
-  signed protected exchange, issuer rotation, withdrawal, Agent deletion and quarantine over loopback.
-
+- `tests/integration/postgres-staged-github-source-admission.test.ts` exercises
+  Agent enrollment, the selected TokenService and scoped GitHub issuance against
+  a controlled HTTPS issuer. The production API schedule and manual delivery
+  share the committed version through Provider acknowledgement.
 - Read the source: `status.refresh.state`, `lastRefreshAt`, `failureCode`, and
   `recoveryAction` explain the last mint without exposing a token.
 - `oauth_token_endpoint_unavailable` means the OpenShell gateway Pod could not

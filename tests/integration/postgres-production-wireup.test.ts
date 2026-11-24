@@ -26,7 +26,6 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
-import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.ts";
@@ -51,7 +50,6 @@ import {
   PostgresPlatformState,
   InstalledDriver,
   OpenClawController,
-  type PostgresPool,
 } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { productionBootstrapEnvironment } from "../helpers/bootstrap-installation.mjs";
@@ -572,8 +570,6 @@ test(
 
       // Exercise both API builders against PostgreSQL while failures at owned Driver seams
       // verify that shutdown and failed startup still release later owners.
-      const custodyKeyPath = join(passwordDirectory, "cleanup-custody-key");
-      await writeFile(custodyKeyPath, randomBytes(32), { mode: 0o600 });
       for (const [mode, failure] of [
         ["production", "shutdown"],
         ["development", "shutdown"],
@@ -616,32 +612,12 @@ test(
             { id: "cleanup-fixture", implementation: "cleanup-fixture", configuration: {} },
             registration,
           );
-          const cleanup: { endPool?: () => Promise<void> } = {};
-          let poolClosed = false;
-          class ObservedGitHubLifecycle extends PostgresPreparedGitHubLifecycle {
-            override async connect(pool: PostgresPool) {
-              await super.connect(pool);
-              const endPool = pool.end.bind(pool);
-              cleanup.endPool = endPool;
-              pool.end = async () => {
-                events.push("pool");
-                await endPool();
-                poolClosed = true;
-              };
-            }
-
-            override async close() {
-              events.push("prepared");
-              await super.close();
-            }
-          }
-          const preparedGitHub = new ObservedGitHubLifecycle(custodyKeyPath, {
-            ...runtimeBase.secretDriver,
-            async readCredentialInput() {
-              throw new Error("The cleanup scenario does not issue GitHub tokens.");
-            },
+          const closePool: (this: Pool) => Promise<void> = Pool.prototype.end;
+          const observePool = t.mock.method(Pool.prototype, "end", function (this: Pool) {
+            events.push("pool");
+            return closePool.call(this);
           });
-          const runtime = { ...runtimeBase, protectedDriver, preparedGitHub };
+          const runtime = { ...runtimeBase, protectedDriver };
           const config = {
             host: "127.0.0.1",
             databaseUrl,
@@ -680,15 +656,12 @@ test(
             assert.deepEqual(
               events,
               failure === "bind"
-                ? ["bind", "driver", "prepared", "pool"]
-                : ["bind", "exchange", "driver", "prepared", "pool"],
+                ? ["bind", "driver", "pool"]
+                : ["bind", "exchange", "driver", "pool"],
             );
-            assert.equal(poolClosed, true);
+            assert.equal(observePool.mock.callCount(), 1);
           } finally {
-            // Release only this case's pool if a regression strands it.
-            if (cleanup.endPool && !poolClosed) {
-              await cleanup.endPool();
-            }
+            observePool.mock.restore();
           }
         });
       }

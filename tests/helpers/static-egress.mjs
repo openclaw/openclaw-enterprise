@@ -1,11 +1,5 @@
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
-import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
-import {
-  githubMetadataGrant,
-  preparedGitHubProviderRef,
-  preparedGitHubSourceFromRoute,
-} from "../../packages/contracts/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
 import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
@@ -87,10 +81,7 @@ async function buildStaticEgressFixture(
     serviceTransport,
     admitRevision = true,
     resolutionFinished,
-    preparedGitHub,
-    createPreparedGitHub,
     configurePreparedTokens,
-    secretValue,
     providerServer = /** @type {((tls: import("node:tls").TlsOptions, handle: import("node:http").RequestListener) => Provider) | undefined} */ (
       undefined
     ),
@@ -491,26 +482,7 @@ async function buildStaticEgressFixture(
     { id: "openshell-sandbox", backend },
   );
   const preparedTokens = new TokenService();
-  const owner = createPreparedGitHub
-    ? await createPreparedGitHub({ secretDriver, tokenService: preparedTokens })
-    : preparedGitHub;
   const preparedProvider = configurePreparedTokens?.(preparedTokens);
-  if (preparedGitHub) {
-    preparedTokens.registerIssuer({
-      tokenKind: "github_app_installation",
-      provider: preparedGitHubProviderRef,
-      sourceFromRoute: preparedGitHubSourceFromRoute,
-      issuerInput: "private_key",
-      issuerAuthority: "fixture-github-metadata",
-      admission(config) {
-        return { origin: owner.apiOrigin, grant: githubMetadataGrant(config), schemaVersion: 2 };
-      },
-      configure: (...args) => owner.configure(...args),
-      resolve: (...args) => owner.resolve(...args),
-      ready: (...args) => owner.ready(...args),
-      withdraw: (...args) => owner.withdraw(...args),
-    });
-  }
   const origin = await createExchangeOrigin(t, { key, cert }, providerServer);
   const { providerPort, providerRequests, setResponse } = origin;
   const modelProvider = {
@@ -519,11 +491,7 @@ async function buildStaticEgressFixture(
   };
   const egress = new OpenShellLegacyEgressProxyDriver(egressOptions, {
     id: proxyDriverId,
-    preparedProviders: preparedProvider
-      ? [preparedProvider]
-      : owner
-        ? [githubMetadataProvider]
-        : [],
+    ...(preparedProvider && { preparedProviders: [preparedProvider] }),
     backend,
     sandbox,
   });
@@ -569,7 +537,6 @@ async function buildStaticEgressFixture(
         },
         ...driverConfigurations,
       ],
-      preparedTokenProof: preparedGitHub && { current: (...args) => owner.current(...args) },
       secretDriver,
       computeDriver,
       namespaceLifecycleBindings: [
@@ -633,15 +600,11 @@ async function buildStaticEgressFixture(
     executionMode: "dedicated",
     harnessAuth: { method: "runtime" },
   });
-  const issuer =
-    secretValue === undefined
-      ? secret
-      : await post("secrets", { name: "prepared-github-issuer", value: secretValue });
   const { agent, source } = await admitSource({
     app,
     agent: draft,
     namespace,
-    secret: issuer,
+    secret,
     path,
     countSecretReads: () => secretReads,
     origin: `https://provider.example.test:${providerPort}`,

@@ -59,19 +59,13 @@ const gatewayValues = {
   "gatewayRouting.gatewayClassName": "eg",
   "gatewayRouting.apiKeySecretName": "private-gateway-key",
 };
-// Prepared GitHub custody for the Credential Proxy authority, without and with a private issuer CA.
-const preparedGitHubValues = {
+const egressAuthorityValues = {
   "egressAuthority.enabled": "true",
   "egressAuthority.tlsSecretName": "authority-server-tls",
   "egressAuthority.issuerSecretName": "gateway-jwt-keys",
   "egressAuthority.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
     "openshell-system",
   "egressAuthority.clients[0].podSelector.matchLabels.app": "openshell-gateway",
-  "preparedGitHub.custodySecretName": "prepared-github-custody",
-};
-const issuerCaValues = {
-  ...preparedGitHubValues,
-  "preparedGitHub.issuerCaConfigMapName": "prepared-github-issuer-ca",
 };
 
 test(
@@ -89,8 +83,7 @@ test(
       themeValues,
       gatewayValues,
       { ...repositoryCredentialValues, ...themeValues },
-      preparedGitHubValues,
-      issuerCaValues,
+      egressAuthorityValues,
     ]) {
       const { job, hook, api } = await render(values, true);
       const install = await render(values, false);
@@ -205,11 +198,6 @@ test(
       if ("repositoryCredentials.enabled" in values) {
         expected.push("repository-registry", "repository-public-ca");
       }
-      // Loading the Installation reads preparedGitHub.issuerCaPath (finding 2205). The worker
-      // reads the custody key only after it opens the database, so the hook never mounts it.
-      if ("preparedGitHub.issuerCaConfigMapName" in values) {
-        expected.push("prepared-github-issuer-ca");
-      }
       assert.deepEqual(
         check.volumeMounts.map(({ name }) => name),
         expected,
@@ -224,7 +212,6 @@ test(
           api.volumes.find(({ name }) => name === mount.name),
         );
       }
-      assert.ok(!hook.volumes.some(({ name }) => name === "prepared-github-custody"));
       assert.equal(hook.automountServiceAccountToken, false);
     }
   },
@@ -334,7 +321,7 @@ test(
           .map(({ name, value }) => [name, value]),
       );
     };
-    const enabled = await chartEnvironment(preparedGitHubValues);
+    const enabled = await chartEnvironment(egressAuthorityValues);
     const reachable = credentialProxyInstallation();
     reachable.drivers.credential_proxy.configuration.authority.host = "0.0.0.0";
     for (const host of ["0.0.0.0", "::"]) {
@@ -349,7 +336,7 @@ test(
     for (const [configuration, environment, message] of [
       [
         reachable,
-        await chartEnvironment({ ...preparedGitHubValues, "egressAuthority.port": "9555" }),
+        await chartEnvironment({ ...egressAuthorityValues, "egressAuthority.port": "9555" }),
         "drivers.credential_proxy.configuration.authority.port is 9444, but Helm egressAuthority.port is 9555.",
       ],
       [
@@ -395,7 +382,7 @@ test(
           return items.map(({ path }) => `${mountPath}/${path}`);
         });
     // The paths startup compares are the ones the chart renders, for both listeners.
-    const api = await pod(preparedGitHubValues, "openclaw-enterprise-api");
+    const api = await pod(egressAuthorityValues, "openclaw-enterprise-api");
     const worker = await pod(
       {
         ...repositoryCredentialValues,
@@ -420,7 +407,7 @@ test(
 
     const prefix =
       "installation-check: API and worker startup would refuse the Installation (CHART_LISTENER_MISMATCH)";
-    const [check] = (await render(preparedGitHubValues, true)).hook.initContainers;
+    const [check] = (await render(egressAuthorityValues, true)).hook.initContainers;
     const environment = Object.fromEntries(
       check.env
         .filter(

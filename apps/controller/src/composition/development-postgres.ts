@@ -123,7 +123,7 @@ export async function composePostgresDevelopment(
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, drivers?.protectedDriver, drivers?.preparedGitHub, database);
+    closeResources(exchange, drivers?.protectedDriver, database);
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
@@ -350,7 +350,6 @@ export async function composePostgresDevelopment(
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     drivers?.repositoryTransport?.connectRestartObservation?.(pool);
-    await drivers?.preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);

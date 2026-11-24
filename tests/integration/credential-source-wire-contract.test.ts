@@ -115,7 +115,7 @@ test("namespace Source registration distinguishes TokenService material from pro
   };
   const prepared = {
     name: "Protected repository metadata",
-    type: "github-app-metadata",
+    type: "protected-provider-source",
     secrets: { private_key: reference },
   };
 

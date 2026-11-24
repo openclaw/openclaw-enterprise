@@ -38,21 +38,51 @@ test(
   "explicit protected credential-free metadata: both gates, false selections, lost COMMIT and last withdrawal",
   { ...requiresPostgres, timeout: 120_000 },
   async (t) => {
-    let issuerAccess = 0;
     let readsBeforeAdmission: number | undefined;
     const repository = { id: 7311, full_name: "fixture/credential-free" };
     const { f, pool, proxy, receipt, assertLostDispatch } = await commitLossScenario(t, {
-      preparedGitHub: new Proxy(
-        {},
-        {
-          get() {
-            issuerAccess++;
-            throw Error("Credential-free metadata must never access the issuer or prepared store.");
-          },
-        },
-      ),
-      async admitSource({ app, agent, namespace, origin, countSecretReads }) {
+      async admitSource({ app, agent, namespace, origin, path, secret, countSecretReads }) {
         readsBeforeAdmission = countSecretReads();
+        const installation = await app.request("GET", "/installation");
+        assert.equal(installation.status, 200);
+        assert.ok(isRecord(installation.data));
+        const capabilities = installation.data.capabilities;
+        assert.ok(isRecord(capabilities) && isRecord(capabilities.credentialSources));
+        const { types } = capabilities.credentialSources;
+        assert.ok(isArray(types));
+        assert.ok(
+          types.some(
+            (entry: unknown) =>
+              isRecord(entry) && entry.type === "credential-free-repository-metadata",
+          ),
+        );
+        assert.ok(
+          !types.some((entry: unknown) => isRecord(entry) && entry.type === "github-app-metadata"),
+        );
+
+        // A real Namespace Secret cannot revive the retired built-in signer offer.
+        const refused = await app.request("POST", path, {
+          body: {
+            name: "retired-signer",
+            type: "github-app-metadata",
+            config: {
+              app_id: "7302",
+              installation_id: "7303",
+              repository_id: String(repository.id),
+              repository: repository.full_name,
+              agent_id: agent.id,
+              authority: "execution",
+            },
+            secrets: { private_key: secret.ref },
+          },
+        });
+        assert.equal(refused.status, 400);
+        assert.match(
+          JSON.stringify(refused.body),
+          /Register static credentials or OAuth through TokenService/,
+        );
+        assert.equal(countSecretReads(), readsBeforeAdmission);
+
         const source = await app.controller.createCredentialSource(app.principal.id, {
           namespaceId: namespace.id,
           name: "identity-only",
@@ -243,6 +273,5 @@ test(
       readsBeforeAdmission,
       "zero provider Secret reads, including refusal paths",
     );
-    assert.equal(issuerAccess, 0, "zero issuer or prepared-material calls");
   },
 );

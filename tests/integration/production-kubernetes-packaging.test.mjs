@@ -3338,12 +3338,6 @@ test(
     ]) {
       await assert.rejects(render({ ...protectedValues, ...override }), diagnostic);
     }
-
-    const prepared = await renderObjects({
-      ...protectedValues,
-      "preparedGitHub.custodySecretName": "prepared-github-custody",
-    });
-    assert.ok(prepared.some(({ kind }) => kind === "Deployment"));
   },
 );
 

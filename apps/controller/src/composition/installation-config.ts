@@ -132,8 +132,6 @@ import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
 import { TokenService } from "../backends/token-service/service.ts";
-import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
-import type { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/access/prepared-lifecycle.ts";
 import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
@@ -316,7 +314,6 @@ export interface InstallationRuntimeDrivers {
   /** Present only when this registration owns protected repository delivery. */
   readonly repositoryGitDriver?: InstalledDriver;
   readonly tokenService?: TokenService;
-  readonly preparedGitHub?: PostgresPreparedGitHubLifecycle;
   readonly pluginDrivers?: readonly PluginDriver[];
   readonly repositoryPolicy?: RepositoryPolicyDriver;
   readonly repositoryAdmission?: Awaited<
@@ -1075,9 +1072,6 @@ async function composeInstallationConfiguration(
   let packageProxyId: string | undefined;
   let egressAuthority: EgressAuthorityConfiguration | undefined;
   let credentialProxyCapacity: CredentialProxyCapacity | undefined;
-  let preparedGitHubKeyPath: string | undefined;
-  let preparedGitHubOrigin: string | undefined;
-  let preparedGitHubCa: Buffer | undefined;
   if (drivers.credential_proxy !== undefined) {
     const selection = object(drivers.credential_proxy, "drivers.credential_proxy");
     closed(selection, ["id", "configuration", "requestCapacity"], "drivers.credential_proxy");
@@ -1108,13 +1102,6 @@ async function composeInstallationConfiguration(
       }
       repositoryTransportConfiguration = configuredProxy.repository;
       egressAuthority = configuredProxy.authority;
-      preparedGitHubKeyPath = configuredProxy.prepared?.custodyKeyPath;
-      preparedGitHubOrigin = configuredProxy.prepared?.apiOrigin;
-      if (configuredProxy.prepared?.issuerCaPath) {
-        preparedGitHubCa = Buffer.from(
-          await readPublicCaBundle(configuredProxy.prepared.issuerCaPath),
-        );
-      }
       const { OpenShellLegacyEgressProxyDriver } =
         await import("../drivers/egress-proxy/openshell.ts");
       proxySelection = selected(
@@ -1580,18 +1567,6 @@ async function composeInstallationConfiguration(
     },
   );
   const tokenService = new TokenService();
-  let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
-  if (preparedGitHubKeyPath !== undefined) {
-    const { PostgresPreparedGitHubLifecycle } =
-      await import("../drivers/repo/github/access/prepared-lifecycle.ts");
-    preparedGitHub = new PostgresPreparedGitHubLifecycle(
-      preparedGitHubKeyPath,
-      secretDriver,
-      preparedGitHubOrigin,
-      preparedGitHubCa,
-      tokenService,
-    );
-  }
   const createCredentialDeliveryProxy = async (
     pairedSandbox: SandboxDriver,
     tokenServiceImplementation: string,
@@ -1685,7 +1660,6 @@ async function composeInstallationConfiguration(
       proxy: {
         id: proxySelection.id,
         configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
-        preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
         repositoryOriginRefusal:
           repositoryTransportConfiguration && preparedRepositoryGit?.apiOrigin !== undefined
             ? openShellGitOriginRefusal(preparedRepositoryGit.apiOrigin)
@@ -1885,7 +1859,6 @@ async function composeInstallationConfiguration(
       : { protectedDriver, proxyDriver: protectedDriver.require("credential_proxy") }),
     ...(repositoryGitDriver && { repositoryGitDriver }),
     tokenService,
-    ...(preparedGitHub === undefined ? {} : { preparedGitHub }),
     createIAMDriver,
     pluginDrivers: plugins.map(({ driver }) => driver),
     ...repositoryServices,

@@ -363,17 +363,6 @@ openshellGit:
   # Trusted OpenShell Gateway and supervisor callers: namespace and Pod labels required.
   clients: []
 
-# Optional OCE custody for explicitly enrolled, Agent-scoped GitHub metadata reads.
-# In the Installation's drivers.credential_proxy.configuration.preparedGitHub set
-# custodyKeyPath: /etc/openclaw/prepared-github/custody.key. Supply a dedicated
-# Secret with exactly 32 random binary bytes at custody.key, keep it stable across
-# API and worker restarts, and protect its backup separately from the database.
-# The issuer's App key belongs to an OCC Secret, never to this Secret or Helm values.
-preparedGitHub:
-  custodySecretName: ""
-  # Optional public ca.crt for an explicitly configured private HTTPS issuer.
-  issuerCaConfigMapName: ""
-
 # Closed OpenShell canary only: operator-owned Namespace, no initialization Job.
 # Bind the existing OCE Namespace ID and independently observed Kubernetes UID.
 preprovisionedNamespace: {}

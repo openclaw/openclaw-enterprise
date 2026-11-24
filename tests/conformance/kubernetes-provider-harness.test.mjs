@@ -1,6 +1,5 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
@@ -12,7 +11,7 @@ import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { waitFor } from "../helpers/qa-wait.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
-import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
+import { credentialFreeMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
@@ -34,10 +33,7 @@ import {
   withoutCause,
 } from "./kubernetes-provider-observation-cases.ts";
 import { containerProgram } from "./kubernetes-workload-program-cases.ts";
-import {
-  admitLoggingConfiguration,
-  preparedGitHubSourceFromRoute,
-} from "../../packages/contracts/src/index.ts";
+import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   DependencyUnavailableError,
   InstalledDriver,
@@ -506,7 +502,7 @@ test("provider Harness verified endpoint trust is projected before rollout and i
   assert.deepEqual(configMap(trust.metadata.name), trust);
 });
 
-test("provider Harness protected execution is released only on current signed installation and warmth", async (t) => {
+test("provider Harness protected execution is released only on current signed installation", async (t) => {
   const fixture = await preparedEndpoint(
     providerEndpointFixture({
       servicePrincipalCredentials: { mode: "disabled" },
@@ -547,7 +543,7 @@ test("provider Harness protected execution is released only on current signed in
     sourceControl: {
       sender: { id: "supervisor", generation: 1 },
       resolver: { id: "resolver", generation: 1 },
-      providers: [githubMetadataProvider],
+      providers: [credentialFreeMetadataProvider],
       assertAvailable: assert.fail,
     },
     async configureRevision({ plan }) {
@@ -568,10 +564,8 @@ test("provider Harness protected execution is released only on current signed in
     { id: sandbox.id, implementation: sandbox.implementation, configuration: {} },
     { capabilities: { sandbox, credential_proxy: proxy } },
   );
-  let preparedIssuer;
   const driver = new KubernetesComputeDriver(fixture.driver.options, {
     protectedDriver,
-    preparedTokens: { issuer: () => preparedIssuer },
     nodeEnrollment: fixture.driver.nodeEnrollment,
   });
   driver.apiClients = Promise.resolve(fixture.clients);
@@ -931,134 +925,6 @@ test("provider Harness protected execution is released only on current signed in
       const invocations = (await readFile(calls, "utf8")).trim().split("\n");
       assert.equal(invocations.length, 1);
       assert.match(invocations[0], /app-server/);
-    },
-  );
-  await t.test(
-    "metadata-only Compute observes exact warm preparation before release and waits for serving",
-    async () => {
-      const id = "ar_00000000-0000-4000-8000-000000000549";
-      const execution = { ...plan.execution, revisionId: id };
-      const key = {
-        installationId: execution.installationId,
-        namespaceId: tenant.id,
-        source: { id: "cs_00000000-0000-4000-8000-000000000547", generation: 1 },
-        backend: { id: "github", generation: 1 },
-        provider: { id: "github-app-metadata", generation: 1 },
-      };
-      const grant = {
-        kind: "github_repository_metadata",
-        appId: "7",
-        installationId: "9",
-        repositoryId: "11",
-        repository: "test/example",
-        isolationId: execution.agentId,
-        profile: "metadata-read",
-      };
-      const binding = {
-        binding: { id: "00000000-0000-4000-8000-000000000549", generation: 1 },
-        execution,
-        source: key,
-        grant,
-        grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
-        isolationId: execution.agentId,
-      };
-      const route = {
-        route: { id: binding.binding.id + "/metadata", generation: 1 },
-        binding,
-        origin: "https://api.github.com",
-        method: "GET",
-        path: "/repos/test/example",
-        operationPolicy: { id: "github-bodyless-metadata-get", generation: 1 },
-        responsePolicy: { id: "github-complete-repository-identity-only", generation: 1 },
-        deadlineMs: 30_000,
-      };
-      const metadataPlan = { ...plan, execution, routes: [route] };
-      const metadata = {
-        ...protectedRevision,
-        id,
-        revision: protectedRevision.revision + 2,
-        harnessAuth: { method: "runtime" },
-        harness: { ...protectedRevision.harness, configuration: {} },
-        compute: { id: driver.id, implementation: driver.implementation },
-        egressPlan: metadataPlan,
-      };
-      seedNode(metadata);
-      const receipt = { ...installed, plan: metadataPlan };
-      const sequence = [];
-      let warmth;
-      const lifecycle = {
-        // This owner can only observe readiness. Access, issue and refresh are not wired.
-        async ready(source) {
-          assert.deepEqual(source.grant, grant);
-          assert.deepEqual(source.key, key);
-          sequence.push("observe-warmth");
-          return warmth === "ignore-abort" ? new Promise(() => {}) : warmth;
-        },
-      };
-      preparedIssuer = { ...lifecycle, sourceFromRoute: preparedGitHubSourceFromRoute };
-      observation = receipt;
-      let expireDuringRelease = false;
-      sandbox.enrollHarness = async (context, current, release) => {
-        assert.equal(current, receipt);
-        assert.ok(
-          context.requirements.environment.some(
-            (v) => v.name === "CODEX_LOGIN_MODE" && v.value === "protected-no-inference",
-          ),
-        );
-        if (expireDuringRelease) {
-          warmth = false;
-        }
-        const authorization = await release("00000000-0000-4000-8000-000000000549");
-        assert.equal(authorization.challenge.inference, false);
-        assert.equal(authorization.challenge.routeCount, 1);
-        sequence.push("signed");
-      };
-      const context = {
-        harnessAuth: metadata.harnessAuth,
-        recordEgressInstallation: async () => sequence.push("commit"),
-        currentEgressInstallation: async () => receipt,
-      };
-      for (const cold of [false, "ignore-abort"]) {
-        warmth = cold;
-        assert.equal((await driver.prepareRevision(metadata, context)).ready, false, String(cold));
-        assert.deepEqual(
-          sequence.splice(0),
-          ["observe-warmth"],
-          "cold and bounded-out observations release nothing",
-        );
-      }
-      warmth = true;
-      expireDuringRelease = true;
-      await assert.rejects(
-        driver.prepareRevision(metadata, context),
-        /exact current committed installation/,
-      );
-      assert.deepEqual(sequence.splice(0), ["observe-warmth", "commit", "observe-warmth"]);
-      warmth = true;
-      expireDuringRelease = false;
-      // Independently observe the metadata revision's Ready provider Pod, not the
-      // predecessor used by this fixture. Harness status still determines readiness.
-      const pod = fixture.pod("metadata-revision");
-      pod.metadata.labels["openclaw.dev/revision"] = id;
-      pod.metadata.labels["app.kubernetes.io/name"] =
-        "agent-" + digest(metadata.agentId) + "-rev-" + digest(id);
-      const originalList = core.listNamespacedPod;
-      core.listNamespacedPod = async (request) =>
-        request.labelSelector.includes("openclaw.dev/revision=" + id)
-          ? { items: [pod] }
-          : originalList(request);
-      for (const state of ["starting", "serving"]) {
-        harnessAnswer = { state };
-        const prepared = await driver.prepareRevision(metadata, context);
-        assert.equal(prepared.ready, state === "serving");
-        assert.deepEqual(sequence.splice(0), [
-          "observe-warmth",
-          "commit",
-          "observe-warmth",
-          "signed",
-        ]);
-      }
-      core.listNamespacedPod = originalList;
     },
   );
 });

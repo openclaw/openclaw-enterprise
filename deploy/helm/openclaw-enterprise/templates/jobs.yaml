@@ -80,14 +80,6 @@ spec:
               - key: {{ .Values.repositoryCredentials.publicCaKey | quote }}
                 path: ca.crt
         {{- end }}
-        {{- if and .Values.preparedGitHub.custodySecretName .Values.preparedGitHub.issuerCaConfigMapName }}
-        # Loading the Installation reads preparedGitHub.issuerCaPath. Public CA only, never custody.
-        - name: prepared-github-issuer-ca
-          configMap:
-            name: {{ .Values.preparedGitHub.issuerCaConfigMapName | quote }}
-            items:
-              - {key: ca.crt, path: ca.crt}
-        {{- end }}
         {{- if .Release.IsInstall }}
         - name: bootstrap-credentials
           secret:
@@ -146,11 +138,6 @@ spec:
             {{- if .Values.repositoryCredentials.enabled }}
             - name: repository-public-ca
               mountPath: /etc/openclaw/repository-ca
-              readOnly: true
-            {{- end }}
-            {{- if and .Values.preparedGitHub.custodySecretName .Values.preparedGitHub.issuerCaConfigMapName }}
-            - name: prepared-github-issuer-ca
-              mountPath: /etc/openclaw/prepared-github-issuer
               readOnly: true
             {{- end }}
         - name: migration

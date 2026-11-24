@@ -49,7 +49,6 @@
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
     "tests/integration/postgres-static-egress.test.ts",
     "tests/integration/postgres-prepared-token-service.test.ts",
-    "tests/integration/postgres-prepared-github-lifecycle.test.ts",
     "tests/integration/postgres-prepared-repository-git-broker.test.ts",
     "tests/integration/postgres-prepared-receipt-restart.test.ts",
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
@@ -438,23 +437,7 @@
     {
       "path": "tests/integration/postgres-prepared-token-service.test.ts",
       "expectedTests": [
-        "independent prepared lease: cold read, replace, exact transaction, withdrawal and lost issue",
-        "rejected fresh GitHub material recovers once across separate owners without replay",
-        "prepared TokenService metadata reaches only the admitted repository"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-prepared-github-lifecycle.test.ts",
-      "expectedTests": [
-        "authorized GitHub proxy requests mint the registered grant and share one replacement",
-        "PostgreSQL prepared custody: source consent, proactive renewal, restart and issuer rotation",
-        "current proof preserves caller SQL limits and restores them in its unit",
-        "signed PostgreSQL dispatch uses one shared connection for current material proof",
-        "concurrent signed checks drain the shared single-connection pool",
-        "before-send bounds a real PostgreSQL lock wait and refuses late permission",
-        "before-send refuses expired material and an elapsed signed deadline",
-        "before-send refuses displaced material and accepts renewed material",
-        "before-send refuses a rejected prepared selection"
+        "independent prepared lease: cold read, replace, exact transaction, withdrawal and lost issue"
       ]
     },
     {

@@ -448,12 +448,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.egressAuthority.enabled -}}
 {{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/egress/tls" "/etc/openclaw/egress/issuer") -}}
 {{- end -}}
-{{- if .Values.preparedGitHub.custodySecretName -}}
-{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/prepared-github" -}}
-{{- if .Values.preparedGitHub.issuerCaConfigMapName -}}
-{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/prepared-github-issuer" -}}
-{{- end -}}
-{{- end -}}
 {{- if .Values.openshellGit.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/openshell-git" -}}
 {{- end -}}
@@ -715,10 +709,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if .Values.openshellGit.enabled -}}
 {{- $roles = append $roles (list "openshellGit.tlsSecretName" .Values.openshellGit.tlsSecretName) -}}
-{{- end -}}
-{{- if .Values.preparedGitHub.custodySecretName -}}
-{{- if not .Values.egressAuthority.enabled -}}{{- fail "preparedGitHub custody requires egressAuthority.enabled" -}}{{- end -}}
-{{- $roles = append $roles (list "preparedGitHub.custodySecretName" .Values.preparedGitHub.custodySecretName) -}}
 {{- end -}}
 {{- if and $routing.enabled (not $routing.issuerRef.name) -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "installation.secretName" .Values.installation.secretName) (list "database.secretName" .Values.database.secretName) (list "auth.secretName" .Values.auth.secretName)) -}}

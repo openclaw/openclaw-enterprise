@@ -37,11 +37,11 @@ A caller with `credential_source:update` on the exact Namespace Source can reque
 
 ## Proposed change to protected GitHub metadata
 
-Retire the built-in protected `github-app-metadata` Source that uses a Namespace Secret as its GitHub App signing key. The selected Credential Proxy would stop offering and admitting this Source. Authenticated `GET /repos/{owner}/{repo}` through that offer would be unavailable until there is a TokenService-backed replacement.
+Retire the built-in protected `github-app-metadata` Source that uses a Namespace Secret as its GitHub App signing key. The selected Credential Proxy stops offering and admitting this Source. Authenticated `GET /repos/{owner}/{repo}` through that offer requires a future TokenService-backed replacement.
 
 Keep the credential-free protected repository metadata offer for qualified deployments. Ordinary repository Git uses the registered GitHub App Client, its TokenService installation Source, and each Agent's admitted Repository policy.
 
-This retirement requires a product decision before implementation.
+The product decision approves this retirement.
 
 ## Acceptance criteria
 
