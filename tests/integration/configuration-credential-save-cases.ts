@@ -61,7 +61,7 @@ interface ConfigurationCredentialSaveFixtures {
 }
 
 type CredentialRefusal = readonly [values: OpenClawConfigurationDocument, message: string];
-type HeaderRefusal = readonly [root: string, header: string, value: string | number];
+type HeaderRefusal = readonly [root: string, header: string, value: string | number, name?: string];
 
 const schemaContext = { SafeJsonValue: JsonValue };
 const environmentReference = (id: string) => ({ source: "env", provider: "default", id });
@@ -120,16 +120,26 @@ export function registerConfigurationCredentialSaveCases(
       headers,
     });
     const refused: HeaderRefusal[] = [
-      ["/mcp/servers/docs", "Authorization", `Bearer ${sentinel}`],
+      [
+        "/mcp/servers/docs",
+        "Authorization",
+        `Bearer ${sentinel}`,
+        "refuses a literal bearer token in the MCP Authorization header",
+      ],
       ["/nodeHost/mcp/servers/docs", "X-Api-Key", sentinel],
       // `Bearer ${NAME}` holds a reference only in an Authorization header; a number is a literal.
       ["/mcp/servers/docs", "X-Auth-Token", "Bearer ${MCP_TOKEN}"],
       ["/mcp/servers/docs", "x-client-secret", 12345],
-      ["/mcp/servers/docs", "Authorization", `Bearer ${sentinel}\${SUFFIX}`],
+      [
+        "/mcp/servers/docs",
+        "Authorization",
+        `Bearer ${sentinel}\${SUFFIX}`,
+        "refuses a literal bearer token followed by a reference",
+      ],
     ];
-    for (const [root, header, value] of refused) {
+    for (const [root, header, value, name] of refused) {
       const field = `${root}/headers/${header}`;
-      await t.test(`refuses ${field}`, async () => {
+      await t.test(name ?? `refuses ${field}`, async () => {
         const values = at(root, server({ [header]: value }));
         await refusedOnSave(context, values, literalHeader(field), { item, sentinel });
       });

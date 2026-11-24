@@ -2370,9 +2370,10 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
   });
   const other = "anthropic/claude-opus-4";
   // A default model setting off the openai provider, and the refusal that names it.
-  const offDefaults = (path, settings) => [
+  const offDefaults = (path, settings, name) => [
     withAgents({ defaults: { ...runtimeDefaults, ...settings } }),
     setting(`agents.defaults.${path}`, openaiOnly),
+    name,
   ];
   const [imageValues, imageRefusal] = offDefaults("imageModel", { imageModel: other });
   const defaultFallback = [
@@ -2380,21 +2381,41 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     setting("agents.defaults.model.fallbacks", "must use the primary model's provider"),
   ];
   const offProvider = [
-    offDefaults("subagents.model", { subagents: { model: other } }),
+    offDefaults(
+      "subagents.model",
+      { subagents: { model: other } },
+      "refuses a subagent model from another provider",
+    ),
     [imageValues, imageRefusal],
     offDefaults("pdfModel.primary", { pdfModel: { primary: other } }),
     // Finding 1306: OpenClaw's explicit /model allowlist, on the defaults and on an Agent entry.
-    offDefaults("modelPolicy.allow", { modelPolicy: { allow: [runtimeDefaults.model, other] } }),
+    offDefaults(
+      "modelPolicy.allow",
+      { modelPolicy: { allow: [runtimeDefaults.model, other] } },
+      "refuses a model allowlist mixing providers",
+    ),
     [
       withAgents({ entries: { main: { modelPolicy: { allow: ["openai/*", other] } } } }),
       setting("agents.entries.main.modelPolicy.allow", openaiOnly),
     ],
     // Finding 1310: OpenClaw reads openrouter:auto and openrouter:free, which have no slash, as
     // the openrouter provider's models, trimmed and in any case.
-    offDefaults("subagents.model", { subagents: { model: "openrouter:auto" } }),
-    offDefaults("modelPolicy.allow", { modelPolicy: { allow: [" OpenRouter:Free "] } }),
+    offDefaults(
+      "subagents.model",
+      { subagents: { model: "openrouter:auto" } },
+      "refuses an automatic router alias for subagents",
+    ),
+    offDefaults(
+      "modelPolicy.allow",
+      { modelPolicy: { allow: [" OpenRouter:Free "] } },
+      "refuses a padded mixed-case router alias in the model allowlist",
+    ),
     // The provider with no model, a root model setting, and fallbacks that are not a list.
-    offDefaults("subagents.model", { subagents: { model: "openai/" } }),
+    offDefaults(
+      "subagents.model",
+      { subagents: { model: "openai/" } },
+      "refuses a subagent provider without a model",
+    ),
     [{ ...valid, tts: { summaryModel: other } }, setting("tts.summaryModel", openaiOnly)],
     [
       {
@@ -2425,8 +2446,8 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
   ];
   // One subtest per refusal, so each stands on its own. The console's Save Configuration sends
   // the PATCH; a Preset save refuses the same text.
-  for (const [values, message] of offProvider) {
-    await t.test(message, async () => {
+  for (const [values, message, name] of offProvider) {
+    await t.test(name ?? message, async () => {
       await refusedOnSave(context, values, message, { item, sentinel: "claude-opus-4" });
       const label = JSON.stringify(values);
       assert.deepEqual(await readData(context, item, label), created.body.data, label);
@@ -3775,7 +3796,11 @@ test("Configuration and Preset saves read a git config value as a proxy when its
   });
   const parameters = (value) => ({ env: { vars: { GIT_CONFIG_PARAMETERS: value } } });
   const refused = [
-    [{ env: { vars: pair("http.proxy") } }, "/env/vars/GIT_CONFIG_VALUE_0"],
+    [
+      { env: { vars: pair("http.proxy") } },
+      "/env/vars/GIT_CONFIG_VALUE_0",
+      "refuses proxy credentials set by a Git config pair",
+    ],
     [{ env: pair("https.proxy", 2) }, "/env/GIT_CONFIG_VALUE_2"],
     // Section and variable names in any case, with a URL or remote subsection.
     [
@@ -3795,14 +3820,24 @@ test("Configuration and Preset saves read a git config value as a proxy when its
     [
       { env: { GIT_CONFIG_KEY_0: "http.proxy", vars: { GIT_CONFIG_VALUE_0: proxy } } },
       "/env/vars/GIT_CONFIG_VALUE_0",
+      "refuses a Git proxy key in env paired with a value in env vars",
     ],
     [
       { env: { vars: { GIT_CONFIG_VALUE_0: proxy, GIT_CONFIG_KEY_0: "http.proxy" } } },
       "/env/vars/GIT_CONFIG_VALUE_0",
+      "refuses a Git proxy value listed before its key",
     ],
-    [{ env: { vars: pair("${GIT_KEY:-http.proxy}") } }, "/env/vars/GIT_CONFIG_VALUE_0"],
+    [
+      { env: { vars: pair("${GIT_KEY:-http.proxy}") } },
+      "/env/vars/GIT_CONFIG_VALUE_0",
+      "refuses a Git proxy key supplied by a fallback",
+    ],
     // A key that is a whole reference may render any key.
-    [at("/skills/entries/x/env", pair("${GIT_KEY}")), "/skills/entries/x/env/GIT_CONFIG_VALUE_0"],
+    [
+      at("/skills/entries/x/env", pair("${GIT_KEY}")),
+      "/skills/entries/x/env/GIT_CONFIG_VALUE_0",
+      "refuses a skill proxy when the entire Git key is a reference",
+    ],
     // Keys pair across the maps OpenClaw merges: the Gateway's environment and every skill's, and
     // the Docker sandbox's defaults and each Agent's.
     [
@@ -3811,6 +3846,7 @@ test("Configuration and Preset saves read a git config value as a proxy when its
         skills: { entries: { x: { env: { GIT_CONFIG_VALUE_0: proxy } } } },
       },
       "/skills/entries/x/env/GIT_CONFIG_VALUE_0",
+      "refuses a skill proxy paired with a key from the gateway environment",
     ],
     [
       {
@@ -3849,36 +3885,68 @@ test("Configuration and Preset saves read a git config value as a proxy when its
     [{ env: { vars: { " HTTPS_PROXY": proxy } } }, "/env/vars/ HTTPS_PROXY"],
     // `git -c` pairs in GIT_CONFIG_PARAMETERS, in the current and the older quoting.
     ...[
-      `'user.name'='ops' 'http.proxy'='${proxy}'`,
-      `'remote.origin.proxy=${proxy}'`,
+      [
+        `'user.name'='ops' 'http.proxy'='${proxy}'`,
+        "refuses a Git proxy after an unrelated quoted parameter",
+      ],
+      [`'remote.origin.proxy=${proxy}'`, "refuses a remote proxy in legacy Git parameter quoting"],
       // A value is split at the first `=` (a password may end in one), `'\''` quotes a `'`, a key
       // may be a reference, and a proxy without a scheme or a password still names a user.
-      `'remote.origin.proxy=u:${sentinel}=@proxy.example.test:3128'`,
-      `'user.name'='o'\\''brien' 'http.proxy'='u:it'\\''s${sentinel}@proxy.example.test:3128'`,
-      `'\${GIT_PROXY_KEY}'='${proxy}'`,
-      `'http.proxy'='${sentinel}@proxy.example.test:3128'`,
-    ].map((value) => [parameters(value), "/env/vars/GIT_CONFIG_PARAMETERS"]),
+      [
+        `'remote.origin.proxy=u:${sentinel}=@proxy.example.test:3128'`,
+        "refuses a remote proxy with an equals sign in its password",
+      ],
+      [
+        `'user.name'='o'\\''brien' 'http.proxy'='u:it'\\''s${sentinel}@proxy.example.test:3128'`,
+        "refuses a Git proxy with an escaped quote in its password",
+      ],
+      [`'\${GIT_PROXY_KEY}'='${proxy}'`, "refuses a Git proxy parameter whose key is a reference"],
+      [
+        `'http.proxy'='${sentinel}@proxy.example.test:3128'`,
+        "refuses a Git proxy parameter with a username and no password",
+      ],
+    ].map(([value, name]) => [parameters(value), "/env/vars/GIT_CONFIG_PARAMETERS", name]),
   ];
-  for (const [values, field] of refused) {
-    await t.test(`refuses ${field}`, async () => {
+  for (const [values, field, name] of refused) {
+    await t.test(name ?? `refuses ${field}`, async () => {
       await refusedOnSave(context, values, userinfo(field), { item, sentinel });
     });
   }
   // On a Preset save, a key that waits on a variable is matched as the text around it, and a
   // name whose index waits on one pairs with every index.
   const variables = { url: { type: "string" }, n: { type: "string" } };
-  for (const [key, variable] of [
-    [{ GIT_CONFIG_KEY_0: "{{ vars.url }}" }, "GIT_CONFIG_VALUE_0"],
-    [{ GIT_CONFIG_KEY_0: "{{ vars.url }}.proxy" }, "GIT_CONFIG_VALUE_0"],
-    [{ GIT_CONFIG_KEY_0: "http.{{ vars.url }}" }, "GIT_CONFIG_VALUE_0"],
+  for (const [key, variable, name] of [
+    [
+      { GIT_CONFIG_KEY_0: "{{ vars.url }}" },
+      "GIT_CONFIG_VALUE_0",
+      "refuses a Preset variable in place of the entire Git config key",
+    ],
+    [
+      { GIT_CONFIG_KEY_0: "{{ vars.url }}.proxy" },
+      "GIT_CONFIG_VALUE_0",
+      "refuses a Preset variable as the section of a Git proxy key",
+    ],
+    [
+      { GIT_CONFIG_KEY_0: "http.{{ vars.url }}" },
+      "GIT_CONFIG_VALUE_0",
+      "refuses a Preset variable as the HTTP config key name",
+    ],
     [{ GIT_CONFIG_KEY_0: "http.proxy" }, "GIT_CONFIG_VALUE{{ vars.n }}"],
     [{ GIT_CONFIG_KEY_0: "http.proxy" }, "GIT_CONFIG_{{ vars.n }}_0"],
-    [{ GIT_CONFIG_KEY_0: "http.{{ vars.url }}.proxy" }, "GIT_CONFIG_VALUE_0"],
-    [{ GIT_CONFIG_KEY_0: "http.https://{{ vars.url }}/.proxy" }, "GIT_CONFIG_VALUE_0"],
+    [
+      { GIT_CONFIG_KEY_0: "http.{{ vars.url }}.proxy" },
+      "GIT_CONFIG_VALUE_0",
+      "refuses a Preset variable as the full HTTP proxy subsection",
+    ],
+    [
+      { GIT_CONFIG_KEY_0: "http.https://{{ vars.url }}/.proxy" },
+      "GIT_CONFIG_VALUE_0",
+      "refuses a Preset variable within the URL of an HTTP proxy subsection",
+    ],
     [{ GIT_CONFIG_KEY_0: "http.proxy" }, "GIT_CONFIG_VALUE_{{ vars.n }}"],
     [{ "GIT_CONFIG_KEY_{{ vars.n }}": "http.proxy" }, "GIT_CONFIG_VALUE_4"],
   ]) {
-    await t.test(`refuses a Preset ${variable} at save`, async () => {
+    await t.test(name ?? `refuses a Preset ${variable} at save`, async () => {
       const field = `/skills/entries/x/env/${variable}`;
       const env = { ...key, [variable]: proxy };
       const response = await savePreset(context, {
