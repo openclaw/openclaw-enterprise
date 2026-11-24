@@ -229,15 +229,12 @@ See [migration recovery](../reference/settings/operations.md#migration-history).
 
 ### Released controller compatibility
 
-To produce a receipt for an upgrade, load the installed and candidate controller
-images locally. Use their exact digest-pinned references and full Git commits.
-Each commit must match its image’s `org.opencontainers.image.revision` label.
-Keep an image index digest even when testing a single architecture.
+Load the installed and candidate controllers locally. Pin both image digests
+(preserve index digests) and full commits matching `org.opencontainers.image.revision`.
 
-On Linux with Docker Compose and workspace dependencies installed, set
-`ATTEMPT` to an unused absolute path inside a private directory you own.
-Run from the checkout root. The command clears the manual database selectors
-for this run so the whole file uses the PostgreSQL server the runner creates.
+On Linux with Docker Compose and workspace dependencies, choose an unused
+absolute `ATTEMPT` path in a private directory. From the checkout root,
+run the whole file on runner-managed PostgreSQL.
 
 ```sh
 env -u OCC_MIGRATION_HISTORY_DATABASE_URL -u OCC_MIGRATION_HISTORY_CONTAINER \
@@ -251,21 +248,21 @@ env -u OCC_MIGRATION_HISTORY_DATABASE_URL -u OCC_MIGRATION_HISTORY_CONTAINER \
   --file tests/integration/postgres-migration-compatibility.test.mjs
 ```
 
-Require the run, both compatibility cases and cleanup to pass. If cleanup fails
-or process termination is uncertain, retain the attempt state and follow the
-[recovery steps](ci/run-lanes.md#run-a-complete-local-attempt). In
-`$ATTEMPT/result.json`, check the file’s `imageDigests.releasedController` and
-`imageDigests.candidateController`. Keep this receipt private and unchanged. For the
-[control plane upgrade](../guides/deploy/production-upgrade.md#upgrade-the-control-plane),
-pass `--controller-compatibility-results "$ATTEMPT/result.json"` with
-`--controller-image "$CANDIDATE_IMAGE"`. The upgrade checks both image digests
-before stopping writers.
+Require a successful run, both compatibility cases passing without skips,
+and successful cleanup. If cleanup fails or termination is uncertain, retain
+state and follow [runner recovery](ci/run-lanes.md#run-a-complete-local-attempt).
+Check `imageDigests.releasedController` and `imageDigests.candidateController`
+in the file result. Keep `$ATTEMPT/result.json` private and unchanged.
+Pass `--controller-compatibility-results "$ATTEMPT/result.json"` and
+`--controller-image "$CANDIDATE_IMAGE"` to the
+[upgrade](../guides/deploy/production-upgrade.md#upgrade-the-control-plane).
+It checks both digests before stopping writers.
 
-To diagnose the pair on an existing disposable PostgreSQL server, use the
-three `OCC_MIGRATION_HISTORY_*` selectors above. Omit the `env -u` options and pass
-the same four image and commit assignments to
+For a diagnostic without a receipt, use the disposable server's three
+`OCC_MIGRATION_HISTORY_*` selectors above. Keep the four image and revision
+assignments, omit `env -u`, and run
 `node --test --test-name-pattern='Released controller remains usable' tests/integration/postgres-migration-compatibility.test.mjs`.
-This diagnostic produces no upgrade receipt. Check that both named cases pass.
+Require both cases to pass.
 Neither case pulls controller images. Partial image inputs fail. With all four
 inputs absent, PostgreSQL CI and the diagnostic can succeed without running
 either case.
