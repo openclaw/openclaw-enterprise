@@ -98,7 +98,7 @@ uses a private CA, configure `NODE_EXTRA_CA_CERTS` with its CA bundle first.
 
 ```bash
 umask 077
-SECRET_VALUE_FILE=/secure/operator/agent-model-key
+SECRET_VALUE_FILE=/secure/operator/slack-bot-token
 export NAMESPACE_ID
 
 node --input-type=module - "$SECRET_VALUE_FILE" <<'JS'
@@ -109,7 +109,7 @@ const url = new URL(`/namespaces/${encodeURIComponent(process.env.NAMESPACE_ID)}
 const response = await fetch(url, {
   method: "POST", redirect: "error",
   headers: { "x-api-key": key, "content-type": "application/json" },
-  body: JSON.stringify({ name: "model-api-key", value }),
+  body: JSON.stringify({ name: "slack-bot-token", value }),
 });
 if (response.status !== 201) {
   const error = (await response.json().catch(() => null))?.error;
@@ -126,7 +126,7 @@ A successful create returns HTTP `201` with metadata only:
   "data": {
     "id": "sec_123e4567-e89b-42d3-a456-426614174000",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "name": "model-api-key",
+    "name": "slack-bot-token",
     "ref": {
       "kind": "secret",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
@@ -176,13 +176,13 @@ Agent mutation permission and `operate` on each exact Secret. Namespace
 membership, Configuration access, Agent access, or possession of a ref is not
 enough.
 
-Before deployment, the selected IAM policy must grant both the deploying actor
-and the consuming Agent's existing stable service principal `operate` on every
-bound Secret. Native IAM policy is controller-owned persisted state, not
-Installation YAML, Driver YAML, or Kubernetes RoleBindings. Authorized Agent
-responses expose the Agent service principal ID, and administrators can create
-the exact Secret grant through the Namespace IAM policy API before a
-Secret-backed deployment is admitted.
+Deployment requires `operate` on each bound Secret for both the caller and
+the Agent’s stable service principal. With transactional Native IAM,
+[deployment can supply missing Agent grants](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
+OCC stores these grants outside Installation YAML, Driver YAML and Kubernetes
+RoleBindings. If policy is managed externally, have the IAM administrator
+grant the Agent access before deployment. Authorized Agent responses include
+its service principal ID.
 
 Deployment freezes the normalized bindings and selected Secret Driver ID in the
 AgentRevision. It does not snapshot backend locators or value bytes.
@@ -190,40 +190,54 @@ The API authorizes the deploying actor and the consuming Agent service principal
 then asks the selected Secret Driver to validate the backend during admission.
 The worker rechecks the actor and Agent service principal before resolving
 current OCC metadata and passing an ephemeral projection context to the Compute
-Driver; it does not call the Secret Driver or Kubernetes Secret API. The Compute
-Driver renders Kubernetes `secretKeyRef` environment variables only into each
-explicitly selected consuming gateway. Native OpenClaw configuration then
-resolves the env SecretRefs normally.
+Driver. That metadata lookup calls neither the Secret Driver nor the
+Kubernetes Secret API. Kubernetes Compute runs in the trusted worker. It checks
+and references the original channel Secrets for dedicated Gateways. For embedded
+Gateways and direct Harness API keys, it copies approved fields into revision
+Secrets. Only selected Gateways receive the environment bindings through
+`secretKeyRef`. Native OpenClaw then resolves the environment SecretRefs.
 
 For model credentials, use [Agent harness authentication](../agents.md#harness-authentication).
 The API-key binding uses this same Secret Driver and exact authorization, but
 Kubernetes places the projection only in the selected model-executing Harness.
-Dedicated gateways cannot receive model credentials through Configuration
-bindings. Embedded OpenClaw also selects its key through `harnessAuth`.
+Use `harnessAuth` for direct model keys in dedicated and embedded deployments.
+Never bind a model key as a channel credential.
 
 ## Update and redeploy
+
+If the credential is exposed, revoke it at the provider immediately and stop
+affected workloads. For routine rotation, [identify all consumers](#find-a-secrets-consumers)
+first. Review each Agent's draft before deploying. Deploy only Agents intended
+to run. Leave stopped or never-deployed Agents offline until their next
+intended deployment.
+
+To replace related channel Secrets together, stop the affected running Agents
+and wait for shutdown before changing any values. Updates are separate writes.
+Keep the Agents stopped until every update succeeds.
 
 Patch only the value with
 `PATCH /namespaces/:namespaceId/secrets/:secretId { "value": "..." }`. Keep the
 value in a protected file or secret manager output and send it with the protected
-request pattern above, changing the method, exact-Secret URL, and body to match
-the PATCH operation. The Secret reference stays stable.
+request pattern above. Change the method to `PATCH`, use the exact Secret URL
+and send only `JSON.stringify({ value })`. Change the error check to `response.status !== 200`
+and the message prefix to `Secret update failed`.
 
-The response returns the same metadata and `ref`. Update success means the
-driver stored the new value; it does not restart a gateway, edit an existing
-AgentRevision, or prove that a running process has consumed the value.
+HTTP `200` returns unchanged metadata and `ref` in `data`. The Driver has
+stored the replacement. This does not restart a Gateway, edit an AgentRevision
+or confirm that any running process uses the new value.
 
-For a Harness model API key, update the OCC Secret, explicitly deploy every
-[consuming Agent](#find-a-secrets-consumers) through OCE, wait for each new revision to become active, and
-verify a model request before revoking the old key upstream. Revision preparation
-reads the current CP source and delivers the admitted fields into the DP runtime
-Secret before starting the Harness. An unchanged Configuration or Secret reference
-does not remove the need to deploy again.
+For a direct Harness API key, deploy a new revision of each
+[consuming Agent](#find-a-secrets-consumers) that should run with the replacement.
+Revision preparation delivers the current fields to the runtime Secret even
+if the Configuration and reference are unchanged. Wait for each revision to
+become active and make a model request. For routine rotation, verify use of
+the new key before revoking the old one. A successful request alone cannot
+identify the key.
 
 If a [credential source](../credential-sources.md) holds the key as a Gateway
 copy, also run `occ credential-source update ID` after updating the Secret and
 before deploying. A deployment alone starts the new version with the old copy.
-See [Update a source](../credential-sources.md#update-a-source).
+See [Update a source](../credential-sources/other-delivery-modes.md#update-a-source).
 
 With OpenShell, that source update briefly disconnects the workspace node of
 every running Agent that uses the source, even when nothing changed. A turn that
@@ -232,20 +246,27 @@ already in progress. Update the source while those Agents are idle.
 
 Recreating a Harness Pod or running `kubectl rollout restart` only reads its
 existing revision projection; neither is a credential-delivery operation.
-Embedded Gateway bindings also use revision projections and require explicit
-OCE deployment to refresh. Dedicated Gateway restarts read current canonical
-channel values directly.
+Embedded Gateway environment bindings also require a new OCE deployment to
+refresh their revision copies.
+
+Enabled channels require dedicated execution. The dedicated Gateway reads
+current channel Secrets at startup. Once the updates are
+complete, deploy the Agents that should resume through OCE. Wait for Gateway readiness
+and check delivery through that channel.
+
+A [channel proxy credential](../agents/network-proxy.md#agent-operations)
+is separate. After rotating the Secret in `networkProxy.credentialSecretId`,
+deploy a new revision when the Agent should run. Restarting the Gateway cannot update the proxy
+binding’s Secret version. Verify that the proxied channel works with the
+replacement.
+
 See the [replacement procedure](../../guides/deploy/credential-lifecycle.md#replace-runtime-values-and-verify-consumption)
 for verification and safe upstream revocation.
 
-There is no value history, automatic rotation, automatic workload restart, or
-value rollback. Updating or deleting an OCC Secret does not remove credentials
-already delivered to a running process environment, and deletion is blocked while
-current Configurations, credential sources, Agent drafts, selected versions, or pending
-deployments still depend on the Secret. For a compromised credential, stop the affected workloads and revoke
-the credential at the upstream provider; then update the OCC Secret with a
-replacement value and redeploy the intended consumers. Delete the Secret only
-after its reference dependencies are cleared; see [Delete](#delete).
+There is no value history, automatic rotation, workload restart on update or
+rollback. Updating or deleting a Secret leaves delivered values in process
+environments. After revoking a compromised credential, store and [deliver the replacement](#update-and-redeploy)
+before resuming work. Clear references before [deletion](#delete).
 
 ### Find a Secret's consumers
 
@@ -257,15 +278,17 @@ version, or a pending deployment references the Secret. These are the same
 references that block deletion.
 
 ```bash
-./bin/occ secret get "$SECRET_ID" -o json | jq -r '.consumers.agents[]'
+./bin/occ secret get "$SECRET_ID" -o json | jq '.consumers'
 ```
 
-Only resources you may read are named; `unreadable` counts the others without
-naming them, so someone with wider read access must find those. A provisioning
-request is named only for the actor that started it. OCC examines at most 50
-references, ordered by kind and ID; `truncated: true` means more exist. An Agent
-that uses a listed Configuration but has not deployed it is not listed; its next
-deployment reads the current value.
+OCC examines up to 50 references, ordered by kind and ID. `unreadable` counts
+hidden entries among those examined. Only the initiating actor with the
+required current grants can see a provisioning request. `truncated: true`
+means more references exist. Wider access cannot remove this limit.
+Follow listed Configurations and credential sources to their consumers.
+The list can omit Agents that use a Secret indirectly.
+Before routine revocation, account for missing consumers with authorized
+owners or a separate inventory.
 
 The same read returns `callerPermissions`: whether you may replace (`update`) and
 delete (`delete`) the Secret now. It is advisory and records no denial; the write
@@ -291,7 +314,7 @@ referenced by any current Configuration, credential source, Agent draft, selecte
 The `409` names the references you may read, as many as fit the message, for
 example `The Secret is still referenced by Agent agt_…; 1 resource you cannot
 read. Remove those references first.` [Find its consumers](#find-a-secrets-consumers)
-for the full list.
+for readable references and lookup limits.
 Inactive historical revisions alone do not prevent deletion.
 Namespace removal is also blocked while owned Secrets remain. Agent removal does
 not own or garbage-collect Namespace Secret storage.
@@ -307,9 +330,10 @@ metadata cleanup after OCC verifies the stored backend identity.
   this name already exists in this Namespace", choose another name or update the
   existing Secret. For `NAMESPACE_NOT_READY`, wait until the platform Namespace is
   `ready` and its backing Kubernetes namespace is bound to the exact Namespace ID.
-- **Secret delete returns `409` `RESOURCE_CONFLICT`:** Remove each named
-  reference, then retry. For references you cannot read, ask someone with read
-  access to the Namespace's Agents and Configurations to clear them.
+- **Secret delete returns `409` `RESOURCE_CONFLICT`:** Check
+  [all reference types](#find-a-secrets-consumers). Ask the owners to clear
+  unwanted references and settle pending provisioning. Repeat the lookup
+  as blockers clear.
 - **Secret operation returns `403`:** Verify OCC permission for the exact Secret
   or parent Namespace. For binding or Agent assignment, also verify caller
   `operate` on each exact Secret. For deployment, verify both the deploying actor
@@ -326,9 +350,8 @@ metadata cleanup after OCC verifies the stored backend identity.
   selected Secret, including retained bindings when PATCH omits `secretBindings`.
   Omit `secretBindings` on PATCH to preserve existing bindings, or send an empty
   map to clear them.
-- **A rotated value is not visible:** Secret update does not restart workloads.
-  Deploy each consuming Agent through OCE and verify the new revision became
-  active; restarting a Pod does not refresh revision projections.
+- **A rotated value is not visible:** Follow [Update and redeploy](#update-and-redeploy)
+  for the delivery mode. Restarting a Pod cannot refresh a revision copy.
 
 ## Related
 

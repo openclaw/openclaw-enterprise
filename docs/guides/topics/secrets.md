@@ -34,17 +34,28 @@ The API procedure below supports protected-file input.
    explains who can grant it. Namespace access or possession of the Secret ID
    does not grant permission to consume the value.
 
-Follow [Grant the Agent access to its model Secret](../deploy/production-agents.md#grant-the-agent-access-to-its-model-secret).
-This requires an administrator with access to the configured IAM authority.
+With Native IAM, deployment can supply the Agent’s missing grants. If policy
+is managed externally, an administrator must
+[grant the Agent access to its model Secret](../deploy/production-agents.md#grant-the-agent-access-to-its-model-secret)
+through the configured IAM authority.
 
 ## Rotate or remove a Secret
 
-Updating a Secret changes the stored value. It does not restart a workload or
-change a running process's environment. Redeploy each consumer through OCE and
-verify the new version. `occ secret get` lists the consumers you may read and
-counts the others; see [Find a Secret's consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers). There is no value history or automatic rotation. If a
-credential is exposed, stop the affected workloads, revoke it at the upstream
-provider, store a replacement, and redeploy. OCC rejects deletion while a
-current Configuration, credential source, Agent draft, selected version,
-pending deployment, or pending Agent provisioning request still references the
-Secret; the `409` names the references you may read. See [Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).
+Updating a Secret changes storage. Running processes keep their environment.
+If a credential is exposed, revoke it at the provider immediately and stop affected
+workloads. Then replace and deliver the credential.
+
+For a Secret-backed CredentialSource, follow
+[Update a source](../../reference/credential-sources/other-delivery-modes.md#update-a-source).
+Update static Gateway copies first. Review drafts and redeploy only Agents
+intended to run. For direct model,
+channel or proxy credentials, follow [Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).
+For routine rotation, verify use of the replacement before revoking the old
+credential.
+
+There is no value history or automatic rotation. OCC refuses deletion while a
+Configuration, credential source, Agent draft, selected revision, pending
+deployment or queued or running provisioning request references the Secret.
+The `409` message may omit references. In
+[`occ secret get`](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers),
+check both `unreadable` and `truncated` before relying on the list.

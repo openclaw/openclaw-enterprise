@@ -156,13 +156,13 @@ model API keys go only to the Harness that executes the model.
 
 ## Troubleshooting
 
-| Symptom                                 | What to check                                                                                                                                                           |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Creation or update fails before storage | Confirm the Namespace is ready and the input meets the size and text rules.                                                                                             |
-| Binding or deployment is denied         | Check the caller's exact Secret grant and, for deployment, the Agent ServicePrincipal's `operate` grant. Backend RBAC cannot replace either.                            |
-| A Secret cannot be resolved             | Check the selected Driver, backend availability, and whether the original owned object still matches OCC's identity. Do not point OCC to a replacement object manually. |
-| Updated credentials are not visible     | Restart or redeploy the consuming workload and verify the new process became active; updating storage does not refresh existing environments.                           |
-| Deletion is rejected                    | Remove Configuration and deployment references through OCC before retrying.                                                                                             |
+| Symptom                                 | What to check                                                                                                                                                               |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Creation or update fails before storage | Confirm the Namespace is ready and the input meets the size and text rules.                                                                                                 |
+| Binding or deployment is denied         | Check the caller's exact Secret grant and, for deployment, the Agent ServicePrincipal's `operate` grant. Backend RBAC cannot replace either.                                |
+| A Secret cannot be resolved             | Check the selected Driver, backend availability, and whether the original owned object still matches OCC's identity. Do not point OCC to a replacement object manually.     |
+| Updated credentials are not visible     | Revoke exposed credentials immediately. [Follow the delivery steps](kubernetes-secret.md#update-and-redeploy) and verify use of the replacement.                            |
+| Deletion is rejected                    | For a `409` reference conflict, [clear blockers](kubernetes-secret.md#find-a-secrets-consumers). For a Driver mismatch (`503`), retry when the original Driver is selected. |
 
 ## Implementations
 

@@ -64,32 +64,41 @@ instead of editing its backing object directly. Generated transport credentials
 are separate from channel Secrets; the current initial provisioning flow does not
 rotate an existing generated bundle.
 
-List all affected applications or Agents before restarting or deploying them.
-`occ secret get "$SECRET_ID" -o json` lists a Secret's consuming Agents in
-`consumers.agents`; a nonzero `consumers.unreadable` means some references are
-hidden from you (see [Find a Secret's consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers)).
-A running process keeps the environment variables it received, even after the
-source Secret changes. For a model API key, the supported sequence is:
+If a credential is exposed, revoke it at the provider immediately and stop
+affected workloads. For routine rotation, identify all affected applications
+and Agents. In `occ secret get "$SECRET_ID" -o json`, check
+`consumers.unreadable` and `consumers.truncated`. Follow indirect references
+and account for [missing consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers).
+
+Review each draft. Deploy only Agents intended to run. For a direct Harness
+API key, follow these steps.
 
 1. Update the existing OCC Secret through its API, retaining the Secret reference.
-2. Run `occ agent deploy "$AGENT_ID"` for each consuming Agent, even when its
-   Configuration and `harnessAuth` reference are unchanged.
-3. Wait for OCC to select the new version, then perform a
-   [real model request](../operate/model-verification.md).
+2. Run `occ agent deploy "$AGENT_ID"` for each intended consumer, even if
+   the Configuration and `harnessAuth` reference are unchanged.
+3. Wait for the new revision to become active. Make a
+   [model request](../operate/model-verification.md) and verify which key was used.
 
-With Kubernetes Compute, OCE preparation refreshes the Harness's DP credential
-projection from the CP source. Recreating its Pod or running `kubectl rollout restart` reads the existing
-projection and is not a substitute for this OCE deployment.
+A running process keeps its environment. Kubernetes Compute refreshes the
+Harness’s runtime copy on deployment. Recreating a Pod, including through
+`kubectl rollout restart`, reuses the existing copy.
+For a static Credential Gateway copy, [update the source](../../reference/credential-sources/other-delivery-modes.md#update-a-source)
+before deploying its Agents.
 
-For a channel credential, explicitly deploy each consumer and exercise the
-affected channel workflow; a successful model turn does not prove channel authentication. For transport tokens, coordinate
-both endpoints and clients, and verify a fresh allowed connection and rejection
-of the old token. No automatic coordinated transport-token rotation is provided.
+For related channel Secrets, stop affected running Agents and wait for shutdown
+before updating any value. Keep them stopped until all updates succeed.
+Deploy the Agents that should resume and verify channel delivery. A model
+turn cannot prove channel authentication. A [channel proxy credential](../../reference/agents/network-proxy.md#agent-operations)
+requires a new revision after rotation.
 
-Where the provider permits overlap, revoke the old upstream credential after
-successful replacement checks. A stored credential status does not show that
+For transport tokens, coordinate both endpoints and clients. Verify a fresh
+allowed connection and rejection of the old token. OCC provides no automatic
+coordinated transport-token rotation.
+
+For routine rotation, if the provider permits overlap, verify use of the
+replacement before revoking the old credential. A stored credential status does not show that
 the provider accepts the value. Dedicated Gateway restarts read current canonical
-channel values; Harness restarts read their existing runtime projection.
+channel values.
 Version history does not restore old source values.
 
 Backend-managed account credentials require separate handling: OCC cannot
