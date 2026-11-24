@@ -95,7 +95,7 @@ type TlsSecret = NamedObject & { data?: Record<string, unknown> };
 type ClientWorkload = NamedObject & { spec?: unknown };
 type SecretVolumeMapping = {
   optional: boolean;
-  items: { key: string; path: string }[];
+  items: { key: string; path: string; exceedsPathLimits: boolean }[];
 };
 
 type KubeConnection = {
@@ -1062,8 +1062,9 @@ function inspectCertificate(
     throw new DiagnosticError("The selected Secret has unreadable key data.");
   }
   if (volume) {
+    const itemPathAction = "Ask the workload owner to correct the Secret volume's item paths.";
     const paths = new Set<string>();
-    for (const { key, path } of volume.items) {
+    for (const { key, path, exceedsPathLimits } of volume.items) {
       const value = data && Object.hasOwn(data, key) ? data[key] : undefined;
       if (value === undefined && volume.optional) {
         continue;
@@ -1074,6 +1075,12 @@ function inspectCertificate(
           secretAction,
         );
       }
+      if (exceedsPathLimits) {
+        return failure(
+          "A mapped item in the selected Secret volume exceeds Kubernetes path length limits.",
+          itemPathAction,
+        );
+      }
       paths.add(path);
     }
     for (const path of paths) {
@@ -1081,7 +1088,7 @@ function inspectCertificate(
         if (paths.has(parent)) {
           return failure(
             "The selected Secret volume maps one path as both a file and a directory.",
-            "Ask the workload owner to correct the Secret volume's item paths.",
+            itemPathAction,
           );
         }
       }
@@ -1277,7 +1284,11 @@ function mountedClientSecret(
       }
       certificateMapped = true;
     }
-    mappedItems.push({ key, path: target });
+    // The Kubernetes atomic writer measures raw paths before normalizing them.
+    const exceedsPathLimits =
+      Buffer.byteLength(itemPath) > 4_096 ||
+      itemPath.split("/").some((component) => Buffer.byteLength(component) > 255);
+    mappedItems.push({ key, path: target, exceedsPathLimits });
   }
   return certificateMapped ? { ...volume, items: mappedItems } : undefined;
 }

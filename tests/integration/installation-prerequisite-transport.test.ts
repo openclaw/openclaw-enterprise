@@ -734,6 +734,7 @@ test(
       let observeSecret: (() => void) | undefined;
       let optional = false;
       let mapped = true;
+      let companionPresent = true;
       const publicItem = { key: "tls.crt", path: "client.pem" };
       const companionItem = { key: companion, path: "companion.txt" };
       clientFixture = (path) => {
@@ -796,7 +797,7 @@ test(
                 "tls.crt": clientData,
                 "tls.key": clientKey,
                 "unrelated-key": unrelated,
-                [companion]: "",
+                ...(companionPresent ? { [companion]: "" } : {}),
               },
             },
           };
@@ -927,6 +928,48 @@ syncBuiltinESMExports();
           ),
           false,
         );
+
+        // Kubernetes measures UTF-8 bytes before it cleans the item paths.
+        // A present companion can block the mount even when the leaf fits.
+        const maxComponent = "界".repeat(85);
+        const overlongComponent = `${maxComponent}a`;
+        const maxPath = `dir/${"/".repeat(4_096 - "dir/companion.txt".length)}companion.txt`;
+        const projections = [
+          { name: "255-byte leaf", leaf: maxComponent, status: "passed" },
+          { name: "256-byte leaf", leaf: overlongComponent, status: "failed" },
+          { name: "255-byte directory", sibling: `${maxComponent}/data`, status: "passed" },
+          { name: "256-byte directory", sibling: `${overlongComponent}/data`, status: "failed" },
+          { name: "4096-byte path", sibling: maxPath, status: "passed" },
+          { name: "4097-byte path", sibling: `${maxPath}/`, status: "failed" },
+          {
+            name: "absent optional companion",
+            sibling: `${overlongComponent}/data`,
+            omitCompanion: true,
+            status: "passed",
+          },
+        ];
+        const statuses = [];
+        for (const {
+          name,
+          leaf = "client.pem",
+          sibling = "companion.txt",
+          omitCompanion,
+        } of projections) {
+          publicItem.path = leaf;
+          companionItem.path = sibling;
+          optional = omitCompanion === true;
+          companionPresent = !omitCompanion;
+          await writeFile(plan, JSON.stringify(planWithClient()));
+          const observed = await observations(verifiedConfig, null);
+          statuses.push({ name, status: observed.get("client-certificate")?.status });
+        }
+        assert.deepEqual(
+          statuses,
+          projections.map(({ name, status }) => ({ name, status })),
+        );
+        publicItem.path = "client.pem";
+        companionItem.path = "companion.txt";
+        companionPresent = true;
 
         // Change only the follow-up workload observation at the HTTPS API.
         // A healthy public leaf cannot make any of these races pass.

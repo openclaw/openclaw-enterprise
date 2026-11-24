@@ -141,6 +141,8 @@ Select a regular container or a restartable init container with a direct
 Secret volume mount. The selected file must have one mapping to `tls.crt` in the Secret.
 An item mapping can give the file a different name. A required Secret volume
 needs every mapped key. An optional volume can omit other mapped keys.
+For each present key, Kubernetes limits the relative item path to 4,096 UTF-8
+bytes and each component to 255 bytes before it normalizes the path.
 Two mapped keys with values in the Secret cannot use the same path as both a
 file and a directory. Overlapping mounts at the selected file, StatefulSet
 claims that replace the volume, subpath mounts, and projected volumes fail
@@ -248,7 +250,7 @@ HTTP `404`. Invalid responses leave the check unknown.
 | API addresses                      | The expected `/32` set matches the current Service and IPv4 EndpointSlice inventory.                                                                             |
 | ResourceQuotas                     | Each Job and ReplicaSet object limit fits reported usage plus the planned peak. A complete list can establish that neither limit exists.                         |
 | Service dependency                 | The named policy grants both required TCP edges. With `tls`, the selected public leaf has a current validity window and a matching DNS subject alternative name. |
-| Workload client certificate        | The selected container's Secret mount supplies a currently valid public leaf whose extended key usage allows client authentication.                              |
+| Workload client certificate        | The workload template and Secret map a currently valid public leaf with client-authentication usage to the selected path.                                        |
 | EKS identity and webhook addresses | The account, ARN, TLS endpoint and CA identify the intended EKS cluster, and expected webhook `/32`s match the filtered control-plane interface inventory.       |
 
 For `api-addresses` and `webhook-addresses`, `missing` lists observed `/32` addresses

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-24"
-last_updated_session: "authoring-run/adf92678-9370-432d-b05f-fc9b18392642"
+last_updated_session: "authoring-run/d741699f-1816-4494-b673-ec5ca6b39ead"
 ---
 
 # Production Startup Flow
@@ -91,7 +91,7 @@ and CA before collecting IPv4 addresses from the API Service and its EndpointSli
 and TLS selections over private IPC. A disconnect interrupts the read. The child
 returns only the result and retains the Secret body. For client mounts it
 rereads the workload after the Secret. A changed UID or `resourceVersion` yields
-`unknown`. Missing required keys or conflicting paths fail.
+`unknown`. Missing required keys, overlong item paths or path conflicts fail.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
@@ -367,6 +367,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 02:58: Check Secret item path byte limits. (authoring-run/d741699f-1816-4494-b673-ec5ca6b39ead - b75c6cd3a6fbddf70f550a5a9a3462ed3872a3ae)
 
 - 2026-11-24 02:20: Restrict certificate and controller projection to the validated parent request. (authoring-run/adf92678-9370-432d-b05f-fc9b18392642 - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
 
