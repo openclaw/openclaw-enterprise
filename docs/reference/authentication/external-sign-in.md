@@ -98,18 +98,23 @@ reports `password: false`. The Console keeps the password form behind
 **Recovery sign-in** while discovering sign-in methods, then adds the configured
 provider buttons. During a provider outage only the recovery account can sign in.
 
-An account without an identity for a configured provider cannot sign in until an
-administrator attaches one. Each startup with `recovery-only` logs
-`authentication.password-sign-in-warning` (`EXTERNAL_IDENTITY_MISSING`) with the
-enabled accounts, other than the recovery account, that lack one, in the
-`skippedUserIds` fields that the activation warning also uses. To switch:
+Before you switch to `recovery-only`, check that each person can still sign in.
 
-1. Keep `all`. As an Installation administrator, attach an identity to every
-   ordinary account ([attachment](#external-sign-in-profile)), and
-   have each person sign in with it once.
-2. Set `recovery-only` and upgrade. If the warning lists accounts, attach their
-   identities; that takes effect without a restart. Setting `all` again and upgrading restores
-   passwords.
+1. Keep `all`. Use a human Installation administrator session to check every
+   enabled, enrolled account except the designated recovery account. Include other
+   administrators. For anyone missing an identity with a configured provider,
+   attach the correct [Google](../../guides/deploy/google-sign-in.md#attach-and-detach)
+   or [OIDC](../../guides/deploy/oidc-sign-in.md#attach-and-detach) subject.
+2. Have every enabled, enrolled user except the recovery administrator verify
+   a fresh sign-in with a configured provider. Verify a fresh password sign-in
+   for the recovery account. Then set `recovery-only` and upgrade.
+3. Check the API startup logs. If logging is configured and accounts lack an
+   identity, `authentication.password-sign-in-warning` reports
+   `EXTERNAL_IDENTITY_MISSING`. When `skippedUserIdsTruncated` is true,
+   `skippedUserIds` is incomplete. Check the remaining accounts too.
+
+Attaching a missing identity takes effect without a restart. To allow password
+sign-in for other accounts again, set `all` and upgrade.
 
 State orders password-session creation with online recovery replacement. If the
 move commits first, the former holder's login receives the same audited `401`,
