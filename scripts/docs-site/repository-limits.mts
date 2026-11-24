@@ -42,7 +42,7 @@ function mount(root: HTMLElement) {
     </details>
     <details data-advanced>
       <summary>Advanced <span data-mode></span></summary>
-      <div>These limits apply to every Agent using the registration. They cannot add permissions or change Git access.</div>
+      <div>These limits apply to every Agent using the registration. They cannot add permissions.</div>
       <div class="levels">
         ${resources
           .map(
@@ -58,8 +58,8 @@ function mount(root: HTMLElement) {
           )
           .join("")}
       </div>
-      <label><input type="checkbox" name="block">Block API access unless listed</label>
-      <div class="hint">Includes future resources. For Git only, select this option and leave both resources blocked by default.</div>
+      <label><input type="checkbox" name="block">Allow only explicit API selections</label>
+      <div class="hint">Select this to block unlisted resources, including future ones. Git is unchanged.</div>
       <div data-omit>Omit <code>apiLimits</code> to use the approved permissions and each Agent’s grant.</div>
       <div data-config hidden>
         Set <code>apiLimits</code> beside <code>permissions</code> in this repository’s <code>namespaces</code> entry. Redeploy affected Agents.

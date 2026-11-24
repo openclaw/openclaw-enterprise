@@ -66,7 +66,7 @@ test("Native GitHub preview keeps Namespace limits independent of example Agent 
   const grant = select("Example Agent grant");
   const issues = select("Issues");
   const pulls = select("Pull requests");
-  const block = panel.getByRole("checkbox", { name: "Block API access unless listed" });
+  const block = panel.getByRole("checkbox", { name: "Allow only explicit API selections" });
   const access = () => panel.locator("dd").allInnerTexts();
   const output = panel.locator("pre");
   async function config(): Promise<unknown> {
