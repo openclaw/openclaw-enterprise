@@ -808,12 +808,8 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           if (
             input.type !== "static" ||
             typeof input.name !== "string" ||
-            !material ||
-            typeof material !== "object" ||
-            Array.isArray(material) ||
-            Object.values(material).length !== 1 ||
-            typeof Object.values(material)[0] !== "string" ||
-            Object.values(material)[0] === "" ||
+            typeof material !== "string" ||
+            material.trim() === "" ||
             "secrets" in input ||
             "driverId" in input
           ) {

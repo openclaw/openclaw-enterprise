@@ -510,7 +510,7 @@ test(
     assert.equal(invalidSource.json().error.code, "INVALID_REQUEST");
     assert.equal(
       invalidSource.json().error.message,
-      "Static sources accept only the optional provider_preset=openai configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
+      "Static sources accept an approved provider_preset configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
     );
     const invalidPreset = remember(
       await inject("POST", `${base}/credential-sources`, {

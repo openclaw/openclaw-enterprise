@@ -288,9 +288,7 @@ async function savedCodexPluginFixture(
           name,
           type: "static",
           config: { provider_preset: preset },
-          secret: {
-            opaque: preset === "codex-pat" ? "at-controlled-console-token" : "controlled-api-key",
-          },
+          secret: preset === "codex-pat" ? "at-controlled-console-token" : "controlled-api-key",
         },
       },
     );
