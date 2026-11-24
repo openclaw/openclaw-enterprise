@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { X509Certificate } from "node:crypto";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import assert from "node:assert/strict";
@@ -6,6 +7,7 @@ import { createServer } from "node:https";
 import test, { type TestContext } from "node:test";
 import { StrandsBoxSandboxDriver } from "../../apps/controller/src/drivers/sandbox/strands-box.ts";
 import { listen } from "../helpers/listen.ts";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import {
   KubernetesObjectApi,
   type KubernetesObject,
@@ -119,8 +121,8 @@ test("a replacement at the same readiness endpoint receives no bearer or request
   assert.equal(requests, 0);
 });
 
-test("Box bounds listener startup retries to a missing Pod or an owned initializing Pod", async (t) => {
-  const driver = new StrandsBoxSandboxDriver(
+function strandsDriver() {
+  return new StrandsBoxSandboxDriver(
     {
       kubernetes: {
         seccompProfile: "strands.json",
@@ -136,6 +138,36 @@ test("Box bounds listener startup retries to a missing Pod or an owned initializ
       routing: gatewayRouting,
     },
   );
+}
+
+function podCertificate(uid: string, hostname: string, statusHostname: string): string {
+  return execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-days",
+      "1",
+      "-subj",
+      `/CN=${uid}`,
+      "-keyout",
+      "/dev/null",
+      "-addext",
+      "basicConstraints=critical,CA:FALSE",
+      "-addext",
+      `subjectAltName=DNS:${hostname},DNS:${statusHostname}`,
+    ],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+  );
+}
+
+test("Box bounds listener startup retries to a missing Pod or an owned initializing Pod", async (t) => {
+  const driver = strandsDriver();
   const revision = routedRevision(
     { id: "kubernetes", implementation: "kubernetes" },
     { sandboxDriverId: driver.id },
@@ -236,4 +268,243 @@ test("Box bounds listener startup retries to a missing Pod or an owned initializ
       );
     });
   }
+});
+
+test("Compute observes only the Strands execution identity pinned by endpoint discovery", async (t) => {
+  const sandbox = strandsDriver();
+  const {
+    driver: compute,
+    revision,
+    namespace: namespaceName,
+    core,
+  } = providerEndpointFixture({
+    sandboxDriver: sandbox,
+  });
+  const namespace = { ...tenant, name: namespaceName, status: "ready" } as const;
+  const { resourceName } = sandbox.harnessResource({ revision, namespace });
+  const hostname = `${resourceName}.${namespaceName}.svc`;
+  const statusHostname = `${resourceName}-status.${namespaceName}.svc`;
+  const labels = {
+    "openclaw.dev/strands-box": digest(sandbox.id, 20),
+    "openclaw.dev/namespace": namespace.id,
+    "openclaw.dev/agent": revision.agentId,
+    "openclaw.dev/revision": revision.id,
+    "openclaw.dev/workload-role": "agent",
+  };
+  const deploymentOwner = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    name: resourceName,
+    uid: "deployment-a",
+    controller: true,
+  };
+  const replicaSetOwner = {
+    apiVersion: "apps/v1",
+    kind: "ReplicaSet",
+    name: `${resourceName}-rs`,
+    uid: "rs-a",
+    controller: true,
+  };
+  const deployment = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: resourceName, namespace: namespaceName, labels, uid: deploymentOwner.uid },
+  };
+  const originalUid = "00000000-0000-4000-8000-000000000001";
+  const replacementUid = "00000000-0000-4000-8000-000000000002";
+  const originalPem = podCertificate(originalUid, hostname, statusHostname);
+  const replacementPem = podCertificate(replacementUid, hostname, statusHostname);
+  const pod = (uid: string, certificate: string) => ({
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: `${resourceName}-${uid.slice(-1)}`,
+      namespace: namespaceName,
+      labels,
+      uid,
+      ownerReferences: [replicaSetOwner],
+    },
+    status: {
+      phase: "Running",
+      conditions: [{ type: "Ready", status: "True" }],
+      containerStatuses: [{ name: "agent", restartCount: 0, state: { running: {} } }],
+      initContainerStatuses: [
+        {
+          name: "initialize-listener",
+          state: { terminated: { exitCode: 0, message: certificate } },
+        },
+      ],
+    },
+  });
+  type Receipt = KubernetesObject & {
+    immutable?: boolean;
+    data?: { deploymentUid?: string; podUid?: string; certificate?: string };
+  };
+  const original = pod(originalUid, originalPem);
+  const replacement = pod(replacementUid, replacementPem);
+  let pods: Array<KubernetesObject & { status?: unknown }> = [original];
+  let deployments = [deployment];
+  let receipt: Receipt | undefined;
+  let receiptReadsForbidden = false;
+  let podReadFailure: Error | undefined;
+  let podListContinuation: string | undefined;
+  const receipts: Receipt[] = [];
+  const absent = () => Object.assign(new Error("not found"), { statusCode: 404 });
+  const objects = {
+    async list(_version: string, kind: string) {
+      if (kind === "Deployment") {
+        return { items: structuredClone(deployments) };
+      }
+      assert.equal(kind, "Pod");
+      if (podReadFailure) {
+        throw podReadFailure;
+      }
+      return { metadata: { continue: podListContinuation }, items: structuredClone(pods) };
+    },
+    async read({ kind, metadata }: KubernetesObject) {
+      assert.equal(metadata?.namespace, namespaceName);
+      switch (kind) {
+        case "Deployment":
+          assert.equal(metadata?.name, resourceName);
+          return structuredClone(deployments[0]);
+        case "ReplicaSet":
+          assert.equal(metadata?.name, replicaSetOwner.name);
+          return { metadata: { uid: replicaSetOwner.uid, ownerReferences: [deploymentOwner] } };
+        case "ConfigMap":
+          assert.equal(metadata?.name, `${resourceName}-listener`);
+          if (receiptReadsForbidden) {
+            throw Object.assign(new Error("forbidden"), { statusCode: 403 });
+          }
+          if (!receipt) {
+            throw absent();
+          }
+          return structuredClone(receipt);
+        case "Service":
+          assert.equal(metadata?.name, resourceName);
+          return {
+            kind,
+            metadata: { name: resourceName, labels },
+            spec: { ports: [{ port: 18790, targetPort: 18790 }], selector: labels },
+          };
+        default:
+          assert.fail("unexpected read: " + kind);
+      }
+    },
+    async create(resource: Receipt) {
+      assert.equal(resource.kind, "ConfigMap");
+      assert.equal(resource.metadata?.name, `${resourceName}-listener`);
+      receipts.push(structuredClone(resource));
+      assert.equal(receipt, undefined);
+      receipt = structuredClone(resource);
+      return resource;
+    },
+  };
+  Object.setPrototypeOf(objects, KubernetesObjectApi.prototype);
+  // Inject only the Kubernetes response boundary. Compute's namespace and revision checks,
+  // the Box observer, and endpoint certificate verification all run as shipped.
+  Object.defineProperty(compute, "apiClients", { value: Promise.resolve({ core, objects }) });
+  Object.defineProperty(sandbox, "observer", { value: Promise.resolve(objects) });
+  const signal = new AbortController().signal;
+  const observe = () => compute.observeRevision(revision, signal);
+  const endpoint = () =>
+    sandbox.harnessEndpoint({
+      namespace,
+      revision,
+      kubernetes: objects,
+      signal,
+      requirements: {
+        loginMode: "api_key",
+        image: "box:fixture",
+        labels,
+        command: [],
+        retainedDirectories: [],
+        environment: [{ name: "APP_SERVER_PORT", value: "18790" }],
+        files: [],
+        credentialAttachments: [],
+        workspaceMounts: [],
+      },
+    });
+  for (const phase of ["Failed", "Succeeded"]) {
+    await t.test(
+      `initializer success on a ${phase} Pod cannot reserve its certificate`,
+      async () => {
+        receipt = undefined;
+        receipts.length = 0;
+        pods = [
+          {
+            ...original,
+            status: {
+              phase,
+              conditions: [{ type: "Ready", status: "False" }],
+              initContainerStatuses: original.status.initContainerStatuses,
+            },
+          },
+        ];
+        await assert.rejects(endpoint(), { name: "DependencyUnavailableError" });
+        assert.deepEqual(receipts, []);
+      },
+    );
+  }
+  await t.test("the original Ready Pod owns the listener pin and is running", async () => {
+    receipt = undefined;
+    receipts.length = 0;
+    pods = [original];
+    const unpinned = await observe();
+    const bound = await endpoint();
+    assert.equal(bound.url, `wss://${hostname}:18790`);
+    assert.equal(bound.tlsPeerCertificate, new X509Certificate(originalPem).toString());
+    assert.equal(receipts[0]?.immutable, true);
+    assert.equal(receipts[0]?.data?.podUid, originalUid);
+    assert.equal(receipts[0]?.data?.deploymentUid, deploymentOwner.uid);
+    assert.deepEqual(await observe(), { state: "running" });
+    assert.deepEqual(unpinned, { state: "starting" });
+  });
+  await t.test("an unavailable read cannot establish loss", async () => {
+    receiptReadsForbidden = true;
+    assert.deepEqual(await observe(), { state: "unknown" });
+    receiptReadsForbidden = false;
+    podReadFailure = Object.assign(new Error("Pod list unavailable"), { statusCode: 503 });
+    assert.deepEqual(await observe(), { state: "unknown" });
+    podReadFailure = undefined;
+    pods = [replacement];
+    podListContinuation = "original-may-be-on-the-next-page";
+    assert.deepEqual(await observe(), { state: "unknown" });
+    podListContinuation = undefined;
+  });
+  await t.test("a failed supervisor is gone even while the Pod phase is Running", async () => {
+    pods = [
+      {
+        ...original,
+        status: {
+          ...original.status,
+          conditions: [{ type: "Ready", status: "False" }],
+          containerStatuses: [
+            {
+              name: "agent",
+              restartCount: 1,
+              // Kubernetes keeps Running for a container in its restart backoff.
+              state: { waiting: { reason: "CrashLoopBackOff" } },
+            },
+          ],
+        },
+      },
+    ];
+    assert.deepEqual(await observe(), { state: "lost", code: "HARNESS_EXITED" });
+  });
+  await t.test("a Ready replacement cannot cause running or overwrite the stored pin", async () => {
+    pods = [original, replacement];
+    assert.deepEqual(await observe(), { state: "unknown" });
+    pods = [replacement];
+    assert.deepEqual(await observe(), { state: "lost", code: "SANDBOX_MISSING" });
+    const bound = await endpoint();
+    assert.equal(bound.tlsPeerCertificate, new X509Certificate(originalPem).toString());
+    assert.equal(receipts.length, 1);
+  });
+  await t.test("a new Deployment with the same name is a different execution", async () => {
+    pods = [original];
+    deployments = [{ ...deployment, metadata: { ...deployment.metadata, uid: "deployment-b" } }];
+    assert.deepEqual(await observe(), { state: "lost", code: "SANDBOX_MISSING" });
+    await assert.rejects(endpoint(), /receipt ownership changed/);
+    assert.equal(receipts.length, 1);
+  });
 });

@@ -193,6 +193,60 @@ function listenerState(statuses: unknown = []): Record<string, unknown> | undefi
   return state;
 }
 
+function supervisorExited(status: Record<string, unknown> | undefined): boolean {
+  const statuses = status?.containerStatuses ?? [];
+  if (!Array.isArray(statuses)) {
+    throw new DependencyUnavailableError("Invalid Strands container statuses.");
+  }
+  const supervisors = statuses.map(asRecord).filter((entry) => entry?.name === "agent");
+  if (supervisors.length > 1) {
+    throw new DependencyUnavailableError("Ambiguous Strands supervisor status.");
+  }
+  const supervisor = supervisors[0];
+  const restarts = supervisor?.restartCount;
+  const exited = (state: unknown) =>
+    Number.isSafeInteger(asRecord(asRecord(state)?.terminated)?.exitCode);
+  // A supervisor consumes its Pod-local TLS key when it starts. Kubelet can
+  // restart the container on this Pod, but that process cannot serve this pin.
+  return (
+    (typeof restarts === "number" && Number.isSafeInteger(restarts) && restarts > 0) ||
+    exited(supervisor?.state) ||
+    exited(supervisor?.lastState)
+  );
+}
+
+function listenerReceipt(ref: SandboxResourceRef): KubernetesObject {
+  return {
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: { name: ref.resourceName + "-listener", namespace: ref.namespaceName },
+  };
+}
+
+function listenerLeaf(pem: unknown, podUid: string, ref: SandboxResourceRef): X509Certificate {
+  if (
+    typeof pem !== "string" ||
+    pem.length > 4096 ||
+    !/^-----BEGIN CERTIFICATE-----[\r\n]+[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/u.test(
+      pem.trim(),
+    )
+  ) {
+    throw new Error("Invalid Strands execution certificate evidence.");
+  }
+  const leaf = new X509Certificate(pem);
+  const hostOptions = { subject: "never" } as const;
+  if (
+    leaf.ca ||
+    leaf.subject !== "CN=" + podUid ||
+    !leaf.checkHost(`${ref.resourceName}.${ref.namespaceName}.svc`, hostOptions) ||
+    !leaf.checkHost(`${ref.resourceName}-status.${ref.namespaceName}.svc`, hostOptions) ||
+    !leaf.verify(leaf.publicKey)
+  ) {
+    throw new Error("Strands listener identity does not match its Pod and Services.");
+  }
+  return leaf;
+}
+
 function api(context: SandboxNamespaceContext): KubernetesObjectApi {
   if (!(context.kubernetes instanceof KubernetesObjectApi)) {
     throw new Error("Strands Box requires Compute's Kubernetes object client.");
@@ -370,55 +424,109 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     };
   }
 
-  async observeHarness(context: SandboxLogContext): Promise<SandboxHarnessObservation> {
-    this.harnessResource(context);
-    this.observer ??= createKubernetesClientConfiguration(
-      this.authentication,
-      (message) => new Error(message),
-    ).then(({ sdk, clientConfiguration }) => new sdk.KubernetesObjectApi(clientConfiguration));
-    const client = await this.observer;
-    context.signal.throwIfAborted();
+  private async revisionResources(
+    context: SandboxLogContext,
+    client: KubernetesObjectApi,
+    kind: "Pod" | "Deployment",
+  ) {
     const selector = Object.entries(this.labels(context))
-      .map(([key, value]) => `${key}=${value}`)
+      .map(([key, value]) => key + "=" + value)
       .join(",");
-    const list = (version: string, kind: string) =>
-      withComputeAbortSignal(context.signal, () =>
-        client.list(
-          version,
-          kind,
-          context.namespace.name,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          selector,
-        ),
+    const result = await withComputeAbortSignal(context.signal, () =>
+      client.list(
+        kind === "Pod" ? "v1" : "apps/v1",
+        kind,
+        context.namespace.name,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        selector,
+      ),
+    );
+    context.signal.throwIfAborted();
+    const metadata = asRecord(result.metadata);
+    if (!Array.isArray(result.items) || metadata?.continue || metadata?._continue) {
+      throw new DependencyUnavailableError("Incomplete Strands Box revision resources.");
+    }
+    return result.items;
+  }
+
+  async observeHarness(context: SandboxLogContext): Promise<SandboxHarnessObservation> {
+    const ref = this.harnessResource(context);
+    const { signal } = context;
+    try {
+      this.observer ??= createKubernetesClientConfiguration(
+        this.authentication,
+        (message) => new Error(message),
+      ).then(({ sdk, clientConfiguration }) => new sdk.KubernetesObjectApi(clientConfiguration));
+      const client = await this.observer;
+      signal.throwIfAborted();
+      const deployments = await this.revisionResources(context, client, "Deployment");
+      if (deployments.length === 0) {
+        return { state: "lost", code: "SANDBOX_MISSING" };
+      }
+      const deployment = deployments.length === 1 ? deployments[0] : undefined;
+      if (deployment?.metadata?.name !== ref.resourceName || !deployment.metadata.uid) {
+        return { state: "unknown" };
+      }
+      owned(deployment, context.namespace.id, this.id);
+      if (deployment.metadata.deletionTimestamp) {
+        return { state: "lost", code: "SANDBOX_DELETING" };
+      }
+      const receipt = await withComputeAbortSignal(signal, () =>
+        read({ ...context, kubernetes: client }, listenerReceipt(ref)),
       );
-    const deployments = await list("apps/v1", "Deployment");
-    context.signal.throwIfAborted();
-    if (deployments.items.length === 0) {
-      return { state: "lost", code: "SANDBOX_MISSING" };
+      signal.throwIfAborted();
+      if (!receipt) {
+        return { state: "starting" };
+      }
+      const pin = this.pinnedListener(context, ref, receipt);
+      if (pin.deploymentUid !== deployment.metadata.uid) {
+        return { state: "lost", code: "SANDBOX_MISSING" };
+      }
+      // Endpoint discovery verified the controller chain before recording the
+      // immutable UIDs. A replacement with identical labels has a different UID.
+      const pods = await this.revisionResources(context, client, "Pod");
+      if (pods.some((pod) => !isPodUid(pod?.metadata?.uid))) {
+        return { state: "unknown" };
+      }
+      const pinnedPods = pods.filter((pod) => pod.metadata?.uid === pin.podUid);
+      if (pinnedPods.length === 0) {
+        return { state: "lost", code: "SANDBOX_MISSING" };
+      }
+      const pod = pinnedPods[0]!;
+      if (pinnedPods.length !== 1) {
+        return { state: "unknown" };
+      }
+      if (pod.metadata?.deletionTimestamp) {
+        return { state: "lost", code: "SANDBOX_DELETING" };
+      }
+      const status = asRecord(asRecord(pod)?.status);
+      if (status?.phase === "Failed") {
+        return { state: "lost", code: "SANDBOX_FAILED" };
+      }
+      if (status?.phase === "Succeeded") {
+        return { state: "lost", code: "HARNESS_EXITED" };
+      }
+      if (status?.phase === "Pending") {
+        return { state: "starting" };
+      }
+      if (status?.phase !== "Running") {
+        return { state: "unknown" };
+      }
+      if (supervisorExited(status)) {
+        return { state: "lost", code: "HARNESS_EXITED" };
+      }
+      if (pods.length !== 1 || !Array.isArray(status.conditions)) {
+        return { state: "unknown" };
+      }
+      const ready = status.conditions.find((entry) => asRecord(entry)?.type === "Ready");
+      return asRecord(ready)?.status === "True" ? { state: "running" } : { state: "starting" };
+    } catch {
+      signal.throwIfAborted();
+      return { state: "unknown" };
     }
-    if (deployments.items.length !== 1) {
-      throw new Error("Ambiguous Strands Box revision resources.");
-    }
-    owned(deployments.items[0]!, context.namespace.id, this.id);
-    if (deployments.items[0]!.metadata?.deletionTimestamp) {
-      return { state: "lost", code: "SANDBOX_DELETING" };
-    }
-    const pods = await list("v1", "Pod");
-    context.signal.throwIfAborted();
-    if (pods.items.length !== 1) {
-      return { state: "starting" };
-    }
-    const status = asRecord(asRecord(pods.items[0])?.status);
-    const conditions = Array.isArray(status?.conditions) ? status.conditions : [];
-    return conditions.some(
-      (condition) =>
-        asRecord(condition)?.type === "Ready" && asRecord(condition)?.status === "True",
-    )
-      ? { state: "running" }
-      : { state: "starting" };
   }
 
   async workspaceNodePeerLabels(
@@ -824,6 +932,31 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     return `${serviceName}.${ref.namespaceName}.svc:${port}`;
   }
 
+  private pinnedListener(
+    context: SandboxLogContext,
+    ref: SandboxResourceRef,
+    receipt: KubernetesObject,
+  ) {
+    owned(receipt, context.namespace.id, this.id);
+    const object = asRecord(receipt);
+    const data = asRecord(object?.data);
+    if (
+      receipt.metadata?.name !== ref.resourceName + "-listener" ||
+      object?.immutable !== true ||
+      receipt.metadata.deletionTimestamp ||
+      typeof data?.deploymentUid !== "string" ||
+      !data.deploymentUid ||
+      !isPodUid(data.podUid)
+    ) {
+      throw new Error("Strands execution receipt ownership changed.");
+    }
+    return {
+      deploymentUid: data.deploymentUid,
+      podUid: data.podUid,
+      certificate: listenerLeaf(data.certificate, data.podUid, ref),
+    };
+  }
+
   private async listenerCertificate(context: SandboxHarnessContext): Promise<X509Certificate> {
     const ref = this.harnessResource(context);
     const metadata = { name: ref.resourceName, namespace: ref.namespaceName };
@@ -834,77 +967,28 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     owned(deployment, context.namespace.id, this.id);
     const uid = deployment.metadata.uid;
     const labels = this.labels(context);
-    const receipt = {
-      apiVersion: "v1",
-      kind: "ConfigMap",
-      metadata: { ...metadata, name: metadata.name + "-listener", labels },
-    };
-    const hostname = metadata.name + "." + metadata.namespace + ".svc";
-    const validate = (pem: unknown, podUid: unknown) => {
-      if (
-        typeof pem !== "string" ||
-        pem.length > 4096 ||
-        !/^-----BEGIN CERTIFICATE-----[\r\n]+[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/u.test(
-          pem.trim(),
-        ) ||
-        !isPodUid(podUid)
-      ) {
-        throw new Error("Invalid Strands execution certificate evidence.");
-      }
-      const leaf = new X509Certificate(pem);
-      if (
-        leaf.ca ||
-        leaf.subject !== "CN=" + podUid ||
-        !leaf.checkHost(hostname, { subject: "never" }) ||
-        !leaf.checkHost(metadata.name + "-status." + metadata.namespace + ".svc", {
-          subject: "never",
-        }) ||
-        !leaf.verify(leaf.publicKey)
-      ) {
-        throw new Error("Strands listener identity does not match its Pod and Services.");
-      }
-      return leaf;
-    };
+    const receipt = listenerReceipt(ref);
     const pinned = (resource: KubernetesObject) => {
-      owned(resource, context.namespace.id, this.id);
-      const object = asRecord(resource);
-      const data = asRecord(object?.data);
-      if (
-        object?.immutable !== true ||
-        resource.metadata?.deletionTimestamp ||
-        data?.deploymentUid !== uid
-      ) {
+      const pin = this.pinnedListener(context, ref, resource);
+      if (pin.deploymentUid !== uid) {
         throw new Error("Strands execution receipt ownership changed.");
       }
-      return validate(data.certificate, data.podUid);
+      return pin.certificate;
     };
     const existing = await read(context, receipt);
     if (existing) {
       return pinned(existing);
     }
-    const selector = Object.entries(labels)
-      .map(([key, value]) => key + "=" + value)
-      .join(",");
-    const pods = await api(context).list(
-      "v1",
-      "Pod",
-      metadata.namespace,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      selector,
-    );
     const pending = (message: string) =>
       new TransientDependencyError("sandbox_gateway", "unavailable", message);
-    const items = Array.isArray(pods.items) ? pods.items : undefined;
-    if (items?.length === 0) {
+    const items = await this.revisionResources(context, api(context), "Pod");
+    if (items.length === 0) {
       throw pending("Awaiting the first Strands execution Pod.");
     }
-    const pod = items?.length === 1 ? items[0] : undefined;
+    const pod = items.length === 1 ? items[0] : undefined;
     const owner = pod?.metadata?.ownerReferences?.find((item) => item.controller === true);
     if (
-      !pod?.metadata?.uid ||
+      !isPodUid(pod?.metadata?.uid) ||
       pod.metadata.deletionTimestamp ||
       owner?.kind !== "ReplicaSet" ||
       owner.apiVersion !== "apps/v1" ||
@@ -931,33 +1015,35 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     }
     const rawStatus = asRecord(pod)?.status;
     const status = asRecord(rawStatus);
+    const phase = status?.phase;
+    if (
+      (rawStatus !== undefined && !status) ||
+      (phase !== undefined && phase !== "Pending" && phase !== "Running")
+    ) {
+      throw new DependencyUnavailableError("The Strands execution Pod cannot serve the listener.");
+    }
     const state = listenerState(status?.initContainerStatuses);
     const terminated = asRecord(state?.terminated);
     if (terminated?.exitCode !== 0) {
       // Only normal startup observations justify retrying without a certificate.
-      const phase = status?.phase;
       const waiting = asRecord(state?.waiting);
       const starting =
         waiting &&
         (waiting.reason === undefined ||
           waiting.reason === "ContainerCreating" ||
           waiting.reason === "PodInitializing");
-      if (
-        isPodUid(pod.metadata.uid) &&
-        (rawStatus === undefined || status) &&
-        (phase === undefined || phase === "Pending" || phase === "Running") &&
-        (!state || starting || asRecord(state.running))
-      ) {
+      if (!state || starting || asRecord(state.running)) {
         throw pending("Awaiting Strands listener certificate.");
       }
       throw new DependencyUnavailableError("Awaiting Strands listener certificate.");
     }
-    const cert = validate(terminated.message, pod.metadata.uid);
+    const cert = listenerLeaf(terminated.message, pod.metadata.uid, ref);
     // Concurrent workers may observe different Pods. A single create wins.
     // Every retry uses the winner, including after the Deployment replaces a Pod.
     try {
       await api(context).create({
         ...receipt,
+        metadata: { ...receipt.metadata, labels },
         immutable: true,
         data: {
           deploymentUid: uid,
