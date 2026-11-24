@@ -1018,7 +1018,13 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         ownersCurrent,
       );
       const { credentialSource } = repository.resolution;
-      return credentialSource === undefined ? edit : { ...edit, credentialSource };
+      return credentialSource === undefined
+        ? edit
+        : {
+            ...edit,
+            credentialSource,
+            repositoryApiMaxima: repository.resolution.repositoryApiMaxima ?? [],
+          };
     } catch {
       // Driver refusals can contain protected configuration and binding details.
       return undefined;

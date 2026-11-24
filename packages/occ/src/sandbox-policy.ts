@@ -32,6 +32,7 @@ function editableSandboxPolicy(
 
 import {
   type RepositoryNetworkGrant,
+  type RepositoryApiMaximum,
   assertExecutionAdmission,
   ConfigurationValidationError,
   networkGrantAdmissionDetails,
@@ -80,6 +81,7 @@ interface SandboxPolicyDependencies {
   ) => Promise<
     | (ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> & {
         readonly credentialSource?: string;
+        readonly repositoryApiMaxima?: readonly RepositoryApiMaximum[];
       })
     | undefined
   >;
@@ -90,6 +92,7 @@ interface SandboxPolicyDependencies {
     agent: Readonly<Agent>,
     sourceId: string,
     grants: readonly RepositoryNetworkGrant[] | undefined,
+    maxima: readonly RepositoryApiMaximum[] | undefined,
   ) => Promise<unknown>;
   readonly repositoryCeiling: (namespaceId: string) => RepositoryNetworkPolicyCeiling;
   readonly installationId: string;
@@ -653,6 +656,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
           agent,
           qualifiedEdit.credentialSource,
           repositoryNetworkPolicy,
+          qualifiedEdit.repositoryApiMaxima,
         );
       }
       const admittedEdit = repositoryOnly

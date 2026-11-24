@@ -21,7 +21,7 @@ If the private-store write cannot be confirmed, registration can fail while leav
 
 ### Register a GitHub repository token
 
-The `github` preset holds one GitHub fine-grained personal access token. `config.repositories` is required with this preset and is not allowed with other presets. It is the Source's repository ceiling: comma-separated `owner/name:read` or `owner/name:write` entries, each repository once, in canonical lowercase form. It holds at most 32 entries, and the whole value at most 2,048 characters, as for every config value. An error names the refused entry by number. The response returns the ceiling in repository order. Create and update audit records carry the ceiling, and a ceiling change also records the previous one.
+The `github` preset holds one GitHub fine-grained personal access token. `config.repositories` is required with this preset and is not allowed with other presets. It is the Source's repository ceiling: comma-separated `owner/name:read` or `owner/name:write` entries, each optionally ending in `:api` for [issue and pull request access](../repository-credentials/repository-token-source.md#issues-and-pull-requests), each repository once, in canonical lowercase form. It holds at most 32 entries, and the whole value at most 2,048 characters, as for every config value. An error names the refused entry by number. The response returns the ceiling in repository order. Create and update audit records carry the ceiling, and a ceiling change also records the previous one.
 
 ```json
 {

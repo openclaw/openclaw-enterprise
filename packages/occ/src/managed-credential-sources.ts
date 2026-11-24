@@ -6,6 +6,7 @@ import {
   GITHUB_SOURCE_PRESET_ID,
   isGitHubFineGrainedToken,
   isRepositoryTokenSource,
+  readSourceRepositoryCeiling,
   isSourceProviderPresetId,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   SOURCE_REPOSITORIES_CONFIG_KEY,
@@ -419,6 +420,29 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         throw new ResourceStateConflictError(
           "Repository ceiling changes require an unbound source.",
         );
+      }
+      if (ceilingChanges && ceiling && currentPreset === GITHUB_SOURCE_PRESET_ID) {
+        const current = readSourceRepositoryCeiling(
+          source.config[SOURCE_REPOSITORIES_CONFIG_KEY] ?? "",
+        );
+        const next = readSourceRepositoryCeiling(ceiling[SOURCE_REPOSITORIES_CONFIG_KEY] ?? "");
+        // Removing an ungranted repository could enable PR creation without shrinking the PAT.
+        const byName = new Map(current.map((entry) => [entry.repository, entry]));
+        if (
+          next.some(({ api }) => api) &&
+          (next.length !== current.length ||
+            next.some((entry) => {
+              const prior = byName.get(entry.repository);
+              return (
+                !prior ||
+                (entry.api && (!prior.api || (entry.access === "write" && prior.access === "read")))
+              );
+            }))
+        ) {
+          throw new ResourceStateConflictError(
+            "Register a new Source to expand GitHub API access or change its repository set.",
+          );
+        }
       }
       if (currentPreset === GITHUB_SOURCE_PRESET_ID && input.secret !== undefined) {
         assertGitHubSourceMaterial(input.secret);

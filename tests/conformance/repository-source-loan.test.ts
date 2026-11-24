@@ -170,6 +170,9 @@ const lent = (agentId = "agent-a") => ({
   key: { source: { id: `revision-key-${agentId}` } },
   session: { namespaceId: "namespace-a", agentId, revisionId: `revision-${agentId}` },
   grant: {
+    repositoryApiMaxima: [
+      { repository: "fixture/a", access: "write", issues: "none", pull_requests: "none" },
+    ] as import("@openclaw-enterprise/contracts").RepositoryApiMaximum[],
     credentialSource: { namespaceId: "namespace-a", sourceId: "cs_fixture_token" },
     repositories: [{ repository: "fixture/a", repositoryId: "1" }],
   },
@@ -628,4 +631,33 @@ test("a refused loan is reported once per revision, even while a peer revision's
   fake.operable.delete("agent-a");
   assert.equal(await reader.readWarm(undefined, lent("agent-a")), undefined);
   assert.equal(refusals.length, 2);
+});
+
+test("a PAT loan checks API enrollment, unbound PR heads and tightening before resolving material", async () => {
+  const fake = custodyFake({ repositories: "fixture/a:write" });
+  const { reader } = loanReader(fake);
+  const request = lent();
+  request.grant.repositoryApiMaxima.splice(0, 1, {
+    repository: "fixture/a",
+    access: "write",
+    issues: "write",
+    pull_requests: "write",
+  });
+  assert.equal(await reader.readWarm(undefined, request), undefined);
+  fake.row.repositories = "fixture/a:write:api,fixture/c:read";
+  assert.equal(await reader.readWarm(undefined, request), undefined);
+  assert.equal(fake.counts.resolves, 0);
+  fake.row.repositories = "fixture/a:write:api";
+  const { material, hold } = await lend(reader, request);
+  await hold.release();
+  const installed = {
+    preparationAttemptId: material.preparationAttemptId,
+    materialVersion: material.materialVersion,
+  };
+  assert.ok(await reader.current(undefined, request, installed));
+  fake.row.repositories = "fixture/a:write";
+  const before = fake.counts.resolves;
+  assert.equal(await reader.current(undefined, request, installed), undefined);
+  assert.equal(await reader.readWarm(undefined, request), undefined);
+  assert.equal(fake.counts.resolves, before);
 });

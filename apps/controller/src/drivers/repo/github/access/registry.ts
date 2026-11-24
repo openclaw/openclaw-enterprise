@@ -7,6 +7,7 @@ import {
 } from "./repository-grant.ts";
 import {
   limitRepositoryApi,
+  repositoryGitRestOperations,
   type RepositoryGitDeliveryResolver,
   type RepositoryGitRestAuthority,
 } from "../../access/delivery.ts";
@@ -58,7 +59,7 @@ export interface GitHubRepositoryRegistration {
      * (finding 2147). Absent means one draft per grant. */
     draftPullLimit?: "none";
     /** A same-Namespace TokenService Source that holds this registration's Git credential in
-     * place of the GitHub App. Allowed only for native Git with Git permissions. */
+     * place of the GitHub App. Requires a native repository network policy. */
     credentialSource?: string;
   }>[];
 }
@@ -88,8 +89,8 @@ export interface GitHubRepositoryRegistry {
 
 const selectorPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const credentialSourcePattern = /^cs_[A-Za-z0-9._-]{1,125}$/;
-// The network policy enforces Git paths only, so a Source-backed registration grants nothing else.
-const sourceRegistrationPermissions = new Set(["metadata", "contents"]);
+// Only Git, Issues and Pull requests have native routes for a repository token.
+const sourceRegistrationPermissions = new Set(["metadata", "contents", "issues", "pull_requests"]);
 
 export class GitHubAppRegistryRequiredError extends Error {
   constructor() {
@@ -342,7 +343,6 @@ export function validateGitHubRepositoryRegistry(
         source !== undefined
           ? !selected ||
             policy.nativeGit !== "v1" ||
-            Object.hasOwn(policy, "apiLimits") ||
             Object.keys(permissions ?? {}).some((key) => !sourceRegistrationPermissions.has(key))
           : !app
       ) {
@@ -733,21 +733,8 @@ export function createGitHubRepositoryDeliveryResolver(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
       }
-      if (scope.credential.kind === "credential_source") {
-        // A Source is lent to its own endpointless Provider; it has no route but native Git.
-        if (!nativeGit) {
-          throw new Error("A repository token Source requires native Git with a network policy.");
-        }
-        return Object.freeze({
-          binding: state.bindings[0]!,
-          delivery: Object.freeze({
-            scope: "github-repository" as const,
-            credentialSource: scope.credential.sourceId,
-            repositories: scope.repositories,
-            permissions: scope.permissions,
-            nativeGit: "v1" as const,
-          }),
-        });
+      if (scope.credential.kind === "credential_source" && !nativeGit) {
+        throw new Error("A repository token Source requires native Git with a network policy.");
       }
       // The credential covers every bound repository, and a pull request can name any of them
       // in the target's fork network as its head. Creation therefore needs a saved grant on each.
@@ -759,10 +746,14 @@ export function createGitHubRepositoryDeliveryResolver(
         binding: state.bindings[0]!,
         delivery: Object.freeze({
           scope: "github-repository" as const,
-          installationId: requireGitHubApp(registry).installationId,
+          ...(scope.credential.kind === "credential_source"
+            ? { credentialSource: scope.credential.sourceId, nativeGit: "v1" as const }
+            : {
+                installationId: requireGitHubApp(registry).installationId,
+                ...(nativeGit && { nativeGit: "v1" as const }),
+              }),
           repositories: scope.repositories,
           permissions: scope.permissions,
-          ...(nativeGit && { nativeGit: "v1" as const }),
           ...(nativeGit && scopedRest.length > 0 && { scopedRest: Object.freeze(scopedRest) }),
         }),
       });
@@ -820,6 +811,13 @@ export function resolveSelectedRepositoryGrant(
       id: bindings[0]!.grant.grantId,
       isolationId: revisionId,
       credentialSource: Object.freeze({ namespaceId, sourceId: scope.credential.sourceId }),
+      repositoryApiMaxima: repositoryGitRestOperations(
+        scope.repositories.map(({ repository }) => ({
+          repository,
+          access: scope.permissions.contents === "write" ? "write" : "read",
+        })),
+        scope.scopedRest,
+      ),
       profile: "github-repository",
       repositories: scope.repositories,
       permissions: scope.permissions,

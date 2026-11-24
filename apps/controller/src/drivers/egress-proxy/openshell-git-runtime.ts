@@ -393,7 +393,7 @@ function gitProvider(
     ...(managedSandbox && { managedSandbox }),
     ...(workspaceRoute && { workspaceRoute }),
     ...(observedHookPreview && { observedHookPreview }),
-    ...openShellGitNetworkDefaults(delivery),
+    ...openShellGitNetworkDefaults(delivery, repositoryNetworkPolicy),
   });
 }
 
@@ -907,7 +907,8 @@ export class OpenShellGitRuntime {
       provider: entry.binding.provider,
       nativePolicy: entry.preview.native
         ? {
-            binaries: openShellGitNetworkDefaults(scope.delivery).binaries,
+            binaries: openShellGitNetworkDefaults(scope.delivery, scope.repositoryNetworkPolicy)
+              .binaries,
             scopedRest,
             ...("credentialSource" in scope.delivery &&
               scope.delivery.credentialSource !== undefined && { credential: "source" as const }),

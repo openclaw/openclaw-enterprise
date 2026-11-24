@@ -16,7 +16,10 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { compileOpenShellBoundGitRule } from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
+import {
+  compileOpenShellBoundGitRule,
+  openShellGitNetworkDefaults,
+} from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/repository-approval.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
@@ -763,7 +766,7 @@ test("App grant identities keep their exact digest when the registry learns Sour
   );
 });
 
-test("a registration selects a Source only for native Git with Git permissions", async (t) => {
+test("a Source registration requires native delivery and supported repository permissions", async (t) => {
   const registry = validateGitHubRepositoryRegistry(sourceRegistryInput(), "github-primary");
   assert.equal(registry.appId, undefined);
   assert.equal(registry.githubInstallationId, undefined);
@@ -783,24 +786,11 @@ test("a registration selects a Source only for native Git with Git permissions",
     "the retired scoped REST field": (input) => {
       input.repositories[0]!.namespaces[0]!.scopedRest = "v1";
     },
-    "API limits": (input) => {
-      input.repositories[0]!.namespaces[0]!.apiLimits = { issues: "read" };
-    },
-    "a Git-only API limit": (input) => {
-      input.repositories[0]!.namespaces[0]!.apiLimits = { default: "none" };
-    },
-    "issues permission": (input) => {
+    "unrelated permissions": (input) => {
       input.repositories[0]!.namespaces[0]!.permissions = {
         metadata: "read",
         contents: "write",
-        issues: "read",
-      };
-    },
-    "pull request permission": (input) => {
-      input.repositories[0]!.namespaces[0]!.permissions = {
-        metadata: "read",
-        contents: "write",
-        pull_requests: "write",
+        actions: "write",
       };
     },
     "standing approval": (input) => {
@@ -1012,19 +1002,22 @@ test("a Source-backed revision is delivered from its Source, never from the App"
     id: bindings[0]!.grant.grantId,
     isolationId: "rev_source",
     credentialSource: { namespaceId: "namespace-a", sourceId: "cs_repository_token" },
+    repositoryApiMaxima: [
+      { repository: "fixture/token", access: "write", issues: "none", pull_requests: "none" },
+    ],
     profile: "github-repository",
     repositories: [{ repositoryId: "101", repository: "fixture/token" }],
     permissions: { metadata: "read", contents: "write" },
   });
   assert.equal("appId" in grant || "installationId" in grant, false);
-  // A Source has no route but native Git: without a saved network policy it gets nothing.
+  // A Source requires a saved network policy for every route.
   assert.throws(
     () => createGitHubRepositoryDeliveryResolver(registry)(sourceRevision(bindings)),
     /requires native Git with a network policy/,
   );
 });
 
-test("a Source-backed registration stays Git-only under the REST derivation", () => {
+test("a Source uses the same scoped routes as the App only with declared REST permissions", () => {
   const grants = [{ repository: "fixture/token", access: "write" }] as const;
   // The same registration on the App, widened with issue and pull request permissions, derives
   // REST routes: that derivation follows the registration's permissions.
@@ -1048,9 +1041,7 @@ test("a Source-backed registration stays Git-only under the REST derivation", ()
   ).delivery;
   assert.ok("scopedRest" in appDelivery && appDelivery.scopedRest?.length === 1);
 
-  // A Source registration can hold neither those permissions nor API limits (refused above), so
-  // nothing in the derivation gives it REST: no scopedRest entry, no API limit and no network
-  // policy requirement from limits, at the policy Driver, the selected set and the delivery.
+  // A bare registration keeps its Git-only policy.
   const input = sourceRegistryInput();
   Object.assign(input, { appId: "12345", githubInstallationId: "67890" });
   const registry = validateGitHubRepositoryRegistry(input);
@@ -1101,7 +1092,7 @@ test("a Source-backed registration stays Git-only under the REST derivation", ()
   for (const field of ["scopedRest", "apiLimits", "installationId"]) {
     assert.equal(Object.hasOwn(limitedDelivery, field), false, field);
   }
-  // The Source Provider's rule binds Git paths only and refuses any REST authority.
+  // A bare Source rule carries no API endpoint.
   const provider = "oce-github-token-" + "a".repeat(32);
   const rule = compileOpenShellBoundGitRule(
     grants,
@@ -1111,15 +1102,61 @@ test("a Source-backed registration stays Git-only under the REST derivation", ()
     "source",
   );
   assert.deepEqual(new Set(rule.endpoints.map(({ host }) => host)), new Set(["github.com"]));
-  assert.throws(
-    () =>
-      compileOpenShellBoundGitRule(
-        grants,
-        provider,
-        ["/usr/bin/git"],
-        appScope.scopedRest,
-        "source",
-      ),
-    /A Source Provider is Git-only/,
+  const enabled = sourceRegistryInput();
+  for (const repo of enabled.repositories) {
+    repo.namespaces[0]!.permissions = appRegistration.permissions;
+  }
+  const api = validateGitHubRepositoryRegistry(enabled);
+  const bind = (refs: string[]) =>
+    createGitHubRepositoryDeliveryResolver(api)(sourceRevision(sourceBindings(api, refs), grants))
+      .delivery;
+  const selected = bind(["token"]);
+  assert.ok("credentialSource" in selected);
+  assert.deepEqual(selected.scopedRest, appScope.scopedRest);
+  const mixed = bind(["token", "token-peer"]);
+  assert.ok("credentialSource" in mixed);
+  assert.equal(mixed.scopedRest?.[0]?.createPullRequests, undefined);
+  assert.equal(mixed.scopedRest?.[0]?.createIssues, true);
+  const { binaries } = openShellGitNetworkDefaults(selected, grants);
+  assert.ok(binaries.includes("/usr/bin/gh"));
+  const gitOnly = openShellGitNetworkDefaults(selected, [
+    { ...grants[0], apiLimits: { default: "none" } },
+  ]);
+  assert.equal(gitOnly.binaries.includes("/usr/bin/gh"), false);
+  const apiRule = compileOpenShellBoundGitRule(
+    grants,
+    provider,
+    binaries,
+    selected.scopedRest,
+    "source",
+  );
+  const endpoint = apiRule.endpoints.find(({ host }) => host === "api.github.com");
+  assert.ok(endpoint && "rules" in endpoint);
+  assert.deepEqual(endpoint.credential_binding, { provider });
+  for (const resource of ["issues", "pulls"]) {
+    for (const method of ["GET", "POST"]) {
+      assert.ok(
+        endpoint.rules.some(
+          ({ allow }) =>
+            allow.method === method && allow.path === `/repos/fixture/token/${resource}`,
+        ),
+      );
+    }
+  }
+  const readOnly = compileOpenShellBoundGitRule(
+    [{ repository: "fixture/token", access: "read" }],
+    provider,
+    binaries,
+    mixed.scopedRest,
+    "source",
+  );
+  const apiEndpoints = readOnly.endpoints.filter(({ host }) => host === "api.github.com");
+  assert.equal(apiEndpoints.length, 1);
+  const [read] = apiEndpoints;
+  assert.ok(read && "rules" in read && read.rules.length);
+  assert.ok(
+    read.rules.every(
+      ({ allow }) => allow.method === "GET" && allow.path?.startsWith("/repos/fixture/token/"),
+    ),
   );
 });

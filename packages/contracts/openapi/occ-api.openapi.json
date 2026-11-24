@@ -285,7 +285,7 @@
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-            "description": "Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries.",
+            "description": "Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries. Append :api at enrollment to permit issue and pull request routes within that entry. API expansion requires a new Source.",
             "maxProperties": 32,
             "type": "object"
           },
@@ -322,7 +322,7 @@
         "properties": {
           "config": {
             "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
-            "description": "Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries.",
+            "description": "Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries. Append :api at enrollment to permit issue and pull request routes within that entry. API expansion requires a new Source.",
             "maxProperties": 32,
             "type": "object"
           },

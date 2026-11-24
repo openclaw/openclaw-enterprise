@@ -1,3 +1,5 @@
+import type { RepositoryApiMaximum } from "@openclaw-enterprise/contracts";
+
 /** Repository set explicitly approved for one Agent revision. */
 export interface GitHubRepositoryGrant {
   readonly id: string;
@@ -14,6 +16,7 @@ export interface GitHubRepositorySourceGrant extends Omit<
   GitHubRepositoryGrant,
   "appId" | "installationId"
 > {
+  readonly repositoryApiMaxima: readonly RepositoryApiMaximum[];
   readonly credentialSource: Readonly<{ namespaceId: string; sourceId: string }>;
 }
 

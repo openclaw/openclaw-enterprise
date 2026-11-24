@@ -22,11 +22,12 @@ export type OpenShellGitNetworkTarget =
       readonly installationId: string;
       readonly credentialSource?: never;
     }
-  /** A TokenService Source: native Git only, so its Provider never carries endpoints. */
+  /** A TokenService Source: its native Provider never carries endpoints. */
   | {
       readonly repository?: never;
       readonly installationId?: never;
       readonly credentialSource: string;
+      readonly scopedRest?: RepositoryGitRestAuthority;
     };
 
 /** The Provider a bound rule names, by the credential it binds; the name is derived, never chosen. */
@@ -46,9 +47,21 @@ const binaries = Object.freeze([
   "/usr/bin/node",
 ]);
 
-export function openShellGitNetworkDefaults(target: OpenShellGitNetworkTarget) {
+export function openShellGitNetworkDefaults(
+  target: OpenShellGitNetworkTarget,
+  grants?: readonly RepositoryNetworkGrant[],
+) {
+  const sourceApi =
+    target.credentialSource &&
+    grants &&
+    repositoryGitRestOperations(grants, target.scopedRest).some(
+      ({ issues, pull_requests }) => issues !== "none" || pull_requests !== "none",
+    );
   return {
-    binaries: target.installationId ? [...binaries, "/usr/bin/gh", "/usr/local/bin/gh"] : binaries,
+    binaries:
+      target.installationId || sourceApi
+        ? [...binaries, "/usr/bin/gh", "/usr/local/bin/gh"]
+        : binaries,
     gitOrigin: "https://github.com",
     apiOrigin: "https://api.github.com",
   };
@@ -249,9 +262,6 @@ export function compileOpenShellBoundGitRule(
         ? "Expected a Source Git Provider."
         : "Expected an installation Git Provider.",
     );
-  }
-  if (credential === "source" && scopedRest !== undefined) {
-    throw new Error("A Source Provider is Git-only.");
   }
   if (!Array.isArray(binaries) || binaries.length === 0) {
     throw new Error("Expected exact Git transport binary paths.");

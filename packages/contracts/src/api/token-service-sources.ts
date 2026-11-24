@@ -13,7 +13,7 @@ const material = Type.Record(Type.String(), SecretValue, {
 const managedConfig = {
   ...CredentialSourceConfig,
   description:
-    "Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries.",
+    "Non-secret configuration. provider_preset selects the approved permitted-use preset outside TokenService: openai for a model key, or github for one fine-grained personal access token. A github Source also requires repositories, a comma-separated repository ceiling of owner/name:read or owner/name:write entries. Append :api at enrollment to permit issue and pull request routes within that entry. API expansion requires a new Source.",
 };
 
 export const RegisterTokenServiceSourceBody = Type.Object(

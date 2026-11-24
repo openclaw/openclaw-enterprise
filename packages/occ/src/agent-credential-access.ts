@@ -7,7 +7,8 @@ import {
   readSourceRepositoryCeiling,
   SOURCE_REPOSITORIES_CONFIG_KEY,
   type RepositoryNetworkGrant,
-  type RepositoryNetworkPolicyCeiling,
+  type RepositoryApiMaximum,
+  sourceRepositoryApiRefusal,
   isModelSourcePresetId,
   MAX_AGENT_CREDENTIAL_SOURCES,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
@@ -293,6 +294,7 @@ export function createAgentCredentialAccess({
     agent: Readonly<Agent>,
     sourceId: string,
     grants: readonly RepositoryNetworkGrant[] | undefined,
+    maxima: readonly RepositoryApiMaximum[] | undefined,
   ): Promise<{ readonly tokenServiceInstanceId: string }> {
     const ref = {
       kind: "credential_source",
@@ -302,7 +304,7 @@ export function createAgentCredentialAccess({
     // Authorize before the lookup, so a caller without the grant learns nothing about the Source.
     await authorizeSourceOperate(principalId, agent.namespaceId, sourceId);
     const source = await state.credentialSources.lockCredentialSource(agent.namespaceId, sourceId);
-    let ceiling: RepositoryNetworkPolicyCeiling | undefined;
+    let ceiling: ReturnType<typeof readSourceRepositoryCeiling> | undefined;
     let tokenServiceInstanceId: string | undefined;
     if (
       isManagedTokenServiceSource(source) &&
@@ -325,6 +327,15 @@ export function createAgentCredentialAccess({
     }
     await authority.authorizeAgentPrincipal(principalId, agent, "operate", ref);
     assertSourceRepositoryGrants(grants, ceiling);
+    const refusal = sourceRepositoryApiRefusal(grants ?? [], ceiling, maxima ?? []);
+    if (refusal) {
+      throw new ResourceStateConflictError(
+        refusal === "api-not-enrolled"
+          ? "GitHub API access exceeds the Source ceiling. Disable API access or enroll an API-enabled Source."
+          : "Opening pull requests requires access to every repository declared by the Source. Disable opening pull requests or use a narrower Source.",
+        [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+      );
+    }
     return { tokenServiceInstanceId };
   }
 

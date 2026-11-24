@@ -75,11 +75,11 @@ export interface RepositoryGitDeliveryBinding {
         readonly scope: "github-repository";
         readonly repository?: never;
         readonly installationId?: never;
-        /** The registration's TokenService Source ID: native Git only, lent rather than issued. */
+        /** The registration's TokenService Source ID: lent for native repository access. */
         readonly credentialSource: string;
         readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
         readonly nativeGit: "v1";
-        readonly scopedRest?: never;
+        readonly scopedRest?: RepositoryGitRestAuthority;
         readonly permissions: Readonly<Record<string, string>>;
       }
     | { readonly repository: string; readonly installationId?: never }

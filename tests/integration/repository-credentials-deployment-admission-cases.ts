@@ -1420,11 +1420,15 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     }
   });
 
-  test("a registry-selected Source is checked at policy save, deploy and retirement", async (t) => {
+  async function sourcePolicyFixture(
+    t: TestContext,
+    repositorySourceCeiling: string,
+    rest = false,
+  ) {
     selectFixtureRelease(t);
     const fixture = await scopedFixture(t, {
       nativeGit: "v1",
-      repositorySourceCeiling: "example/selected:read",
+      repositorySourceCeiling,
       // The selected repository's registration names the Source; the others stay on the App.
       configureRegistry: (registry, repositorySourceId) => {
         assert.ok(repositorySourceId);
@@ -1438,6 +1442,14 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
                   namespaces: repo.namespaces.map((policy) => ({
                     ...policy,
                     credentialSource: repositorySourceId,
+                    ...(rest && {
+                      permissions: {
+                        metadata: "read",
+                        contents: "write",
+                        issues: "write",
+                        pull_requests: "write",
+                      },
+                    }),
                   })),
                 }
               : repo,
@@ -1469,19 +1481,71 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       });
     };
 
+    const authorize = async (expected: RepositoryNetworkGrant = selected) => {
+      const principal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
+      grantRole(f.iamState, principal.servicePrincipalId, {
+        id: `repository-token-for-${agent.id}`,
+        namespaceId: f.namespace.id,
+        permissions: { credential_source: ["operate"] },
+        resource: { kind: "credential_source", id: repositorySourceId },
+      });
+
+      // Placement is stubbed as in the other admission cases.
+      stubAdmissionCompute(t, fixtureCompute, expected);
+      sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
+    };
+    return {
+      f,
+      selected,
+      writeGrant,
+      agent,
+      path,
+      sourcesPath,
+      repositorySourceId,
+      save,
+      authorize,
+    };
+  }
+
+  test("PAT API save and deploy require enrollment and bound PR heads", async (t) => {
+    for (const [ceiling, limits] of [
+      ["example/selected:write", { default: "none" }],
+      ["example/selected:write:api,example/other:read", { pull_requests: "read" }],
+      ["example/selected:write:api", undefined],
+    ] as const) {
+      await t.test(ceiling, async (t) => {
+        const { f, path, writeGrant, save, authorize } = await sourcePolicyFixture(
+          t,
+          ceiling,
+          true,
+        );
+        const grant = limits ? { ...writeGrant, apiLimits: limits } : writeGrant;
+        await authorize(grant);
+        if (limits) {
+          checkedEnvelope(await save([writeGrant]), ErrorResponse, 409);
+        }
+        const grants = [grant];
+        checkedEnvelope(await save(grants), SandboxPolicyResponse, 200);
+        checkedEnvelope(await f.request("POST", path + "/deploy"), AgentRevisionResponse, 202);
+      });
+    }
+  });
+
+  test("a registry-selected Source is checked at policy save, deploy and retirement", async (t) => {
+    const {
+      f,
+      selected,
+      writeGrant,
+      agent,
+      path,
+      sourcesPath,
+      repositorySourceId,
+      save,
+      authorize,
+    } = await sourcePolicyFixture(t, "example/selected:read");
     // The Agent principal has operate only on its model Source, so the save is forbidden.
     checkedEnvelope(await save([selected]), ErrorResponse, 403);
-    const principal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
-    grantRole(f.iamState, principal.servicePrincipalId, {
-      id: `repository-token-for-${agent.id}`,
-      namespaceId: f.namespace.id,
-      permissions: { credential_source: ["operate"] },
-      resource: { kind: "credential_source", id: repositorySourceId },
-    });
-
-    // Placement is stubbed as in the other admission cases.
-    stubAdmissionCompute(t, fixtureCompute, selected);
-    sandbox.validateProtectedRepositoryNetworkPolicy = () => {};
+    await authorize();
     // A Source is scoped only by the saved network policy. Without one, deploy refuses with a
     // named reason; it never falls back to the App's route.
     const unsaved = checkedEnvelope(await f.request("POST", path + "/deploy"), ErrorResponse, 409);
