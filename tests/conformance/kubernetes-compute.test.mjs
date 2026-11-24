@@ -2283,9 +2283,8 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   const withdrawals = [];
   let withdrawalFailure;
   const nativeConfiguration = createHarnessConfiguration("openclaw", "team/model");
-  nativeConfiguration.models.providers.openai.baseUrl = "https://models.example.test/inference/v1";
-  nativeConfiguration.models.providers.openai.models[0].baseUrl =
-    "https://models.example.test:443/inference/v1/";
+  nativeConfiguration.models.providers.openai.baseUrl = "https://api.openai.com/v1";
+  nativeConfiguration.models.providers.openai.models[0].baseUrl = "https://api.openai.com:443/v1/";
   nativeConfiguration.models.providers.openai.api = "openai-responses";
   const [selectedEntry] = nativeConfiguration.models.providers.openai.models;
   // The primary row names its own API; the worker and the startup probe use it, not the
@@ -2312,7 +2311,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     ...selectedEntry,
     id: "team/fallback",
     name: "team/fallback",
-    baseUrl: "https://models.example.test/inference/v1",
+    baseUrl: "https://api.openai.com/v1",
   };
   delete fallbackEntry.api;
   nativeConfiguration.models.providers.openai.models.unshift(fallbackEntry);
@@ -2320,60 +2319,12 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     id: "unselected",
     baseUrl: "https://other.example.test/v1",
   });
-  const sourceType = {
-    type: "openai",
-    config: [],
-    secrets: [{ name: "api_key", required: true }],
-    rotation: "none",
-    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-  };
-  const snapshot = {
-    method: "credential_source",
-    sourceId: "cs_native_custom",
-    credentialGatewayId: "native-credentials",
-    sourceType: "openai",
-    loginMode: "api_key",
-  };
-  const source = {
-    id: snapshot.sourceId,
-    name: "Native model",
-    createdAt: tenant.createdAt,
-    namespaceId: tenant.id,
-    ownerCapability: "credential_gateway",
-    driverId: snapshot.credentialGatewayId,
-    type: "openai",
-    config: { authorized_base_url: "https://models.example.test/inference/v1" },
-    secrets: {},
-    state: "ready",
-  };
   const fixture = dedicatedFirstDeployFixture({
-    modelEndpoint: "https://models.example.test/inference/v1",
     sandboxDriver,
-    credentialGatewayDriver: {
-      id: snapshot.credentialGatewayId,
-      capability: "credential_gateway",
-      async listSourceTypes() {
-        return [sourceType];
-      },
-      async attachForRevision() {
-        return [{ sourceId: source.id, ref: "native-provider" }];
-      },
-      async attachmentStatus() {
-        return [{ sourceId: source.id, state: "ready" }];
-      },
-    },
-    context: { harnessAuth: { ...snapshot, source }, credentialSources: [source] },
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
       sandboxDriverId: sandboxDriver.id,
-      harnessAuth: snapshot,
-      credentialSources: [
-        {
-          sourceId: source.id,
-          credentialGatewayId: snapshot.credentialGatewayId,
-          sourceType: source.type,
-        },
-      ],
+      harnessAuth: apiKeyAuth,
       configuration: admitLoggingConfiguration(nativeConfiguration, "info"),
       plugins: undefined,
     },
@@ -2381,7 +2332,6 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   const {
     driver,
     revision,
-    context,
     state,
     namespace,
     gatewayName,
@@ -2436,10 +2386,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
       ({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG",
     ).value,
   );
-  assert.equal(
-    nativeConfig.models.providers.openai.baseUrl,
-    "https://models.example.test/inference/v1",
-  );
+  assert.equal(nativeConfig.models.providers.openai.baseUrl, "https://api.openai.com/v1");
   assert.deepEqual(nativeConfig.models.providers.openai.apiKey, {
     source: "env",
     provider: "model",
@@ -2449,8 +2396,8 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.deepEqual(
     nativeConfig.models.providers.openai.models.map(({ id, api, baseUrl }) => [id, api, baseUrl]),
     [
-      ["team/model", "openai-responses", "https://models.example.test/inference/v1"],
-      ["team/fallback", "openai-responses", "https://models.example.test/inference/v1"],
+      ["team/model", "openai-responses", "https://api.openai.com/v1"],
+      ["team/fallback", "openai-responses", "https://api.openai.com/v1"],
     ],
   );
   // The startup probe gets only the primary model's entry (OpenClaw merges entries whose ids
@@ -2466,7 +2413,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   );
   const { baseUrl: workerEndpoint, ...workerPrimary } =
     nativeConfig.models.providers.openai.models[0];
-  assert.equal(workerEndpoint, "https://models.example.test/inference/v1");
+  assert.equal(workerEndpoint, "https://api.openai.com/v1");
   assert.deepEqual(
     [workerPrimary.contextWindow, workerPrimary.maxTokens],
     [128000, 8192],
@@ -2543,10 +2490,13 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.equal(withdrawals.length, 1);
   assert.deepEqual(read("NetworkPolicy", stale.metadata.name), stale);
   assert.deepEqual(deleted, []);
-  await assert.rejects(driver.activateRevision(revision, context), /gateway is not ready/);
+  await assert.rejects(
+    driver.activateRevision(revision, authContext(revision, namespace)),
+    /gateway is not ready/,
+  );
   markReady(gatewayName);
   assert.equal((await prepare()).ready, true);
-  await driver.activateRevision(revision, context);
+  await driver.activateRevision(revision, authContext(revision, namespace));
 
   assert.deepEqual(deleted, [stale.metadata.name]);
   assert.equal(objects.has(key("NetworkPolicy", `allow-gateway-agent-${suffix}`)), false);

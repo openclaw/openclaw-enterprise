@@ -3,7 +3,9 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
 import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
-import { administrator, fixture } from "./credential-source-occ-fixture.ts";
+import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   pollCodexDeviceAuthorization,
   startCodexDeviceAuthorization,
@@ -147,7 +149,11 @@ test("Codex device authorization validates issuer transport and grant fields", a
 });
 
 test("the selected TokenService refreshes the fixed Codex grant using the provider response", async (t) => {
-  const f = await fixture({ withoutGateway: true });
+  const state = new InMemoryPlatformState();
+  const secretDriver = createTestSecretDriver();
+  const f = await createConsoleAppFixture(t, { state, secretDriver });
+  await f.bootstrap();
+  const namespace = await f.createNamespace("Codex refresh", { ready: true });
   const deliveryEvents = [];
   let deliveryFailure = false;
   const delivery = {
@@ -163,14 +169,13 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     f.controller,
     {
       installation: { drivers: { token_service: { id: "codex-refresh-owner" } } },
-      secretDriver: f.secretDriver,
+      secretDriver,
       credentialDeliveryRegistration: { require: () => delivery },
     },
-    f.state,
+    state,
   );
   const owner = f.controller.selectedDriver("token_service");
   const instanceId = f.controller.currentTokenServiceInstanceId();
-  await f.makeReady();
   const signal = AbortSignal.timeout(10_000);
   const initialRefresh = randomUUID();
   const rotatedRefresh = randomUUID();
@@ -188,11 +193,11 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     owner.createSource(
       {
         kind: "oauth_refresh_token",
-        namespaceId: f.namespace.id,
+        namespaceId: namespace.id,
         name,
         consent: {
           kind: "builtin_codex",
-          ownerPrincipalId: administrator,
+          ownerPrincipalId: f.principal.id,
           account: { accountId: "account-fixture", planType: "plus", isFedramp: false },
         },
         grant: {
@@ -210,7 +215,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     "profile",
   ]);
   const sourceInstance = {
-    sourceRef: { kind: "credential_source", namespaceId: f.namespace.id, id: source.id },
+    sourceRef: { kind: "credential_source", namespaceId: namespace.id, id: source.id },
     tokenServiceInstanceId: instanceId,
   };
   const received = [];
@@ -264,8 +269,8 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     notification: { sourceRef: sourceInstance.sourceRef, version: access.version },
     credential: access,
   });
-  const settled = await f.state.read(({ credentialSources }) =>
-    credentialSources.findCredentialSource(f.namespace.id, source.id),
+  const settled = await state.read(({ credentialSources }) =>
+    credentialSources.findCredentialSource(namespace.id, source.id),
   );
   assert.deepEqual(settled.consent.grantedScopes, ["openid"]);
   assert.deepEqual(settled.consent.account, {
@@ -377,8 +382,8 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   assert.equal(scopedFailure.state, "failed");
   assert.equal(scopedFailure.failureCode, "grant_scope_mismatch");
   assert.equal(scopedFailure.recoveryAction, "reauthorize");
-  const unchanged = await f.state.read(({ credentialSources }) =>
-    credentialSources.findCredentialSource(f.namespace.id, scopedSource.id),
+  const unchanged = await state.read(({ credentialSources }) =>
+    credentialSources.findCredentialSource(namespace.id, scopedSource.id),
   );
   assert.deepEqual(unchanged.consent.grantedScopes, ["openid", "profile"]);
   assert.equal(deliveryEvents.length, deliveriesBeforePartial, "no malformed grant is pushed");
@@ -434,8 +439,8 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     return true;
   });
   const failedDelivery = deliveryEvents.at(-1);
-  const due = await f.state.read((view) =>
-    view.oauthCredentials.findTokenCustody(f.namespace.id, failedSource.id),
+  const due = await state.read((view) =>
+    view.oauthCredentials.findTokenCustody(namespace.id, failedSource.id),
   );
   assert.equal(due.due, true);
   const exchanges = received.length;

@@ -31,13 +31,11 @@ import type {
   PresetSummaryWire,
 } from "../../packages/contracts/src/api/resources.ts";
 
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { within } from "../helpers/wait-for.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -53,7 +51,6 @@ import {
   recordLayoutShifts,
   secretOptionLabel,
   secretPostRequests,
-  selectSecret,
   takeLayoutShifts,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
@@ -1755,9 +1752,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  const serviceAccountSecret = page.getByLabel("Service account token Secret", { exact: true });
-  await serviceAccountSecret.waitFor();
-  assert.equal(await serviceAccountSecret.inputValue(), "");
+  await page.getByLabel("Service account token", { exact: true }).fill("at-discarded-codex-pat");
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
   assert.deepEqual(
@@ -2143,7 +2138,7 @@ for (const width of [1440, 390]) {
     // Authentication owns its picker even when the model reset refuses the malformed draft.
     const keySecret = page.getByLabel("API key Secret", { exact: true });
     const directKey = page.getByLabel("API key", { exact: true });
-    const tokenSecret = page.getByLabel("Service account token Secret", { exact: true });
+    const patToken = page.getByLabel("Service account token", { exact: true });
     const authDraft = await editAllow("codex");
     const authModel = await manual.inputValue();
     const authMode = await mode.inputValue();
@@ -2151,7 +2146,7 @@ for (const width of [1440, 390]) {
     await assertBlocked(authDraft);
     assert.equal(await authMethod.inputValue(), "codex_pat");
     assert.equal(await keySecret.isVisible(), false);
-    assert.equal(await tokenSecret.isVisible(), true);
+    assert.equal(await patToken.isVisible(), true);
     assert.equal(await manual.inputValue(), authModel);
     assert.equal(await manual.isVisible(), true);
     assert.equal(await mode.inputValue(), authMode);
@@ -2159,7 +2154,7 @@ for (const width of [1440, 390]) {
     await authMethod.selectOption("api_key");
     assert.equal(await directKey.isVisible(), true);
     assert.equal(await keySecret.isVisible(), false);
-    assert.equal(await tokenSecret.isVisible(), false);
+    assert.equal(await patToken.isVisible(), false);
     assert.equal(await choice.inputValue(), "");
     assert.equal(await configuration.getAttribute("aria-invalid"), null);
     await choice.selectOption("gpt-6-sol");
@@ -2181,7 +2176,7 @@ for (const width of [1440, 390]) {
     assert.equal(await manual.inputValue(), harnessModel);
     assert.equal(await manual.isVisible(), true);
     assert.equal(await keySecret.isVisible(), true);
-    assert.equal(await tokenSecret.isVisible(), false);
+    assert.equal(await patToken.isVisible(), false);
     await editAllow([]);
     await harness.selectOption("codex");
     assert.equal(await harness.inputValue(), "codex");
@@ -2840,24 +2835,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
 test("Agent creation reuses its saved Secret and Configuration after an Agent creation conflict", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const pluginDriver = new CodexPluginDriver();
-  // Keep optional catalog prefetch local while exercising the real Agent creation conflict.
-  t.mock.method(
-    pluginDriver,
-    "discoverCatalog",
-    async (): ReturnType<typeof pluginDriver.discoverCatalog> => ({
-      plugins: [],
-      nextCursor: null,
-    }),
-  );
-  fixture.controller.registerDriver(pluginDriver);
-  fixture.controller.selectDriver("plugin", pluginDriver.id);
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
-  const discardedPatSecret = await fixture.createSecret(
-    namespace.id,
-    "Discarded service account token",
-    "at-discarded-pat",
-  );
   const values = nativeValues("partial-save", { harnessId: "codex", providerModel: "gpt-5.1" });
   const { page } = await newPage(t, fixture);
   // Exercise the supported draft path; dedicated provisioning has separate workflow coverage.
@@ -2867,70 +2845,12 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start with default Preset" }).click();
-  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await selectSecret(page, "Service account token Secret", discardedPatSecret);
-  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
-  await page.getByLabel("Model ID", { exact: true }).fill("discarded-pat-model");
-  await page.getByLabel("Model ID", { exact: true }).press("Tab");
-  // OpenClaw requires a new API key, never the previous service account token.
-  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
-  assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
-  assert.equal(
-    await page.getByLabel("Authentication method", { exact: true }).inputValue(),
-    "api_key",
-  );
-  assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
-  assert.equal(await page.getByLabel("Model ID", { exact: true }).isVisible(), false);
-  assert.equal(
-    JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents.defaults.model,
-    undefined,
-  );
-  assert.equal(
-    await page
-      .getByLabel("Authentication method", { exact: true })
-      .locator('[value="codex_pat"]')
-      .isDisabled(),
-    true,
-  );
-  // Plugin catalog discovery is a read sent as POST. The codex_pat Secret above arms its
-  // prefetch with a 300 ms debounce, so it may or may not have been sent before the switch.
-  const pluginCatalogPath = `/namespaces/${namespace.id}/agents/plugins`;
-  assert.deepEqual(
-    nonAuthWriteRequests(requests).filter((request) => request.path !== pluginCatalogPath),
-    [],
-  );
-  assert.deepEqual(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`), []);
-  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await selectSecret(page, "Service account token Secret", discardedPatSecret);
-  await openAdvancedSettings(page);
-  await page
-    .getByLabel("Configuration JSON")
-    .fill(JSON.stringify(createHarnessConfiguration("openclaw", "gpt-5.1")));
-  // Manual Configuration changes obey the same credential boundary while keeping their model.
-  assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
-  assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
-  assert.equal(
-    await page.getByLabel("Authentication method", { exact: true }).inputValue(),
-    "api_key",
-  );
-  assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
-  assert.equal(await page.getByLabel("Model ID", { exact: true }).inputValue(), "gpt-5.1");
-  assert.equal(
-    JSON.parse(await page.getByLabel("Configuration JSON").inputValue()).agents.defaults.model,
-    "openai/gpt-5.1",
-  );
-  await page.getByText("Advanced settings", { exact: true }).click();
-  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  assert.equal(await page.getByLabel("Execution mode").inputValue(), "dedicated");
-  assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   requests.length = 0;
   await page.getByLabel("Agent name").fill("Retry Agent");
-  const selectedSecret = await createModelCredentialSecret(page, "at-browser-pat");
+  const selectedSecret = await createModelCredentialSecret(page, "retry-model-api-key");
   assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.equal(
-    await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
+    await page.getByLabel("API key Secret", { exact: true }).inputValue(),
     secretOptionLabel(selectedSecret),
   );
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
@@ -2979,13 +2899,10 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   );
   assert.equal(await page.getByLabel("Configuration JSON").isDisabled(), true);
   assert.equal(
-    await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
+    await page.getByLabel("API key Secret", { exact: true }).inputValue(),
     secretOptionLabel(selectedSecret),
   );
-  assert.equal(
-    await page.getByLabel("Service account token Secret", { exact: true }).isDisabled(),
-    true,
-  );
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).isDisabled(), true);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "codex");
   assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
@@ -3002,29 +2919,18 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     "# Keep this draft\n",
   );
   assert.equal(await page.getByLabel("SOUL.md", { exact: true }).isEnabled(), true);
-  assert.equal(await page.getByLabel("Plugin selections JSON").isEnabled(), true);
   await page.getByLabel("SOUL.md", { exact: true }).fill("# Corrected draft\n");
-  await openAdvancedSettings(page);
-  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
-  await page.getByLabel("Plugin selections JSON").fill(
-    JSON.stringify({
-      "codex-plugin:linear@openai-curated-remote": {
-        enabled: true,
-        toolDefaults: { approval: "none" },
-      },
-    }),
-  );
   await page.getByLabel("Agent name").fill("Retry Agent Corrected");
   const retryResponse = await submitCreateAgent(page, fixture, namespace.id);
   const retried = await retryResponse.json();
   assert.equal(retried.data.name, "Retry Agent Corrected");
-  assert.equal(retried.data.harnessAuth.method, "codex_pat");
+  assert.equal(retried.data.harnessAuth.method, "api_key");
   assert.equal(retried.data.configurationId, savedConfiguration.data.id);
   assert.equal(retried.data.activeRevisionId, undefined);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.deepEqual(
     secretPostRequests(requests, namespace.id).map(({ body }) => body),
-    [{ name: "Retry Agent model credential", value: "at-browser-pat" }],
+    [{ name: "Retry Agent model credential", value: "retry-model-api-key" }],
   );
   const attempts = agentPostRequests(requests, namespace.id).map(
     ({ body }) => body as CreateAgentBody,
@@ -3033,22 +2939,16 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   const [first, corrected] = attempts;
   assert.ok(first && corrected, "expected both Agent submissions");
   assert.deepEqual(first.harnessAuth, {
-    method: "codex_pat",
+    method: "api_key",
     source: selectedSecret.ref,
   });
   assert.deepEqual(corrected.harnessAuth, {
-    method: "codex_pat",
+    method: "api_key",
     source: selectedSecret.ref,
   });
-  assert.deepEqual(retried.data.harnessAuth, { method: "codex_pat", source: selectedSecret.ref });
+  assert.deepEqual(retried.data.harnessAuth, { method: "api_key", source: selectedSecret.ref });
   assert.equal(first.initialWorkspaceFiles?.["SOUL.md"], "# Keep this draft\n");
   assert.equal(corrected.initialWorkspaceFiles?.["SOUL.md"], "# Corrected draft\n");
-  assert.deepEqual(retried.data.plugins, {
-    "codex-plugin:linear@openai-curated-remote": {
-      enabled: true,
-      toolDefaults: { approval: "none" },
-    },
-  });
   for (const body of attempts) {
     assert.equal(body.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
   }

@@ -116,6 +116,11 @@ const source = {
   createdAt: time,
   ref: { kind: "credential_source", namespaceId, id: id("cs") },
 };
+const codexAccountSource = {
+  kind: "credential_source",
+  namespaceId,
+  id: "cs_123e4567-e89b-42d3-a456-426614174004",
+};
 const account = { id: id("sa"), namespaceId, name: "Model service account" };
 const role = {
   id: "role-secret-operator",
@@ -457,8 +462,12 @@ export const requestExamples = {
     authMethod: "api_key",
     apiKey: "replace-with-your-authorized-model-key",
   },
-  discoverAgentPlugins: { harnessId: "codex", secretRef },
-  discoverAgentPluginDetails: { harnessId: "codex", secretRef, pluginId: plugin.id },
+  discoverAgentPlugins: { harnessId: "codex", credentialSource: codexAccountSource },
+  discoverAgentPluginDetails: {
+    harnessId: "codex",
+    credentialSource: codexAccountSource,
+    pluginId: plugin.id,
+  },
   discoverSavedAgentPlugins: {},
   discoverSavedAgentPluginDetails: { pluginId: plugin.id },
   lookupChannelDirectory: { kind: "channels", secretId: secret.id, query: "engineering" },

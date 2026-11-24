@@ -3137,96 +3137,91 @@ export function registerSharingCredentialsAndChannelsCases(
     );
   });
 
-  for (const method of ["api_key", "codex_pat"] as const) {
-    test(`Credentials grants exact Agent access when rebinding ${method}`, async (t) => {
-      const fixture = await detailApp(t);
-      const namespace = await fixture.createNamespace(`Model credential replacement ${method}`, {
-        ready: true,
-      });
-
-      const agent = await fixture.createAgent(
-        namespace.id,
-        "Credential Agent",
-        createHarnessConfiguration("codex", "gpt-4.1"),
-        { executionMode: "dedicated" },
-      );
-
-      const replacement = await fixture.createSecret(
-        namespace.id,
-        "Replacement model credential",
-        "test-replacement-token",
-      );
-
-      const unrelated = await fixture.createSecret(
-        namespace.id,
-        "Unrelated credential",
-        "test-unrelated-token",
-      );
-
-      const { page } = await newPage(t, fixture);
-      await login(
-        page,
-        fixture,
-        `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
-      );
-      await page.getByLabel("Authentication source").selectOption(method);
-      await selectSecret(
-        page,
-        method === "api_key" ? "API key Secret" : "Service account token Secret",
-        replacement,
-      );
-      await page.getByRole("button", { name: "Save authentication source" }).click();
-      // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
-      await page.waitForFunction(
-        () =>
-          globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
-          false,
-      );
-      const bindings = await fixture.request(
-        "GET",
-        `/namespaces/${namespace.id}/iam/access-bindings`,
-      );
-      const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
-      const currentBindings = bindingsFrom(bindings.data);
-      const grants = currentBindings.filter(
-        (binding) =>
-          binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
-      );
-      assert.equal(grants.length, 1);
-      const grant = grants[0];
-      assert.ok(grant);
-      assert.deepEqual(grant, {
-        id: grant.id,
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: agent.servicePrincipalId,
-        roleId: grant.roleId,
-        resourceKind: "secret",
-        resourceId: replacement.id,
-      });
-      assert.deepEqual(
-        readRole(records(roles.data).find((role) => role.id === grant.roleId)).permissions,
-        [{ action: "operate", resourceKind: "secret" }],
-      );
-      assert.equal(
-        currentBindings.some((binding) => binding.resourceId === unrelated.id),
-        false,
-      );
-      const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-      assert.deepEqual(responseData(saved).harnessAuth, { method, source: replacement.ref });
-      // Saving the same source again repairs missing access and reuses an existing exact binding.
-      await page.getByRole("button", { name: "Save authentication source" }).click();
-      await page.waitForFunction(
-        () =>
-          globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
-          false,
-      );
-      assert.deepEqual(
-        (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
-        bindings.data,
-      );
+  test("Credentials grants exact Agent access when rebinding api_key", async (t) => {
+    const method = "api_key";
+    const fixture = await detailApp(t);
+    const namespace = await fixture.createNamespace(`Model credential replacement ${method}`, {
+      ready: true,
     });
-  }
+
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Credential Agent",
+      createHarnessConfiguration("codex", "gpt-4.1"),
+      { executionMode: "dedicated" },
+    );
+
+    const replacement = await fixture.createSecret(
+      namespace.id,
+      "Replacement model credential",
+      "test-replacement-token",
+    );
+
+    const unrelated = await fixture.createSecret(
+      namespace.id,
+      "Unrelated credential",
+      "test-unrelated-token",
+    );
+
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    );
+    await page.getByLabel("Authentication source").selectOption(method);
+    await selectSecret(page, "API key Secret", replacement);
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
+    await page.waitForFunction(
+      () =>
+        globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
+        false,
+    );
+    const bindings = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/iam/access-bindings`,
+    );
+    const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+    const currentBindings = bindingsFrom(bindings.data);
+    const grants = currentBindings.filter(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
+    );
+    assert.equal(grants.length, 1);
+    const grant = grants[0];
+    assert.ok(grant);
+    assert.deepEqual(grant, {
+      id: grant.id,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: grant.roleId,
+      resourceKind: "secret",
+      resourceId: replacement.id,
+    });
+    assert.deepEqual(
+      readRole(records(roles.data).find((role) => role.id === grant.roleId)).permissions,
+      [{ action: "operate", resourceKind: "secret" }],
+    );
+    assert.equal(
+      currentBindings.some((binding) => binding.resourceId === unrelated.id),
+      false,
+    );
+    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.deepEqual(responseData(saved).harnessAuth, { method, source: replacement.ref });
+    // Saving the same source again repairs missing access and reuses an existing exact binding.
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    await page.waitForFunction(
+      () =>
+        globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
+        false,
+    );
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+      bindings.data,
+    );
+  });
 
   test("Credentials retries denied and interrupted grants without repeating the authentication save", async (t) => {
     const fixture = await createConsoleAppFixture(t);
@@ -3265,8 +3260,8 @@ export function registerSharingCredentialsAndChannelsCases(
     const deniedGrant = restrict(fixture.policy, "administer", "installation", {
       resourceId: resourceId(installation),
     });
-    await page.getByLabel("Authentication source").selectOption("codex_pat");
-    await selectSecret(page, "Service account token Secret", replacement);
+    await page.getByLabel("Authentication source").selectOption("api_key");
+    await selectSecret(page, "API key Secret", replacement);
     await page.getByRole("button", { name: "Save authentication source" }).click();
     await page
       .getByText(

@@ -199,7 +199,6 @@ export function registerRepositoryCases() {
         },
       );
       assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-
       assert.equal(bound.mock.callCount(), 1, "fresh planning uses the bound policy exactly once");
       assert.equal(legacy.mock.callCount(), 0, "fresh planning bypasses the legacy resolver");
       assert.deepEqual(bound.mock.calls[0]?.arguments, [
@@ -258,6 +257,7 @@ export function registerRepositoryCases() {
             : undefined;
         },
       );
+      fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);
       await fixture.stopWorker();
       const workerBoundCalls = bound.mock.calls.slice(boundCallsBeforeWorker);
       assert.ok(
@@ -361,7 +361,6 @@ export function registerRepositoryCases() {
       );
       // Database constraints enforce consistency even when an application writer is bypassed.
       for (const invalid of [
-        { defaultProfile: "git-write", repositories: [{ repositoryRef: "project" }] },
         { ...custom, extra: true },
         { ...custom, repositories: [...repositoryBindings, ...repositoryBindings] },
         { ...custom, repositories: [{ repositoryRef: "project", profile: null }] },
@@ -382,7 +381,7 @@ export function registerRepositoryCases() {
       });
       assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
       assert.deepEqual(cleared.data.repositoryAccess?.repositories, []);
-      assert.equal(Object.hasOwn(cleared.data, "repositoryAccess"), false);
+      assert.equal(Object.hasOwn(cleared.data, "repositoryBindings"), false);
       const historical = await fixture.requestChecked(
         AgentRevisionReadResponse,
         "GET",
@@ -519,16 +518,12 @@ export function registerRepositoryCases() {
         "provisioning-installation-access",
         { installationAccess: true },
       );
-      const { repositoryAccess: ignored, ...body } = repositoryProvisioningBody(
-        namespace.id,
-        secrets,
-        {
-          repositoryAccess: {
-            defaultProfile: "git-write",
-            repositories: [{ repositoryRef: "installation", profile: "github-installation" }],
-          },
+      const body = repositoryProvisioningBody(namespace.id, secrets, {
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: "installation", profile: "github-installation" }],
         },
-      );
+      });
       const admitted = await fixture.requestChecked(
         AgentProvisioningResponse,
         "POST",

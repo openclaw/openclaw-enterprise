@@ -12,9 +12,7 @@ import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { waitFor } from "../helpers/qa-wait.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
-import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
-import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
-import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
+import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
@@ -37,7 +35,6 @@ import {
 } from "./kubernetes-provider-observation-cases.ts";
 import { containerProgram } from "./kubernetes-workload-program-cases.ts";
 import {
-  WORKSPACE_DEFAULTS_ID,
   admitLoggingConfiguration,
   preparedGitHubSourceFromRoute,
 } from "../../packages/contracts/src/index.ts";
@@ -46,13 +43,7 @@ import {
   InstalledDriver,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
-import { createCodexStartup, login, probe, timedOut } from "../fixtures/codex-native-startup.mjs";
-import {
-  captureOpenShellHarness,
-  providerEndpointFixture,
-  tlsPinnedWorkspaceSetupCode,
-} from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { tenant, authContext, digest } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -81,8 +72,6 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
   });
   return fixture;
 }
-
-const openAiStaticProvider = createOpenAiStaticProvider();
 
 test("the Box provisioner receives the launcher for a mounted private hook directory", async () => {
   const fixture = providerEndpointFixture();
@@ -354,62 +343,6 @@ for (const scenario of transportScenarios) {
   });
 }
 
-for (const scenario of transportScenarios) {
-  test(`provider Harness ready credential attachment still requires ${scenario.name}`, async () => {
-    const fixture = await endpointWithGateway();
-    const { driver, revision } = fixture;
-    fixture.observePods([fixture.pod("ready")]);
-    const harnessObservations = [];
-    fixture.sandbox.harnessStatus = async (context) => {
-      harnessObservations.push(context);
-      return scenario.answer;
-    };
-    const attachmentChecks = [];
-    // The Credential Gateway Compute holds; only revisions that bind sources reach it.
-    driver.credentialGatewayDriver = {
-      id: "credential-gateway",
-      capability: "credential_gateway",
-      async attachForRevision(context) {
-        return context.sources.map(({ id }) => ({ sourceId: id, ref: `ref-${id}` }));
-      },
-      async attachmentStatus(context) {
-        attachmentChecks.push(context.sources.map(({ id }) => id));
-        return context.sources.map(({ id }) => ({ sourceId: id, state: "ready" }));
-      },
-    };
-    const toolSource = {
-      id: "cs_00000000-0000-4000-8000-000000000546",
-      namespaceId: tenant.id,
-      name: "tool",
-      type: "bearer-token",
-      config: {},
-      secrets: {},
-      ownerCapability: "credential_gateway",
-      driverId: "credential-gateway",
-      state: "ready",
-      createdAt: "2026-10-08T00:00:00.000Z",
-    };
-    const sourced = {
-      ...revision,
-      credentialSources: [
-        {
-          sourceId: toolSource.id,
-          credentialGatewayId: "credential-gateway",
-          sourceType: "bearer-token",
-        },
-      ],
-    };
-    const sourcedContext = { ...authContext(sourced), credentialSources: [toolSource] };
-    assert.deepEqual(await fixture.prepare(sourced, sourcedContext), {
-      ...expectedRevision(fixture),
-      ...scenario.outcome,
-    });
-    assert.deepEqual(attachmentChecks, [[toolSource.id]]);
-    assert.equal(harnessObservations.length, 1);
-    assert.equal(harnessObservations[0].revision, sourced);
-  });
-}
-
 test("provider Harness unreachable transport is a transient Sandbox provisioning failure", async () => {
   const fixture = await endpointWithGateway();
   const { driver } = fixture;
@@ -598,42 +531,6 @@ test("provider Harness protected execution is released only on current signed in
     revisionId: protectedId,
     executionId: "00000000-0000-4000-8000-000000000547",
   };
-  const protectedSourceId = "cs_00000000-0000-4000-8000-000000000547";
-  const sourceKey = {
-    installationId: execution.installationId,
-    namespaceId: tenant.id,
-    source: { id: protectedSourceId, generation: 1 },
-    backend: { id: "static-input", generation: 1 },
-    provider: openAiStaticProvider.ref,
-  };
-  const source = {
-    namespaceId: tenant.id,
-    secrets: {},
-    ownerCapability: "credential_gateway",
-    driverId: "credential-gateway",
-    state: "ready",
-    createdAt: tenant.createdAt,
-    id: protectedSourceId,
-    name: "model",
-    type: "openai",
-    config: openAiStaticProvider.normalizeConfig({}),
-    egress: {
-      key: sourceKey,
-      schemaVersion: 1,
-      adoption: "live",
-      retention: "none",
-      materialRefId: "material-model",
-      secret: {
-        kind: "secret",
-        id: "sec_00000000-0000-4000-8000-000000000550",
-        namespaceId: tenant.id,
-      },
-      secretDriver: { id: "secrets", generation: 1 },
-      sender: { id: "supervisor", generation: 1 },
-      resolver: { id: "resolver", generation: 1 },
-    },
-  };
-  const grant = openAiStaticProvider.normalizeGrant(["gpt-5"]);
   const sandbox = {
     ...fixture.sandbox,
     capability: "sandbox",
@@ -648,9 +545,9 @@ test("provider Harness protected execution is released only on current signed in
     implementation: sandbox.implementation,
     capability: "credential_proxy",
     sourceControl: {
-      sender: source.egress.sender,
-      resolver: source.egress.resolver,
-      providers: [openAiStaticProvider],
+      sender: { id: "supervisor", generation: 1 },
+      resolver: { id: "resolver", generation: 1 },
+      providers: [githubMetadataProvider],
       assertAvailable: assert.fail,
     },
     async configureRevision({ plan }) {
@@ -676,11 +573,6 @@ test("provider Harness protected execution is released only on current signed in
     protectedDriver,
     preparedTokens: { issuer: () => preparedIssuer },
     nodeEnrollment: fixture.driver.nodeEnrollment,
-    credentialGatewayDriver: {
-      id: source.driverId,
-      capability: "credential_gateway",
-      listSourceTypes: async () => [openAiStaticProvider.sourceType],
-    },
   });
   driver.apiClients = Promise.resolve(fixture.clients);
   const plan = {
@@ -690,41 +582,27 @@ test("provider Harness protected execution is released only on current signed in
     driver: protectedDriver.ref,
     sandboxDriverId: sandbox.id,
     egressDriverId: proxy.id,
-    routes: openAiStaticProvider.routes(
-      source,
-      {
-        binding: { id: "00000000-0000-4000-8000-000000000549", generation: 1 },
-        execution,
-        source: sourceKey,
-        grant,
-        grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
-        isolationId: revision.agentId,
-      },
-      revision.harness.configuration,
-    ),
-  };
-  const protectedAuth = {
-    method: "credential_source",
-    sourceId: source.id,
-    credentialGatewayId: source.driverId,
-    sourceType: source.type,
-    loginMode: "api_key",
+    routes: [],
   };
   const protectedRevision = {
     ...revision,
     id: protectedId,
     executionAdmission: { version: 3, mode: "protected" },
     revision: revision.revision + 1,
-    harnessAuth: protectedAuth,
+    harnessAuth: { method: "runtime" },
+    harness: { ...revision.harness, configuration: {} },
     egressPlan: plan,
-    credentialSources: [
-      { sourceId: source.id, credentialGatewayId: source.driverId, sourceType: source.type },
-    ],
+    credentialSources: [],
+  };
+  protectedRevision.compute = {
+    id: driver.id,
+    implementation: driver.implementation,
+    admission: driver.admitRevision(protectedRevision),
   };
   const installed = {
     plan,
     sandboxId: "installed-sandbox",
-    sender: source.egress.sender,
+    sender: proxy.sourceControl.sender,
     installedAt: "2026-10-14T00:00:00.000Z",
     enforcement: {
       instanceId: "current-instance",
@@ -763,24 +641,12 @@ test("provider Harness protected execution is released only on current signed in
     });
   seedNode(protectedRevision);
   const protectedContext = {
-    harnessAuth: { ...protectedAuth, source },
-    credentialSources: [source],
+    harnessAuth: protectedRevision.harnessAuth,
     async recordEgressInstallation() {
       events.push("commit");
     },
     currentEgressInstallation: async () => observation,
   };
-  // A source cannot claim Proxy ownership under a different admitted source key.
-  const conflictingSource = structuredClone(source);
-  conflictingSource.egress.key.source.generation += 1;
-  await assert.rejects(
-    driver.prepareRevision(protectedRevision, {
-      ...protectedContext,
-      harnessAuth: { ...protectedAuth, source: conflictingSource },
-    }),
-    /Protected Harness authentication does not match its admitted source/,
-  );
-  assert.deepEqual(events.splice(0), []);
   observation = undefined;
   assert.equal((await driver.prepareRevision(protectedRevision, protectedContext)).ready, false);
   assert.deepEqual(events.splice(0), ["observe"]);
@@ -1072,8 +938,13 @@ test("provider Harness protected execution is released only on current signed in
     async () => {
       const id = "ar_00000000-0000-4000-8000-000000000549";
       const execution = { ...plan.execution, revisionId: id };
-      const provider = { id: "github-app-metadata", generation: 1 };
-      const key = { ...sourceKey, provider };
+      const key = {
+        installationId: execution.installationId,
+        namespaceId: tenant.id,
+        source: { id: "cs_00000000-0000-4000-8000-000000000547", generation: 1 },
+        backend: { id: "github", generation: 1 },
+        provider: { id: "github-app-metadata", generation: 1 },
+      };
       const grant = {
         kind: "github_repository_metadata",
         appId: "7",
@@ -1083,8 +954,24 @@ test("provider Harness protected execution is released only on current signed in
         isolationId: execution.agentId,
         profile: "metadata-read",
       };
-      const binding = { ...plan.routes[0].binding, execution, grant, source: key };
-      const route = { ...plan.routes[0], method: "GET", path: "/repos/test/example", binding };
+      const binding = {
+        binding: { id: "00000000-0000-4000-8000-000000000549", generation: 1 },
+        execution,
+        source: key,
+        grant,
+        grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
+        isolationId: execution.agentId,
+      };
+      const route = {
+        route: { id: binding.binding.id + "/metadata", generation: 1 },
+        binding,
+        origin: "https://api.github.com",
+        method: "GET",
+        path: "/repos/test/example",
+        operationPolicy: { id: "github-bodyless-metadata-get", generation: 1 },
+        responsePolicy: { id: "github-complete-repository-identity-only", generation: 1 },
+        deadlineMs: 30_000,
+      };
       const metadataPlan = { ...plan, execution, routes: [route] };
       const metadata = {
         ...protectedRevision,
@@ -1172,196 +1059,6 @@ test("provider Harness protected execution is released only on current signed in
         ]);
       }
       core.listNamespacedPod = originalList;
-    },
-  );
-  await t.test(
-    "protected admission selects no connection retries and preserves pre-upgrade command bytes",
-    async () => {
-      // Pin the commands the Driver renders, not only the exported entrypoints (#3310,
-      // finding 2256): the Sandbox launch carries the workspace node; activation renders
-      // the same Harness without it for the endpoint and status reads.
-      const admission = driver.admitRevision(protectedRevision);
-      assert.match(
-        admission,
-        /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
-      );
-      const admitted = {
-        ...protectedRevision,
-        compute: { ...protectedRevision.compute, admission },
-      };
-      const alreadyAdmitted = {
-        ...admitted,
-        compute: {
-          ...admitted.compute,
-          admission: admission
-            .replace("http-chat:v1:", "")
-            .replace("openshell-codex-launch:v1:", ""),
-        },
-      };
-      const pod = fixture.pod("protected-revision");
-      pod.metadata.labels["openclaw.dev/revision"] = protectedRevision.id;
-      pod.metadata.labels["app.kubernetes.io/name"] =
-        "agent-" + digest(protectedRevision.agentId) + "-rev-" + digest(protectedRevision.id);
-      const originalList = core.listNamespacedPod;
-      const { enrollHarness, harnessEndpoint } = sandbox;
-      core.listNamespacedPod = async (request) =>
-        request.labelSelector.includes("openclaw.dev/revision=" + protectedRevision.id)
-          ? { items: [pod] }
-          : originalList(request);
-      observation = installed;
-      current = true;
-      const baselineObjects = structuredClone(objects);
-      const restoreObjects = () => {
-        objects.clear();
-        for (const [key, resource] of baselineObjects) {
-          objects.set(key, structuredClone(resource));
-        }
-      };
-      try {
-        for (const [target, disabled] of [
-          [admitted, true],
-          [alreadyAdmitted, true],
-          [protectedRevision, false],
-        ]) {
-          // These rows represent separate admission histories. Do not reinterpret a
-          // ConfigMap rendered for new HTTP defaults as an older immutable revision.
-          restoreObjects();
-          const gatewayName = `gateway-${digest(target.agentId)}-rev-${digest(target.id)}`;
-          for (const [key, resource] of objects) {
-            if (resource.kind === "ConfigMap" && resource.metadata.name === gatewayName) {
-              objects.delete(key);
-            }
-          }
-          const hashes = [];
-          const captureCommand = async ({ requirements }) => {
-            hashes.push(
-              createHash("sha256").update(JSON.stringify(requirements.command)).digest("hex"),
-            );
-            throw released;
-          };
-          sandbox.enrollHarness = captureCommand;
-          sandbox.harnessEndpoint = captureCommand;
-          for (const lifecycle of ["prepareRevision", "activateRevision"]) {
-            await assert.rejects(
-              driver[lifecycle](target, protectedContext),
-              (error) => error === released,
-            );
-          }
-          // SHA-256 of prepare and activate argv with Node 24.22.1; the prepare
-          // argv embeds the startup schema thresholds, so it moves with the pin.
-          assert.deepEqual(
-            hashes,
-            disabled
-              ? [
-                  "e38d4be7e9e75516db4873af61295dca90bd2f2ea4d7ef00e6704a662ec92ad7",
-                  "ed13402558c5c2a2c0df08d2f4f46d65438b5b0e01675101fac12a78ee21fa37",
-                ]
-              : [
-                  "a7412cefc1b7f4cfa68243b92e3f9ea789376c9182e4291e1af2872c2bb216a0",
-                  "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
-                ],
-          );
-        }
-      } finally {
-        restoreObjects();
-        core.listNamespacedPod = originalList;
-        sandbox.enrollHarness = enrollHarness;
-        sandbox.harnessEndpoint = harnessEndpoint;
-      }
-    },
-  );
-  await t.test(
-    "OpenShell provisions a protected API-key revision with workspace setup",
-    async (t) => {
-      const egress = { middlewareName: "fixture-authority", authorityScope: "execution" };
-      const capture = captureOpenShellHarness(fixture, sandbox, egress);
-
-      // A real protected inference route selects API-key auth. The OAuth account
-      // bootstrap belongs to the ordinary OpenShell case.
-      const id = "rev_7b620136-6184-4fe4-a0e4-12d4e9a41b55";
-      const execution = {
-        ...plan.execution,
-        revisionId: id,
-        executionId: "7e373ed8-fc1d-4fd7-a19f-f83b146f1dc5",
-      };
-      const target = {
-        ...protectedRevision,
-        id,
-        revision: protectedRevision.revision + 1,
-        configuration: capture.openshell.configureAgent(
-          protectedRevision.configuration,
-          protectedRevision.harness,
-        ),
-        compute: { ...protectedRevision.compute },
-        egressPlan: {
-          ...plan,
-          id: "80df91f7-e8e1-43da-b1db-579ad56598be",
-          execution,
-          routes: plan.routes.map((route) => ({
-            ...route,
-            binding: { ...route.binding, execution },
-          })),
-        },
-      };
-      target.compute.admission = driver.admitRevision(target);
-      const workspaceSetup = {
-        id: "workspace-setup-1f8d6823-aa87-4cba-ae3e-62352e892d12",
-        namespaceId: target.namespaceId,
-        agentId: target.agentId,
-        defaultsId: WORKSPACE_DEFAULTS_ID,
-        completed: false,
-        files: { "USER.md": "Private protected setup" },
-      };
-      seedNode(target);
-      const name = driver.workspaceNodeName(target);
-      const node = fixture.read("Secret", name);
-      node.data.setupCode = Buffer.from(
-        tlsPinnedWorkspaceSetupCode(
-          `wss://agents.example.internal/namespaces/${target.namespaceId}/agents/${target.agentId}/node`,
-          Date.now() + 600_000,
-        ),
-      ).toString("base64");
-      save(node);
-
-      proxy.configureRevision = async ({ plan, revision }) => ({
-        plan,
-        configuration: openShellEgressConfiguration(plan, egress, revision),
-      });
-      await assert.rejects(
-        driver.prepareRevision(target, { ...protectedContext, workspaceSetup }),
-        (error) => error === capture.provisioned,
-      );
-      const { command, environment } = capture.request.spec;
-      assert.equal(environment.CODEX_LOGIN_MODE, "api_key");
-      assert.equal(environment.OCE_CODEX_CREDENTIAL_SOURCE, undefined);
-      assert.ok(environment[COMPUTE_RELEASE_PUBLIC_KEY]);
-      const { loader, supervisor, codex } = inspectOpenShellCodexCommand(t, command, {
-        compact: true,
-      });
-      assert.match(loader, /\.oce-workspace-setup\.json/);
-      assert.match(supervisor, new RegExp(workspaceSetup.id));
-      // Use the exact nested program delivered by CreateSandbox. The fixture
-      // verifies the signature gate and both native invocations' no-retry flags.
-      const answered = probe([
-        { type: "turn.started" },
-        { type: "item.completed", item: { type: "agent_message", text: "READY" } },
-        { type: "turn.completed" },
-      ]);
-      for (const [result, failure] of [
-        [answered, undefined],
-        [probe([], timedOut, 30000), "MODEL_PROBE_TIMEOUT"],
-      ]) {
-        const runtime = createCodexStartup(t, {
-          protectedInference: "signed",
-          native: [login(), result],
-        });
-        runtime.start(codex);
-        await runtime.releaseProtectedExecution();
-        runtime.assertNativeScriptConsumed();
-        assert.equal(runtime.retryTimers.length, 0);
-        assert.equal(runtime.appServerStarts, failure === undefined ? 1 : 0);
-        assert.equal(runtime.status().runtimeFailure?.code, failure);
-      }
     },
   );
 });

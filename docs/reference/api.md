@@ -5133,12 +5133,12 @@ Schema: `object or object`.
 Example request
 ```json
 {
-  "harnessId": "codex",
-  "secretRef": {
-    "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-    "kind": "secret",
+  "credentialSource": {
+    "id": "cs_123e4567-e89b-42d3-a456-426614174004",
+    "kind": "credential_source",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-  }
+  },
+  "harnessId": "codex"
 }
 ```
 
@@ -5253,13 +5253,13 @@ Schema: `object or object or object`.
 Example request
 ```json
 {
-  "harnessId": "codex",
-  "pluginId": "documentation",
-  "secretRef": {
-    "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-    "kind": "secret",
+  "credentialSource": {
+    "id": "cs_123e4567-e89b-42d3-a456-426614174004",
+    "kind": "credential_source",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-  }
+  },
+  "harnessId": "codex",
+  "pluginId": "documentation"
 }
 ```
 

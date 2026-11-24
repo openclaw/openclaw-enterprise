@@ -437,13 +437,15 @@ async function kubeHandler(request: IncomingMessage, response: ServerResponse): 
       status(response, 409);
       return;
     }
+    const uid = current.metadata.uid;
+    assert.ok(uid, "A stored Secret must have a UID.");
     const stored: Secret = {
       ...value,
       apiVersion: "v1",
       kind: "Secret",
       metadata: {
         ...value.metadata,
-        uid: current.metadata.uid,
+        uid,
         resourceVersion: String(Number(current.metadata.resourceVersion) + 1),
       },
       data: {

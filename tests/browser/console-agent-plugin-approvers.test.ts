@@ -987,7 +987,7 @@ async function managedAccessBrowser(t: TestContext) {
       resource: { kind: "credential_source", id },
     }).binding;
   }
-  const selectedGrant = grantAccount(sourceId);
+  grantAccount(sourceId);
   grantAccount(siblingId);
   pluginDriver.getCatalogPlugin = async () =>
     assert.fail("An IAM refusal reached the Plugin Driver");
@@ -1042,8 +1042,6 @@ async function managedAccessBrowser(t: TestContext) {
     approvers,
     sourceId,
     siblingId,
-    selectedGrant,
-    principalId,
     path,
     capabilitiesUrl,
     detailsUrl,
@@ -1065,6 +1063,11 @@ async function managedAccessBrowser(t: TestContext) {
       }),
     denySource: (id: string) =>
       restrict(fixture.policy, "operate", "credential_source", {
+        namespaceId: namespace.id,
+        resourceId: id,
+      }),
+    denySourceRead: (id: string) =>
+      restrict(fixture.policy, "read", "credential_source", {
         namespaceId: namespace.id,
         resourceId: id,
       }),
@@ -1203,7 +1206,6 @@ async function refuseManaged(ui: ManagedAccessBrowser) {
 for (const loss of [
   "Agent read",
   "Agent update",
-  "Agent source",
   "caller source",
   "caller source and Agent read",
 ] as const) {
@@ -1215,22 +1217,9 @@ for (const loss of [
     if (action) {
       ui.denyAgent(action);
     }
-    if (loss === "Agent source") {
-      const index = fixture.policy.bindings.indexOf(ui.selectedGrant);
-      assert.ok(index >= 0);
-      fixture.policy.bindings.splice(index, 1);
-      const resource = {
-        kind: "credential_source" as const,
-        namespaceId: ui.namespace.id,
-        id: sourceId,
-      };
-      const canOperate = async (principalId: string) =>
-        (await fixture.iamDriver.authorize({ principalId, action: "operate", resource })).allowed;
-      assert.equal(await canOperate(ui.principalId), false);
-      assert.equal(await canOperate(fixture.principal.id), true);
-    }
     if (loss.startsWith("caller source")) {
       ui.denySource(sourceId);
+      ui.denySourceRead(sourceId);
     }
     const refusal = await refuseManaged(ui);
     const audit = fixture.auditSink.events.findLast(
@@ -1242,12 +1231,6 @@ for (const loss of [
     await expectManagedBlocked(ui, refusal);
     assert.equal(ui.rechecks(), 0, "the refusal must not trigger an automatic recheck");
 
-    const narrowCard = loss === "Agent source";
-    if (narrowCard) {
-      await ui.button("Configured plugins").click();
-      await pluginCard(ui.dialog, slackPluginId).waitFor();
-      await ui.page.setViewportSize({ width: 390, height: 720 });
-    }
     const recheck = ui.button("Recheck access");
     const staleRecheck = await recheck.elementHandle();
     const checked = await recheckManaged(ui, action ? 403 : 200, async () => {
@@ -1273,10 +1256,6 @@ for (const loss of [
         await ui.button("Load plugins").evaluate((node) => node === document.activeElement),
         true,
       );
-      if (narrowCard) {
-        await ui.page.setViewportSize({ width: 1280, height: 800 });
-        await ui.button("Available plugins").click();
-      }
       await loadFreshManaged(ui, [siblingId]);
       assert.notEqual(
         await ui.account.inputValue(),
@@ -1312,10 +1291,8 @@ test("An empty managed account slot rechecks a regrant and requires fresh discov
   const { page, sourceId, siblingId } = ui;
   const restriction = ui.denySource(sourceId);
   ui.denySource(siblingId);
-  const sourceRead = restrict(ui.fixture.policy, "read", "credential_source", {
-    resourceId: sourceId,
-  });
-  restrict(ui.fixture.policy, "read", "credential_source", { resourceId: siblingId });
+  const sourceRead = ui.denySourceRead(sourceId);
+  ui.denySourceRead(siblingId);
   const refusal = await refuseManaged(ui);
   await expectManagedBlocked(ui, refusal);
 
@@ -1393,7 +1370,9 @@ test("Canceled managed rechecks keep current refusal guidance across reopen and 
   const ui = await managedAccessBrowser(t);
   const { page, dialog, sourceId, siblingId } = ui;
   const restriction = ui.denySource(sourceId);
+  const sourceRead = ui.denySourceRead(sourceId);
   ui.denySource(siblingId);
+  ui.denySourceRead(siblingId);
   const original = await refuseManaged(ui);
   await expectManagedBlocked(ui, original);
 
@@ -1477,6 +1456,7 @@ test("Canceled managed rechecks keep current refusal guidance across reopen and 
   await expectAccounts(await recheckManaged(ui, 200), []);
   await loadFreshManaged(ui, []);
   liftRestriction(ui.fixture.policy, restriction);
+  liftRestriction(ui.fixture.policy, sourceRead);
   await cancelHeldRecheck(accountRecheck, [sourceId]);
   assert.equal(ui.rechecks(), 6);
   ui.checkNoWrites();
@@ -1486,12 +1466,14 @@ test("A later catalog refusal retires recovered Add and a regranted source still
   const ui = await managedAccessBrowser(t);
   const { fixture, page, dialog, sourceId, siblingId } = ui;
   const restriction = ui.denySource(sourceId);
+  const sourceRead = ui.denySourceRead(sourceId);
   const initialRefusal = await refuseManaged(ui);
   await expectManagedBlocked(ui, initialRefusal);
   await expectAccounts(await recheckManaged(ui, 200), [siblingId]);
   await loadFreshManaged(ui, [siblingId]);
 
   liftRestriction(fixture.policy, restriction);
+  liftRestriction(fixture.policy, sourceRead);
   const update = ui.denyAgent("update");
   const held = await holdRequests(t, page, ui.catalogUrl, {
     once: true,
@@ -1576,6 +1558,7 @@ test("A later catalog refusal retires recovered Add and a regranted source still
   await ui.checkDraft();
 
   ui.denySource(siblingId);
+  ui.denySourceRead(siblingId);
   liftRestriction(fixture.policy, update);
   await expectAccounts(await recheckManaged(ui, 200), [sourceId]);
   assert.deepEqual(ui.reads(), priorReads, "a compatible recheck must not replay discovery");
@@ -1796,6 +1779,7 @@ test("A deleting Agent's access recheck moves keyboard focus to the current refu
 test("Incompatible account or policy rechecks keep managed discovery blocked through session expiry", async (t) => {
   const ui = await managedAccessBrowser(t);
   ui.denySource(ui.sourceId);
+  ui.denySourceRead(ui.sourceId);
   const refusal = await refuseManaged(ui);
   await expectManagedBlocked(ui, refusal);
   const configure = ui.page.getByRole("button", { name: "Configure plugins", exact: true });

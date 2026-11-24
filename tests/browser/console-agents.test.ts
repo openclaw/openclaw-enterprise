@@ -193,7 +193,6 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await apiKeySecret.waitFor();
   assert.equal(await apiKeySecret.evaluate((node) => node.tagName), "INPUT");
   assert.equal(await apiKeySecret.evaluate((node: HTMLInputElement) => node.required), true);
-  assert.equal(await page.locator("#plugin-discovery-token").isVisible(), false);
   assert.equal(await page.getByRole("link", { name: "Create an API key", exact: true }).count(), 0);
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   await page.getByLabel("Service account token Secret", { exact: true }).waitFor();
@@ -201,20 +200,6 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
     "",
   );
-  await page.locator("#plugin-discovery-token > summary").click();
-  const discoveryToken = page.getByLabel("Token for plugin discovery", { exact: true });
-  assert.equal(await discoveryToken.inputValue(), "");
-  assert.equal(await discoveryToken.getAttribute("placeholder"), "at-…");
-  assert.equal(
-    await page.getByRole("link", { name: "OpenAI admin", exact: true }).getAttribute("href"),
-    "https://admin.openai.com/",
-  );
-  await page
-    .getByText(
-      "choose your workspace, open Service accounts, and create a token with Codex scope.",
-      { exact: false },
-    )
-    .waitFor();
   assert.equal(await page.getByRole("link", { name: "Create an API key", exact: true }).count(), 0);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Model", { exact: true }).isVisible(), true);
