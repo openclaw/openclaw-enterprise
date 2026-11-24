@@ -218,19 +218,38 @@ test("smoke timing attributes a delayed proxy wait without double-counting the p
   assert.equal(waits, 59);
 });
 
-test("smoke timing preserves a rejected proxy wait and omits unreached waits", async (t) => {
+test("smoke timing isolates channel proxy deployments from subsequent checks", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "first-agent-timing-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  let clock = 200;
+  let clock = 1000;
   const { smokeStep, writeTimingReport } = createStepRecorder(() => clock);
-  const error = new Error("unpublished proxy wait failure");
-  const proxy = smokeStep("controlled-channel-proxy", () =>
-    smokeStep("channel-proxy-helm-wait", async () => {
-      clock += 12;
-      throw error;
-    }),
-  );
-  await assert.rejects(proxy, (rejection) => rejection === error);
+  const peer = Promise.withResolvers<string>();
+  const parent = "controlled-channel-proxy";
+  const proxy = smokeStep(parent, async () => {
+    clock += 3;
+    const revisions = await smokeStep("channel-proxy-initial-deploy", () =>
+      Promise.all([Promise.resolve("revision-a"), peer.promise]),
+    );
+    assert.deepEqual(revisions, ["revision-a", "revision-b"]);
+    // Advance time between waits to model follow-up checks owned by the parent.
+    clock += 5;
+    await smokeStep("channel-proxy-move-deploy", () => {
+      clock += 11;
+    });
+    clock += 7;
+    await smokeStep("channel-proxy-clear-deploy", () => {
+      clock += 13;
+    });
+    clock += 3;
+    await smokeStep("channel-proxy-tls-control-deploy", () => {
+      clock += 17;
+    });
+    clock += 2;
+  });
+  // Only the slower peer holds the initial deployment open during this delay.
+  clock += 47;
+  peer.resolve("revision-b");
+  await proxy;
   await writeTimingReport(directory);
   assert.deepEqual(
     JSON.parse(await readFile(join(directory, "first-agent-smoke-timing-v2.json"), "utf8")),
@@ -238,22 +257,75 @@ test("smoke timing preserves a rejected proxy wait and omits unreached waits", a
       version: 2,
       rows: [
         {
-          phase: "channel-proxy-helm-wait",
-          parent: "controlled-channel-proxy",
-          startMs: 0,
-          endMs: 12,
-          status: "failed",
+          phase: "channel-proxy-initial-deploy",
+          parent,
+          startMs: 3,
+          endMs: 50,
+          status: "ok",
         },
         {
-          phase: "controlled-channel-proxy",
-          parent: null,
-          startMs: 0,
-          endMs: 12,
-          status: "failed",
+          phase: "channel-proxy-move-deploy",
+          parent,
+          startMs: 55,
+          endMs: 66,
+          status: "ok",
         },
+        {
+          phase: "channel-proxy-clear-deploy",
+          parent,
+          startMs: 73,
+          endMs: 86,
+          status: "ok",
+        },
+        {
+          phase: "channel-proxy-tls-control-deploy",
+          parent,
+          startMs: 89,
+          endMs: 106,
+          status: "ok",
+        },
+        { phase: parent, parent: null, startMs: 0, endMs: 108, status: "ok" },
       ],
     },
   );
+});
+
+test("smoke timing preserves a rejected proxy wait and omits unreached waits", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-timing-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const [phase, nextPhase] of [
+    ["channel-proxy-helm-wait", "channel-proxy-envoy-trust-rollout"],
+    ["channel-proxy-move-deploy", "channel-proxy-clear-deploy"],
+  ] as const) {
+    let clock = 200;
+    const { smokeStep, writeTimingReport } = createStepRecorder(() => clock);
+    const error = new Error("unpublished proxy wait failure");
+    const proxy = smokeStep("controlled-channel-proxy", async () => {
+      await smokeStep(phase, async () => {
+        clock += 12;
+        throw error;
+      });
+      await smokeStep(nextPhase, () => assert.fail("a subsequent wait ran"));
+    });
+    await assert.rejects(proxy, (rejection) => rejection === error);
+    await writeTimingReport(directory);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(directory, "first-agent-smoke-timing-v2.json"), "utf8")),
+      {
+        version: 2,
+        rows: [
+          { phase, parent: "controlled-channel-proxy", startMs: 0, endMs: 12, status: "failed" },
+          {
+            phase: "controlled-channel-proxy",
+            parent: null,
+            startMs: 0,
+            endMs: 12,
+            status: "failed",
+          },
+        ],
+      },
+    );
+  }
 });
 
 test("the Actions smoke command reports no retirement waits when image setup is missing", async (t) => {
