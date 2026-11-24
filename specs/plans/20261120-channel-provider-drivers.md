@@ -32,7 +32,8 @@ more providers, such as Microsoft Teams; their Drivers are separate changes.
 - OCC: `installChannelDrivers` replaces `channel` selection and refuses a Driver
   without a lookup schema. Directory lookup dispatches by provider and validates
   `context` against the Driver's schema before it reads the Secret. Deployment
-  admission runs and rechecks every installed validator.
+  admission runs and rechecks every installed validator, and refuses an Agent that
+  enables a channel without an installed Driver, on every Compute.
 - Composition: parse `drivers.channel`, build the provider set with
   `createChannelProviders`, and give it to OCC and Kubernetes Compute.
 - Slack Driver: declare empty closed schemas for its Installation configuration

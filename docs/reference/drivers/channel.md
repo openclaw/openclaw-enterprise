@@ -36,14 +36,16 @@ Driver identity and `lookupDirectory({ token, context?, kind, query?, cursor?, i
 `kind` selects users or channels. Optional `context` contains the provider's own
 lookup fields: at most eight nonsecret strings of at most 200 characters. Each
 Driver declares those fields with `directoryContextSchema()`, a closed JSON
-Schema object; OCC refuses to install a Driver whose schema is open or does not
-compile. OCC validates `context`, an absent one as `{}`, against it before it
+Schema object; OCC refuses to install a Driver whose schema is open or that the
+Driver configuration schema rules refuse. OCC validates `context`, an absent one as `{}`, against it before it
 reads the Secret, and returns `400 INVALID_REQUEST` with details. A missing or
 malformed field is named, for example `/context/team`; an unknown key is
 reported as `/context`. A provider without lookup fields declares a closed empty
-schema, so any context is refused. The Driver owns authentication and
-pagination, and can refuse input that a schema cannot express, such as a cursor
-from another lookup, with the `invalid_request` reason and field details. `ids` resolves saved IDs directly and
+schema: an empty `context` passes and any key is refused. The Driver owns
+authentication and pagination, and can refuse input that a schema cannot
+express, such as a cursor from another lookup, with the `invalid_request` reason
+and field details. That refusal comes after OCC reads the Secret and calls the
+Driver. `ids` resolves saved IDs directly and
 cannot be combined with a search query or cursor. The method returns workspace
 identity, candidates, an optional next cursor, and `complete`. A returned name
 is a display hint; callers save IDs.
@@ -82,8 +84,9 @@ drivers:
 
 If you omit `drivers.channel`, startup installs every bundled Driver with
 default configuration. If you supply the list, startup installs only the listed
-Drivers. Kubernetes Compute refuses an Agent Configuration that enables a
-channel whose Driver is not installed, at save and at deployment.
+Drivers. OCC refuses to deploy an Agent that enables a channel whose Driver is
+not installed, on every Compute. Kubernetes Compute also refuses that Agent
+Configuration at save.
 Startup refuses an unknown ID, a repeated ID and unknown or invalid
 configuration. OCC directory lookup and Compute admission use the same
 installed set.

@@ -18,9 +18,12 @@ import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { exactConfiguration, storedSecretBindings } from "./configuration-operations.ts";
 import { secretOperation, sameSecretBackend } from "./secret-operations.ts";
+import { enabledChannelEntries } from "./channel-secret-bindings.ts";
+import { configurationSettingMessage, keyedSettingPath } from "./environment-references.ts";
 import {
   AuthorizationDeniedError,
   ChannelCredentialError,
+  ConfigurationHarnessError,
   DependencyUnavailableError,
   RepositoryPolicyDeploymentConflict,
   ResourceConflictError,
@@ -71,7 +74,11 @@ interface DeploymentChannelDependencies {
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
   readonly drivers: Pick<
     DriverRegistry,
-    "selection" | "hasChannelDrivers" | "installedChannelDrivers"
+    | "selection"
+    | "hasChannelDrivers"
+    | "installedChannelDrivers"
+    | "installedChannelProviders"
+    | "channelDriver"
   >;
   readonly configurationDriver: () => ConfigurationDriver;
   readonly requireBundledChannelBindings: (
@@ -397,7 +404,27 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
     }
   }
 
+  // Every Compute: an enabled channel needs an installed Channel Driver, or OCC can neither check
+  // its credentials nor own its egress. Kubernetes Compute also refuses it at Configuration save.
+  function assertEnabledChannelsInstalled(values: OpenClawConfigurationDocument): void {
+    const installed = dependencies.drivers.installedChannelProviders();
+    for (const provider of enabledChannelEntries(values)) {
+      if (dependencies.drivers.channelDriver(provider) === undefined) {
+        // The same message as Kubernetes Compute's save-time rule.
+        throw new ConfigurationHarnessError(
+          configurationSettingMessage(
+            keyedSettingPath("channels", provider),
+            installed.length === 0
+              ? "is not a supported channel: install its Channel Driver, or set its enabled to false"
+              : `is not a supported channel: use ${installed.join(" or ")}, or set its enabled to false`,
+          ),
+        );
+      }
+    }
+  }
+
   return {
+    assertEnabledChannelsInstalled,
     validateChannelCredentials,
     prepareOrdinaryDeploymentChannels,
     validatePreparedChannels,

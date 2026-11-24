@@ -152,14 +152,14 @@ test("Channel directory lookup reaches only the named provider's Driver", async 
     },
   };
   assert(fixture.controller, "bootstrap must create the controller");
-  // OCC refuses an open or uncompilable lookup schema when it installs the set, not per request.
+  // OCC refuses a lookup schema that is open or that Driver configuration schemas would refuse
+  // (malformed keywords, unknown formats, bad patterns) when it installs the set, not per request.
+  const closed = { type: "object", additionalProperties: false };
   for (const directoryContextSchema of [
     () => ({ type: "object" }),
-    () => ({
-      type: "object",
-      additionalProperties: false,
-      properties: { team: { type: "string", pattern: "(" } },
-    }),
+    () => ({ ...closed, properties: { team: { type: "string", pattern: "(" } } }),
+    () => ({ ...closed, required: "team", properties: { team: { type: "string" } } }),
+    () => ({ ...closed, properties: { team: { type: "string", format: "team-reference" } } }),
   ]) {
     assert.throws(
       () =>

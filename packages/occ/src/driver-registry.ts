@@ -9,7 +9,7 @@ import type {
   PluginDriver,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
-import { validateConfiguration } from "@openclaw-enterprise/contracts";
+import { assertConfigurationSchema } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { DriverConfigurationRegistry } from "./configuration-registry.ts";
 import {
@@ -48,38 +48,18 @@ interface DriverRegistryDependencies {
   readonly hasBuiltInRepositoryPolicy: () => boolean;
 }
 
-/** A Channel Driver's lookup schema must be a closed object schema that compiles. */
+/** A Channel Driver's lookup schema must be a supported, closed object schema. */
 function closedLookupSchema(driver: ChannelDriver): boolean {
   if (typeof driver.directoryContextSchema !== "function") {
     return false;
   }
   try {
-    const schema = asRecord(driver.directoryContextSchema());
-    if (schema?.type !== "object" || schema.additionalProperties !== false) {
-      return false;
-    }
-    // Compile every pattern now, so a malformed schema fails at install, not per request.
-    const patterns = (value: unknown): void => {
-      if (Array.isArray(value)) {
-        value.forEach(patterns);
-        return;
-      }
-      const record = asRecord(value);
-      if (record === undefined) {
-        return;
-      }
-      for (const [key, child] of Object.entries(record)) {
-        if (key === "pattern" && typeof child === "string") {
-          new RegExp(child, "u");
-        } else if (key === "patternProperties" && asRecord(child) !== undefined) {
-          Object.keys(child as object).forEach((pattern) => new RegExp(pattern, "u"));
-        }
-        patterns(child);
-      }
-    };
-    patterns(schema);
-    validateConfiguration(schema, {});
-    return true;
+    const schema = driver.directoryContextSchema();
+    // The same check as Driver configuration schemas: valid JSON Schema, known formats, and a
+    // schema that compiles, so a malformed one fails at install instead of per request.
+    assertConfigurationSchema(schema);
+    const root = asRecord(schema);
+    return root?.type === "object" && root.additionalProperties === false;
   } catch {
     return false;
   }
@@ -227,6 +207,13 @@ export class DriverRegistry {
       }
       return entry.driver as ChannelDriver;
     });
+  }
+
+  /** The providers that have an installed Channel Driver, in composition order. */
+  installedChannelProviders(): readonly string[] {
+    return this.channelRegistrations.flatMap((entry) =>
+      entry.provider === undefined ? [] : [entry.provider],
+    );
   }
 
   /** The Channel Driver installed for one provider, or undefined. */

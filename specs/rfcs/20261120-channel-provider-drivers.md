@@ -79,8 +79,10 @@ drivers:
 | `slack-channel` | `slack`  | None.         |
 
 Without `drivers.channel`, the controller installs every bundled Driver. With
-it, the controller installs only the listed Drivers, and Kubernetes Compute
-refuses an Agent Configuration that enables another provider. Each Driver's
+it, the controller installs only the listed Drivers. OCC then refuses to deploy
+an Agent that enables another provider, on every Compute, because it can neither
+check that provider's credentials nor own its traffic. Kubernetes Compute also
+refuses such an Agent Configuration at save. Each Driver's
 configuration has a closed schema, so startup refuses unknown fields. A later
 provider can add its own settings, such as Teams storage hosts.
 
@@ -98,8 +100,9 @@ Driver declares these fields with `directoryContextSchema()`, a closed JSON
 Schema. OCC checks `context` against it before it reads the Secret. A request
 that does not match gets `400 INVALID_REQUEST`, which names a missing or
 malformed field and reports an unknown key as `/context`. Slack declares no
-fields, so any context is refused. A Driver can still refuse input that a schema
-cannot express, such as a cursor from another lookup.
+fields, so an empty `context` passes and any key is refused. A Driver can still
+refuse input that a schema cannot express, such as a cursor from another
+lookup; that refusal comes after OCC reads the Secret and calls the Driver.
 
 ### Credential checks at deployment
 
@@ -130,7 +133,8 @@ No changes.
 - [`ChannelDriver`](../../packages/contracts/src/drivers/channel/index.ts) gets
   the required `directoryContextSchema(): JSONSchema`, a closed object schema
   for the provider's lookup fields. OCC refuses to install a Driver without it,
-  or with a schema that is open or does not compile.
+  or with a schema that is open or that the Driver configuration schema rules
+  refuse.
 - `ChannelDirectoryLookupInput` gets the checked
   `context?: Readonly<Record<string, string>>`. It does not get `provider`.
 - `ChannelDirectoryError` gets the `invalid_request` reason, with optional field
@@ -153,11 +157,12 @@ Driver that forwards each request to the correct provider.
   lookup without `provider` reaches the Slack Driver.
 - **AC-3 — OCC checks declared lookup fields:** A lookup that misses a required
   field, or sends a value the schema refuses, gets `400 INVALID_REQUEST` that
-  names the field. OCC does not read the Secret or call the provider. Any
-  context on a Slack lookup is refused the same way.
+  names the field. OCC does not read the Secret or call the provider. Any key
+  in a Slack lookup's context is refused the same way.
 - **AC-4 — Selection controls installation:** With an empty `drivers.channel`,
-  the API refuses to save an Agent Configuration that enables Slack. Unknown or
-  malformed settings stop startup.
+  OCC refuses to deploy an Agent that enables Slack, on SSH Compute as on
+  Kubernetes Compute, which also refuses to save that Configuration. An Agent
+  with Slack off still deploys. Unknown or malformed settings stop startup.
 - **AC-5 — Every installed credential check gates deployment:** With two
   providers installed, deployment runs both checks. A change to either Driver
   or its check before the revision is recorded refuses the deployment.
@@ -167,7 +172,8 @@ Driver that forwards each request to the correct provider.
 The [implementation plan](../plans/20261120-channel-provider-drivers.md) records
 delivery and the tests for each criterion. AC-1 to AC-3 run through the real API,
 OCC and Slack Driver, with an HTTP stand-in for Slack. AC-4 runs through the
-real Installation loader and API. AC-5 runs through real deployment admission.
+real Installation loader, the API, and the Kubernetes and SSH Compute Drivers.
+AC-5 runs through real deployment admission.
 
 ## Rationale and alternatives
 
