@@ -1083,12 +1083,12 @@ test(
       );
       assert.equal(JSON.stringify(attemptAudit.rows).includes(submittedMaterial), false);
     }
-    const createAgent = () =>
+    const createAgent = (credentialSources = [{ sourceId }]) =>
       memberRequest("POST", `${base}/agents`, {
         name: `Agent ${randomUUID()}`,
         configurationId,
         harnessAuth: { method: "credential_source", sourceId },
-        credentialSources: [{ sourceId }],
+        credentialSources,
       });
     const denied = await createAgent();
     assert.equal(denied.statusCode, 403, denied.body);
@@ -1123,6 +1123,29 @@ test(
     assert.equal(createdAgent.statusCode, 201, createdAgent.body);
     const agent = createdAgent.json().data;
     assert.deepEqual(agent.credentialSources, [{ sourceId }]);
+
+    const duplicate = await createAgent([{ sourceId }, { sourceId }]);
+    assert.equal(duplicate.statusCode, 400, duplicate.body);
+    assert.equal(duplicate.json().error.code, "INVALID_REQUEST");
+    assert.match(duplicate.json().error.message, /credentialSources.*no duplicate items/u);
+    assert.deepEqual(duplicate.json().error.details, [
+      { path: "/credentialSources", code: "INVALID_VALUE" },
+    ]);
+
+    // The request limit applies before OCC looks up any of the additional Source IDs.
+    const oversized = await memberRequest("PATCH", `${base}/agents/${agent.id}`, {
+      configurationId,
+      credentialSources: [
+        { sourceId },
+        ...Array.from({ length: 64 }, () => ({ sourceId: `cs_${randomUUID()}` })),
+      ],
+    });
+    assert.equal(oversized.statusCode, 400, oversized.body);
+    assert.equal(oversized.json().error.code, "INVALID_REQUEST");
+    assert.match(oversized.json().error.message, /credentialSources.*at most 64 items/u);
+    const unchangedAgent = await inject("GET", `${base}/agents/${agent.id}`);
+    assert.equal(unchangedAgent.statusCode, 200, unchangedAgent.body);
+    assert.deepEqual(unchangedAgent.json().data.credentialSources, [{ sourceId }]);
 
     // The actual Agent draft now references this source. A policy reduction must wait for
     // withdrawal, including when submitted with a new secret. Rejection must precede custody.
@@ -1916,8 +1939,19 @@ test(
     assert.equal(exactGrant.statusCode, 200, exactGrant.body);
     const admitted = await inject("POST", `${base}/agents/${dedicatedId}/deploy`, {}, nativeApp);
     assert.equal(admitted.statusCode, 202, admitted.body);
+    const admittedRevision = admitted.json().data;
+    const expectedSources = [{ sourceId: nativeSource.id }];
+    assert.deepEqual(admittedRevision.credentialSources, expectedSources);
+    const publicRevision = await inject(
+      "GET",
+      `${base}/agents/${dedicatedId}/revisions/${admittedRevision.id}`,
+      undefined,
+      nativeApp,
+    );
+    assert.equal(publicRevision.statusCode, 200, publicRevision.body);
+    assert.deepEqual(publicRevision.json().data.credentialSources, expectedSources);
     const revision = await nativeController.transact((unit) =>
-      unit.revisions.findRevision(namespaceId, dedicatedId, admitted.json().data.id),
+      unit.revisions.findRevision(namespaceId, dedicatedId, admittedRevision.id),
     );
     assert.equal(revision?.executionAdmission.version, 8);
     assert.deepEqual(revision?.credentialDeployment?.injectionPolicies, [
