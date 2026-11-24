@@ -2359,7 +2359,15 @@ run_migration_stage() {
     if [[ "$stage" == verify ]]; then
       [[ "$history" == completed ]] || history=verificationFailed
     elif [[ -z "$history" ]]; then
-      die "the apply Job did not succeed with a valid migration result. Preserve its evidence, reconcile the database outcome, and keep writers stopped."
+      local reason="the apply Job did not succeed with a valid migration result."
+      # Report a recognized failure without copying arbitrary Job output to the terminal.
+      if [[ "$terminal_phase" == Failed ]] && jq -Rse '
+        [split("\n")[] | fromjson? | objects | select(.event == "migration.failed") | .code]
+          == ["MIGRATION_DATABASE_BUSY"]
+      ' "$evidence_dir/preflight-migration.log" >/dev/null 2>&1; then
+        reason="the apply Job reported a conflicting database lock (MIGRATION_DATABASE_BUSY). Check outstanding transactions."
+      fi
+      die "$reason Keep writers stopped. Inspect migration-deploy-apply/preflight-migration.log in the upgrade evidence directory. Reconcile the original Job and database history. Do not replay the Job."
     fi
     migration_stage_state migration-settled "$upgrade_evidence_dir" "$attempt" "$history"
     record=$(migration_stage_state migration-status "$upgrade_evidence_dir" |
