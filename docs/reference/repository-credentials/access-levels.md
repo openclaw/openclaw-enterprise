@@ -121,6 +121,18 @@ Any explicit limit requires a saved repository network policy and native
 enforcement, even without API permissions. If either is missing, OCE refuses
 credential delivery and renewal. Withdrawal and Stop remain available.
 
+#### Preview Namespace limits
+
+Choose an example grant to preview direct requests. Open **Advanced** to
+generate limits for every Agent that uses the registration. The preview does
+not read or save your policy.
+
+<div data-repository-limits></div>
+
+To change one Agent, edit its [saved grant](../sandbox-policies.md#repository-network-policy)
+and deploy. Review the [indirect effects](#known-limits). For example, issue
+reads can return pull requests even if you block direct pull request access.
+
 #### Issue creation
 
 Namespace `permissions.issues: write` and saved Agent Write permit
