@@ -6,6 +6,7 @@ import test, { type TestContext } from "node:test";
 import pg from "pg";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import {
   createOpenShellBackend,
   openShellProviderName,
@@ -480,6 +481,7 @@ test(
       instanceId,
       state,
       { notifyCredentialUpdated: notify },
+      new OAuthAccountTokens(state, driver, controller.resolveConnectionClient.bind(controller)),
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", owner.id);
@@ -1875,16 +1877,12 @@ test(
     );
     assert.deepEqual([...core.secrets], custodyBeforeRefusal);
     const deliveryName = openShellProviderName(retirementId);
-    const readProvider = () =>
-      nativeTransport.client.getProvider(
-        kubernetesNamespace,
-        deliveryName,
-        AbortSignal.timeout(5_000),
-      );
-    const readProfile = () =>
+    const readProvider = (name = deliveryName) =>
+      nativeTransport.client.getProvider(kubernetesNamespace, name, AbortSignal.timeout(5_000));
+    const readProfile = (name = deliveryName) =>
       nativeTransport.client.getProviderProfile(
         kubernetesNamespace,
-        deliveryName,
+        name,
         AbortSignal.timeout(5_000),
       );
     assert.ok(await readProvider());
@@ -1902,6 +1900,70 @@ test(
     assert.equal(core.secrets.size, custodyBeforeRefusal.length - 1);
     assert.equal(await readProvider(), undefined);
     assert.equal(await readProfile(), undefined);
+
+    // Issue a grant at the trusted post-exchange boundary. The controlled copy represents
+    // delivery state retained after its Sandbox detached.
+    const accessToken = randomUUID();
+    const refreshToken = randomUUID();
+    material.push(accessToken, refreshToken);
+    const oauth = await owner.createSource(
+      {
+        kind: "oauth_refresh_token",
+        namespaceId,
+        name: "Native OAuth retirement source",
+        consent: {
+          kind: "builtin_codex",
+          ownerPrincipalId: principal.id,
+          account: { accountId: "retirement-account", planType: "plus", isFedramp: false },
+        },
+        grant: {
+          accessToken,
+          refreshToken,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          requestedScopes: ["openid"],
+          grantedScopes: ["openid"],
+        },
+      },
+      AbortSignal.timeout(5_000),
+    );
+    const oauthPath = `${base}/credential-sources/${oauth.id}`;
+    const oauthDeliveryName = openShellProviderName(oauth.id);
+    const readCustody = () =>
+      state.read((view) => view.oauthCredentials.findTokenCustody(namespaceId, oauth.id));
+    const custody = await readCustody();
+    assert.ok(custody);
+    const { namespaceName, name } = custody.secret.backendRef;
+    const secretKey = `${namespaceName}/${name}`;
+    const storedGrant = structuredClone(core.secrets.get(secretKey));
+    assert.ok(storedGrant);
+    nativeTransport.seed(oauth.id);
+
+    nativeTransport.refused = true;
+    const refusedOAuthRetirement = remember(
+      await inject("DELETE", oauthPath, undefined, nativeApp),
+    );
+    assert.equal(refusedOAuthRetirement.statusCode, 503, refusedOAuthRetirement.body);
+    const retiringOAuth = remember(await inject("GET", oauthPath, undefined, nativeApp));
+    assert.equal(retiringOAuth.statusCode, 200, retiringOAuth.body);
+    assert.equal(retiringOAuth.json().data.state, "deleting");
+    assert.equal(retiringOAuth.json().data.consent.revocationRequestedBy, principal.id);
+    assert.equal(retiringOAuth.json().data.consent.revokedAt, undefined);
+    assert.deepEqual(await readCustody(), custody);
+    assert.deepEqual(core.secrets.get(secretKey), storedGrant);
+    assert.ok(await readProvider(oauthDeliveryName));
+    assert.ok(await readProfile(oauthDeliveryName));
+
+    nativeTransport.refused = false;
+    const completedOAuthRetirement = remember(
+      await inject("DELETE", oauthPath, undefined, nativeApp),
+    );
+    assert.equal(completedOAuthRetirement.statusCode, 204, completedOAuthRetirement.body);
+    assert.equal(await readProvider(oauthDeliveryName), undefined);
+    assert.equal(await readProfile(oauthDeliveryName), undefined);
+    assert.equal(remember(await inject("GET", oauthPath, undefined, nativeApp)).statusCode, 404);
+    assert.equal(await readCustody(), undefined);
+    assert.equal(core.secrets.has(secretKey), false);
+
     const networking = `${base}/agents/${dedicatedId}/sandbox-policy/networking`;
     const editing = await inject("PATCH", `${networking}/editing`, { enabled: true }, nativeApp);
     assert.equal(editing.statusCode, 200, editing.body);

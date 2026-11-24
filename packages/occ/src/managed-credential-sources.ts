@@ -458,7 +458,22 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     }
   }
 
-  /** Revoke OAuth material even while an Agent still refers to the Source. */
+  async function retireSourceDelivery(
+    namespace: Readonly<Namespace>,
+    source: Readonly<CredentialSource>,
+  ): Promise<void> {
+    try {
+      await dependencies.retireDelivery(
+        namespace,
+        credentialSourceRef(source),
+        AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+      );
+    } catch {
+      throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
+    }
+  }
+
+  /** Finish a recorded OAuth revocation. Agent references can retain the Source row. */
   async function finishOAuthRevocation(
     namespaceId: string,
     sourceId: string,
@@ -471,7 +486,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     | undefined
   > {
     const pending = await dependencies.transactions.transact(async (state) => {
-      await lockNamespace(state, namespaceId);
+      const namespace = await lockNamespace(state, namespaceId);
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (
         !isManagedTokenServiceSource(source) ||
@@ -483,12 +498,15 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       if (source.state !== "deleting") {
         throw new ResourceStateConflictError("The OAuth Source has no pending retirement.");
       }
-      return { source, requestedBy: source.consent.revocationRequestedBy };
+      return { namespace, source, requestedBy: source.consent.revocationRequestedBy };
     });
     if (!pending) {
       return undefined;
     }
     const owner = ownedTokenServiceDriver(pending.source.tokenServiceInstanceId);
+    if (pending.source.consent.revokedAt === undefined) {
+      await retireSourceDelivery(pending.namespace, pending.source);
+    }
     const removed = await driverOperation(
       () =>
         owner.removeSource(
@@ -713,15 +731,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       return;
     }
     const owner = ownedTokenServiceDriver(source.tokenServiceInstanceId);
-    try {
-      await dependencies.retireDelivery(
-        namespace,
-        credentialSourceRef(source),
-        AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
-      );
-    } catch {
-      throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
-    }
+    await retireSourceDelivery(namespace, source);
     const removed = await driverOperation(
       () =>
         owner.removeSource(

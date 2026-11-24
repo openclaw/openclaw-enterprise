@@ -71,4 +71,4 @@ code once. If the provider rejects the client secret, an administrator can corre
 the Token Service retries the same grant. If the provider rejects the user’s
 refresh grant, the user reconnects.
 
-Use `DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}` to disconnect the OAuth Source. Its owner needs exact Source read and operate permission; another caller needs Source delete permission. OCC records the request before TokenService retires the grant, and the worker can finish a pending revocation.
+Disconnect the OAuth Source with the [Source DELETE operation](credential-sources.md#delete-a-source). OCC records the request and retires Proxy delivery copies before TokenService removes the grant.

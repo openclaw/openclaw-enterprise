@@ -13,7 +13,10 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { closeResources } from "./composition/close-resources.ts";
-import { installationDriverConfigurations } from "./composition/installation-config.ts";
+import {
+  credentialSourceDeliveryBinding,
+  installationDriverConfigurations,
+} from "./composition/installation-config.ts";
 import {
   DriverConfigurationRegistry,
   type DriverConfigurationRegistration,
@@ -1692,6 +1695,7 @@ export class ControllerWorker {
     this.attachLifecycleDrivers(this.iam);
     const provisioningOptions = {
       namespaceLifecycleBindings: this.namespaceLifecycleBindings,
+      credentialSourceDelivery: credentialSourceDeliveryBinding(this.tokenServiceDrivers),
       preparedTokens: this.preparedTokens,
       state: this.state,
       sandboxNetworkPolicyCeiling: this.policyCeiling,
