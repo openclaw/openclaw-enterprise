@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
+  pathCovered,
+  type ConnectionEndpoint,
+  type ConnectionTemplateVersion,
   type StoredCredentialSource as CredentialSource,
   type PluginCatalogEntry,
   type PluginDesiredState,
@@ -458,7 +461,39 @@ export function managedMcpInstallForSourceConfig(
 export function managedMcpSlotAcceptsSource(
   install: ManagedMcpInstall,
   source: CredentialSource,
+  template?: ConnectionTemplateVersion,
 ): boolean {
+  if (source.ownerCapability === "token_service") {
+    if (
+      source.state !== "ready" ||
+      !source.connectionTemplateId ||
+      template?.templateId !== source.connectionTemplateId
+    ) {
+      return false;
+    }
+    const endpoint = install.endpoint;
+    const destinationMatches = ({ host, port, path }: ConnectionEndpoint) =>
+      host === endpoint.host && port === endpoint.port && pathCovered(endpoint.path, path);
+    if (source.type === "static") {
+      return (
+        template.mode === "static_bearer" &&
+        template.destinations.some(
+          (destination) => destination.method === "POST" && destinationMatches(destination),
+        )
+      );
+    }
+    const slot = install.credentials[install.slotId]!;
+    return (
+      source.consent.kind === "connection_template" &&
+      source.consent.revocationRequestedBy === undefined &&
+      source.consent.revokedAt === undefined &&
+      template.mode === "mcp_discovery" &&
+      template.issuer === slot.issuer &&
+      template.mcp?.serverUrl === install.url &&
+      template.mcp.resource === slot.mcp.resource &&
+      template.destinations.some(destinationMatches)
+    );
+  }
   return (
     source.ownerCapability === "credential_gateway" &&
     source.state === "ready" &&
@@ -473,12 +508,13 @@ function acceptsManagedSource(
   install: ManagedCliInstall | ManagedMcpInstall,
   requirement: string,
   source: CredentialSource,
+  template?: ConnectionTemplateVersion,
 ): boolean {
   if (install.kind === "mcp") {
-    return requirement === install.slotId && managedMcpSlotAcceptsSource(install, source);
+    return requirement === install.slotId && managedMcpSlotAcceptsSource(install, source, template);
   }
   const slot = install.credentials[requirement];
-  return !!slot && cliCredentialPolicy(install)?.accepts(install, slot, source) === true;
+  return !!slot && cliCredentialPolicy(install)?.accepts(install, slot, source, template) === true;
 }
 
 export function managedPluginCredentials(
@@ -507,14 +543,18 @@ export function managedPluginCredentials(
         }),
       );
     },
-    mcpToolDiscovery(pluginId: string, slotId: string, source: CredentialSource) {
+    mcpToolDiscovery(pluginId: string, slotId: string, source: CredentialSource, template) {
       const install = managedMcpInstalls.find(({ id }) => id === pluginId);
-      if (!install || slotId !== install.slotId || !managedMcpSlotAcceptsSource(install, source)) {
+      if (
+        !install ||
+        slotId !== install.slotId ||
+        !managedMcpSlotAcceptsSource(install, source, template)
+      ) {
         return undefined;
       }
       return { endpoint: install.url };
     },
-    choices(sources: readonly CredentialSource[]) {
+    choices(sources: readonly CredentialSource[], templates) {
       return managedInstalls.flatMap((install) =>
         Object.entries(install.credentials).map(([id, slot]) => ({
           pluginId: install.id,
@@ -523,12 +563,14 @@ export function managedPluginCredentials(
           label: slot.label,
           ...(install.kind === "mcp" && { toolDiscovery: true as const }),
           sources: sources
-            .filter((source) => acceptsManagedSource(install, id, source))
+            .filter((source) =>
+              acceptsManagedSource(install, id, source, templates?.get(source.id)),
+            )
             .map(({ id, name }) => ({ id, name })),
         })),
       );
     },
-    async validate(selections, sources, modelSourceId) {
+    async validate(selections, sources, modelSourceId, templates) {
       const sourcesById = new Map(sources.map((source) => [source.id, source]));
       for (const [pluginId, selection] of Object.entries(selections)) {
         const install = managedInstalls.find(({ id }) => id === pluginId);
@@ -571,7 +613,7 @@ export function managedPluginCredentials(
               !source ||
               source.id === modelSourceId ||
               source.namespaceId !== sourceRef.namespaceId ||
-              !acceptsManagedSource(install, requirement, source)
+              !acceptsManagedSource(install, requirement, source, templates?.get(source.id))
             ) {
               throw unavailable();
             }

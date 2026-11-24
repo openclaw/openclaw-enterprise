@@ -7437,18 +7437,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         consumer.kind === "plugin" ? [consumer.pluginId] : [],
       ),
     );
-    const legacyPluginSelections =
-      stagedPluginIds.size === 0
-        ? revision.plugins?.plugins
-        : Object.fromEntries(
-            Object.entries(revision.plugins?.plugins ?? {}).filter(
-              ([pluginId]) => !stagedPluginIds.has(pluginId),
-            ),
-          );
     requireManagedCredentialRuntime(
-      legacyPluginSelections,
+      revision.plugins?.plugins,
       sandboxDriver?.implementation,
       this.credentialGatewayDriver?.implementation,
+      stagedPluginIds,
     );
     requireNativeWorkerSandbox(revision.harness, sandboxDriver);
     if (sandboxDriver !== undefined && embedded) {
