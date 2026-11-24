@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { GIT_REVISION } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
@@ -568,6 +568,123 @@ test(
         [stopped.revisionId]: [true, true],
         [replaced.revisionId]: [true, true],
       },
+    );
+  },
+);
+
+/** A ready Namespace with one managed repository token Source, its DELETE and its copy input. */
+async function managedSource(t: TestContext, label: string) {
+  assert.ok(databaseUrl);
+  const { controller, inject, pool, principal, state } = await createPostgresAgentApp(t, {
+    label,
+    authSecret: `${label}-session-secret`,
+    requestAudit: false,
+    controllerOptions: { iamConfiguration: controllerIAMConfiguration(defaultUsersIAM()) },
+  });
+  await controller.applyIAMConfiguration();
+  const { driver } = useInstallationSecretDriver(controller);
+  assert.ok(driver.installationSecrets);
+  const instanceId = await controller.activateTokenServiceInstance(label, randomUUID());
+  const owner = new OCCTokenServiceDriver(
+    label,
+    controller.installation.id,
+    driver.installationSecrets,
+    instanceId,
+    state,
+  );
+  controller.registerDriver(owner);
+  controller.selectDriver("token_service", owner.id);
+  const created = await inject("POST", "/namespaces", { name: `${label} ${randomUUID()}` });
+  assert.equal(created.statusCode, 201, created.body);
+  const namespaceId: string = created.json().data.id;
+  await controller.handleNamespaceLifecycle(principal.id, namespaceId, "ready");
+  const event = (action: string, ref: CredentialSourceReference, phase?: string): AuditEvent => ({
+    ...auditEvent(
+      controller.installation.id,
+      namespaceId,
+      principal.id,
+      phase ? `${action}.started` : action,
+      ref,
+    ),
+    ...(phase ? { details: { phase } } : {}),
+  });
+  const source = await controller.createManagedCredentialSource(
+    principal.id,
+    namespaceId,
+    sourceInput("fixture/a:write"),
+    (ref, phase) => event("openclaw.credential_sources.create", ref, phase),
+  );
+  const retire = () =>
+    controller.deleteCredentialSource(principal.id, namespaceId, source.id, (_removed, phase) =>
+      event(
+        "openclaw.credential_sources.delete",
+        { kind: "credential_source", namespaceId, id: source.id },
+        phase,
+      ),
+    );
+  const copy = (revisionId: string) => ({
+    namespaceId,
+    credentialSourceId: source.id,
+    tokenServiceInstanceId: instanceId,
+    agentId: `agent-${revisionId}`,
+    revisionId,
+  });
+  return { pool, state, namespaceId, source, retire, copy };
+}
+
+test(
+  "a deploy's copy and Source DELETE serialize on the Source row: whichever commits first, the other sees it",
+  requiresPostgres,
+  async (t) => {
+    const f = await managedSource(t, "repository-source-copy-race");
+    const revisionId = `rev-${randomUUID()}`;
+    // The deploy's side as admission takes it: the Namespace row, then the Source row, then the
+    // copy, all in one transaction that stays open until `commit` is called.
+    let commit!: () => void;
+    const committing = new Promise<void>((resolve) => (commit = resolve));
+    let locked!: () => void;
+    const lockedSource = new Promise<void>((resolve) => (locked = resolve));
+    const deploy = f.state.transact(async (unit) => {
+      assert.ok(await unit.namespaces.lockNamespace(f.namespaceId));
+      const source = await unit.credentialSources.lockCredentialSource(f.namespaceId, f.source.id);
+      assert.equal(source?.state, "ready");
+      await unit.credentialSources.recordRepositorySourceCopy(f.copy(revisionId));
+      locked();
+      await committing;
+    });
+    await lockedSource;
+    // DELETE waits behind the open deploy transaction, then reads the committed copy.
+    let settled = false;
+    const deleting = f.retire().finally(() => (settled = true));
+    deleting.catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(settled, false, "DELETE waits for the deploy's row locks");
+    commit();
+    await deploy;
+    await assert.rejects(deleting, RepositorySourceCopiesUnretiredError);
+    assert.equal(
+      (
+        await f.state.read((view) =>
+          view.credentialSources.findCredentialSource(f.namespaceId, f.source.id),
+        )
+      )?.state,
+      "ready",
+    );
+
+    // DELETE first: once the copy is retired it commits, and the next deploy finds no ready
+    // Source to record a copy for.
+    assert.equal(await new PostgresOpenShellGitRouteStore(f.pool).retireSourceCopy(revisionId), true);
+    await f.retire();
+    await assert.rejects(
+      f.state.transact(async (unit) => {
+        assert.ok(await unit.namespaces.lockNamespace(f.namespaceId));
+        assert.equal(
+          await unit.credentialSources.lockCredentialSource(f.namespaceId, f.source.id),
+          undefined,
+        );
+        await unit.credentialSources.recordRepositorySourceCopy(f.copy(`rev-${randomUUID()}`));
+      }),
+      ScopeViolationError,
     );
   },
 );
