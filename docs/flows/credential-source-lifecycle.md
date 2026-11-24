@@ -60,7 +60,7 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 OCC authorizes `credential_source:create` on a ready Namespace and validates any static Connection Template before it calls TokenService. TokenService creates the Source, saves its optional Template ID, and stores the credential in private custody. OCC then grants the creator access and audits completion. The response contains only the Source ID and nonsecret metadata. See the [custody flow](token-service-static-custody.md) for failures between those commits.
 
-The [OAuth consent workflow](connection-templates.md#3-authorize-the-account-in-the-browser) keeps consent state until it exchanges the authorization code. TokenService then creates the ready OAuth Source and stores the grant. The Source association stores the Template ID. The consent record keeps the original Template version and OAuth client. See the [Source reference](../reference/credential-sources.md#read-and-list-sources) for the metadata returned to callers.
+The [OAuth consent workflow](connection-templates.md#3-authorize-the-account-in-the-browser) keeps consent state until it exchanges the authorization code. TokenService then creates the ready OAuth Source and stores the grant. For Template-backed OAuth, `connectionTemplateId` stores the Template ID. `OAuthCredentialSource.consent` keeps the original Template version and OAuth client. See the [Source reference](../reference/credential-sources.md#read-and-list-sources) for the metadata returned to callers.
 
 <a id="3-bind-and-admit-an-agent-revision"></a>
 
