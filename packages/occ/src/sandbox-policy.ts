@@ -2,12 +2,13 @@ import {
   checkedSandboxPolicySnapshot,
   defaultDeploymentSandboxPolicy,
 } from "./sandbox-policy-admission.ts";
-import { assertScopedRepositoryHistory } from "./repository-network-policy.ts";
 
 import type { HarnessResolver } from "./agent-harness-topology.ts";
 import {
   type repositoryPolicySaveValidator,
+  assertScopedRepositoryHistory,
   bindRepositoryPolicyAuthorization,
+  supportsScopedRepositoryHistory,
 } from "./repository-network-policy.ts";
 
 function editableSandboxPolicy(
@@ -80,7 +81,10 @@ interface SandboxPolicyDependencies {
     additions?: readonly SandboxNetworkGrant[],
     canOperate?: (target: ResourceRef) => Promise<boolean>,
   ) => Promise<
-    ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> | undefined
+    | (ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> & {
+        readonly allowsStandaloneModelHistory?: true;
+      })
+    | undefined
   >;
   readonly repositoryCeiling: (namespaceId: string) => RepositoryNetworkPolicyCeiling;
   readonly installationId: string;
@@ -374,10 +378,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       const storesRepositoryPolicy = state.sandboxPolicies.supportsRepositoryNetworkPolicy === true;
       const canWithdraw = storesRepositoryPolicy && policy.repositoryNetworkPolicy !== undefined;
       const edit =
-        storesRepositoryPolicy &&
-        unavailableReason === undefined &&
-        (canWithdraw ||
-          (await state.revisions.listRevisionMetadata(namespaceId, agentId)).length === 0)
+        storesRepositoryPolicy && unavailableReason === undefined
           ? await dependencies.qualifyRepositoryEdit(
               state,
               agent,
@@ -391,7 +392,16 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
             )
           : undefined;
       const repositoryNetworkPolicyCeiling = dependencies.repositoryCeiling(namespaceId);
-      const supported = edit?.supports(repositoryNetworkPolicyCeiling) === true;
+      const supported =
+        edit !== undefined &&
+        (canWithdraw ||
+          (edit.allowsStandaloneModelHistory
+            ? supportsScopedRepositoryHistory(
+                await state.revisions.listRevisionsForBrowsing(namespaceId, agentId),
+                true,
+              )
+            : (await state.revisions.listRevisionMetadata(namespaceId, agentId)).length === 0)) &&
+        edit.supports(repositoryNetworkPolicyCeiling);
       const repositoryApiMaxima = supported
         ? edit.apiMaxima(repositoryNetworkPolicyCeiling)
         : undefined;
@@ -413,6 +423,10 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         repositoryNetworkPolicyCeiling,
         ...(repositoryApiMaxima && { repositoryApiMaxima }),
         repositoryNetworkPolicySaveSupported: canWithdraw || supported,
+        ...(supported &&
+          edit.allowsStandaloneModelHistory && {
+            repositoryNetworkPolicySupportsAdditions: true as const,
+          }),
         defaults,
         // A fresh deploy carries the saved version into its Sandbox; no application is
         // requested for it (D773).
@@ -624,29 +638,31 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       if (active === null) {
         throw new ResourceStateConflictError(unreadableRevisionReason);
       }
-      if (edit) {
-        assertScopedRepositoryHistory(await state.revisions.listRevisions(namespaceId, agentId));
-      }
-      const admittedEdit =
+      const qualifiedEdit =
         explicitList &&
         (!withdrawal || additions.length > 0) &&
         networkPolicyUnavailable() === undefined
-          ? (
-              await dependencies.qualifyRepositoryEdit(
-                state,
-                agent,
-                expectedVersion + 1,
-                async (ref) =>
-                  (await authorizationDecision(principalId, "read", ref, iam, decide)).decision
-                    .allowed,
-                resolveHarness,
-                additions,
-                async (ref) =>
-                  (await authorizationDecision(principalId, "operate", ref, iam, decide)).decision
-                    .allowed,
-              )
-            )?.admit(repositoryNetworkPolicy)
+          ? await dependencies.qualifyRepositoryEdit(
+              state,
+              agent,
+              expectedVersion + 1,
+              async (ref) =>
+                (await authorizationDecision(principalId, "read", ref, iam, decide)).decision
+                  .allowed,
+              resolveHarness,
+              additions,
+              async (ref) =>
+                (await authorizationDecision(principalId, "operate", ref, iam, decide)).decision
+                  .allowed,
+            )
           : undefined;
+      if (edit) {
+        assertScopedRepositoryHistory(
+          await state.revisions.listRevisionsForBrowsing(namespaceId, agentId),
+          qualifiedEdit?.allowsStandaloneModelHistory,
+        );
+      }
+      const admittedEdit = explicitList ? qualifiedEdit?.admit(repositoryNetworkPolicy) : undefined;
       if (!admittedEdit && (edit || additions.length > 0)) {
         if (await protectedExecutionApplies(state, agent, active)) {
           throw new ProtectedExecutionNetworkPolicyError(

@@ -1372,7 +1372,7 @@ async function openRepositoryCreate(
 }
 
 const firstRepositoryDeploymentWarning =
-  /If you deploy without a repository policy, per-repository access requires a new Agent\./;
+  /Deploying without a repository policy can require a new Agent to add per-repository access later\./;
 
 test("Console requires a registered GitHub App Client before it can enroll a repository Source", async (t) => {
   const { page, requests, fixture, namespaceId, tooling } = await openRepositoryCreate(t);
@@ -1816,7 +1816,9 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   await page.getByRole("link", { name: "Set repository permissions" }).click();
   const permissions = page.getByRole("button", { name: "Manage permissions", exact: true });
   await permissions.click();
-  await panel.getByText("Save the first list before deploying this Agent.").waitFor();
+  await panel
+    .getByText("Save repository access before deploying the version that needs it.")
+    .waitFor();
   const legacyPolicy = (await mixedAgent.read()).policy;
   await panel.getByRole("button", { name: "Deny all repositories", exact: true }).click();
   const emptyRefusal = put(mixedAgent.base);

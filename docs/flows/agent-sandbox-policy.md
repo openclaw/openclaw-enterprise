@@ -118,8 +118,10 @@ drafts if saved grants match. Otherwise, discard them. PUT validates the list.
 The editor confirms Agent, Namespace, version
 and grants, including limits. First deployment review shows API limits beside each role.
 Deny-all and withdrawal require confirmation.
-Unscoped history requires a new Agent. Unreadable revisions require a compatible
-controller and Worker to stop.
+Dedicated Agents can save their first TokenService Git grants after standalone
+model-only deployments. Stop before deploying the saved grants. OCC and the
+Worker reject unscoped history through `supportsScopedRepositoryHistory`.
+Git presents OpenShell's placeholder through a repository-scoped HTTPS credential helper.
 
 Deployment rechecks Repo scope, proxy and Driver identities before credential
 access and revision insertion. PostgreSQL binds version, grants and identity,

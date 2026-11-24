@@ -262,9 +262,9 @@ function repositoryPolicySummary({
 }
 
 const REPOSITORY_POLICY_NEW_AGENT =
-  "If an earlier deployment lacked a repository policy, create a new Agent and save its policy before deploying.";
+  "If this Agent has incompatible deployment history, create a new Agent and save its policy before deploying.";
 
-const REPOSITORY_POLICY_DEPLOY_GUIDANCE = `Deploying this policy requires supporting Drivers. ${REPOSITORY_POLICY_NEW_AGENT}`;
+const REPOSITORY_POLICY_DEPLOY_GUIDANCE = "Deploying this policy requires supporting Drivers.";
 
 function repositoryStopGuidance(view: SandboxPolicyViewWire | undefined) {
   return view?.protectedExecution === null
@@ -1649,7 +1649,14 @@ export function renderAgentSandboxPolicy(
   }
 
   async function saveRepositoryPolicy(loaded: SandboxPolicyViewWire, grants: RepositoryGrants) {
-    const updated = await writePolicy(loaded.configuration, loaded.policy, "save", [], grants);
+    const additions = grants.length > 0 ? loaded.policy.additions : [];
+    const updated = await writePolicy(
+      loaded.configuration,
+      loaded.policy,
+      "save",
+      additions,
+      grants,
+    );
     if (current() && view) {
       view.policy = updated;
       repositoryDraft = undefined;
@@ -1961,9 +1968,9 @@ export function renderAgentSandboxPolicy(
       loaded.capability !== null &&
       canEdit() &&
       !hasProposedChanges() &&
-      policy.additions.length === 0;
+      (policy.additions.length === 0 || loaded.repositoryNetworkPolicySupportsAdditions === true);
     if (canPropose && saved === undefined) {
-      panel.append(hint("Save the first list before deploying this Agent."));
+      panel.append(hint("Save repository access before deploying the version that needs it."));
     }
     // The hint admits submissions. The PUT still validates the exact list.
     if (canPropose && readableRepositoryCeiling(ceiling) && ceiling.length) {
@@ -3181,7 +3188,7 @@ export function renderAgentSandboxPolicy(
           "p",
           { role: "status" },
           view.unavailableReason ??
-            `Repository policy is unavailable for this draft. ${REPOSITORY_POLICY_DEPLOY_GUIDANCE}`,
+            `Repository policy is unavailable for this draft. ${REPOSITORY_POLICY_NEW_AGENT}`,
         ),
       );
       return;

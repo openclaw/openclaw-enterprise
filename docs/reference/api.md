@@ -2697,7 +2697,6 @@ Example request
   "clientSecret": "example-client-secret",
   "displayName": "Example provider client",
   "issuer": "https://accounts.example.com",
-  "kind": "oauth2",
   "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
   "tokenEndpointAuthMethod": "client_secret_basic",
   "tokenUrl": "https://accounts.example.com/token"
@@ -8639,7 +8638,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.policy.repositoryNetworkPolicy[].apiLimits.pull_requests` | `"none" or "read" or "write"` | No | — |
 | `data.policy.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.policy.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.protectedExecution` | `boolean or null` | Yes | Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone. |
+| `data.protectedExecution` | `boolean or null` | Yes | Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy uses protected or standalone credential execution. The selected Drivers must admit the proposed repository grants and network additions. |
 | `data.repositoryApiMaxima` | `array<object>` | No | max items: 32; Selected repositories eligible for API limits and the maximum Git and API levels permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy. |
 | `data.repositoryApiMaxima[].access` | `"read" or "write"` | Yes | — |
 | `data.repositoryApiMaxima[].issues` | `"none" or "read" or "write"` | Yes | — |
@@ -8648,7 +8647,8 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.repositoryNetworkPolicyCeiling` | `array<object>` | Yes | max items: 32; Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently. |
 | `data.repositoryNetworkPolicyCeiling[].access` | `"read" or "write"` | Yes | — |
 | `data.repositoryNetworkPolicyCeiling[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
-| `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether the editor can request withdrawal of a saved list or submit a first list for validation. Before the first deployment, a qualified Driver pair can evaluate a first list if the selected and delegated scopes overlap or the pair accepts an empty list. PUT validates the complete proposed list. |
+| `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether the editor can request withdrawal of saved grants or submit a repository list for validation. TokenService Git can admit a first list after earlier dedicated standalone model-only deployments. PUT validates the complete list against the current bindings and policy ceiling. |
+| `data.repositoryNetworkPolicySupportsAdditions` | `true` | No | The current repository editor can retain saved network additions. |
 | `data.unavailableReason` | `string` | No | Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -8717,7 +8717,7 @@ Replace one Agent network policy additions
 | `additions[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `additions[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Omit to preserve the saved grants. Sending an explicit empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported. |
+| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Omit to preserve the saved grants. An empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment unless TokenService Git qualifies an earlier dedicated standalone model-only history. A qualified TokenService Git policy can retain model network additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported. |
 | `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
 | `repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
 | `repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |

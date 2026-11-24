@@ -234,7 +234,6 @@ const inferenceAgent = {
 };
 const oauthClientId = id("ccr");
 const oauthClientInput = {
-  kind: "oauth2",
   namespaceId,
   displayName: "Example provider client",
   clientId: "example-client",
@@ -244,6 +243,7 @@ const oauthClientInput = {
 };
 const oauthClient = {
   ...oauthClientInput,
+  kind: "oauth2",
   id: oauthClientId,
   createdAt: time,
 };

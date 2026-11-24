@@ -345,6 +345,47 @@ export async function verifyStagedModelPolicyObservation(
   assert.ok(Array.isArray(idleProviders));
   assert.equal(idleProviders.includes(repositoryProvider), false);
   assert.equal(Object.hasOwn(repositorySandbox.spec!.environment ?? {}, "GITHUB_TOKEN"), false);
+  // Use the Sandbox's actual startup settings with stock Git. Its credential lookup must
+  // receive only the projected marker for the saved HTTPS repository and no other origin/path.
+  const marker = `openshell:resolve:env:s${"a".repeat(64)}_GITHUB_TOKEN`;
+  const repositoryEnvironment = repositorySandbox.spec!.environment;
+  assert.ok(
+    typeof repositoryEnvironment === "object" &&
+      repositoryEnvironment !== null &&
+      !Array.isArray(repositoryEnvironment),
+  );
+  const gitEnvironment: NodeJS.ProcessEnv = {
+    PATH: "/usr/bin:/bin",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    HOME: "/tmp",
+    GITHUB_TOKEN: marker,
+  };
+  for (const [name, value] of Object.entries(repositoryEnvironment)) {
+    if (name.startsWith("GIT_")) {
+      assert.ok(typeof value === "string");
+      gitEnvironment[name] = value;
+    }
+  }
+  const credential = (host: string, path: string, protocol = "https") =>
+    spawnSync("/usr/bin/git", ["credential", "fill"], {
+      cwd: "/tmp",
+      env: gitEnvironment,
+      encoding: "utf8",
+      input: `protocol=${protocol}\nhost=${host}\npath=${path}\n\n`,
+    });
+  const allowedCredential = credential("github.com", `${repositoryGrants[0]!.repository}.git`);
+  assert.equal(allowedCredential.status, 0);
+  assert.match(allowedCredential.stdout, /^username=x-access-token$/m);
+  assert.ok(allowedCredential.stdout.includes(`password=${marker}\n`));
+  for (const denied of [
+    credential("github.com", "fixture/unapproved.git"),
+    credential("github.com.evil.test", `${repositoryGrants[0]!.repository}.git`),
+    credential("github.com", `${repositoryGrants[0]!.repository}.git`, "http"),
+  ]) {
+    assert.notEqual(denied.status, 0);
+    assert.equal(denied.stdout.includes(marker), false);
+  }
   const repositoryIdle = repositorySandbox.spec!.policy as Record<string, unknown>;
   const repositoryRoutes = narrowOpenShellRepositoryRoutes(
     repositoryRevision,

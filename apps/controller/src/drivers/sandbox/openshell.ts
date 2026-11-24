@@ -673,6 +673,31 @@ function environment(
   return result;
 }
 
+function stagedGitClientEnvironment(
+  grants: readonly { readonly repository: string }[],
+): Record<string, string> {
+  const helper =
+    "!f() { test \"$1\" = get || exit 0; printf '%s\\n' 'username=x-access-token' \"password=$GITHUB_TOKEN\"; }; f";
+  const settings: [string, string][] = [
+    ["credential.helper", ""],
+    ["credential.useHttpPath", "true"],
+    ["http.sslVerify", "true"],
+    ["http.followRedirects", "false"],
+    ...grants.map(({ repository }): [string, string] => [
+      `credential.https://github.com/${repository}.git.helper`,
+      helper,
+    ]),
+  ];
+  return Object.fromEntries([
+    ["GIT_TERMINAL_PROMPT", "0"],
+    ["GIT_CONFIG_COUNT", String(settings.length)],
+    ...settings.flatMap(([key, value], index) => [
+      [`GIT_CONFIG_KEY_${index}`, key],
+      [`GIT_CONFIG_VALUE_${index}`, value],
+    ]),
+  ]);
+}
+
 /** The status read uses only the Harness port of its requirements, so a stop needs no others. */
 export type OpenShellHarnessStatusContext = Omit<SandboxHarnessStatusContext, "requirements"> & {
   readonly requirements: Pick<HarnessWorkloadRequirements, "environment">;
@@ -4001,6 +4026,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       spec,
       serviceExposures,
     };
+    if (stagedRepository) {
+      // Stock Git presents the projected placeholder as Basic auth; OpenShell resolves it only
+      // for the exact admitted Repository route. No raw credential enters Harness configuration.
+      Object.assign(create.spec.environment, stagedGitClientEnvironment(repositoryPolicy!.grants));
+    }
     // Check the final composition against the independently validated setup binding,
     // including absence; a supplied auxiliary rule cannot establish its own authority.
     const expectedWorkspacePolicy =

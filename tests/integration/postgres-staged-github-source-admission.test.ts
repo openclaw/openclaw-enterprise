@@ -462,6 +462,89 @@ test(
     });
     assert.equal(issues.statusCode, 409, issues.body);
     assert.equal(new Set(agents).size, 2);
+
+    const modelOnly = await request("POST", `${base}/agents`, {
+      name: `Existing model Agent ${randomUUID()}`,
+      configurationId: config.json().data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+      credentialSources: [{ sourceId: modelSource.id }],
+    });
+    assert.equal(modelOnly.statusCode, 201, modelOnly.body);
+    const agentId = modelOnly.json().data.id;
+    const agentPath = `${base}/agents/${agentId}`;
+    const existingPolicyPath = `${agentPath}/sandbox-policy/networking`;
+    const editing = await request("PATCH", `${existingPolicyPath}/editing`, { enabled: true });
+    assert.equal(editing.statusCode, 200, editing.body);
+    const initialPolicy = await request("GET", existingPolicyPath);
+    assert.equal(initialPolicy.statusCode, 200, initialPolicy.body);
+    const savedModelPolicy = await request("PUT", existingPolicyPath, {
+      expectedVersion: initialPolicy.json().data.policy.version,
+      additions: [modelGrant],
+    });
+    assert.equal(savedModelPolicy.statusCode, 200, savedModelPolicy.body);
+    const first = await request("POST", `${agentPath}/deploy`, {});
+    assert.equal(first.statusCode, 202, first.body);
+    const firstId = first.json().data.id;
+    const firstRevision = await state.read((view) =>
+      view.revisions.findRevision(namespaceId, agentId, firstId),
+    );
+    assert.equal(firstRevision?.executionAdmission.mode, "standalone");
+    assert.equal(firstRevision?.sandboxPolicy?.repositoryNetworkPolicy, undefined);
+    assert.equal(firstRevision?.repositoryCredentials, undefined);
+    // This workflow exercises API admission and PostgreSQL. Settle the runtime
+    // pointer through the same persistence operations the Worker uses.
+    assert.equal(
+      (
+        await state.transact((unit) =>
+          unit.agents.compareAndSetActiveRevision(namespaceId, agentId, undefined, firstId),
+        )
+      )?.activeRevisionId,
+      firstId,
+    );
+    const draft = await request("PATCH", agentPath, {
+      configurationId: config.json().data.id,
+      credentialSources: [{ sourceId: modelSource.id }, { sourceId: gitSource.id }],
+      repositoryBindings: [
+        { repositoryRef: repositories[0]!.repositoryRef, profile: "github-repository" },
+      ],
+    });
+    assert.equal(draft.statusCode, 200, draft.body);
+    const view = await request("GET", existingPolicyPath);
+    assert.equal(view.statusCode, 200, view.body);
+    assert.equal(view.json().data.repositoryNetworkPolicySaveSupported, true);
+    assert.equal(view.json().data.repositoryNetworkPolicySupportsAdditions, true);
+    assert.deepEqual(view.json().data.policy.additions, [modelGrant]);
+    const newGrants = [{ repository: repositories[0]!.repository, access: "read" }];
+    const repoPolicy = await request("PUT", existingPolicyPath, {
+      expectedVersion: view.json().data.policy.version,
+      additions: view.json().data.policy.additions,
+      repositoryNetworkPolicy: newGrants,
+    });
+    assert.equal(repoPolicy.statusCode, 200, repoPolicy.body);
+    const active = await request("GET", agentPath);
+    assert.equal(active.statusCode, 200, active.body);
+    assert.equal(active.json().data.activeRevisionId, firstId);
+    const live = await request("POST", `${agentPath}/deploy`, {});
+    assert.equal(live.statusCode, 409, live.body);
+    assert.match(live.body, /Complete Stop before deploying again/);
+    const stopped = await request("POST", `${agentPath}/stop`);
+    assert.equal(stopped.statusCode, 202, stopped.body);
+    const retired = await state.transact((unit) =>
+      unit.agents.compareAndClearActiveRevision(namespaceId, agentId, firstId),
+    );
+    assert.equal(retired?.desiredRuntimeState, "stopped");
+    assert.equal(retired?.activeRevisionId, undefined);
+    const second = await request("POST", `${agentPath}/deploy`, {});
+    assert.equal(second.statusCode, 202, second.body);
+    const history = await state.read((view) => view.revisions.listRevisions(namespaceId, agentId));
+    assert.deepEqual(history[0], firstRevision);
+    assert.equal(history[1]?.id, second.json().data.id);
+    assert.equal(history[1]?.revision, 2);
+    assert.ok(history[1] && isNativeStagedRepositoryRevision(history[1]));
+    assert.deepEqual(history[1].sandboxPolicy?.additions, [modelGrant]);
+    assert.deepEqual(history[1].sandboxPolicy?.repositoryNetworkPolicy?.grants, newGrants);
+
     assert.equal(
       issuances,
       1,

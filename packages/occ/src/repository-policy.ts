@@ -1036,7 +1036,10 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     additions: readonly SandboxNetworkGrant[],
     admission: InstallationRepositoryAdmission,
   ): Promise<
-    ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> | undefined
+    | (ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> & {
+        readonly allowsStandaloneModelHistory: true;
+      })
+    | undefined
   > {
     const auth = agent.harnessAuth;
     const sources = agent.credentialSources;
@@ -1198,6 +1201,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       },
       apiMaxima: () => undefined,
       admit,
+      allowsStandaloneModelHistory: true,
     };
   }
 

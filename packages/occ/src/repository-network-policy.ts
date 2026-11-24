@@ -4,11 +4,11 @@ import { types } from "node:util";
 import {
   admitRepositoryNetworkPolicy,
   admitSandboxRepositoryNetworkPolicy,
+  assertExecutionAdmission,
   RepositoryNetworkPolicyAdmissionError,
   type RepositoryApiLevel,
   type RepositoryApiMaximum,
   type Agent,
-  type AgentRevision,
   type AgentRevisionRead,
   type Configuration,
   type StoredCredentialSource,
@@ -460,22 +460,52 @@ export function admitDeploymentRepositoryPolicy(
   }
 }
 
-// Stop retires the active pointer. A provider can still complete an earlier
-// unscoped write after its Worker loses the claim. Retained revisions identify
-// every deployment that could have targeted this Agent's shared resources.
-export function hasOnlyScopedRepositoryRevisions(
+// Stop cannot fence a delayed unscoped write to shared Agent resources. A
+// standalone model revision had no Git authority and uses its own Sandbox.
+export function supportsScopedRepositoryHistory(
   history: readonly Readonly<AgentRevisionRead>[],
+  allowStandaloneModelHistory = false,
 ): boolean {
-  return history.every(
-    (revision, index) =>
-      !("configurationReadError" in revision) &&
-      revision.revision === index + 1 &&
-      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
-  );
+  return history.every((revision, index) => {
+    if ("configurationReadError" in revision || revision.revision !== index + 1) {
+      return false;
+    }
+    if (revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
+      return true;
+    }
+    const bindings = revision.credentialDeployment?.bindings;
+    const model = bindings?.[0];
+    const auth = revision.harnessAuth;
+    if (
+      !allowStandaloneModelHistory ||
+      revision.executionAdmission.mode !== "standalone" ||
+      revision.harness.mode !== "dedicated" ||
+      !revision.sandboxDriverId ||
+      revision.sandboxPolicy?.driverId !== revision.sandboxDriverId ||
+      revision.repositoryCredentials !== undefined ||
+      bindings?.length !== 1 ||
+      model?.consumer.kind !== "model" ||
+      auth.method !== "credential_source" ||
+      !auth.tokenServiceInstanceId ||
+      model.sourceRef.id !== auth.sourceId ||
+      revision.credentialSources?.some(({ sourceType }) => sourceType === "github-app-installation")
+    ) {
+      return false;
+    }
+    try {
+      assertExecutionAdmission(revision);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
-export function assertScopedRepositoryHistory(history: readonly Readonly<AgentRevision>[]): void {
-  if (!hasOnlyScopedRepositoryRevisions(history)) {
+export function assertScopedRepositoryHistory(
+  history: readonly Readonly<AgentRevisionRead>[],
+  allowStandaloneModelHistory = false,
+): void {
+  if (!supportsScopedRepositoryHistory(history, allowStandaloneModelHistory)) {
     throw new RepositoryPolicyDeploymentConflict("unscoped_history");
   }
 }

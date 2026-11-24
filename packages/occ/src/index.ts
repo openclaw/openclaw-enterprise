@@ -437,4 +437,4 @@ export type {
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
 
-export { hasOnlyScopedRepositoryRevisions } from "./repository-network-policy.ts";
+export { supportsScopedRepositoryHistory } from "./repository-network-policy.ts";

@@ -109,7 +109,7 @@ export const SandboxPolicyViewResponse = Type.Object(
         editingEnabled: Type.Boolean(),
         protectedExecution: Type.Union([Type.Boolean(), Type.Null()], {
           description:
-            "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
+            "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy uses protected or standalone credential execution. The selected Drivers must admit the proposed repository grants and network additions.",
         }),
         ceiling: SandboxNetworkGrantsSchema,
         repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkLimitSchema, {
@@ -136,8 +136,13 @@ export const SandboxPolicyViewResponse = Type.Object(
         ),
         repositoryNetworkPolicySaveSupported: Type.Boolean({
           description:
-            "Whether the editor can request withdrawal of a saved list or submit a first list for validation. Before the first deployment, a qualified Driver pair can evaluate a first list if the selected and delegated scopes overlap or the pair accepts an empty list. PUT validates the complete proposed list.",
+            "Whether the editor can request withdrawal of saved grants or submit a repository list for validation. TokenService Git can admit a first list after earlier dedicated standalone model-only deployments. PUT validates the complete list against the current bindings and policy ceiling.",
         }),
+        repositoryNetworkPolicySupportsAdditions: Type.Optional(
+          Type.Literal(true, {
+            description: "The current repository editor can retain saved network additions.",
+          }),
+        ),
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),
         deployedPolicyVersion: Type.Optional(
@@ -177,7 +182,7 @@ export const SandboxPolicyUpdateBody = Type.Object(
     repositoryNetworkPolicy: Type.Optional(
       Type.Array(RepositoryNetworkGrantSchema, {
         description:
-          "Omit to preserve the saved grants. Sending an explicit empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
+          "Omit to preserve the saved grants. An empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment unless TokenService Git qualifies an earlier dedicated standalone model-only history. A qualified TokenService Git policy can retain model network additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
         maxItems: maxRepositoryNetworkGrants,
       }),
     ),

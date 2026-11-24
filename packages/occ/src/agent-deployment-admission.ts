@@ -1376,7 +1376,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         }
       };
       if (policyCompute || stagedRepository) {
-        assertScopedRepositoryHistory(previous);
+        assertScopedRepositoryHistory(previous, stagedRepository !== undefined);
       }
       const policyAdmittedRevision = await policyCompute?.admit(
         revisionDraft,

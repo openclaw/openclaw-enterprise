@@ -32,7 +32,7 @@ type RepositoryContext = Pick<NamespacePageContext, "request" | "isCurrent" | "o
 };
 
 export const FIRST_REPOSITORY_DEPLOYMENT_WARNING =
-  "If you deploy without a repository policy, per-repository access requires a new Agent.";
+  "Deploying without a repository policy can require a new Agent to add per-repository access later.";
 
 // An Installation without repository access (no Repo Driver selected, or draft-only discovery).
 const REPOSITORY_ACCESS_NOT_CONFIGURED =

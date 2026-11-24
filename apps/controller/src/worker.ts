@@ -3,7 +3,7 @@ import { admitOpenShellRepositoryCredentials } from "./composition/openshell-cre
 import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
-import { hasOnlyScopedRepositoryRevisions, reduceCredentialPolicy } from "@openclaw-enterprise/occ";
+import { reduceCredentialPolicy, supportsScopedRepositoryHistory } from "@openclaw-enterprise/occ";
 import {
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
@@ -5001,7 +5001,8 @@ export class ControllerWorker {
     // History is immutable. A later unreadable revision has no bearing on this prefix.
     const prefix = rows.slice(0, revision.revision);
     return (
-      prefix[revision.revision - 1]?.id === revision.id && hasOnlyScopedRepositoryRevisions(prefix)
+      prefix[revision.revision - 1]?.id === revision.id &&
+      supportsScopedRepositoryHistory(prefix, isNativeStagedRepositoryRevision(revision))
     );
   }
 
