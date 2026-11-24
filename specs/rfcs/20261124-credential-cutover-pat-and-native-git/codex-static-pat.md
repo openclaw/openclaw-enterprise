@@ -19,27 +19,26 @@ Inactive revisions and settled receipts remain unchanged and retain their origin
 
 The database needs a restricted transition because ordinary Source updates cannot change owner, type, or instance identity. Private custody and Gateway retirement are outside that transaction. A failure can leave orphan custody material or remove the old Provider before the owner change commits. Report failure and reconcile the known Provider and custody reference before retrying. The unchanged Namespace Secret is the recovery input; do not claim cross-store rollback or automatic orphan discovery.
 
-Existing PAT Secret and issued ServiceAccount broker paths are unchanged. [Codex device login](codex-device-login.md) remains a separate OAuth path.
+Existing PAT Secret and issued ServiceAccount broker paths are unchanged. [Codex device login](https://github.com/openclaw/openclaw-enterprise/blob/c561b70b559dbce49d53c0842b30e8d3ca0f319a/specs/rfcs/20261124-credential-design-1-0/codex-device-login.md) remains a separate OAuth path.
 
 ## PAT recipient and enforcement
 
 The trusted runtime selects the dedicated Codex executable, `CODEX_ACCESS_TOKEN`, Bearer presentation, and PAT login mode. An Agent network grant can restrict this executable's requests; it cannot select or enlarge the credential recipient. Admission checks both network access and credential injection for these HTTPS requests on port 443:
 
-| Host              | Method | Path                                           |
-| ----------------- | ------ | ---------------------------------------------- |
-| `auth.openai.com` | `GET`  | `/api/accounts/v1/user-auth-credential/whoami` |
-| `chatgpt.com`     | `GET`  | `/backend-api/codex/models`                    |
-| `chatgpt.com`     | `POST` | `/backend-api/codex/responses`                 |
-| `chatgpt.com`     | `GET`  | `/backend-api/wham/config/bundle`              |
-| `chatgpt.com`     | `GET`  | `/backend-api/wham/accounts/check`             |
-| `chatgpt.com`     | `GET`  | `/backend-api/wham/settings/user`              |
-| `chatgpt.com`     | `GET`  | `/backend-api/wham/usage`                      |
+| Host              | Method        | Path                                           |
+| ----------------- | ------------- | ---------------------------------------------- |
+| `auth.openai.com` | `GET`         | `/api/accounts/v1/user-auth-credential/whoami` |
+| `chatgpt.com`     | `GET`, `POST` | `/backend-api/codex/**`                        |
+| `chatgpt.com`     | `GET`         | `/backend-api/wham/config/bundle`              |
+| `chatgpt.com`     | `GET`         | `/backend-api/wham/accounts/check`             |
+| `chatgpt.com`     | `GET`         | `/backend-api/wham/settings/user`              |
+| `chatgpt.com`     | `GET`         | `/backend-api/wham/usage`                      |
 
-Query parameters must not widen these paths. Do not inherit the old `/backend-api/codex/**` selector, allow WebSocket upgrades through REST rules, or include OAuth or hosted Plugin/App endpoints. The current Codex launcher can fall back to HTTP. The requests come from [OCC model discovery](../../../apps/controller/src/drivers/compute/model-discovery.ts) and Codex 0.164's [PAT login](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/login/src/auth/personal_access_token.rs), [backend](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/backend-client/src/client.rs), [models](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/codex-api/src/endpoint/models.rs), [rate limits](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/backend-client/src/client/rate_limit_resets.rs), and [Responses](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/codex-api/src/endpoint/responses.rs) clients.
+Allow any query parameters on these PAT requests. The subtree selector includes the base and descendants for GET and POST. It reuses the old Gateway Codex subtree and can authorize more operations than model discovery and inference. Do not allow WebSocket upgrades through REST rules or include OAuth or hosted Plugin/App endpoints. Codex can use the HTTP Responses transport instead of WebSocket. The requests come from [OCC model discovery](../../../apps/controller/src/drivers/compute/model-discovery.ts) and Codex 0.164's [PAT login](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/login/src/auth/personal_access_token.rs), [backend](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/backend-client/src/client.rs), [models](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/codex-api/src/endpoint/models.rs), [rate limits](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/backend-client/src/client/rate_limit_resets.rs), and [Responses](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/codex-api/src/endpoint/responses.rs) clients.
 
 Worker resolves the Source through TokenService; Credential Proxy creates and updates its native Provider. Compute passes only the stable placeholder. The launcher writes an ephemeral PAT auth file, and Sandbox readiness checks that the serving app-server reports `personalAccessToken`. Missing authority, a mismatched preset or executable, failed login, or unready delivery prevents activation. There is no API-key fallback.
 
-**Open qualification:** OpenShell's [transport-scheme limitation](codex-device-login.md#renewal-and-delivery) needs separate PAT qualification. The existing OAuth exception does not approve PAT delivery.
+**Open qualification:** OpenShell's [transport-scheme limitation](https://github.com/openclaw/openclaw-enterprise/blob/c561b70b559dbce49d53c0842b30e8d3ca0f319a/specs/rfcs/20261124-credential-design-1-0/codex-device-login.md#renewal-and-delivery) needs separate PAT qualification. The existing OAuth exception does not approve PAT delivery.
 
 ## Interface changes
 
@@ -59,7 +58,7 @@ Permit only the verified owner/type/instance transition and Source-to-Secret ref
 
 Add optional TokenService `adoptSource` for the existing Source identity. Its inputs identify the Source, expected Gateway and Secret, selected instance, preset, authorized Secret-read and Gateway-retirement callbacks, and cancellation. TokenService owns the transaction and returns the adopted Source. Refuse unsupported Drivers; `createSource` remains for new enrollment.
 
-Add optional fourth argument `modelPreset?: SourceProviderPresetId` to Compute's `resolveHarnessConfiguration`. Admission derives it from the locked Source before building the preset. Compute uses it to distinguish Codex PAT from an OpenAI API key and reject incompatible `modelProvider` overrides. Do not persist another copy. Credential Proxy and Sandbox reuse the [staged deployment contract](worker-credential-configuration.md).
+Add optional fourth argument `modelPreset?: SourceProviderPresetId` to Compute's `resolveHarnessConfiguration`. Admission derives it from the locked Source before building the preset. Compute uses it to distinguish Codex PAT from an OpenAI API key and reject incompatible `modelProvider` overrides. Do not persist another copy. Credential Proxy and Sandbox reuse the [staged deployment contract](https://github.com/openclaw/openclaw-enterprise/blob/c561b70b559dbce49d53c0842b30e8d3ca0f319a/specs/rfcs/20261124-credential-design-1-0/worker-credential-configuration.md).
 
 ## Simplifications
 
@@ -68,5 +67,5 @@ Reuse static custody, Source IAM, and ordinary Proxy push. Specialize only the C
 ## Acceptance criteria
 
 - Through authenticated Fastify and PostgreSQL, prove Stop, detach, adoption, and redeployment preserve Source and Agent identities, grants, history, and the Namespace Secret. Verify one custody record, removal of the old reference, a sanitized response, and refusal of unauthorized or live transfers, wrong owners, unavailable inputs, failed retirement, and uncertain custody or commit.
-- Through ordinary Agent deployment, verify the trusted executable, exact request policy, native Provider delivery and Source-update push, placeholder-only startup, and serving-process `personalAccessToken` readiness. Invalid authority, policy, or login must prevent activation.
+- Through ordinary Agent deployment, verify the trusted executable, admitted request policy, native Provider delivery and Source-update push, placeholder-only startup, and serving-process `personalAccessToken` readiness. Invalid authority, policy, or login must prevent activation.
 - Separately qualify a genuine Codex model turn and native Git on the final candidate. PostgreSQL and controlled transport checks do not prove live enforcement or authentication.
