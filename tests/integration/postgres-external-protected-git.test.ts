@@ -85,6 +85,10 @@ import {
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
 
+const openSandboxGit = process.env.OCC_TEST_OPENSANDBOX_GIT === "1";
+if (openSandboxGit) {
+  assert.ok(databaseUrl, "OpenSandbox Git qualification requires an owned PostgreSQL database.");
+}
 const conversationRequired = process.env.OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION === "1";
 const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
 if (conversationRequired) {
@@ -648,6 +652,8 @@ function externalGitJourney(
     const authenticatedJourney = scope === "built-in-installation";
     // Repository write access with one draft pull request, authorized per request.
     const writes = scope === "git-write";
+    const sandboxedGit = writes && openSandboxGit;
+    let issuedFixtureToken: string | undefined;
     const online = scope === "online-installation" || authenticatedJourney || writes;
     const lostRotation = scope === "lost-rotation";
     const reducible = scope === "reducible-installation" || lostRotation;
@@ -661,7 +667,21 @@ function externalGitJourney(
         : undefined;
     const { registry, backendId, origin, gh, tls, privateKeyPath, custodyKeyPath } =
       broad ??
-      (await standingGitOrigin(t, namespaceId, 300_000, undefined, false, undefined, writes));
+      (await standingGitOrigin(
+        t,
+        namespaceId,
+        300_000,
+        undefined,
+        false,
+        undefined,
+        writes,
+        undefined,
+        sandboxedGit
+          ? (token) => {
+              issuedFixtureToken = token;
+            }
+          : undefined,
+      ));
     const installationApiOrigin = broad?.gh.origin;
     const conversation = modelExecutable
       ? await standingGitConversation(t, modelExecutable)
@@ -1591,14 +1611,21 @@ function externalGitJourney(
         }
       }
 
-      const cwd = await temporaryDirectory(t, "cedar-git-destination-");
       const env = cleanEnvironment({ GIT_SSL_CAINFO: certFile });
+      const sandbox = sandboxedGit
+        ? await (
+            await import("../helpers/opensandbox-git-client.ts")
+          ).startOpenSandboxGit(t, {
+            peer: peer.url,
+            origin: new URL(origin.origin),
+            certFile,
+          })
+        : undefined;
+      const cwd = sandbox ? undefined : await temporaryDirectory(t, "cedar-git-destination-");
       const git = (args: string[], allowFailure = false) =>
-        run("git", ["-C", cwd, ...args], {
-          env,
-          allowFailure,
-          timeout: 15_000,
-        });
+        sandbox
+          ? sandbox.git(args, allowFailure)
+          : run("git", ["-C", cwd!, ...args], { env, allowFailure, timeout: 15_000 });
       await git(["init", "--quiet"]);
       const { traffic } = origin;
       const remote = new URL("/" + origin.repository + ".git", peer.url).href;
@@ -1838,6 +1865,24 @@ function externalGitJourney(
             return [operation, kind === "denied" ? reason : kind];
           });
         await git(["checkout", "--quiet", "-b", "review", "FETCH_HEAD"]);
+        if (sandbox) {
+          // These requests exercise sender routing before any issuer or origin traffic.
+          const before = { origin: traffic(), decisions: peer.decisions.length };
+          const foreign = new URL("/outside-scope/ungranted.git", peer.url).href;
+          const wrong = await git(
+            ["-c", auth, "fetch", "--no-tags", foreign, "refs/heads/main"],
+            true,
+          );
+          assert.equal(wrong.code, 128);
+          assert.match(wrong.stderr, /403/u);
+          const unauthenticated = await git(
+            ["fetch", "--no-tags", remote, "refs/heads/main"],
+            true,
+          );
+          assert.equal(unauthenticated.code, 128);
+          assert.match(unauthenticated.stderr, /username|401/iu);
+          assert.deepEqual({ origin: traffic(), decisions: peer.decisions.length }, before);
+        }
         await git([
           "-c",
           "user.name=Cedar",
@@ -1975,6 +2020,42 @@ function externalGitJourney(
           draftPosts: draftPosts(),
           issues: gh.issuesOfTokens.length,
         });
+        const newCommit = sandbox ? await origin.addCommit() : undefined;
+        if (newCommit) {
+          assert.equal(await origin.ref("main"), newCommit);
+          assert.equal(await hasObject(newCommit), false);
+        }
+        function directTokenStatus() {
+          const token = issuedFixtureToken;
+          assert(token && /^fixture_access_[0-9a-f]{48}$/u.test(token));
+          const discovery = new URL(
+            "/" + origin.repository + ".git/info/refs?service=git-upload-pack",
+            origin.origin,
+          );
+          return new Promise<number | undefined>((resolve, reject) => {
+            get(
+              discovery,
+              {
+                ca: tls.ca,
+                agent: false,
+                signal: AbortSignal.timeout(5_000),
+                headers: {
+                  authorization:
+                    "Basic " + Buffer.from("x-access-token:" + token).toString("base64"),
+                },
+              },
+              (response) => {
+                response.once("end", () => resolve(response.statusCode));
+                response.resume();
+              },
+            ).once("error", reject);
+          });
+        }
+        // Establish provider validity before withdrawal. The ordinary token owner may
+        // revoke concurrently with the fresh workload requests below.
+        if (sandbox) {
+          assert.equal(await directTokenStatus(), 200, "The issued token can read the origin.");
+        }
         const before = writeTraffic();
         const decisions = peer.decisions.length;
         preparationsBeforeWithdrawal = preparations;
@@ -2001,6 +2082,38 @@ function externalGitJourney(
         await nextMaintenancePass(f, revision, completions);
         assertNoPreparationAfterWithdrawal();
         assert.deepEqual(writeTraffic(), before, "maintenance after withdrawal prepares nothing");
+        if (sandbox && newCommit) {
+          assert.equal(await hasObject(newCommit), false);
+          assert.equal(before.issues, 1);
+          // Independently observe the provider retiring the same unexpired token.
+          assert.ok("tokenState" in gh);
+          const [issuance] = gh.issuesOfTokens;
+          assert.ok(issuance);
+          const { index, expires } = issuance;
+          await waitFor(
+            "provider revocation of the issued token",
+            () => gh.tokenState().find((token) => token.index === index)?.revoked || undefined,
+            15_000,
+          );
+          assert.ok(gh.clock.wallNow() < expires, "Retirement precedes provider expiry.");
+          assert.deepEqual(writeTraffic(), before, "retirement sent no workload request");
+          const retiredStatus = await directTokenStatus();
+          assert.equal(retiredStatus, 401, "The same provider token is refused after revocation.");
+          assert.deepEqual(traffic(), {
+            connections: before.git.connections + 1,
+            requests: before.git.requests + 1,
+          });
+          const custody = await sandbox.proveCustody();
+          t.diagnostic(
+            JSON.stringify({
+              freshObjectDenied: newCommit,
+              deniedOriginRequests: 0,
+              directTokenStatusBeforeWithdrawal: 200,
+              directTokenStatusAfterRevocation: retiredStatus,
+              custody,
+            }),
+          );
+        }
         t.diagnostic(
           JSON.stringify({
             allowed: uses.map((use) => use.operation),
