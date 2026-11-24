@@ -3484,7 +3484,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT revision_id,namespace_id,credential_source_id,token_service_instance_id,agent_id,
-               retirement_blocked
+               retirement_blocked,unknown_write_version IS NOT NULL AS unreconciled_write
              FROM occ.repository_source_copies
              WHERE namespace_id=$1 AND credential_source_id=$2 AND retired_at IS NULL
              ORDER BY recorded_at,revision_id`,
@@ -3492,6 +3492,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           )
         ).rows.map((row) => {
           const copy = row as Record<string, string | null>;
+          const unreconciled = (row as { unreconciled_write?: unknown }).unreconciled_write;
           return Object.freeze({
             revisionId: copy.revision_id!,
             namespaceId: copy.namespace_id!,
@@ -3499,6 +3500,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             tokenServiceInstanceId: copy.token_service_instance_id!,
             agentId: copy.agent_id!,
             ...(copy.retirement_blocked ? { retirementBlocked: copy.retirement_blocked } : {}),
+            ...(unreconciled === true ? { unreconciledWrite: true as const } : {}),
           });
         }),
       deleteCredentialSource: async (namespaceId, credentialSourceId) => {

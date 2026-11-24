@@ -34,6 +34,27 @@ import {
   type OpenShellProviderResponse,
   type OpenShellSandboxProviderStatus,
 } from "../sandbox/openshell-gateway-client.ts";
+import {
+  OpenShellGatewayUnavailableError,
+  statusCode,
+} from "../sandbox/openshell-gateway-errors.ts";
+
+/**
+ * Whether the Gateway answered a conditional UpdateProvider in a way that proves it was not
+ * applied. At the pinned OpenShell, update_provider refuses a missing Provider (NOT_FOUND) before
+ * it writes, and a write that lost its resource version condition answers ABORTED ("provider was
+ * modified concurrently"), which the client wraps without its details. FAILED_PRECONDITION proves
+ * nothing: the request replay layer also answers it (REQUEST_OUTCOME_UNCERTAIN) when it cannot
+ * record its admission after the handler has committed the write. A transport failure, a
+ * deadline or a cancellation proves nothing either.
+ */
+function writeUnapplied(error: unknown): boolean {
+  if (statusCode(error) === 5) {
+    return true;
+  }
+  const answered = (error as { grpcStatus?: unknown } | null)?.grpcStatus;
+  return !(error instanceof OpenShellGatewayUnavailableError) && answered === 10;
+}
 
 export {
   openShellExpectedProviderRule,
@@ -1015,6 +1036,14 @@ export class OpenShellPreparedGitProvider {
     previous = Object.freeze({ ...previous });
     let phase: "reading" | "release" | "writing" = "reading";
     let hold: MaterialWriteHold | undefined;
+    // Set once the hold durably recorded this write as possibly applied; only then is it settled.
+    let recorded = false;
+    const unapplied = async () => {
+      if (recorded) {
+        recorded = false;
+        await hold?.settled?.("unapplied");
+      }
+    };
     try {
       if (!this.owns(previous) || !this.client.updateProviderCredentialsConditionally) {
         refuse();
@@ -1047,10 +1076,21 @@ export class OpenShellPreparedGitProvider {
         return;
       }
       this.token(token);
+      if (hold?.dispatching) {
+        // Recorded before dispatch and committed apart from the hold, so a write whose answer is
+        // lost keeps its owner fenced after the hold ends, also across a restart. The confirm
+        // below then proves the hold stood across that commit. Unrecorded, nothing is sent.
+        recorded = await hold.dispatching().catch(() => false);
+        if (!recorded) {
+          return;
+        }
+      }
       if (hold && !(await hold.confirm())) {
+        await unapplied();
         return;
       }
       if (token.isCurrent && !token.isCurrent()) {
+        await unapplied();
         return;
       }
       phase = "writing";
@@ -1104,12 +1144,23 @@ export class OpenShellPreparedGitProvider {
         delete this.refreshReceipt;
         this.receipt = { version: updated.resourceVersion, id };
       }
-      return this.binding(updated, previous.profileVersion, token.expiresAt);
+      const binding = this.binding(updated, previous.profileVersion, token.expiresAt);
+      if (recorded) {
+        // Settled while the hold still stands: a replacement waiting on the row reads it settled.
+        recorded = false;
+        await hold?.settled?.("applied");
+      }
+      return binding;
     } catch (error) {
       // Refused before the write for a read the gateway did not answer, the rotation is
       // observed again later; an unknown write is never retried (finding 2136).
       if (error instanceof OpenShellGatewayDispatchRefusedError) {
+        await unapplied();
         return;
+      }
+      if (phase === "writing" && writeUnapplied(error)) {
+        // The route still treats it as unknown; only the owner's fence is lifted.
+        await unapplied();
       }
       if (phase === "release") {
         throw error; // The local authority failed before this writer could send anything.

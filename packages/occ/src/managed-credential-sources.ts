@@ -45,6 +45,7 @@ import {
   DriverSelectionError,
   NamespaceNotReadyError,
   RepositorySourceCopiesUnretiredError,
+  RepositorySourceWriteUnreconciledError,
   ResourceStateConflictError,
   RetryLaterError,
   ScopeViolationError,
@@ -77,6 +78,8 @@ export type UpdateManagedCredentialSourceInput =
  * gateway copy does not prove that no late create is still in flight, so the record is kept.
  */
 const CREDENTIAL_GATEWAY_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
+/** Sees rows committed during a lock wait, whatever the connection default isolation. */
+const READ_COMMITTED = { readCommitted: true } as const;
 
 function assertManagedSourceLifecycleSettings(settings: Readonly<Record<string, string>>): void {
   if (
@@ -533,7 +536,9 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       } catch {
         // Preserve the original failure when audit storage is unavailable.
       }
-      throw error;
+      throw error instanceof RepositorySourceWriteUnreconciledError
+        ? await namedUnretiredCopies(principalId, ref.namespaceId, error)
+        : error;
     }
   }
 
@@ -542,17 +547,19 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
    * transaction ended so no authorization call waits under its row locks. A copy whose Agent the
    * caller cannot read (or an IAM outage) is only counted.
    */
-  async function namedUnretiredCopies(
-    principalId: string,
-    namespaceId: string,
-    error: RepositorySourceCopiesUnretiredError,
-  ): Promise<RepositorySourceCopiesUnretiredError> {
+  async function namedUnretiredCopies<
+    E extends RepositorySourceCopiesUnretiredError | RepositorySourceWriteUnreconciledError,
+  >(principalId: string, namespaceId: string, error: E): Promise<E> {
     for (const copy of error.copies.slice(0, 3)) {
       const readable = await dependencies.authority
         .canRead(principalId, { kind: "agent", id: copy.agentId, namespaceId })
         .catch(() => false);
       if (readable) {
-        return new RepositorySourceCopiesUnretiredError(error.copies, copy);
+        return (
+          error instanceof RepositorySourceWriteUnreconciledError
+            ? new RepositorySourceWriteUnreconciledError(error.copies, copy)
+            : new RepositorySourceCopiesUnretiredError(error.copies, copy)
+        ) as E;
       }
     }
     return error;
@@ -624,11 +631,19 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           );
         }
         // Read under the Namespace and Source row locks this transaction already holds: a deploy
-        // records its copy under the same Source lock, and the Worker only retires copies.
+        // records its copy under the same Source lock, and the Worker only retires copies. The
+        // transaction reads committed whatever the connection default, so a copy or a Provider
+        // write committed while it waited on the Source row is seen.
         const unretired = await state.credentialSources.findUnretiredRepositorySourceCopies(
           locked.id,
           found.id,
         );
+        // A Provider write the Worker recorded before sending and could not confirm may still
+        // take effect, so it is named first; the Worker records only while it holds this row.
+        const unreconciled = unretired.filter(({ unreconciledWrite }) => unreconciledWrite);
+        if (unreconciled.length > 0) {
+          throw new RepositorySourceWriteUnreconciledError(unreconciled);
+        }
         if (unretired.length > 0) {
           throw new RepositorySourceCopiesUnretiredError(unretired);
         }
@@ -670,9 +685,10 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           source: deleting,
           gateway: owner?.kind === "gateway" ? owner.driver : undefined,
         };
-      })
+      }, READ_COMMITTED)
       .catch(async (error: unknown) => {
-        throw error instanceof RepositorySourceCopiesUnretiredError
+        throw error instanceof RepositorySourceCopiesUnretiredError ||
+          error instanceof RepositorySourceWriteUnreconciledError
           ? await namedUnretiredCopies(principalId, namespaceId, error)
           : error;
       });

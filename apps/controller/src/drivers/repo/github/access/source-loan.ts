@@ -38,6 +38,27 @@ export interface SourceLoanCaller {
   limitIdle(ms: number): Promise<void>;
 }
 
+/** The record of one Provider write on the revision's copy (see `RepositorySourceCustody.write`). */
+export interface RepositorySourceWriteFence {
+  /** Records the write before dispatch. False (or a throw) means nothing may be sent. */
+  dispatching(): Promise<boolean>;
+  /** Settles the record. A rejection leaves it, so the Source stays fenced. */
+  settled(outcome: "applied" | "unapplied"): Promise<void>;
+}
+
+/**
+ * A Provider write whose record failed (nothing was sent) or whose settle failed (the record
+ * stays, so the Source refuses replacement and deletion until it is reconciled). Names the Agent,
+ * revision, Source and its custody version; never the value, a digest or the Provider name.
+ */
+export interface RepositorySourceWriteFenceFailure {
+  readonly code: "REPOSITORY_SOURCE_WRITE_UNRECORDED" | "REPOSITORY_SOURCE_WRITE_UNSETTLED";
+  readonly agentId: string;
+  readonly revisionId: string;
+  readonly sourceId: string;
+  readonly sourceVersion: string;
+}
+
 export interface RepositorySourceCustody {
   /**
    * Takes a shared lock on the Source's catalog row with a bounded wait and reads it. Replacement
@@ -58,6 +79,12 @@ export interface RepositorySourceCustody {
          * copies, so it cannot pass between this read and the Provider write.
          */
         readonly recorded: (revisionId: string) => Promise<boolean>;
+        /**
+         * The fence of a Provider write of `version` for the revision: `dispatching` records it
+         * on the copy as a write whose outcome is unknown, committed before dispatch; `settled`
+         * clears it once the outcome is known. Replacement and retirement refuse while it stands.
+         */
+        readonly write: (revisionId: string, version: string) => RepositorySourceWriteFence;
       }
     | undefined
   >;
@@ -150,6 +177,8 @@ export function createRepositorySourceMaterialReader<
     readonly clock?: { now(): number };
     /** Told once per revision, Source version and reason; a waiting route reads at every pass. */
     readonly refused?: (refusal: RepositorySourceLoanRefusal) => void;
+    /** Told each time a lent write's record or settle fails. */
+    readonly fenceFailed?: (failure: RepositorySourceWriteFenceFailure) => void;
   } = {},
 ): TokenMaterialReader<Transaction, Source> {
   const clock = options.clock ?? Date;
@@ -236,6 +265,9 @@ export function createRepositorySourceMaterialReader<
       ) {
         throw new RepositorySourceLoanRefusal(sourceId, "source_access_exceeded");
       }
+      // The loan's lifetime is anchored here, before the authority check, so no write of it,
+      // however late it lands, carries access past 15 minutes after that check.
+      const checkedAt = clock.now();
       if (!(await custody.operate(source.session, ref))) {
         throw new RepositorySourceLoanRefusal(sourceId, "operate_denied");
       }
@@ -271,7 +303,40 @@ export function createRepositorySourceMaterialReader<
         bytes.fill(0);
       }
       reported.delete(revisionKey(source));
-      return { resolved, hold: locked.hold };
+      // The Provider write records itself on the revision's copy before it is dispatched.
+      const fence = locked.write(source.session.revisionId, resolved.version);
+      const failed = (code: RepositorySourceWriteFenceFailure["code"]) =>
+        options.fenceFailed?.({
+          code,
+          agentId: source.session.agentId,
+          revisionId: source.session.revisionId,
+          sourceId,
+          sourceVersion: resolved.version,
+        });
+      const hold: MaterialWriteHold = {
+        ...locked.hold,
+        async dispatching() {
+          let recorded: boolean;
+          try {
+            recorded = await fence.dispatching();
+          } catch {
+            recorded = false;
+          }
+          // A hold that already ended records nothing by design; only a failed record is told.
+          if (!recorded && locked.hold.held()) {
+            failed("REPOSITORY_SOURCE_WRITE_UNRECORDED");
+          }
+          return recorded;
+        },
+        async settled(outcome) {
+          try {
+            await fence.settled(outcome);
+          } catch {
+            failed("REPOSITORY_SOURCE_WRITE_UNSETTLED");
+          }
+        },
+      };
+      return { resolved, hold, checkedAt };
     } catch (error) {
       await locked.hold.release();
       throw error;
@@ -286,7 +351,7 @@ export function createRepositorySourceMaterialReader<
         refuse(error, source);
         return undefined;
       }
-      const window = Math.floor(clock.now() / loanWindowMs);
+      const window = Math.floor(checked.checkedAt / loanWindowMs);
       const current = identity(source, window, checked.resolved.version);
       let value: string | undefined = checked.resolved.credential;
       return withWriteHold(

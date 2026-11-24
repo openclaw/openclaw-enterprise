@@ -21,6 +21,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   ResourceStateConflictError,
+  RepositorySourceWriteUnreconciledError,
   CredentialDeliveryFailedError,
   ScopeViolationError,
   TokenServiceSourceInputError,
@@ -33,6 +34,8 @@ import { withComputeAbortSignal } from "../compute/operation-context.ts";
 import { isOpenShellGitCredential } from "../egress-proxy/openshell-prepared-git-provider.ts";
 
 const maxSecretValueBytes: number = Reflect.get(SecretValue, "maxLength");
+/** Sees rows committed during a lock wait, whatever the connection default isolation. */
+const READ_COMMITTED = { readCommitted: true } as const;
 
 function checkLifecycle(config: SourceLifecycleConfig): void {
   if (config.type !== "static" || Object.keys(config.settings).length !== 0) {
@@ -224,6 +227,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       checkLifecycle(update.lifecycleConfig);
     }
     let version: string | undefined;
+    // Read committed whatever the connection default, so the copies read below sees a write the
+    // Worker recorded while this transaction waited on the Source row.
     const updated = await this.state.transact(async ({ namespaces, credentialSources }) => {
       const namespace = await namespaces.lockNamespace(ref.namespaceId);
       if (namespace?.status !== "ready") {
@@ -237,6 +242,16 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       }
       if (update.secret) {
         checkRepositoryTokenMaterial(found, update.secret);
+        // Read under the Source row this transaction holds exclusively. The Worker records a
+        // Provider write of the value before it sends it, and settles a confirmed one, while it
+        // holds the same row shared; so a write recorded after this read cannot exist, and an
+        // ordinary write in flight is settled before this transaction gets the row.
+        const unreconciled = (
+          await credentialSources.findUnretiredRepositorySourceCopies(ref.namespaceId, ref.id)
+        ).filter(({ unreconciledWrite }) => unreconciledWrite);
+        if (unreconciled.length > 0) {
+          throw new RepositorySourceWriteUnreconciledError(unreconciled);
+        }
         const stored = encodeCredential(update.secret);
         await withComputeAbortSignal(signal, () =>
           this.store.update(this.storageRef(ref), stored.stored),
@@ -249,7 +264,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       }
       signal.throwIfAborted();
       return found;
-    });
+    }, READ_COMMITTED);
     // A repository token never has a model Provider copy, so there is nothing to deliver: a
     // committed Git-only replacement does not depend on the model delivery Gateway.
     if (version && this.credentialProxy && !isRepositoryTokenSource(updated)) {
