@@ -465,6 +465,10 @@ export function registerRetainedFleetPreflightTests(
           await f.failNext(fault);
           await assert.rejects(f.run(), injectedFault);
         }
+        const stopFiles = ["current-worker-deployment.json", "quiescence-worker-patch.json"].map(
+          (name) => join(f.evidence, name),
+        );
+        const originalStop = fault && (await Promise.all(stopFiles.map((path) => readFile(path))));
         const state = await f.state();
         assert.equal(state.worker, scenario === "lost acknowledgement" ? 0 : 1);
         if (scenario !== "lost acknowledgement") {
@@ -477,10 +481,29 @@ export function registerRetainedFleetPreflightTests(
           await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
         }
         assert.deepEqual(await f.events(), events);
+        const refusal = f.run(...(scenario === "fresh" ? [] : ["--resume"]));
         await assert.rejects(
-          f.run(...(scenario === "fresh" ? [] : ["--resume"])),
+          refusal,
           /worker Deployment .* is at zero replicas without a confirmed stop/u,
         );
+        // A fresh refusal leaves no request. Resume retains the original one-to-zero request.
+        if (originalStop) {
+          assert.deepEqual(
+            await Promise.all(stopFiles.map((path) => readFile(path))),
+            originalStop,
+            "resume must preserve the original Worker stop request and observation",
+          );
+        } else {
+          assert.deepEqual(
+            stopFiles.map((path) => existsSync(path)),
+            [false, false],
+          );
+        }
+        await assert.rejects(refusal, /worker-stop-confirmed\.json/u);
+        const observed: unknown = JSON.parse(
+          await readFile(join(f.evidence, "observed-worker-deployment.json"), "utf8"),
+        );
+        assert.equal(optionalField(optionalField(observed, "spec"), "replicas"), 0);
         assert.deepEqual(await f.events(), events);
         const refused = await f.state();
         assert.equal(refused.api, scenario === "fresh" ? 1 : 0);
@@ -488,7 +511,11 @@ export function registerRetainedFleetPreflightTests(
         assert.equal(refused.version, 1);
         assert.deepEqual(refused.secret, state.secret);
         assert.equal(refused.dispatches, 0);
-        for (const name of ["helm-started", "database-migration-handoff.json"]) {
+        for (const name of [
+          "worker-stop-confirmed.json",
+          "helm-started",
+          "database-migration-handoff.json",
+        ]) {
           assert.equal(existsSync(join(f.evidence, name)), false);
         }
       });
