@@ -160,14 +160,16 @@ permissions committed before it acquires the lock. It releases the lock before
 waiting for the provider and checks deployment admission again before saving the
 revision.
 
-To opt into repository policy, an Agent must have an explicit list from its
-first deployment. Ordinary Agents can keep deploying without a list.
-A delayed write to its Gateway can outlive a Worker claim and a completed
-stop. Deployment returns 409 if any earlier revision has no list. The Worker
-checks the same history before preparing a queued scoped revision. For a
-previously deployed Agent with that history, create a new Agent and save
-the list before deploying it. An Agent that started with a list can
-deploy subsequent policy changes under the same Agent ID.
+To opt in, save an explicit repository list before first deployment. Later revisions
+can update it. If any revision lacked a list, scoped deployment returns 409
+even after Stop. A delayed Gateway write can outlive both the Worker claim
+and Stop. The Worker rechecks history before preparing a queued scoped revision.
+
+An unscoped Agent can keep deploying without a list. For scoped access,
+create a draft Agent and save its list before deploying. Keep the original
+Agent and its storage for existing chats and files. Reusing a name or
+[conversation label](agent-http-chat.md#conversations-and-execution)
+does not transfer history.
 
 After refusing a scoped replacement before its first provider call, the Worker
 can maintain the serving predecessor if the deployment has no earlier attempt.
