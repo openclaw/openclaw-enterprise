@@ -49,6 +49,7 @@ import {
   oauthClientsPage,
   createNavigation,
   pages,
+  type AgentsLanding,
 } from "./navigation.mjs";
 import {
   brandContents,
@@ -1720,6 +1721,7 @@ async function loadPage({
   openingAgent = false,
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
+  agentsLanding = null,
   retrySearch = null,
 }: {
   fromNavigation?: boolean;
@@ -1729,6 +1731,7 @@ async function loadPage({
   restoreHistory?: ((url: string) => void) | null;
   openingAgent?: boolean;
   chatLinkFailure?: keyof typeof chatLinkFailures | null;
+  agentsLanding?: AgentsLanding | null;
   retrySearch?: AgentSearchFocus | null;
 } = {}) {
   noteConsoleLoad();
@@ -1856,6 +1859,8 @@ async function loadPage({
     current.feature === "agents" && current.namespace && !current.agentId && !current.creating
       ? routeKey(current)
       : null;
+  const trackDeletionLanding =
+    agentsLanding === "deletion-status-unavailable" && listRoute !== null;
   let search =
     retrySearch ??
     (listRoute && previousMountedRouteKey === listRoute
@@ -1884,12 +1889,10 @@ async function loadPage({
     current.feature === "secrets" &&
     retainedFocus != null &&
     "key" in retainedFocus;
-  let secretReturnMoved = false;
+  let returnFocusMoved = false;
   const onFocus = (event: FocusEvent) => {
     if (event.target !== expectedHeading && event.target !== document.body) {
-      if (trackSecretReturn) {
-        secretReturnMoved = true;
-      }
+      returnFocusMoved = true;
       // Both snapshots can return focus to Search if the new control later blurs.
       refocused = null;
       search = null;
@@ -1899,7 +1902,7 @@ async function loadPage({
       }
     }
   };
-  if (search || trackSecretReturn) {
+  if (search || trackSecretReturn || trackDeletionLanding) {
     document.addEventListener("focusin", onFocus, { capture: true, signal: lifetime.signal });
   }
   const pendingSearch = () =>
@@ -1916,6 +1919,7 @@ async function loadPage({
   let restoreRefocus: (() => void) | null = null;
   let pendingAgentHeading: HTMLHeadingElement | null = null;
   let focusAgentResult = false;
+  let showDeletionStatusNotice = false;
   // The page kept on screen while an Agent's overview renders behind it, and the Agent's title
   // until it reveals (findings 1516, 1526).
   let shownStandIn: { view: HTMLElement } | null = null;
@@ -2211,6 +2215,11 @@ async function loadPage({
       )?.id ??
       null;
     const selectedNamespace = namespaceId;
+    showDeletionStatusNotice =
+      trackDeletionLanding &&
+      selectedNamespace === current.namespace &&
+      previousOwner !== null &&
+      owner === previousOwner;
     const unscopedAgentId = current.namespace === null ? current.agentId : null;
     // Record the history position while keeping the Agent's Namespace provisional.
     replaceUrl(pageUrl(current.target, unscopedAgentId ? null : selectedNamespace));
@@ -2415,9 +2424,10 @@ async function loadPage({
       }
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       shell = restoredShell;
-      // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
+      // Landing notices stay on a refocus of the same view and clear on a new navigation.
       if (!resumingView) {
         shell.view.querySelector(":scope > .unopened-chat-link")?.remove();
+        updateDeletionStatusNotice(shell.view, showDeletionStatusNotice);
       }
       mountedViewState = retainedState;
       retainedState.active = active;
@@ -2937,6 +2947,7 @@ async function loadPage({
         resumed: resumingView,
       });
       showChatLinkFailure(shell.view, chatLinkFailure);
+      updateDeletionStatusNotice(shell.view, showDeletionStatusNotice);
       // A refocus rebuilds the list when its recheck reads changed (a re-grant, a row another
       // person deleted) or after a row write, which makes the list one it never reuses. Focus on
       // a row's name or icon returns to the same control in the rebuilt row instead of falling
@@ -3181,7 +3192,18 @@ async function loadPage({
         }
       }
       restoreRefocus?.();
-      if (focusAgentResult && document.activeElement === document.body) {
+      if (showDeletionStatusNotice && mountedRouteKey === listRoute) {
+        // The retained scroll and row focus can leave the new status above the viewport.
+        const heading = app.querySelector<HTMLHeadingElement>(".content h1")!;
+        if (
+          !returnFocusMoved &&
+          document.hasFocus() &&
+          (document.activeElement === document.body || document.activeElement === heldHeading)
+        ) {
+          heading.focus({ preventScroll: true });
+        }
+        window.scrollTo({ top: 0, left: 0 });
+      } else if (focusAgentResult && document.activeElement === document.body) {
         const heading =
           shell.view.querySelector<HTMLHeadingElement>(":scope > .state-panel > h2") ??
           app.querySelector<HTMLHeadingElement>(".content h1")!;
@@ -3189,7 +3211,7 @@ async function loadPage({
         heading.focus({ preventScroll: true });
       } else if (
         fromNavigation &&
-        (!trackSecretReturn || (!secretReturnMoved && document.hasFocus())) &&
+        (!trackSecretReturn || (!returnFocusMoved && document.hasFocus())) &&
         previousMountedRouteKey !== routeKey(current) &&
         (document.activeElement === document.body ||
           (returnFocus && document.activeElement === heldHeading))
@@ -3258,6 +3280,21 @@ function showChatLinkFailure(view: HTMLElement, failure: keyof typeof chatLinkFa
         className: "unopened-chat-link",
         role: "status",
       }),
+    );
+  }
+}
+
+function updateDeletionStatusNotice(view: HTMLElement, show: boolean) {
+  view.querySelector(":scope > .agent-deletion-status-unavailable")?.remove();
+  if (show) {
+    view.prepend(
+      statusBlock(
+        "info",
+        null,
+        "Deletion requested. The Agent’s status is no longer available, so cleanup is unconfirmed.",
+        [],
+        { className: "agent-deletion-status-unavailable" },
+      ),
     );
   }
 }
