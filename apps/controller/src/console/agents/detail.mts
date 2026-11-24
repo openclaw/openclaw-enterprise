@@ -1818,18 +1818,21 @@ export async function renderAgentDetail(
     if (!control) {
       return;
     }
-    for (const other of tabControls.values()) {
-      other.tabIndex = other === control ? 0 : -1;
-    }
     // focus() leaves a partly visible tab where it is; scrolling it into view honours the strip's
     // scroll padding, so the tab and its ring clear the faded edge.
     control.focus({ preventScroll: true });
     control.scrollIntoView({ block: "nearest", inline: "nearest" });
   });
-  // A click outside the strip can leave the return stop clipped without a Tab keydown.
   tabs.addEventListener("focusin", (event) => {
-    const control = tabControls.get(selectedTab);
-    if (event.target === control && control.matches(":focus-visible")) {
+    const control = event.target;
+    if (!(control instanceof HTMLButtonElement)) {
+      return;
+    }
+    for (const other of tabControls.values()) {
+      other.tabIndex = other === control ? 0 : -1;
+    }
+    // A click outside the strip can leave the return stop clipped without a Tab keydown.
+    if (control === tabControls.get(selectedTab) && control.matches(":focus-visible")) {
       revealSelectedTab(control);
     }
   });
