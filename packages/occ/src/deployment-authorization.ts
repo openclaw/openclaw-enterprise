@@ -2,7 +2,7 @@ import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import type { AuthorizationSnapshot, ControllerAuthority } from "./controller-authority.ts";
 
 export interface DeployAgentInput {
-  readonly expectedRepositoryPolicyVersion?: number | undefined;
+  readonly expectedRepositoryPolicyVersion?: number | null | undefined;
   readonly harnessOverrides?: Readonly<Record<string, unknown>> | undefined;
   readonly namespaceId: string;
   readonly agentId: string;
