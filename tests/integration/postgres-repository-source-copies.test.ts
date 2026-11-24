@@ -1061,13 +1061,34 @@ test(
     assert.ok(Date.parse(confirmed.committedAt) <= Date.parse(confirmed.confirmedAt));
 
     // A write whose outcome is unknown: unreconciled, whatever was confirmed before.
-    const worker = f.custody();
-    const lent = await worker.lock(ref);
+    const holder = f.custody();
+    const lent = await holder.lock(ref);
     assert.ok(lent?.source);
     assert.equal(await lent.recorded(revisionId), true);
-    const { version } = await worker.resolve(ref, lent.source);
+    const { version } = await holder.resolve(ref, lent.source);
     assert.equal(await lent.write(revisionId, version).dispatching(), true);
     await lent.hold.release();
     assert.equal((await delivery()).state, "unreconciled");
+
+    // Retired once its Provider reads back gone: no delivery is listed, and a late activation
+    // cannot bring the copy back.
+    const g = gateway();
+    g.prepare(revisionId);
+    assert.equal(
+      await worker(routes).retireSourceCopy(
+        revisionId,
+        g.client,
+        f.namespaceName,
+        AbortSignal.timeout(5_000),
+      ),
+      "retired",
+    );
+    assert.equal(await routes.recordSourceCopyConfirmed(revisionId, latest), false);
+    const retired = await f.state.read((state) =>
+      access.readRepositoryCredentialSource(state, "reader", agent, f.source.id, [], []),
+    );
+    assert.ok("deliveries" in retired);
+    assert.deepEqual(retired.deliveries, []);
+    await f.retire();
   },
 );
