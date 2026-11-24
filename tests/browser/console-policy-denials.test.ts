@@ -234,7 +234,7 @@ test("the repository policy panel shows the repository credential and its delive
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, undefined, "policy"));
   const absent = await panelText(undefined, false);
-  assert.match(absent, /example\/tooling · write/);
+  assert.match(absent, /example\/tooling · Contributor/);
   assert.doesNotMatch(absent, /Credential|Token delivery/);
 
   assert.match(await panelText({ kind: "github_app" }), /^Credential: GitHub App$/m);
@@ -275,7 +275,7 @@ test("the repository policy panel shows the repository credential and its delive
   });
   assert.match(
     pending,
-    /^Effective access after the Namespace, registry and Source limits:\n+example\/application · read$/m,
+    /^Effective access after the Namespace, registry and Source limits:\n+example\/application · Read-only$/m,
   );
   assert.match(
     pending,
