@@ -1,10 +1,42 @@
 # Diagnose Kubernetes installation prerequisites
 
 Before installing OCE, run the read-only prerequisite check from a matching
-checkout with Node.js satisfying `engines.node` in the selected release checkout's `package.json`, `kubectl`, and your trusted kubeconfig. Prepare the target
+checkout on a host with Unix sockets, Node.js satisfying `engines.node` in the
+release checkout's `package.json`, `kubectl`, and your trusted kubeconfig. Prepare the target
 namespace and prerequisite controllers through your infrastructure workflow first.
 The command does not create resources, update policies, change your current
 context, or run commands inside Pods.
+
+## Collect EKS addresses
+
+Use the cluster ARN from your infrastructure outputs and the intended kubeconfig
+and context. This works before the OCE namespace and prerequisite controllers
+exist. You need AWS CLI access to call `sts get-caller-identity`,
+`eks describe-cluster`, and `ec2 describe-network-interfaces`. The Kubernetes
+identity needs to read the `default/kubernetes` Service and list its EndpointSlices.
+
+Address collection pins the verified server and CA in a private temporary
+kubeconfig. It requires `KUBECTL_KUBERC=false` for the command, including for
+token and client certificate credentials. This disables all `kuberc` rules,
+including credential plugin rules. Use the command only with a trusted
+kubeconfig and context and the credential owner's permission. If policy requires
+kubectl preferences, collect the addresses through the infrastructure workflow.
+Set `TMPDIR` to an existing private directory before running the command.
+
+```bash
+KUBECTL_KUBERC=false TMPDIR=/secure/occ/prerequisite-run node scripts/diagnose-kubernetes-prerequisites.ts \
+  --inventory-eks "$EKS_CLUSTER_ARN" --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
+```
+
+Success prints JSON with `apiCidrs` for API egress and `eks.webhookCidrs` for
+webhook ingress. Each address is IPv4 with a `/32` prefix. API address
+collection omits IPv6 and requires an IPv4 Service address and at least one
+IPv4 endpoint. It refuses malformed or incomplete replies. Review the addresses
+against the infrastructure policies and use the reviewed values in the plan
+below. The reads take place in sequence. Repeat them if the infrastructure
+changes.
+A failed or incomplete read exits with status 2 and leaves stdout empty. It
+writes the reason and any available `Next:` guidance to stderr.
 
 ## Select the resources and expected addresses
 
@@ -77,14 +109,15 @@ Use the DNS name from the intended client's reviewed TLS configuration for
 Omit `tls` for a policy check alone. Kubernetes `get` on the named Secret
 authorizes reading the entire object, including `tls.key`. Use an identity
 already authorized to read that Secret or ask the certificate owner to run the
-TLS check. The command projects only Secret identity, deletion state, and the
-public `tls.crt` field from `kubectl`. It checks the first certificate's
+TLS check. It uses Secret identity, deletion state, and the public `tls.crt`
+field for the diagnosis. It checks the first certificate's
 validity window and matches `serverName` against its DNS subject alternative
 names. The report contains no certificate or private key bytes. Verify the
 actual served leaf, trust chain, and policy enforcement separately from the
 caller's network.
 
-To check one workload's client certificate, add `clientCertificate` to the plan:
+To check one workload's client certificate, add a `clientCertificate` object
+to the plan:
 
 ```json
 {
@@ -98,36 +131,33 @@ To check one workload's client certificate, add `clientCertificate` to the plan:
 }
 ```
 
-For the OpenShell administrator connection, copy `auth.certificatePath` from
+For the OpenShell administrator connection, use `auth.certificatePath` from
 the configured [OpenShell Backend](../../reference/backends.md#openshell-gateway).
-Run a separate check for each selected Deployment or StatefulSet and container.
-The path must resolve through one direct Secret volume mount in that container
-or restartable init container to the public `tls.crt` key. Secret item mappings
-may give the file a different name. For a required Secret volume, every mapped
-key must exist. An optional volume can omit other mapped keys, but the selected
-`tls.crt` must still exist. The check rejects overlapping item paths at the
-selected file and StatefulSet claims that replace its volume. Subpath mounts
-and mixed projected volumes are outside the supported check.
+The path must be an absolute POSIX file path, at most 1,024 bytes, without
+redundant separators or dot segments. Run a separate check for each Deployment
+or StatefulSet and container.
 
-Use named `get` access to the selected workload and its mounted Secret.
-This permission grants access to the whole object. The command collects only
-the workload identity and relevant mount fields, plus rollout fields if you
-also select the Deployment as a controller. For the Secret, the command reads
-its identity and public `tls.crt`. For required mappings, the command checks
-that each key exists and the workload resource version has not changed.
-The report records the resource UIDs and resource versions. A missing workload
-on the first read or a missing Secret for a matching workload fails the check.
-A failed read yields `unknown`. For required mappings, a workload change
-between reads also yields `unknown`. Verify that the resource exists and the
-selected identity has named `get` access.
-The check validates the public leaf's dates and reads its extended key usage
-for TLS client authentication. An absent or unreadable extension yields
-`unknown` because the check cannot establish client suitability. Confirm
-client authentication with the operator who owns the mTLS connection.
+Select a regular container or a restartable init container with a direct
+Secret volume mount. The selected file must have one mapping to `tls.crt` in the Secret.
+An item mapping can give the file a different name. A required Secret volume
+needs every mapped key. An optional volume can omit other mapped keys.
+Two mapped keys with values in the Secret cannot use the same path as both a
+file and a directory. Overlapping mounts at the selected file, StatefulSet
+claims that replace the volume, subpath mounts, and projected volumes fail
+the check.
 
-This is static evidence from the current Pod template and Secret. Verify the
-mounted bytes, active process credentials, gateway issuer and client-CA policy,
-peer identity, and the actual mTLS RPC separately.
+Grant named Kubernetes `get` access to the selected workload and mounted Secret.
+The Kubernetes API returns whole objects. The subprocess uses the public leaf,
+checks whether required keys exist and returns the result with resource UIDs
+and resource versions. The check compares the workload UID and resource version
+before and after the Secret read. A changed workload or denied read yields
+`unknown`. A confirmed missing workload on the first read, or missing Secret
+with a matching workload, fails the check.
+
+A passing check establishes that the observed public leaf is current and its
+extended key usage permits client authentication. An absent or unreadable
+extension yields `unknown`. Verify the mounted bytes, active process
+credentials, gateway client-CA policy, peer identity, and mTLS RPC separately.
 
 For EKS, add `eks` with the intended cluster ARN and expected webhook caller
 addresses. AWS CLI must already have authorized credentials:
@@ -145,13 +175,36 @@ account and the cluster named by the ARN with your intended target. Use the
 for webhook ingress. The adapter reads STS caller identity, EKS cluster details,
 and EC2 network interfaces filtered by VPC, cluster security group and cluster description.
 
-Select the exact EKS HTTPS endpoint or an IP loopback tunnel with an explicit
-port and the EKS hostname in `tls-server-name`. Both require the EKS CA. The
-tool pins the verified endpoint, TLS name and CA for subsequent reads. Keep the
-trusted kubeconfig, context and credentials stable during collection.
+Select the exact EKS HTTPS endpoint or a tunnel at `127.0.0.1` or `[::1]`
+with an explicit port from 1 through 65535 and the EKS hostname in
+`tls-server-name`. Omit the tunnel path or use `/`. Both require the EKS CA.
 
-Use an HTTPS kubeconfig with server verification and a configured credential.
-The operator needs API discovery, named reads of the GatewayClass, Deployments,
+Use a kubeconfig with an explicit `https://` server URL, server verification
+and a configured credential.
+The tool resolves the selected context into a private temporary copy before
+its first Kubernetes request. Each read uses a short-lived kubectl proxy on a
+private Unix socket. The command sends a GET for the selected API path and
+reports redirects as unknown without following them. For EKS, the tool also
+verifies the copy's endpoint, TLS name and CA against the intended
+cluster. The copy includes any configured CA and file-backed client certificate
+and key. Without a configured CA, ordinary HTTPS uses system trust.
+Keep referenced token files and credential plugins available. They can supply
+refreshed credentials for the verified endpoint.
+Use an exec plugin, token or client certificate in place of a built-in
+kubeconfig `auth-provider`. The command refuses built-in providers before
+making requests because their refresh can replace credentials in a kubeconfig.
+
+Diagnosis disables all kubectl preferences so defaults cannot change the
+verified target. An approved token or client certificate works without an
+exec plugin exception. For an exec plugin, follow the credential owner's
+procedure. If it permits running the plugin without kubectl preferences for
+the trusted kubeconfig and context, prefix this command with
+`KUBECTL_KUBERC=false`. The command does not apply any `kuberc` rules,
+including a credential plugin policy. If policy requires those rules for
+the plugin, use an approved credential without a plugin. If policy requires
+kubectl preferences for every call, use the infrastructure workflow.
+
+The operator needs named reads of the GatewayClass, Deployments,
 CRDs, namespace and `default/kubernetes` Service, and list access to that
 Service's EndpointSlices and the namespace's ResourceQuotas. The tool uses your
 configured credential plugin when applicable. The optional Service dependency
@@ -159,17 +212,32 @@ check needs named `get` access to the resources it selects.
 
 ## Run and interpret the checks
 
+Set `RUN_DIR` to an existing private directory that contains `prerequisites.json`.
+Use the command-local `KUBECTL_KUBERC=false` prefix when approved for an exec plugin.
+
 ```bash
-node scripts/diagnose-kubernetes-prerequisites.ts --config "$RUN_DIR/prerequisites.json"
-# Save machine-readable evidence privately when needed.
-node scripts/diagnose-kubernetes-prerequisites.ts \
-  --config "$RUN_DIR/prerequisites.json" --json > "$RUN_DIR/prerequisite-result.json"
+RUN_DIR=/secure/occ/prerequisite-run
+TMPDIR="$RUN_DIR" node scripts/diagnose-kubernetes-prerequisites.ts \
+  --config "$RUN_DIR/prerequisites.json"
 ```
+
+To save a machine-readable report, add `--json` to the command and redirect
+its stdout to `"$RUN_DIR/prerequisite-result.json"`.
+
+For both modes, use a private `TMPDIR` with a path short enough for Unix sockets.
+Linux with procfs also supports longer paths. The command creates a private
+`oce-prerequisites-*` child directory under `TMPDIR` and removes it before
+writing its result. After a forced termination or cleanup error, check `TMPDIR`
+for that run's child directory. It can contain a credential-bearing
+`kubeconfig.json`. Once the process has stopped, remove that exact directory
+and keep its contents private during removal.
 
 Each result is `passed`, `failed`, or `unknown`, with a next action for failed or
 unknown checks. Exit status is `0` when all requested checks passed, `1` when any
 failed, and `2` when none failed but evidence is incomplete, or the plan is invalid.
 A failed check can coexist with unknown checks; inspect the complete report.
+A check reports a resource absent when Kubernetes returns `NotFound` with
+HTTP `404`. Invalid responses leave the check unknown.
 
 | Check                              | What it establishes                                                                                                                                              |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -190,6 +258,8 @@ inventory. An incomplete or unreadable inventory yields `unknown`.
 For `service-egress`, `missing` lists required grants absent from the named
 NetworkPolicy. An `ExternalName` Service is a DNS alias without a ClusterIP.
 The check reports `failed` for that Service even when it declares ports.
+For a missing or unreadable dependency, verify the selected resource and
+read access before changing a NetworkPolicy or serving certificate.
 
 Reconcile address drift and missing grants through your infrastructure workflow.
 Review the deployed policies before changing the plan.

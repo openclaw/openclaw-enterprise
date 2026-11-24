@@ -35,6 +35,8 @@ access must permit reading and deleting the recorded Jobs, Secrets and
 NetworkPolicies, plus listing Pods and reading any recorded child Pod. No OCC
 service key or candidate image is required. Cleanup does not run Helm, migrate
 the database, scale workloads, create Kubernetes resources or dispatch Agents.
+Cleanup applies the [kubectl preference and credential checks](production-upgrade-command.md#run-the-image-upgrade)
+before cluster access.
 
 ## Run cleanup against the original evidence
 
@@ -78,6 +80,13 @@ the result's path. It keeps original receipts and earlier results unchanged.
 not remove `.upgrade-lock`, resume an upgrade, prove release health, establish
 migration outcomes or roll back the database. The release owner must finish
 [partial-upgrade recovery](production-upgrade-recovery.md).
+
+An interrupted upgrade can retain a private temporary kubeconfig. Once the operation
+and all helper children are settled and no resume is planned, inspect each
+`kubeconfig-snapshot.*` receipt in the original evidence. Verify the recorded
+path differs from the original kubeconfig, then retire that temporary copy as
+credential material. Retain the receipt with the evidence; keep the original
+kubeconfig.
 
 ## Understand an incomplete result
 

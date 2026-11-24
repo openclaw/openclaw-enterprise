@@ -32,7 +32,13 @@ type NetworkEndpoint = {
   enforcement?: string;
   access?: string;
   allowed_ips?: string[];
-  rules?: { allow?: { method?: string; path?: string } }[];
+  rules?: {
+    allow?: {
+      method?: string;
+      path?: string;
+      query?: Record<string, { glob?: string; any?: string[] }>;
+    };
+  }[];
   websocket_credential_rewrite?: boolean;
   credential_binding?: { provider?: string | undefined };
 };
@@ -48,6 +54,7 @@ type SandboxPolicy = {
   network_policies?: Record<string, NetworkPolicy>;
 };
 type SandboxSpec = {
+  template?: { image?: string; resources?: unknown; driver_config?: unknown };
   policy?: SandboxPolicy;
   providers?: string[];
   restart_policy?: string;
@@ -204,6 +211,7 @@ type WireMethods = {
     Scoped & { profiles?: { profile?: ProviderProfile; source?: string }[]; request_id?: string },
     { imported?: boolean; profiles?: ProviderProfile[] },
   ];
+  GetProviderProfile: [Scoped & { id?: string }, { profile?: ProviderProfile }];
   ListProviderProfiles: [
     Scoped & { page_token?: string },
     { profiles?: ProviderProfile[]; next_page_token?: string },

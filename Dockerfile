@@ -48,6 +48,10 @@ COPY --chown=node:node scripts scripts
 COPY --chown=node:node deploy/presets deploy/presets
 RUN mkdir -p /app/.development/configurations \
     && chown -R node:node /app/.development
+ARG OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST
+ARG OCC_INSPECTED_WORKSPACE_AGENT_DIGEST
+RUN --mount=type=bind,source=scripts/write-inspected-workspace-image-pin.ts,target=/tmp/write-inspected-workspace-image-pin.ts \
+    node /tmp/write-inspected-workspace-image-pin.ts "$OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST" "$OCC_INSPECTED_WORKSPACE_AGENT_DIGEST"
 # The route validators and serializers, precompiled with this image's Node and dependencies
 # so the server loads them instead of compiling every schema at start
 # (apps/controller/src/http/route-compilers.ts).
@@ -92,6 +96,10 @@ COPY --chown=node:node scripts/auth-maintain.ts scripts/auth-maintain.ts
 COPY --chown=node:node scripts/lib/auth-maintain-arguments.ts scripts/lib/auth-maintain-arguments.ts
 COPY --chown=node:node deploy/presets deploy/presets
 COPY --chown=node:node scripts/production-healthcheck.ts scripts/production-healthcheck.ts
+ARG OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST
+ARG OCC_INSPECTED_WORKSPACE_AGENT_DIGEST
+RUN --mount=type=bind,source=scripts/write-inspected-workspace-image-pin.ts,target=/tmp/write-inspected-workspace-image-pin.ts \
+    node /tmp/write-inspected-workspace-image-pin.ts "$OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST" "$OCC_INSPECTED_WORKSPACE_AGENT_DIGEST"
 # As in the development stage: precompiled route validators and serializers for this image.
 RUN node apps/controller/src/precompile-route-schemas.ts
 

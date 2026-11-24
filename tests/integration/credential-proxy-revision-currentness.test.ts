@@ -9,7 +9,7 @@ import type {
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";

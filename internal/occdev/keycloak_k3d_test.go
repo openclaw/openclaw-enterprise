@@ -875,6 +875,7 @@ func TestKeycloakSecondPassRenderedPoliciesRestrictHTTPS(t *testing.T) {
 	first["api"] = map[string]any{"clients": []any{map[string]any{"namespace": "oce-system", "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}}
 	first["images"] = map[string]string{"controller": "controller@" + profileTestDigest}
 	first["database"] = map[string]any{"cidrs": []string{"10.42.0.20/32"}}
+	first["channelEgress"] = map[string]any{"enabled": false}
 	first["cluster"] = map[string]any{"cidrs": []string{"172.30.42.3/32"}, "port": 6443}
 	second, err := developmentKeycloakSignInValues(mustJSON(t, first), "occ-dev-test", "user1", keycloakServiceJSON(t))
 	if err != nil {

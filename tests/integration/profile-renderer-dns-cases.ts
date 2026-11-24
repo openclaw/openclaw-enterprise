@@ -118,11 +118,10 @@ export function registerDnsCases(): void {
           .find(
             (document) =>
               document.includes("kind: NetworkPolicy") &&
-              document.includes("name: openclaw-enterprise-slack-proxy"),
+              document.includes("name: openclaw-channel-egress-fleet"),
           );
         assert.ok(slackPolicy);
         assert.match(slackPolicy, /cidr: 0\.0\.0\.0\/0\s+except:/);
-        assert.doesNotMatch(output.values, /slackProxyUpstreamCidrs/);
         assert.deepEqual(
           propertyAt(loadYaml(output.values), "api", "modelDiscoveryCidrs"),
           profile === "codex" ? ["192.0.2.20/32"] : [],

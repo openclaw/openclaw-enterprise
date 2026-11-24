@@ -41,7 +41,7 @@ When changing policy, ownership, or exceptions, verify the real repository and
 negative cases:
 
 ```sh
-node --test tests/conformance/module-policy.test.mjs
+node --test tests/conformance/module-policy.test.ts
 ```
 
 Review the resulting scopes and cycles.

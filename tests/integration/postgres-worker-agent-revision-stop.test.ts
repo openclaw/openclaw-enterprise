@@ -1921,7 +1921,8 @@ test(
     const siblingRevision = await fixture.revision(sibling, 1);
     let unavailable = true;
     let retirementAttempts = 0;
-    await fixture.start({
+    const events: WorkerEvent[] = [];
+    const compute: ComputeDriver = {
       ...fixture.compute,
       async retireRevision(target) {
         assert.equal(target.id, revision.id);
@@ -1931,13 +1932,21 @@ test(
         }
         await retirement.promise;
       },
-    });
+    };
+    await fixture.start(compute, { emit: (event) => events.push(checkedWorkerEvent(event)) });
     await Promise.all([
       fixture.work(revision, "succeeded"),
       fixture.work(siblingRevision, "succeeded"),
     ]);
     const deletion = await fixture.requestDeletion(owner);
     await fixture.work(deletion, "failed_permanent");
+    const completed = await completion(
+      events,
+      "the exhausted Agent deletion to log completion",
+      ({ event, workId }) => event === "worker.completed" && workId === deletion.idempotencyKey,
+    );
+    assert.equal(completed.result, "retry", "exhausted deletion completion result");
+    assert.equal(completed.outcome, "permanent", "exhausted deletion completion outcome");
     const observe = () =>
       fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
     const exhausted = required(await observe());

@@ -24,7 +24,7 @@ import (
 // controller downloads and network-policy probes, which only a real cluster proves
 // (see dev-up-openshell-k3d-real and local-first-agent-openshell-k3d-real).
 
-const profileTestDigest = "sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4"
+const profileTestDigest = "sha256:1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5"
 
 // fakeProfileCommands puts fake binaries on PATH. Each records its arguments and
 // answers only the listed cases, so a step that issues a new command fails.
@@ -165,7 +165,7 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 		"endpoint: https://openshell-gateway.oce-system.svc.cluster.local:8080",
 		"requestTimeoutMs: 30000",
 		"mode: inCluster",
-		"workspaceMode: operator",
+		"integrationMode: legacy",
 		"operatorWorkspaceResources:",
 		"userNamespaces: false",
 		`openshell.ai/openclaw-workspace: "true"`,
@@ -325,9 +325,9 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			// Fixed source pins guard the released default; candidate digests deliberately
 			// differ from the containerd manifests returned by the import fixture.
 			sources := []string{
-				"ghcr.io/nvidia/openshell/gateway:0.1.8@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4",
-				"ghcr.io/nvidia/openshell/sandbox:0.1.8@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b",
-				"ghcr.io/nvidia/openshell/supervisor:0.1.8@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1",
+				"ghcr.io/nvidia/openshell/gateway:0.1.9@sha256:1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5",
+				"ghcr.io/nvidia/openshell/sandbox:0.1.9@sha256:e57d07cd6cc1fc314b80368d6b51ec6fbf825fb62cd8f081312941180846866f",
+				"ghcr.io/nvidia/openshell/supervisor:0.1.9@sha256:f1ec231b5dbe5b6a40c33acb2ac847995aabb959a56134ef6d7d7aa4f43199d3",
 			}
 			selection := candidateOpenShellEnvironment()
 			if candidate {
@@ -409,6 +409,8 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 				"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 				"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 				"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
+				// One OCC caller serves every Namespace; OpenShell's default of 1000 admissions is too low.
+				`--set=gatewayConfig.openshell\.gateway.mutation_admission_limit_per_caller=5000`,
 				// Only in-cluster OCE components reach the gateway in this profile.
 				"--set=service.type=ClusterIP",
 			} {
@@ -598,6 +600,17 @@ func TestDevelopmentNodeSubnet(t *testing.T) {
 	}
 }
 
+func openShellDockerImportCases(source, staging, marker, listing string) string {
+	return `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
+"pull ` + source + `") ;;
+"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
+"tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
+"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
+"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
+"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
+`
+}
+
 // Docker's containerd image store cannot save a manifest-list reference as one
 // complete image, so the staging tag must move to the platform child the
 // registry's list names for the host platform.
@@ -612,14 +625,7 @@ func TestOpenShellImageImportTagsThePlatformChildOfAManifestList(t *testing.T) {
 	server := "k3d-" + state.Cluster + "-server-0"
 	listing := `{"manifest":{"manifests":[{"digest":"` + child + `","platform":{"os":"linux","architecture":"amd64"}},{"digest":"sha256:` + strings.Repeat("d", 64) + `","platform":{"os":"linux","architecture":"arm64"}}]}}`
 	commands := fakeProfileCommands(t, map[string]string{
-		"docker": `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
-"pull ` + source + `") ;;
-"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
-"tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
-"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
-"image inspect ` + resolved + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
+		"docker": openShellDockerImportCases(source, staging, marker, listing) + `"image inspect ` + resolved + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
 "pull ` + resolved + `") ;;
 "tag ` + resolved + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
 "image save --output "*" ` + staging + `") printf archive > "$4" ;;
@@ -661,14 +667,7 @@ func TestOpenShellImageImportKeepsAPlainManifestSource(t *testing.T) {
 	// buildx reports a single manifest without a manifests list.
 	listing := `{"manifest":{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}}`
 	commands := fakeProfileCommands(t, map[string]string{
-		"docker": `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
-"pull ` + source + `") ;;
-"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
-"tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
-"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
-"image save --platform linux/amd64 --output "*" ` + staging + `") printf archive > "$6" ;;
+		"docker": openShellDockerImportCases(source, staging, marker, listing) + `"image save --platform linux/amd64 --output "*" ` + staging + `") printf archive > "$6" ;;
 "exec ` + server + ` ctr -n k8s.io images list") echo "` + staging + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `" ;;
 "exec ` + server + ` ctr -n k8s.io images tag ` + staging + ` openclaw-development/openshell-gateway@` + profileTestDigest + `") ;;
 "image rm ` + staging + `") /bin/rm ` + shellQuote(marker) + ` ;;`,
@@ -710,14 +709,7 @@ func TestOpenShellImageImportKeepsTheSourceWhenTheChildPullFails(t *testing.T) {
 	server := "k3d-" + state.Cluster + "-server-0"
 	listing := `{"manifest":{"manifests":[{"digest":"` + child + `","platform":{"os":"linux","architecture":"amd64"}}]}}`
 	commands := fakeProfileCommands(t, map[string]string{
-		"docker": `"image inspect ` + source + `") echo '[{"Id":"` + profileTestDigest + `"}]' ;;
-"pull ` + source + `") ;;
-"image inspect ` + staging + `") if [ -f ` + shellQuote(marker) + ` ]; then echo '[{"Id":"` + profileTestDigest + `"}]'; else for image do :; done; printf 'Error response from daemon: No such image: %s\n' "$image" >&2; exit 1; fi ;;
-"tag ` + source + ` ` + staging + `") : > ` + shellQuote(marker) + ` ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + source + `") echo linux/amd64 ;;
-"buildx imagetools inspect --format {{json .}} ` + source + `") printf '%s\n' '` + listing + `' ;;
-"image inspect ` + resolved + `") exit 1 ;;
+		"docker": openShellDockerImportCases(source, staging, marker, listing) + `"image inspect ` + resolved + `") exit 1 ;;
 "pull ` + resolved + `") echo 'registry unavailable' >&2; exit 1 ;;
 "image save --platform linux/amd64 --output "*" ` + staging + `") printf archive > "$6" ;;
 "exec ` + server + ` ctr -n k8s.io images list") echo "` + staging + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `" ;;
@@ -1122,20 +1114,23 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 			state.SandboxDriver = test.sandboxDriver
 			state.APIPort = 3100
 			state.BrowserPort = test.browserPort
-			if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\ndrivers:\n  compute:\n    id: compute-kubernetes\n    configuration:\n      runtime: {}\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			commands := fakeProfileCommands(t, map[string]string{
-				"kubectl": `"apply -f "*) ;;
+				"kubectl": `"get nodes -o json") echo '{"items":[{"spec":{"podCIDRs":["10.42.0.0/24"]},"status":{"addresses":[{"address":"172.30.42.3"}]}}]}' ;;
+"get servicecidrs -o json") echo '{"items":[{"spec":{"cidrs":["10.43.0.0/16"]}}]}' ;;
+"apply -f "*) ;;
 "-n oce-system rollout status statefulset/postgres "*) ;;
 "-n oce-system get pod postgres-0 -o jsonpath={.status.podIP}") echo 10.42.0.20 ;;
 "-n default get endpoints kubernetes -o jsonpath={.subsets[0].addresses[0].ip}") echo 172.30.42.3 ;;
 "-n default get endpoints kubernetes -o jsonpath={.subsets[0].ports[0].port}") echo 6443 ;;
 "-n oce-system rollout status deployment/occ-development-api-proxy "*) ;;`,
-				"docker": `"network inspect k3d-occ-dev-owned") echo '[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]' ;;`,
-				"helm":   `"upgrade --install openclaw-enterprise deploy/helm/openclaw-enterprise "*) ;;`,
+				"docker":  `"network inspect k3d-occ-dev-owned") echo '[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]' ;;`,
+				"python3": `"scripts/setup-channel-egress check "*) ;;`,
+				"helm":    `"upgrade --install openclaw-enterprise deploy/helm/openclaw-enterprise "*) ;;`,
 			})
-			r := newRunner(Options{Repository: state.Repository})
+			r := newRunner(Options{Repository: repositoryRoot(t)})
 			r.engine = "docker"
 			if err := r.installKubernetesControlPlane(context.Background(), state, "controller@"+profileTestDigest, "postgres@"+profileTestDigest, test.routing, time.Minute); err != nil {
 				t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))

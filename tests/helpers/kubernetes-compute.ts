@@ -1,3 +1,4 @@
+import { channelEgressOptions, slackChannelDrivers } from "./channel-egress.ts";
 import assert from "node:assert/strict";
 import {
   KubernetesComputeDriver,
@@ -44,7 +45,7 @@ export function createTestKubernetesComputeDriver(
   {
     repositoryCredentials = false,
     gatewayRuntime = false,
-    // An Installation with runtime.channels: isolated channel credentials and a reviewed proxy.
+    // An Installation with runtime.channelEgress: isolated channel credentials and a reviewed proxy.
     channelRuntime = false,
     // false: runtime storage without gateway routing or node enrollment, which dedicated Agents
     // cannot use (provisioning and deployment admission refuse them).
@@ -119,13 +120,14 @@ export function createTestKubernetesComputeDriver(
               ...(modelProvider === undefined ? {} : { modelProvider }),
               gatewayStorageClassName: "local-path",
               ...(placed ? { gatewayNodeSelector: { "oce-role": "control" } } : {}),
-              ...(channelRuntime ? { channels: { proxyUrl: "http://10.42.0.15:3128" } } : {}),
+              ...(channelRuntime ? { channelEgress: channelEgressOptions } : {}),
             },
           }
         : {}),
     },
     {
       id,
+      channelDrivers: slackChannelDrivers,
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
       ...(protectedDriver === undefined ? {} : { protectedDriver }),

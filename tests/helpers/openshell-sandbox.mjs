@@ -34,7 +34,8 @@ export function openShellSandbox(t, overrides = {}, gateway = {}) {
   t.after(() => backend.client.close());
   const sandboxDriver = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator", ...gateway },
+      integrationMode: "legacy",
+      gateway: { ...gateway },
       kubernetes,
       policy: {
         process: { runAsUser: "1000", runAsGroup: "1000" },

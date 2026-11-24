@@ -66,7 +66,7 @@
   "repositoryCredentials": {
     "enabled": false
   },
-  "slackProxy": {
+  "channelEgress": {
     "enabled": false
   },
   "metrics": {

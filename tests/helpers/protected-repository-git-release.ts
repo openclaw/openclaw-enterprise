@@ -9,7 +9,7 @@ import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
 import type {
   AgentRevision,
   ComputeRevisionContext,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   EgressInstallation,
   Namespace,
   ProxyRevisionContext,
@@ -22,7 +22,7 @@ import {
   InstalledDriver,
   RepositoryGitSenderUnqualifiedError,
 } from "../../packages/occ/src/index.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { CREDENTIAL_PROXY_INSTALLATION_PREVIEW } from "./refusal-text.mjs";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
@@ -35,7 +35,7 @@ import {
  * installation observation is controlled, never a claim of a qualifying stock OpenShell. */
 export function protectedRepositoryGitRelease(
   repository: () => SandboxRepositoryAccess,
-  bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>,
+  bindRepositoryGit?: NonNullable<LegacyEgressProxyDriver["bindRepositoryGit"]>,
 ) {
   const id = "test-installed-git-sender";
   const registration = "oce-prepared-git";
@@ -113,7 +113,7 @@ export function protectedRepositoryGitRelease(
     isRouteBlockedError: (error) => repository().isRouteBlockedError(error),
   };
   Object.assign(sandbox, { repositoryAccess: access });
-  class ObservedOnlineSender extends OpenShellCredentialProxyDriver {
+  class ObservedOnlineSender extends OpenShellLegacyEgressProxyDriver {
     protected override assertRepositoryGitProfileAvailable(profile?: RepositoryGitDeliveryProfile) {
       if (profile === undefined) {
         return super.assertRepositoryGitProfileAvailable(profile);
@@ -169,8 +169,9 @@ export function protectedRepositoryGitRelease(
     implementation: sandbox.implementation,
     configuration: opts,
     definition: {
-      configurationSchema: OpenShellCredentialProxyDriver.configurationSchema,
-      validateConfiguration: (input) => OpenShellCredentialProxyDriver.validateConfiguration(input),
+      configurationSchema: OpenShellLegacyEgressProxyDriver.configurationSchema,
+      validateConfiguration: (input) =>
+        OpenShellLegacyEgressProxyDriver.validateConfiguration(input),
       configurationContributions: OpenShellSandboxDriver.configurationContributions,
     },
   };

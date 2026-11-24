@@ -7,7 +7,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { keycloakRealmFile, prepareKeycloak } from "../../scripts/ci/keycloak.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.ts");

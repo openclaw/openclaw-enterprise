@@ -37,16 +37,23 @@ function start(command: string[]) {
   return { child, completion };
 }
 
+function decodeReports(stdout: string, { skipBlankLines = false } = {}): ProbeReport[] {
+  const lines = stdout.trim().split("\n");
+  return (skipBlankLines ? lines.filter(Boolean) : lines).map((line): ProbeReport =>
+    JSON.parse(line),
+  );
+}
+
+function invalidTargets(target: ProbeTarget): ProbeTarget[] {
+  return [
+    { ...target, host: "unresolvable.invalid" },
+    { ...target, port: -1 },
+  ];
+}
+
 async function run(targets: ProbeTarget[], options?: { waitForInitialEgress: boolean }) {
   const result = await start(tcpProbeCommand(targets, options)).completion;
-  return {
-    ...result,
-    reports: result.stdout
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line): ProbeReport => JSON.parse(line)),
-  };
+  return { ...result, reports: decodeReports(result.stdout, { skipBlankLines: true }) };
 }
 
 test(
@@ -86,10 +93,7 @@ test(
     assert.equal(unauthorized.reports[0]!.outcome, "connected");
 
     // No DNS lookup or unknown socket setup error may count as a denial.
-    for (const target of [
-      { ...blocked, host: "unresolvable.invalid" },
-      { ...blocked, port: -1 },
-    ]) {
+    for (const target of invalidTargets(blocked)) {
       const invalid = await run([target]);
       assert.equal(invalid.code, 1);
       assert.equal(invalid.reports[0]!.outcome, "error");
@@ -134,10 +138,7 @@ test(
     await once(server, "listening");
     const ready = await delayed.completion;
     assert.equal(ready.code, 0, ready.stderr);
-    const attempts = ready.stdout
-      .trim()
-      .split("\n")
-      .map((line): ProbeReport => JSON.parse(line));
+    const attempts = decodeReports(ready.stdout);
     assert.equal(attempts[0]!.outcome, "denied");
     assert.equal(attempts.at(-1)!.outcome, "connected");
     assert(attempts.length > 1);
@@ -181,10 +182,7 @@ test(
       assert.equal(result.reports[1]!.attempt, 1);
       assert.equal(result.reports[1]!.label, target.label);
     }
-    for (const target of [
-      { ...initial, host: "unresolvable.invalid" },
-      { ...initial, port: -1 },
-    ]) {
+    for (const target of invalidTargets(initial)) {
       const result = await run([target], options);
       assert.equal(result.code, 1);
       assert.equal(result.reports.length, 1);

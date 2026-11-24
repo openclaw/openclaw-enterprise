@@ -1,7 +1,7 @@
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CleanupRegistrar } from "./console-file-app.ts";
+import type { CleanupRegistrar } from "./cleanup-registrar.ts";
 
 // The longest Unix socket path that binds everywhere: sun_path holds 104 bytes on macOS
 // and 108 on Linux, including the trailing NUL.

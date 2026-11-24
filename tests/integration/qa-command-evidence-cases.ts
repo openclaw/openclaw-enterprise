@@ -10,7 +10,7 @@ import {
   type QaCommandFixture,
   type QaCommandOptions,
 } from "../helpers/qa-command.ts";
-import { registerQaSecret } from "../helpers/qa-secrets.ts";
+import { protectedText, registerQaSecret } from "../helpers/qa-secrets.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 async function readPrivateLog(path: string): Promise<string> {
@@ -442,4 +442,131 @@ export function registerQaCommandFailureCases(): void {
     assert.equal(recorded.lines.length, 200);
     assert.doesNotMatch(JSON.stringify(recorded), /fakeKeyBody/);
   });
+}
+
+export async function runQaPrivateFileCase(
+  directory: string,
+  credential: string,
+  { chmod, symlink }: Pick<typeof import("node:fs/promises"), "chmod" | "symlink">,
+): Promise<void> {
+  // A path replaced with a symlink must not redirect the credential read,
+  // even when its target would pass the regular-file and permission checks.
+  const link = join(directory, "substituted");
+  await symlink(credential, link);
+  await assert.rejects(protectedText(link, "test credential"), { code: "ELOOP" });
+  await assert.rejects(protectedText(directory, "test credential"), /private regular file/);
+  await chmod(credential, 0o644);
+  await assert.rejects(protectedText(credential, "test credential"), /private regular file/);
+  await chmod(credential, 0o600);
+  await writeFile(credential, " \n");
+  await assert.rejects(protectedText(credential, "test credential"), /must not be empty/);
+}
+
+export async function runQaCredentialMaterializationCase(
+  t: TestContext,
+  rm: typeof import("node:fs/promises").rm,
+): Promise<void> {
+  const { spawnSync } = await import("node:child_process");
+  const script = new URL("../../scripts/ci/qa-matrix-credentials.mjs", import.meta.url);
+  const directory = await temporaryDirectory(t, "qa-hosted-inputs-");
+  const githubEnv = join(directory, "github-env");
+  const result = spawnSync(process.execPath, [script.pathname], {
+    encoding: "utf8",
+    env: {
+      RUNNER_TEMP: directory,
+      GITHUB_ENV: githubEnv,
+      OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets",
+      OPENAI_API_KEY: "synthetic-model-key",
+      CODEX_ACCESS_TOKEN: "synthetic-codex-token",
+      // Even if a caller supplies unrelated credentials, do not write them.
+      SLACK_APP_TOKEN: "unselected-secret",
+      REPOSITORY_APP_KEY: "unselected-secret",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout + result.stderr, "");
+  const privateDirectory = join(directory, "qa-matrix-credentials");
+  assert.deepEqual((await readdir(privateDirectory)).sort(), ["codex", "openai"]);
+  assert.equal(
+    await protectedText(join(privateDirectory, "codex"), "Codex credential"),
+    "synthetic-codex-token",
+  );
+  const exported = await readFile(githubEnv, "utf8");
+  assert.match(exported, /OCC_TEST_QA_CODEX_TOKEN_FILE=/);
+  assert.doesNotMatch(
+    exported,
+    /synthetic-|unselected-secret|SLACK|REPOSITORY_(?:APP|OBSERVER|REGISTRY)/,
+  );
+  assert.doesNotMatch(exported, /QA_REPOSITORY_FIXTURE/);
+  await rm(privateDirectory, { recursive: true });
+  await rm(githubEnv);
+  const missing = spawnSync(process.execPath, [script.pathname], {
+    encoding: "utf8",
+    env: {
+      RUNNER_TEMP: directory,
+      GITHUB_ENV: githubEnv,
+      OCC_TEST_QA_SCENARIOS: "console-secrets",
+      OCC_TEST_QA_PRESET: "Codex",
+    },
+  });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /CODEX_ACCESS_TOKEN is required/);
+  await assert.rejects(readFile(githubEnv), { code: "ENOENT" });
+}
+
+export async function runQaMultilineRedactionCase(): Promise<void> {
+  const { redactedQaTail, registerQaSecret } = await import("../helpers/qa-secrets.ts");
+  const body = ["MIIEfixtureLineOneAAAAAAAA", "fixtureLineTwoBBBBBBBBBBBB"];
+  registerQaSecret(
+    ["-----BEGIN PRIVATE KEY-----", ...body, "-----END PRIVATE KEY-----"].join("\n"),
+  );
+  const lines = redactedQaTail(
+    `reading key\n${body[0]}\n${body[1]}\ndone\n`,
+    {},
+    {
+      lines: 10,
+      lineChars: 200,
+    },
+  );
+  assert.deepEqual(lines[0], "reading key");
+  assert.equal(lines.at(-1), "done");
+  assert.doesNotMatch(lines.join("\n"), /fixtureLine/);
+}
+
+export async function runQaEncodedRedactionCase(): Promise<void> {
+  const { redactQaError, redactedQaTail, registerQaSecret } =
+    await import("../helpers/qa-secrets.ts");
+  // Synthetic, with every character an encoding changes.
+  const value = 'synthetic"qa\\value/<&>+= 2026';
+  registerQaSecret(value);
+  const json = JSON.stringify(value).slice(1, -1);
+  const encoded = [
+    json,
+    // Go's encoding/json (kube API errors) also escapes <, > and &.
+    json.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e").replaceAll("&", "\\u0026"),
+    Buffer.from(value).toString("base64"),
+    Buffer.from(value).toString("base64url"),
+    encodeURIComponent(value),
+  ];
+  assert.equal(new Set([value, ...encoded]).size, 6);
+  const text = [
+    `plain ${value}`,
+    JSON.stringify({ level: 30, msg: `loaded ${value}` }),
+    `go ${encoded[1]}`,
+    `secret data ${encoded[2]}`,
+    `url-safe ${encoded[3]}`,
+    `query ?v=${encoded[4]}`,
+  ].join("\n");
+  const lines = redactedQaTail(text, {}, { lines: 10, lineChars: 400 });
+  assert.equal(lines.length, 6);
+  for (const variant of [value, ...encoded]) {
+    assert.ok(!lines.join("\n").includes(variant), `variant survived: ${lines.join("\n")}`);
+  }
+  assert.ok(
+    lines.every((line) => line.includes("[env:qa-secret]")),
+    lines.join("\n"),
+  );
+  const error = redactQaError(new Error(`failed: ${encoded[2]}`));
+  assert.ok(error instanceof Error);
+  assert.equal(error.message, "failed: [REDACTED]");
 }

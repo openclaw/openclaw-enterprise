@@ -395,6 +395,7 @@ async function applyControllers(
     `${basename(envoyGatewayManifest, ".yaml")}-controller.yaml`,
   );
   const envoyDocuments = (await readFile(envoyGatewayManifest, "utf8"))
+    .replace("extensionApis: {}", "extensionApis:\n      enableEnvoyPatchPolicy: true")
     .split(/^---\s*$/mu)
     .filter((document) => {
       if (!/^kind:\s*CustomResourceDefinition\s*$/mu.test(document)) {

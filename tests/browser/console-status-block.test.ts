@@ -30,12 +30,12 @@ import {
 import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_SAVE_DENIED,
-  DIAGNOSTICS_DENIED,
   notIncluded,
   RELOAD_DRAFT_BEFORE_SAVING,
   REPOSITORY_ACCESS_CHANGED,
   REPOSITORY_EDITS_PENDING,
 } from "../helpers/refusal-text.mjs";
+import { DIAGNOSTICS_DENIED } from "../helpers/refusal-access.ts";
 
 // Errors, warnings and notices share one status block (UX plan C1): a wash in the tone's
 // design-token colour, with the text in the body colour. Errors and warnings retain a stripe;

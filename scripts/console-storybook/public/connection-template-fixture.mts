@@ -12,7 +12,7 @@ export function createConnectionTemplateFixture(
 ) {
   const issuer = "https://identity.example.com";
   const templateId = "ctp_00000000-0000-4000-8000-000000000004";
-  const oauthTemplates: Record<string, unknown>[] =
+  const templates: Record<string, unknown>[] =
     mode === "ready"
       ? [
           {
@@ -48,10 +48,24 @@ export function createConnectionTemplateFixture(
               createdAt,
             },
           },
+          {
+            id: "ctp_00000000-0000-4000-8000-000000000005",
+            displayName: "Reporting API",
+            createdAt,
+            current: {
+              templateId: "ctp_00000000-0000-4000-8000-000000000005",
+              version: 1,
+              mode: "static_bearer",
+              destinations: [
+                { host: "reports.example.com", port: 443, path: "/reports/**", method: "GET" },
+              ],
+              createdAt,
+            },
+          },
         ]
       : [];
   const googleTemplateId = "ctp_00000000-0000-4000-8000-000000000003";
-  oauthTemplates.unshift({
+  templates.unshift({
     id: googleTemplateId,
     displayName: "Google OAuth",
     createdAt,
@@ -100,7 +114,7 @@ export function createConnectionTemplateFixture(
   const previousVersions: Record<string, unknown>[] = [];
   return (path: string, method: string, body: unknown): Response | undefined => {
     if (path === "/connection-templates" && method === "GET") {
-      return response(oauthTemplates);
+      return response(templates);
     }
     if (path === "/oauth-clients" && method === "GET") {
       return response(oauthClients, 200, undefined, {
@@ -108,11 +122,11 @@ export function createConnectionTemplateFixture(
       });
     }
     if (method === "DELETE" && path.startsWith("/connection-templates/")) {
-      const index = oauthTemplates.findIndex((t) => path === "/connection-templates/" + t.id);
+      const index = templates.findIndex((t) => path === "/connection-templates/" + t.id);
       if (index === -1) {
         return error(404, "NOT_FOUND", "The connection template does not exist.");
       }
-      oauthTemplates.splice(index, 1);
+      templates.splice(index, 1);
       return new Response(null, { status: 204 });
     }
     if (method === "DELETE" && path.startsWith("/oauth-clients/")) {
@@ -122,7 +136,7 @@ export function createConnectionTemplateFixture(
       }
       const client = oauthClients[index]!;
       if (
-        oauthTemplates.some(
+        templates.some(
           (t) =>
             (isRecord(t.current) && t.current.oauthClientId === client.id) ||
             previousVersions.some(
@@ -157,7 +171,7 @@ export function createConnectionTemplateFixture(
           : response(observed);
       }
       if (path === "/oauth-clients" && method === "POST") {
-        const selected = oauthTemplates.find((t) => t.id === body.connectionTemplateId);
+        const selected = templates.find((t) => t.id === body.connectionTemplateId);
         const version = selected?.current;
         if (
           !selected ||
@@ -166,6 +180,13 @@ export function createConnectionTemplateFixture(
           typeof version.version !== "number"
         ) {
           return error(409, "RESOURCE_STATE_CONFLICT", "Reload the selected connection template.");
+        }
+        if (version.mode === "static_bearer") {
+          return error(
+            409,
+            "RESOURCE_STATE_CONFLICT",
+            "A static template cannot register an OAuth client.",
+          );
         }
         const client = {
           id: nextId("ccr"),
@@ -185,7 +206,7 @@ export function createConnectionTemplateFixture(
         return response(client, 201);
       }
       if (path.startsWith("/connection-templates/") && method === "PATCH") {
-        const template = oauthTemplates.find((item) => path === "/connection-templates/" + item.id);
+        const template = templates.find((item) => path === "/connection-templates/" + item.id);
         if (
           !template ||
           !isRecord(template.current) ||
@@ -194,14 +215,27 @@ export function createConnectionTemplateFixture(
           return error(404, "RESOURCE_NOT_FOUND", "Connection template unavailable.");
         }
         const { displayName, ...config } = body;
-        previousVersions.push(template.current);
-        template.displayName = displayName;
-        template.current = {
-          ...config,
-          templateId: template.id,
-          version: template.current.version + 1,
-          createdAt,
-        };
+        if (typeof displayName === "string") {
+          template.displayName = displayName;
+        }
+        const sameStaticSettings =
+          config.mode === "static_bearer" &&
+          template.current.mode === "static_bearer" &&
+          JSON.stringify(config.destinations) === JSON.stringify(template.current.destinations);
+        if (config.mode !== undefined && !sameStaticSettings) {
+          previousVersions.push(template.current);
+          template.current = {
+            ...config,
+            templateId: template.id,
+            version: template.current.version + 1,
+            createdAt,
+          };
+        }
+        if (mode === "unconfirmed-save" && isRecord(template.current)) {
+          const current = { ...template.current };
+          delete current.version;
+          return response({ ...template, current });
+        }
         return response(template);
       }
       if (path === "/connection-templates" && method === "POST") {
@@ -224,7 +258,7 @@ export function createConnectionTemplateFixture(
             : {}),
         };
         const template = { id, displayName, namespaceId, current, createdAt };
-        oauthTemplates.push(template);
+        templates.push(template);
         return response(template, 201);
       }
     }

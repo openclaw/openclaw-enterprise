@@ -1,4 +1,4 @@
-import type { CredentialSourceReference } from "../../index.ts";
+import type { AccessBinding, CredentialSource, CredentialSourceReference } from "../../index.ts";
 import type { Driver } from "../index.ts";
 
 export type TokenServiceSourceRef = CredentialSourceReference | InstallationClientSecretRef;
@@ -10,17 +10,12 @@ export interface InstallationClientSecretRef {
   readonly namespaceId?: never;
 }
 
-/** Nonsecret owner output. Native delivery must validate the backend and workspace before attach. */
-export type TokenServiceRegistration =
-  | { readonly delivery: "push"; readonly backendRef?: Readonly<Record<string, string>> }
-  | { readonly delivery: "native"; readonly backendRef: Readonly<Record<string, string>> };
-
-export interface RegisteredTokenServiceSource<
+/** A credential store instance retains its identity across ordinary restarts and redeployments. */
+export interface TokenServiceSourceInstance<
   Ref extends TokenServiceSourceRef = TokenServiceSourceRef,
 > {
   readonly sourceRef: Ref;
-  readonly driverId: string;
-  readonly registration: TokenServiceRegistration;
+  readonly tokenServiceInstanceId: string;
 }
 
 /** Only the selected owner's adapter interprets its reviewed source type and lifecycle fields. */
@@ -30,16 +25,25 @@ export interface SourceLifecycleConfig {
 }
 
 type SecretFields = Readonly<Record<string, string>>;
+type SourceConfig = Readonly<Record<string, string>>;
 
 export interface SourceRegistrationInput {
-  readonly sourceRef: TokenServiceSourceRef;
+  readonly namespaceId: string;
+  readonly name: string;
   readonly secret: SecretFields;
   readonly lifecycleConfig: SourceLifecycleConfig;
+  readonly config: SourceConfig;
 }
 
 export type SourceUpdate =
-  | { readonly secret: SecretFields; readonly lifecycleConfig?: SourceLifecycleConfig }
-  | { readonly lifecycleConfig: SourceLifecycleConfig; readonly secret?: SecretFields };
+  | {
+      readonly secret: SecretFields;
+      readonly lifecycleConfig?: SourceLifecycleConfig;
+    }
+  | {
+      readonly lifecycleConfig: SourceLifecycleConfig;
+      readonly secret?: SecretFields;
+    };
 
 export interface ResolvedCredential {
   readonly credential: string;
@@ -61,40 +65,33 @@ export interface CredentialRefreshStatus {
   readonly recoveryAction?: "retry" | "reauthorize" | "fix_configuration" | "investigate";
 }
 
-export interface SourceRefreshOperation {
-  readonly sourceRef: CredentialSourceReference;
-  readonly driverId: string;
+export interface SourceRefreshOperation extends TokenServiceSourceInstance<CredentialSourceReference> {
   readonly operationId: string;
 }
 
-/** Proposed owner boundary. Installation selection lands with its first implementation. */
+/** The selected owner creates and maintains CredentialSources and their usable credentials. */
 export interface TokenServiceDriver extends Omit<Driver, "capability"> {
   readonly capability: "token_service";
-  registerSource(
-    input: SourceRegistrationInput,
-    signal: AbortSignal,
-  ): Promise<TokenServiceRegistration>;
+  createSource(input: SourceRegistrationInput, signal: AbortSignal): Promise<CredentialSource>;
   updateSource(
-    source: RegisteredTokenServiceSource,
+    source: TokenServiceSourceInstance,
     update: SourceUpdate,
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<CredentialSource>;
   resolveCredential(
-    source: RegisteredTokenServiceSource,
+    source: TokenServiceSourceInstance,
     signal: AbortSignal,
   ): Promise<ResolvedCredential>;
   forceRefresh(
-    source: RegisteredTokenServiceSource<CredentialSourceReference>,
+    source: TokenServiceSourceInstance<CredentialSourceReference>,
     signal: AbortSignal,
   ): Promise<SourceRefreshOperation>;
   getRefreshStatus(
     operation: SourceRefreshOperation,
     signal: AbortSignal,
   ): Promise<CredentialRefreshStatus>;
-  /** The reference alone permits cleanup after an uncertain registration on supporting owners. */
   removeSource(
-    sourceRef: TokenServiceSourceRef,
-    registration: TokenServiceRegistration | undefined,
+    source: TokenServiceSourceInstance,
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<readonly AccessBinding[]>;
 }

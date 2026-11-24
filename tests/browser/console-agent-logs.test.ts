@@ -28,17 +28,17 @@ import {
   fileConsoleApp,
 } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
+import { STOP_REQUESTED_FIRST_DEPLOYMENT } from "../helpers/refusal-text.mjs";
 import {
   LOG_TEXT_DENIED,
   RUNTIME_STATUS_DENIED,
   RUNTIME_STATUS_OPERATE_DENIED,
   RUNTIME_STATUS_VERSION_UNREADABLE,
-  STOP_REQUESTED_FIRST_DEPLOYMENT,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 import {
   createProviderSandboxDriver,
   createRuntimeLogComputeDriver,
-} from "../helpers/runtime-logs.mjs";
+} from "../helpers/runtime-logs.ts";
 import {
   deploymentStatusResponse,
   routeFailedDeployment,
@@ -55,6 +55,7 @@ import {
   waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
+import { responseTo } from "./console-action-helpers.ts";
 
 import {
   settledFetches,
@@ -64,7 +65,7 @@ import {
 } from "./console-fetch-accounting.ts";
 import { withholdPermissionSummary } from "./console-agents-test-support.ts";
 import { refocus } from "./console-refocus-helpers.ts";
-import { callbackGate, within } from "../helpers/wait-for.ts";
+import { within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type LogLine = AgentRuntimeLogChunk["lines"][number];
@@ -348,6 +349,64 @@ for (const viewport of [
       true,
     );
   });
+
+  test(`the first Logs response keeps focus on the version chooser at ${viewport.width}x${viewport.height}`, async (t) => {
+    const logs = await logsFixture(t);
+    const { fixture, computeDriver, namespace, agent, revisionId } = logs;
+    const marker = "first log output after moving focus";
+    computeDriver.state.lines = [line(1, marker)];
+    const { page } = await newPage(t, fixture, { context: { viewport, reducedMotion: "reduce" } });
+    await trackSettledFetches(page);
+    // Hold the first-view deadline until the successful response can be released.
+    await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "configuration"),
+    );
+    await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    await page.clock.runFor(100);
+
+    const logPath = revisionLogsPath(logs);
+    const firstLog = await holdRequests(t, page, (url) => url.pathname === logPath, {
+      method: "GET",
+      once: true,
+      afterServer: true,
+    });
+    const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
+    const chooser = page.getByRole("combobox", { name: "Viewing version" });
+    const chooserFocused = () =>
+      chooser.evaluate((node) => node === globalThis.document.activeElement);
+
+    await logsTab.focus();
+    await page.keyboard.press("Enter");
+    assert.equal((await firstLog.requested)?.status(), 200);
+    assert.equal(await logsTab.getAttribute("aria-selected"), "true");
+    assert.equal(await logsTab.evaluate((node) => node.matches(":focus")), true);
+    for (let steps = 0; steps < 12 && !(await chooserFocused()); steps += 1) {
+      await page.keyboard.press("Shift+Tab");
+    }
+    assert.equal(await chooserFocused(), true, "Shift+Tab moved focus to the version chooser");
+    await page.locator(".agent-logs-pending").waitFor({ state: "attached" });
+    assert.equal(await settledFetches(page, logPath), 0);
+    const scrollBefore = await page.evaluate(() => globalThis.scrollY);
+
+    firstLog.release();
+    await page.getByRole("log", { name: "Runtime log output" }).getByText(marker).waitFor();
+    await waitForIdleFetches(page);
+    // Advance past the post-render frame and timer. Reduced motion makes any scroll immediate.
+    await page.clock.runFor(100);
+
+    assert.equal(await logsTab.getAttribute("aria-selected"), "true");
+    assert.equal(
+      await chooserFocused(),
+      true,
+      "the first Logs response moved focus from the chooser",
+    );
+    assert.equal(await page.evaluate(() => globalThis.scrollY), scrollBefore);
+  });
 }
 
 test("phone-width routes, resizing and history keep the selected Agent tab visible", async (t) => {
@@ -470,6 +529,33 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
   assert.equal(await strip.evaluate((node) => node.isConnected), true);
   await resize(390, 844);
   await assertSelectedTabVisible("Logs");
+
+  // Arrow focus stays on Deployment when the strip narrows, while Logs remains selected.
+  await resize(1440, 900);
+  const logs = page.getByRole("tab", { name: "Logs", exact: true });
+  const deployment = page.getByRole("tab", { name: "Deployment", exact: true });
+  await logs.press("ArrowLeft");
+  assert.equal(await deployment.evaluate((tab) => tab === document.activeElement), true);
+  await resize(390, 844);
+  assert.equal(await logs.getAttribute("aria-selected"), "true");
+  const geometry = await deployment.evaluate((tab) => {
+    const tabList = tab.closest(".agent-tabs")!;
+    const stripBounds = tabList.getBoundingClientRect();
+    const bounds = tab.getBoundingClientRect();
+    const style = getComputedStyle(tabList);
+    return {
+      focused: tab === document.activeElement && tab.matches(":focus-visible"),
+      before: bounds.left - stripBounds.left,
+      after: stripBounds.right - bounds.right,
+      fadeBefore: Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-before")),
+      fadeAfter: Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-after")),
+    };
+  });
+  assert.equal(geometry.focused, true);
+  assert.ok(geometry.fadeBefore > 0 && geometry.fadeAfter > 0, "both strip edges fade");
+  // The outline is inset, so keeping the whole button clear of the fades also clears its ring.
+  assert.ok(geometry.before >= geometry.fadeBefore - 1, "Deployment clears the leading fade");
+  assert.ok(geometry.after >= geometry.fadeAfter - 1, "Deployment clears the trailing fade");
 });
 
 test("the Logs tab shows runtime status, sanitized output and follows with a cursor", async (t) => {
@@ -805,7 +891,7 @@ test("the log message column stays readable beside the version list", async (t) 
 // cards at about 265 px each beside the version list, Pod names and container states wrapping
 // over 3-4 lines next to about 280 px of blank strip (finding 2100, at 1440 on a live install).
 // Here the strip is a little narrower, so the old layout leaves that gap from 1600 px.
-test("runtime Pod cards fill the status strip at desktop and phone widths", async (t) => {
+test("runtime Pod cards fill the status strip and pair status facts on wide desktop cards", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.harnessPod = { ready: true };
   const { page } = await newPage(t, fixture);
@@ -813,6 +899,7 @@ test("runtime Pod cards fill the status strip at desktop and phone widths", asyn
   const strip = page.locator(".runtime-strip");
   await strip.getByRole("heading", { name: "Agent (Harness)" }).waitFor();
   await strip.getByRole("heading", { name: "Gateway" }).waitFor();
+  const gateway = strip.getByRole("article", { name: /^Gateway Pod / });
   for (const width of [1440, 1600, 390]) {
     await page.setViewportSize({ width, height: 900 });
     const { row, tracks, cards } = await strip.evaluate((node) => {
@@ -843,6 +930,28 @@ test("runtime Pod cards fill the status strip at desktop and phone widths", asyn
         `cards end ${row.right - last.right}px before the strip's edge at ${width}px`,
       );
     }
+    const facts = await gateway.locator("dt").evaluateAll((terms) =>
+      terms.map((term) => ({
+        label: term.textContent,
+        top: term.getBoundingClientRect().top,
+        valueTop: term.nextElementSibling!.getBoundingClientRect().top,
+      })),
+    );
+    for (const { label, top, valueTop } of facts) {
+      assert.equal(top, valueTop, `${label} and its value share a row at ${width}px`);
+    }
+    const factRows = [...Map.groupBy(facts, ({ top }) => top).values()];
+    assert.deepEqual(
+      factRows.map((row) => row.map(({ label }) => label)),
+      width === 390
+        ? [["Phase"], ["Ready"], ["Container"], ["Restarts"], ["State"], ["Age"]]
+        : [
+            ["Phase", "Ready"],
+            ["Container", "Restarts"],
+            ["State", "Age"],
+          ],
+      `Gateway status rows at ${width}px`,
+    );
   }
 });
 
@@ -1004,7 +1113,7 @@ test("startup warnings on a Ready Pod without restarts read as history", async (
 // "Observed <time>" status line changed on every poll (finding 1425).
 test("an unchanged runtime status poll leaves the status strip and pickers untouched", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
-  computeDriver.state.lines = [line(1, "steady output")];
+  computeDriver.state.lines = [...earlierOutput(48), line(1, "steady output")];
   // A second Pod shows the Pod picker as well.
   computeDriver.state.extraPods = [
     { name: "gateway-second", uid: "5c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f" },
@@ -1015,7 +1124,14 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
   await page.getByRole("log", { name: "Runtime log output" }).getByText("steady output").waitFor();
   const strip = page.locator(".runtime-strip");
   await strip.locator(".runtime-pod").nth(1).waitFor();
-  await page.locator("#runtime-log-pod:not([hidden])").waitFor();
+  const source = page.locator("#runtime-log-source");
+  const picker = page.locator("#runtime-log-pod");
+  await picker.waitFor();
+  const selectedPod = JSON.stringify([computeDriver.podName({ id: revisionId }), "gateway"]);
+  assert.equal(await picker.inputValue(), selectedPod);
+  await source.focus();
+  await page.keyboard.press("Tab");
+  assert.equal(await picker.evaluate((node) => node.matches(":focus-visible")), true);
   const content = { childList: true, subtree: true, characterData: true };
   const rewrites = await recordWrites(
     page,
@@ -1042,6 +1158,7 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
     before,
   );
   assert.deepEqual(await rewrites.jsonValue(), []);
+  assert.equal(await picker.evaluate((node) => node.matches(":focus-visible")), true);
 
   // A real change still updates the strip.
   computeDriver.state.restartCount = 4;
@@ -1049,6 +1166,35 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
   await strip.getByText("4", { exact: true }).first().waitFor();
   assert.ok((await rewrites.jsonValue()).length > 0);
   await rewrites.dispose();
+
+  // The selected stream remains available, but its picker disappears when the other Pod leaves.
+  // On a narrow screen, removing the stacked card can move both pickers above the viewport.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await picker.evaluate((node) => {
+    globalThis.scrollBy({ top: node.getBoundingClientRect().top - 48, behavior: "instant" });
+  });
+  const pickerTop = await picker.evaluate((node) => node.getBoundingClientRect().top);
+  assert.ok(pickerTop >= 0 && pickerTop <= 50, "the focused Pod picker is near the top edge");
+  assert.equal(await picker.evaluate((node) => node.matches(":focus-visible")), true);
+  computeDriver.state.extraPods = [];
+  const status = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}/runtime`,
+  );
+  await page.clock.runFor(10_000);
+  assert.equal((await status).status(), 200);
+  await picker.waitFor({ state: "hidden" });
+  assert.equal(await picker.inputValue(), selectedPod);
+  assert.equal(await source.evaluate((node) => node.matches(":focus-visible")), true);
+  assert.equal(
+    await source.evaluate((node) => {
+      const { top, bottom } = node.getBoundingClientRect();
+      return top >= 0 && bottom <= globalThis.innerHeight;
+    }),
+    true,
+    "the Source picker remains in the viewport after receiving focus",
+  );
 });
 
 test("a failed status refresh keeps the Pod cards dated with their last observation", async (t) => {
@@ -1170,13 +1316,25 @@ test("a status poll that replaces the selected Pod drops even an in-flight page 
   const before = reads().length;
   const wasPainted = await watchPainted(page, { text: late });
 
+  // The reader has already moved past the picker when its selection disappears.
+  const previous = page.locator("#runtime-log-previous");
+  await page.locator("#runtime-log-source").focus();
+  await page.keyboard.press("Tab");
+  assert.equal(await picker.evaluate((node) => node.matches(":focus-visible")), true);
+  await page.keyboard.press("Tab");
+  assert.equal(await previous.evaluate((node) => node.matches(":focus-visible")), true);
   state.extraPods = [];
   delete state.readPodUid;
   state.lines = [line(3, "first output from the remaining Pod")];
   await page.clock.runFor(10_000);
-  await picker
-    .getByRole("option", { name: old.name + " / gateway" })
-    .waitFor({ state: "detached" });
+  await picker.waitFor({ state: "hidden" });
+  assert.equal(await previous.evaluate((node) => node.matches(":focus-visible")), true);
+  assert.equal(
+    await picker
+      .getByRole("option", { name: old.name + " / gateway", includeHidden: true })
+      .count(),
+    0,
+  );
   assert.equal(await oldLine.count(), 0, "do not label the old output as the new selection");
 
   const delivered = page.waitForResponse(url);
@@ -1964,6 +2122,31 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
   await shows(/Latest visible deployment\s+v4\s+·\s+Queued/);
 });
 
+async function holdAgentRead(
+  t: TestContext,
+  page: Page,
+  url: string,
+  read: () => Promise<unknown>,
+) {
+  const held = await holdRequests(t, page, url, { once: true, method: "GET", afterServer: true });
+  const [request, answer] = await Promise.all([
+    page.waitForRequest((r) => r.url() === url && r.method() === "GET"),
+    within(held.requested, "the held Agent read"),
+    read(),
+  ]);
+  assert.ok(answer);
+  return async () => {
+    const delivered = page.waitForResponse((response) => response.request() === request);
+    held.release();
+    const response = await delivered;
+    assert.equal(response.status(), 200);
+    const body = await response.body();
+    assert.ok(body.equals(await answer.body()), "the held Agent answer reached the browser");
+    const { data }: { data: AgentWire } = JSON.parse(body.toString());
+    return data;
+  };
+}
+
 // Finding 2998. Each Logs status poll rereads the Agent while the viewed version has no running
 // Pod. A reread sent before this page's own Stop and answered after it carried the running state
 // from before the Stop: the page showed "Not running" and offered Stop Agent again over "Stop
@@ -1982,27 +2165,11 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
 
   // The next poll's Agent read takes the server's answer now, while the Agent still runs, and
   // is answered only after this page's Stop.
-  let release!: () => void;
-  const released = new Promise<void>((resolve) => (release = resolve));
-  const held = callbackGate("the held Agent read");
-  let holding = true;
-  await page.route(`${fixture.origin}${agentPath}`, async (route) => {
-    if (!holding || route.request().method() !== "GET") {
-      await route.fallback();
-      return;
-    }
-    holding = false;
-    await held.run(async () => {
-      const response = await route.fetch();
-      held.resolve();
-      await released;
-      await route.fulfill({ response });
-    });
-  });
   const agentReads = await settledFetches(page, agentPath);
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  await page.clock.runFor(10_000);
-  await held.reached();
+  const release = await holdAgentRead(t, page, `${fixture.origin}${agentPath}`, async () => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await page.clock.runFor(10_000);
+  });
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stop.click();
   await page
@@ -2015,7 +2182,7 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "stopped");
 
   // The pre-Stop answer lands: the page keeps the Stop it accepted.
-  release();
+  assert.equal((await release()).desiredRuntimeState, "running");
   await waitForSettledFetches(page, agentPath, agentReads + 1);
   await waitForIdleFetches(page);
   await shows(/Runtime\s+Stop requested/);
@@ -2284,7 +2451,7 @@ for (const viewport of [
 // 2998). Applied, it showed the stopped version as selected for service again.
 test("a refocus recheck's older Agent answer leaves a newer poll's state", async (t) => {
   const logs = await logsFixture(t);
-  const { agentPath, page, shows, stopElsewhere } = await openUnreadableCurrent(
+  const { agentPath, hidden, page, shows, stopElsewhere } = await openUnreadableCurrent(
     t,
     logs,
     "hidden-current-race",
@@ -2294,25 +2461,9 @@ test("a refocus recheck's older Agent answer leaves a newer poll's state", async
   await waitForIdleFetches(page);
   // The recheck's Agent read takes the server's answer now, while v2 is still selected, and is
   // answered only after the poll below.
-  let release!: () => void;
-  const released = new Promise<void>((resolve) => (release = resolve));
-  const held = callbackGate("the held Agent read");
-  let holding = true;
-  await page.route(`${logs.fixture.origin}${agentPath}`, async (route) => {
-    if (!holding || route.request().method() !== "GET") {
-      await route.fallback();
-      return;
-    }
-    holding = false;
-    await held.run(async () => {
-      const response = await route.fetch();
-      held.resolve();
-      await released;
-      await route.fulfill({ response });
-    });
-  });
-  await refocus(page);
-  await held.reached();
+  const release = await holdAgentRead(t, page, `${logs.fixture.origin}${agentPath}`, () =>
+    refocus(page),
+  );
 
   // Another session stops the Agent, and the next poll shows it.
   await stopElsewhere();
@@ -2320,7 +2471,7 @@ test("a refocus recheck's older Agent answer leaves a newer poll's state", async
   await shows(/Selected for service\s+None/);
 
   // The recheck's answer from before the stop lands: the page keeps the newer state.
-  release();
+  assert.equal((await release()).activeRevisionId, hidden.id);
   await page.locator(settledView).waitFor();
   await waitForIdleFetches(page);
   await shows(/Selected for service\s+None/);

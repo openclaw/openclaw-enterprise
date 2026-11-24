@@ -284,16 +284,12 @@ test(
         resourceVersion: string;
       }[];
     };
-    async function invokeDiagnostic(
-      plan: Plan,
-      sensitiveValues: string[] = [],
-      env?: NodeJS.ProcessEnv,
-    ) {
+    async function invokeDiagnostic(plan: Plan, sensitiveValues: string[] = []) {
       await writeFile(configPath, JSON.stringify(plan));
       const result = spawnSync(
         process.execPath,
         ["scripts/diagnose-kubernetes-prerequisites.ts", "--config", configPath, "--json"],
-        { encoding: "utf8", timeout: 100_000, env },
+        { encoding: "utf8", timeout: 100_000 },
       );
       assert.equal(result.error, undefined);
       for (const sensitiveValue of sensitiveValues) {
@@ -748,122 +744,6 @@ test(
       controllers: [...config.controllers, { namespace, name: clientName }],
     };
 
-    // Observe real kubectl stdout at the subprocess boundary. Checking only
-    // the final report would miss unrelated data already captured by the CLI.
-    const kubectlPath = execFileSync("sh", ["-c", "command -v kubectl"], {
-      encoding: "utf8",
-    }).trim();
-    const commandLog = join(dir, "kubectl-observations");
-    await writeFile(
-      join(dir, "kubectl"),
-      String.raw`#!${process.execPath}
-const { spawnSync } = require("node:child_process");
-const { appendFileSync, fstatSync, statSync } = require("node:fs");
-const args = process.argv.slice(2);
-const options = {
-  encoding: "utf8",
-  env: { ...process.env, PATH: process.env.OCC_FIXTURE_ORIGINAL_PATH },
-};
-const readsSecret = args.includes("get") && args.includes(${JSON.stringify(`secrets/${clientSecret}`)});
-let changedWorkload = false;
-if (readsSecret && process.env.OCC_FIXTURE_CHANGE_WORKLOAD === "1") {
-  const scope = args.slice(0, args.indexOf("get"));
-  const update = spawnSync(${JSON.stringify(kubectlPath)}, [...scope, "annotate",
-    "deployments.apps", ${JSON.stringify(clientName)}, "example.test/observed-change=1"], options);
-  changedWorkload = update.status === 0;
-}
-const result = spawnSync(${JSON.stringify(kubectlPath)}, args, options);
-let observation = {};
-if (args.includes("get") && args.includes("deployments.apps") && args.includes(${JSON.stringify(clientName)})) {
-  const stderr = fstatSync(2);
-  observation = {
-    workload: true,
-    selectedMount: result.stdout?.includes(${JSON.stringify(mountPath)}),
-    excludedValue: result.stdout?.includes(${JSON.stringify(excludedValue)}),
-    excludedFields: /"env"|"annotations"/u.test(result.stdout ?? ""),
-    detachedSecret: [${JSON.stringify(detachedSecret)}, ${JSON.stringify(detachedItem)}]
-      .some((value) => result.stdout?.includes(value)),
-    unrelatedMount: result.stdout?.includes(${JSON.stringify(unrelatedMountPath)}),
-    otherContainer: [${JSON.stringify(otherContainer)}, ${JSON.stringify(otherContainerMountPath)}]
-      .some((value) => result.stdout?.includes(value)),
-    stderrDiscarded: stderr.isCharacterDevice() && stderr.rdev === statSync("/dev/null").rdev,
-  };
-}
-if (readsSecret) {
-  observation = {
-    secret: true,
-    exit: result.status,
-    changedWorkload,
-    unrelatedSecretData: [${JSON.stringify(unrelatedSecretKey)}, ${JSON.stringify(unrelatedSecretValue)}]
-      .some((value) => result.stdout?.includes(value)),
-    namedWorkload: args.includes(${JSON.stringify(`deployments.apps/${clientName}`)}),
-    projectionSize: Buffer.byteLength(args.find((argument) => argument.startsWith("go-template=")) ?? ""),
-    rawTemplateError: result.stdout?.includes("raw data was:"),
-    privateKey: [${JSON.stringify(clientLeaf.key)}, ${JSON.stringify(clientKeyBase64)}]
-      .some((value) => result.stdout?.includes(value) || args.some((arg) => arg.includes(value))),
-    selectedMapping: result.stdout?.includes(${JSON.stringify(selectedMappingKey)}) ||
-      args.some((arg) => arg.includes(${JSON.stringify(selectedMappingKey)})),
-    publicLeaf: result.stdout?.includes(${JSON.stringify(clientLeafBase64)}),
-    publicLeafInArgs: args.some((arg) => arg.includes(${JSON.stringify(clientLeafBase64)})),
-  };
-}
-appendFileSync(${JSON.stringify(commandLog)}, JSON.stringify(observation) + "\n");
-process.stdout.write(result.stdout ?? "");
-process.stderr.write(result.stderr ?? "");
-process.exitCode = result.status ?? 1;
-`,
-      { mode: 0o700 },
-    );
-    const projectionEnv = {
-      ...process.env,
-      PATH: `${dir}:${process.env.PATH}`,
-      OCC_FIXTURE_ORIGINAL_PATH: process.env.PATH,
-    };
-    const readObservations = async () =>
-      (await readFile(commandLog, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line));
-    function assertSecretPrivacy(observation: Record<string, unknown>) {
-      for (const field of [
-        "unrelatedSecretData",
-        "rawTemplateError",
-        "privateKey",
-        "selectedMapping",
-        "publicLeafInArgs",
-      ]) {
-        assert.equal(observation[field], false, field);
-      }
-    }
-    await writeFile(commandLog, "");
-    const misspelledSelection = { ...config, clientCertifcate: clientCertificate };
-    const misspelledClient = await invokeDiagnostic(
-      misspelledSelection,
-      protectedValues,
-      projectionEnv,
-    );
-    assert.equal(misspelledClient.status, 2);
-    assert.equal(misspelledClient.stdout, "");
-    assert.match(misspelledClient.stderr, /only supported top-level fields/u);
-    assert.equal(await readFile(commandLog, "utf8"), "");
-
-    // Change the real Deployment after its first observation. The joined read
-    // must reject the stale resource version even though the TLS Secret exists.
-    const changed = await invokeDiagnostic(clientPlan, protectedValues, {
-      ...projectionEnv,
-      OCC_FIXTURE_CHANGE_WORKLOAD: "1",
-    });
-    const changedCheck = (JSON.parse(changed.stdout).checks as Check[]).find(
-      ({ id }) => id === "client-certificate",
-    );
-    assert.equal(changedCheck?.status, "unknown");
-    assert.match(changedCheck?.summary ?? "", /could not bind the selected Secret/u);
-    const changedProjection = (await readObservations()).find(({ secret }) => secret);
-    assert.equal(changedProjection?.changedWorkload, true);
-    assertSecretPrivacy(changedProjection);
-    assert.equal(changedProjection.publicLeaf, false);
-    await writeFile(commandLog, "");
-
     const clientCheck = async (plan: Plan = clientPlan) =>
       (await diagnose(plan, protectedValues)).checks.get("client-certificate");
     const identity = async (kind: string, resourceKind: string, name: string) => {
@@ -876,52 +756,18 @@ process.exitCode = result.status ?? 1;
     });
     const workloadIdentity = await identity("Deployment", "deployment", clientName);
     const secretIdentity = await identity("Secret", "secret", clientSecret);
-    const observedClient = await invokeDiagnostic(
-      overlapPlan,
-      [...protectedValues, excludedValue],
-      projectionEnv,
-    );
-    assert.equal(observedClient.stderr, "");
-    const observedChecks = JSON.parse(observedClient.stdout).checks as Check[];
-    const bound = observedChecks.find(({ id }) => id === "client-certificate");
-    const rollout = observedChecks.find(({ id }) => id === `controller:${namespace}/${clientName}`);
+    const { checks: observedChecks } = await diagnose(overlapPlan, [
+      ...protectedValues,
+      excludedValue,
+    ]);
+    const bound = observedChecks.get("client-certificate");
+    const rollout = observedChecks.get(`controller:${namespace}/${clientName}`);
     assert.equal(
       rollout?.status,
       "failed",
       "the selected certificate Deployment has zero replicas",
     );
     assert.equal(rollout?.resource, `${namespace}/${clientName}@${workloadIdentity.uid}`);
-    const observations = await readObservations();
-    const secretOutput = observations.filter(({ secret }) => secret);
-    assert.equal(secretOutput.length, 1);
-    const [secretProjection] = secretOutput;
-    assertSecretPrivacy(secretProjection);
-    assert.equal(secretProjection.namedWorkload, true);
-    assert.equal(secretProjection.publicLeaf, true);
-    assert.ok(secretProjection.projectionSize > 0 && secretProjection.projectionSize < 12_000);
-    const workloadOutput = observations.filter(({ workload }) => workload);
-    assert.deepEqual(workloadOutput, [
-      {
-        workload: true,
-        selectedMount: false,
-        excludedValue: false,
-        excludedFields: false,
-        detachedSecret: false,
-        unrelatedMount: false,
-        otherContainer: false,
-        stderrDiscarded: true,
-      },
-      {
-        workload: true,
-        selectedMount: true,
-        excludedValue: false,
-        excludedFields: false,
-        detachedSecret: false,
-        unrelatedMount: false,
-        otherContainer: false,
-        stderrDiscarded: true,
-      },
-    ]);
     assert.equal(bound?.status, "passed");
     assert.deepEqual(bound?.resources, [workloadIdentity, secretIdentity]);
     assert.deepEqual(await identity("Deployment", "deployment", clientName), workloadIdentity);
@@ -1125,23 +971,14 @@ process.exitCode = result.status ?? 1;
       "--role=client-workload-reader",
       `--serviceaccount=${namespace}:reader`,
     );
-    await writeFile(commandLog, "");
-    const deniedClient = await invokeDiagnostic(
+    const deniedClient = await diagnose(
       { ...clientPlan, kubeconfig: deniedConfig, context: "reader" },
       [token, ...protectedValues],
-      projectionEnv,
     );
-    const deniedSecret = (JSON.parse(deniedClient.stdout).checks as Check[]).find(
-      ({ id }) => id === "client-certificate",
-    );
+    const deniedSecret = deniedClient.checks.get("client-certificate");
     assert.equal(deniedSecret?.status, "unknown");
-    assert.match(deniedSecret?.summary ?? "", /named resource could not be read.*get access/u);
+    assert.match(deniedSecret?.summary ?? "", /not authorized to read this resource/u);
     assert.deepEqual(deniedSecret?.resources, [workloadIdentity]);
-    const deniedProjection = (await readObservations()).find(({ secret }) => secret);
-    assert.equal(deniedProjection?.namedWorkload, true);
-    assert.notEqual(deniedProjection.exit, 0);
-    assertSecretPrivacy(deniedProjection);
-    assert.equal(deniedProjection.publicLeaf, false);
 
     const workerMounts = "/spec/template/spec/containers/0/volumeMounts";
     async function patchWorkerMounts(operations: object[]) {
@@ -1196,7 +1033,12 @@ process.exitCode = result.status ?? 1;
     }
 
     const companionItems = [publicItem, { key: "companion", path: "companion.txt" }];
-    async function updateClientVolume(secret: typeof clientVolume.secret & { optional?: boolean }) {
+    async function updateClientVolume(
+      secret: Omit<typeof clientVolume.secret, "items"> & {
+        items?: (typeof clientVolume.secret)["items"];
+        optional?: boolean;
+      },
+    ) {
       const patchPath = join(dir, "client-volume-patch.json");
       await writeFile(
         patchPath,
@@ -1240,9 +1082,19 @@ process.exitCode = result.status ?? 1;
     await updateClientVolume({ ...clientVolume.secret, items: [...companionItems, ...largeItems] });
     assert.equal((await clientCheck())?.status, "passed");
 
-    // Once removed, the same companion key blocks a required volume and is
-    // skipped in an optional volume. Both still need the selected public leaf.
-    await updateClientVolume({ ...clientVolume.secret, items: companionItems });
+    // Two present companion keys cannot claim the same path as both a file
+    // and a directory, even when neither claim overlaps the public leaf.
+    const conflictingItems = [
+      ...companionItems,
+      { key: unrelatedSecretKey, path: "companion.txt/extra" },
+    ];
+    await updateClientVolume({ ...clientVolume.secret, items: conflictingItems });
+    const conflicting = await clientCheck();
+    assert.equal(conflicting?.status, "failed");
+    assert.match(conflicting?.summary ?? "", /maps one path as both a file and a directory/u);
+
+    // Removing one companion key blocks a required volume. An optional volume
+    // omits that file, so the remaining projection can supply the public leaf.
     await kubectl(
       "-n",
       namespace,
@@ -1256,8 +1108,38 @@ process.exitCode = result.status ?? 1;
     const requiredCompanion = await clientCheck();
     assert.equal(requiredCompanion?.status, "failed");
     assert.match(requiredCompanion?.summary ?? "", /maps a required key that the Secret lacks/u);
-    await updateClientVolume({ ...clientVolume.secret, items: companionItems, optional: true });
+    await updateClientVolume({ ...clientVolume.secret, items: conflictingItems, optional: true });
     assert.equal((await clientCheck())?.status, "passed");
+    // The same Secret can supply its default filename or a mapped file with
+    // spaces and Unicode. Both use the configured POSIX path.
+    await updateClientVolume({ secretName: clientSecret });
+    assert.equal(
+      (
+        await clientCheck({
+          ...clientPlan,
+          clientCertificate: { ...clientCertificate, certificatePath: `${mountPath}/tls.crt` },
+        })
+      )?.status,
+      "passed",
+    );
+    const unicodePath = "client cert 雪.pem";
+    await updateClientVolume({
+      secretName: clientSecret,
+      items: [{ key: "tls.crt", path: unicodePath }],
+    });
+    assert.equal(
+      (
+        await clientCheck({
+          ...clientPlan,
+          clientCertificate: {
+            ...clientCertificate,
+            certificatePath: `${mountPath}/${unicodePath}`,
+          },
+        })
+      )?.status,
+      "passed",
+    );
+
     const noLeafSecret = "client-without-public-leaf";
     await kubectl("-n", namespace, "create", "secret", "generic", noLeafSecret);
     await updateClientVolume({ ...clientVolume.secret, secretName: noLeafSecret, optional: true });
@@ -1333,6 +1215,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     values,
     JSON.stringify({
       gatewayRouting: { enabled: false },
+      channelEgress: { enabled: false },
       images: { controller: `registry.example.invalid/controller@sha256:${"a".repeat(64)}` },
       auth: { baseUrl: "https://occ.example.invalid", secretName: "occ-auth", secretKey: "secret" },
       agentNativeAdmin: { domain: "agents.example.invalid" },

@@ -104,6 +104,8 @@ test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
     await copyFile(join(repository, "scripts", script), join(checkout, "scripts", script));
   }
   const expected = await realpath(checkout);
+  const runner = join(directory, "runner");
+  await mkdir(runner, { mode: 0o700 });
   // Help and an unknown profile look the same from either directory, so record where each
   // wrapper ended up: this startup file, and nothing inherited, records it on exit.
   const exitDirectory = join(directory, "exit-directory");
@@ -115,7 +117,7 @@ test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
       BASH_ENV: startup,
       CDPATH: cdpath,
       PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH}`,
-      RUNNER_TEMP: join(directory, "runner"),
+      RUNNER_TEMP: runner,
       TEST_WRAPPER_CWD: exitDirectory,
     });
     delete env.GITHUB_ENV;

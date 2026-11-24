@@ -18,7 +18,7 @@ import {
 import type { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 
 interface HttpResponse {
   status: number;

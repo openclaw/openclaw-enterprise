@@ -71,6 +71,10 @@ export const AgentDeploymentBody = Type.Object(
   { harnessOverrides: Type.Optional(HarnessSettings) },
   { additionalProperties: false },
 );
+export const AgentStopQuery = Type.Object(
+  { expectedActiveRevisionId: Type.Optional(RevisionId) },
+  { additionalProperties: false },
+);
 export const FirstDeploymentIntent = Type.Object(
   {
     key: Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$" }),
@@ -394,7 +398,7 @@ export const AgentCredentialSourcesSchema = Type.Array(
     maxItems: MAX_AGENT_CREDENTIAL_SOURCES,
     uniqueItems: true,
     description:
-      "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+      "Credential Source IDs selected for the Agent. A credential_source harnessAuth binding selects one listed sourceId. OCC authorizes each Source and requires a supported delivery path at deployment. This field contains no credential values.",
   },
 );
 
@@ -417,11 +421,12 @@ export const CredentialSourceType = Type.String({
   minLength: 1,
   maxLength: 64,
   pattern: "^[a-z][a-z0-9-]{0,63}$",
-  description: "Source type from the selected Credential Gateway catalog, for example `openai`.",
+  description:
+    "Source type accepted by the Driver registering the credential, for example `openai`.",
 });
 
 export const CredentialSourceConfig = Type.Record(
-  CredentialSourceFieldName,
+  Type.String(),
   Type.String({ minLength: 1, maxLength: 2048 }),
   {
     maxProperties: 32,
@@ -784,6 +789,19 @@ export const GatewayManagedModeSchema = Type.Boolean({
     "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
 });
 
+export const AgentNetworkProxySchema = Type.Object(
+  {
+    url: Type.String({
+      minLength: 1,
+      maxLength: 2048,
+      description:
+        "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+    }),
+    credentialSecretId: Type.Optional(SecretId),
+  },
+  { additionalProperties: false },
+);
+
 export const CreateAgentBody = Type.Object(
   {
     initialWorkspaceFiles: Type.Optional(
@@ -813,6 +831,7 @@ export const CreateAgentBody = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -853,6 +872,7 @@ export const ProvisionAgentBody = Type.Object(
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -888,6 +908,7 @@ export const ValidateAgentCreateBody = Type.Object(
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     harnessAuth: Type.Optional(
@@ -942,6 +963,7 @@ export const UpdateAgentBody = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
+    networkProxy: Type.Optional(Type.Union([AgentNetworkProxySchema, Type.Null()])),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
@@ -952,6 +974,7 @@ export const UpdateAgentBody = Type.Object(
     anyOf: [
       { required: ["configurationId"] },
       { required: ["gatewayManagedMode"] },
+      { required: ["networkProxy"] },
       { required: ["modelProviderId"] },
     ],
   },
@@ -1366,3 +1389,4 @@ export const UpdatePresetBody = Type.Object(
 );
 
 export type FirstDeploymentIntent = Type.Static<typeof FirstDeploymentIntent>;
+export type AgentStopQuery = Type.Static<typeof AgentStopQuery>;

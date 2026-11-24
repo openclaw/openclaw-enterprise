@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { TestContext } from "node:test";
 import type { OpenShellSandboxExecRequest } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { WorkspaceSetup } from "../../packages/contracts/src/index.ts";
@@ -31,14 +31,16 @@ export async function runNativeWorkspaceSetupCase(
       const [entrypoint, ...args] = execution.command;
       assert.ok(entrypoint);
       const mountPath = execution.environment.OPENCLAW_WORKSPACE_DIR;
-      assert.ok(mountPath);
+      const homePath = execution.environment.HOME;
+      assert.ok(mountPath && homePath);
       const root = await temporaryDirectory(t, "openshell-workspace-setup-");
       assert.ok(process.getuid && process.getgid);
       const user = `${process.getuid()}:${process.getgid()}`;
       const workspace = join(root, "workspace");
-      const home = join(root, "home");
+      const runtime = join(root, "runtime");
       await mkdir(workspace);
-      await mkdir(home);
+      // Match the private runtime parent to the test UID, which may differ from the image UID.
+      await mkdir(join(runtime, "home"), { recursive: true, mode: 0o700 });
       // Execute the exact command produced by provisionHarness with the real native CLI.
       // The separate live Sandbox proof covers the OpenShell transport.
       const execute = async (input: string) => {
@@ -64,7 +66,7 @@ export async function runNativeWorkspaceSetupCase(
               "--volume",
               `${workspace}:${mountPath}:z`,
               "--volume",
-              `${home}:/sandbox/.openclaw-runtime/home:z`,
+              `${runtime}:${dirname(homePath)}:z`,
               ...Object.entries(execution.environment).flatMap(([key, value]) => [
                 "--env",
                 `${key}=${value}`,

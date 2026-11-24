@@ -375,7 +375,9 @@ try {
       if (
         Number.isSafeInteger(nativePolls) &&
         nativePolls >= 0 &&
-        ["running", "completed", "deadline", "unrecognized"].includes(nativeStatus) &&
+        ["running", "completed", "deadline", "tool-denied", "unrecognized"].includes(
+          nativeStatus,
+        ) &&
         (nativeExitCode === null || Number.isInteger(nativeExitCode)) &&
         typeof nativeSessionPresent === "boolean"
       ) {

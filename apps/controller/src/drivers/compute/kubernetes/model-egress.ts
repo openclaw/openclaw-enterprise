@@ -29,8 +29,8 @@ const excludedRanges = MODEL_EGRESS_EXCLUDED_IPV4_CIDRS.map((cidr) => {
  * operator's own policy can open the endpoint, and a CNI that does not enforce NetworkPolicy
  * blocks nothing. Only a literal address is checked: a host name may resolve anywhere, which
  * admission cannot know. Like the policy, it leaves other special-use IPv4 ranges (loopback,
- * 198.18.0.0/15) alone. The text names every blocked property in plain words (no commas or
- * quotes), so the worker log keeps it, and never repeats the URL.
+ * 198.18.0.0/15) alone. The text names every blocked property in plain words and never repeats
+ * the URL.
  */
 export function modelEgressWarning(subject: string, endpoint: string): string | undefined {
   const url = new URL(endpoint);

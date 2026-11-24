@@ -89,7 +89,7 @@ function failureMessage(value: unknown): string | DeploymentFailure {
 
 type PluginStage = {
   kind: "openshell-stage";
-  stage: "installation" | "exposure-auth";
+  stage: "installation" | "exposure-auth" | "plugin-check";
   outcome: "started" | "passed" | "failed";
 };
 
@@ -101,9 +101,9 @@ function validPluginTransition(previous: PluginStage | undefined, next: PluginSt
     return next.stage === previous.stage && next.outcome !== "started";
   }
   return (
-    previous.stage === "installation" &&
     previous.outcome === "passed" &&
-    next.stage === "exposure-auth" &&
+    ((previous.stage === "installation" && next.stage === "exposure-auth") ||
+      (previous.stage === "exposure-auth" && next.stage === "plugin-check")) &&
     next.outcome === "started"
   );
 }
@@ -116,7 +116,9 @@ function nextPluginStage(line: string, previous: PluginStage | undefined): Plugi
     const value = openShellProgress(JSON.parse(line.slice(openShellProgressPrefix.length)));
     if (
       value?.kind === "openshell-stage" &&
-      (value.stage === "installation" || value.stage === "exposure-auth") &&
+      (value.stage === "installation" ||
+        value.stage === "exposure-auth" ||
+        value.stage === "plugin-check") &&
       line === `${openShellProgressPrefix}${JSON.stringify(value)}` &&
       validPluginTransition(previous, value as PluginStage)
     ) {
@@ -130,7 +132,7 @@ function nextPluginStage(line: string, previous: PluginStage | undefined): Plugi
 
 // Only complete, validated stdout stage records precede the terminal frame.
 export default async function* reporter(source: AsyncIterable<{ type: string; data: unknown }>) {
-  // The transition check admits at most four frames across the entire child.
+  // The transition check admits at most six frames across the entire child.
   const pending: string[] = [];
   let progress: PluginStage | undefined;
   const readProgress = boundedProgressLines((line: string) => {

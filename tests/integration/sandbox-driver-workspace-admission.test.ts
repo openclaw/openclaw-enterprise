@@ -458,6 +458,29 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
       // Let the real Compute enrollment write the Agent-owned Secret.
       const provision = (input = context) =>
         assert.rejects(fixture.prepare(undefined, input), (error) => error === capture.provisioned);
+      const checkStartupDiagnostics = admitted && hasSetup && loginMode === "codex_pat";
+      const assertDiagnostic = async (code: string) => {
+        await assert.rejects(fixture.prepare(undefined, context), (error: unknown) => {
+          assert.deepEqual(compute.describePrepareRevisionFailure(error), {
+            code,
+            stage: "sandbox_provision",
+            errorClass: "OpenShellSandboxConfigurationFailure",
+          });
+          return true;
+        });
+      };
+      if (checkStartupDiagnostics) {
+        // The gateway creates the requested Sandbox but replies with a different name.
+        const create = capture.gateway.createSandbox;
+        capture.gateway.createSandbox = async (request, signal) => ({
+          ...(await create(request, signal)),
+          name: "unexpected-sandbox",
+        });
+        await t.test("reports a mismatched Sandbox name", () =>
+          assertDiagnostic("OPENSHELL_SANDBOX_IDENTITY_MISMATCH"),
+        );
+        capture.gateway.createSandbox = create;
+      }
       await provision();
       const { name, spec } = capturedRequest(capture.request);
       const command = commandArguments(spec.command);
@@ -496,6 +519,39 @@ test("OpenShell composes immutable commands from admitted Compute revisions", as
         startup.includes("OCE_CODEX_CHATGPT_ACCOUNT"),
         loginMode === "chatgptAuthTokens",
       );
+
+      if (checkStartupDiagnostics) {
+        const stored = capture.gateway.sandboxes.get(name);
+        assert.ok(stored);
+        // An adopted Sandbox can still have the admitted spec while its service
+        // observation is missing. Distinguish that from refusal to adopt drifted content.
+        capture.gateway.sandboxes.set(name, { ...stored, serviceUrls: {} });
+        await t.test("reports a missing Harness service", () =>
+          assertDiagnostic("OPENSHELL_HARNESS_SERVICE_INVALID"),
+        );
+        capture.gateway.sandboxes.set(name, {
+          ...stored,
+          annotations: { ...stored.annotations, "openclaw.dev/revision-id": "different-revision" },
+        });
+        await t.test("reports drifted Sandbox ownership", () =>
+          assertDiagnostic("OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH"),
+        );
+
+        // Once the supervisor is ready, an initializer failure must report
+        // the fixed code without any remote output or workspace contents.
+        capture.gateway.sandboxes.set(name, { ...stored, phase: "SANDBOX_PHASE_READY" });
+        let initializationAttempted = false;
+        capture.gateway.execSandbox = async () => {
+          initializationAttempted = true;
+          throw new Error("private initializer output");
+        };
+        await t.test("reports an initializer failure without its output", async () => {
+          await assertDiagnostic("OPENSHELL_WORKSPACE_INITIALIZATION_FAILED");
+          assert.equal(initializationAttempted, true);
+        });
+        capture.gateway.sandboxes.set(name, stored);
+        await provision();
+      }
 
       if (!admitted && hasSetup) {
         // Completing setup keeps the legacy Sandbox adoptable, while even one

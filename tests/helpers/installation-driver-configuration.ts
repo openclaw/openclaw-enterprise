@@ -101,7 +101,8 @@ export function createCredentialProxyInstallationConfiguration() {
   const sandbox = {
     id: "openshell-sandbox",
     configuration: {
-      gateway: { workspaceMode: "operator" },
+      integrationMode: "legacy",
+      gateway: {},
       kubernetes: {
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {

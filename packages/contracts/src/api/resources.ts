@@ -17,6 +17,7 @@ import {
   CredentialSourceSecrets,
   CredentialSourceType,
   GatewayManagedModeSchema,
+  AgentNetworkProxySchema,
   HarnessExecutionModeSchema,
   RevisionHarnessSchema,
   ModelProviderId,
@@ -220,7 +221,12 @@ const RuntimeEvidenceTimestamp = Type.String({
 const PluginPolicyCapabilitiesSchema = Type.Object(
   {
     driver: Type.Ref("PluginDriverIdentity"),
-    policyScopeByPlugin: Type.Optional(Type.Record(Type.String(), Type.Literal("enablement_only"))),
+    policyScopeByPlugin: Type.Optional(
+      Type.Record(
+        Type.String(),
+        Type.Union([Type.Literal("enablement_only"), Type.Literal("tool_human_approval")]),
+      ),
+    ),
     approvers: Type.Optional(
       Type.Object(
         { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },
@@ -438,6 +444,7 @@ export const AgentSchema = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
     gatewayManagedMode: GatewayManagedModeSchema,
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     pluginDriver: Type.Optional(Type.Ref("PluginDriverIdentity")),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -459,6 +466,7 @@ const ConfigurationReadErrorSchema = Type.Object(
       Type.Literal("pluginApprovers"),
       Type.Literal("repositoryBindings"),
       Type.Literal("repositoryAccess"),
+      Type.Literal("networkProxy"),
       Type.Literal("harnessAuth"),
       Type.Literal("credentialSources"),
       Type.Literal("secretBindings"),
@@ -470,7 +478,7 @@ const ConfigurationReadErrorSchema = Type.Object(
 );
 
 const agentReadDescription =
-  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.";
+  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources.";
 
 export const AgentReadSchema = Type.Union(
   [
@@ -483,6 +491,7 @@ export const AgentReadSchema = Type.Union(
           "pluginApprovers",
           "repositoryBindings",
           "repositoryAccess",
+          "networkProxy",
           "harnessAuth",
           "credentialSources",
         ]).properties,
@@ -665,7 +674,7 @@ export const CredentialRefreshStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+      "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
   },
 );
 
@@ -683,7 +692,7 @@ export const CredentialSourceStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+      "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
   },
 );
 
@@ -1396,6 +1405,7 @@ export const AgentRevisionSchema = Type.Object(
       description:
         "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
     }),
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     harness: RevisionHarnessSchema,
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
@@ -1500,6 +1510,7 @@ export const AgentRevisionSummarySchema = Type.Object(
       "backendId",
       "configurationId",
       "configurationGeneration",
+      "networkProxy",
       "createdAt",
     ]).properties,
     harness: Type.Object(
@@ -1599,7 +1610,7 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "Saved cleanup status for this Agent revision, separate from its deployment result. `null` means no cleanup requirement was recorded. `succeeded` confirms that cleanup is complete.",
+          "Status of recorded runtime retirement and session disposal for retiring or nonserving Agent revisions. Session disposal reports its current queue state. `null` means there is no applicable work record. `succeeded` means the applicable records show completion at the time of the read.",
       },
     ),
     progress: Type.Union(

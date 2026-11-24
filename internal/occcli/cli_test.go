@@ -1352,7 +1352,7 @@ func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
 		{[]string{"agent", "update", "agt_00000000-0000-4000-8000-000000000001", "--file="}, "--file must name a JSON document"},
 		{[]string{"iam", "role", "create", "--file="}, "--file must name a JSON document"},
 		{[]string{"iam", "access-binding", "create", "--file="}, "--file must name a JSON document"},
-		{append(slices.Clone(serviceKeyCreate), "--out="), "--out must name a key file path"},
+		{append(slices.Clone(serviceKeyCreate), "--out="), "--out must name an output file path"},
 		{append(slices.Clone(serviceKeyCreate), "--service-principal="), "--service-principal must name a ServicePrincipal ID"},
 		// --facet is inherited from "agent policy"; update would otherwise read its file first.
 		{[]string{"agent", "policy", "update", "agt_00000000-0000-4000-8000-000000000001", "--file", outFile, "--facet="}, "--facet must name a sandbox policy facet such as networking"},

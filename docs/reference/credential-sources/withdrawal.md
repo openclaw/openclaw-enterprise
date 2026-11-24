@@ -10,7 +10,7 @@ keeps running. Send
 `POST /namespaces/:namespaceId/agents/:agentId/credential-sources/:credentialSourceId/withdraw`.
 The caller needs `agent:operate`, and the selected version must have been
 saved with that source, as its Harness authentication or in
-`credentialSources`. The request returns `202` with the withdrawal in state `pending`.
+`credentialSources`. A supported request returns `202` with the withdrawal in state `pending`. OCC records that denial before the Worker starts, so the Agent cannot use the Source for another admitted or routed operation.
 A saved version with the source that is not yet selected gets its own
 withdrawal, so it never attaches the source. A withdrawn Harness source fails
 that deployment with `CREDENTIAL_WITHDRAWN`; otherwise it becomes selected without the
@@ -20,10 +20,22 @@ replacing it gets its own withdrawal too. A replay returns the
 same withdrawal and makes the caller its `requestedBy`. It queues another
 attempt only if none is queued or running; a queued attempt runs at once.
 
-The worker detaches the source from the version's Sandbox and records
-`revoked` only after the gateway confirms that the version's placeholders no
-longer resolve, even in running processes. Requests already forwarded upstream
-are not undone. Read the state with
+For a staged TokenService Source, the Worker rechecks the requester's exact `agent:operate`
+authority. Compute asks the selected native Credential Proxy to remove the binding from the saved
+Sandbox target. The paired Sandbox Driver applies the reduced policy and verifies that the loaded
+and effective policies no longer permit the credential destination. Proxy detaches the Provider and checks its native receipt. The Worker
+records `revoked` after that receipt reaches `REVOKED`, or after Proxy independently confirms that the Sandbox is absent. An unconfirmed policy, receipt, or absence leaves
+the withdrawal `pending` with `DEPENDENCY_UNAVAILABLE` for retry. Proxy retains an OpenShell Provider
+still attached to another Agent and retires its owned Provider and profile after the last binding is
+removed. TokenService keeps the Source and its credential; other Agents using that Source retain their
+access.
+
+For other supported delivery paths, the Worker detaches the Source from the version's Sandbox. The
+Worker records `revoked` only after the selected delivery owner confirms revocation. While confirmation
+is pending, a running process may still use material already installed in its Sandbox. A request
+already sent upstream cannot be undone.
+
+Read the state with
 `GET /namespaces/:namespaceId/agents/:agentId/credential-sources/:credentialSourceId/withdrawal`,
 which requires `agent:read`. It returns `requestedBy`, the principal whose
 `agent:operate` the worker rechecks, `reason` with `lastAttemptAt` for the
@@ -58,7 +70,10 @@ gateway call), and Compute has no maintenance (the Kubernetes Compute Driver
 has none), the worker queues another series 30 seconds later, then after 1, 2
 and 4 minutes, then every 5 minutes, 15 series in all (about an hour).
 Meanwhile the read shows `pending`, the latest `reason`, and
-`withdrawalInProgress: true`, and the source still resolves in the Sandbox. The first series the gateway confirms
+`withdrawalInProgress: true`, and the source can still resolve in the Sandbox.
+The Sandbox may stop resolving it a few seconds before the gateway confirms.
+If a series ends in between, the read stays `pending` until the next series
+runs, although the source is no longer usable. The first series the gateway confirms
 records `revoked`, with no replay needed. A withdraw request sent while a
 series waits queues nothing more; the series runs at once, on the caller's
 authority.
@@ -82,6 +97,12 @@ maintenance never prepares the version again. It continues recovering pending
 tool withdrawals even when the model source is already `revoked`, and stops only when every withdrawal is `revoked`.
 Redeploy to resume Compute repair.
 
+A running Agent whose Harness source is withdrawn still reads `active`. After native revocation is confirmed, its model credential no longer resolves in the Sandbox. The Codex Harness treats this as a
+connection failure and keeps retrying, so a turn gets no answer and ends only
+when its caller disconnects. No error on the turn names the withdrawal: read
+the withdrawal state as described above, and deploy a new version to resume
+model execution.
+
 For externally managed Codex OAuth, restarting the same OpenShell Sandbox after
 withdrawal keeps the Harness process alive but unready, with
 `AUTHENTICATION_FAILED` at the `login` phase. It does not start Codex or use cached
@@ -93,9 +114,10 @@ each is authorized by its own `requestedBy`. A requester who lost
 `agent:operate` leaves only their withdrawal `pending` with
 `AUTHORIZATION_DENIED`; the others are still revoked.
 
-The version still references the source, so the source cannot be deleted until
-a redeploy replaces the version. Redeploy the Agent with a replacement source
+Withdrawal does not delete the Source. The version still references it, so the Source cannot be deleted until a redeploy replaces the version. Redeploy the Agent with a replacement source
 or another authentication method.
+
+Stock OpenShell addresses detach by Sandbox name. A replacement with the same name can race that operation; see [current OpenShell limits](../credential-sources.md#implementation-status). Withdrawal also cannot interrupt a send that already passed its final authorization check.
 
 ## Related
 

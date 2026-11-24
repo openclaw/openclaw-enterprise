@@ -414,12 +414,26 @@ export async function runProvisioningApiCase(
       "oidc:maintainer-02": ["operator.admin"],
     },
   };
-  const body = provisioningRequestBody({
+  const requestedBody = provisioningRequestBody({
     modelSecretRef: modelSecret.data.ref,
     slackBotSecretRef: slackBotSecret.data.ref,
     authMethod: "codex_pat",
     gatewayAuth,
   });
+  // This fixture proves provisioning and retained storage. Enabled channels
+  // require the separate real Envoy/runtime workflow, not a synthetic provider.
+  const body = {
+    ...requestedBody,
+    configuration: {
+      ...requestedBody.configuration,
+      values: {
+        ...requestedBody.configuration.values,
+        channels: {
+          slack: { ...requestedBody.configuration.values.channels.slack, enabled: false },
+        },
+      },
+    },
+  };
   assert.equal(
     JSON.stringify(body).includes(rotatedPat),
     false,
@@ -523,7 +537,7 @@ export async function runProvisioningApiCase(
   await handoffWorkerStop;
   await fixture.stopWorker();
   assert.equal(provisioned.status, "queued");
-  assert.ok(fixture.slackValidations.length > 0 && fixture.slackValidations.every(Boolean));
+  assert.equal(fixture.slackValidations.length, 0);
   assert.ok(provisioned.agentId);
   assert.ok(provisioned.configurationId);
   assert.ok(provisioned.revisionId);

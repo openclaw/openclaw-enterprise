@@ -15,7 +15,7 @@
   },
   "files": [
     {
-      "path": "tests/integration/production-network-access.test.mjs",
+      "path": "tests/integration/production-network-access.test.ts",
       "expectedTests": ["production Helm policies enforce workload network access levels"]
     }
   ]

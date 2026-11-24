@@ -36,7 +36,7 @@ export const staticAnalysisLimits = [
 
 const production = "apps/controller/src/composition/production.ts";
 const installation = "apps/controller/src/composition/egress-authority.ts";
-const controller = "packages/occ/src/index.ts";
+const controller = "packages/occ/src/controller.ts";
 const proxy = "packages/occ/src/credential-proxy.ts";
 const exchange = "packages/contracts/src/credential-proxy-exchange.ts";
 const listener = "apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
@@ -53,7 +53,7 @@ const coupling = (from: string, kind: CouplingEdge["kind"], to: string): Require
 const gitBinding = coupling(
   `${installed}#InstalledDriver.requireRepositoryGitTransport`,
   "binds",
-  `${driver}#CredentialProxyDriver.bindRepositoryGit`,
+  `${driver}#LegacyEgressProxyDriver.bindRepositoryGit`,
 );
 
 /** Explicit claims cover only these source relationships, never whole diagrams. */
@@ -155,7 +155,7 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
           coupling(
             `${installation}#installEgressAuthority`,
             "calls",
-            `${driver}#CredentialProxyDriver.bindExchange`,
+            `${driver}#LegacyEgressProxyDriver.bindExchange`,
           ),
           coupling(
             `${installation}#installEgressAuthority`,

@@ -28,12 +28,12 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { consoleFixtureClient } from "../helpers/console-fixture-client.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { assertWriteAuthorizationDenial } from "../helpers/partial-write-authorization.ts";
-import { createDenied } from "../helpers/refusal-text.mjs";
+import { createDenied } from "../helpers/refusal-access.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type Session = Awaited<ReturnType<ConsoleFixture["signIn"]>>;

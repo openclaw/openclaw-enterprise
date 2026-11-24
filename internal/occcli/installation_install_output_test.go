@@ -2,6 +2,8 @@ package occcli
 
 import (
 	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,28 +16,36 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Helm and kubectl are real subprocesses. The loopback Kubernetes API fixture
-// stores only Helm release Secrets; this does not establish cluster deployment.
+// stores Helm release Secrets and serves initialization Job evidence; this does
+// not establish cluster deployment.
 func TestInstallationInstallOutputFailure(t *testing.T) {
 	for _, tool := range []string{"helm", "kubectl"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skip("requires " + tool)
 		}
 	}
+	check := installationCheckContainer(installationCheckArg(t))
 	for _, phase := range []struct {
 		name            string
 		failNotice      bool
 		failResult      bool
 		failHelm        bool
+		completeJob     bool
+		pendingRelease  bool
 		templateFailure string
 	}{
 		{name: "healthy"},
+		{name: "healthy-completed-job", completeJob: true},
 		{name: "healthy-inherited-stderr"},
 		{name: "intent", failNotice: true},
 		{name: "result", failResult: true},
 		{name: "helm-failed", failHelm: true},
+		{name: "helm-failed-completed-job", failHelm: true, completeJob: true},
+		{name: "pending-release", pendingRelease: true},
 		{name: "stock-suffix-refusal", templateFailure: "stock"},
 		{name: "template-canary-refusal", templateFailure: "canary"},
 		{name: "template-overflow", templateFailure: "overflow"},
@@ -71,6 +81,9 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 			receipt := filepath.Join(root, "receipt")
 			var mu sync.Mutex
 			var releases []json.RawMessage
+			if phase.pendingRelease {
+				releases = []json.RawMessage{installationPendingRelease(t)}
+			}
 			creates, updates := 0, 0
 			releaseContentType := "application/json"
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +145,23 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 						if err := readInstallationRecord(receipt, "dispatch.json", &dispatch); err != nil || dispatch["outcome"] != "unknown" {
 							t.Errorf("original dispatch marker before Helm create: %v, err=%v", dispatch, err)
 						}
+						if phase.completeJob {
+							// Keep Helm running until the real kubectl observer captures
+							// the original UID, rather than racing Helm's empty-chart exit.
+							deadline := time.Now().Add(10 * time.Second)
+							for {
+								var job installationJobReceipt
+								if err := readInstallationRecord(receipt, "job.json", &job); err == nil {
+									break
+								}
+								if time.Now().After(deadline) || r.Context().Err() != nil {
+									t.Error("observer did not capture the original Job")
+									w.WriteHeader(http.StatusInternalServerError)
+									return
+								}
+								time.Sleep(10 * time.Millisecond)
+							}
+						}
 						// A failed response after storage makes the real Helm process
 						// exit nonzero while retaining evidence of the initial dispatch.
 						if phase.failHelm {
@@ -148,6 +178,19 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 					return
 				}
 				if r.URL.Path == "/apis/batch/v1/namespaces/operations/jobs/demo-initialization" && r.Method == "GET" {
+					if phase.completeJob {
+						var intent installationIntent
+						if err := readInstallationRecord(receipt, "intent.json", &intent); err != nil {
+							t.Error(err)
+							w.WriteHeader(http.StatusInternalServerError)
+							return
+						}
+						// Match the actual persisted attempt and the supported chart's
+						// install steps, labels, release, name and stable original UID.
+						job := fmt.Sprintf(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"original-job","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade","openclaw.dev/installation-attempt":%q}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.ts","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs","--require-fresh"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`, intent.Attempt)
+						fmt.Fprint(w, strings.Replace(job, `"initContainers":[`, `"initContainers":[`+check+`,`, 1))
+						return
+					}
 					w.WriteHeader(http.StatusNotFound)
 					fmt.Fprint(w, `{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"NotFound","details":{"name":"demo-initialization","group":"batch","kind":"jobs"},"code":404}`)
 					return
@@ -158,50 +201,59 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 			defer server.Close()
 			config := installationDoctorKubeconfig(t, server.URL)
 			chart := filepath.Join(root, "chart")
-			if err := os.Mkdir(chart, 0700); err != nil {
-				t.Fatal(err)
-			}
-			// An empty Helm chart isolates receipt/output handling from chart resources.
-			// The production command still runs its real snapshot, list, install and read.
-			if err := os.WriteFile(filepath.Join(chart, "Chart.yaml"), []byte("apiVersion: v2\nname: output-proof\nversion: 0.1.0\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			values := filepath.Join(root, "values.yaml")
-			if err := os.WriteFile(values, []byte("{}\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
 			const canary = "private-template-canary-7b1d"
+			valuesData := []byte("{}\n")
+			var refusal string
 			if phase.templateFailure == "stock" {
-				// Keep the stock chart intact; change only the Console host so the
-				// chart itself rejects the shared browser-session suffix.
-				chart = "../../deploy/helm/openclaw-enterprise"
-				original, err := os.ReadFile("../../deploy/examples/production/values.yaml")
+				if err := os.CopyFS(chart, os.DirFS("../../deploy/helm/openclaw-enterprise")); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				valuesData, err = os.ReadFile("../../deploy/examples/production/values.yaml")
 				if err != nil {
 					t.Fatal(err)
 				}
-				rejected := strings.ReplaceAll(string(original), "https://console.oce.example.internal", "https://"+canary+".unrelated.invalid")
-				if rejected == string(original) {
-					t.Fatal("stock fixture host was not replaced")
-				}
-				if err := os.WriteFile(values, []byte(rejected), 0600); err != nil {
+				// Invoke the stock suffix validation with a different Console host
+				// in an isolated copy of the template values.
+				refusal = fmt.Sprintf(`
+{{- $context := merge (dict "Values" (deepCopy .Values)) . -}}
+{{- $_ := set $context.Values.auth "baseUrl" %q -}}
+{{- include "openclaw.validate" $context -}}`, "https://"+canary+".unrelated.invalid")
+			} else {
+				if err := os.Mkdir(chart, 0700); err != nil {
 					t.Fatal(err)
 				}
-			} else if phase.templateFailure != "" {
-				if err := os.Mkdir(filepath.Join(chart, "templates"), 0700); err != nil {
+				// The empty chart isolates receipt and output handling from chart resources.
+				if err := os.WriteFile(filepath.Join(chart, "Chart.yaml"), []byte("apiVersion: v2\nname: output-proof\nversion: 0.1.0\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				template := `{{ fail .Values.privateDiagnostic }}`
-				if phase.templateFailure == "overflow" {
+				switch phase.templateFailure {
+				case "canary":
+					refusal = `{{ fail .Values.privateDiagnostic }}`
+				case "overflow":
 					// Excess diagnostics must be drained without changing Helm's failure
 					// or treating a partial message as evidence for guidance.
-					template = `{{ fail (repeat 200000 .Values.privateDiagnostic) }}`
+					refusal = `{{ fail (repeat 200000 .Values.privateDiagnostic) }}`
 				}
-				if err := os.WriteFile(filepath.Join(chart, "templates", "refusal.yaml"), []byte(template), 0600); err != nil {
+				if refusal != "" {
+					valuesData = []byte("privateDiagnostic: " + canary + "\n")
+				}
+			}
+			if refusal != "" {
+				templates := filepath.Join(chart, "templates")
+				if err := os.MkdirAll(templates, 0700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(values, []byte("privateDiagnostic: "+canary+"\n"), 0600); err != nil {
+				// Only live discovery from the fixture supplies the Job kind. Offline
+				// preflight passes, then the real install encounters the refusal.
+				template := `{{- if .Capabilities.APIVersions.Has "batch/v1/Job" -}}` + refusal + `{{- end -}}`
+				if err := os.WriteFile(filepath.Join(templates, "refusal.yaml"), []byte(template), 0600); err != nil {
 					t.Fatal(err)
 				}
+			}
+			values := filepath.Join(root, "values.yaml")
+			if err := os.WriteFile(values, valuesData, 0600); err != nil {
+				t.Fatal(err)
 			}
 			var outputAttempt, stderr bytes.Buffer
 			var output io.Writer = &outputAttempt
@@ -218,6 +270,20 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 			cmd := New(output, &stderr)
 			cmd.SetArgs([]string{"installation", "install", "--bootstrap-credentials", "existing", "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo", "--chart", chart, "--values", values, "--receipt", receipt})
 			err := cmd.ExecuteContext(t.Context())
+			if phase.pendingRelease {
+				if err == nil || !strings.Contains(err.Error(), "Helm release is not confirmed unused") {
+					t.Errorf("pending release: got %v, want unused-release refusal", err)
+				}
+				if _, err := os.Stat(receipt); !os.IsNotExist(err) {
+					t.Errorf("pending release left a fresh receipt: %v", err)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if creates != 0 || updates != 0 {
+					t.Error("pending release check changed Helm storage")
+				}
+				return
+			}
 			wantOutcome := "succeeded"
 			switch {
 			case phase.failHelm || phase.templateFailure != "":
@@ -267,8 +333,23 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 					t.Errorf("missing reported Helm outcome %q in %q", wantOutcome, outputAttempt.String())
 				}
 			}
+			const nextStep = "After verifying the API and worker rollouts, follow “Authenticate to the production API” in docs/guides/deploy/production-installation.md to sign in and prepare your first Namespace."
+			wantNextStep := phase.completeJob && !phase.failHelm
+			if got := strings.Contains(outputAttempt.String(), nextStep); got != wantNextStep {
+				t.Errorf("next-step guidance on stdout=%v, want %v: %q", got, wantNextStep, outputAttempt.String())
+			}
+			if strings.Contains(stderr.String(), nextStep) || (err != nil && strings.Contains(err.Error(), nextStep)) {
+				t.Error("next-step guidance escaped to stderr or the returned error")
+			}
+			if phase.completeJob {
+				for _, evidence := range []string{"Initialization Job (install hook): complete", `UID "original-job" matches the recorded UID`, "Use installation doctor or plan with --receipt"} {
+					if !strings.Contains(outputAttempt.String(), evidence) {
+						t.Errorf("missing original Job diagnostic %q in stdout", evidence)
+					}
+				}
+			}
 			text := outputAttempt.String() + stderr.String()
-			if strings.Contains(text, canary) {
+			if strings.Contains(text, canary) || (err != nil && strings.Contains(err.Error(), canary)) {
 				t.Fatal("private template value escaped to output")
 			}
 			if phase.templateFailure == "" || phase.templateFailure == "overflow" {
@@ -335,4 +416,25 @@ func TestInstallationInstallOutputFailure(t *testing.T) {
 
 		})
 	}
+}
+
+// Seed the fixture with Helm's Secret storage format. The real Helm process
+// must decode the release, include pending installs, and stop the CLI before dispatch.
+func installationPendingRelease(t *testing.T) json.RawMessage {
+	t.Helper()
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := io.WriteString(writer, `{"name":"demo","namespace":"operations","version":1,"info":{"status":"pending-install"},"chart":{"metadata":{"name":"output-proof","version":"0.1.0"}}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	release := base64.StdEncoding.EncodeToString(compressed.Bytes())
+	return json.RawMessage(fmt.Sprintf(`{
+		"apiVersion":"v1","kind":"Secret","type":"helm.sh/release.v1",
+		"metadata":{"name":"sh.helm.release.v1.demo.v1","namespace":"operations",
+			"labels":{"owner":"helm","name":"demo","version":"1","status":"pending-install"}},
+		"data":{"release":%q}
+	}`, base64.StdEncoding.EncodeToString([]byte(release))))
 }

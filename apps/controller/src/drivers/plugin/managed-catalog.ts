@@ -48,7 +48,7 @@ function loadManagedInstall(packageName: string) {
       ? /^occ-plugin:([a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/u.exec(extension.id)?.[1]
       : undefined;
   if (
-    policyScope !== "enablement_only" ||
+    (policyScope !== "enablement_only" && policyScope !== "tool_human_approval") ||
     extension?.release !== "./ai.openclaw.oce/release.json" ||
     !runtimeName ||
     !isNonEmptyString(extension.displayName) ||
@@ -116,6 +116,7 @@ function loadManagedCliInstall(install: ReturnType<typeof loadManagedInstall>) {
   const credentials = release?.credentials;
   const gatewayCapabilities = asRecord(release?.capabilities)?.gateway;
   if (
+    install.policyScope !== "enablement_only" ||
     !Check(
       Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]*$" }), credentialSlot, {
         minProperties: 1,
@@ -194,6 +195,7 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
   const slots = release?.credentials;
   const capabilities = asRecord(release?.capabilities);
   if (
+    install.policyScope !== "tool_human_approval" ||
     !Check(mcpSlots, slots) ||
     !Array.isArray(capabilities?.harness) ||
     !capabilities.harness.includes("mcp") ||
@@ -385,7 +387,23 @@ export function managedMcpCredentialBinding(
       `Select distinct literal ${install.entry.name} tool names whose OpenClaw aliases fit within 64 characters.`,
     );
   }
-  return { install, sourceId, toolNames: selected as string[] };
+  const selectedNames = selected as string[];
+  const approvalToolNames: string[] = [];
+  for (const [name, tool] of Object.entries(selection.tools ?? {})) {
+    if (
+      !selectedNames.includes(name) ||
+      Object.keys(tool).length !== 1 ||
+      (tool.approval !== "none" && tool.approval !== "all_actions")
+    ) {
+      throw new ConfigurationHarnessError(
+        `Select an enabled ${install.entry.name} tool and choose no approval or human approval for each override.`,
+      );
+    }
+    if (tool.approval === "all_actions") {
+      approvalToolNames.push(name);
+    }
+  }
+  return { install, sourceId, toolNames: selectedNames, approvalToolNames };
 }
 
 export function managedMcpCredentialBindings(

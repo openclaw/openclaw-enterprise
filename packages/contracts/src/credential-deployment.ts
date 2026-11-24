@@ -1,6 +1,5 @@
 import type { RepositoryGitDeliveryProfile } from "./drivers/credential-proxy/index.ts";
 import type { CredentialSourceReference } from "./index.ts";
-import type { RegisteredTokenServiceSource } from "./drivers/token-service/index.ts";
 import type { SandboxNetworkGrant } from "./sandbox-policy.ts";
 
 export type DeploymentRequestPolicy =
@@ -68,35 +67,36 @@ export interface BearerCredentialProjection {
   readonly presentation: "bearer";
 }
 
-export type DeploymentCredentialBinding =
-  RegisteredTokenServiceSource<CredentialSourceReference> & {
-    readonly bindingRef: string;
-  } & (
-      | {
-          readonly consumer: {
-            readonly kind: "plugin";
-            readonly pluginId: string;
-            readonly requirement: string;
-            readonly connection: string;
-          };
-          readonly projection: BearerCredentialProjection;
-        }
-      | {
-          readonly consumer: { readonly kind: "model"; readonly providerId: string };
-          /** The admitted model profile selects the header. The proxy must support that exact placement. */
-          readonly projection: {
-            readonly environment: string;
-            readonly presentation: "bearer" | "x-api-key";
-          };
-        }
-      | {
-          readonly consumer: { readonly kind: "repository"; readonly repositoryId: string };
-          readonly projection: {
-            readonly environment: string;
-            readonly presentation: RepositoryGitDeliveryProfile;
-          };
-        }
-    );
+/** The proxy selects and records delivery for each binding inside its own implementation. */
+export type DeploymentCredentialBinding = {
+  readonly sourceRef: CredentialSourceReference;
+  readonly bindingRef: string;
+} & (
+  | {
+      readonly consumer: {
+        readonly kind: "plugin";
+        readonly pluginId: string;
+        readonly requirement: string;
+        readonly connection: string;
+      };
+      readonly projection: BearerCredentialProjection;
+    }
+  | {
+      readonly consumer: { readonly kind: "model"; readonly providerId: string };
+      /** The admitted model profile selects the header. The proxy must support that exact placement. */
+      readonly projection: {
+        readonly environment: string;
+        readonly presentation: "bearer" | "x-api-key";
+      };
+    }
+  | {
+      readonly consumer: { readonly kind: "repository"; readonly repositoryId: string };
+      readonly projection: {
+        readonly environment: string;
+        readonly presentation: RepositoryGitDeliveryProfile;
+      };
+    }
+);
 
 /** Nonsecret issuance information. The Sandbox/runtime installs the placeholder on a fresh launch. */
 export interface CredentialProjection {

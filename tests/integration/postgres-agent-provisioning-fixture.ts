@@ -23,6 +23,7 @@ import {
   createControllerWorker,
   type ControllerWorkerOptions,
 } from "../../apps/controller/src/worker.ts";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
@@ -234,6 +235,9 @@ function installationDrivers({
     computeDriver,
     configurationDriver,
     secretDriver,
+    // This PostgreSQL workflow supplies an explicit Driver with mocked Slack
+    // transport. It does not prove Envoy availability or network enforcement.
+    channelDrivers: [{ provider: "slack", driver: new SlackChannelDriver(globalThis.fetch) }],
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
     ...(repoDriver === undefined

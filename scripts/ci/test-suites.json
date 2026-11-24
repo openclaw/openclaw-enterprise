@@ -27,7 +27,11 @@
     "production-tui": "./test-suites/production-tui.json",
     "slack": "./test-suites/slack.json",
     "openshell": "./test-suites/openshell.json",
+    "openshell-saved-agent": "./test-suites/openshell-saved-agent.json",
+    "openshell-provider-replacement": "./test-suites/openshell-provider-replacement.json",
     "openshell-linear": "./test-suites/openshell-linear.json",
+    "provider-cutover": "./test-suites/provider-cutover.json",
+    "strands-listener-replacement": "./test-suites/strands-listener-replacement.json",
     "openshell-oauth": "./test-suites/openshell-oauth.json",
     "helper-timeout": "./test-suites/helper-timeout.json",
     "logging-collector": "./test-suites/logging-collector.json",
@@ -44,7 +48,8 @@
     "keycloak-oidc": "./test-suites/keycloak-oidc.json",
     "egress-connected": "./test-suites/egress-connected.json",
     "skipper-prepared-git-installed": "./test-suites/skipper-prepared-git-installed.json",
-    "egress-custody-installed": "./test-suites/egress-custody-installed.json"
+    "egress-custody-installed": "./test-suites/egress-custody-installed.json",
+    "channel-egress-upgrade": "./test-suites/channel-egress-upgrade.json"
   },
   "groups": {
     "ci": [

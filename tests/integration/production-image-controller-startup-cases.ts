@@ -11,9 +11,15 @@ import { jsonEvent } from "../helpers/json-lines.ts";
 const execute = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 
+export const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
+export const imageTestOptions: TestOptions =
+  image === undefined
+    ? {
+        skip: "Set OCC_TEST_PRODUCTION_IMAGE to a locally built production controller image tag.",
+      }
+    : {};
+
 type ControllerStartupCases = {
-  image: string | undefined;
-  imageTestOptions: TestOptions;
   productionFixture: (context: TestContext) => Promise<string>;
 };
 
@@ -97,8 +103,6 @@ function serverStartupArguments(fixture: string, image: string): string[] {
 }
 
 export function registerProductionImageControllerStartupCases({
-  image,
-  imageTestOptions,
   productionFixture,
 }: ControllerStartupCases): void {
   test(

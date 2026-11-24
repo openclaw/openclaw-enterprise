@@ -251,7 +251,10 @@ try {
     // Native prepared Git: a deployment waits for its version's first GitHub token (finding 2415).
     ...(preparedRepositoryGit?.revisionMaterial === undefined
       ? {}
-      : { repositoryGitMaterial: preparedRepositoryGit.revisionMaterial }),
+      : {
+          repositoryGitMaterial: preparedRepositoryGit.revisionMaterial,
+          observeNativeRepositoryWithdrawal: preparedRepositoryGit.observeNativeWithdrawal,
+        }),
     ...(readinessPath === undefined
       ? {}
       : {

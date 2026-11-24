@@ -1,3 +1,8 @@
+---
+tags: [human_verified]
+last_verified: "2026-11-18"
+---
+
 # Deploy and operate OpenClaw Enterprise
 
 <a id="operate-openclaw-enterprise"></a>
@@ -8,6 +13,9 @@ Namespaces, networking, and runtime credentials. If you want to try the platform
 on your own machine, start with [Local Setup](../quickstart.md).
 
 ## Install the platform
+
+Start with [Control plane setup](../deploy/control-plane-setup.md) to choose
+Kubernetes or platform-specific preparation.
 
 For EKS, follow the [complete quickstart](../deploy/eks-openshell-setup.md) from
 AWS prerequisites through browser access and Agent onboarding.

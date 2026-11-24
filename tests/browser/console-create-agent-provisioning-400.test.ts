@@ -37,7 +37,7 @@ import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";

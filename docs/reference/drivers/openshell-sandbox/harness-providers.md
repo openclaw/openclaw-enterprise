@@ -131,3 +131,16 @@ process with an exit code and a positive restart count, the Driver returns
 `restart_count` to `exitCode` and `restarts`. On first startup the Driver
 returns plain `starting`. OCC diagnostics mark a restarting Harness as a failed
 `sandbox` check while the gateway attempts the restart.
+
+## Sandbox startup refusals
+
+Check `worker.compute-prepare-failed` for the `sandbox_provision` step and one
+of these codes:
+
+- `OPENSHELL_SANDBOX_IDENTITY_MISMATCH`: The gateway returned a different Sandbox name on creation.
+- `OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH`: The existing Sandbox differs from the expected Workspace, ownership metadata, or specification.
+- `OPENSHELL_HARNESS_SERVICE_INVALID`: The Harness service is missing, unexpected, or has an invalid origin, target port, or authorization mode.
+- `OPENSHELL_WORKSPACE_INITIALIZATION_FAILED`: The worker could not verify or initialize the workspace files.
+
+The event omits the exception message and provider response. Match `workId` or
+`revisionId` with `worker.completed` for the attempt outcome.

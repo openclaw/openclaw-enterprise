@@ -437,10 +437,16 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       const policy = selections[pkg.id]!;
       if (
         typeof policy.enabled !== "boolean" ||
-        Object.keys(policy).some((key) => key !== "enabled" && key !== "driverPolicy")
+        Object.keys(policy).some(
+          (key) =>
+            key !== "enabled" && key !== "driverPolicy" && !(pkg.kind === "mcp" && key === "tools"),
+        ) ||
+        (pkg.kind === "mcp" && policy.tools !== undefined && policy.driverPolicy === undefined)
       ) {
         throw new ConfigurationHarnessError(
-          `The ${pkg.entry.name} package supports enablement and an optional credential slot.`,
+          pkg.kind === "mcp"
+            ? `The ${pkg.entry.name} package supports enablement, a credential slot, and per-tool human approval.`
+            : `The ${pkg.entry.name} package supports enablement and an optional credential slot.`,
         );
       }
     }

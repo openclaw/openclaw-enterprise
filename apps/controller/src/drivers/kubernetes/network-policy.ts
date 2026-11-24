@@ -1,6 +1,28 @@
 import { V1NetworkPolicyIngressRule, type V1NetworkPolicySpec } from "@kubernetes/client-node";
 import { asRecord } from "@openclaw-enterprise/utils";
 
+/** DNS traffic reaches the selected resolver pods after service address translation. */
+export function resolverEgress(peer: {
+  readonly namespace: string;
+  readonly podLabels: Readonly<Record<string, string>>;
+}) {
+  return {
+    to: [
+      {
+        namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": peer.namespace } },
+        podSelector: { matchLabels: { ...peer.podLabels } },
+      },
+    ],
+    ports: [
+      { protocol: "UDP", port: 53 },
+      { protocol: "TCP", port: 53 },
+      // OpenShift forwards DNS to backend port 5353.
+      { protocol: "UDP", port: 5353 },
+      { protocol: "TCP", port: 5353 },
+    ],
+  };
+}
+
 /** Restore SDK aliases and Kubernetes empty-rule serialization for spec comparison. */
 export function networkPolicySpecToJson(spec: V1NetworkPolicySpec | undefined): unknown {
   const ingress = spec?.ingress;

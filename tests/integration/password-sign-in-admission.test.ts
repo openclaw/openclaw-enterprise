@@ -251,7 +251,11 @@ test("slow attempts beyond the global occupancy are refused, an administrator's 
   await turn();
   assert.equal(floors.length, 1);
   let answer: Awaited<ReturnType<typeof status>>;
-  const refused = status(limiter, { email: "b@example.test" }, right).then((code) => {
+  let checks = 0;
+  const refused = status(limiter, { email: "b@example.test" }, () => {
+    checks += 1;
+    return right();
+  }).then((code) => {
     answer = code;
   });
   await turn();
@@ -263,6 +267,7 @@ test("slow attempts beyond the global occupancy are refused, an administrator's 
   secondFloor();
   await refused;
   assert.equal(answer, 429);
+  assert.equal(checks, 0);
   const firstFloor = floors[0];
   assert.ok(firstFloor);
   firstFloor();

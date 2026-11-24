@@ -9,7 +9,7 @@ import {
 import { createOpenShellCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-registration.ts";
 import type { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import {
   OpenShellSandboxDriver,
@@ -29,6 +29,7 @@ import { join } from "node:path";
 import test, { afterEach, type TestContext } from "node:test";
 import type {
   AgentRevision,
+  CredentialProxyDriver,
   EgressInstallation,
   Namespace,
   ProtectedRepositoryGitAuthority,
@@ -37,6 +38,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import {
   InstalledDriver,
+  DriverSelectionError,
   OpenClawController,
   type PostgresPool,
 } from "../../packages/occ/src/index.ts";
@@ -45,6 +47,7 @@ import {
   type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
+import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
@@ -54,6 +57,40 @@ import { listen } from "../helpers/listen.ts";
 
 // Every field the OpenShell Git runtime emits reaches the worker log (finding 2244).
 afterEach(() => assert.deepEqual(takeUnloggedRuntimeFields(), []));
+
+test("incomplete credential delivery Driver registration is refused before selection", () => {
+  // An installed package can return a malformed capability despite the static contract.
+  const incomplete = {
+    id: "delivery",
+    implementation: "openshell",
+    capability: "credential_proxy_delivery",
+    async deployProxy() {
+      return {};
+    },
+    async configureDeployment() {
+      return { credentialProjections: [] };
+    },
+    async removeDeployment() {},
+  } as unknown as CredentialProxyDriver;
+  assert.throws(
+    () =>
+      new InstalledDriver(
+        { id: incomplete.id, implementation: incomplete.implementation, configuration: {} },
+        { capabilities: { credential_proxy_delivery: incomplete } },
+      ),
+    /exact selected capability contracts/,
+  );
+  const controller = new OpenClawController({
+    id: "installation",
+    name: "installation",
+    createdAt: "2026-10-01T00:00:00Z",
+  });
+  assert.throws(() => controller.registerDriver(incomplete), /exact capability contract/);
+  assert.throws(
+    () => controller.selectDriver("credential_proxy_delivery", incomplete.id),
+    /No registered Driver matches/,
+  );
+});
 
 test("one installed Driver owns both protected capabilities, lifecycle and verified release", async (t) => {
   const id = "release-fixture";
@@ -99,7 +136,25 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
     name: "installation",
     createdAt: "2026-10-01T00:00:00Z",
   });
-  controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+  // Advertising delivery must not select it for a protected-only installation without TokenService.
+  assert.ok(owner.capabilities.includes("credential_proxy_delivery"));
+  assert.equal(api.credentialDeliveryRegistration, undefined);
+  const legacyOnly = new InstalledDriver(
+    {
+      id,
+      implementation: owner.ref.implementation,
+      configuration: configuration.drivers.sandbox.configuration,
+    },
+    {
+      capabilities: {
+        sandbox: owner.require("sandbox"),
+        credential_proxy: owner.require("credential_proxy"),
+      },
+    },
+  );
+  assert.deepEqual(owner.ref, legacyOnly.ref);
+  installSelectedSandboxDrivers(controller, api);
+  assert.throws(() => controller.selectedDriver("credential_proxy_delivery"), DriverSelectionError);
   const sandbox = controller.selectedDriver("sandbox");
   const proxy = controller.selectedDriver("credential_proxy");
   assert.equal(sandbox, api.sandboxDriver);
@@ -301,6 +356,36 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
   assert.equal(calls.close, 1);
   await Promise.all([worker.protectedDriver!.close(), worker.protectedDriver!.close()]);
   assert.equal(calls.close, 2);
+
+  // Selecting OCC TokenService enables the advertised delivery role on the same protected owner,
+  // while the protected registration identity remains stable for existing revision admissions.
+  Object.assign(configuration.drivers, { token_service: { id: "occ", configuration: {} } });
+  await writeFile(path, JSON.stringify(configuration));
+  const withTokenService = (await load())!;
+  const deliveryOwner = withTokenService.credentialDeliveryRegistration!;
+  assert.equal(deliveryOwner, withTokenService.protectedDriver);
+  assert.deepEqual(deliveryOwner.ref, owner.ref);
+  const mixed = new OpenClawController(controller.installation);
+  installSelectedSandboxDrivers(mixed, withTokenService);
+  assert.equal(mixed.selectedDriver("sandbox"), deliveryOwner.require("sandbox"));
+  assert.equal(mixed.selectedDriver("credential_proxy"), deliveryOwner.require("credential_proxy"));
+  assert.equal(
+    mixed.selectedDriver("credential_proxy_delivery"),
+    deliveryOwner.require("credential_proxy_delivery"),
+  );
+  await mixed.validateBackendConfiguration();
+
+  // A different registered delivery owner cannot replace the Sandbox owner's selected role.
+  const foreignDelivery = { ...deliveryOwner.require("credential_proxy_delivery"), id: "foreign" };
+  const foreignOwner = new InstalledDriver(
+    { id: foreignDelivery.id, implementation: foreignDelivery.implementation, configuration: {} },
+    { capabilities: { credential_proxy_delivery: foreignDelivery } },
+  );
+  mixed.registerDriver(foreignOwner);
+  mixed.selectDriver("credential_proxy_delivery", foreignDelivery.id);
+  await assert.rejects(mixed.validateBackendConfiguration(), /same registered Driver/);
+  await deliveryOwner.close();
+  Reflect.deleteProperty(configuration.drivers, "token_service");
 
   configuration.drivers.credential_proxy.id = "other-owner";
   await writeFile(path, JSON.stringify(configuration));
@@ -537,7 +622,8 @@ test("protected Git resolves repository and installation grants without granting
 test("OpenShell registration pairs its capabilities using only a Repo delivery resolver", async (t) => {
   const { registry, revision: seed, binding } = repositoryDeliveryFixture();
   const configuration: OpenShellSandboxDriverOptions = {
-    gateway: { workspaceMode: "operator" },
+    integrationMode: "legacy",
+    gateway: {},
     kubernetes: {
       userNamespaces: false,
       serviceAccount: { mode: "gatewayConfigured" },
@@ -807,7 +893,7 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
             },
           });
           t.after(() => bundled.close());
-          assert.ok(bundled.proxy instanceof OpenShellCredentialProxyDriver);
+          assert.ok(bundled.proxy instanceof OpenShellLegacyEgressProxyDriver);
           const owner = new InstalledDriver(input.sandbox, {
             capabilities: { sandbox: bundled.sandbox, credential_proxy: bundled.proxy },
           });

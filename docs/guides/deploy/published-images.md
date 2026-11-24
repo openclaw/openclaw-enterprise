@@ -97,9 +97,7 @@ printf '%s\n' "${OCE_IMAGE_REVISION:?Select the published images first}"
 ```
 
 If they differ, you can reuse an existing checkout that is clean and available
-for this installation. Before switching, keep the guide open on GitHub at the
-exact PR commit so its relative links continue to open the same version of the
-documentation. From the checkout you intend to reuse, run:
+for this installation. From the checkout you intend to reuse, run:
 
 ```bash
 changes=$(git status --porcelain=v1 --untracked-files=all) &&
@@ -132,7 +130,9 @@ test "$(git rev-parse HEAD)" = "${OCE_IMAGE_REVISION:?}"
 
 Continue in this shell so the image selections remain exported. Use the chart,
 CLI, configuration renderer, and installation instructions from this matching
-checkout. If you need a feature introduced after the published commit,
+checkout. If you read the installation instructions on GitHub, open them at the
+verified full image source commit in `OCE_IMAGE_REVISION`.
+If you need a feature introduced after the published commit,
 [build images from that newer checkout](production-installation.md#build-and-publish-production-images)
 instead of combining its configuration with images from a different revision.
 
@@ -210,9 +210,10 @@ cluster. Complete [Agent model verification](../operate/model-verification.md).
 Keep the resolved image references with your deployment record so a later move
 of the selected alias does not change which images were selected for this installation.
 
-For an OpenShell deployment that uses optional native tools, the sandbox
-filesystem policy must let the Agent read and execute files under
-`/opt/devtools`. Verify each required tool through the deployed Agent with
-the exact image digest and policy. Exercise a real allowed download and a
-connection the policy must deny. Follow the
+OpenShell's default Enterprise sandbox policy lets the Agent read and execute
+packaged native tools under `/opt/devtools`. If you set an explicit filesystem
+policy, follow the [OpenShell Driver configuration](../../reference/drivers/openshell-sandbox.md#configuration).
+Verify each required tool through the deployed Agent with the exact image
+digest and policy. Exercise a real allowed download and a connection the
+policy must deny. Follow the
 [OpenShell verification procedures](../../testing/openshell.md#openshell-sandbox).

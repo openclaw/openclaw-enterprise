@@ -10,7 +10,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.ts";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 
 export type TestInput = Record<string, unknown>;
 export type VerdictCase<Value> = readonly [value: Value, accepted: boolean, chartError?: RegExp];

@@ -1,6 +1,7 @@
 // OpenClaw's state lock commands as the Kubernetes runtime wrappers run them, and what the
 // pinned OpenClaw prints for them. The Gateway's lock cases and the Harness's state migration
 // cases share these.
+import { openClawConfigValidationRefusal } from "./openclaw-config-validation.ts";
 
 // What `gateway recover-lock --json` prints without --confirm, as a production-shaped test
 // install printed it inside a Gateway Pod after the Gateway Pod before it was force-deleted
@@ -48,6 +49,27 @@ export const expectedInspection = {
 export const released = { status: 0, stdout: JSON.stringify({ recovered: true, removed: 1 }) };
 // What it does when one record is not attributable to this namespace: it recovers nothing.
 export const keptLocks = { status: 1, stdout: "" };
+
+// Captured from a dedicated Gateway container started again after its native Gateway was
+// killed (SIGKILL): the new PID namespace cannot verify the recorded holder, so the tool policy
+// step's `config validate --json` reports OpenClaw's refusal to read the configuration.
+export const gatewayLockNamespaceRefusal =
+  "cannot verify Gateway ownership from this process; heartbeat age" +
+  " does not prove that the holder stopped. holder 608 at 54b9b0fe1247/pid-ns 4026536051, last" +
+  " renewed 14 s ago. Run this command inside the Gateway container or with a shared PID" +
+  " namespace; if the holder has stopped, run `openclaw gateway recover-lock` to inspect and" +
+  " explicitly recover the unchanged owner.";
+export const validateLockRefusal = openClawConfigValidationRefusal(
+  [
+    {
+      path: "<root>",
+      message:
+        "read failed at /home/node/.openclaw/openclaw.json: GatewayLockNamespaceError: " +
+        gatewayLockNamespaceRefusal,
+    },
+  ],
+  "Resolve the read error shown above, then retry.",
+);
 
 // The line a held start logs before OpenClaw's holders. The Gateway's is the one the tool
 // policy step logs when `config validate` meets the lock first; an embedded Gateway reaches

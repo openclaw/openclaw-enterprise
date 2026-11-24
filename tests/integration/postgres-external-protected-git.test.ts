@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { createServer, get, request, type ServerOptions } from "node:https";
+import type { IncomingMessage } from "node:http";
 import { json } from "node:stream/consumers";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -12,6 +13,7 @@ import type {
   ComputeRevisionContext,
   ComputeDriver,
   RepositoryGitDeliveryProfile,
+  RepositoryGitMaterialVersion,
   RepositoryGitSendPermit,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -38,7 +40,7 @@ import {
 import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
-import { injectJson } from "../helpers/inject-json.mjs";
+import { injectJson } from "../helpers/inject-json.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
@@ -548,6 +550,7 @@ function externalGitJourney(
     let releaseReduction: (() => void) | undefined;
     let releaseTokenRetirement: (() => void) | undefined;
     let releaseStoppedBind: (() => void) | undefined;
+    let releaseHiddenObservation: (() => void) | undefined;
     let pauseStoppedBind = false;
     let stoppedBindEntered = false;
     const workerOutcomes: object[] = [];
@@ -621,6 +624,7 @@ function externalGitJourney(
       releaseTokenRetirement?.();
       releaseReduction?.();
       releaseStoppedBind?.();
+      releaseHiddenObservation?.();
       try {
         await stopWorker();
       } finally {
@@ -640,6 +644,7 @@ function externalGitJourney(
     await f.controller.handleNamespaceLifecycle(f.actor.id, createdNamespace.id, "ready");
     const namespace = { ...createdNamespace, status: "ready" as const };
     const { id: namespaceId } = namespace;
+    const coldFetch = scope === "repository" && !artifactAdmissionOnly;
     const authenticatedJourney = scope === "built-in-installation";
     // Repository write access with one draft pull request, authorized per request.
     const writes = scope === "git-write";
@@ -707,7 +712,8 @@ function externalGitJourney(
     const path = join(directory, "installation.json");
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const { certFile } = tls;
-    const peerOrigin = await listen(t, cedar.createCounterpart(tls));
+    const counterpart = cedar.createCounterpart(tls);
+    const peerOrigin = await listen(t, counterpart);
     const { capability, server } = createCapabilityPeer(
       tls,
       broad ? "github_installation" : "repository_git",
@@ -835,7 +841,16 @@ function externalGitJourney(
         ...repositoryGitAuthority(drivers),
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
-    prepared = await startOwner();
+    // Observe the installed Token Service's loop so the cold fetch can run before it starts.
+    const maintenanceAttachment = coldFetch
+      ? t.mock.method(repositoryGitAuthority(drivers).tokenService, "ownFamilies")
+      : undefined;
+    try {
+      prepared = await startOwner(!coldFetch);
+    } finally {
+      maintenanceAttachment?.mock.restore();
+    }
+    const scheduledMaintenance = maintenanceAttachment?.mock.calls[0]?.result;
     transport = await bindRepositoryGitTransport(
       drivers,
       prepared.protectedGit,
@@ -927,6 +942,7 @@ function externalGitJourney(
           assert.equal(custody.harnessAuth?.method, "credential_source");
           const auth = custody.harnessAuth;
           assert.ok(auth && auth.method === "credential_source");
+          assert.ok(auth.source);
           await modelGateway.attachForRevision({
             revision,
             namespace,
@@ -1004,6 +1020,7 @@ function externalGitJourney(
                 image: "fixture",
                 command: [],
                 workspaceMounts: [],
+                retainedDirectories: [],
                 files: [],
                 environment: [],
                 labels: {},
@@ -1477,27 +1494,51 @@ function externalGitJourney(
     // queued passes due.
     try {
       await startWorker();
-      await waitForRevisionPass(
+      const session = await waitForRevisionPass(
         "worker's admitted repository session",
         f,
         revision,
         () =>
-          f.state.read(async (view) =>
-            finiteRemoval
-              ? (await view.repositorySessions.listRevisionAttempts(ref)).find(
-                  (attempt) => attempt.phase === "open",
-                )
-              : view.repositorySessions.findStandingExecution(ref),
-          ),
+          f.state.read(async (view) => {
+            if (finiteRemoval) {
+              return (await view.repositorySessions.listRevisionAttempts(ref)).find(
+                (attempt) => attempt.phase === "open",
+              );
+            }
+            const standing = await view.repositorySessions.findStandingExecution(ref);
+            if (!coldFetch) {
+              return standing;
+            }
+            if (!standing || standing.closed) {
+              return;
+            }
+            const agent = await view.agents.findAgent(namespaceId, agentId);
+            if (agent?.status !== "active" || agent.activeRevisionId !== revision.id) {
+              return;
+            }
+            const open = (await view.repositorySessions.listRevisionAttempts(ref)).filter(
+              (attempt) => attempt.phase === "open" && attempt.repositoryRef === repositoryRef,
+            );
+            assert.ok(open.length <= 1);
+            const [attempt] = open;
+            if (attempt?.sessionId) {
+              assert.equal(attempt.liveRevisionId, revision.id);
+              return attempt;
+            }
+          }),
         25_000,
       );
-      const first = await waitFor(
-        "worker installs first material",
-        () => peer.delivery.settled,
-        25_000,
-      );
-      assert.equal(peer.delivery.attempts, 1);
-      assert.equal(peer.delivery.installs, 1);
+      const waitForFirstMaterial = async () => {
+        const material = await waitFor(
+          "worker installs first material",
+          () => peer.delivery.settled,
+          25_000,
+        );
+        assert.equal(peer.delivery.attempts, 1);
+        assert.equal(peer.delivery.installs, 1);
+        return material;
+      };
+      const alreadyPrepared = coldFetch ? undefined : await waitForFirstMaterial();
       const originalPolicy = finiteRemoval ? await peer.observePolicy() : undefined;
       if (lostRotation) {
         peer.delivery.loseReply = true;
@@ -1582,6 +1623,116 @@ function externalGitJourney(
         assert.equal(result.stdout.trim(), "commit");
         return true;
       };
+      const cold = await (async () => {
+        if (!coldFetch) {
+          return;
+        }
+        assert.ok("trace" in gh);
+        const issuer = gh;
+        assert.ok("admissionId" in session && session.sessionId);
+        const { admissionId, sessionId } = session;
+        await waitFor(
+          "external recipient resolves its delivery fence and reads cold material",
+          () => peer.delivery.stage === "read-material" || undefined,
+          25_000,
+        );
+        const observed = await peer.observePolicy();
+        assert.equal(observed.plan.execution.revisionId, revision.id);
+        assert.deepEqual(observed.plan.repositoryGit, revision.repositoryCredentials);
+        const familyId = "repository-git:" + admissionId;
+        const preparedMaterial = () =>
+          pool
+            .query<RepositoryGitMaterialVersion>(
+              `SELECT a.id AS "preparationAttemptId", a.material_version AS "materialVersion"
+             FROM occ.prepared_github_attempts a JOIN occ.prepared_github_families f USING (source_id)
+             JOIN occ.credential_deliveries d
+               ON (d.preparation_attempt_id,d.material_version)=(a.id,a.material_version)
+             WHERE f.source_id=$1 AND f.enabled AND f.source#>>'{session,sessionId}'=$2
+               AND a.admission=f.admission AND a.custody='current' AND a.state='committed'
+               AND d.revision_id=$3 AND d.live_revision_id=$3 AND d.binding_id=$4
+               AND d.target->'installation'=$5::jsonb AND d.settlement='witness'
+               AND d.fence IS NOT NULL AND d.write_pending IS NULL AND d.blocked IS NULL`,
+              [
+                familyId,
+                sessionId,
+                revision.id,
+                observed.plan.execution.executionId,
+                JSON.stringify(observed),
+              ],
+            )
+            .then(({ rows }) => rows);
+        const uses = () =>
+          pool
+            .query<RepositoryGitMaterialVersion & { exchangeId: string; operation: string }>(
+              `SELECT exchange_id AS "exchangeId", operation, attempt_id AS "preparationAttemptId",
+                      material_version AS "materialVersion"
+               FROM occ.prepared_repository_git_uses WHERE admission_id=$1
+               ORDER BY operation, exchange_id`,
+              [admissionId],
+            )
+            .then(({ rows }) => rows);
+        // Trace records parsed requests before authorization. Errors also catch rejected bodies.
+        const coldState = async () => ({
+          issuerRequests: issuer.trace.length,
+          issuerErrors: issuer.errors.length,
+          installs: peer.delivery.installs,
+          attempts: peer.delivery.attempts,
+          confirmations: peer.delivery.confirmations.length,
+          ...traffic(),
+          preparations: (
+            await pool.query("SELECT id FROM occ.prepared_github_attempts WHERE source_id=$1", [
+              familyId,
+            ])
+          ).rowCount,
+          uses: (await uses()).length,
+        });
+        const oid = await origin.ref("main");
+        assert.equal(await hasObject(oid), false);
+        const empty = {
+          issuerRequests: 0,
+          issuerErrors: 0,
+          installs: 0,
+          attempts: 0,
+          confirmations: 0,
+          connections: 0,
+          requests: 0,
+          preparations: 0,
+          uses: 0,
+        };
+        assert.deepEqual(await coldState(), empty);
+        // This sender can refuse missing material before checking the workload marker.
+        let senderRequests = 0;
+        const discovery = new URL(remote).pathname + "/info/refs?service=git-upload-pack";
+        const recordDiscovery = (req: IncomingMessage) => {
+          if (
+            req.method === "GET" &&
+            req.url === discovery &&
+            req.headers.host === peer.url.host &&
+            req.headers.authorization === peer.clientHeader.slice("Authorization: ".length)
+          ) {
+            senderRequests++;
+          }
+        };
+        counterpart.on("request", recordDiscovery);
+        const denied = await fetch(true).finally(() => counterpart.off("request", recordDiscovery));
+        assert.deepEqual(
+          await coldState(),
+          empty,
+          "cold fetch must not reach issuer, recipient installation or Git origin",
+        );
+        assert.equal(senderRequests, 1, "one Git discovery reached the admitted HTTPS sender");
+        assert.equal(denied.code, 128);
+        assert.match(denied.stderr, /The requested URL returned error: 403\b/);
+        assert.equal(await hasObject(oid), false);
+
+        assert.ok(prepared);
+        await prepared.maintain();
+        assert.equal(issuer.trace.length, 1);
+        assert.equal(issuer.errors.length, 0);
+        assert.equal(issuer.issuesOfTokens.length, 1);
+        return { oid, preparedMaterial, uses };
+      })();
+      const first = alreadyPrepared ?? (await waitForFirstMaterial());
       const transfer = async (oid: string) => {
         const beforePresent = await hasObject(oid);
         assert.equal(beforePresent, false, "destination must lack this exact commit");
@@ -1594,11 +1745,46 @@ function externalGitJourney(
           "the real Git discovery and upload reached the private origin",
         );
         const afterSha = (await git(["rev-parse", "FETCH_HEAD"])).stdout.trim();
-        assert.equal(afterSha, oid);
+        assert.equal(afterSha, oid, "Git fetch must resolve to the pinned origin commit");
         assert.equal(await hasObject(oid), true);
         return { expectedSha: oid, beforePresent, afterSha, originRequests };
       };
-      const initialFetch = await transfer(await origin.ref("main"));
+      const [initialMaterial] = peer.delivery.confirmations;
+      if (cold) {
+        assert.ok(initialMaterial);
+        assert.equal(peer.delivery.confirmations.length, 1);
+        assert.equal(first.materialVersion, initialMaterial.materialVersion);
+        assert.deepEqual(await cold.preparedMaterial(), [initialMaterial]);
+        assert.deepEqual(await cold.uses(), []);
+      }
+      const firstDecision = peer.decisions.length;
+      const initialFetch = await transfer(cold?.oid ?? (await origin.ref("main")));
+      if (cold) {
+        assert.ok(initialMaterial);
+        const uses = await cold.uses();
+        assert.deepEqual(
+          uses.map(({ operation }) => operation),
+          ["advertise-upload-pack", "upload-pack"],
+        );
+        assert.equal(new Set(uses.map(({ exchangeId }) => exchangeId)).size, 2);
+        assert.deepEqual(
+          uses.map(({ preparationAttemptId, materialVersion }) => ({
+            preparationAttemptId,
+            materialVersion,
+          })),
+          [initialMaterial, initialMaterial],
+          "initial Git uses must name the committed recipient material",
+        );
+        const permits = peer.decisions.slice(firstDecision);
+        assert.equal(permits.length, uses.length);
+        assert.partialDeepStrictEqual(
+          permits,
+          uses.map(({ operation, ...use }) => ({
+            operation,
+            decision: { kind: "permit", ...use },
+          })),
+        );
+      }
       rehearsal?.gitFetched(initialFetch);
       if (writes) {
         // The sender reports each request's ref and draft scope; the Worker's owner decides
@@ -2149,6 +2335,20 @@ function externalGitJourney(
         );
       }
 
+      let hiddenObservationReached = false;
+      if (lostRotation) {
+        // Keep A's cached route until Git exercises the owner's refusal of pending B.
+        const hold = Promise.withResolvers<void>();
+        releaseHiddenObservation = hold.resolve;
+        peer.delivery.beforeRouteAssignment = async (hasRoute) => {
+          if (hasRoute || peer.delivery.installs !== 2) {
+            return;
+          }
+          delete peer.delivery.beforeRouteAssignment;
+          hiddenObservationReached = true;
+          await hold.promise;
+        };
+      }
       // Real owner deadlines: the 5-minute fixture token is inside the 10-minute renewal window.
       // Make the persisted next check due now for the owner's background loop, without
       // extending or editing a token or session deadline.
@@ -2159,6 +2359,10 @@ function externalGitJourney(
           [revision.id],
         );
         assert.equal(rowCount, 1);
+        if (coldFetch) {
+          assert.ok(scheduledMaintenance, "the installed Token Service attached Git maintenance");
+          scheduledMaintenance.start();
+        }
         if (!lostRotation) {
           second = await waitFor(
             "worker rotates material",
@@ -2266,14 +2470,23 @@ function externalGitJourney(
             assert.equal(denied.code, 128);
             assert.ok(/403/.test(denied.stderr.toString()), "sender refuses Git with HTTP 403");
           };
-          const decisions = peer.decisions.length;
-          await deniedFetch();
-          assert.deepEqual(peer.decisions.slice(decisions), [
-            {
-              operation: "advertise-upload-pack",
-              decision: { kind: "denied", reason: "unavailable" },
-            },
-          ]);
+          try {
+            await waitFor(
+              "reconciler observes no route while B is pending",
+              () => hiddenObservationReached || undefined,
+            );
+            const decisions = peer.decisions.length;
+            await deniedFetch();
+            assert.deepEqual(peer.decisions.slice(decisions), [
+              {
+                operation: "advertise-upload-pack",
+                decision: { kind: "denied", reason: "unavailable" },
+              },
+            ]);
+            assert.deepEqual(await readDelivery(), pending);
+          } finally {
+            releaseHiddenObservation?.();
+          }
           const pendingPasses = peer.delivery.reconciliations;
           await waitFor(
             "original lost B is observed without another installation attempt",
@@ -2281,6 +2494,11 @@ function externalGitJourney(
             10_000,
           );
           assertNoEffect();
+          // With the route cleared, the same sender must refuse before calling authority.
+          const decisions = peer.decisions.length;
+          await deniedFetch();
+          assert.equal(peer.decisions.length, decisions);
+          assert.deepEqual(await readDelivery(), pending);
           await f.stop();
           await transport!.close();
           await prepared.close();
@@ -3157,6 +3375,7 @@ function externalGitJourney(
       releaseTokenRetirement?.();
       releaseReduction?.();
       releaseStoppedBind?.();
+      releaseHiddenObservation?.();
       await f.stop();
     }
   };

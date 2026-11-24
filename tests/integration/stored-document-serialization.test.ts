@@ -27,7 +27,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 import { occApiRoutes } from "../../packages/contracts/src/api/routes.ts";
 import { asRecord, immutableCopy } from "../../packages/utils/src/objects.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 
 const controllerRequire = createRequire(

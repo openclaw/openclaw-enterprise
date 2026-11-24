@@ -10,7 +10,7 @@ import type {
   NamespaceWire,
 } from "../../packages/contracts/src/index.ts";
 import type { PlatformAuditSink, RuntimeLogViewAdmission } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 

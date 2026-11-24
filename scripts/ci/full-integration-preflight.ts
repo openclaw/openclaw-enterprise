@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { appendFileSync } from "node:fs";
+
 import type { decideAdmission } from "./full-integration-admission.ts";
 
 export const fullIntegrationLanes = Object.freeze([
@@ -39,6 +41,8 @@ type GithubRequest = {
 };
 
 export type GithubReader = (request: GithubRequest) => Promise<unknown>;
+
+type Progress = { stage: string; http?: number };
 
 type PreflightInput = {
   env?: NodeJS.ProcessEnv;
@@ -257,19 +261,49 @@ function matchesDispatcher(user: unknown, actorId: number, actor: string) {
   return typeof login === "string" && login.toLowerCase() === actor.toLowerCase();
 }
 
-async function fetchGithubJson({ repository, token, path }: GithubRequest): Promise<unknown> {
-  const response = await fetch(`https://api.github.com/repos/${repository}${path}`, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "openclaw-enterprise-full-integration",
-    },
-  });
+async function fetchGithubJson(
+  { repository, token, path }: GithubRequest,
+  progress: Progress,
+  retry: { available: boolean },
+): Promise<unknown> {
+  const url = `https://api.github.com/repos/${repository}${path}`;
+  const headers = {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${token}`,
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "openclaw-enterprise-full-integration",
+  };
+  let response = await fetch(url, { headers });
+  let retried = false;
+  // Spend the retry on at most one GET across all reads in this preflight.
+  if (
+    retry.available &&
+    [502, 503, 504].includes(response.status) &&
+    !response.headers.has("retry-after") &&
+    response.headers.get("x-ratelimit-remaining") !== "0"
+  ) {
+    retry.available = false;
+    retried = true;
+    // A broken or stalled error body must not delay the replacement GET.
+    void response.body?.cancel().catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    response = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) }).catch(() => {
+      throw new Error("GitHub API retry failed.");
+    });
+  }
   if (!response.ok) {
+    // Distinguish gateway outages from permission and rate-limit responses.
+    if ([401, 403, 429, 502, 503, 504].includes(response.status)) {
+      progress.http = response.status;
+    }
     throw new Error(`GitHub API ${path} returned ${response.status}.`);
   }
-  const body = await response.text();
+  const body = await response.text().catch((error: unknown) => {
+    if (retried) {
+      throw new Error("GitHub API retry response could not be read.");
+    }
+    throw error;
+  });
   try {
     return JSON.parse(body);
   } catch {
@@ -279,24 +313,36 @@ async function fetchGithubJson({ repository, token, path }: GithubRequest): Prom
   }
 }
 
-export async function validateFullIntegrationPreflight({
-  env = process.env,
-  github = fetchGithubJson,
-  impactMode = "full",
-}: PreflightInput = {}): Promise<PreflightResult> {
+export async function validateFullIntegrationPreflight(
+  input: PreflightInput = {},
+): Promise<PreflightResult> {
+  return evaluatePreflight(input, { stage: "unknown" });
+}
+
+async function evaluatePreflight(
+  { env = process.env, github: reader, impactMode = "full" }: PreflightInput,
+  progress: Progress,
+): Promise<PreflightResult> {
   assertRunContext(env);
+  const scheduled = env.GITHUB_EVENT_NAME === "schedule";
+  const retry = { available: scheduled };
+  const github: GithubReader = reader ?? ((request) => fetchGithubJson(request, progress, retry));
   const read = (path: string) =>
     github({ repository: env.GITHUB_REPOSITORY, token: env.GITHUB_TOKEN, path });
-  const scheduled = env.GITHUB_EVENT_NAME === "schedule";
   if (scheduled) {
     const { decideAdmission } = await import("./full-integration-admission.ts");
     const { readScheduleHistory } = await import("./full-integration-schedule-history.ts");
     const now = Date.now();
     const eventSha = env.GITHUB_SHA ?? "";
+    progress.stage = "history";
     const history = await readScheduleHistory(read, eventSha, Number(env.GITHUB_RUN_ID), now);
     const decision = decideAdmission({ ...history, now, eventSha });
     if (decision.result === "hold") {
       const failure = "failure" in history ? history.failure : undefined;
+      // Both fields are closed enums assigned by readScheduleHistory, never API text.
+      if (failure) {
+        progress.stage = `history-${failure.operation}-${failure.kind}`;
+      }
       const detail = failure ? ` (${failure.operation}: ${failure.kind})` : "";
       throw new Error(`Full Integration schedule could not verify admission metadata${detail}.`);
     }
@@ -304,6 +350,7 @@ export async function validateFullIntegrationPreflight({
       return { selectedLane: "skip", runAll: false, reason: decision.reason };
     }
   }
+  progress.stage = "unknown";
   const selected = selectLane({
     eventName: env.GITHUB_EVENT_NAME,
     inputLane: env.INPUT_LANE,
@@ -319,6 +366,7 @@ export async function validateFullIntegrationPreflight({
     await validateManualApproval(env, github);
   }
   for (const environmentName of required) {
+    progress.stage = "environment-policy";
     const environment = await github({
       repository: env.GITHUB_REPOSITORY,
       token: env.GITHUB_TOKEN,
@@ -332,6 +380,7 @@ export async function validateFullIntegrationPreflight({
     validateEnvironmentPolicy(environmentName, environment, policies);
   }
   if (scheduled) {
+    progress.stage = "final-main";
     const current = await read("/git/ref/heads/main");
     const object =
       optionalField(current, "ref") === "refs/heads/main" ? field(current, "object") : undefined;
@@ -350,7 +399,18 @@ export async function validateFullIntegrationPreflight({
 }
 
 async function main() {
-  const result = await validateFullIntegrationPreflight();
+  const progress: Progress = { stage: "unknown" };
+  const result = await evaluatePreflight({}, progress).catch((error: unknown) => {
+    if (process.env.GITHUB_EVENT_NAME === "schedule" && process.env.GITHUB_OUTPUT) {
+      try {
+        const http = progress.http === undefined ? "" : `-http-${progress.http}`;
+        appendFileSync(process.env.GITHUB_OUTPUT, `failure_stage=${progress.stage}${http}\n`);
+      } catch {
+        // Diagnostics must not replace the original refusal.
+      }
+    }
+    throw error;
+  });
   if (result.selectedLane === "skip") {
     const message = `Full Integration schedule skipped: ${result.reason}.`;
     console.log(
@@ -366,7 +426,6 @@ async function main() {
     );
   }
   if (process.env.GITHUB_OUTPUT) {
-    const { appendFileSync } = await import("node:fs");
     appendFileSync(
       process.env.GITHUB_OUTPUT,
       `selected_lane=${result.selectedLane}\nrun_all=${result.runAll}\n`,

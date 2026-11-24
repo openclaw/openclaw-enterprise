@@ -55,6 +55,12 @@ Some lanes are also selected by [CI](required-checks.md) or
 Job links name the execution jobs and open their manifests. GitHub groups these
 under `Execute`, including `Execute / Full Integration Aggregate`.
 
+The [isolated upgrade qualification](../kubernetes.md#run-an-isolated-upgrade-qualification-lane)
+selects two distinct runtime images. It checks continuation through the production
+upgrade and verifies that the stopped Agent first runs the new image when
+explicitly deployed after the upgrade. Its cancelled turn must stay cancelled.
+The scheduled Production TUI job exercises the regular revision cutover.
+
 `all` selects the workflow's supported lanes, not every lane registered in the
 repository. [Manually prepared lanes](../manual-tests.md)
 remain excluded. QA's default `all` also excludes its four

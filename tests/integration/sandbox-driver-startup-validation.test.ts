@@ -71,6 +71,9 @@ const invalidValue = (path: string, message: string): RefusalDetail[] => [
 // (findings 2353, 2356).
 test("startup refuses unknown OpenShell settings and invalid Agent resource quantities", async (t) => {
   for (const [change, path] of [
+    // OCE's selector is independent of the remote gateway's workspace mode.
+    [(c) => Object.assign(sandboxOf(c).gateway, { workspaceMode: "managed" }), "/gateway"],
+    [(c) => Object.assign(sandboxOf(c).gateway, { integrationMode: "service" }), "/gateway"],
     [(c) => Object.assign(sandboxOf(c).kubernetes, { userNamespace: false }), "/kubernetes"],
     // Runtime placement belongs to Kubernetes/provider configuration, not OCE.
     [(c) => Object.assign(sandboxOf(c).kubernetes, { runtimeClassName: "runc" }), "/kubernetes"],
@@ -103,6 +106,13 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
       t,
       change,
       structuralRefusal(path, "additionalProperties", "UNKNOWN_FIELD"),
+    );
+  }
+  for (const integrationMode of ["managed", "operator", "kubernetes", "invalid"]) {
+    await rejectsAtStartup(
+      t,
+      (c) => Object.assign(sandboxOf(c), { integrationMode }),
+      structuralRefusal("/integrationMode", "enum"),
     );
   }
   const quantity =
@@ -358,7 +368,6 @@ test("startup refuses OpenShell settings its schema leaves open", async (t) => {
   const refused = invalidValue("", "Configuration violates the Driver's constraints.");
   const dataMount = (c: SandboxInstallation) => sandboxOf(c).kubernetes.sandboxDataMount;
   for (const change of [
-    (c) => Reflect.deleteProperty(sandboxOf(c).gateway, "workspaceMode"),
     // labels() refuses an empty map before the explicit empty check does.
     (c) => Object.assign(sandboxOf(c).gateway, { operatorNamespaceLabels: {} }),
     (c) =>

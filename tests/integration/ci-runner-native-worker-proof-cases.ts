@@ -7,10 +7,8 @@ import test from "node:test";
 
 import { isRecord } from "../../scripts/ci/records.ts";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
-import {
-  collectNativeWorkerFailure,
-  nativePlacementReadRetryable,
-} from "../helpers/local-first-agent-native.mjs";
+import { nativePlacementReadRetryable } from "../helpers/local-first-agent-native-placement.ts";
+import { collectNativeWorkerFailure } from "../helpers/local-first-agent-native.mjs";
 import {
   nativeWorkerHistoryEvidence,
   nativeWorkerProofProgram,

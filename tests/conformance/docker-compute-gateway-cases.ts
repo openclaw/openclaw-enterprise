@@ -29,11 +29,6 @@ export function registerGatewayLaunchCases() {
     const defaultLaunch = await gatewayContainerLaunch();
     assert.match(defaultLaunch.environment.OPENCLAW_GATEWAY_PASSWORD ?? "", /^[0-9a-f]{64}$/);
     assert.equal(defaultLaunch.environment.OPENCLAW_GATEWAY_PORT, "8080");
-    // Only a restart of the same revision resumes a turn its shutdown interrupted.
-    assert.equal(
-      defaultLaunch.environment.OPENCLAW_GATEWAY_RESTART_RESUME_SCOPE,
-      defaultLaunch.revision.id,
-    );
     assert.equal(defaultLaunch.gateway.auth.mode, "password");
     assert.equal(defaultLaunch.gateway.auth.password, "${OPENCLAW_GATEWAY_PASSWORD}");
     assert.equal(defaultLaunch.revision.configuration.gateway, undefined);

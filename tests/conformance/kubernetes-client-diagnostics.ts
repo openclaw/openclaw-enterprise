@@ -7,7 +7,7 @@ import {
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import type { ComputeAgentRevisionBinding } from "../../packages/contracts/src/index.ts";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 import { kubernetesList } from "../helpers/kubernetes-sdk-api.ts";
 import { recordingApiServer, writeKubeconfig } from "./kubernetes-client-fixture.ts";
 

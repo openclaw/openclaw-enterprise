@@ -54,8 +54,6 @@ export function productionChartRendererRefusalCases({
     ["missing bootstrap service key", { "bootstrap.credentials.serviceKeyKey": "" }],
     ["invalid bootstrap service key", { "bootstrap.credentials.serviceKeyKey": "nested/key" }],
     ["shared bootstrap input key", { "bootstrap.credentials.serviceKeyKey": "admin-password" }],
-    ["retired bootstrap password output", { "bootstrap.password.claimName": "retired" }],
-    ["retired bootstrap service-key output", { "bootstrap.serviceKey.fileName": "retired.json" }],
     ["unrestricted client namespace", { "api.clients[0].namespace": "" }],
     ["retired database egress key", { "database.cidr": "10.45.0.12/32" }],
     ["retired Kubernetes API egress key", { "cluster.cidr": "10.43.0.1/32" }],

@@ -10,10 +10,7 @@ import {
   writeJson,
   writeRunnerManifest,
 } from "../helpers/ci-runner-fixture.ts";
-
-interface AuditReceipt {
-  issues: { code: string; message: string; file?: string }[];
-}
+import { parseRunnerRecord, runnerRecords, runnerText } from "./ci-runner-result-records.ts";
 
 interface SharedLaneReceipt {
   fileConcurrency: number;
@@ -33,6 +30,15 @@ async function auditManifest(root: string, manifest: Parameters<typeof writeRunn
   return runRunnerSync(["audit", "--manifest", "manifest.json", "--root", root]);
 }
 
+async function auditRejectedManifest(
+  root: string,
+  manifest: Parameters<typeof writeRunnerManifest>[1],
+) {
+  const { status, stdout } = await auditManifest(root, manifest);
+  assert.equal(status, 1, stdout);
+  return runnerRecords(parseRunnerRecord(stdout, "audit receipt").issues, "audit issues");
+}
+
 test("audit fails when a referenced lane cannot be loaded", async (t) => {
   const root = await fixture(t);
   const missing = await auditManifest(root, { lanes: { missing: "./missing-lane.json" } });
@@ -44,7 +50,7 @@ test("audit fails when a referenced lane cannot be loaded", async (t) => {
 test("audit rejects prototype keys instead of silently dropping file environment", async (t) => {
   const root = await fixture(t);
   await writeFile(join(root, "tests/integration/env.test.mjs"), "import 'node:test';\n");
-  const result = await auditManifest(root, {
+  const issues = await auditRejectedManifest(root, {
     lanes: {
       baseline: {
         files: [
@@ -56,21 +62,19 @@ test("audit rejects prototype keys instead of silently dropping file environment
       },
     },
   });
-  assert.equal(result.status, 1);
-  const summary = JSON.parse(result.stdout) as AuditReceipt;
   assert.deepEqual(
-    summary.issues.map(({ code }) => code),
+    issues.map(({ code }) => code),
     ["invalid-manifest"],
   );
-  const [issue] = summary.issues;
+  const [issue] = issues;
   assert.ok(issue);
-  assert.match(issue.message, /files\.0\.env\.__proto__/);
+  assert.match(runnerText(issue.message, "audit issue message"), /files\.0\.env\.__proto__/);
 });
 
 test("audit rejects obsolete manifest selectors", async (t) => {
   const root = await fixture(t);
   await writeFile(join(root, "tests/integration/pattern.test.mjs"), "import 'node:test';\n");
-  const result = await auditManifest(root, {
+  const issues = await auditRejectedManifest(root, {
     lanes: {
       obsolete: {
         files: [
@@ -84,9 +88,7 @@ test("audit rejects obsolete manifest selectors", async (t) => {
     },
   });
 
-  assert.equal(result.status, 1);
-  const summary = JSON.parse(result.stdout) as AuditReceipt;
-  assert.deepEqual(summary.issues.map((entry) => entry.message).sort(), [
+  assert.deepEqual(issues.map((entry) => entry.message).sort(), [
     "lanes.obsolete.files.0.allowedSkips is no longer supported",
     "lanes.obsolete.files.0.namePattern is no longer supported",
   ]);
@@ -97,7 +99,7 @@ test("audit rejects invalid file concurrency marks", async (t) => {
   for (const name of ["one", "two"]) {
     await writeFile(join(root, `tests/integration/${name}.test.mjs`), "import 'node:test';\n");
   }
-  const result = await auditManifest(root, {
+  const issues = await auditRejectedManifest(root, {
     lanes: {
       marks: {
         fileConcurrency: 0,
@@ -120,24 +122,20 @@ test("audit rejects invalid file concurrency marks", async (t) => {
     },
   });
 
-  assert.equal(result.status, 1);
-  assert.deepEqual(
-    (JSON.parse(result.stdout) as AuditReceipt).issues.map((entry) => entry.message).sort(),
-    [
-      "lanes.marks.fileConcurrency must be an integer from 1 to 32",
-      "lanes.marks.parallelFiles lists tests/integration/one.test.mjs twice",
-      "lanes.marks.parallelFiles tests/integration/one.test.mjs is also serial",
-      "lanes.marks.parallelFiles tests/integration/other.test.mjs is not a lane file",
-      "lanes.marks.parallelFiles tests/integration/two.test.mjs is also serial",
-      "lanes.marks.serialFiles.tests/integration/gone.test.mjs is not a lane file",
-      "lanes.marks.serialFiles.tests/integration/one.test.mjs must name a reason",
-    ],
-  );
+  assert.deepEqual(issues.map((entry) => entry.message).sort(), [
+    "lanes.marks.fileConcurrency must be an integer from 1 to 32",
+    "lanes.marks.parallelFiles lists tests/integration/one.test.mjs twice",
+    "lanes.marks.parallelFiles tests/integration/one.test.mjs is also serial",
+    "lanes.marks.parallelFiles tests/integration/other.test.mjs is not a lane file",
+    "lanes.marks.parallelFiles tests/integration/two.test.mjs is also serial",
+    "lanes.marks.serialFiles.tests/integration/gone.test.mjs is not a lane file",
+    "lanes.marks.serialFiles.tests/integration/one.test.mjs must name a reason",
+  ]);
 });
 
 // Each fixture file holds a marker in `running/` while it runs. A parallel file waits
-// for its partner's marker, so it passes only if both share slots; a file that must
-// run alone fails if any other marker exists. Neither depends on timing.
+// for its partner's marker and acknowledgment, so both must observe the overlap;
+// a file that must run alone fails if any other marker exists.
 function concurrencyProbe(name: string, partner: string | null) {
   return [
     'import assert from "node:assert/strict";',
@@ -155,9 +153,14 @@ function concurrencyProbe(name: string, partner: string | null) {
           `      assert.ok(Date.now() < deadline, "${partner} never ran beside ${name}");`,
           "      await sleep(10);",
           "    }",
+          "    const acknowledgments = process.env.CI_RUNNER_PROBE_ACK_DIR;",
+          `    writeFileSync(acknowledgments + "/${name}", "");`,
+          `    while (!existsSync(acknowledgments + "/${partner}")) {`,
+          `      assert.ok(Date.now() < deadline, "${partner} never acknowledged ${name}");`,
+          "      await sleep(10);",
+          "    }",
         ].join("\n")
-      : `    assert.deepEqual(readdirSync(running), ["${name}"]);`,
-    "    await sleep(50);",
+      : `    assert.deepEqual(readdirSync(running), ["${name}"]);\n    await sleep(50);`,
     "  } finally {",
     `    rmSync(running + "/${name}", { force: true });`,
     "  }",
@@ -175,7 +178,13 @@ async function runSharedLaneFixture(
 ) {
   const resultsPath = `results/${name}.json`;
   const args = laneArgs(root, "shared", `state/${name}.jsonl`, resultsPath, manifestPath);
-  const { status, stderr } = runRunnerSync(args, env);
+  const probeEnv = { ...env };
+  if (probeEnv.CI_RUNNER_PROBE_DIR) {
+    const acknowledgments = join(root, `acknowledgments-${name}`);
+    await mkdir(acknowledgments);
+    probeEnv.CI_RUNNER_PROBE_ACK_DIR = acknowledgments;
+  }
+  const { status, stderr } = runRunnerSync(args, probeEnv);
   assert.equal(status, exitCode, stderr);
   const summary = JSON.parse(await readFile(join(root, resultsPath), "utf8")) as SharedLaneReceipt;
   return { summary, stderr };
@@ -326,12 +335,11 @@ test("audit rejects an unusable file duration table", async (t) => {
     files: { "tests/integration/one.test.mjs": -1, "tests/integration/two.test.mjs": 1.5 },
   });
   const audit = async (fileDurations: unknown) => {
-    const result = await auditManifest(root, {
+    const issues = await auditRejectedManifest(root, {
       fileDurations,
       lanes: { one: { files: [{ path: "tests/integration/one.test.mjs" }] } },
     });
-    assert.equal(result.status, 1, result.stdout);
-    return (JSON.parse(result.stdout) as AuditReceipt).issues.map((entry) => entry.message);
+    return issues.map((entry) => entry.message);
   };
 
   assert.deepEqual(await audit("./durations.json"), [
@@ -356,7 +364,7 @@ test("audit requires current discovered test files and rejects duplicate ownersh
   await writeFile(join(root, "tests/integration/unmapped.test.ts"), "import 'node:test';\n");
   await mkdir(join(root, "tests/docs"), { recursive: true });
   await writeFile(join(root, "tests/docs/unmapped.test.mjs"), "import 'node:test';\n");
-  const result = await auditManifest(root, {
+  const issues = await auditRejectedManifest(root, {
     lanes: {
       one: {
         files: [
@@ -379,9 +387,7 @@ test("audit requires current discovered test files and rejects duplicate ownersh
     },
   });
 
-  assert.equal(result.status, 1);
-  const summary = JSON.parse(result.stdout) as AuditReceipt;
-  assert.deepEqual(summary.issues.map((entry) => entry.code).sort(), [
+  assert.deepEqual(issues.map((entry) => entry.code).sort(), [
     "duplicate-file",
     "missing-file",
     "missing-lane",
@@ -390,7 +396,7 @@ test("audit requires current discovered test files and rejects duplicate ownersh
     "unmapped-file",
   ]);
   assert.deepEqual(
-    summary.issues
+    issues
       .filter((entry) => entry.code === "unmapped-file")
       .map((entry) => entry.file)
       .sort(),

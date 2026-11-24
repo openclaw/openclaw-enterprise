@@ -58,11 +58,16 @@ export function registerInstalledGitTransportCase() {
     const helper = new URL("../helpers/openshell-git-installation.mjs", import.meta.url).href;
     // A fresh process must actually enable Node's ambient proxy before importing
     // the same client used by the installed scenario. No real credential is used.
+    // The control either rejects (a CONNECT tunnel refused) or returns the proxy's
+    // 403 (a plain-HTTP request sent to the proxy, as newer Node versions do).
     const script = `
     import assert from "node:assert/strict";
     import { createOpenShellGitApi } from ${JSON.stringify(helper)};
     const origin = ${JSON.stringify(origin)};
-    await assert.rejects(fetch(origin + "/proxy-control"));
+    await fetch(origin + "/proxy-control").then(
+      (response) => assert.equal(response.status, 403),
+      () => {},
+    );
     const cleanup = [];
     const request = createOpenShellGitApi({
       origin, key: ${JSON.stringify(key)}, signal: AbortSignal.timeout(30_000),

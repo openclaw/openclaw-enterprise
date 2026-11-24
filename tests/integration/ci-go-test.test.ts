@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 // scripts/ci/go-test.ts gates the Go CLI tests in CI. These cases run it over a
 // scratch module, one package directory at a time: the script tests "./...", so
@@ -95,12 +95,23 @@ async function fixtureModule(t: TestContext) {
 
 async function goTest(
   cwd: string,
-  { env = {}, args = [] }: { env?: NodeJS.ProcessEnv; args?: string[] } = {},
+  {
+    env = {},
+    args = [],
+    timeout = 120_000,
+    killSignal = "SIGTERM",
+  }: {
+    env?: NodeJS.ProcessEnv;
+    args?: string[];
+    timeout?: number;
+    killSignal?: NodeJS.Signals;
+  } = {},
 ) {
   const options: ExecFileOptionsWithStringEncoding = {
     cwd,
     encoding: "utf8",
-    timeout: 120_000,
+    timeout,
+    killSignal,
     env: {
       ...process.env,
       GOFLAGS: "",
@@ -341,19 +352,24 @@ if (args[0] === "list") {
   // Wait for all three processes before producing records. A serialized runner
   // cannot complete this handshake. Each child acknowledges cleanup on errors.
   const role = isolated ? "isolated" : remainder ? "remainder" : "other";
-  fs.writeFileSync(role, "started");
+  // Bound startup and cancellation independently of the reporter under test.
+  const watchdog = setTimeout(() => {
+    console.error(role + " fixture watchdog expired");
+    process.exit(1);
+  }, 10_000);
+  watchdog.unref();
   process.on("SIGTERM", () => {
     console.error(role + " observed termination");
     process.exit(0);
   });
+  fs.writeFileSync(role, "started");
   const timer = setInterval(() => {
     if (!["isolated", "remainder", "other"].every((file) => fs.existsSync(file))) return;
     clearInterval(timer);
     console.error(role + " stderr evidence");
     if (scenario === "cancel") {
+      watchdog.ref();
       if (isolated) process.kill(process.ppid, "SIGTERM");
-      // Stay alive until the reporter forwards cancellation to every child.
-      setInterval(() => {}, 1000);
       return;
     }
     if (remainder && scenario === "empty-remainder") return;
@@ -388,13 +404,19 @@ if (args[0] === "list") {
       const result = await goTest(root, {
         args: ["--split-stalled-archive"],
         env: { PATH: root },
+        timeout: 20_000,
+        killSignal: "SIGKILL",
       });
       assert.equal(result.code, scenario === "pass" ? 0 : 1, result.stdout + result.stderr);
       if (scenario === "spawn") {
         assert.equal(result.stderr.match(/Error: spawn go ENOENT/g)?.length, 3, result.stderr);
       } else {
         for (const role of ["isolated", "remainder", "other"]) {
-          assert.match(result.stderr, new RegExp(`${role} (stderr evidence|observed termination)`));
+          const evidence =
+            scenario === "cancel"
+              ? new RegExp(`^${role} observed termination$`, "m")
+              : new RegExp(`${role} (stderr evidence|observed termination)`);
+          assert.match(result.stderr, evidence);
         }
       }
       if (scenario === "pass") {

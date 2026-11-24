@@ -12,7 +12,7 @@ import {
   renderPresetTemplate,
   validatePresetTemplate,
 } from "../../packages/contracts/src/index.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { registerTopologyLaunchCases } from "./topology-launch-cases.ts";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";

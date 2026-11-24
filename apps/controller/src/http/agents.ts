@@ -7,6 +7,7 @@ import {
   type AgentRead,
   type AgentRevisionRead,
   type AgentRuntimeCredentialsBody,
+  type AgentStopQuery,
   type FirstDeploymentIntent,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -55,6 +56,7 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     backendId: agent.backendId,
     executionMode: agent.executionMode,
     gatewayManagedMode: agent.gatewayManagedMode,
+    networkProxy: agent.networkProxy,
     plugins: agent.plugins,
     pluginApprovers: agent.pluginApprovers,
     repositoryBindings: agent.repositoryBindings,
@@ -108,6 +110,7 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     configurationGeneration: revision.configurationGeneration,
     backendId: revision.backendId,
     gatewayManagedMode: revision.gatewayManagedMode,
+    networkProxy: revision.networkProxy,
     configuration: revision.configuration,
     harness: revision.harness,
     compute: { id: revision.compute.id, implementation: revision.compute.implementation },
@@ -628,8 +631,14 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     },
     async stopAgent({ controller, context, request, reply, params, namespaceId, mutationEvent }) {
       const agentId = params.agentId!;
+      const { expectedActiveRevisionId } = request.query as AgentStopQuery;
       const stopped = await controller.transact(async (unit) => {
-        const agent = await controller.stopAgent(context.actorId, namespaceId, agentId);
+        const agent = await controller.stopAgent(
+          context.actorId,
+          namespaceId,
+          agentId,
+          expectedActiveRevisionId,
+        );
         try {
           await unit.audit.append(mutationEvent({ kind: "agent", id: agentId, namespaceId }));
         } catch (error) {
@@ -659,6 +668,7 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
           backendId: summary.backendId,
           configurationId: summary.configurationId,
           configurationGeneration: summary.configurationGeneration,
+          networkProxy: summary.networkProxy,
           harness: summary.harness,
           createdAt: summary.createdAt,
           deploymentStatus: summary.deploymentStatus,

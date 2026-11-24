@@ -7,7 +7,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 
 const tenant = {
   id: "ns_00000000-0000-4000-8000-000000000014",
@@ -99,22 +99,22 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
     { name: namespace, plane: "execution" },
   );
 
-  const gateway = driver.deployment(
-    `gateway-${suffix}`,
-    { namespaceId: tenant.id, agentId: candidate.agentId },
-    { name: namespace, plane: "execution" },
-    {
+  const gateway = driver.deployment({
+    name: `gateway-${suffix}`,
+    ownership: { namespaceId: tenant.id, agentId: candidate.agentId },
+    namespace: { name: namespace, plane: "execution" },
+    images: {
       runtime: "openclaw-enterprise/gateway-fixture:local",
       workspaceSetup: driver.options.images.gateway,
     },
-    `agent-${suffix}`,
-    "gateway",
-    {},
-    driver.gatewayConfiguration(candidate).loggingLevel,
-    driver.gatewayConfiguration(candidate),
-    true,
-    candidate.servicePrincipalId,
-    driver.harnessAuthForRevision(
+    serviceAccountName: `agent-${suffix}`,
+    role: "gateway",
+    environment: {},
+    loggingLevel: driver.gatewayConfiguration(candidate).loggingLevel,
+    configuration: driver.gatewayConfiguration(candidate),
+    embedded: true,
+    workloadServicePrincipalId: candidate.servicePrincipalId,
+    harnessAuth: driver.harnessAuthForRevision(
       candidate,
       {
         harnessAuth: {
@@ -124,9 +124,8 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
       },
       { name: namespace, plane: "execution" },
     ),
-    [],
     secretEnvironment,
-  );
+  });
   const environment = Object.fromEntries(
     gateway.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
   );
@@ -143,25 +142,20 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
 
   assert.throws(
     () =>
-      driver.deployment(
-        `agent-${suffix}`,
-        { namespaceId: tenant.id, agentId: candidate.agentId, revisionId: candidate.id },
-        { name: namespace, plane: "execution" },
-        {
+      driver.deployment({
+        name: `agent-${suffix}`,
+        ownership: { namespaceId: tenant.id, agentId: candidate.agentId, revisionId: candidate.id },
+        namespace: { name: namespace, plane: "execution" },
+        images: {
           runtime: "openclaw-enterprise/agent-fixture:local",
           workspaceSetup: driver.options.images.gateway,
         },
-        `agent-${suffix}`,
-        "agent",
-        {},
-        "info",
-        undefined,
-        false,
-        undefined,
-        undefined,
-        [],
+        serviceAccountName: `agent-${suffix}`,
+        role: "agent",
+        environment: {},
+        loggingLevel: "info",
         secretEnvironment,
-      ),
+      }),
     /only be delivered to Agent gateways/i,
   );
 
