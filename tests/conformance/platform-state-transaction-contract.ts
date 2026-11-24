@@ -42,6 +42,15 @@ async function verifyRevisionOrder(
       }
     });
   await assertHistory();
+  await store.read(async ({ revisions }) => {
+    const page = await revisions.pageRevisionSummaries(namespaceId, agentId, { limit: 2 });
+    assert.deepEqual(page.revisions.map(identity), [identity(third), identity(second)]);
+    assert.equal(page.nextBefore, 2);
+    const options = { limit: 2, before: page.nextBefore };
+    const tail = await revisions.pageRevisionSummaries(namespaceId, agentId, options);
+    assert.deepEqual(tail.revisions.map(identity), [identity(first)]);
+    assert.equal(tail.nextBefore, undefined);
+  });
   await assert.rejects(
     store.transact(({ revisions }) =>
       revisions.createRevision({ ...second, id: identifier("rev") }),

@@ -754,6 +754,16 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   });
 }
 
+const REVISION_SCOPE = `FROM occ.agent_revisions AS r
+  JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
+  JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
+  WHERE r.namespace_id = $1 AND r.agent_id = $2`;
+
+const FULL_REVISION = `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
+  r.admitted_spec, r.gateway_managed_mode, r.network_proxy_url, r.network_proxy_secret_id,
+  r.network_proxy_admission, r.admitted_at, a.service_principal_id
+  ${REVISION_SCOPE}`;
+
 function revisionMetadataFromRow(row: PostgresRow): Readonly<AgentRevisionMetadata> {
   const rawNumber = row.revision_number;
   const revision = typeof rawNumber === "string" ? Number(rawNumber) : rawNumber;
@@ -4120,40 +4130,15 @@ export class PostgresPlatformState implements PlatformStateStore {
       namespaceId: string,
       agentId: string,
       revisionId: string,
-    ): Promise<PostgresRow | undefined> => {
-      const found = decodeQueryRows(
-        await client.query(
-          `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode, r.network_proxy_url, r.network_proxy_secret_id, r.network_proxy_admission,
-                      r.admitted_at, a.service_principal_id
-               FROM occ.agent_revisions AS r
-               JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
-               JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
-               WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.id = $3`,
-          [namespaceId, agentId, revisionId],
-        ),
+    ): Promise<PostgresRow | undefined> =>
+      decodeQueryRows(
+        await client.query(`${FULL_REVISION} AND r.id = $3`, [namespaceId, agentId, revisionId]),
       )[0];
-      return found;
-    };
 
-    const listRevisionRows = async (
-      namespaceId: string,
-      agentId: string,
-    ): Promise<PostgresRow[]> => {
-      const found = decodeQueryRows(
-        await client.query(
-          `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
-                      r.admitted_spec, r.gateway_managed_mode, r.network_proxy_url, r.network_proxy_secret_id, r.network_proxy_admission,
-                      r.admitted_at, a.service_principal_id
-               FROM occ.agent_revisions AS r
-               JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
-               JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
-               WHERE r.namespace_id = $1 AND r.agent_id = $2 ORDER BY r.revision_number`,
-          [namespaceId, agentId],
-        ),
+    const listRevisionRows = async (namespaceId: string, agentId: string): Promise<PostgresRow[]> =>
+      decodeQueryRows(
+        await client.query(`${FULL_REVISION} ORDER BY r.revision_number`, [namespaceId, agentId]),
       );
-      return found;
-    };
 
     const revisions: AgentRevisionRepository = {
       findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
@@ -4202,10 +4187,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             await client.query(
               `SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
                         r.admitted_at
-                 FROM occ.agent_revisions AS r
-                 JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
-                 JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
-                 WHERE r.namespace_id = $1 AND r.agent_id = $2 ORDER BY r.revision_number`,
+                 ${REVISION_SCOPE} ORDER BY r.revision_number`,
               [namespaceId, agentId],
             ),
           ).map(revisionMetadataFromRow),
@@ -4221,10 +4203,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                FROM (
                  SELECT r.id, r.namespace_id, r.agent_id, r.revision_number, r.backend_id,
                         r.admitted_at, r.admitted_spec, r.network_proxy_url, r.network_proxy_secret_id
-                 FROM occ.agent_revisions AS r
-                 JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
-                 JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
-                 WHERE r.namespace_id = $1 AND r.agent_id = $2
+                 ${REVISION_SCOPE}
                    AND ($3::bigint IS NULL OR r.revision_number < $3::bigint)
                  ORDER BY r.revision_number DESC
                  LIMIT $4
