@@ -844,3 +844,34 @@ test(
     assert.equal(revisions.rowCount, 0);
   },
 );
+
+test(
+  "an existing principal can create Agents only in its configured Namespace until revoked",
+  requiresPostgres,
+  async (t) => {
+    const iam = defaultUsersIAM();
+    iam.defaultUserGroups = [];
+    iam.roleBindings = [];
+    const fixture = await defaultUsersApp(t, "principal-create", iam);
+    const namespaceId = await defaultNamespace(fixture);
+    const other = await fixture.inject("POST", "/namespaces", { name: "other" });
+    assert.equal(other.statusCode, 201, other.body);
+    const alice = await fixture.account("operator");
+    const base = "/namespaces/" + namespaceId;
+    const grant = {
+      ...iam,
+      namespacePrincipalBindings: [
+        { principalId: alice.principalId, namespaceId, role: "agent_creator" },
+      ],
+    };
+    await restartedController(fixture.controller, fixture.state, grant).applyIAMConfiguration();
+    await ownedAgent(base, alice);
+    assert.equal(
+      (await alice.request("GET", "/namespaces/" + other.json().data.id + "/agent-capabilities"))
+        .status,
+      403,
+    );
+    await restartedController(fixture.controller, fixture.state, iam).applyIAMConfiguration();
+    assert.equal((await alice.request("GET", base + "/agent-capabilities")).status, 403);
+  },
+);
