@@ -46,7 +46,7 @@ See the [API reference](api.md#connections) for request and response fields.
 
 ## Connect an account
 
-OCC handles browser consent and the callback. After the code exchange, the selected TokenService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Agent attachment and delivery of OAuth Sources remain pending.
+OCC handles browser consent and the callback. After the code exchange, the selected TokenService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Eligible Plugin selections can use the OAuth Source at Agent admission without a separate attachment. Delivery through a running Plugin Agent remains unqualified.
 
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
