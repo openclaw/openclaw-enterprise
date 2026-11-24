@@ -97,7 +97,7 @@ status. The Refresh Driver owns device exchange and refresh configuration.
 | ---------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------- | --------- | ------------------------------ |
 | `openai`                     | `api_key` (required)                        | `authorized_base_url` (optional)                                                | `none`    | `openai` / `api_key`           |
 | `codex-pat`                  | `access_token` (required)                   | None                                                                            | `none`    | `openai` / `codex_pat`         |
-| `codex-oauth` (Experimental) | None; device login                          | None                                                                            | `refresh` | `openai` / `chatgptAuthTokens` |
+| `codex-oauth` (Experimental) | None; Gateway-owned Source                  | None                                                                            | `refresh` | `openai` / `chatgptAuthTokens` |
 | `bearer-token`               | `token` (required)                          | `host`, `env_var` (required); `port`, `path`, `protocol`                        | `none`    | None (tool credential)         |
 | `oauth2-client-credentials`  | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential)         |
 | `oauth2-refresh-token`       | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential)         |

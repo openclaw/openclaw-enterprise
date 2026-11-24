@@ -79,10 +79,8 @@ principal `credential_source:operate` on it.
 [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
 · [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
 
-Allow the OCE API to reach the MCP endpoint for **Load tools**. For HTTPS port 443,
-set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refresh
-them when DNS changes. Other ports need the Installation's managed egress policy.
-This setting is separate from model discovery. Worker calls use the Sandbox policy.
+For **Load tools**, verify that the OCE API can resolve and reach the MCP endpoint.
+The chart gives the API unrestricted egress; Agent tool calls still use the Sandbox policy.
 
 Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
 Choose the tools to enable, then save and deploy. Loading tools again refreshes

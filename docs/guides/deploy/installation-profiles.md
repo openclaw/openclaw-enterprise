@@ -168,8 +168,7 @@ ChatGPT Backend admin credential path:
     "managedServiceAccounts": {
       "workspaceId": "11111111-1111-4111-8111-111111111111",
       "adminSecretName": "occ-chatgpt-admin",
-      "adminSecretKey": "admin-key",
-      "providerCidr": "198.51.100.30/32"
+      "adminSecretKey": "admin-key"
     }
   }
 }
@@ -198,19 +197,11 @@ set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
 and rejects URLs the controller would reject at startup, including any `@` before the host and a tab, newline, or a backslash before the query.
 
-### Hosted discovery egress
+### Hosted discovery connectivity
 
-With hosted `codex-plugin`, omitted `codex.modelDiscoveryCidrs` resolves
-`auth.openai.com` and `chatgpt.com` from the renderer host into Helm
-`api.modelDiscoveryCidrs`. This grants only release API Pods TCP 443 to those
-IPv4 `/32` hosts.
-
-Supplied lists stay unchanged without DNS queries; `[]` requires an external
-HTTPS policy for both hosts. DNS failure leaves both YAML files absent.
-
-Verify API Pod DNS/NAT destinations and **Load plugins** with an authorized PAT.
-Rerender and upgrade Helm after address changes; this initial snapshot does not
-refresh itself.
+The chart gives API and worker Pods unrestricted egress. Verify API Pod DNS and
+HTTPS connectivity to the hosted discovery service before using **Load plugins**.
+Rendering does not resolve provider addresses or create a provider allowlist.
 
 ### External sign-in and trusted proxies
 
@@ -250,8 +241,7 @@ short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
 generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
-`google` and `oidc` accept `secretName`, `clientIdKey`, `clientSecretKey` and
-`egressCidrs`. OIDC also accepts `tokenAuth`, `displayName` and `enrollment`.
+`google` and `oidc` accept `secretName`, `clientIdKey`, and `clientSecretKey`. OIDC also accepts `tokenAuth`, `displayName` and `enrollment`.
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
 Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
 `origin`, and `x-api-key`; use a header that carries plain client addresses, such as
@@ -322,6 +312,11 @@ and its path in `outputs`. Unreadable or malformed JSON produces no report.
 Both failures exit nonzero and leave no YAML outputs.
 
 ## Use rendered files
+
+To prepare a fresh install from a previous profile, keep the original input
+JSON and checked YAML pair. Review the JSON for the target release, then render
+into a new private directory. Compare any hand edits with the new pair before
+installing. Update the JSON and render again for settings that the profile owns.
 
 Set `OCC_INPUT_DIRECTORY` to the output directory, then complete the
 [production shell and context setup](production-installation.md#configure-the-installation).

@@ -1225,7 +1225,10 @@ function prepareHarnessAuth(
     (harness.id === "codex" || harness.id === "openclaw")
   ) {
     const selected = harnessModelAuthentication(configuration);
+    const accountLogin = resolvedAuth.sourceType === "oauth2-refresh-token";
+    const environmentName = accountLogin ? "CODEX_ACCESS_TOKEN" : selected.environmentName;
     if (
+      (accountLogin && (harness.id !== "codex" || selected.providerId !== "codex")) ||
       !revision.credentialDeployment?.bindings.some(
         ({ consumer, sourceRef, projection }) =>
           consumer.kind === "model" &&
@@ -1233,7 +1236,7 @@ function prepareHarnessAuth(
           sourceRef.kind === "credential_source" &&
           sourceRef.namespaceId === revision.namespaceId &&
           sourceRef.id === resolvedAuth.sourceId &&
-          projection.environment === selected.environmentName &&
+          projection.environment === environmentName &&
           projection.presentation === "bearer",
       )
     ) {
@@ -1242,7 +1245,7 @@ function prepareHarnessAuth(
       );
     }
     // This is the concrete launcher's presentation mode, derived from the admitted binding.
-    const loginMode = "api_key";
+    const loginMode = accountLogin ? "chatgptAuthTokens" : "api_key";
     if (harness.id === "codex") {
       environment.push({ name: "CODEX_LOGIN_MODE", value: loginMode });
     }
@@ -15999,7 +16002,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return (
       (auth.method === "api_key" ||
         (auth.method === "credential_source" &&
-          (auth.tokenServiceInstanceId !== undefined || auth.loginMode === "api_key"))) &&
+          (auth.tokenServiceInstanceId !== undefined
+            ? auth.sourceType === "static"
+            : auth.loginMode === "api_key"))) &&
       (harness.id === "codex" ||
         (harness.id === "openclaw" &&
           nativeOpenAiModelSelections(configuration)?.[0]?.provider === "openai"))
@@ -16083,8 +16088,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         (revision.harness.id === "codex" &&
           (revision.harnessAuth.method === "api_key" ||
             (revision.harnessAuth.method === "credential_source" &&
-              (revision.harnessAuth.tokenServiceInstanceId !== undefined ||
-                revision.harnessAuth.loginMode === "api_key"))) !==
+              (revision.harnessAuth.tokenServiceInstanceId !== undefined
+                ? revision.harnessAuth.sourceType === "static"
+                : revision.harnessAuth.loginMode === "api_key"))) !==
             (provider !== undefined)) ||
         (revision.harness.id === "codex" &&
           provider !== undefined &&
@@ -16261,19 +16267,28 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     const auth = revision.harnessAuth;
     const providerOwned = sandbox?.provisionHarness !== undefined;
+    let openShellProgram: CodexLaunch["openShellProgram"] = "ordinary";
+    if (
+      revision.executionAdmission.version === 8 &&
+      revision.executionAdmission.mode === "standalone" &&
+      auth.method === "credential_source" &&
+      auth.tokenServiceInstanceId !== undefined &&
+      auth.sourceType === "oauth2-refresh-token"
+    ) {
+      openShellProgram = "account";
+    } else if (
+      revision.executionAdmission.mode === "unprotected" &&
+      auth.method === "credential_source" &&
+      auth.loginMode === "codex_pat"
+    ) {
+      openShellProgram = "pat";
+    }
     return {
       providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
       ...(prefix === PROXY_CODEX_LAUNCH && { explicitProxy: true }),
       ...(sandbox?.implementation === "strands-box" && { strandsBox: true }),
-      ...(prefix === OPENSHELL_CODEX_LAUNCH && {
-        openShellProgram:
-          revision.executionAdmission.mode === "unprotected" &&
-          auth.method === "credential_source" &&
-          auth.loginMode === "codex_pat"
-            ? "pat"
-            : "ordinary",
-      }),
+      ...(prefix === OPENSHELL_CODEX_LAUNCH && { openShellProgram }),
       ...(revision.egressPlan?.repositoryGitAuthorization === "network-policy" && {
         nativeGit: true,
       }),

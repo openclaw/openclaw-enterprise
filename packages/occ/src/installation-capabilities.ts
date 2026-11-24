@@ -6,6 +6,7 @@ import type {
   InstallationCapabilities,
   PluginDriver,
   SandboxDriver,
+  TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { HARNESS_EXECUTION_MODES } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
@@ -21,6 +22,7 @@ interface InstallationCapabilityDependencies {
   readonly allowsGatewaySourceType: (sourceType: CredentialSourceType) => boolean;
   readonly enabledPluginDrivers: () => readonly PluginDriver[];
   readonly sandboxDriver: () => SandboxDriver | undefined;
+  readonly tokenServiceDriver: () => TokenServiceDriver | undefined;
 }
 
 async function readInstallationCapabilities(
@@ -34,6 +36,7 @@ async function readInstallationCapabilities(
     nativeWorkers: _unchecked,
     openclaw: _derived,
     pluginCatalogs: _catalogs,
+    deviceAuthorization: _deviceAuthorization,
     ...declared
   } = installation.capabilities ?? {};
   const openclaw = openClawExecutionModes(nativeWorkerSupport, dependencies.sandboxDriver);
@@ -68,8 +71,13 @@ async function readInstallationCapabilities(
       ? { pluginDiscovery: { credential: driver.discoveryCredential ?? "required" } }
       : {}),
   }));
+  const owner = dependencies.tokenServiceDriver();
+  const deviceAuthorization =
+    typeof owner?.startDeviceAuthorization === "function" &&
+    typeof owner.pollDeviceAuthorization === "function";
   return {
     ...capabilities,
+    ...(deviceAuthorization ? { deviceAuthorization: true as const } : {}),
     ...(catalogs.length > 0 ? { pluginCatalogs: catalogs } : {}),
   };
 }

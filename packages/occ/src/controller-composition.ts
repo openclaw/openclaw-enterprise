@@ -561,13 +561,11 @@ function createCredentialServices({
     timestamp: resourceValues.timestamp,
     transactions,
     authority,
-    hasDriver: (capability) => drivers.hasSelection(capability),
-    credentialGatewayDriver: credentialSourceDrivers.credentialGatewayDriver,
-    credentialRefreshDriver: credentialSourceDrivers.credentialRefreshDriver,
-    credentialSourceContext: credentialSourceOperations.credentialSourceContext,
-    authorizedCredentialSource: credentialSourceOperations.authorizedCredentialSource,
-    createSource: (principalId, input, audit, registrationAudit) =>
-      publicController.createCredentialSource(principalId, input, audit, registrationAudit),
+    hasTokenService: () => drivers.hasSelection("token_service"),
+    ownedTokenServiceDriver: (instanceId) =>
+      managedCredentialSources.ownedTokenServiceDriver(instanceId),
+    currentTokenServiceInstanceId: () => managedCredentialSources.currentTokenServiceInstanceId(),
+    bindCreator: iamPolicy.bindCreator,
   });
   const managedCredentialSources: ManagedCredentialSources = createManagedCredentialSources({
     transactions,
@@ -852,6 +850,7 @@ export function createControllerComposition(
   const credentialProxyCapacity: CredentialProxyCapacity = capacity.capacity;
   const backendMap: ReadonlyMap<string, BackendDefinition> = backendDefinitionMap(backends);
   const repositoryPolicy = createRepositoryPolicyOperations({
+    installationId: admittedInstallation.id,
     configurationDriver: configurationOperations.selectedDriver,
     selectedProxyOwner: () => drivers.selectedProxyOwner(),
     credentialSourceOwner: credentialSourceDrivers.credentialSourceOwner,
@@ -884,6 +883,8 @@ export function createControllerComposition(
     authority,
     authorizedCredentialSource: credentialSourceOperations.authorizedCredentialSource,
     sourceReader: pluginSourceReader,
+    ownedTokenServiceDriver: (instanceId) =>
+      managedCredentialSources.ownedTokenServiceDriver(instanceId),
     secretDriver: secretOperations.secretDriver,
     readConfiguration: (metadata) => configurationOperations.savedConfigurationReader(metadata)(),
     modelPolicyAgent,
@@ -910,6 +911,8 @@ export function createControllerComposition(
     authority,
     transactions,
     sandboxDriver: sandboxPolicyOperations.sandboxDriver,
+    tokenServiceDriver: () =>
+      drivers.hasSelection("token_service") ? drivers.selectedDriver("token_service") : undefined,
     readGatewaySourceTypes: () =>
       drivers.hasSelection("credential_gateway")
         ? credentialGatewayOperation(() =>

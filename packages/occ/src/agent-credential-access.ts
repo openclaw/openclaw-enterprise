@@ -180,7 +180,11 @@ export function createAgentCredentialAccess({
       }
       if (isManagedTokenServiceSource(source)) {
         requireTokenServiceOwner(source.tokenServiceInstanceId);
-        if (source.type !== "static" || source.connectionTemplateId !== undefined) {
+        if (
+          source.connectionTemplateId !== undefined ||
+          (source.type !== "static" &&
+            (source.type !== "oauth2-refresh-token" || source.consent.kind !== "builtin_codex"))
+        ) {
           throw new ResourceStateConflictError(
             "Template-associated Source admission is not implemented.",
           );

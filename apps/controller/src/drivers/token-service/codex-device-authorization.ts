@@ -126,26 +126,19 @@ export async function startCodexDeviceAuthorization(
   }
 }
 
-export function codexDeviceAuthorizationState(privateState: string) {
+export async function pollCodexDeviceAuthorization(
+  privateState: string,
+  signal: AbortSignal,
+): Promise<DeviceTokens | undefined> {
   let state: Record<string, unknown> | undefined;
   try {
     state = asRecord(JSON.parse(privateState));
   } catch {
     throw new Error("Codex device authorization state is invalid.");
   }
-  return {
-    deviceAuthId: required(state?.deviceAuthId),
-    userCode: required(state?.userCode),
-  };
-}
-
-export async function pollCodexDeviceAuthorization(
-  state: ReturnType<typeof codexDeviceAuthorizationState>,
-  signal: AbortSignal,
-): Promise<DeviceTokens | undefined> {
   const body = JSON.stringify({
-    device_auth_id: required(state.deviceAuthId),
-    user_code: required(state.userCode),
+    device_auth_id: required(state?.deviceAuthId),
+    user_code: required(state?.userCode),
   });
   let response: Response;
   try {

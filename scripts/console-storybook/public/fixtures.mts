@@ -4,7 +4,7 @@ import { createPresetFixtures } from "./preset-fixture.mts";
 import type {
   AgentDeviceAuthorizationResponse,
   AgentPluginCredentialSlot,
-  CredentialSourceMetadata,
+  CredentialSourceResponse,
   SecretMetadata,
   AgentRuntimeContainerStatus,
   AgentRuntimePodStatus,
@@ -128,7 +128,7 @@ type FixtureEvidence = Parameters<typeof serveChannelDirectory>[2] & {
 // intentionally partial replies are not asserted to be complete API records.
 type StoredIdentity = { id: string; response: object };
 type DeviceLogin = Static<typeof AgentDeviceAuthorizationResponse>["data"];
-type StoredCredentialSource = CredentialSourceMetadata;
+type StoredCredentialSource = CredentialSourceResponse["data"];
 function storedIdentity<T extends { id: string }>(response: T): StoredIdentity {
   return { id: response.id, response };
 }
@@ -683,6 +683,9 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             allowedProfiles: ["git-read"],
           },
         ];
+        if (scenario.repositoryDescriptionsPending === false) {
+          return response(options);
+        }
         const requestedDescriptions = new Set(
           url.searchParams.get("descriptionRefs")?.split(",") ?? [],
         );
@@ -743,6 +746,37 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             );
           }
           const input = Object(body) as Record<string, unknown>;
+          if (
+            input.type === "openai" &&
+            scenario.credentialSourceTypes?.some(({ type }) => type === input.type)
+          ) {
+            const refs = Object(input.secrets) as Record<string, unknown>;
+            const key = Object(refs.api_key) as Partial<SecretReference>;
+            const secret = typeof key.id === "string" ? secrets.get(key.id) : undefined;
+            if (
+              typeof input.name !== "string" ||
+              "secret" in input ||
+              key.kind !== "secret" ||
+              key.namespaceId !== namespaceId ||
+              !secret
+            ) {
+              return error(400, "INVALID_REQUEST", "Choose a model Secret in this Namespace.");
+            }
+            const id = nextId("cs");
+            const saved: StoredCredentialSource = {
+              id,
+              namespaceId,
+              name: input.name,
+              type: input.type,
+              ownerCapability: "credential_gateway",
+              config: {},
+              secrets: { api_key: secret.ref },
+              state: "ready",
+              ref: { kind: "credential_source", namespaceId, id },
+            };
+            credentialSources.set(id, saved);
+            return response(saved, 201);
+          }
           const material = input.secret;
           if (
             input.type !== "static" ||

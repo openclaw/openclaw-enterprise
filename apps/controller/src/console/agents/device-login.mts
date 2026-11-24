@@ -65,22 +65,16 @@ function readLogin(
   };
 }
 
-// A start needs a selected Credential Gateway that lists one refresh source type with a Codex
-// device login, and a selected Credential Refresh Driver (packages/occ/src/device-authorization-flow.ts). The
-// Installation's capabilities list the Gateway's source types only while one is selected, so a
-// list without that type means every start is refused with 501 (finding 2991). They do not say
-// whether a Refresh Driver is selected: true can still be refused, and that 501 names why.
+// The selected TokenService owns the device-login capability.
 export function deviceLoginOffered(capabilities: InstallationCapabilities | undefined) {
-  return (capabilities?.credentialSources?.types ?? []).some(
-    (type) => type.rotation === "refresh" && type.deviceAuthorization?.harnessId === "codex",
-  );
+  return capabilities?.deviceAuthorization === true;
 }
 
 const NOT_OFFERED =
-  "ChatGPT sign-in needs a Credential Gateway that offers ChatGPT device login and a Credential Refresh Driver, and this Installation's Drivers do not offer it. Choose another authentication method.";
+  "ChatGPT sign-in needs a selected TokenService that supports device authorization. Choose another authentication method.";
 
 // Each request checks Agent scope: create for a new Agent, or read and update for a saved Agent.
-// Starting also checks credential source create, and polling checks operate on that source.
+// Starting and completing check Source create; a ready replay checks operate on its Source.
 // The transient login itself is not an IAM resource.
 type DeviceLoginStep = "start" | "poll" | "cancel";
 const START_REMEDY =
@@ -97,7 +91,9 @@ function deviceLoginDenied(step: DeviceLoginStep, agentScoped: boolean) {
     ? "Agent read and update on this Agent"
     : "Agent create in this Namespace, which only an Installation administrator holds";
   const required =
-    step === "poll" ? `${scope}, plus credential source operate on its credential source` : scope;
+    step === "poll"
+      ? `${scope}, plus credential source create to finish linking or operate on an already linked source`
+      : scope;
   return agentScoped
     ? notIncluded(task, required)
     : `Your access does not include ${task}. It needs ${required}. ${askAdministratorTo("check your access")}`;

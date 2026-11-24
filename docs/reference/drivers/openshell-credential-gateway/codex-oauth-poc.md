@@ -3,6 +3,9 @@
 This page is part of the [OpenShell Credential Gateway](../openshell-credential-gateway.md)
 reference.
 
+This page describes Gateway-owned `codex-oauth` Sources. New Codex account
+sign-in uses [TokenService custody and native delivery](../kubernetes-compute/codex-oauth-storage.md).
+
 The experimental `codex-oauth` type uses upstream `GetProviderCredentials` and
 matching supervisor/static launcher binaries. Select paired `credential_refresh`
 and configure [operator TLS and issuer trust](../../../testing/openshell-oauth.md).

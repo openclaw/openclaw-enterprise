@@ -1,5 +1,5 @@
 import type { RepositoryGitDeliveryProfile } from "./drivers/credential-proxy/index.ts";
-import type { CredentialSourceReference } from "./index.ts";
+import type { BuiltinCodexOAuthAccount, CredentialSourceReference } from "./index.ts";
 import type { SandboxNetworkGrant } from "./sandbox-policy.ts";
 
 export type DeploymentRequestPolicy =
@@ -104,6 +104,8 @@ export interface CredentialProjection {
   readonly environment: string;
   readonly placeholder:
     { readonly kind: "runtime" } | { readonly kind: "proxy"; readonly value: string };
+  /** Trusted, nonsecret account context added by Worker from the authorized model Source. */
+  readonly account?: BuiltinCodexOAuthAccount;
 }
 
 export interface DeploymentWorkloadRequirement {

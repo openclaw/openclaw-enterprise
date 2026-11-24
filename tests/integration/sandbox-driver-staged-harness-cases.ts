@@ -5,6 +5,11 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  stagedHarnessSupervisor,
+  STAGED_HARNESS_ACTIVATE,
+  STAGED_HARNESS_PREPARE,
+} from "../../apps/controller/src/drivers/sandbox/openshell-staged-harness.ts";
 import { supportsOpenShellCredentialDeployment } from "../../apps/controller/src/composition/openshell-credential-admission.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
@@ -137,6 +142,45 @@ export async function verifyStagedModelPolicyObservation(): Promise<void> {
   });
   assert.deepEqual(loaded, retained, "new model-only policy keeps the same canonical shape");
   assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
+}
+
+export async function verifyStagedCodexAccountProjection(t: TestContext): Promise<void> {
+  const home = await temporaryDirectory(t, "staged-codex-account-");
+  const marker = join(home, "launch.json");
+  const placeholder = `openshell:resolve:env:s${"a".repeat(64)}_CODEX_ACCESS_TOKEN`;
+  const account = { accountId: "account-fixture", planType: "business", isFedramp: false };
+  const launcher = stagedHarnessSupervisor([
+    process.execPath,
+    "-e",
+    `require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ placeholder: process.env.CODEX_ACCESS_TOKEN, account: JSON.parse(process.env.OCE_CODEX_CHATGPT_ACCOUNT) }))`,
+  ]);
+  const supervisor = spawn(process.execPath, ["-e", launcher], {
+    env: { ...process.env, HOME: home },
+    stdio: "ignore",
+  });
+  t.after(() => supervisor.kill());
+  await waitFor(
+    "Codex staged supervisor",
+    () => existsSync(join(home, ".oce-staged-harness.sock")),
+    5000,
+  );
+  const projection = {
+    bindingRef: "model",
+    environment: "CODEX_ACCESS_TOKEN",
+    placeholder: { kind: "runtime" },
+    account,
+  };
+  const prepare = spawnSync(process.execPath, ["-e", STAGED_HARNESS_PREPARE], {
+    env: { ...process.env, HOME: home },
+    input: JSON.stringify([projection]),
+  });
+  assert.equal(prepare.status, 0);
+  const activate = spawnSync(process.execPath, ["-e", STAGED_HARNESS_ACTIVATE], {
+    env: { ...process.env, HOME: home, CODEX_ACCESS_TOKEN: placeholder },
+  });
+  assert.equal(activate.status, 0);
+  await waitFor("Codex staged launch", () => existsSync(marker), 5000);
+  assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), { placeholder, account });
 }
 
 export async function stagedManagedMcpPolicy(): Promise<Record<string, unknown>> {

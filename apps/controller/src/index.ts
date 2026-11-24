@@ -1230,7 +1230,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ...createDeviceAuthorizationHandlers({
       auditSink: options.auditSink,
       // Start phases belong in the factory input, before audit details are sanitized and frozen.
-      startEvent: ({ context, request }, resource, details) =>
+      transitionEvent: ({ context, request }, resource, details) =>
         event(context.operation, request, resource, "mutation", context, undefined, {
           outcome: "success",
           details,
@@ -3783,7 +3783,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event: "device_authorization.start_failed",
         requestId: request.id,
         route: request.routeOptions.url ?? "unmatched",
-        boundary: "credential_refresh",
+        boundary: "token_service",
         reason: error.reason,
         failure: error.failure,
       });

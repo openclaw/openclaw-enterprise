@@ -123,7 +123,8 @@
     {
       "path": "tests/integration/postgres-device-authorization.test.ts",
       "expectedTests": [
-        "shared authentication state isolates browser consent from device login across API replicas"
+        "shared authentication state isolates browser consent from device login across API replicas",
+        "completed Codex login admits the direct Agent model binding and refuses referenced Source deletion"
       ]
     },
     {

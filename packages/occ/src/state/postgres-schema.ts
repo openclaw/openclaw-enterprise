@@ -2760,6 +2760,7 @@ export const authenticationStates = occSchema.table(
     connectionTemplateVersion: integer("connection_template_version"),
     createdAt: timestamp("created_at", { withTimezone: true }),
     binding: jsonb("binding").notNull(),
+    credentialSourceId: text("credential_source_id"),
     phase: text("phase"),
     nextPollAt: timestamp("next_poll_at", { withTimezone: true }),
     encryptedChallenge: text("encrypted_challenge"),
@@ -2804,17 +2805,22 @@ export const authenticationStates = occSchema.table(
     ) IS TRUE)`,
     ),
     check(
+      "authentication_states_device_source_owner",
+      sql`${table.kind} = 'device_authorization' OR ${table.credentialSourceId} IS NULL`,
+    ),
+    check(
       "authentication_states_device_shape",
       sql`${table.kind} <> 'device_authorization' OR ((
       ${table.id} ~ ${identifierPatterns.secret}
       AND ${table.connectionTemplateId} IS NULL
       AND ${table.connectionTemplateVersion} IS NULL AND ${table.createdAt} IS NULL AND ${table.version} > 0
       AND jsonb_typeof(${table.binding}) = 'object'
-      AND ${table.binding} ?& ARRAY['harnessId','credentialGatewayId','credentialRefreshId','sourceId','intervalSeconds']
-      AND ${table.binding} - ARRAY['agentId','harnessId','credentialGatewayId','credentialRefreshId','sourceId','intervalSeconds'] = '{}'::jsonb
+      AND ${table.binding} ?& ARRAY['harnessId','tokenServiceInstanceId','intervalSeconds']
+      AND ${table.binding} - ARRAY['agentId','harnessId','tokenServiceInstanceId','intervalSeconds'] = '{}'::jsonb
       AND (NOT (${table.binding} ? 'agentId') OR jsonb_typeof(${table.binding}->'agentId') = 'string')
-      AND jsonb_typeof(${table.binding}->'harnessId') = 'string' AND jsonb_typeof(${table.binding}->'credentialGatewayId') = 'string'
-      AND jsonb_typeof(${table.binding}->'credentialRefreshId') = 'string' AND jsonb_typeof(${table.binding}->'sourceId') = 'string'
+      AND jsonb_typeof(${table.binding}->'harnessId') = 'string' AND jsonb_typeof(${table.binding}->'tokenServiceInstanceId') = 'string'
+      AND ((${table.phase} = 'ready') = (${table.credentialSourceId} IS NOT NULL))
+      AND (${table.credentialSourceId} IS NULL OR ${table.credentialSourceId} ~ ${identifierPatterns.credentialSource})
       AND CASE WHEN jsonb_typeof(${table.binding}->'intervalSeconds') = 'number' THEN
         (${table.binding}->>'intervalSeconds')::numeric BETWEEN 1 AND 2147483647
         AND trunc((${table.binding}->>'intervalSeconds')::numeric) = (${table.binding}->>'intervalSeconds')::numeric ELSE false END

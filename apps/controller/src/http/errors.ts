@@ -781,7 +781,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       503,
       "DEPENDENCY_UNAVAILABLE",
       error.reason === "unreachable"
-        ? "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again."
+        ? "OCC could not reach the sign-in service at auth.openai.com. Ask an operator to check API Pod DNS, routing, and HTTPS connectivity, then try again."
         : "Device login could not start. Try again.",
     );
   }

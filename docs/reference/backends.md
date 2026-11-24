@@ -320,28 +320,14 @@ backend:
     enabled: true
     secretName: occ-chatgpt-admin
     key: admin-key
-    providerCidr: "203.0.113.10/32" # Example only; replace with the approved destination.
 ```
 
 Enable it with the Installation Backend. The dedicated Secret mounts only in
 the API Pod at `/etc/openclaw/chatgpt/admin-key`; `apiKeyPath` must match.
-`providerCidr` is required when `enabled` is true: the chart refuses to render
-without exactly one IPv4 `/32`. It adds that destination on TCP/443 to the API
-Pod's NetworkPolicy. It configures no DNS, routing, or application proxy. The bundled
-client sends HTTPS directly to `api.chatgpt.com`; the upstream URL is fixed,
-and the chart configures no HTTP CONNECT or `HTTPS_PROXY` transport. Entering
-an ordinary forward proxy's IP will not cause the client to use it.
-
-Before enabling the Backend, have your network operator confirm that the
-address the NetworkPolicy sees for `api.chatgpt.com:443` is the configured
-destination. You can use a reviewed direct route where the hostname resolves
-to that address, or transparent egress already provided by your cluster that
-works with the client's direct HTTPS request and preserves the hostname and
-certificate validation. The chart provisions neither. It supports only one
-IPv4 address; if the direct hostname resolves to multiple or changing addresses,
-do not rely on a single DNS lookup. Arrange suitable egress before enabling the
-Backend. Disabled defaults keep `occ-chatgpt-admin`, `admin-key`, and an empty
-CIDR. See the [deployment guide](../guides/deploy.md) and
+The API uses unrestricted control-plane egress. The bundled client sends HTTPS
+directly to the fixed `api.chatgpt.com` origin. Verify DNS, routing, and TLS trust
+before enabling the Backend; the chart does not configure an HTTP CONNECT or
+`HTTPS_PROXY` transport. See the [deployment guide](../guides/deploy.md) and
 [security boundary](security.md).
 
 To verify the admin key and route, [issue a service-account credential](../guides/integrations/chatgpt.md#verify-backend-access).

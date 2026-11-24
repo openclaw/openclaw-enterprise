@@ -153,8 +153,8 @@ ordinary workload clients. Select the fixture HTTPS origin (without `/v1`) in
 `drivers.credential_proxy.configuration.preparedGitHub.apiOrigin` in the Installation.
 Supply `issuerCaPath: /etc/openclaw/prepared-github-issuer/ca.crt` and
 `custodyKeyPath: /etc/openclaw/prepared-github/custody.key`. In the chart select
-`preparedGitHub.custodySecretName`, `issuerCaConfigMapName`, exact `issuerCidrs`
-IPv4 /32 and `issuerPort`. The API and worker need working DNS and verified
+`preparedGitHub.custodySecretName` and `issuerCaConfigMapName`. The API and
+worker have unrestricted control-plane egress and need working DNS and verified
 TLS to that origin. The test checks the selected private origin in both Pods
 before enrollment; a credential source cannot redirect it. The test also checks
 the workload's effective authorization cannot retrieve or project the Compute signer.

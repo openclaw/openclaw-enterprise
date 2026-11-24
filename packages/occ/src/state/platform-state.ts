@@ -1,5 +1,5 @@
 import {
-  admitRepositoryNetworkPolicy,
+  isCanonicalRepositoryNetworkPolicy,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
 import type {
@@ -1987,7 +1987,7 @@ function repositories(
       namespaceId,
       id,
       version,
-      { phase, expiresAt, nextPollAt, privateState, encryptedChallenge },
+      { phase, expiresAt, nextPollAt, privateState, encryptedChallenge, sourceId },
     ) => {
       const state = snapshot.authenticationStates.get(id);
       if (
@@ -1997,7 +1997,12 @@ function repositories(
       ) {
         return false;
       }
-      const { privateState: _handle, encryptedChallenge: _challenge, ...metadata } = state;
+      const {
+        privateState: _handle,
+        encryptedChallenge: _challenge,
+        sourceId: _source,
+        ...metadata
+      } = state;
       snapshot.authenticationStates.set(
         id,
         storedCopy({
@@ -2007,6 +2012,7 @@ function repositories(
           nextPollAt,
           ...(privateState === undefined ? {} : { privateState }),
           ...(encryptedChallenge === undefined ? {} : { encryptedChallenge }),
+          ...(sourceId === undefined ? {} : { sourceId }),
           version: version + 1,
         }),
       );
@@ -3561,7 +3567,8 @@ function repositories(
       const grants = policy?.repositoryNetworkPolicy;
       const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
       if (
-        !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
+        !isDeepStrictEqual(grants, admittedPolicy?.grants) ||
+        (admittedPolicy !== undefined && !isCanonicalRepositoryNetworkPolicy(admittedPolicy)) ||
         (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
       ) {
         throw new ScopeViolationError(

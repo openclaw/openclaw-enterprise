@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-22
-last_updated_session: authoring-run/0c5f10a7-019b-4ee0-b082-146bbde6d768
+updated: 2026-11-24
+last_updated_session: authoring-run/3020b1e1-86c1-4a99-bb6b-890205dab49b
 ---
 
 # Agent Plugin Deployment Flow
@@ -29,13 +29,13 @@ graph TD
   E0 -->|no credential| D6
   E0 -->|bound| E1["Caller and Agent operate"] --> D6
   E0 -->|managed MCP| M0["Check credential and discover server tools"] --> D5
-  E0 -->|credentialSource| D2
+  E0 -->|credentialSource| E1
   D1 -->|stored source| D2["Caller source operate"] --> D6["Select Harness catalog"]
   D1 -->|token or none| D6
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|token or none| D4["Call PluginDriver"]
   D6 -->|Secret| D3["Read and recheck"] --> D4
-  D6 -->|CredentialSource| D9["Check source and exact Gateway owner; read unless canceled"]
+  D6 -->|CredentialSource| D9["Check Source and selected owner; resolve unless canceled"]
   D9 -->|success| D10["Recheck authority, source and catalog"]
   D10 -->|allowed and connected| D4
   D9 -->|canceled or failed| D12["Stop"]
@@ -74,8 +74,13 @@ cross-Namespace requests (`400`), missing Secrets (`404`) and unavailable explic
 CredentialSources (`409`). Saved discovery requires dedicated Agents.
 Unavailable bound sources return `404`. Only hosted catalogs need credentials.
 
-OpenShell metadata/exports use operator mTLS. External Gateways support
-`withSourceToken`. OCC rechecks attachment before dispatch. Owners refresh credentials.
+`packages/occ/src/plugin-discovery.ts:withPluginDiscoveryCredential` checks the
+ready Source and selected owner. For a signed-in Codex account, the selected
+TokenService resolves the current bearer from custody; OCC supplies the trusted
+account context from the Source consent. Gateway Sources retain their selected
+Backend reader or external `withSourceToken` callback. Saved discovery also
+checks that the Source is bound to the Agent and that its service principal can
+operate it. OCC rechecks authority and Source ownership before the hosted read.
 Cancellation discards late credentials.
 
 `packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools` reads tokens via the Secret Driver,
@@ -344,6 +349,7 @@ OpenClaw model probes cap CPU-based deadlines at 600 s. CPU wait is max(PSI, thr
 
 ## Changelog
 
+- 2026-11-24 02:32: Resolve hosted signed-in account discovery through the selected TokenService while retaining Gateway discovery. (authoring-run/3020b1e1-86c1-4a99-bb6b-890205dab49b - 1f256635c37842e2d94846259303fa17cfe83be2)
 - 2026-11-22 22:57: Clarify preflight outcomes and qualification limits; restore contributor history. (authoring-run/0c5f10a7-019b-4ee0-b082-146bbde6d768 - 428f5fedbb16ec1be835dee171fc6b0b824af9b3)
 - 2026-11-22 22:35: Bound WebSocket preflights independently of HTTP. (authoring-run/032774b9-7075-41b5-b108-59a16c9d3d8e - fdf309517b43823b722df9d068ba95495dcbbde6)
 - 2026-11-22 10:23: Distinguish existing Plugin delivery from the credential-design policy path. (authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e - 6747afc21)

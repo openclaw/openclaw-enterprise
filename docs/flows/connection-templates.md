@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: "2026-11-24"
-last_updated_session: "authoring-run/92d52f30-0721-45fb-aa04-3c474de214cf"
+updated: 2026-11-24
+last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
 ---
 
 # How OCC saves a connection template
@@ -91,7 +91,7 @@ After exchange, OCC sends the grant and consent details to the selected TokenSer
 
 The worker renews due OAuth Sources. A trusted consumer obtains a usable credential only through the selected TokenService. Template-backed renewal uses the Source's original consent version and client registration, including the registration's current client secret. A Template update changes the version available for a later Agent admission; it does not widen the original OAuth grant or change its refresh endpoint. TokenService records the next renewal and any narrower granted scopes.
 
-For built-in Codex consent, `apps/controller/src/drivers/token-service/codex-device-authorization.ts` sends the fixed issuer's JSON refresh request and derives access expiry from the returned JWT. The serving Codex device-login route has not switched to this issuer.
+Built-in Codex device login uses no Connection Template. See the [Credential source lifecycle](credential-source-lifecycle.md#1-register-a-source).
 
 ## Debugging and Verification
 
@@ -112,6 +112,8 @@ For built-in Codex consent, `apps/controller/src/drivers/token-service/codex-dev
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 10:41: Link built-in Codex device login to its Source lifecycle owner. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 
 - 2026-11-24 08:50: Check the Namespace and IAM grant support, and write the initial OAuth grant directly. (authoring-run/92d52f30-0721-45fb-aa04-3c474de214cf - 0829d4c18d640e890dd3b17e6cf9a3156a1c217b)
 

@@ -420,6 +420,8 @@ export class OAuthAccountTokens {
     registrationSource?: Readonly<OAuthCredentialSource>,
   ) => Promise<OAuthConnectionClient>;
   private readonly codexRefresh: OAuthGrantRefresh | undefined;
+  private readonly notifyRenewed:
+    ((ref: OAuthAccountRef, version: string, signal: AbortSignal) => Promise<void>) | undefined;
   private readonly renewing = new Map<string, Promise<OAuthConnectionStatus>>();
 
   constructor(
@@ -430,11 +432,13 @@ export class OAuthAccountTokens {
       registrationSource?: Readonly<OAuthCredentialSource>,
     ) => Promise<OAuthConnectionClient>,
     codexRefresh?: OAuthGrantRefresh,
+    notifyRenewed?: (ref: OAuthAccountRef, version: string, signal: AbortSignal) => Promise<void>,
   ) {
     this.state = state;
     this.grants = new OAuthGrantStore(secrets, refreshPinnedOAuthGrant);
     this.client = resolveClient;
     this.codexRefresh = codexRefresh;
+    this.notifyRenewed = notifyRenewed;
   }
 
   private custody(ref: OAuthAccountRef) {
@@ -569,6 +573,16 @@ export class OAuthAccountTokens {
       .then(async (outcome) => {
         if (outcome.state === "pending" && !outcome.schedule) {
           return outcome;
+        }
+        if (
+          outcome.state === "ready" &&
+          outcome.schedule !== undefined &&
+          outcome.schedule.version !== expectedVersion &&
+          this.notifyRenewed !== undefined
+        ) {
+          // If delivery fails, custody keeps the committed token and rotated grant, and the
+          // old schedule stays due so the same version can be pushed without another exchange.
+          await this.notifyRenewed(ref, outcome.schedule.version, signal);
         }
         await this.state.transact(async (unit) => {
           const source = await unit.credentialSources.lockCredentialSource(

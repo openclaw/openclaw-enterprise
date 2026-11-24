@@ -5,7 +5,6 @@ import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/t
 import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
 import { administrator, fixture } from "./credential-source-occ-fixture.ts";
 import {
-  codexDeviceAuthorizationState,
   pollCodexDeviceAuthorization,
   startCodexDeviceAuthorization,
 } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
@@ -58,14 +57,13 @@ test("Codex device authorization validates issuer transport and grant fields", a
         });
       } else {
         const login = await startCodexDeviceAuthorization(signal);
-        const state = codexDeviceAuthorizationState(login.privateState);
         if (phase === 1) {
           // A refused pre-code request retains the existing pending behavior.
-          assert.equal(await pollCodexDeviceAuthorization(state, signal), undefined);
+          assert.equal(await pollCodexDeviceAuthorization(login.privateState, signal), undefined);
         } else {
           // Native fetch refuses the redirect itself (redirect: "error").
           await assert.rejects(
-            pollCodexDeviceAuthorization(state, signal),
+            pollCodexDeviceAuthorization(login.privateState, signal),
             (error) => error instanceof TypeError && error.cause?.message === "unexpected redirect",
           );
         }
@@ -123,8 +121,7 @@ test("Codex device authorization validates issuer transport and grant fields", a
     );
     const signal = AbortSignal.timeout(10_000);
     const login = await startCodexDeviceAuthorization(signal);
-    const state = codexDeviceAuthorizationState(login.privateState);
-    const grant = await pollCodexDeviceAuthorization(state, signal);
+    const grant = await pollCodexDeviceAuthorization(login.privateState, signal);
     assert.deepEqual(grant, {
       accessToken,
       expiresAt: new Date(expirySeconds * 1000).toISOString(),
@@ -137,16 +134,13 @@ test("Codex device authorization validates issuer transport and grant fields", a
     tokenType = undefined;
     const withoutType = await startCodexDeviceAuthorization(signal);
     assert.ok(
-      await pollCodexDeviceAuthorization(
-        codexDeviceAuthorizationState(withoutType.privateState),
-        signal,
-      ),
+      await pollCodexDeviceAuthorization(withoutType.privateState, signal),
       "the fixed issuer may omit the token type as the existing login client permits",
     );
     tokenType = "DPoP";
     const unsupported = await startCodexDeviceAuthorization(signal);
     await assert.rejects(
-      pollCodexDeviceAuthorization(codexDeviceAuthorizationState(unsupported.privateState), signal),
+      pollCodexDeviceAuthorization(unsupported.privateState, signal),
       /unsupported token type/,
     );
   });
@@ -154,11 +148,23 @@ test("Codex device authorization validates issuer transport and grant fields", a
 
 test("the selected TokenService refreshes the fixed Codex grant using the provider response", async (t) => {
   const f = await fixture({ withoutGateway: true });
+  const deliveryEvents = [];
+  let deliveryFailure = false;
+  const delivery = {
+    async notifyCredentialUpdated(notification, resolveCredential, signal) {
+      signal.throwIfAborted();
+      deliveryEvents.push({ notification, credential: await resolveCredential() });
+      if (deliveryFailure) {
+        throw new Error("private delivery diagnostic");
+      }
+    },
+  };
   await installTokenServiceDriver(
     f.controller,
     {
       installation: { drivers: { token_service: { id: "codex-refresh-owner" } } },
       secretDriver: f.secretDriver,
+      credentialDeliveryRegistration: { require: () => delivery },
     },
     f.state,
   );
@@ -171,6 +177,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   const rotatedAgain = randomUUID();
   const scopedRefresh = randomUUID();
   const clientRotatedRefresh = randomUUID();
+  const rotatedAfterDeliveryFailure = randomUUID();
   const initialExpiry = Math.floor(Date.now() / 1000) + 3600;
   const renewedExpiry = initialExpiry + 3600;
   const renewedAccess = jwt({
@@ -207,7 +214,11 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     tokenServiceInstanceId: instanceId,
   };
   const received = [];
-  let responseIndex = 0;
+  let replies = [];
+  const useIssuerReplies = (...next) => {
+    received.length = 0;
+    replies = next;
+  };
   const privateIssuerMessage = "provider diagnostic must remain private";
   const server = await startProviderServer(t, async (request, response) => {
     const raw = await readProviderRequestBody(request);
@@ -219,46 +230,10 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     }
     received.push({ contentType: request.headers["content-type"], body });
     response.setHeader("content-type", "application/json");
-    const index = responseIndex++;
-    if (index === 6) {
-      response.statusCode = 401;
-      response.end(JSON.stringify({ error: "invalid_client" }));
-      return;
-    }
-    if (index === 7) {
-      response.end(JSON.stringify({ refresh_token: clientRotatedRefresh }));
-      return;
-    }
-    if (index === 8) {
-      response.end(JSON.stringify({ access_token: renewedAccess }));
-      return;
-    }
-    if (index === 5) {
-      response.end(JSON.stringify({ refresh_token: scopedRefresh, scope: "openid" }));
-      return;
-    }
-    if (index === 4) {
-      response.end(
-        JSON.stringify({ message: privateIssuerMessage, padding: "x".repeat(64 * 1024) }),
-      );
-      return;
-    }
-    if (index === 3) {
-      response.statusCode = 403;
-      response.end(
-        JSON.stringify({ error: { code: "refresh_token_reused", message: privateIssuerMessage } }),
-      );
-      return;
-    }
-    response.end(
-      JSON.stringify(
-        [
-          { access_token: renewedAccess, refresh_token: rotatedRefresh, scope: "openid" },
-          { refresh_token: rotatedAgain },
-          { access_token: renewedAccess, token_type: "DPoP" },
-        ][index],
-      ),
-    );
+    const reply = replies.shift();
+    assert.ok(reply, "the scenario prepares each expected issuer response");
+    response.statusCode = reply.status ?? 200;
+    response.end(JSON.stringify(reply.body));
   });
   redirectProviderFetch(
     t,
@@ -267,6 +242,11 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   );
 
   // Codex supplies expiry in the access JWT rather than generic OAuth expires_in.
+  useIssuerReplies(
+    { body: { access_token: renewedAccess, refresh_token: rotatedRefresh, scope: "openid" } },
+    { body: { refresh_token: rotatedAgain } },
+    { body: { access_token: renewedAccess, token_type: "DPoP" } },
+  );
   const first = await owner.forceRefresh(sourceInstance, signal);
   const refreshed = await owner.getRefreshStatus(first, signal);
   assert.equal(
@@ -280,6 +260,10 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     "only the selected owner resolves the refreshed access token",
   );
   assert.equal(access.expiresAt, new Date(renewedExpiry * 1000).toISOString());
+  assert.deepEqual(deliveryEvents[0], {
+    notification: { sourceRef: sourceInstance.sourceRef, version: access.version },
+    credential: access,
+  });
   const settled = await f.state.read(({ credentialSources }) =>
     credentialSources.findCredentialSource(f.namespace.id, source.id),
   );
@@ -335,6 +319,10 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
 
   // A nested provider refusal on a non-401 response needs a new consent;
   // its private diagnostic must not become public refresh status.
+  useIssuerReplies({
+    status: 403,
+    body: { error: { code: "refresh_token_reused", message: privateIssuerMessage } },
+  });
   const reusedSource = await registerSource("Codex reused grant fixture", randomUUID());
   const reusedOperation = await owner.forceRefresh(
     {
@@ -354,6 +342,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
 
   // The issuer may have consumed a rotating grant before sending an oversized
   // response. Quarantine it without exposing diagnostics or issuing an access token.
+  useIssuerReplies({ body: { message: privateIssuerMessage, padding: "x".repeat(64 * 1024) } });
   const oversizedSource = await registerSource("Codex oversized response fixture", randomUUID());
   const oversizedInstance = {
     ...sourceInstance,
@@ -373,6 +362,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
 
   // Codex's partial refresh response does not carry scope authority. Refuse a changed scope
   // without a replacement access token instead of publishing an unsupported narrowing.
+  useIssuerReplies({ body: { refresh_token: scopedRefresh, scope: "openid" } });
   const scopedSource = await registerSource("Codex malformed scope fixture", randomUUID(), [
     "openid",
     "profile",
@@ -381,6 +371,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     ...sourceInstance,
     sourceRef: { ...sourceInstance.sourceRef, id: scopedSource.id },
   };
+  const deliveriesBeforePartial = deliveryEvents.length;
   const scopedOperation = await owner.forceRefresh(scopedInstance, signal);
   const scopedFailure = await owner.getRefreshStatus(scopedOperation, signal);
   assert.equal(scopedFailure.state, "failed");
@@ -390,12 +381,18 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     credentialSources.findCredentialSource(f.namespace.id, scopedSource.id),
   );
   assert.deepEqual(unchanged.consent.grantedScopes, ["openid", "profile"]);
+  assert.equal(deliveryEvents.length, deliveriesBeforePartial, "no malformed grant is pushed");
   await assert.rejects(owner.resolveCredential(scopedInstance, signal), {
     name: "ResourceStateConflictError",
   });
 
   // A 401 client-authentication error does not consume the grant. Keep it in custody so
   // a later attempt can recover without asking the user to authorize again.
+  useIssuerReplies(
+    { status: 401, body: { error: "invalid_client" } },
+    { body: { refresh_token: clientRotatedRefresh } },
+    { body: { access_token: renewedAccess } },
+  );
   const clientRefresh = randomUUID();
   const clientSource = await registerSource("Codex refused client fixture", clientRefresh);
   const clientInstance = {
@@ -411,13 +408,43 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   const clientRetry = await owner.forceRefresh(clientInstance, signal);
   const pending = await owner.getRefreshStatus(clientRetry, signal);
   assert.equal(pending.state, "pending");
-  assert.equal(received[7].body.refresh_token, clientRefresh);
+  assert.equal(received[1].body.refresh_token, clientRefresh);
   await assert.rejects(owner.resolveCredential(clientInstance, signal), {
     name: "ResourceStateConflictError",
   });
   const recovered = await owner.forceRefresh(clientInstance, signal);
   assert.equal((await owner.getRefreshStatus(recovered, signal)).state, "ready");
-  assert.equal(received[8].body.refresh_token, clientRotatedRefresh);
+  assert.equal(received[2].body.refresh_token, clientRotatedRefresh);
+
+  // Delivery cannot roll back an issuer rotation. A failed push retains the committed
+  // grant and due schedule; retry pushes the same version without exchanging it again.
+  useIssuerReplies(
+    { body: { access_token: renewedAccess, refresh_token: rotatedAfterDeliveryFailure } },
+    { body: { access_token: renewedAccess } },
+  );
+  const failedSource = await registerSource("Codex delivery failure fixture", randomUUID());
+  const failedInstance = {
+    ...sourceInstance,
+    sourceRef: { ...sourceInstance.sourceRef, id: failedSource.id },
+  };
+  deliveryFailure = true;
+  await assert.rejects(owner.forceRefresh(failedInstance, signal), (error) => {
+    assert.equal(error.name, "CredentialDeliveryFailedError");
+    assert.ok(!error.message.includes("private delivery diagnostic"));
+    return true;
+  });
+  const failedDelivery = deliveryEvents.at(-1);
+  const due = await f.state.read((view) =>
+    view.oauthCredentials.findTokenCustody(f.namespace.id, failedSource.id),
+  );
+  assert.equal(due.due, true);
+  const exchanges = received.length;
+  deliveryFailure = false;
+  await owner.forceRefresh(failedInstance, signal);
+  assert.equal(received.length, exchanges, "delivery retry reuses committed custody");
+  assert.equal(deliveryEvents.at(-1).notification.version, failedDelivery.notification.version);
+  await owner.forceRefresh(failedInstance, signal);
+  assert.equal(received[1].body.refresh_token, rotatedAfterDeliveryFailure);
 });
 
 function jwt(payload) {

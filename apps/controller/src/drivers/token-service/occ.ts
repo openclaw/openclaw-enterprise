@@ -38,7 +38,6 @@ import type { OAuthAccountTokens } from "../../backends/token-service/oauth-conn
 import { withoutMutationDeadline } from "../../admission/mutation-deadline.ts";
 import { withComputeAbortSignal } from "../compute/operation-context.ts";
 import {
-  codexDeviceAuthorizationState,
   pollCodexDeviceAuthorization,
   startCodexDeviceAuthorization,
 } from "./codex-device-authorization.ts";
@@ -198,10 +197,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     signal: AbortSignal,
   ): Promise<TokenServiceDeviceAuthorizationResult> {
     this.assertDeviceEnrollment(context);
-    const result = await pollCodexDeviceAuthorization(
-      codexDeviceAuthorizationState(privateState),
-      signal,
-    );
+    const result = await pollCodexDeviceAuthorization(privateState, signal);
     if (!result) {
       return { status: "pending" };
     }
