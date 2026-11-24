@@ -925,11 +925,14 @@ test(
       );
       return remaining === undefined ? true : undefined;
     });
-    const workerCompletion = await pool.query(
-      `SELECT actor_id, details->'removedAccessBindings' AS removed FROM occ.audit_events
-       WHERE action='openclaw.credential_sources.delete' AND resource_id=$1 AND outcome='success'`,
-      [id],
-    );
+    const workerCompletion = await waitFor("the worker retirement audit", async () => {
+      const result = await pool.query(
+        `SELECT actor_id, details->'removedAccessBindings' AS removed FROM occ.audit_events
+         WHERE action='openclaw.credential_sources.delete' AND resource_id=$1 AND outcome='success'`,
+        [id],
+      );
+      return result.rowCount === 1 ? result : undefined;
+    });
     assert.equal(workerCompletion.rowCount, 1);
     assert.equal(workerCompletion.rows[0].actor_id, ownerId);
     assert.deepEqual(
