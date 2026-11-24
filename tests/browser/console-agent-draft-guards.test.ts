@@ -1339,7 +1339,7 @@ test("Create Agent requests ordinary provisioning when eligible GitHub repositor
 });
 
 test("Create Agent saves GitHub grants before the first deployment and rolls back a refused draft", async (t) => {
-  const { fixture, controller, namespaceId, app, tooling, grants, page, requests, agents, mode } =
+  const { fixture, controller, namespaceId, app, tooling, page, requests, agents, mode } =
     await openRepositoryCreate(t);
   // Return to a retained draft before the first selection. Its empty policy
   // picker must not become an access-profile picker that provisions immediately.
@@ -2018,7 +2018,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.equal(await issue.isVisible(), false);
   await advanced.click();
   // Save a durable limit while the Namespace already blocks issue creation.
-  await row.getByText("Read-only · Limited by current permissions").waitFor();
+  await row.getByText("Current limit · Read-only").waitFor();
   await issue.selectOption("read");
   await row.getByText("Read and open", { exact: true }).waitFor();
   const restricted = [{ ...nativeRepo, apiLimits: { issues: "read" } }, peerRepo];
@@ -2037,13 +2037,13 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.equal(await issue.inputValue(), "read");
   assert.equal(await pull.inputValue(), "");
   // Changing the default blocks omitted resources. Explicit limits survive a role change.
-  await row.getByRole("checkbox", { name: /Block API access unless listed/ }).check();
+  await row.getByRole("checkbox", { name: /Allow only explicit API selections/ }).check();
   await row.getByText("No access", { exact: true }).filter({ visible: true }).waitFor();
   await pull.selectOption("write");
   await role.selectOption("read");
   await issue.selectOption("none");
   assert.equal(await pull.inputValue(), "write");
-  await row.getByText("Read-only", { exact: true }).filter({ visible: true }).waitFor();
+  await row.getByText("Current limit · Read-only").waitFor();
   await role.selectOption("write");
   assert.deepEqual(await saveGrant(), [
     { ...nativeRepo, apiLimits: { default: "none", issues: "none", pull_requests: "write" } },

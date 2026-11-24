@@ -168,7 +168,7 @@ function repositoryApiEditor(
         missingGrant && key === "pull_requests" ? "read" : "write",
       );
       effective.textContent =
-        level === requested ? levels[level] : `${levels[level]} · Limited by current permissions`;
+        level === (value ?? requested) ? levels[level] : `Current limit · ${levels[level]}`;
     }
     return { key, select, row, render };
   });
@@ -198,11 +198,11 @@ function repositoryApiEditor(
       element(
         "span",
         {},
-        "Block API access unless listed",
+        "Allow only explicit API selections",
         element(
           "span",
           { className: "hint" },
-          "Applies to existing and future API resources. Git access stays the same.",
+          "Unspecified and future resources are blocked. Git is unchanged.",
         ),
       ),
     ),
@@ -214,11 +214,7 @@ function repositoryApiEditor(
     reset,
   );
   details.addEventListener("change", () => {
-    const limits: {
-      default?: "none";
-      issues?: RepositoryApiLevel;
-      pull_requests?: RepositoryApiLevel;
-    } = {};
+    const limits: { -readonly [K in keyof RepositoryApiLimits]: RepositoryApiLimits[K] } = {};
     if (block.checked) {
       limits.default = "none";
     }
