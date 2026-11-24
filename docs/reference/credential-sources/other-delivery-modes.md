@@ -175,7 +175,8 @@ Updated Gateway copies reach new Harness processes only. To rotate a copied key,
    Secret.
 2. Run `occ credential-source update ID`, adding `--file` with replacement
    `secrets` if you created a new Secret.
-3. Redeploy each Agent that uses the source.
+3. Review each consumer’s draft. Deploy only Agents intended to run with the
+   replacement. Leave other Agents offline until their next intended deployment.
 
 With OpenShell, step 2 [briefly interrupts running Agents](../drivers/kubernetes-secret.md#update-and-redeploy) that use the Source.
 

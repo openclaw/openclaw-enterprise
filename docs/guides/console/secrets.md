@@ -45,16 +45,25 @@ the Secret may not exist or you may not read it.
 
 ## Replace a value
 
+If the credential is exposed, revoke it at the provider immediately and stop
+affected workloads. To rotate related channel Secrets together, stop their
+Agents and wait for shutdown before changing any value.
+
 Select the Secret, then **Replace value**. Enter the replacement and confirm.
 The ID and bindings remain stable. The old value is never loaded into the form.
 Without Secret `update` on it, **Replace value** is disabled and the dialog says
 so; without Secret `delete`, **Delete Secret** is too.
 
-A successful save changes storage. Deploy consuming Agents again through OCE
-and verify credential use. CredentialSources hold a separate copy; follow
-[source updates](../../reference/credential-sources.md#update-a-source) as well.
-See [Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy)
-for delivery and revocation requirements.
+A successful save changes the stored value.
+
+For a Secret-backed CredentialSource, follow
+[Update a source](../../reference/credential-sources/other-delivery-modes.md#update-a-source).
+Update a static Credential Gateway copy first. Review drafts and redeploy only
+Agents intended to run. For
+direct model, channel or proxy credentials, follow
+[Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).
+For routine rotation, verify that running consumers use the replacement before
+revoking the old credential.
 
 ## Delete and recover
 
@@ -71,9 +80,13 @@ A permission refusal clears the entered value and disables submission. Ask an
 administrator for access, then refresh. Storage failures show a request ID when
 available. An **Outcome unknown** message means the write may have applied:
 
-- After creation, close and refresh the list before deciding to create another.
-- After replacement, verify credential use before deciding to submit another
-  replacement; metadata cannot confirm the stored value.
+- After creation, close the form and refresh the list. A missing name does
+  not prove the write failed. Ask someone with read access to check that
+  Namespace before creating another Secret.
+- After replacement, check which credential the consumer used, for example
+  by its ID at the provider. A consumer can still hold an older copy. Metadata or a
+  successful request alone cannot confirm replacement. If you cannot tell
+  which credential was used, leave the outcome unresolved.
 - After deletion, use **Check deletion status**. A failed or denied read cannot
   confirm removal.
 

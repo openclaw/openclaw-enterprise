@@ -290,11 +290,14 @@ application password is an environment SecretRef:
 For Slack setup, set the Agent's `executionMode` to `dedicated`; embedded mode
 is rejected because its combined gateway/Agent cannot isolate channel
 credentials. Preserve existing Codex/model settings and enable the native Slack
-plugin. Explicitly redeploy the Agent to snapshot the updated document. Store
-each channel value as a Namespace Secret and bind its exact reference to the
-native environment destination with `secretBindings`. Grant the consuming
-Agent's returned `servicePrincipalId` access through the
-[Namespace IAM APIs](../authorization.md#manage-namespace-policy). Only its
+plugin. Store each Slack credential as a Secret in the Agent's Namespace.
+Save the enabled Slack settings with `secretBindings` that map the referenced
+environment names to those Secrets. Include existing bindings you want to keep.
+You need `operate` on each bound Secret. With transactional Native IAM,
+[deployment grants the Agent missing access](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
+Otherwise, make sure its `servicePrincipalId` has `operate` on each Secret
+through the [Namespace IAM APIs](../authorization.md#manage-namespace-policy)
+or the selected IAM Driver. When the Agent should run, deploy it to apply the saved Configuration. Only its
 dedicated gateway receives these admitted bindings; generated runtime
 credentials contain no channel tokens. See
 [Kubernetes credential ownership](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
