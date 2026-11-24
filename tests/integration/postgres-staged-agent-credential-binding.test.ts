@@ -17,8 +17,10 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import type {
@@ -479,7 +481,12 @@ test(
       instanceId,
       state,
       { notifyCredentialUpdated: notify },
-      new OAuthAccountTokens(state, driver, controller.resolveConnectionClient.bind(controller)),
+      new OAuthAccountTokens(
+        state,
+        driver,
+        controller.resolveConnectionClient.bind(controller),
+        refreshCodexOAuthGrant,
+      ),
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", owner.id);
@@ -1325,23 +1332,6 @@ test(
         },
       },
     });
-    for (const configuration of [unknown, hostileEndpoint]) {
-      assert.equal(configuration.statusCode, 201, configuration.body);
-      const selected = await inject("PATCH", `${base}/agents/${agent.id}`, {
-        configurationId: configuration.json().data.id,
-      });
-      assert.equal(selected.statusCode, 200, selected.body);
-      const mismatch = await inject("POST", `${base}/agents/${agent.id}/deploy`, {});
-      assert.equal(mismatch.statusCode, 409, mismatch.body);
-      assert.equal(
-        mismatch.json().error.message,
-        "The selected model has no matching approved source preset and explicit inference route.",
-      );
-      assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
-    }
-
-    const restoredConfig = await inject("PATCH", `${base}/agents/${agent.id}`, { configurationId });
-    assert.equal(restoredConfig.statusCode, 200, restoredConfig.body);
 
     // Explicitly dropping both bindings remains possible when the previously selected owner is unavailable.
     const replacement = new OCCTokenServiceDriver(
@@ -1444,9 +1434,10 @@ test(
       ports: [{ from: 443, to: 443 }],
     };
     const ambiguousGrant = { ...grant, id: "alternate-model-egress", binary: "/usr/bin/other" };
+    const codexGrant = { ...grant, id: "codex-model-egress", binary: OPEN_SHELL_CODEX_BINARIES[0] };
     const installation = {
       ...buildSandboxInstallation(),
-      sandboxNetworkPolicyCeiling: [grant, ambiguousGrant],
+      sandboxNetworkPolicyCeiling: [grant, ambiguousGrant, codexGrant],
       runtime: { nativeWorkerSupport: "custom-image" },
     };
     Reflect.deleteProperty(installation.drivers, "credential_gateway");
@@ -1686,6 +1677,37 @@ test(
       nativeApp,
     );
     assert.equal(selectedNative.statusCode, 200, selectedNative.body);
+
+    // Exercise model and destination refusals through the qualified Compute/Sandbox path.
+    // The same transaction must roll back temporary IAM grants, revision, and queued work.
+    for (const configuration of [unknown, hostileEndpoint]) {
+      assert.equal(configuration.statusCode, 201, configuration.body);
+      const selected = await inject(
+        "PATCH",
+        `${base}/agents/${dedicatedId}`,
+        { configurationId: configuration.json().data.id },
+        nativeApp,
+      );
+      assert.equal(selected.statusCode, 200, selected.body);
+      const mismatch = await inject("POST", `${base}/agents/${dedicatedId}/deploy`, {}, nativeApp);
+      assert.equal(mismatch.statusCode, 409, mismatch.body);
+      assert.equal(
+        mismatch.json().error.message,
+        "The selected model has no matching approved source preset and explicit inference route.",
+      );
+      assert.deepEqual(
+        await deploymentEffects(nativeSource.id, dedicatedAgent),
+        noDeploymentEffects,
+      );
+    }
+    const restoredConfig = await inject(
+      "PATCH",
+      `${base}/agents/${dedicatedId}`,
+      { configurationId },
+      nativeApp,
+    );
+    assert.equal(restoredConfig.statusCode, 200, restoredConfig.body);
+
     assert.equal(
       (await inject("DELETE", `${base}/credential-sources/${providerlessId}`, undefined, nativeApp))
         .statusCode,
@@ -1888,47 +1910,190 @@ test(
       },
     ]);
 
-    assert.ok(revision);
-    // A second admitted Agent uses the same Source and native Provider. The following setup
-    // controls only deployment transport state; both drafts and immutable revisions are real.
-    const siblingResponse = await inject(
+    // Console's standard Codex Configuration deliberately keeps its Gateway provider on
+    // loopback. Admission must approve the Compute-owned upstream without widening the Source.
+    const codexValues = createHarnessConfiguration("codex", "gpt-4.1");
+    const codexConfiguration = await inject(
+      "POST",
+      `${base}/configurations`,
+      { kind: "agent", values: codexValues },
+      nativeApp,
+    );
+    assert.equal(codexConfiguration.statusCode, 201, codexConfiguration.body);
+    const codexResponse = await inject(
       "POST",
       `${base}/agents`,
       {
-        name: `Native sibling ${randomUUID()}`,
-        configurationId,
+        name: `Native Codex ${randomUUID()}`,
+        configurationId: codexConfiguration.json().data.id,
         executionMode: "dedicated",
         harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
         credentialSources: [{ sourceId: nativeSource.id }],
       },
       nativeApp,
     );
-    assert.equal(siblingResponse.statusCode, 201, siblingResponse.body);
-    const siblingId: string = siblingResponse.json().data.id;
-    const siblingNetworking = `${base}/agents/${siblingId}/sandbox-policy/networking`;
+    assert.equal(codexResponse.statusCode, 201, codexResponse.body);
+    const codexAgent = codexResponse.json().data;
+    const codexNetworking = `${base}/agents/${codexAgent.id}/sandbox-policy/networking`;
     assert.equal(
-      (await inject("PATCH", `${siblingNetworking}/editing`, { enabled: true }, nativeApp))
+      (await inject("PATCH", `${codexNetworking}/editing`, { enabled: true }, nativeApp))
         .statusCode,
       200,
     );
-    const siblingGrant = await inject(
+    // The editor may save this grant because it is in the Installation ceiling, but it must
+    // not become a Codex credential recipient merely because its host and port match.
+    const arbitraryPolicy = await inject(
       "PUT",
-      siblingNetworking,
+      codexNetworking,
       { expectedVersion: 1, additions: [grant] },
       nativeApp,
     );
-    assert.equal(siblingGrant.statusCode, 200, siblingGrant.body);
-    const siblingAdmitted = await inject(
+    assert.equal(arbitraryPolicy.statusCode, 200, arbitraryPolicy.body);
+    const codexDeploymentBeforeRefusal = await deploymentEffects(nativeSource.id, codexAgent);
+    const arbitraryExecutable = await inject(
       "POST",
-      `${base}/agents/${siblingId}/deploy`,
+      `${base}/agents/${codexAgent.id}/deploy`,
       {},
       nativeApp,
     );
-    assert.equal(siblingAdmitted.statusCode, 202, siblingAdmitted.body);
-    const siblingRevision = await nativeController.transact((unit) =>
-      unit.revisions.findRevision(namespaceId, siblingId, siblingAdmitted.json().data.id),
+    assert.equal(arbitraryExecutable.statusCode, 409, arbitraryExecutable.body);
+    assert.equal(
+      arbitraryExecutable.json().error.message,
+      "The staged model credential needs one exact, unambiguous network grant for its approved inference route.",
     );
-    assert.ok(siblingRevision);
+    assert.deepEqual(
+      await deploymentEffects(nativeSource.id, codexAgent),
+      codexDeploymentBeforeRefusal,
+    );
+    const codexPolicy = await inject(
+      "PUT",
+      codexNetworking,
+      { expectedVersion: 2, additions: [codexGrant] },
+      nativeApp,
+    );
+    assert.equal(codexPolicy.statusCode, 200, codexPolicy.body);
+    const unapprovedCodex = await inject(
+      "POST",
+      `${base}/agents/${codexAgent.id}/deploy`,
+      {
+        harnessOverrides: {
+          modelProvider: {
+            protocol: "openai-responses",
+            baseUrl: "https://unapproved.example.test/v1",
+          },
+        },
+      },
+      nativeApp,
+    );
+    assert.equal(unapprovedCodex.statusCode, 409, unapprovedCodex.body);
+    assert.deepEqual(
+      await deploymentEffects(nativeSource.id, codexAgent),
+      codexDeploymentBeforeRefusal,
+    );
+    const codexAdmitted = await inject(
+      "POST",
+      `${base}/agents/${codexAgent.id}/deploy`,
+      {},
+      nativeApp,
+    );
+    assert.equal(codexAdmitted.statusCode, 202, codexAdmitted.body);
+    const codexRevision = await nativeController.transact((unit) =>
+      unit.revisions.findRevision(namespaceId, codexAgent.id, codexAdmitted.json().data.id),
+    );
+    const savedCodexConfiguration = codexRevision?.configuration as typeof codexValues | undefined;
+    const savedCodexUpstream = codexRevision?.harness.configuration?.modelProvider as
+      { baseUrl?: string } | undefined;
+    assert.equal(savedCodexConfiguration?.agents.defaults.model, "codex/gpt-4.1");
+    assert.equal(savedCodexConfiguration?.models.providers.codex?.baseUrl, "http://127.0.0.1:9");
+    assert.equal(savedCodexUpstream?.baseUrl, "https://api.openai.com/v1");
+    assert.deepEqual(codexRevision?.credentialDeployment?.bindings[0]?.consumer, {
+      kind: "model",
+      providerId: "codex",
+    });
+    assert.deepEqual(codexRevision?.credentialDeployment?.injectionPolicies, [
+      {
+        bindingRef: "model",
+        allowedRequests: [
+          {
+            binary: codexGrant.binary,
+            host: codexGrant.host,
+            ports: codexGrant.ports,
+            requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+          },
+        ],
+      },
+    ]);
+
+    const searchableCodexResponse = await inject(
+      "POST",
+      `${base}/agents`,
+      {
+        name: `Native Codex search ${randomUUID()}`,
+        configurationId: codexConfiguration.json().data.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
+        credentialSources: [{ sourceId: nativeSource.id }],
+      },
+      nativeApp,
+    );
+    assert.equal(searchableCodexResponse.statusCode, 201, searchableCodexResponse.body);
+    const searchableCodexId = searchableCodexResponse.json().data.id;
+    const searchableNetworking = `${base}/agents/${searchableCodexId}/sandbox-policy/networking`;
+    assert.equal(
+      (await inject("PATCH", `${searchableNetworking}/editing`, { enabled: true }, nativeApp))
+        .statusCode,
+      200,
+    );
+    const searchablePolicy = await inject(
+      "PUT",
+      searchableNetworking,
+      { expectedVersion: 1, additions: [codexGrant] },
+      nativeApp,
+    );
+    assert.equal(searchablePolicy.statusCode, 200, searchablePolicy.body);
+    const searchableCodex = await inject(
+      "POST",
+      `${base}/agents/${searchableCodexId}/deploy`,
+      {
+        harnessOverrides: {
+          modelProvider: {
+            protocol: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+            supportsStandaloneWebSearch: true,
+          },
+        },
+      },
+      nativeApp,
+    );
+    assert.equal(searchableCodex.statusCode, 202, searchableCodex.body);
+    const searchableRevision = await nativeController.transact((unit) =>
+      unit.revisions.findRevision(namespaceId, searchableCodexId, searchableCodex.json().data.id),
+    );
+    assert.equal(
+      (
+        searchableRevision?.harness.configuration?.modelProvider as
+          { supportsStandaloneWebSearch?: boolean } | undefined
+      )?.supportsStandaloneWebSearch,
+      true,
+    );
+    assert.deepEqual(searchableRevision?.credentialDeployment?.injectionPolicies, [
+      {
+        bindingRef: "model",
+        allowedRequests: ["/v1/responses", "/v1/alpha/search"].map((path) => ({
+          binary: codexGrant.binary,
+          host: codexGrant.host,
+          ports: codexGrant.ports,
+          requestPolicy: { type: "http", method: "POST", path },
+        })),
+      },
+    ]);
+
+    assert.ok(revision);
+    assert.ok(codexRevision);
+    // The already admitted default Codex Agent is the sibling using the same Source and Provider.
+    // The following setup controls transport state; both Agents and immutable revisions are real.
+    const siblingId = codexAgent.id;
+    const siblingRevision = codexRevision;
 
     // Simulate an admitted deployment that reached staged delivery. The retained ConfigMap and
     // native Provider are transport state, not substitutes for withdrawal or Proxy decisions.
@@ -2032,15 +2197,18 @@ test(
       siblingSandboxName,
       siblingSandboxId,
     );
-    // Activation is a controlled prerequisite here. Use the same PostgreSQL state transition
-    // as the deployment worker, and defer its simulated deployment work before starting the
-    // real withdrawal worker. This test does not claim to qualify deployment itself.
-    for (const candidate of [revision, siblingRevision]) {
+    // Activation is a controlled prerequisite here. Defer all admitted deployment work,
+    // including the search-only admission, before starting the real withdrawal worker.
+    // This test does not claim to qualify deployment itself.
+    assert.ok(searchableRevision);
+    for (const candidate of [revision, siblingRevision, searchableRevision]) {
       const deferred = await pool.query(
         "UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour' WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND idempotency_key=$4 AND state='queued'",
         [namespaceId, candidate.agentId, candidate.id, `agent_revision:${candidate.id}:reconcile`],
       );
       assert.equal(deferred.rowCount, 1);
+    }
+    for (const candidate of [revision, siblingRevision]) {
       const active = await state.transact((unit) =>
         unit.agents.compareAndSetActiveRevision(
           namespaceId,

@@ -685,6 +685,15 @@ test("Create Agent saves a managed static Source and binds its exact ID to a dra
       });
       assert.deepEqual(payload.harnessAuth, { method: "credential_source", sourceId: source.id });
       assert.deepEqual(payload.credentialSources, [{ sourceId: source.id }]);
+      const configurationWrites = configurationPostRequests(requests, namespace.id);
+      assert.equal(configurationWrites.length, 1);
+      const configuration = object(object(configurationWrites[0]!.body).values);
+      const provider = harness === "codex" ? "codex" : "openai";
+      assert.equal(object(object(configuration.agents).defaults).model, `${provider}/gpt-5`);
+      assert.equal(
+        object(object(object(configuration.models).providers)[provider]).baseUrl,
+        harness === "codex" ? "http://127.0.0.1:9" : "https://api.openai.com/v1",
+      );
       assert.equal(JSON.stringify(payload).includes(material), false);
       assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
       assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);

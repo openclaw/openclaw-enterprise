@@ -792,14 +792,6 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           "Replacing an active Agent revision with a staged managed credential is not supported.",
         );
       }
-      const stagedModel = await prepareModelCredentialDeployment(
-        state,
-        lockedAgent,
-        harnessAuth,
-        requestedHarness,
-        configuration.values,
-        sandbox,
-      );
       const revisionHarness = immutableCopy({
         ...requestedHarness,
         configuration:
@@ -809,6 +801,14 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
             configuration.values,
           ) ?? {},
       });
+      const stagedModel = await prepareModelCredentialDeployment(
+        state,
+        lockedAgent,
+        harnessAuth,
+        revisionHarness,
+        configuration.values,
+        sandbox,
+      );
       if (stagedModel !== undefined) {
         let matches: boolean;
         if (

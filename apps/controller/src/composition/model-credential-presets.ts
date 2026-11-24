@@ -54,25 +54,20 @@ export const resolveModelCredentialPreset: NonNullable<
   if (presetId !== "openai") {
     return undefined;
   }
-  if (selected.provider !== "openai" || !selected.id?.trim()) {
+  if (
+    (selected.provider !== "openai" &&
+      !(harness.id === "codex" && selected.provider === "codex")) ||
+    !selected.id?.trim()
+  ) {
     return undefined;
   }
 
-  const overridePresent = Object.hasOwn(harness.overrides ?? {}, "modelProvider");
-  const providerSettings = overridePresent
-    ? asRecord(harness.overrides?.modelProvider)
-    : asRecord(asRecord(asRecord(configuration.models)?.providers)?.openai);
-  const protocol = overridePresent
-    ? providerSettings?.protocol
-    : (providerSettings?.api ?? providerSettings?.protocol);
+  const providerSettings = asRecord(harness.configuration?.modelProvider);
+  const protocol = providerSettings?.protocol;
   if (
     !providerSettings ||
     typeof providerSettings.baseUrl !== "string" ||
-    (protocol !== "openai-responses" && protocol !== "openai-completions") ||
-    (!overridePresent &&
-      providerSettings.api !== undefined &&
-      providerSettings.protocol !== undefined &&
-      providerSettings.api !== providerSettings.protocol)
+    (protocol !== "openai-responses" && protocol !== "openai-completions")
   ) {
     return undefined;
   }
@@ -84,10 +79,20 @@ export const resolveModelCredentialPreset: NonNullable<
     if (!modelProviderRequestApproved(provider, openAiStaticTemplate)) {
       return undefined;
     }
+    const destinations =
+      harness.id === "codex" &&
+      harness.mode === "dedicated" &&
+      providerSettings.supportsStandaloneWebSearch === true
+        ? [
+            ...openAiStaticTemplate.destinations,
+            { method: "POST", host: "api.openai.com", port: 443, path: "/v1/alpha/search" },
+          ]
+        : openAiStaticTemplate.destinations;
     return {
       providerId: selected.provider,
       provider,
-      destinations: openAiStaticTemplate.destinations,
+      destinations,
+      ...(harness.id === "codex" ? { binaries: OPEN_SHELL_CODEX_BINARIES } : {}),
       projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
     };
   } catch {

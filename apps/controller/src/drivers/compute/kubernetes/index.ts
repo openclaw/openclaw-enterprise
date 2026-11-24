@@ -16033,7 +16033,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (!applicable) {
       return {};
     }
-    if (auth.method === "credential_source" && auth.tokenServiceInstanceId !== undefined) {
+    if (
+      auth.method === "credential_source" &&
+      auth.tokenServiceInstanceId !== undefined &&
+      harness.id !== "codex"
+    ) {
       const selected = harnessModelAuthentication(configuration);
       const configured = asRecord(
         asRecord(asRecord(configuration.models)?.providers)?.[selected.providerId],
@@ -16046,6 +16050,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       modelProviderConfiguration(configuration, harness, provider);
       return { modelProvider: provider };
     }
+    // Codex's Configuration provider row belongs to the Gateway and uses unreachable loopback.
+    // Its Harness reaches the resolved Installation provider instead.
     const native = asRecord(asRecord(asRecord(configuration.models)?.providers)?.openai);
     const protocol =
       harness.id === "codex"
