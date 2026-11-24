@@ -102,10 +102,12 @@ Keeping only the bundled pair excludes external implementations. Reuse staged me
 
 ## Delivery
 
-Start with package loading and three independent Strands repairs.
+Start with two shared fixes. [Load delivery-only packages](https://github.com/openclaw/openclaw-enterprise/pull/7211) without selecting legacy egress. Close a loaded registration if [API startup](../../apps/controller/src/api-startup.ts) fails before the application takes ownership. Preserve the original error even if cleanup fails.
 
-1. Recheck ownership before adopting a concurrent create. Refuse widened ingress or egress during DNS refresh.
-2. Report only the pinned Pod as running. Refuse terminal Pods at first pin and keep ambiguous observations unknown.
-3. Reclaim stalled TLS and readiness sockets without interrupting established sessions.
+Three independent Strands repairs apply to sandbox-only deployments.
+
+1. [Recheck resource ownership](https://github.com/openclaw/openclaw-enterprise/pull/7208) before adoption. Refuse widened ingress or egress during DNS refresh.
+2. [Report only the pinned Pod as running](https://github.com/openclaw/openclaw-enterprise/pull/7206). Refuse terminal Pods at first pin. Keep uncertain observations unknown.
+3. [Reclaim stalled TLS and readiness sockets](https://github.com/openclaw/openclaw-enterprise/pull/7204) while preserving established sessions.
 
 Qualify sandbox isolation on a supported Box receiver build. Follow with protected Responses and Source lifecycle, then finite Git. Installed acceptance remains open.
