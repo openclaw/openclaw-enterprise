@@ -11,14 +11,23 @@ Use `scripts/upgrade-channel-egress` to replace the chart-managed Slack proxy
 with managed Envoy channel egress. The script uses the existing checked
 controller/database/Helm upgrade. It does not run during ordinary image upgrades.
 
-**Source support:** Kubernetes Compute installations with the pre-channel-egress
-`slackProxy` Helm settings and matching `runtime.channels.managedProxy` in the
-external Installation file. The source chart and controller from before
-[PR #6529](https://github.com/openclaw/openclaw-enterprise/pull/6529), parent of
-`32662b9d22aed39f782a7058ace80d0f82df44a6`, define this input shape.
-External proxies, mixed old/new channel settings, and already-transitioned
-installations are refused. Disabled legacy channels remain disabled: obsolete
-keys are removed, with no Envoy provisioning or Agent transition.
+**Supported sources.** Use this procedure for Kubernetes Compute installations
+that predate [PR #6529](https://github.com/openclaw/openclaw-enterprise/pull/6529).
+The parent of `32662b9d22aed39f782a7058ace80d0f82df44a6` defines the source format.
+
+- **Enabled.** Helm sets `slackProxy.enabled: true`. In the external Installation,
+  `runtime.channels.proxyUrl` and `runtime.channels.managedProxy` must match
+  this release’s chart-managed Slack proxy.
+- **Disabled.** `slackProxy` is absent or is an object with `enabled` omitted
+  or set to `false`. The installed source omits `runtime.channels`. The
+  helper also accepts an empty object, but the source controller requires a
+  valid `proxyUrl` if that object is present. The upgrade removes obsolete
+  keys and keeps channels disabled. It skips Envoy provisioning and Agent
+  Stop and Deploy. The normal release and inventory checks still apply.
+
+In both cases, `api.channelDirectoryProxyUrl` must be absent or empty.
+The helper refuses external proxies and any existing `channelEgress` key in
+Helm values or the Installation’s Compute runtime.
 
 For enabled legacy channels with running Agents, check guarded Stop.
 `--preflight-only` skips Stop. In a trusted checkout, select `OCC_BINARY`.
@@ -58,7 +67,7 @@ maintenance access, required permissions, and protected files. Retain the actual
 installed Helm values and external Installation YAML; do not regenerate them
 from an example profile. The helper checks both against the live release.
 
-Review **current saved Agent drafts**. Stop followed by Deploy creates a new
+For enabled channels, review **current saved Agent drafts**. Stop followed by Deploy creates a new
 Agent revision from that draft, including unpublished edits. Review the draft
 together with the Harness overrides requested by the revision running before
 Stop. Deploy reuses those overrides, and the candidate controller validates them
@@ -67,8 +76,20 @@ at admission. Agent identities, credentials, and workspace state follow ordinary
 Settle deployments, pending Stops, and Agent deletions under the old controller.
 Previously stopped Agents stay stopped. Do not delete Agents for this procedure.
 
-Provide an OCC service key with Installation inventory, Agent read/operate/deploy,
-Configuration read, and AgentRevision read access for the affected fleet. Configure
+For both paths, use an Installation-scoped OCC service key with the
+[standard inventory permissions](production-upgrade.md#prepare-the-release).
+These include Agent `deploy` and AgentRevision `read` for the running Agents
+specified there.
+
+- **Disabled channels.** The script reads each retained running Agent’s active
+  revision. Its saved Harness configuration and overrides must both be readable
+  objects. If this check fails, the script exits before stopping OCC writers.
+- **Enabled channels.** For running Agents that need Stop and Deploy, the key
+  also needs Agent `operate`, Configuration `read` and AgentRevision
+  `read` on the replacement revisions. Check the other permissions each
+  deployment requires.
+
+Configure
 `OCC_URL`, `OCC_SERVICE_KEY_FILE`, and, when required, `OCC_CA_BUNDLE`. Keep
 credentials out of command arguments and terminal output. Use the exact
 kubeconfig, context, namespace, and Helm release throughout.
@@ -135,10 +156,10 @@ A genuine first entry written in the same bare form with an implicit null is
 indistinguishable from a display heading. Use an explicit `null` for that value
 in a values file you author.
 
-Create candidates outside the checkout. List every Pod and Service CIDR and all
-node addresses, including public node addresses. Built-in private-address
-denials remain in force. The following CIDRs are examples; replace them with
-the selected cluster's complete ranges:
+Create candidates outside the checkout. For disabled channels, omit every
+`--excluded-cidr` option below. For enabled channels, replace the examples
+with every Pod and Service CIDR and all node addresses, including public ones.
+Built-in private-address denials remain in force.
 
 ```bash
 umask 077
@@ -195,7 +216,7 @@ It creates temporary readiness probes and startup/migration Jobs, then cleans
 them. It does not stop Agents or OCC and does not run the revision checks at the
 Stop boundary. A successful rehearsal is not execution proof.
 
-Execution records the complete original running-Agent set. Before submitting
+For enabled channels, execution records the complete original running-Agent set. Before submitting
 any Stop, it checks that every original revision needed for redeployment can
 supply its requested Harness overrides. A readable revision must contain an
 overrides object, including an explicit `{}` when none were requested. For
@@ -208,9 +229,11 @@ runs the selected migration mode, updates the Installation and Helm release, and
 checks authenticated access to the same Installation. Finally, it deploys the
 recorded Agents sequentially and waits for each deployment to succeed.
 
-The protected `channel-agent-operations.json` receipt records original revisions,
-Stop responses, deployment IDs, and completed operations. The shared evidence
-retains identity, Secret, migration, Helm, and concurrency checks. The ordinary
+For enabled channels, the protected `channel-agent-operations.json` journal
+records original revisions, Stop responses, deployment IDs and completed
+operations. For disabled channels, there is no Agent transition journal.
+The controller, database and Helm upgrade steps still apply.
+Shared evidence covers identity, Secret, migration, Helm and concurrency checks. The ordinary
 upgrade command continues to refuse this configuration change.
 
 ### Recover and verify
@@ -219,12 +242,15 @@ Keep the original evidence, journal, and attempt paths while the outcome is
 unresolved. `$EVIDENCE_DIRECTORY/before-values.yaml` holds the original captured
 Helm values. Do not restore an older journal from backup. Use the same command,
 checkout, inputs, and evidence with `--resume` only after inspecting actual
-cluster state. Completed operations are not repeated. Before another Stop on a
-partial journal, the script checks all original revisions still needed for redeployment,
+cluster state. Completed operations are not repeated.
+
+For enabled channels, before another Stop on a partial Agent journal, the script
+checks all original revisions still needed for redeployment,
 including Agents already stopped. Earlier Stops remain recorded if a check fails.
 The script checks that Agents still select their recorded new revisions. While
 both OCC writers are quiesced, it validates the recorded Stop inventory offline.
-For database mode `separate`, repeat the same one-off `run` command with
+
+For either channel setting in database mode `separate`, repeat the same one-off `run` command with
 `--migration-apply-only` after exit 3, without `--resume`. It applies and verifies
 the original Installation's database through the shared guarded Jobs. Then repeat
 the original command with `--resume --migration-history-checked`. Follow the
@@ -232,7 +258,7 @@ the original command with `--resume --migration-history-checked`. Follow the
 and unresolved-Job requirements. For an uncertain Helm outcome, use the existing
 [Helm recovery procedure](production-upgrade-recovery.md).
 
-A journal operation marked `sending` has an **unknown outcome**. The script stops
+For enabled channels, an Agent journal operation marked `sending` has an **unknown outcome**. The script stops
 and refuses automatic resubmission. Inspect that Agent's revision history,
 deployment status and audit events using the normal CLI/API. For a confirmed
 accepted deployment, record its exact deployment ID and change only that target's
@@ -242,8 +268,10 @@ records establish that the request was not accepted. If acceptance cannot be
 established, keep the script stopped and recover manually. Never infer failure
 from a missing response or missing completion marker.
 
-After completion, verify a model turn, channel delivery, OCC directory lookup,
-and allowed/denied egress for the affected Agents. Successful deployment status
+After completion, verify a model turn with an identity authorized for the Agent. For disabled channels, confirm
+`channelEgress.enabled` remains false. For enabled channels, verify channel
+delivery, OCC directory lookup and allowed and denied egress for the affected
+Agents. Successful deployment status
 alone does not prove a Slack exchange or model execution.
 
 After verification succeeds, stage the updated `--values` file at
