@@ -5,6 +5,7 @@ import type { OpenClawController, PlatformStateStore } from "@openclaw-enterpris
 
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
+import { refreshCodexOAuthGrant } from "../drivers/token-service/codex-device-authorization.ts";
 import type { InstallationRuntimeDrivers } from "./installation-config.ts";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -67,6 +68,7 @@ export async function installTokenServiceDriver(
       state,
       drivers.secretDriver,
       controller.resolveConnectionClient.bind(controller),
+      refreshCodexOAuthGrant,
     ),
   );
   controller.registerDriver(owner);

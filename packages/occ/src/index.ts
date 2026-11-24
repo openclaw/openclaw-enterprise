@@ -20,7 +20,11 @@ export type {
   CreateIAMRoleInput,
   InstallationIAMConfiguration,
 } from "./iam-policy-operations.ts";
-export { parseOAuthGrantedScopes, refreshPinnedOAuthGrant } from "./oauth-token-endpoint.ts";
+export {
+  parseOAuthGrantedScopes,
+  readOAuthTokenResponse,
+  refreshPinnedOAuthGrant,
+} from "./oauth-token-endpoint.ts";
 export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 export { CredentialDeliveries } from "./state/credential-deliveries.ts";
 export type { CredentialDeliveryKey } from "./state/credential-deliveries.ts";

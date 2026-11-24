@@ -2,7 +2,6 @@ import type {
   AccessBinding,
   CredentialSource,
   CredentialSourceReference,
-  CredentialSourceDeviceAuthorization,
   OAuthCredentialSource,
   OAuthConnectionGrant,
   OAuthBuiltinCodexSourceConsent,
@@ -100,6 +99,15 @@ export interface CredentialRefreshStatus {
 
 export interface SourceRefreshOperation extends TokenServiceSourceInstance<CredentialSourceReference> {
   readonly operationId: string;
+}
+
+export interface CredentialSourceDeviceAuthorization {
+  readonly verificationUrl: string;
+  readonly userCode: string;
+  readonly expiresAt: string;
+  readonly intervalSeconds: number;
+  /** Opaque issuer-owned login handle; never an access or refresh token. */
+  readonly privateState: string;
 }
 
 /** Trusted enrollment context selected by the authorized control-plane login flow. */

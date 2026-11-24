@@ -5,7 +5,12 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "../../backends/token-service/codex-oauth-preset.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { DeviceAuthorizationStartError, parseOAuthGrantedScopes } from "@openclaw-enterprise/occ";
+import {
+  BrowserAuthorizationError,
+  DeviceAuthorizationStartError,
+  parseOAuthGrantedScopes,
+  readOAuthTokenResponse,
+} from "@openclaw-enterprise/occ";
 
 type AccountMetadata = OAuthBuiltinCodexSourceConsent["account"];
 
@@ -33,6 +38,22 @@ function claims(token: string): Record<string, unknown> {
     // Provider responses must never become error messages or log fields.
   }
   throw new Error("Codex OAuth returned an invalid token payload.");
+}
+
+function accessTokenGrant(token: Record<string, unknown>) {
+  if (
+    token.token_type !== undefined &&
+    (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer")
+  ) {
+    throw new Error("Codex OAuth returned an unsupported token type.");
+  }
+  const accessToken = required(token.access_token);
+  const accessClaims = claims(accessToken);
+  const expiry = new Date(Number(accessClaims.exp) * 1000);
+  if (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= Date.now()) {
+    throw new Error("Codex OAuth returned an expired access token or no expiry.");
+  }
+  return { accessToken, accessClaims, expiresAt: expiry.toISOString() };
 }
 
 async function responseRecord(response: Response): Promise<Record<string, unknown>> {
@@ -171,14 +192,7 @@ export async function pollCodexDeviceAuthorization(
       signal,
     }),
   );
-  if (
-    token.token_type !== undefined &&
-    (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer")
-  ) {
-    throw new Error("Codex OAuth returned an unsupported token type.");
-  }
-  const accessToken = required(token.access_token);
-  const accessClaims = claims(accessToken);
+  const { accessToken, accessClaims, expiresAt } = accessTokenGrant(token);
   const identityClaims = claims(required(token.id_token));
   const identity = asRecord(identityClaims["https://api.openai.com/auth"]) ?? {};
   const access = asRecord(accessClaims["https://api.openai.com/auth"]) ?? {};
@@ -190,13 +204,9 @@ export async function pollCodexDeviceAuthorization(
     identityClaims.email ?? asRecord(identityClaims["https://api.openai.com/profile"])?.email;
   const accountUserId =
     access.chatgpt_account_id === accountId ? access.chatgpt_account_user_id : undefined;
-  const expiry = Number(accessClaims.exp) * 1000;
-  if (!Number.isFinite(expiry) || expiry <= Date.now()) {
-    throw new Error("Codex OAuth returned an expired access token or no expiry.");
-  }
   return {
     accessToken,
-    expiresAt: new Date(expiry).toISOString(),
+    expiresAt,
     refreshToken: required(token.refresh_token),
     requestedScopes: [],
     grantedScopes: parseOAuthGrantedScopes(token.scope, undefined),
@@ -209,5 +219,69 @@ export async function pollCodexDeviceAuthorization(
       isFedramp:
         identity.chatgpt_account_is_fedramp === true || access.chatgpt_account_is_fedramp === true,
     },
+  };
+}
+
+/** Renew only the server-owned Codex grant; OAuth Templates continue to use their pinned client. */
+export async function refreshCodexOAuthGrant(
+  grant: Pick<OAuthConnectionGrant, "refreshToken" | "grantedScopes">,
+  signal: AbortSignal,
+) {
+  const response = await fetch(BUILTIN_CODEX_OAUTH_PRESET.tokenUrl, {
+    method: "POST",
+    redirect: "error",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      client_id: BUILTIN_CODEX_OAUTH_PRESET.clientId,
+      refresh_token: grant.refreshToken,
+    }),
+    signal,
+  });
+  if (response.status >= 500 || response.status === 429) {
+    await response.body?.cancel();
+    throw new Error("The outcome of the Codex token exchange is unknown.");
+  }
+  const token = await readOAuthTokenResponse(response);
+  if (!response.ok) {
+    const error = typeof token?.error === "string" ? token.error : asRecord(token?.error)?.code;
+    const code = typeof error === "string" ? error.toLowerCase() : undefined;
+    if (
+      response.status === 401 ||
+      code === "invalid_grant" ||
+      code === "access_denied" ||
+      code === "refresh_token_expired" ||
+      code === "refresh_token_reused" ||
+      code === "refresh_token_invalidated"
+    ) {
+      throw new BrowserAuthorizationError("grant_refused", "retry");
+    }
+    if (code === "invalid_client" || code === "unauthorized_client") {
+      throw new BrowserAuthorizationError("client_refused", "fix_configuration");
+    }
+    throw new BrowserAuthorizationError("exchange_refused", "fix_configuration");
+  }
+  const refreshToken = token?.refresh_token;
+  if (refreshToken !== undefined && !isNonEmptyString(refreshToken)) {
+    throw new BrowserAuthorizationError("invalid_refresh_token", "fix_configuration");
+  }
+  const grantedScopes = parseOAuthGrantedScopes(token?.scope, grant.grantedScopes);
+  if (token?.access_token === undefined) {
+    if (refreshToken === undefined && !isNonEmptyString(token?.id_token)) {
+      throw new BrowserAuthorizationError("invalid_access_token", "fix_configuration");
+    }
+    return { refreshToken: refreshToken ?? grant.refreshToken, grantedScopes };
+  }
+  let access;
+  try {
+    access = accessTokenGrant(token);
+  } catch {
+    throw new BrowserAuthorizationError("invalid_access_token", "fix_configuration");
+  }
+  return {
+    accessToken: access.accessToken,
+    expiresAt: access.expiresAt,
+    grantedScopes,
+    ...(refreshToken === undefined ? {} : { refreshToken }),
   };
 }

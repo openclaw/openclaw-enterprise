@@ -27,7 +27,9 @@ export function parseOAuthGrantedScopes(
   return [...new Set(reported)];
 }
 
-async function readResponse(response: Response): Promise<Record<string, unknown> | undefined> {
+export async function readOAuthTokenResponse(
+  response: Response,
+): Promise<Record<string, unknown> | undefined> {
   const reader = response.body?.getReader();
   if (!reader) {
     return undefined;
@@ -106,7 +108,7 @@ export async function requestOAuthTokens(
     // A proxy failure does not establish whether the issuer consumed the one-use grant.
     throw new Error("The outcome of the OAuth token exchange is unknown.");
   }
-  const body = await readResponse(response);
+  const body = await readOAuthTokenResponse(response);
   if (!response.ok) {
     // Never include the issuer's text, credential bytes or endpoint in errors or audit.
     if (body?.error === "invalid_grant" || body?.error === "access_denied") {

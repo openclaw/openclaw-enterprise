@@ -1689,7 +1689,6 @@ export type {
 export type {
   CredentialRefreshDriver,
   CredentialRefreshInput,
-  CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "./drivers/credential-refresh/index.ts";
 export type {
@@ -1878,6 +1877,7 @@ export type {
   ResolvedCredential,
   CredentialRefreshStatus,
   SourceRefreshOperation,
+  CredentialSourceDeviceAuthorization,
   TokenServiceDeviceAuthorizationContext,
   TokenServiceDeviceAuthorizationResult,
   TokenServiceDriver,

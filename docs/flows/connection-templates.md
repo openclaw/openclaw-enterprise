@@ -85,7 +85,9 @@ After exchange, OCC calls the selected TokenService's typed Source registration 
 
 `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
 
-The worker renews due OAuth Sources. A trusted consumer obtains a usable credential only through the selected TokenService. Renewal uses the Source's original consent version and client registration, including the registration's current client secret. A Template update changes the version available for a later Agent admission; it does not widen the original OAuth grant or change its refresh endpoint. TokenService records the next renewal and any narrower granted scopes.
+The worker renews due OAuth Sources. A trusted consumer obtains a usable credential only through the selected TokenService. Template-backed renewal uses the Source's original consent version and client registration, including the registration's current client secret. A Template update changes the version available for a later Agent admission; it does not widen the original OAuth grant or change its refresh endpoint. TokenService records the next renewal and any narrower granted scopes.
+
+For built-in Codex consent, `apps/controller/src/drivers/token-service/codex-device-authorization.ts` sends the fixed issuer's JSON refresh request and derives access expiry from the returned JWT. The serving Codex device-login route has not switched to this issuer.
 
 ## Debugging and Verification
 

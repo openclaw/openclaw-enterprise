@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
@@ -68,6 +69,7 @@ test(
           state,
           secretDriver,
           controller.resolveConnectionClient.bind(controller),
+          refreshCodexOAuthGrant,
         ),
       );
       controller.registerDriver(tokenService);

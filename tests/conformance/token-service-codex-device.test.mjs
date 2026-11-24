@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
+import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { administrator, fixture } from "./credential-source-occ-fixture.ts";
 import {
   codexDeviceAuthorizationState,
   pollCodexDeviceAuthorization,
   startCodexDeviceAuthorization,
 } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
-import { redirectProviderFetch, startProviderServer } from "../helpers/provider-http-transport.ts";
+import {
+  readProviderRequestBody,
+  redirectProviderFetch,
+  startProviderServer,
+} from "../helpers/provider-http-transport.ts";
 
 test("Codex device authorization validates issuer transport and grant fields", async (t) => {
   const paths = [
@@ -142,6 +150,277 @@ test("Codex device authorization validates issuer transport and grant fields", a
       /unsupported token type/,
     );
   });
+});
+
+test("the selected TokenService refreshes the fixed Codex grant using the provider response", async (t) => {
+  const f = await fixture({ withoutGateway: true });
+  await installTokenServiceDriver(
+    f.controller,
+    {
+      installation: { drivers: { token_service: { id: "codex-refresh-owner" } } },
+      secretDriver: f.secretDriver,
+    },
+    f.state,
+  );
+  const owner = f.controller.selectedDriver("token_service");
+  const instanceId = f.controller.currentTokenServiceInstanceId();
+  await f.makeReady();
+  const signal = AbortSignal.timeout(10_000);
+  const initialRefresh = randomUUID();
+  const rotatedRefresh = randomUUID();
+  const rotatedAgain = randomUUID();
+  const scopedRefresh = randomUUID();
+  const scopedAgain = randomUUID();
+  const initialExpiry = Math.floor(Date.now() / 1000) + 3600;
+  const renewedExpiry = initialExpiry + 3600;
+  const renewedAccess = jwt({
+    exp: renewedExpiry,
+    "https://api.openai.com/auth": { chatgpt_account_id: "account-fixture" },
+  });
+  const registerSource = (name, refreshToken, scopes = []) =>
+    owner.createSource(
+      {
+        kind: "oauth_refresh_token",
+        namespaceId: f.namespace.id,
+        name,
+        consent: {
+          kind: "builtin_codex",
+          ownerPrincipalId: administrator,
+          account: { accountId: "account-fixture", planType: "plus", isFedramp: false },
+        },
+        grant: {
+          accessToken: jwt({ exp: initialExpiry }),
+          refreshToken,
+          expiresAt: new Date(initialExpiry * 1000).toISOString(),
+          requestedScopes: scopes,
+          grantedScopes: scopes,
+        },
+      },
+      signal,
+    );
+  const source = await registerSource("Codex refresh fixture", initialRefresh, [
+    "openid",
+    "profile",
+  ]);
+  const sourceInstance = {
+    sourceRef: { kind: "credential_source", namespaceId: f.namespace.id, id: source.id },
+    tokenServiceInstanceId: instanceId,
+  };
+  const received = [];
+  const retryReceived = Promise.withResolvers();
+  const releaseRetry = Promise.withResolvers();
+  let responseIndex = 0;
+  const privateIssuerMessage = "provider diagnostic must remain private";
+  const server = await startProviderServer(t, async (request, response) => {
+    const raw = await readProviderRequestBody(request);
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = undefined;
+    }
+    received.push({ contentType: request.headers["content-type"], body });
+    response.setHeader("content-type", "application/json");
+    const index = responseIndex++;
+    if (index === 5) {
+      response.end(JSON.stringify({ refresh_token: scopedRefresh, scope: "openid" }));
+      return;
+    }
+    if (index === 6) {
+      response.end(JSON.stringify({ refresh_token: scopedAgain }));
+      return;
+    }
+    if (index === 7) {
+      retryReceived.resolve();
+      await releaseRetry.promise;
+      response.end(JSON.stringify({ access_token: renewedAccess, scope: "openid" }));
+      return;
+    }
+    if (index === 4) {
+      response.end(
+        JSON.stringify({ message: privateIssuerMessage, padding: "x".repeat(64 * 1024) }),
+      );
+      return;
+    }
+    if (index === 3) {
+      response.statusCode = 403;
+      response.end(
+        JSON.stringify({ error: { code: "refresh_token_reused", message: privateIssuerMessage } }),
+      );
+      return;
+    }
+    response.end(
+      JSON.stringify(
+        [
+          { access_token: renewedAccess, refresh_token: rotatedRefresh, scope: "openid" },
+          { refresh_token: rotatedAgain },
+          { access_token: renewedAccess, token_type: "DPoP" },
+        ][index],
+      ),
+    );
+  });
+  redirectProviderFetch(
+    t,
+    new Set([BUILTIN_CODEX_OAUTH_PRESET.tokenUrl]),
+    `http://127.0.0.1:${server.port}`,
+  );
+
+  // Codex supplies expiry in the access JWT rather than generic OAuth expires_in.
+  const first = await owner.forceRefresh(sourceInstance, signal);
+  const refreshed = await owner.getRefreshStatus(first, signal);
+  assert.equal(
+    refreshed.state,
+    "ready",
+    `Codex refresh failed: ${refreshed.failureCode ?? refreshed.state}`,
+  );
+  const access = await owner.resolveCredential(sourceInstance, signal);
+  assert.ok(
+    access.credential === renewedAccess,
+    "only the selected owner resolves the refreshed access token",
+  );
+  assert.equal(access.expiresAt, new Date(renewedExpiry * 1000).toISOString());
+  const settled = await f.state.read(({ credentialSources }) =>
+    credentialSources.findCredentialSource(f.namespace.id, source.id),
+  );
+  assert.deepEqual(settled.consent.grantedScopes, ["openid"]);
+  assert.deepEqual(settled.consent.account, {
+    accountId: "account-fixture",
+    planType: "plus",
+    isFedramp: false,
+  });
+  assert.ok(
+    !JSON.stringify(source).includes(initialRefresh),
+    "the Source response has no refresh token",
+  );
+  assert.match(received[0].contentType, /^application\/json(?:;|$)/i);
+  assert.deepEqual(Object.keys(received[0].body).sort(), [
+    "client_id",
+    "grant_type",
+    "refresh_token",
+  ]);
+  assert.equal(received[0].body.grant_type, "refresh_token");
+  assert.equal(received[0].body.client_id, BUILTIN_CODEX_OAUTH_PRESET.clientId);
+  assert.ok(
+    received[0].body.refresh_token === initialRefresh,
+    "the issuer receives the private grant from custody",
+  );
+
+  // A partial Codex grant may rotate only the refresh token. It must not
+  // manufacture a new delivery credential while the existing access token is usable.
+  const partial = await owner.forceRefresh(sourceInstance, signal);
+  assert.equal((await owner.getRefreshStatus(partial, signal)).state, "ready");
+  const retained = await owner.resolveCredential(sourceInstance, signal);
+  assert.ok(
+    retained.credential === access.credential,
+    "partial renewal preserves the usable access token",
+  );
+  assert.equal(retained.expiresAt, access.expiresAt);
+  assert.equal(retained.version, access.version);
+  assert.ok(
+    received[1].body.refresh_token === rotatedRefresh,
+    "partial renewal consumes the rotated grant from custody",
+  );
+
+  // The next refresh uses the second rotated grant and refuses an explicit
+  // token type that the selected Proxy cannot inject.
+  const second = await owner.forceRefresh(sourceInstance, signal);
+  const refused = await owner.getRefreshStatus(second, signal);
+  assert.equal(refused.state, "failed");
+  assert.equal(refused.failureCode, "invalid_access_token");
+  assert.ok(
+    received[2].body.refresh_token === rotatedAgain,
+    "renewal retained the partial grant rotation in custody",
+  );
+
+  // A nested provider refusal on a non-401 response needs a new consent;
+  // its private diagnostic must not become public refresh status.
+  const reusedSource = await registerSource("Codex reused grant fixture", randomUUID());
+  const reusedOperation = await owner.forceRefresh(
+    {
+      ...sourceInstance,
+      sourceRef: { ...sourceInstance.sourceRef, id: reusedSource.id },
+    },
+    signal,
+  );
+  const reused = await owner.getRefreshStatus(reusedOperation, signal);
+  assert.equal(reused.state, "failed");
+  assert.equal(reused.failureCode, "grant_refused");
+  assert.equal(reused.recoveryAction, "reauthorize");
+  assert.ok(
+    !JSON.stringify(reused).includes(privateIssuerMessage),
+    "issuer diagnostics stay private",
+  );
+
+  // The issuer may have consumed a rotating grant before sending an oversized
+  // response. Quarantine it without exposing diagnostics or issuing an access token.
+  const oversizedSource = await registerSource("Codex oversized response fixture", randomUUID());
+  const oversizedInstance = {
+    ...sourceInstance,
+    sourceRef: { ...sourceInstance.sourceRef, id: oversizedSource.id },
+  };
+  const oversizedOperation = await owner.forceRefresh(oversizedInstance, signal);
+  const oversized = await owner.getRefreshStatus(oversizedOperation, signal);
+  assert.equal(oversized.state, "failed");
+  assert.equal(oversized.failureCode, "refresh_outcome_unknown");
+  assert.ok(
+    !JSON.stringify(oversized).includes(privateIssuerMessage),
+    "oversized issuer diagnostics stay private",
+  );
+  await assert.rejects(owner.resolveCredential(oversizedInstance, signal), {
+    name: "ResourceStateConflictError",
+  });
+
+  // Narrowing scopes without a replacement access token cannot keep serving
+  // the older broader bearer or replay the newly rotated grant implicitly.
+  const scopedSource = await registerSource("Codex narrowed scopes fixture", randomUUID(), [
+    "openid",
+    "profile",
+  ]);
+  const scopedInstance = {
+    ...sourceInstance,
+    sourceRef: { ...sourceInstance.sourceRef, id: scopedSource.id },
+  };
+  const scopedOperation = await owner.forceRefresh(scopedInstance, signal);
+  assert.equal((await owner.getRefreshStatus(scopedOperation, signal)).state, "pending");
+  const requestsAfterPartial = received.length;
+  await assert.rejects(owner.resolveCredential(scopedInstance, signal), {
+    name: "ResourceStateConflictError",
+  });
+  assert.equal(
+    received.length,
+    requestsAfterPartial,
+    "resolution does not immediately replay a pending grant",
+  );
+  const stillPending = await owner.forceRefresh(scopedInstance, signal);
+  assert.equal((await owner.getRefreshStatus(stillPending, signal)).state, "pending");
+  assert.ok(
+    received[6].body.refresh_token === scopedRefresh,
+    "the partial retry uses the rotated grant",
+  );
+  await assert.rejects(owner.resolveCredential(scopedInstance, signal), {
+    name: "ResourceStateConflictError",
+  });
+
+  const retrying = owner.forceRefresh(scopedInstance, signal);
+  await retryReceived.promise;
+  try {
+    await assert.rejects(owner.resolveCredential(scopedInstance, signal), {
+      name: "ResourceStateConflictError",
+    });
+  } finally {
+    releaseRetry.resolve();
+  }
+  const retried = await retrying;
+  assert.equal((await owner.getRefreshStatus(retried, signal)).state, "ready");
+  assert.ok(
+    received[7].body.refresh_token === scopedAgain,
+    "fresh-access recovery consumes the newest rotated grant from custody",
+  );
+  const narrowed = await owner.resolveCredential(scopedInstance, signal);
+  assert.ok(
+    narrowed.credential === renewedAccess,
+    "only the replacement access token is delivered",
+  );
 });
 
 function jwt(payload) {
