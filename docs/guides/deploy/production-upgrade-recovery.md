@@ -51,22 +51,30 @@ For `--verify-agent`, keep `agent-continuity.json` and review
 workload roles, then resume with the same selection. Resume skips successful
 Helm work. A replacement revision requires separate recovery and verification.
 
-Review `native-command-failures.tsv`. Settle outstanding operations. Before retrying,
-privately copy the journals, last prepared `quiescence-<component>-patch.json` and
-`current-<component>-deployment.json`. Compare them with both live Deployments.
-The files alone prove neither submission nor acceptance.
+Settle outstanding operations. Review `native-command-failures.tsv` and
+`quiescence-<component>-preview.err`. Privately back up journals,
+`quiescence-<component>-patch.json` and `current-<component>-deployment.json`
+before retrying. Compare both Deployments. Saved requests cannot prove acceptance.
 
-At zero Worker replicas, further quiescence requires a valid
-`worker-stop-confirmed.json`.
-Privately restore only an authentic copy from this attempt. Live state, the
-request and the handoff cannot reconstruct the receipt.
+At zero Worker replicas, further shutdown requires this attempt's
+`worker-stop-confirmed.json`. Only restore an authentic private copy.
+Live state and handoff records cannot reconstruct it.
 
-After handoff or possible SQL or Helm submission, keep both writers fenced
-and reconcile with the release and database owners. Restarting either writer
-invalidates the handoff. Before handoff or submission, the release owner can
-restore compatible writers under exclusive maintenance after checking Helm,
-the mounted Installation Secret, database history and outstanding work.
-Resume rechecks inventory before a fresh stop.
+After handoff or possible SQL or Helm submission, keep both writers stopped.
+Restarting either invalidates the handoff. Consult the release and database owners.
+
+### Restore incumbent API access after partial quiescence
+
+Before handoff or submission, the release owner can restore compatible writers
+under exclusive maintenance. Check Helm, the mounted Installation Secret,
+database history and outstanding work. If only the API stopped, use one JSON Patch.
+Test the original UID, verified resource version and zero replicas before restoring
+the recorded count. Verify inventory access before resuming.
+
+Preserve `channel-agent-operations.json`. A Stop marked `sending` blocks resume.
+Reconcile Agent state, revisions and audit records. Resolve permission or admission denials.
+
+### Reconcile Helm and migration
 
 Helm failure or disconnection does not prove migration rollback. Inspect live
 Helm status/history, initialization Job/Pod outcomes and the database;

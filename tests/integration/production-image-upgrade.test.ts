@@ -891,7 +891,11 @@ case "$*" in
       exit
     fi
     [[ "$1" == patch && "$3" == --type && "$4" == json && "$5" == --patch-file && -f "$6" && "$6" != -* ]] || exit 91
-    if [[ "$component" == worker ]]; then
+    preview=0
+    if [[ "$7" == --dry-run=server ]]; then
+      [[ $# == 9 && "$8" == --output && "$9" == 'jsonpath={.spec.replicas}' ]] || exit 91
+      preview=1
+    elif [[ "$component" == worker ]]; then
       [[ $# == 8 && "$7" == --output && "$8" == 'jsonpath={.metadata.uid}{"\\t"}{.metadata.generation}{"\\t"}{.spec.replicas}' ]] || exit 91
     else
       [[ $# == 6 ]] || exit 91
@@ -904,6 +908,10 @@ case "$*" in
         {op: "test", path: "/spec/replicas", value: $replicas},
         {op: "replace", path: "/spec/replicas", value: 0}
       ]]' "$6" >/dev/null || exit 91
+    if ((preview)); then
+      printf '0'
+      exit
+    fi
     write_writer 0 || exit
     if [[ "$component" == worker ]]; then
       printf 'fixture-worker\\t%s\\t0\\n' "$((generation + 1))"

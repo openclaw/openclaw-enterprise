@@ -70,11 +70,12 @@ Agent. Capture the error and successful retry; this is simulated UI evidence onl
 ## Correct an offscreen Configuration syntax error
 
 In **Pages → Agent detail → Invalid Configuration JSON** (`invalidConfiguration`),
-enter a long JSON draft with an extra `x` between two valid lines. Move to the
-end so the error is offscreen, then press Tab and Enter to activate **Save
-Configuration**. Check that the error remains visible and the focused editor
-reveals the caret immediately before `x`. Press Delete and save the corrected
-draft.
+enter a long draft with an extra `x` between valid lines. Use a short desktop
+window and repeat at 200% zoom. Move to the end, then press Tab and Enter to
+activate **Save Configuration**. When the editor and error fit, check that both
+are visible and the caret is before `x`. Enlarge the editor manually
+and try saving again. If both no longer fit, check that the editor keeps its
+size and the caret stays visible. Press Delete and save the corrected draft.
 
 ## Correct an out-of-range Configuration number
 
