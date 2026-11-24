@@ -81,6 +81,7 @@ export const platformReadMethods = deepFreeze({
   serviceAccounts: [
     "findServiceAccount",
     "listServiceAccounts",
+    "findServiceAccountByCredentialSource",
     "findServiceAccountBackendBinding",
   ],
   workspaceSetups: ["find"],

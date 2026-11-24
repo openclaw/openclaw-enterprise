@@ -155,15 +155,28 @@ const secretKey = /^[-._a-zA-Z0-9]+$/;
 
 function validCredential(credential: unknown): credential is ServiceAccountCredential {
   if (
+    credential !== null &&
+    typeof credential === "object" &&
+    !Array.isArray(credential) &&
+    Object.keys(credential).length === 2 &&
+    "kind" in credential &&
+    credential.kind === "access_token" &&
+    "sourceId" in credential &&
+    typeof credential.sourceId === "string" &&
+    /^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      credential.sourceId,
+    )
+  ) {
+    return true;
+  }
+  if (
     credential === null ||
     typeof credential !== "object" ||
     Array.isArray(credential) ||
     Object.keys(credential).length !== 2 ||
     !("kind" in credential) ||
     !("secretRef" in credential) ||
-    (credential.kind !== "api_key" &&
-      credential.kind !== "oauth_access_token" &&
-      credential.kind !== "access_token") ||
+    (credential.kind !== "api_key" && credential.kind !== "oauth_access_token") ||
     credential.secretRef === null ||
     typeof credential.secretRef !== "object" ||
     Array.isArray(credential.secretRef) ||
@@ -3147,6 +3160,14 @@ function repositories(
   };
 
   const serviceAccounts: ServiceAccountRepository = {
+    findServiceAccountByCredentialSource: async (namespaceId, sourceId) =>
+      Array.from(snapshot.serviceAccounts.values()).find(
+        (account) =>
+          account.namespaceId === namespaceId &&
+          account.credential?.kind === "access_token" &&
+          "sourceId" in account.credential &&
+          account.credential.sourceId === sourceId,
+      ),
     findServiceAccount: async (namespaceId, serviceAccountId) => {
       if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
         return undefined;
@@ -3218,6 +3239,17 @@ function repositories(
       const current = await serviceAccounts.findServiceAccount(namespaceId, serviceAccountId);
       if (current === undefined) {
         return undefined;
+      }
+      if ("sourceId" in credential) {
+        const source = await findCredentialSource(namespaceId, credential.sourceId);
+        if (
+          source?.ownerCapability !== "token_service" ||
+          source.type !== "static" ||
+          source.state !== "ready" ||
+          source.config.provider_preset !== "codex-pat"
+        ) {
+          throw new ScopeViolationError("The managed ServiceAccount Source is invalid.");
+        }
       }
       const updated = immutableCopy({ ...current, credential });
       snapshot.serviceAccounts.set(agentKey(namespaceId, serviceAccountId), updated);

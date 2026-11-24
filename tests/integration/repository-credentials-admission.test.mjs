@@ -26,8 +26,6 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
@@ -1452,7 +1450,7 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
 // execution profile to the stock 0.1.5 registration, as a gateway with a stronger exchange would;
 // `registered: false` leaves the registration out of gateway info; `extension` overrides fields
 // of the registration gateway info reports; `middlewareName` names a separate egress
-// registration; `credentialGateway` also selects the bundled OpenShell Credential Gateway;
+// registration;
 // `installationAccess` offers github-installation and composes the Proxy with its Git transport,
 // as repository.openShell does; `preview` opts in to the observed-hook preview, and
 // `gatewayVersion` replaces the version the gateway reports.
@@ -1464,9 +1462,6 @@ async function protectedOpenShellComposition(
     registered = true,
     extension = {},
     middlewareName,
-    credentialGateway = false,
-    credentialRefresh = false,
-    toolBinaries,
     credentialProxy = true,
     harness = "codex",
     installationAccess = false,
@@ -1488,22 +1483,11 @@ async function protectedOpenShellComposition(
       assertExecutionAdmission(revision);
     }
   }
-  class GatewayHarnessComputeDriver extends ProtectedGitComputeDriver {
-    // Kubernetes Compute paired with the OpenShell Gateway delivers credential-source Harness
-    // authentication; this one is not bound to that pair, so its delivery check is not the subject.
-    validateHarnessAuth() {}
-    // This admission fixture has no Kubernetes cluster; placement is a separate integration.
-    async resolveSandboxNamespace(namespace) {
-      return namespace;
-    }
-  }
   const namespaceLifecycleBindings = [];
   const f = await fixture(t, {
     harness,
     inspected,
-    compute: kubernetesCompute(
-      credentialGateway ? GatewayHarnessComputeDriver : ProtectedGitComputeDriver,
-    ),
+    compute: kubernetesCompute(ProtectedGitComputeDriver),
     controllerOptions: {
       namespaceLifecycleBindings,
       driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
@@ -1574,8 +1558,6 @@ async function protectedOpenShellComposition(
     drivers: {
       sandbox: sandbox.id,
       credential_proxy: sandbox.id,
-      ...(credentialGateway && { credential_gateway: "openshell-credentials" }),
-      ...(credentialRefresh && { credential_refresh: "openshell-refresh" }),
     },
     client: { clientForNamespace: () => gateway, placement: () => undefined, close() {} },
   };
@@ -1617,30 +1599,11 @@ async function protectedOpenShellComposition(
     proxy = loaded.proxyDriver;
     t.after(() => owner.close());
   }
-  if (credentialGateway) {
-    const catalog = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/bin/codex"], ...(toolBinaries && { toolBinaries }) },
-      { id: "openshell-credentials", backend },
-    );
-    f.controller.registerDriver(catalog);
-    f.controller.selectDriver(catalog.capability, catalog.id);
-  }
-  if (runtimeAuthCompute || inspected) {
-    const compute = kubernetesCompute(
-      KubernetesComputeDriver,
-      {
-        id: "runtime-admission-kubernetes",
-        protectedDriver: owner,
-        ...(inspected && {
-          credentialGatewayDriver: f.controller.selectedDriver("credential_gateway"),
-        }),
-      },
-      inspected,
-    );
-    if (inspected) {
-      compute.resolveSandboxNamespace =
-        GatewayHarnessComputeDriver.prototype.resolveSandboxNamespace;
-    }
+  if (runtimeAuthCompute) {
+    const compute = kubernetesCompute(KubernetesComputeDriver, {
+      id: "runtime-admission-kubernetes",
+      protectedDriver: owner,
+    });
     f.controller.registerDriver(compute);
     f.controller.selectDriver("compute", compute.id);
   }
@@ -1651,11 +1614,6 @@ async function protectedOpenShellComposition(
   f.controller.selectDriver("sandbox", sandbox.id);
   if (credentialProxy) {
     f.controller.selectDriver("credential_proxy", proxy.id);
-  }
-  if (credentialRefresh) {
-    const refresh = new OpenShellCredentialRefreshDriver({}, { id: "openshell-refresh", backend });
-    f.controller.registerDriver(refresh);
-    f.controller.selectDriver(refresh.capability, refresh.id);
   }
   return { ...f, providers, protectedDriver: owner, gatewayReads: () => gatewayReads };
 }
@@ -1918,39 +1876,15 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
   assert.equal(f.gatewayReads(), 0);
 });
 
-test("Git-only Proxy hides unsupported plugin and OAuth credentials from Agent capabilities", async (t) => {
-  const f = await protectedOpenShellComposition(t, {
-    installedProfile: "repository",
-    credentialGateway: true,
-    credentialRefresh: true,
-    toolBinaries: ["/usr/bin/curl"],
-  });
-  const catalog = await f.controller.selectedDriver("credential_gateway").listSourceTypes({
-    signal: AbortSignal.timeout(1000),
-  });
-  assert.ok(catalog.some(({ type }) => type === "bearer-token"));
-  const oauth = catalog.find((type) => type.deviceAuthorization !== undefined);
-  assert.ok(oauth);
+test("Git-only Proxy does not offer model Sources or device authorization", async (t) => {
+  const f = await protectedOpenShellComposition(t, { installedProfile: "repository" });
   const visible = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
   assert.equal(visible.status, 200);
-  assert.equal(
-    visible.data.capabilities.credentialSources.types.some(({ type }) => type === "bearer-token"),
-    false,
-  );
-  assert.equal(
-    visible.data.capabilities.credentialSources.types.some(({ type }) => type === oauth.type),
-    false,
-  );
-  t.mock.method(f.controller.selectedDriver("credential_gateway"), "listSourceTypes", async () =>
-    catalog.map((type) =>
-      type.type === "openai" ? { ...type, deviceAuthorization: { harnessId: "codex" } } : type,
-    ),
-  );
-  const deviceCatalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
-  assert.equal(deviceCatalog.status, 200);
-  assert.equal(
-    deviceCatalog.data.capabilities.credentialSources.types.some((type) => type.type === "openai"),
-    false,
+  const capabilities = visible.data.capabilities;
+  assert.equal(capabilities.deviceAuthorization, undefined);
+  assert.equal(capabilities.modelCredentialSourcePresets, undefined);
+  assert.ok(
+    !(capabilities.credentialSources?.types ?? []).some(({ type }) => type === "bearer-token"),
   );
   assert.equal(f.providers.size, 0);
 });
@@ -1978,7 +1912,6 @@ test("runtime-authenticated Dedicated Codex requires a qualified Proxy without s
       // Namespace lifecycle binding. Gateway discovery is simulated; no cluster is started.
       const f = await protectedOpenShellComposition(t, {
         ...options,
-        credentialGateway: options.installedProfile !== undefined,
         runtimeAuthCompute: true,
       });
       const compute = f.controller.selectedDriver("compute");

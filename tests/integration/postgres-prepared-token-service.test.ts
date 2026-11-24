@@ -263,7 +263,6 @@ test(
       },
     };
     const options = {
-      protectedSourceOnly: true,
       configurePreparedTokens(tokens: TokenService) {
         service = tokens;
         tokens.registerIssuer(issuer, (tx) => ({
@@ -533,7 +532,6 @@ test(
       new PostgresPreparedGitHubLifecycle(key, secretDriver, gh.origin, gh.tls.ca, tokens);
     const options = {
       secretValue: gh.privateKey.export({ format: "pem", type: "pkcs8" }),
-      protectedSourceOnly: true,
       // Substitute only the independent trusted classification, never infer it from a 401.
       configurePreparedTokens: () => ({
         ...githubMetadataProvider,
@@ -605,6 +603,31 @@ test(
         [source.key.source.id],
       );
     assert.equal(await lifecycle.maintain(t.signal), "committed");
+    await t.test(
+      "prepared TokenService metadata reaches only the admitted repository",
+      async () => {
+        const before = gh.trace.length;
+        const denied = captureMetadata(f, { target: { path: "/repos/fixture/denied" } });
+        assert.equal((await f.resolve(denied)).refused?.code, f.refusalCode("DENIED"));
+        assert.equal(gh.trace.length, before, "refusal must occur before any provider request");
+
+        const captured = captureMetadata(f);
+        const { ready } = await f.resolve(captured);
+        assert.ok(ready, "the signed exchange reads actual prepared material");
+        const reply = await dispatchMetadata(f, gh, captured, ready);
+        assert.ok("body" in reply);
+        assert.deepEqual(JSON.parse(reply.body.toString()), {
+          id: Number(fixtureRepositoryId),
+          full_name: fixtureRepository,
+        });
+        assert.equal(gh.trace.length, before + 1);
+        const observed = gh.trace.at(-1);
+        assert.equal(observed?.method, "GET");
+        assert.equal(observed?.target, `/repos/${fixtureRepository}`);
+        assert.equal(observed?.tokenIndex, gh.issuesOfTokens[0]?.index);
+        assert.ok(observed?.tokenIndex !== undefined);
+      },
+    );
     await t.test("prepared metadata exposes only its selected columns", async () => {
       // A caller must not be able to specialize the reader's persisted admission.
       type FabricatedReader = (
@@ -729,6 +752,11 @@ test(
     assert.equal(await lifecycle.ready(source, t.signal), true, "a bare 401 cannot fence material");
     trustedRejection = true;
     const first = await dispatched();
+    const metadataRequests = () =>
+      gh.trace.filter(
+        (call) => call.method === "GET" && call.target === `/repos/${fixtureRepository}`,
+      ).length;
+    assert.equal(metadataRequests(), 3, "one successful read and two denied provider replies");
     assert.equal(await lifecycle.ready(source, t.signal), false);
     assert.equal(gh.issuesOfTokens.length, 1, "rejection alone does not mint a replacement");
 
@@ -775,13 +803,7 @@ test(
       2,
       "late predecessor rejection cannot replace the successor",
     );
-    // Recovery must not dispatch another business request.
-    assert.equal(
-      gh.trace.filter(
-        (call) => call.method === "GET" && call.target === `/repos/${fixtureRepository}`,
-      ).length,
-      2,
-    );
+    assert.equal(metadataRequests(), 3, "recovery must not replay a business request");
     assert.equal(revocations(gh.issuesOfTokens[1]!.index), 0, "never retire the replacement");
     const next = await dispatched(true);
     gh.disconnectAfterMutation("POST", `/app/installations/${fixtureInstallationId}/access_tokens`);

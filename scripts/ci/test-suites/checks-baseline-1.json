@@ -834,17 +834,7 @@
     {
       "path": "tests/integration/credential-proxy-provider-pin.test.ts",
       "expectedTests": [
-        "classification diagnostics reject contradictory reports and preserve audit-write refusal",
-        "credential exchange refuses a conflicted eligible provider before route fallback",
-        "static deployment refuses ambiguous or incompatible providers without redirecting its exact binding",
-        "credential exchange refuses duplicate and substituted providers before material access",
-        "credential exchange refuses provider replacement during a pending Secret read",
-        "credential exchange withholds a response after provider method replacement",
-        "credential exchange preserves the original possible-send receipt after provider drift",
-        "credential exchange withholds an observed response after provider replacement",
-        "credential exchange cuts a cached stream lease after provider replacement",
-        "capability discovery omits only conflicting static provider types",
-        "capability discovery omits Gateway lifecycle mismatches"
+        "classification diagnostics reject contradictory reports and preserve audit-write refusal"
       ]
     },
     {
@@ -856,12 +846,7 @@
     {
       "path": "tests/integration/static-egress.test.mjs",
       "expectedTests": [
-        "Responses output text assembled across parts and messages cannot reveal selected material",
-        "Responses assistant projections protect independent items and seeded deltas",
-        "Responses incremental text snapshots cannot reveal selected material",
-        "Responses follow-up replays assistant text with empty provider metadata",
-        "signed Responses Plan projections protect completed and response-wide streamed text",
-        "live-shaped Responses envelopes pass while undeclared or credential-bearing envelope fields refuse",
+        "Source enrollment refuses retired Gateway inference without reading material",
         "protected admission refuses an Agent's network policy additions instead of dropping them",
         "the policy endpoint refuses additions and live application while the active revision is protected",
         "the policy endpoint refuses additions before an Agent's first protected deploy",
@@ -1071,10 +1056,6 @@
     {
       "path": "tests/integration/credential-proxy-stream-exchange.test.ts",
       "expectedTests": [
-        "OpenShell exchange: first-renewal outage, then recover",
-        "OpenShell exchange: first-renewal outage, then withdraw",
-        "OpenShell exchange: post-renewal outage, then recover",
-        "OpenShell exchange: post-renewal outage, then withdraw",
         "exchange reader rejects invalid reply envelopes and preserves terminal ordering"
       ]
     },

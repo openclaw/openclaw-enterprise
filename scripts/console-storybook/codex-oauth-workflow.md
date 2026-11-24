@@ -131,12 +131,7 @@ Capture screenshots of pending, ready, and failure states and a short video of
 sign-in, plugin selection, and cancellation. Keep evidence outside the checkout.
 Record the tested commit and browser; label it simulated UI proof.
 
-## Select a managed or imported PAT
+## Select an issued PAT Source
 
-Open **Components/Credentials → ChatGPT service account**. Confirm the issued
-Research service account is selected. Switch to **Service Accounts**, select an
-imported token Secret, then switch back to **Issued ChatGPT service account** and
-save. The request uses `codex_pat` with a `service_account` source reference; the
-imported choice uses the same method with a `secret` source reference. Check
-**No issued service accounts** and **Issued service accounts unavailable** for
-the empty and denied states.
+Use the [issued account selection workflow](codex-pat-workflow.md) to verify that
+saving a ChatGPT service account binds its TokenService Source to the Agent.

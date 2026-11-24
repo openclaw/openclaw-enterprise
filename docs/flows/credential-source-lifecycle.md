@@ -12,7 +12,7 @@ OpenClaw Control Plane (OCC) authorizes selected Sources and records approved po
 
 ## Entry Points
 
-- Trigger: register, adopt an existing Gateway PAT Source, bind, deploy, withdraw, update, retry delivery for, or retire a managed credential Source.
+- Trigger: register, bind, deploy, withdraw, update, retry delivery for, or retire a managed credential Source.
 - Source: `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 - Source: `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
 - Source: `packages/occ/src/agent-credential-retry.ts:pushAgentCredentials`
@@ -24,8 +24,6 @@ OpenClaw Control Plane (OCC) authorizes selected Sources and records approved po
 graph TD
   Select["<b>OCC</b><br/>Authorize create and validate optional Template"] --> Register["<b>TokenService</b><br/>Store credential and Source"]
   Register --> Associate["<b>OCC</b><br/>Grant creator access and audit"]
-  Adopt["<b>OCC</b><br/>Authorize unbound PAT Source"] --> Transfer["<b>TokenService</b><br/>Take custody, retire Gateway copy, commit same Source"]
-  Transfer --> Kind
   Associate --> Kind{"Template-associated Source?"}
   Kind -->|Yes| Discover["<b>OCC</b><br/>Resolve current Template for a selected Plugin Source"]
   Kind -->|No, model preset| Admit["<b>OCC</b><br/>Authorize Sources and save policies"]
@@ -125,29 +123,33 @@ After confirmed detachment of each binding for the Source, Proxy attempts to ret
 
 OCC checks permission on the exact Source and dispatches static credential replacement to its TokenService owner. An active Agent revision can keep using the Source during replacement. Changing or removing the provider preset requires an unbound Source and a separate request.
 
-The recorded owner determines lifecycle operations for Gateway and protected Proxy Sources. Responses return Secret references and public metadata.
+The recorded Credential Proxy owner handles protected metadata Source lifecycle operations. Responses return public metadata and any associated Secret references.
 
 #### Deliver Source updates
 
 `apps/controller/src/composition/token-service.ts:installTokenServiceDriver`, `apps/controller/src/drivers/token-service/occ.ts:updateSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
 
-API composition binds the selected Proxy to trusted Source Namespace placement. After replacement material or a changed ready OAuth grant commits, TokenService notifies Proxy with the exact Source, version, and instance-bound resolver. Without a Provider, Proxy neither resolves nor creates one. Otherwise it resolves once, conditionally updates each owned Provider, validates target receipts, and waits for activated Sandboxes to observe each update. Waiting does not repeat the update.
+API composition binds the selected Proxy to trusted Source Namespace placement. After a credential replacement or renewal commits, TokenService notifies Proxy with the exact Source, version, and instance-bound resolver. Without a Provider, Proxy neither resolves nor creates one. Otherwise it resolves once, conditionally updates each owned Provider, validates target receipts, and waits for activated Sandboxes to observe each update. Waiting does not repeat the update.
 
 Delivery failure leaves committed material in custody. PATCH audits the update and failure separately and returns `503 DEPENDENCY_UNAVAILABLE`. OAuth leaves the old schedule due and retries the committed version without exchanging the rotated grant again.
+
+`apps/controller/src/composition/token-service.ts:scheduleGitSourceMaintenance`, `apps/controller/src/drivers/token-service/occ.ts:maintainSources`
+
+The API scans ready GitHub App Sources every five seconds. When a token is within 45 seconds of expiry, TokenService reads the current Client key, commits a replacement, and notifies Proxy. A pending receipt retries the same committed version across API restarts. Shutdown joins the current pass before closing PostgreSQL.
 
 #### Retry delivery
 
 `apps/controller/src/http/credential-sources.ts:pushAgentCredentials`, `packages/occ/src/agent-credential-retry.ts:pushAgentCredentials`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
 
-An operator sends an Agent credential push request. OCC reads the deployed Agent revision, selects its unwithdrawn Credential Proxy bindings, and checks `agent:operate` on the exact Agent, caller `credential_source:update` on every selected Source, and Agent service-principal `credential_source:operate` on each Source. It completes all checks before any notification or resolution. An ineligible or unauthorized selection rejects the whole request.
+For an Agent credential push, OCC selects unwithdrawn bindings from the active revision. It checks caller `agent:operate` and exact `credential_source:update`, plus Agent service-principal `credential_source:operate`, for the entire request before notifying Proxy.
 
-For a denied Agent service-principal grant, the response tells the operator to restore Source access and retry delivery. The response names the Source if the caller explicitly selected its ID or can read the bound Source and Agent.
+An Agent service-principal denial asks the operator to restore Source access. The response names a Source only if selected explicitly or readable along with the Agent.
 
 OCC sends Proxy each authorized Source reference and TokenService-bound resolver. Proxy retries the conditional update and verifies receipts, including stale targets at the same version. OCC reports `succeeded`, `resolution_failed`, or `delivery_failed`. Shared Providers can affect other Agents; live Harness rotation remains unqualified.
 
 #### Retire the Source
 
-Before retirement, OCC checks stored Agent, revision, deployment and provisioning references. For Template-backed Sources it also asks the saved Plugin Drivers which Sources their slots select. A blocking reference returns `409` before OCC changes the Source, records OAuth revocation intent or touches custody. An authorized Agent operator can withdraw a deployed binding and remove the remaining references. Once clear, OCC records any OAuth revocation intent and asks the selected Proxy to retire delivery copies before TokenService removes custody. OpenShell requires prior detachment. A Proxy failure returns `503` and retains custody for retry. The OAuth worker also retries pending retirement. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
+OCC checks Agent, revision, deployment, provisioning and Plugin slot references before retirement. A blocking reference returns `409`. After withdrawal and reference removal, OCC records any OAuth revocation intent and asks Proxy to retire its copies before TokenService removes custody. Proxy failure returns `503` and retains custody for retry. The OAuth Worker also retries pending retirement. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
 
 ### 7. Enroll a Codex PAT Source
 

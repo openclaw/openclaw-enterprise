@@ -224,12 +224,10 @@ Create a private evidence directory and record these values before mutation.
       bootstrap key storage, service-principal and service-key identities,
       repository registry metadata, broker sessions, and external provider or
       channel grants.
-- [ ] If CredentialSources are enabled, inventory their IDs, status, bindings,
-      and selected Gateway. Record recovery and rotation procedures for the
-      Gateway's separately managed provider credentials without recording values.
-      Updating a Namespace Secret does not update the Gateway's copy. See the
-      [CredentialSource reference](../../reference/credential-sources.md) for
-      the OpenShell Gateway's production limitations.
+- [ ] Inventory Credential Source IDs, status and Agent bindings. Record the
+      selected TokenService and Credential Proxy and which credentials need
+      [re-enrollment](credential-proxy-upgrade.md) during a Gateway cutover.
+      Keep Slack Channel startup Secrets in the separate channel inventory.
 - [ ] Compare Agent drafts and persisted Preset plugin policies with the
       candidate's [plugin policy contract](../../reference/agent-plugins.md).
       Resolve unsupported approval fields or values deliberately. Verify
@@ -311,8 +309,9 @@ and database migrations to retained volumes and local profile state.
       downstream operation. Where plugin approval is required, verify approval
       and denial through the intended reviewer. See
       [workflow verification](production-handoff.md#verify-the-deployed-workflow).
-- [ ] Where CredentialSources are enabled, confirm source status and Agent
-      bindings and verify a real model reply through the selected Gateway.
+- [ ] Confirm TokenService Source status, exact operator and Agent grants,
+      and the active revision's bindings. Verify a real model reply through
+      the selected Credential Proxy delivery path.
 - [ ] Evidence contains the before/after inventory, rendered configuration,
       migration receipt, rollout status, deployment results, and any accepted
       exceptions, but no credential values.

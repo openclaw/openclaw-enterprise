@@ -8,14 +8,27 @@ import type {
   PluginFieldCatalog,
   PluginFieldsOptions,
 } from "/console/agents/plugin-fields.mjs";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import {
+  credentialSourceDeliveryBinding,
+  installationControllerOptions,
+} from "../../apps/controller/src/composition/installation-config.ts";
+import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
+import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
+import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { credentialGatewayOverProviders } from "../integration/sandbox-driver-credential-fixture.ts";
+import {
+  buildSandboxInstallation,
+  loadSelectedOpenShellAgentInstallation,
+} from "../integration/sandbox-driver-installation-fixture.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -3180,13 +3193,107 @@ test("Dedicated OpenClaw credentials and plugins do not offer Codex-only control
 // Real Console, HTTP, IAM, and Compute admission; runtime observations use the existing wire
 // fixture. This proves submission and refusal/recovery, not a model turn or live cluster.
 test("Harness controls submit the latest request directly and recover from destination refusal", async (t) => {
-  const fixture = await staticEgressFixture(t, { admitRevision: false });
-  assert.ok(
-    "origin" in fixture && "credentials" in fixture && "registerCleanupBeforeAppClose" in fixture,
+  const grant = {
+    id: "codex-inference",
+    binary: OPEN_SHELL_CODEX_BINARIES[0],
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const installation = {
+    ...buildSandboxInstallation(),
+    sandboxNetworkPolicyCeiling: [grant],
+    runtime: { nativeWorkerSupport: "custom-image" },
+  };
+  Reflect.deleteProperty(installation.drivers, "credential_gateway");
+  Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
+  const core = new FakeSecretCoreV1Api();
+  const runtime = await loadSelectedOpenShellAgentInstallation(t, {
+    installation,
+    computeId: "console-native-compute",
+    tokenServiceId: "occ",
+    core,
+    gatewayClient: completeOpenShellGatewayClient(credentialGatewayOverProviders().client),
+  });
+  // The same controlled Kubernetes transport stores the private Source and observes placement.
+  assert.ok(Reflect.set(runtime.secretDriver, "client", Promise.resolve(core)));
+  let state: PlatformStateStore | undefined;
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: [],
+    ...installationControllerOptions(runtime.installation),
+    backends: runtime.installation.backend,
+    credentialSourceDelivery: credentialSourceDeliveryBinding(runtime),
+    namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
+    secretDriver: runtime.secretDriver,
+    wrapState(store: PlatformStateStore) {
+      state = store;
+      return store;
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Native model route", { ready: true });
+  const placed = core.addNamespace(namespace.id);
+  Object.assign(core.namespaces.get(placed)!, { apiVersion: "v1", kind: "Namespace" });
+  assert.ok(state);
+  fixture.controller.registerDriver(runtime.computeDriver);
+  fixture.controller.selectDriver("compute", runtime.computeDriver.id);
+  await installTokenServiceDriver(fixture.controller, runtime, state);
+  installSelectedSandboxDrivers(fixture.controller, runtime);
+  const base = `/namespaces/${namespace.id}`;
+  const source = await fixture.request("POST", `${base}/credential-sources`, {
+    body: {
+      name: "OpenAI",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: { opaque: randomUUID() },
+    },
+  });
+  assert.equal(source.status, 201, JSON.stringify(source.body));
+  const config = await fixture.createConfiguration(
+    namespace.id,
+    createHarnessConfiguration("codex", "fixture-model"),
   );
-  const { namespace, agent, modelProvider } = fixture;
+  const draft = await fixture.request("POST", `${base}/agents`, {
+    body: {
+      name: "Native Codex",
+      executionMode: "dedicated",
+      configurationId: config.id,
+      harnessAuth: { method: "credential_source", sourceId: source.data.id },
+      credentialSources: [{ sourceId: source.data.id }],
+    },
+  });
+  assert.equal(draft.status, 201, JSON.stringify(draft.body));
+  const agent = draft.data;
+  const role = await fixture.request("POST", `${base}/iam/roles`, {
+    body: {
+      name: "Use model Source",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  });
+  assert.equal(role.status, 201, JSON.stringify(role.body));
+  const granted = await fixture.request("POST", `${base}/iam/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: role.data.id,
+      resourceKind: "credential_source",
+      resourceId: source.data.id,
+    },
+  });
+  assert.equal(granted.status, 201, JSON.stringify(granted.body));
+  const modelProvider = { baseUrl: "https://api.openai.com/v1" };
   const { page } = await newPage(t, fixture);
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const networking = path + "/sandbox-policy/networking";
+  const editing = await fixture.request("PATCH", networking + "/editing", {
+    body: { enabled: true },
+  });
+  assert.equal(editing.status, 200, JSON.stringify(editing.body));
+  const policy = await fixture.request("GET", networking);
+  assert.equal(policy.status, 200, JSON.stringify(policy.body));
+  const saved = await fixture.request("PUT", networking, {
+    body: { expectedVersion: policy.data.policy.version, additions: [grant] },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByText("Use the Installation default at deployment.", { exact: true }).waitFor();
@@ -3202,8 +3309,9 @@ test("Harness controls submit the latest request directly and recover from desti
       response.url() === fixture.origin + path + "/deploy",
   );
   await deploy.click();
-  assert.equal((await refused).status(), 409);
-  await page.getByRole("alert").filter({ hasText: "authorized_base_url" }).waitFor();
+  const refusal = await refused;
+  assert.equal(refusal.status(), 409, await refusal.text());
+  await page.getByRole("alert").filter({ hasText: "approved source preset" }).waitFor();
   assert.equal((await fixture.request("GET", path + "/revisions")).data.length, 0);
 
   // Editing the URL changes the actual submitted value without another preparatory operation.
@@ -3219,7 +3327,7 @@ test("Harness controls submit the latest request directly and recover from desti
   );
   await deploy.click();
   const response = await accepted;
-  assert.equal(response.status(), 202);
+  assert.equal(response.status(), 202, await response.text());
   assert.equal(
     response.request().postDataJSON().harnessOverrides.modelProvider.baseUrl,
     modelProvider.baseUrl,

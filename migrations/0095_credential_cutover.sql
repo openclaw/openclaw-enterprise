@@ -1,4 +1,13 @@
 DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM occ.service_accounts
+    WHERE credential->>'kind' = 'access_token' AND credential ? 'secretRef'
+  ) THEN
+    RAISE EXCEPTION 'Existing issued ServiceAccount credentials must be revoked before cutover' USING ERRCODE = '55000';
+  END IF;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM occ.credential_sources WHERE owner_capability='token_service' AND type='oauth2-refresh-token')
     OR EXISTS (SELECT 1 FROM occ.saved_connections)
     OR EXISTS (SELECT 1 FROM occ.connection_token_custody) THEN
@@ -42,8 +51,8 @@ BEGIN
 END;
 $$;
 --> statement-breakpoint
--- Retire Gateway-owned Sources. Draft assignments can be cleared without changing revisions.
--- External Provider copies must already have retired through their old owner.
+-- Drop Gateway Source records and draft links without changing immutable revisions.
+-- Wait for active work to settle. OpenShell Provider cleanup is outside this migration.
 DO $$
 BEGIN
   IF EXISTS (
@@ -1019,3 +1028,57 @@ ALTER TABLE occ.agent_revisions ADD CONSTRAINT agent_revisions_source_backed_rep
 ) NOT VALID;
 --> statement-breakpoint
 ALTER TABLE occ.agent_revisions VALIDATE CONSTRAINT agent_revisions_source_backed_repository_authorization;
+--> statement-breakpoint
+ALTER TABLE occ.service_accounts DROP CONSTRAINT service_accounts_credential_valid;
+--> statement-breakpoint
+ALTER TABLE occ.service_accounts ADD CONSTRAINT service_accounts_credential_valid CHECK (
+  credential IS NULL OR (
+    jsonb_typeof(credential) = 'object'
+    AND credential ?& ARRAY['kind', 'sourceId']
+    AND credential - 'kind' - 'sourceId' = '{}'::jsonb
+    AND credential->>'kind' = 'access_token'
+    AND jsonb_typeof(credential->'sourceId') = 'string'
+    AND credential->>'sourceId' ~ '^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  ) OR (
+    jsonb_typeof(credential) = 'object'
+    AND credential ?& ARRAY['kind', 'secretRef']
+    AND credential - 'kind' - 'secretRef' = '{}'::jsonb
+    AND jsonb_typeof(credential->'kind') = 'string'
+    AND credential->>'kind' IN ('api_key', 'oauth_access_token')
+    AND jsonb_typeof(credential->'secretRef') = 'object'
+    AND (credential->'secretRef') ?& ARRAY['name', 'key']
+    AND (credential->'secretRef') - 'name' - 'key' = '{}'::jsonb
+    AND jsonb_typeof(credential #> '{secretRef,name}') = 'string'
+    AND char_length(credential #>> '{secretRef,name}') BETWEEN 1 AND 253
+    AND (credential #>> '{secretRef,name}') ~ '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
+    AND jsonb_typeof(credential #> '{secretRef,key}') = 'string'
+    AND char_length(credential #>> '{secretRef,key}') BETWEEN 1 AND 253
+    AND (credential #>> '{secretRef,key}') ~ '^[-._a-zA-Z0-9]+$'
+    AND (credential #>> '{secretRef,key}') NOT IN ('.', '..')
+  )
+);
+--> statement-breakpoint
+ALTER TABLE occ.service_accounts ADD COLUMN credential_source_id text
+  GENERATED ALWAYS AS (CASE WHEN credential->>'kind' = 'access_token' THEN credential->>'sourceId' END) STORED;
+--> statement-breakpoint
+ALTER TABLE occ.service_accounts ADD CONSTRAINT service_accounts_credential_source_unique UNIQUE (namespace_id, credential_source_id);
+--> statement-breakpoint
+ALTER TABLE occ.service_accounts ADD CONSTRAINT service_accounts_credential_source_owner
+  FOREIGN KEY (namespace_id, credential_source_id) REFERENCES occ.credential_sources(namespace_id, id)
+  ON UPDATE RESTRICT ON DELETE RESTRICT;
+--> statement-breakpoint
+CREATE FUNCTION occ.guard_service_account_credential_source() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.credential_source_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM occ.credential_sources AS s WHERE s.namespace_id = NEW.namespace_id
+      AND s.id = NEW.credential_source_id AND s.owner_capability = 'token_service'
+      AND s.type = 'static' AND s.state = 'ready' AND s.config->>'provider_preset' = 'codex-pat'
+  ) THEN
+    RAISE EXCEPTION 'The managed ServiceAccount Source is invalid' USING ERRCODE = '23514', CONSTRAINT = 'service_accounts_issued_source_valid';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+--> statement-breakpoint
+CREATE TRIGGER service_accounts_issued_source_guard AFTER INSERT OR UPDATE OF credential
+  ON occ.service_accounts FOR EACH ROW EXECUTE FUNCTION occ.guard_service_account_credential_source();

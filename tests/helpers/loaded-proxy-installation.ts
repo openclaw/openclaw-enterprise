@@ -24,7 +24,7 @@ export async function loadedProxyInstallation(
 ) {
   const directory = await temporaryDirectory(t, "proxy-installation-");
   const registryPath = join(directory, "registry.json");
-  await writeFile(registryPath, JSON.stringify(input.registry));
+  await writeFile(registryPath, JSON.stringify(input.registry), { mode: 0o644 });
   const base = createCredentialProxyInstallationConfiguration();
   const authority = base.drivers.credential_proxy.configuration.authority;
   const repository = input.profile === "repository";

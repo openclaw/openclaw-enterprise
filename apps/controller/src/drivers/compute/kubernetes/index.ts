@@ -94,7 +94,6 @@ import {
   createPrivateKey,
   generateKeyPairSync,
   randomBytes,
-  timingSafeEqual,
   X509Certificate,
   type KeyObject,
 } from "node:crypto";
@@ -235,7 +234,6 @@ import {
   SandboxNamespaceRefusedError,
   SandboxPodQuotaExceededError,
   SandboxWorkspaceSetupRefusedError,
-  ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
   validRuntimeLogFrontierTime,
   waitsOnVariable,
@@ -1423,8 +1421,6 @@ const MODEL_API_KEY = "OPENAI_API_KEY";
 const CUSTOM_MODEL_API_KEY = "OCE_MODEL_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 /** The provider credential whose token an account Secret holds, so a leftover can be revoked. */
-const SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION = "openclaw.dev/provider-credential-id";
-const SERVICE_ACCOUNT_CREDENTIAL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const CODEX_ACCESS_TOKEN = "CODEX_ACCESS_TOKEN";
 const MAX_RUNTIME_CREDENTIAL_BYTES = 65_536;
 const RUNTIME_STATUS_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
@@ -1673,23 +1669,6 @@ function required(value: unknown, description: string, path?: string): string {
  * annotation, and the ID becomes a provider URL path segment, so a value like `..` must never
  * reach a revocation (it would resolve to the provider account itself).
  */
-function serviceAccountCredentialId(secret: ManagedKubernetesObject<"Secret">): string | undefined {
-  const value = secret.metadata.annotations?.[SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION];
-  return typeof value === "string" && SERVICE_ACCOUNT_CREDENTIAL_ID.test(value) ? value : undefined;
-}
-
-/** Whether an account's credential Secret holds exactly this token (constant-time compare). */
-function storesServiceAccountToken(
-  secret: ManagedKubernetesObject<"Secret">,
-  accessToken: string,
-): boolean {
-  const stored = Buffer.from(secret.data?.[SERVICE_ACCOUNT_TOKEN_KEY] ?? "");
-  const requested = Buffer.from(Buffer.from(accessToken).toString("base64"));
-  return stored.length === requested.length && timingSafeEqual(stored, requested);
-}
-
-/** The wait before retry `attempt + 1`: exponential with jitter, or the server's
- * Retry-After on 429/503 when that is longer, never above the per-wait cap. */
 function requestRetryDelay(attempt: number, status: number | undefined, error: unknown): number {
   const exponential = REQUEST_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
   const backoff = exponential / 2 + Math.random() * (exponential / 2);
@@ -6081,269 +6060,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         context.namespace,
       );
     });
-  }
-
-  async storeServiceAccountCredential(input: {
-    readonly namespaceId: string;
-    readonly serviceAccountId: string;
-    readonly credentialId: string;
-    readonly accessToken: string;
-  }): Promise<{ readonly name: string; readonly key: string }> {
-    const namespaceId = required(input.namespaceId, "ServiceAccount Namespace ID");
-    const serviceAccountId = required(input.serviceAccountId, "ServiceAccount ID");
-    const credentialId = required(input.credentialId, "ServiceAccount provider credential ID");
-    const accessToken = required(input.accessToken, "ServiceAccount access token");
-    const namespace = await this.controlNamespace(namespaceId);
-    const observed = await this.getNamespace(namespace);
-    if (observed === undefined || observed.status?.phase !== "Active") {
-      throw new OwnershipFailure("The ServiceAccount Kubernetes namespace is unavailable.");
-    }
-    this.verifyGatewayNamespace(observed, { namespaceId });
-
-    const name = `service-account-${sha256Hex(serviceAccountId, 32)}`;
-    const ownership = { namespaceId, serviceAccountId };
-    const existing = await this.getOwned("Secret", name, namespace, ownership);
-    if (existing !== undefined) {
-      // OCC records no credential for this account, so this is a leftover of an earlier
-      // issuance that appeared after the ServiceAccount Driver's reclaim; name it so the
-      // operator can delete it (findings 935 and 1397).
-      throw new ServiceAccountCredentialSecretExistsError(namespace.name, name);
-    }
-
-    const clients = await this.clients(namespace.plane);
-    const manifest = this.manifest("v1", "Secret", name, ownership, namespace);
-    try {
-      await this.request(
-        () =>
-          clients.core.createNamespacedSecret({
-            namespace: namespace.name,
-            body: {
-              ...manifest,
-              metadata: {
-                ...manifest.metadata,
-                annotations: {
-                  ...manifest.metadata.annotations,
-                  // Written with the token, so a Secret an issuance leaves behind (a crash or
-                  // an unknown COMMIT) still names the credential to revoke (finding 1397).
-                  [SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION]: credentialId,
-                },
-              },
-              type: "Opaque",
-              stringData: {
-                [SERVICE_ACCOUNT_TOKEN_KEY]: accessToken,
-              },
-            },
-          }),
-        { mutating: true },
-      );
-    } catch (error) {
-      if (
-        await this.reconcileFailedServiceAccountCredential(
-          name,
-          namespace,
-          ownership,
-          credentialId,
-          accessToken,
-        )
-      ) {
-        return { name, key: SERVICE_ACCOUNT_TOKEN_KEY };
-      }
-      throw error;
-    }
-    return { name, key: SERVICE_ACCOUNT_TOKEN_KEY };
-  }
-
-  /**
-   * A failed create can have persisted its Secret before losing the reply. An exact
-   * readback can confirm that the requested owned state exists without repeating the
-   * mutation. It does not prove which request created the object. A missing or different
-   * object leaves the original failure in force; an unreadable or unidentified object
-   * remains an unknown outcome. The ServiceAccount Driver owns provider revocation and
-   * any later exact Secret cleanup, so this readback never destroys a recovery receipt.
-   * A create still in flight that lands after the read is not covered.
-   */
-  private async reconcileFailedServiceAccountCredential(
-    name: string,
-    namespace: KubernetesNamespaceAddress,
-    ownership: Ownership,
-    credentialId: string,
-    accessToken: string,
-  ): Promise<boolean> {
-    const unknown = () =>
-      new DependencyUnavailableError(
-        "The ServiceAccount credential Secret create outcome could not be confirmed.",
-      );
-    let existing: ManagedKubernetesObject<"Secret"> | undefined;
-    try {
-      existing = await this.get("Secret", name, namespace);
-    } catch {
-      throw unknown();
-    }
-    if (existing === undefined) {
-      return false;
-    }
-    try {
-      this.verifyOwnership(existing, ownership);
-    } catch {
-      return false;
-    }
-    if (
-      !storesServiceAccountToken(existing, accessToken) ||
-      existing.metadata.annotations?.[SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION] !== credentialId
-    ) {
-      return false;
-    }
-    const { uid, resourceVersion } = existing.metadata;
-    if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
-      throw unknown();
-    }
-    return true;
-  }
-
-  /**
-   * The account's credential Secret, if one exists, and the provider credential it records. It
-   * never returns the token. OCC records no credential for an account while the ServiceAccount
-   * Driver calls this, so a Secret found here is a leftover of an issuance that never
-   * committed (a crash, or an unknown COMMIT that failed), which still holds a live token
-   * (finding 1397). An object under the name that this account does not own is not its
-   * leftover and is not returned.
-   */
-  async findServiceAccountCredential(input: {
-    readonly namespaceId: string;
-    readonly serviceAccountId: string;
-  }): Promise<
-    | {
-        readonly secretNamespace: string;
-        readonly secretRef: { readonly name: string; readonly key: string };
-        readonly credentialId: string | undefined;
-      }
-    | undefined
-  > {
-    const namespaceId = required(input.namespaceId, "ServiceAccount Namespace ID");
-    const serviceAccountId = required(input.serviceAccountId, "ServiceAccount ID");
-    const name = `service-account-${sha256Hex(serviceAccountId, 32)}`;
-    const namespace = await this.controlNamespace(namespaceId);
-    const tenant = await this.getNamespace(namespace);
-    if (tenant === undefined) {
-      return undefined;
-    }
-    this.verifyGatewayNamespace(tenant, { namespaceId });
-    const existing = await this.get("Secret", name, namespace);
-    if (existing === undefined) {
-      return undefined;
-    }
-    try {
-      this.verifyOwnership(existing, { namespaceId, serviceAccountId });
-    } catch {
-      return undefined;
-    }
-    return {
-      secretNamespace: namespace.name,
-      secretRef: { name, key: SERVICE_ACCOUNT_TOKEN_KEY },
-      credentialId: serviceAccountCredentialId(existing),
-    };
-  }
-
-  /**
-   * Removes the account's credential Secret. Account deletion passes neither a token nor a
-   * credential ID and removes the Secret the account owns. A failed issuance's compensation
-   * passes its own token and credential ID: it runs after the transaction's ROLLBACK released the account row
-   * lock, so another issuance may already have stored its Secret under this same
-   * deterministic name (finding 944). An issuance reclaiming a leftover passes the provider
-   * credential ID it just revoked (finding 1397). It deletes the Secret only while
-   * every supplied selector matches, with uid and resourceVersion
-   * preconditions, and leaves any other Secret alone.
-   */
-  async deleteServiceAccountCredential(input: {
-    readonly namespaceId: string;
-    readonly serviceAccountId: string;
-    readonly secretRef: { readonly name: string; readonly key: string };
-    readonly accessToken?: string;
-    readonly credentialId?: string;
-  }): Promise<void> {
-    const namespaceId = required(input.namespaceId, "ServiceAccount Namespace ID");
-    const serviceAccountId = required(input.serviceAccountId, "ServiceAccount ID");
-    const accessToken =
-      input.accessToken === undefined
-        ? undefined
-        : required(input.accessToken, "ServiceAccount access token");
-    const credentialId =
-      input.credentialId === undefined
-        ? undefined
-        : required(input.credentialId, "ServiceAccount provider credential ID");
-    const exact = accessToken !== undefined || credentialId !== undefined;
-    const name = `service-account-${sha256Hex(serviceAccountId, 32)}`;
-    if (input.secretRef.name !== name || input.secretRef.key !== SERVICE_ACCOUNT_TOKEN_KEY) {
-      throw new OwnershipFailure("Refusing another ServiceAccount's credential Secret.");
-    }
-
-    const namespace = await this.controlNamespace(namespaceId);
-    const tenant = await this.getNamespace(namespace);
-    if (tenant === undefined) {
-      return;
-    }
-    this.verifyGatewayNamespace(tenant, { namespaceId });
-    const existing = await this.get("Secret", name, namespace);
-    if (existing === undefined) {
-      return;
-    }
-    try {
-      this.verifyOwnership(existing, { namespaceId, serviceAccountId });
-    } catch (error) {
-      if (!exact) {
-        throw error;
-      }
-      // Someone else's object under this name: an exact delete leaves it alone, as the
-      // failed-create cleanup does.
-      return;
-    }
-    const clients = await this.clients(namespace.plane);
-    if (!exact) {
-      await this.request(
-        () =>
-          clients.core.deleteNamespacedSecret({
-            name,
-            namespace: namespace.name,
-            ...(existing.metadata.uid === undefined
-              ? {}
-              : { body: { preconditions: { uid: existing.metadata.uid } } }),
-          }),
-        { mutating: true },
-      );
-      return;
-    }
-    const matches =
-      (accessToken === undefined || storesServiceAccountToken(existing, accessToken)) &&
-      (credentialId === undefined ||
-        (accessToken === undefined
-          ? serviceAccountCredentialId(existing)
-          : existing.metadata.annotations?.[SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION]) ===
-          credentialId);
-    if (!matches) {
-      // Another issuance's Secret: the one this request meant is already gone.
-      return;
-    }
-    const { uid, resourceVersion } = existing.metadata;
-    if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
-      throw new DependencyUnavailableError(
-        "The ServiceAccount credential Secret has no exact identity to delete.",
-      );
-    }
-    try {
-      await this.request(
-        () =>
-          clients.core.deleteNamespacedSecret({
-            name,
-            namespace: namespace.name,
-            body: { preconditions: { uid, resourceVersion } },
-          }),
-        { mutating: true },
-      );
-    } catch (error) {
-      if (numericErrorStatus(error) !== 404) {
-        throw error;
-      }
-    }
   }
 
   async ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult> {

@@ -31,7 +31,6 @@ import type {
   SourceProviderPresetId,
   SecretBindings,
   SecretEnvironmentProjection,
-  ServiceAccountCredential,
 } from "../../index.ts";
 import type {
   AdmittedRepositoryBinding,
@@ -465,15 +464,6 @@ export interface ComputeDriver extends Driver {
     request: AgentRuntimeLogRequest,
   ): Promise<AgentRuntimeLogChunk>;
   deleteAgentRuntimeCredentials?(binding: ComputeAgentBinding): Promise<void>;
-  /**
-   * Removes a ServiceAccount's account-owned access-token Secret. A force-delete with no
-   * ServiceAccount Driver left calls it so no copy of the unrevoked token stays behind.
-   */
-  deleteServiceAccountCredential?(input: {
-    readonly namespaceId: string;
-    readonly serviceAccountId: string;
-    readonly secretRef: ServiceAccountCredential["secretRef"];
-  }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   /**
    * Resolve a private browser transport for an already-authorized, exact AgentRevision.

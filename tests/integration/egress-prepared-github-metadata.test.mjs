@@ -55,7 +55,6 @@ test("consented protected repository read uses only exact, already prepared meta
     repository: fixtureRepository,
   };
   const f = await staticEgressFixture(t, {
-    protectedSourceOnly: true,
     preparedGitHub: {
       apiOrigin: gh.origin,
       async configure(source, secret) {
@@ -235,6 +234,59 @@ test("consented protected repository read uses only exact, already prepared meta
     (provider) => provider.ref.id === githubMetadataProvider.ref.id,
   );
   const registered = providers[providerIndex];
+  assert.ok(registered);
+  const readCount = reads;
+  const originCount = gh.trace.length;
+  providers.push({ ...registered });
+  try {
+    assert.ok((await f.resolve(captureMetadata(f))).refused);
+    assert.equal(reads, readCount, "duplicate eligible Providers must refuse before custody");
+    assert.equal(gh.trace.length, originCount);
+  } finally {
+    providers.pop();
+  }
+
+  // A second authenticated connection cannot authorize a capture resolved on the first.
+  // The genuine prepared token is used only by the accepted connection.
+  const original = await f.beginExchange();
+  const other = await f.beginExchange();
+  try {
+    const captured = captureMetadata(f);
+    original.stream.write(original.opening(captured));
+    const resolved = await original.next();
+    assert.equal(resolved.event, "resolved");
+    assert.equal(resolved.resolved.result, "ready");
+    const { ready } = resolved.resolved;
+    const otherCapture = captureMetadata(f);
+    other.stream.write(other.opening(otherCapture));
+    const otherResolved = await other.next();
+    assert.equal(otherResolved.event, "resolved");
+    assert.equal(otherResolved.resolved.result, "ready");
+    other.stream.write({ authorize: f.permitRequest(captured, ready) });
+    const swapped = await other.next();
+    assert.equal(swapped.event, "authorized");
+    assert.equal(swapped.authorized.result, "refused");
+    assert.equal(gh.trace.length, originCount);
+    original.stream.write({ authorize: f.permitRequest(captured, ready) });
+    const permitted = await original.next();
+    assert.equal(permitted.event, "authorized");
+    assert.equal(permitted.authorized.result, "allowed");
+  } finally {
+    original.stream.cancel();
+    other.stream.cancel();
+  }
+  // A valid material selection cannot be downgraded into a zero-credential send.
+  const capturedWithMaterial = captureMetadata(f);
+  const selectedMaterial = await f.resolve(capturedWithMaterial);
+  assert.ok(selectedMaterial.ready && !selectedMaterial.ready_without_material);
+  assert.ok(
+    (
+      await f.authorize(
+        f.permitRequest(capturedWithMaterial, selectedMaterial.ready, { noMaterial: true }),
+      )
+    ).refused,
+  );
+
   const selected = { ...registered };
   providers[providerIndex] = selected;
   try {

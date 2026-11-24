@@ -133,7 +133,6 @@ import {
   removeNamespacePolicy,
   removedPolicyDetails,
   validateBackendDefinitions,
-  validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { installTokenServiceDriver } from "./composition/token-service.ts";
@@ -6015,7 +6014,7 @@ export class ControllerWorker {
 
   private async resolveRevisionBackend(
     revision: Readonly<AgentRevision>,
-    view?: PlatformReadView,
+    _view?: PlatformReadView,
   ): Promise<RevisionDispatchResult | undefined> {
     if (
       revision.backendId !== null &&
@@ -6027,42 +6026,7 @@ export class ControllerWorker {
     if (!isServiceAccountHarnessAuth(auth)) {
       return undefined;
     }
-    const loadAccount = async (state: PlatformReadView) => ({
-      account: await state.serviceAccounts.findServiceAccount(revision.namespaceId, auth.source.id),
-      binding: await state.serviceAccounts.findServiceAccountBackendBinding(
-        revision.namespaceId,
-        auth.source.id,
-      ),
-    });
-    const { account, binding } =
-      view === undefined ? await this.state.read(loadAccount) : await loadAccount(view);
-    if (
-      account === undefined ||
-      account.namespaceId !== revision.namespaceId ||
-      account.credential?.kind !== "access_token" ||
-      auth.credential?.kind !== "access_token" ||
-      account.credential.secretRef.name !== auth.credential.secretRef.name ||
-      account.credential.secretRef.key !== auth.credential.secretRef.key
-    ) {
-      return { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_CHANGED" };
-    }
-    try {
-      validateServiceAccountBackendBinding(this.backendMap, revision.backendId, binding);
-      const admitted = auth.backendBinding;
-      if (
-        admitted === undefined ||
-        binding === undefined ||
-        binding.backendId !== admitted.backendId ||
-        binding.driverId !== admitted.driverId ||
-        binding.workspaceId !== admitted.workspaceId ||
-        binding.credentialIssued !== admitted.credentialIssued
-      ) {
-        return { outcome: "permanent", code: "SERVICE_ACCOUNT_BACKEND_MISMATCH" };
-      }
-      return undefined;
-    } catch {
-      return { outcome: "permanent", code: "SERVICE_ACCOUNT_BACKEND_MISMATCH" };
-    }
+    return { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_CHANGED" };
   }
 
   private async observeRevision(
@@ -6098,6 +6062,8 @@ export class ControllerWorker {
         observation.heldForRepositoryGitMaterial === true &&
         observation.pendingReason === "REPOSITORY_GIT_ROUTE_PENDING" &&
         observation.runtimeFailure === undefined;
+      // Staged preparation verifies policy and Provider readiness. The active pass starts
+      // the Harness after OCC publishes this revision.
       const credentialPrepared =
         credentialActivationPending(observation, revision, this.compute) &&
         observation.preparedForCredentialActivation === true;

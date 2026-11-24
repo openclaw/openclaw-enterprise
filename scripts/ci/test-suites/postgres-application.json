@@ -46,9 +46,6 @@
       "expectedTests": [
         "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
         "the revision worker activates admitted candidates, retires predecessors, and rejects revoked, malformed, and wrong-owner effects",
-        "the revision worker rejects associated-account access revoked after admission before invoking Compute",
-        "the revision worker rejects managed ServiceAccount issuance revoked after admission before Compute",
-        "the revision worker retries transient Backend binding read failures without activating",
         "a transient failure at the convergence deadline still retires an OAuth bootstrap last seen running",
         "a restarted worker refuses explicit deny-all before preparing an ordinary revision",
         "a queued scoped deployment cannot replace an unscoped revision",
@@ -91,7 +88,6 @@
         "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",
-        "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot",
         "a Kubernetes 403 on a private Secret write fails deployment on the first attempt",
         "a Kubernetes 403 on a private Secret write during maintenance preparation keeps the maintenance chain",
         "a Kubernetes 403 on a private Secret write during maintenance activation keeps the maintenance chain"

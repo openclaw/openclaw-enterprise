@@ -14,8 +14,6 @@ import { standingExecutionFixture } from "../helpers/postgres-standing-execution
 import { waitUntil } from "../helpers/wait-for.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
-import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   validateGitHubRepositoryRegistry,
@@ -36,22 +34,6 @@ test(
       throw new Error("no live historical release");
     };
     const release = protectedRepositoryGitRelease(historicalOnly, historicalOnly);
-    const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/bin/codex"] },
-      {
-        id: CREDENTIAL_GATEWAY_FIXTURE_ID,
-        backend: {
-          id: "historical-gateway",
-          drivers: { credential_gateway: CREDENTIAL_GATEWAY_FIXTURE_ID },
-          client: {
-            placement: () => undefined,
-            clientForNamespace: () => {
-              throw new Error("no credential access");
-            },
-          },
-        } as never,
-      },
-    );
     const { f, key, revision, registry, owner, approval, driver } = await standingExecutionFixture(
       t,
       import.meta.url,
@@ -88,7 +70,6 @@ test(
         }),
         requestedBinding: { repositoryRef: "team-installation", profile: "github-installation" },
         protectedDriver: release.owner,
-        credentialGateway: gateway,
       }),
       { sandbox: release.sandboxConfiguration },
       20_000,
@@ -440,17 +421,9 @@ test(
         transformDrivers: (d: { installation: { drivers: object } }) => ({
           ...d,
           repositoryPolicy: driver,
-          credentialGatewayDriver: gateway,
           protectedDriver: release.owner,
           sandboxDriver: release.owner.require("sandbox"),
           proxyDriver: release.owner.require("credential_proxy"),
-          installation: {
-            ...d.installation,
-            drivers: {
-              ...d.installation.drivers,
-              credential_gateway: { id: gateway.id },
-            },
-          },
         }),
       },
     );

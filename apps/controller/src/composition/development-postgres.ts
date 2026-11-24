@@ -5,7 +5,7 @@ import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "./installation-config.ts";
-import { installTokenServiceDriver } from "./token-service.ts";
+import { installTokenServiceDriver, scheduleGitSourceMaintenance } from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
@@ -218,7 +218,7 @@ export async function composePostgresDevelopment(
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
-    await installTokenServiceDriver(controller, drivers, state);
+    const tokenService = await installTokenServiceDriver(controller, drivers, state);
     controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
     if (drivers?.repositoryPolicy !== undefined) {
       const driver = drivers.repositoryPolicy;
@@ -358,7 +358,14 @@ export async function composePostgresDevelopment(
       await checkDatabaseReadiness();
       return { status: "ready" };
     });
-    app.addHook("onClose", () => close(state));
+    const stopGitMaintenance =
+      tokenService && drivers?.repositoryRegistry
+        ? scheduleGitSourceMaintenance(app, tokenService, config.logger)
+        : undefined;
+    app.addHook("onClose", async () => {
+      await stopGitMaintenance?.();
+      await close(state);
+    });
     return app;
   } catch (error) {
     // Preserve the startup failure after attempting each cleanup.

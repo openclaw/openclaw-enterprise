@@ -34,9 +34,10 @@ send a token to the Harness.
 
 OAuth requires a dedicated Codex Harness. Unsupported installations fail
 explicitly. The native OpenShell [policy limits](../../credential-sources.md#implementation-status)
-apply to placeholder substitution. New or reauthorized Codex account Sources
-cannot deploy with Repository credentials on the same Agent; deployment returns
-`409`. Active Source references also block deletion.
+apply to placeholder substitution. Dedicated Codex can combine OAuth and
+[Source-backed Git](../../repository-credentials.md) with the required inspected
+images, managed Workspace route, and approved repository grants. Active Source
+references block deletion.
 
 TokenService commits renewed material before notifying the selected Proxy. A
 failed delivery retains custody for retry. A new deployment version is needed to

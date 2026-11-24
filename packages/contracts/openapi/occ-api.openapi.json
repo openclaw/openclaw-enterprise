@@ -46671,9 +46671,13 @@
                               "kind": {
                                 "anyOf": [
                                   { "const": "api_key", "type": "string" },
-                                  { "const": "access_token", "type": "string" },
-                                  { "const": "oauth_access_token", "type": "string" }
+                                  { "const": "oauth_access_token", "type": "string" },
+                                  { "const": "access_token", "type": "string" }
                                 ]
+                              },
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
                               }
                             },
                             "required": ["kind"],
@@ -46857,9 +46861,13 @@
                             "kind": {
                               "anyOf": [
                                 { "const": "api_key", "type": "string" },
-                                { "const": "access_token", "type": "string" },
-                                { "const": "oauth_access_token", "type": "string" }
+                                { "const": "oauth_access_token", "type": "string" },
+                                { "const": "access_token", "type": "string" }
                               ]
+                            },
+                            "sourceId": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
                             }
                           },
                           "required": ["kind"],
@@ -47252,9 +47260,13 @@
                             "kind": {
                               "anyOf": [
                                 { "const": "api_key", "type": "string" },
-                                { "const": "access_token", "type": "string" },
-                                { "const": "oauth_access_token", "type": "string" }
+                                { "const": "oauth_access_token", "type": "string" },
+                                { "const": "access_token", "type": "string" }
                               ]
+                            },
+                            "sourceId": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
                             }
                           },
                           "required": ["kind"],
@@ -47473,9 +47485,13 @@
                             "kind": {
                               "anyOf": [
                                 { "const": "api_key", "type": "string" },
-                                { "const": "access_token", "type": "string" },
-                                { "const": "oauth_access_token", "type": "string" }
+                                { "const": "oauth_access_token", "type": "string" },
+                                { "const": "access_token", "type": "string" }
                               ]
+                            },
+                            "sourceId": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
                             }
                           },
                           "required": ["kind"],
@@ -47686,9 +47702,13 @@
                             "kind": {
                               "anyOf": [
                                 { "const": "api_key", "type": "string" },
-                                { "const": "access_token", "type": "string" },
-                                { "const": "oauth_access_token", "type": "string" }
+                                { "const": "oauth_access_token", "type": "string" },
+                                { "const": "access_token", "type": "string" }
                               ]
+                            },
+                            "sourceId": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
                             }
                           },
                           "required": ["kind"],

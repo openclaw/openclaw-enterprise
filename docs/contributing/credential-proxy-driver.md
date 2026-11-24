@@ -112,7 +112,7 @@ does not prove this workflow.
 ## 6. Qualify the backend
 
 Use the existing [exchange checks](../testing/static-egress.md#check-a-credential-proxy-change)
-and [repository workflow checks](../testing/protected-repository-custody.md#check-useful-git-work-and-conversation-continuity)
+and [repository workflow checks](../testing/protected-repository-custody.md#check-useful-git-work)
 as starting points. Their owning testing pages specify prerequisites and explain
 what the fixtures prove. Extend relevant conformance and integration coverage
 through the real Agent caller for a new implementation.

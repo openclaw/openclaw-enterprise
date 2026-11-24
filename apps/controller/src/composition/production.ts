@@ -11,7 +11,7 @@ import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "./installation-config.ts";
-import { installTokenServiceDriver } from "./token-service.ts";
+import { installTokenServiceDriver, scheduleGitSourceMaintenance } from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
@@ -31,6 +31,7 @@ import {
 import { createFastifyApp } from "../index.ts";
 import type { ConsoleTheme } from "../console-theme.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
+import type { GitHubAppIssuerOptions } from "../drivers/token-service/github-app-issuer.ts";
 import type {
   InstallationRuntimeDrivers,
   ServiceAccountDriverFactory,
@@ -88,6 +89,7 @@ export type ProductionStartupPhase =
  */
 export interface CompositionDependencies {
   readonly passwordHasher?: PasswordHasher;
+  readonly githubAppIssuerOptions?: GitHubAppIssuerOptions;
 }
 
 export async function composeProduction(
@@ -236,7 +238,12 @@ export async function composeProduction(
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
     installSelectedSandboxDrivers(controller, config.drivers);
-    await installTokenServiceDriver(controller, config.drivers, state);
+    const tokenService = await installTokenServiceDriver(
+      controller,
+      config.drivers,
+      state,
+      dependencies.githubAppIssuerOptions,
+    );
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
     config.serviceAccountDriverFactory?.(controller, state);
@@ -379,7 +386,14 @@ export async function composeProduction(
       await checkDatabaseReadiness();
       return { status: "ready" };
     });
-    app.addHook("onClose", () => close(state));
+    const stopGitMaintenance =
+      tokenService && config.drivers.repositoryRegistry
+        ? scheduleGitSourceMaintenance(app, tokenService, config.logger)
+        : undefined;
+    app.addHook("onClose", async () => {
+      await stopGitMaintenance?.();
+      await close(state);
+    });
     phaseCompleted("routes");
     return app;
   } catch (error) {

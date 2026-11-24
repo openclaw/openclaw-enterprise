@@ -17,34 +17,13 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
 - [`postgres-azure-workload-identity`](../../scripts/ci/test-suites/postgres-azure-workload-identity.json): see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
 - [`ssh-host`](../../scripts/ci/test-suites/ssh-host.json): requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
 - [`plugin-model`](../../scripts/ci/test-suites/plugin-model.json): requires a disposable cluster with Envoy Gateway and cert-manager, its Gateway CA certificate and key, an authorized Codex account, an immutable Agent image and three distinct scenario databases. See [plugin tests](plugins.md#native-runtime-prerequisites).
-- [`openshell-saved-agent`](../../scripts/ci/test-suites/openshell-saved-agent.json): run the saved-Agent Git ACL regression locally on Linux with Docker/k3d and the pinned OpenShell release. Prepare a qualified, same-source controller/runtime digest pair using the [native Git build](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git). The controller must embed the runtime digest for both roles. On the regression host, set `QUALIFIED_CONTROLLER_IMAGE` and `QUALIFIED_RUNTIME_IMAGE` to the build's verified `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` digest references, respectively. Set `PRIVATE_FRESH_ATTEMPT` to a fresh private attempt directory. Pull both images into the Docker daemon used by Local Setup.
+- Run [`openshell-token-service-git-agent`](../../scripts/ci/test-suites/openshell-token-service-git-agent.json) to verify a model turn and scoped Git on the same Dedicated Codex Agent. Prepare an isolated Installation of the candidate with OCC TokenService, native Credential Proxy and OpenShell, a managed Workspace route, and the inspected Codex Gateway and runtime image pair. Use a disposable Namespace with one ready built-in Codex OAuth Source, a registered GitHub App Client and two private repositories approved in the Namespace registry. The test grants only the allowed repository to the Agent.
 
-  ```bash
-  docker pull "${QUALIFIED_CONTROLLER_IMAGE:?}" &&
-  docker pull "${QUALIFIED_RUNTIME_IMAGE:?}" &&
-  env -u OCC_DEVELOPMENT_STATE_DIRECTORY -u CODEX_ACCESS_TOKEN \
-    OCC_DEVELOPMENT_CONTROLLER_IMAGE="${QUALIFIED_CONTROLLER_IMAGE:?}" \
-    OCC_KUBERNETES_RUNTIME_IMAGE="${QUALIFIED_RUNTIME_IMAGE:?}" \
-    node scripts/ci/run-tests.ts run openshell-saved-agent --lifecycle complete \
-    --attempt "${PRIVATE_FRESH_ATTEMPT:?}" \
-    --file tests/integration/openshell-saved-agent-git-policy-real.test.ts
-  ```
+  Use the manifest inputs to select the Namespace, Source, model, exact model executable and destination, pinned runtime image, Client, and distinct repository references. Use a loopback API and OpenShell management endpoint, with the service key and mTLS material in private files. The service key must be authorized to deploy and delete the test Agent. The test cleans up its Agent. Run the lane only against an Installation you own for testing.
 
-  The suite selects `issues` for native Issues write. Run the file directly
-  with `issue-controls` to keep Issues write on the token, cap B's Agent grant at
-  `apiLimits: { issues: "read" }` and restrict C to Git through its Namespace
-  despite the Agent's Issues Write limit. Use `reads` to check
-  that B's explicit write limit cannot exceed the token's Issues read permission.
-  Calibrate the legacy callback in a Namespace without limits.
-
-  ```bash
-  env -u OCC_DEVELOPMENT_STATE_DIRECTORY -u CODEX_ACCESS_TOKEN \
-    OCC_DEVELOPMENT_CONTROLLER_IMAGE="${QUALIFIED_CONTROLLER_IMAGE:?}" \
-    OCC_KUBERNETES_RUNTIME_IMAGE="${QUALIFIED_RUNTIME_IMAGE:?}" \
-    OCC_TEST_OPENSHELL_K3D_REAL=1 OCC_TEST_LOCAL_FIRST_AGENT_REAL=1 \
-    OCC_TEST_OPENSHELL_SAVED_AGENT_ACL=1 OCC_TEST_OPENSHELL_SAVED_AGENT_REST=issue-controls \
-    OPENAI_API_KEY=fixture-only-no-model-call OCC_TEST_OPENAI_MODEL=fixture-only-no-model-call \
-    node --test tests/integration/openshell-saved-agent-git-policy-real.test.ts
+  ```sh
+  node scripts/ci/run-tests.ts run openshell-token-service-git-agent --lifecycle complete \
+    --attempt "${PRIVATE_FRESH_ATTEMPT:?}"
   ```
 
 - [`openshell-linear`](../../scripts/ci/test-suites/openshell-linear.json): starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).

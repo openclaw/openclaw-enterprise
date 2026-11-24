@@ -283,7 +283,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     {
       id: "sa_demo",
       name: "Research service",
-      credential: { kind: "access_token" },
+      credential: {
+        kind: "access_token",
+        sourceId: "cs_00000000-0000-4000-8000-000000000010",
+      },
       backendId: "chatgpt-demo",
       status: "active",
       createdAt,
@@ -349,19 +352,22 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       : scenario.auth === "runtime"
         ? { method: "runtime" }
         : scenario.auth === "service"
-          ? { method: "codex_pat", source: { kind: "service_account", namespaceId, id: "sa_demo" } }
+          ? { method: "credential_source", sourceId: "cs_00000000-0000-4000-8000-000000000010" }
           : scenario.auth === "codex_pat"
             ? { method: "codex_pat", source: secretRef("sec_demo_service_account") }
             : scenario.auth === "oauth" || scenario.auth === "api-source"
               ? { method: "credential_source", sourceId: "cs_00000000-0000-4000-8000-000000000010" }
               : auth;
-  if (scenario.auth === "api-source" && selectedAuth?.method === "credential_source") {
+  if (
+    (scenario.auth === "api-source" || scenario.auth === "service") &&
+    selectedAuth?.method === "credential_source"
+  ) {
     credentialSources.set(selectedAuth.sourceId, {
       id: selectedAuth.sourceId,
       namespaceId,
-      name: "Evaluation API key",
+      name: scenario.auth === "service" ? "Research service managed token" : "Evaluation API key",
       type: "static",
-      config: { provider_preset: "openai" },
+      config: { provider_preset: scenario.auth === "service" ? "codex-pat" : "openai" },
       ref: { kind: "credential_source", namespaceId, id: selectedAuth.sourceId },
       state: "ready",
       createdAt,

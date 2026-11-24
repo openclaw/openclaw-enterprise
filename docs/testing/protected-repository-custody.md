@@ -6,7 +6,7 @@ last_verified: "2026-11-04"
 
 # Qualify the installed repository response and dispatch custody
 
-## Check useful Git work and conversation continuity
+## Check useful Git work
 
 From the repository root, use a Node.js version supported by [the workspace](../../package.json), Git, OpenSSL, matching installed
 workspace dependencies, and an owned disposable PostgreSQL fixture. Follow the
@@ -55,26 +55,6 @@ probe requests are accounted for separately; issuer and workload baselines remai
 continuous. This is local
 protocol and persistence proof, not an installed OpenShell or live GitHub
 qualification.
-
-Run the external Driver conversation rehearsal with the same prepared PostgreSQL
-test environment and `OCC_TEST_STANDING_GIT_CODEX` set to the absolute path of
-the Codex executable pinned by the [runtime Dockerfile](../../deploy/runtime/Dockerfile):
-
-```sh
-env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
-  -u OPENCLAW_ENTERPRISE_CI_PREFIX OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION=1 \
-  node --env-file="$PG_RUN_DIR/test.env" --test \
-  --test-name-pattern="a capable external Driver reduces Git" \
-  tests/integration/postgres-external-protected-git.test.ts
-```
-
-Require the four check receipts `model-before`, `git-fetched`, `git-refused`,
-and `model-after`, a passing selected case, and successful fixture cleanup.
-This runs the shipped Codex process and real Git, with a controlled inference
-origin and the external Driver fixture. It uses synthetic credentials and
-requires no OpenShell installation.
-The OpenShell-specific conversation case still runs with
-`pnpm test:standing-git-conversation` and its corresponding prepared database.
 
 On the deployed build, use disposable repositories and an approved GitHub
 credential source. The Agent must never receive the token. In one Agent

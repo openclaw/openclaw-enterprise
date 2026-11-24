@@ -3640,6 +3640,18 @@ export class PostgresPlatformState implements PlatformStateStore {
 
     const serviceAccounts: ServiceAccountRepository = {
       findServiceAccount,
+      findServiceAccountByCredentialSource: async (namespaceId, sourceId) => {
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT s.id, s.namespace_id, s.name, s.credential
+               FROM occ.service_accounts AS s
+               JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
+              WHERE s.namespace_id = $1 AND s.credential_source_id = $2`,
+            [namespaceId, sourceId],
+          ),
+        )[0];
+        return found === undefined ? undefined : serviceAccountFromRow(found);
+      },
       listServiceAccounts: async (namespaceId) =>
         Object.freeze(
           decodeQueryRows(

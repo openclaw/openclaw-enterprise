@@ -1007,9 +1007,13 @@ export function createControllerComposition(
     getNamespace,
     hasSelection: () => drivers.hasSelection("service_account"),
     selectDriver: () => publicController.selectedDriver("service_account"),
-    computeDriver: selectedCompute,
     configuredDriverId: configuredServiceAccountDriverId,
     nextIdentifier: resourceValues.nextIdentifier,
+    ownedTokenServiceDriver: managedCredentialSources.ownedTokenServiceDriver,
+    currentTokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
+    supportsCodexPatSource: () => modelCredentialSourcePresets()?.includes("codex-pat") === true,
+    installationId: admittedInstallation.id,
+    clock: resourceValues.now,
   });
   const harnessAuthOperations = createHarnessAuthOperations({
     requireModelSource,

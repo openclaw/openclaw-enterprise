@@ -54,7 +54,6 @@ test("full coverage receipts require real case evidence and retain approved same
         "tests/integration/openshell-withdrawal-real.test.ts",
         "tests/integration/openshell-optional-plugin-withdrawal-real.test.ts",
         "tests/integration/openshell-gateway-tool-policy-real.test.ts",
-        "tests/integration/openshell-git-retention-real.test.ts",
       ].includes(path),
     );
   }

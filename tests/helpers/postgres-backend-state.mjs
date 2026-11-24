@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -141,24 +141,6 @@ function trackNamespaces(context, pool, close) {
       }
     },
   };
-}
-
-export async function createAccessTokenServiceAccount(state, namespaceId, label) {
-  const id = `sa_${randomUUID()}`;
-  return state.transact((unit) =>
-    unit.serviceAccounts.createServiceAccount({
-      id,
-      namespaceId,
-      name: `${label}-${randomUUID()}`,
-      credential: {
-        kind: "access_token",
-        secretRef: {
-          name: `service-account-${createHash("sha256").update(id).digest("hex").slice(0, 32)}`,
-          key: "token",
-        },
-      },
-    }),
-  );
 }
 
 export async function seedBackendBinding(pool, account, options = {}) {

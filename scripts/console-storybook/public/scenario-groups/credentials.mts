@@ -249,7 +249,7 @@ export function credentialsScenarios({
         sandboxPolicyRead: false,
       },
       description:
-        "The Agent uses a ChatGPT service account for Harness authentication, which each Agent update reads. The permission answer says a source grant is missing but not which one, so the note names operate on the bound Secrets and credential sources and read on the service account.",
+        "The Agent uses a Source enrolled from a ChatGPT service account. Agent updates require ordinary Source operate permission.",
       gap: "The permission answer is simulated; the API still authorizes every save.",
     },
     credentialsSlack: {
@@ -1030,8 +1030,12 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
       name: "ChatGPT service account",
       path: `${draft}&tab=credentials`,
       auth: "service",
+      actions: [
+        { selector: "#harness-auth-method", value: "service_account" },
+        { selector: "#service-account-id", value: "sa_demo" },
+      ],
       description:
-        "Select an issued service account, or switch to an imported Service Accounts token Secret. Both use the same PAT login method.",
+        "Select a freshly issued service account. Saving binds its canonical TokenService Source and uses ordinary Source permissions.",
       gap: "Service-account issuance is outside the console.",
     },
     authServiceEmpty: {
@@ -1049,9 +1053,10 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
       name: "Issued service accounts unavailable",
       path: `${draft}&tab=credentials`,
       auth: "service",
+      actions: [{ selector: "#harness-auth-method", value: "service_account" }],
       rules: [{ suffix: "/service-accounts", method: "GET", status: 403 }],
       description:
-        "A failed list request preserves the saved account and explains that accounts are unavailable only while issued-account authentication is selected.",
+        "A failed account list leaves the saved Source unchanged and explains the refusal only while issued-account selection is open.",
       steps: [
         "Switch Authentication source to API key, Service Accounts, and Operator-managed credentials. The issued-account error disappears; each source shows its own fields with consistent styling.",
         "Return to Issued ChatGPT service account. The unavailable-account feedback and saved account return; the failed lookup does not change its selection.",

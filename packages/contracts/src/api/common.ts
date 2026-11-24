@@ -690,11 +690,7 @@ export const UpdateConfigurationBody = Type.Object(
 
 export const ServiceAccountCredentialSchema = Type.Object(
   {
-    kind: Type.Union([
-      Type.Literal("api_key"),
-      Type.Literal("access_token"),
-      Type.Literal("oauth_access_token"),
-    ]),
+    kind: Type.Union([Type.Literal("api_key"), Type.Literal("oauth_access_token")]),
     secretRef: Type.Object(
       {
         name: Type.String({

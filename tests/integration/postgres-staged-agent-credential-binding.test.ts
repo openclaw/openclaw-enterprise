@@ -14,10 +14,15 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import { openShellCredentialProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
+import { stagedCredentialPolicies } from "../../apps/controller/src/drivers/sandbox/openshell-staged-credential-policy.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { managedCliInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  managedCliInstalls,
+  managedMcpInstalls,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -45,7 +50,7 @@ import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
-import { waitFor } from "../helpers/wait-for.ts";
+import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 import { digest } from "../helpers/kubernetes-routed-scenarios.mjs";
 import type { FixtureDriver } from "../helpers/kubernetes-workspace-setup.ts";
 import { createDedicatedDeployKubernetesFixture } from "../conformance/kubernetes-dedicated-deploy-fixture.ts";
@@ -293,8 +298,7 @@ async function controlledRetirementTransport(
   });
   return {
     client,
-    seed(sourceId: string) {
-      const name = openShellProviderName(sourceId);
+    seed(sourceId: string, name = openShellProviderName(sourceId)) {
       const ownership = {
         "app.kubernetes.io/managed-by": "openclaw-enterprise",
         "openclaw.dev/credential-source-id": sourceId,
@@ -311,11 +315,15 @@ async function controlledRetirementTransport(
         profile: { id: name, resource_version: "1", annotations: ownership },
       });
     },
-    seedSandbox(sourceId: string, revision: Readonly<AgentRevision>, name: string, id: string) {
-      const binding = revision.credentialDeployment!.bindings[0]!;
-      const request = revision.credentialDeployment!.injectionPolicies[0]!.allowedRequests[0]!;
-      const grant = revision.sandboxPolicy!.additions.find((entry) => entry.host === request.host)!;
-      const rule = `oce-agent-${grant.id}`;
+    seedSandbox(revision: Readonly<AgentRevision>, name: string, id: string) {
+      assert.ok(revision.credentialDeployment && revision.sandboxPolicy);
+      const { bindings, injectionPolicies } = revision.credentialDeployment;
+      const request = injectionPolicies[0]!.allowedRequests[0]!;
+      const { admitted } = stagedCredentialPolicies(
+        { version: 1, network_policies: revision.sandboxPolicy.defaults },
+        revision,
+        revision.sandboxPolicy,
+      );
       const sandbox = {
         metadata: {
           id,
@@ -336,35 +344,9 @@ async function controlledRetirementTransport(
           },
         },
         spec: {
-          providers: [openShellProviderName(sourceId)],
+          providers: bindings.map(openShellCredentialProviderName),
           provider_attachment_epoch: randomUUID(),
-          policy: {
-            version: 1,
-            network_policies: {
-              ...revision.sandboxPolicy!.defaults,
-              [rule]: {
-                name: rule,
-                binaries: [{ path: request.binary }],
-                endpoints: [
-                  {
-                    host: request.host,
-                    ports: request.ports.map(({ from }) => from),
-                    protocol: "rest",
-                    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-                    rules: [
-                      {
-                        allow: {
-                          method: request.requestPolicy!.method,
-                          path: request.requestPolicy!.path,
-                        },
-                      },
-                    ],
-                    credential_binding: { provider: openShellProviderName(binding.sourceRef.id) },
-                  },
-                ],
-              },
-            },
-          },
+          policy: admitted,
         },
       };
       sandboxes.set(name, {
@@ -1437,9 +1419,17 @@ test(
     };
     const ambiguousGrant = { ...grant, id: "alternate-model-egress", binary: "/usr/bin/other" };
     const codexGrant = { ...grant, id: "codex-model-egress", binary: OPEN_SHELL_CODEX_BINARIES[0] };
+    const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
+    assert.ok(slack);
+    const slackGrant = {
+      id: "slack",
+      binary: slack.binaryPath,
+      host: slack.endpoint.host,
+      ports: grant.ports,
+    };
     const installation = {
       ...buildSandboxInstallation(),
-      sandboxNetworkPolicyCeiling: [grant, ambiguousGrant, codexGrant],
+      sandboxNetworkPolicyCeiling: [grant, ambiguousGrant, codexGrant, slackGrant],
       runtime: { nativeWorkerSupport: "custom-image" },
     };
     Reflect.deleteProperty(installation.drivers, "credential_gateway");
@@ -2282,23 +2272,38 @@ test(
       nativeApp,
     );
     assert.equal(searchablePolicy.statusCode, 200, searchablePolicy.body);
-    const searchableCodex = await inject(
-      "POST",
-      `${base}/agents/${searchableCodexId}/deploy`,
-      {
-        harnessOverrides: {
-          modelProvider: {
-            protocol: "openai-responses",
-            baseUrl: "https://api.openai.com/v1",
-            supportsStandaloneWebSearch: true,
-          },
-        },
-      },
-      nativeApp,
-    );
+    const firstDeploy = `${base}/agents/${searchableCodexId}/deploy-first`;
+    const intent = {
+      key: "codex-search-source",
+      expectedConfigurationId: codexConfiguration.json().data.id,
+      expectedGeneration: codexConfiguration.json().data.generation,
+    };
+    const modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      supportsStandaloneWebSearch: true,
+    };
+    const submitFirst = (provider: typeof modelProvider) =>
+      inject(
+        "POST",
+        firstDeploy,
+        { ...intent, harnessOverrides: { modelProvider: provider } },
+        nativeApp,
+      );
+    const searchableCodex = await submitFirst(modelProvider);
     assert.equal(searchableCodex.statusCode, 202, searchableCodex.body);
+    const { revisionId: searchId } = searchableCodex.json().data;
+    const replay = await submitFirst({ ...modelProvider, baseUrl: modelProvider.baseUrl + "/" });
+    assert.equal(replay.statusCode, 202, replay.body);
+    assert.equal(replay.json().data.revisionId, searchId);
+    const conflict = await submitFirst({ ...modelProvider, supportsStandaloneWebSearch: false });
+    assert.equal(conflict.statusCode, 409, conflict.body);
+    const recoveryPath = `${firstDeploy}/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}?harnessOverrides=${encodeURIComponent(JSON.stringify({ modelProvider }))}`;
+    const receipt = await inject("GET", recoveryPath, undefined, nativeApp);
+    assert.equal(receipt.statusCode, 200, receipt.body);
+    assert.equal(receipt.json().data.revisionId, searchId);
     const searchableRevision = await nativeController.transact((unit) =>
-      unit.revisions.findRevision(namespaceId, searchableCodexId, searchableCodex.json().data.id),
+      unit.revisions.findRevision(namespaceId, searchableCodexId, searchId),
     );
     assert.equal(
       (
@@ -2326,13 +2331,85 @@ test(
     const siblingId = codexAgent.id;
     const siblingRevision = codexRevision;
 
+    const request = async (
+      method: string,
+      path: string,
+      body: object | undefined,
+      status: number,
+    ) => {
+      const response = remember(await inject(method, path, body, nativeApp));
+      assert.equal(response.statusCode, status, response.body);
+      return status === 204 ? undefined : response.json().data;
+    };
+    const slackTemplate = await request(
+      "POST",
+      "/connection-templates",
+      {
+        namespaceId,
+        displayName: "Slack MCP",
+        mode: "static_bearer",
+        destinations: [{ method: "POST", ...slack.endpoint }],
+      },
+      201,
+    );
+    const slackMaterial = randomUUID();
+    material.push(slackMaterial);
+    const slackSource = await request(
+      "POST",
+      `${base}/credential-sources`,
+      {
+        name: "Slack withdrawal Source",
+        type: "static",
+        connectionTemplateId: slackTemplate.id,
+        secret: { opaque: slackMaterial },
+      },
+      201,
+    );
+    const twoSourceAgent = await request(
+      "POST",
+      `${base}/agents`,
+      {
+        name: "Shared withdrawal claim",
+        configurationId,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
+        credentialSources: [{ sourceId: nativeSource.id }],
+        plugins: {
+          [slack.id]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: slack.releaseSha256,
+              credentials: { [slack.slotId]: slackSource.id },
+              toolNames: ["slack_search_public"],
+            },
+          },
+        },
+      },
+      201,
+    );
+    const twoSourcePath = `${base}/agents/${twoSourceAgent.id}`;
+    const twoSourceNetworking = `${twoSourcePath}/sandbox-policy/networking`;
+    await request("PATCH", `${twoSourceNetworking}/editing`, { enabled: true }, 200);
+    await request("PUT", twoSourceNetworking, { expectedVersion: 1, additions: [grant] }, 200);
+    const twoSourceDeployment = await request("POST", `${twoSourcePath}/deploy`, {}, 202);
+    const twoSourceRevision = await state.read((view) =>
+      view.revisions.findRevision(namespaceId, twoSourceAgent.id, twoSourceDeployment.id),
+    );
+    assert.ok(twoSourceRevision?.credentialDeployment);
+    assert.deepEqual(
+      twoSourceRevision.credentialDeployment.bindings.map(({ sourceRef }) => sourceRef.id),
+      [nativeSource.id, slackSource.id],
+    );
+
     // Simulate an admitted deployment that reached staged delivery. The retained ConfigMap and
     // native Provider are transport state, not substitutes for withdrawal or Proxy decisions.
     const compute = runtime.computeDriver as unknown as FixtureDriver;
     const targetName = `credential-target-${digest(dedicatedId)}-rev-${digest(revision.id)}`;
     const siblingTargetName = `credential-target-${digest(siblingId)}-rev-${digest(siblingRevision.id)}`;
+    const twoSourceTargetName = `credential-target-${digest(twoSourceAgent.id)}-rev-${digest(twoSourceRevision.id)}`;
     const sandboxId = "controlled-sandbox";
     const siblingSandboxId = "controlled-sibling-sandbox";
+    const twoSourceSandboxId = "controlled-two-source-sandbox";
     const stopTransport = createDedicatedDeployKubernetesFixture(
       {
         namespace: kubernetesNamespace,
@@ -2352,6 +2429,7 @@ test(
         for (const [candidate, name, id] of [
           [revision, targetName, sandboxId],
           [siblingRevision, siblingTargetName, siblingSandboxId],
+          [twoSourceRevision, twoSourceTargetName, twoSourceSandboxId],
         ] as const) {
           const target = compute.manifest(
             "v1",
@@ -2421,18 +2499,13 @@ test(
       namespace: placedNamespace,
       revision: siblingRevision,
     }).resourceName;
-    nativeTransport.seedSandbox(nativeSource.id, revision, sandboxName, sandboxId);
-    nativeTransport.seedSandbox(
-      nativeSource.id,
-      siblingRevision,
-      siblingSandboxName,
-      siblingSandboxId,
-    );
+    nativeTransport.seedSandbox(revision, sandboxName, sandboxId);
+    nativeTransport.seedSandbox(siblingRevision, siblingSandboxName, siblingSandboxId);
     // Activation is a controlled prerequisite here. Defer all admitted deployment work,
     // including the search-only admission, before starting the real withdrawal worker.
     // This test does not claim to qualify deployment itself.
     assert.ok(searchableRevision);
-    for (const candidate of [revision, siblingRevision, searchableRevision]) {
+    for (const candidate of [revision, siblingRevision, searchableRevision, twoSourceRevision]) {
       const deferred = await pool.query(
         "UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour' WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND idempotency_key=$4 AND state='queued'",
         [namespaceId, candidate.agentId, candidate.id, `agent_revision:${candidate.id}:reconcile`],
@@ -2476,24 +2549,26 @@ test(
     assert.equal(requested.statusCode, 202, requested.body);
     assert.equal(requested.json().data.state, "pending");
     nativeTransport.effectivePolicyPermissive = true;
-    const worker = createControllerWorker({
-      pool: new pg.Pool({ connectionString: databaseUrl }),
-      drivers: {
-        ...runtime,
-        installation: {
-          ...runtime.installation,
-          drivers: {
-            ...runtime.installation.drivers,
-            secret: { ...runtime.installation.drivers.secret, id: driver.id },
-            token_service: { ...runtime.installation.drivers.token_service!, id: owner.id },
+    const createWorker = () =>
+      createControllerWorker({
+        pool: new pg.Pool({ connectionString: databaseUrl }),
+        drivers: {
+          ...runtime,
+          installation: {
+            ...runtime.installation,
+            drivers: {
+              ...runtime.installation.drivers,
+              secret: { ...runtime.installation.drivers.secret, id: driver.id },
+              token_service: { ...runtime.installation.drivers.token_service!, id: owner.id },
+            },
           },
+          secretDriver: driver,
         },
-        secretDriver: driver,
-      },
-      pollIntervalMs: 15,
-      maxAttempts: 1,
-      emit() {},
-    });
+        pollIntervalMs: 15,
+        maxAttempts: 1,
+        emit() {},
+      });
+    const worker = createWorker();
     try {
       await worker.start();
       // The effective configuration can report admission while another rule still permits the
@@ -2675,6 +2750,140 @@ test(
       ).statusCode,
       200,
     );
+
+    await t.test("Worker honors each withdrawal requester's authority at dispatch", async () => {
+      const snapshot = await state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(
+          namespaceId,
+          twoSourceAgent.id,
+          undefined,
+          twoSourceRevision.id,
+        ),
+      );
+      assert.equal(snapshot?.activeRevisionId, twoSourceRevision.id);
+      const sandboxName = sandbox.harnessResource!({
+        namespace: placedNamespace,
+        revision: twoSourceRevision,
+      }).resourceName;
+      const [modelProvider, slackProvider] = twoSourceRevision.credentialDeployment!.bindings.map(
+        openShellCredentialProviderName,
+      );
+      nativeTransport.seed(nativeSource.id, modelProvider);
+      nativeTransport.seed(slackSource.id, slackProvider);
+      nativeTransport.seedSandbox(twoSourceRevision, sandboxName, twoSourceSandboxId);
+      const role = await request(
+        "POST",
+        `${base}/iam/roles`,
+        {
+          name: "Exact Agent operator",
+          permissions: [{ action: "operate", resourceKind: "agent" }],
+        },
+        201,
+      );
+      const access = await request(
+        "POST",
+        `${base}/iam/access-bindings`,
+        {
+          subjectKind: "identity",
+          subjectId: authorId,
+          roleId: role.id,
+          resourceKind: "agent",
+          resourceId: twoSourceAgent.id,
+        },
+        201,
+      );
+      const sourcePath = (id: string) => `${twoSourcePath}/credential-sources/${id}`;
+      // The authorized operator opens the claim. A second requester adds a model withdrawal
+      // to that claim, then loses the only grant that allowed them to operate this Agent.
+      await request("POST", `${sourcePath(slackSource.id)}/withdraw`, undefined, 202);
+      const queuedModel = await memberRequest(
+        "POST",
+        `${sourcePath(nativeSource.id)}/withdraw`,
+        undefined,
+        nativeApp,
+      );
+      assert.equal(queuedModel.statusCode, 202, queuedModel.body);
+      assert.equal(queuedModel.json().data.requestedBy, authorId);
+      const { rows: claim } = await pool.query(
+        `SELECT actor_id FROM occ.controller_work WHERE namespace_id=$1 AND revision_id=$2
+           AND agent_target='credentials_withdrawn' AND state='queued'`,
+        [namespaceId, twoSourceRevision.id],
+      );
+      assert.deepEqual(claim, [{ actor_id: principal.id }]);
+      await request("DELETE", `${base}/iam/access-bindings/${access.id}`, undefined, 204);
+
+      const withdrawalWorker = createWorker();
+      try {
+        await withdrawalWorker.start();
+        await waitUntil("the shared withdrawal claim to settle", async () => {
+          const slackStatus = await request(
+            "GET",
+            `${sourcePath(slackSource.id)}/withdrawal`,
+            undefined,
+            200,
+          );
+          const modelStatus = await request(
+            "GET",
+            `${sourcePath(nativeSource.id)}/withdrawal`,
+            undefined,
+            200,
+          );
+          return (
+            slackStatus.state === "revoked" &&
+            modelStatus.state === "pending" &&
+            modelStatus.reason === "AUTHORIZATION_DENIED" &&
+            !modelStatus.withdrawalInProgress
+          );
+        });
+      } finally {
+        await withdrawalWorker.stop();
+      }
+      const residual = nativeTransport.sandbox(sandboxName)!.spec as Wire;
+      assert.deepEqual(residual.providers, [modelProvider]);
+      const loaded = await nativeTransport.client.getPolicyStatus(
+        {
+          workspace: kubernetesNamespace,
+          sandbox: sandboxName,
+        },
+        t.signal,
+      );
+      assert.equal(loaded.state, "POLICY_STATUS_LOADED");
+      assert.deepEqual(
+        Object.values((loaded.policy as Wire).network_policies as Record<string, Wire>)
+          .flatMap(({ endpoints }) => endpoints as Wire[])
+          .flatMap(({ credential_binding }) =>
+            credential_binding ? [(credential_binding as Wire).provider] : [],
+          ),
+        [modelProvider],
+      );
+      assert.equal(
+        (await request("GET", twoSourcePath, undefined, 200)).activeRevisionId,
+        twoSourceRevision.id,
+      );
+      assert.deepEqual([...core.secrets], custodyBeforeStop);
+      const { rows: audit } = await pool.query(
+        `SELECT actor_id, outcome, details->'credentialSourceIds' AS sources FROM occ.audit_events
+         WHERE namespace_id=$1 AND resource_id=$2 AND action='openclaw.agents.lifecycle.credentials_withdraw'`,
+        [namespaceId, twoSourceAgent.id],
+      );
+      assert.equal(audit.length, 2);
+      assert.deepEqual(
+        audit.find(({ outcome }) => outcome === "success"),
+        {
+          outcome: "success",
+          actor_id: principal.id,
+          sources: [slackSource.id],
+        },
+      );
+      assert.deepEqual(
+        audit.find(({ outcome }) => outcome === "denied"),
+        {
+          outcome: "denied",
+          actor_id: authorId,
+          sources: [nativeSource.id],
+        },
+      );
+    });
 
     for (const value of material) {
       assert.equal(

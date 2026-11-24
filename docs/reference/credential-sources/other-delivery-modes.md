@@ -10,7 +10,7 @@ The Harness receives the model credential projection separately. Embedded
 execution combines Gateway and Harness in one workload. See
 [runtime credential placement](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
 
-- A **prepared GitHub token** Source (`github-app-metadata`) permits a protected metadata request. TokenService prepares its installation token for the exact registered grant.
+- A **prepared GitHub token** Source (`github-app-metadata`) permits one protected metadata read. The configured issuer reads the approved App signing key from an administrator-supplied Namespace Secret under the selected Secret Driver. The ordinary native Git path uses a TokenService-managed GitHub App Client.
 - A **credential-free repository metadata** Source permits an admitted repository identity read without credential injection. Request and response controls still apply.
 
 OpenShell is a development integration. See the

@@ -888,7 +888,10 @@ export type HarnessAuthSnapshot =
   | {
       readonly method: "codex_pat";
       readonly source: ServiceAccountReference;
-      readonly credential: ServiceAccountCredential & { readonly kind: "access_token" };
+      readonly credential: {
+        readonly kind: "access_token";
+        readonly secretRef: { readonly name: string; readonly key: string };
+      };
       readonly backendBinding: {
         readonly backendId: string;
         readonly driverId: string;
@@ -1237,13 +1240,15 @@ export interface ConfigurationReference extends Scope {
   readonly namespaceId: string;
 }
 
-export interface ServiceAccountCredential {
-  readonly kind: "api_key" | "access_token" | "oauth_access_token";
-  readonly secretRef: {
-    readonly name: string;
-    readonly key: string;
-  };
-}
+export type ServiceAccountCredential =
+  | {
+      readonly kind: "access_token";
+      readonly sourceId: string;
+    }
+  | {
+      readonly kind: "api_key" | "oauth_access_token";
+      readonly secretRef: { readonly name: string; readonly key: string };
+    };
 
 export interface ServiceAccount extends Scope {
   readonly id: string;

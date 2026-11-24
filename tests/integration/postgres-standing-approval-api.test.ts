@@ -1195,7 +1195,10 @@ test(
     const secondBinding = { repositoryRef: "project-two", profile: "git-write" };
     const addBinding = await request("PATCH", path, {
       configurationId,
-      repositoryAccess: [...repositoryAccessSelections(agent.repositoryAccess), secondBinding],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [...repositoryAccessSelections(agent.repositoryAccess), secondBinding],
+      },
     });
     assert.equal(addBinding.statusCode, 409, addBinding.body);
     assert.equal(addBinding.json().error.message, STANDING_APPROVAL_BINDING_LOCKED);
@@ -1207,7 +1210,10 @@ test(
     const multi = await request("POST", `/namespaces/${namespaceId}/agents`, {
       name: "Finite multibinding source",
       configurationId,
-      repositoryAccess: [...repositoryAccessSelections(agent.repositoryAccess), secondBinding],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [...repositoryAccessSelections(agent.repositoryAccess), secondBinding],
+      },
     });
     assert.equal(multi.statusCode, 201, multi.body);
     const multiPath = `/namespaces/${namespaceId}/agents/${multi.json().data.id}`;

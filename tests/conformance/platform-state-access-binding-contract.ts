@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AccessBinding,
   AgentRevision,
-  LegacyCredentialSource,
+  StaticCredentialSource,
   Namespace,
   Preset,
   ResourceKind,
@@ -92,15 +92,22 @@ export async function verifyDeletedResourceAccessBindingContract(
       configuration: { values: {} },
     },
   };
-  const source: LegacyCredentialSource = {
+  const tokenServiceInstanceId = await store.transact(async (transaction) => {
+    const instance = await transaction.installations.selectTokenServiceInstance({
+      id: randomUUID(),
+      driverId: "platform-state-token-service",
+      storeIdentity: "platform-state-contract",
+    });
+    return instance.id;
+  });
+  const source: StaticCredentialSource = {
     id: identifier("cs"),
     namespaceId: namespace.id,
     name: "Bound source " + randomUUID(),
-    type: "openai",
-    config: { base_url: "https://api.openai.com/v1" },
-    secrets: { api_key: { kind: "secret", namespaceId: namespace.id, id: secret.id } },
-    ownerCapability: "credential_gateway",
-    driverId: "credential-gateway-contract",
+    type: "static",
+    config: { provider_preset: "openai" },
+    ownerCapability: "token_service",
+    tokenServiceInstanceId,
     state: "ready",
     createdAt,
   };
@@ -159,20 +166,20 @@ export async function verifyDeletedResourceAccessBindingContract(
   });
 
   // Each reference comes back once, ordered by kind then ID; a full page says more exist.
-  const references = [
-    ...configurationIds.map((id) => ({ kind: "configuration", id })),
-    { kind: "credential_source", id: source.id },
-  ];
+  const references = configurationIds.map((id) => ({ kind: "configuration", id }));
   await store.read(async (state) => {
     assert.deepEqual(await state.secrets.listReferences(namespace.id, secret.id, 50), {
       references,
       truncated: false,
     });
     // A page that holds exactly every reference is not truncated.
-    assert.deepEqual(await state.secrets.listReferences(namespace.id, secret.id, 3), {
-      references,
-      truncated: false,
-    });
+    assert.deepEqual(
+      await state.secrets.listReferences(namespace.id, secret.id, references.length),
+      {
+        references,
+        truncated: false,
+      },
+    );
     assert.deepEqual(await state.secrets.listReferences(namespace.id, secret.id, 1), {
       references: [references[0]],
       truncated: true,
@@ -183,7 +190,7 @@ export async function verifyDeletedResourceAccessBindingContract(
     });
   });
 
-  // The credential source and the Configuration reference the Secret, so they go first.
+  // The Configurations reference the Secret, so delete them first.
   await store.transact(async (transaction) => {
     assert.equal(
       await transaction.credentialSources.deleteCredentialSource(namespace.id, source.id),

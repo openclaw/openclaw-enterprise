@@ -12,6 +12,7 @@ import {
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.ts";
 import { configurePodmanComposeProvider } from "../../scripts/lib/podman-compose-provider.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { selectComposeSubnet } from "./compose-network.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -542,7 +543,7 @@ async function availablePorts() {
   }
 }
 
-export async function localFirstAgentStack(context, { modelCredential } = {}) {
+export async function localFirstAgentStack(context, { modelCredential, nativeModelGrant } = {}) {
   if (modelCredential !== undefined && modelCredential !== "openai") {
     throw new Error("Unsupported local first-Agent model credential selection.");
   }
@@ -652,6 +653,23 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
     );
     context.after(() => rm(policyFile, { force: true }));
     startupArguments.push("--sandbox-network-policy-file", policyFile);
+    if (nativeModelGrant) {
+      const ceilingFile = `${directory}-network-policy-ceiling.json`;
+      const codexGrants = OPEN_SHELL_CODEX_BINARIES.flatMap((binary, architecture) =>
+        ["api.openai.com", "auth.openai.com", "chatgpt.com"].map((host) => ({
+          id: `codex-${architecture}-${host.split(".")[0]}`,
+          binary,
+          host,
+          ports: [{ from: 443, to: 443 }],
+        })),
+      );
+      await writeFile(ceilingFile, JSON.stringify({ grants: [nativeModelGrant, ...codexGrants] }), {
+        mode: 0o600,
+        flag: "wx",
+      });
+      context.after(() => rm(ceilingFile, { force: true }));
+      startupArguments.push("--sandbox-network-policy-ceiling-file", ceilingFile);
+    }
   }
   const controllerImage = environment.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
   if (controllerImage !== undefined) {

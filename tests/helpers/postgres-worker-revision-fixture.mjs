@@ -700,24 +700,17 @@ export function createWorkerRevisionFixtures(
           );
           assert.deepEqual(sources.snapshots, credentialSources);
           const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
-          const plan = (chosen) =>
-            egressAdmission.admitProxyPlan(
-              unit,
-              owner,
-              candidate.id,
-              configuration,
-              sandbox.id,
-              repositoryCredentials,
-              chosen,
-              candidate.harness.configuration,
-            );
-          await assert.rejects(
-            plan({ ...harnessAuth, sourceId: "unselected" }),
-            /created or adopted under the Proxy/,
+          proxyAdmission = await egressAdmission.admitProxyPlan(
+            unit,
+            owner,
+            candidate.id,
+            configuration,
+            sandbox.id,
+            repositoryCredentials,
+            candidate.harness.configuration,
           );
-          proxyAdmission = await plan(harnessAuth);
           const egressPlan = proxyAdmission.plan;
-          assert.deepEqual(egressPlan.harnessCredentialSource, harnessAuth);
+          assert.equal(egressPlan.harnessCredentialSource, undefined);
           assert.deepEqual(
             egressPlan.routes,
             [],

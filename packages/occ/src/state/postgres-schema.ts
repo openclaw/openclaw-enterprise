@@ -204,10 +204,17 @@ export const serviceAccounts = occSchema.table(
       .references(() => namespaces.id, { onDelete: "restrict", onUpdate: "restrict" }),
     name: collatedText("name").notNull(),
     credential: jsonb("credential").$type<ServiceAccountCredential>(),
+    credentialSourceId: text("credential_source_id").generatedAlwaysAs(
+      sql`CASE WHEN credential->>'kind' = 'access_token' THEN credential->>'sourceId' END`,
+    ),
   },
-  (table) => [
+  (table): PgTableExtraConfigValue[] => [
     unique("service_accounts_namespace_id_id_unique").on(table.namespaceId, table.id),
     unique("service_accounts_namespace_id_name_unique").on(table.namespaceId, table.name),
+    unique("service_accounts_credential_source_unique").on(
+      table.namespaceId,
+      table.credentialSourceId,
+    ),
     check("service_accounts_id_format", sql`${table.id} ~ ${identifierPatterns.serviceAccount}`),
     check("service_accounts_name_length", sql`char_length(${table.name}) BETWEEN 1 AND 200`),
     check(
@@ -218,10 +225,17 @@ export const serviceAccounts = occSchema.table(
       "service_accounts_credential_valid",
       sql`${table.credential} IS NULL OR (
         jsonb_typeof(${table.credential}) = 'object'
+        AND (${table.credential} ?& ARRAY['kind', 'sourceId'])
+        AND (${table.credential} - 'kind' - 'sourceId') = '{}'::jsonb
+        AND ${table.credential}->>'kind' = 'access_token'
+        AND jsonb_typeof(${table.credential}->'sourceId') = 'string'
+        AND ${table.credential}->>'sourceId' ~ ${identifierPatterns.credentialSource}
+      ) OR (
+        jsonb_typeof(${table.credential}) = 'object'
         AND (${table.credential} ?& ARRAY['kind', 'secretRef'])
         AND (${table.credential} - 'kind' - 'secretRef') = '{}'::jsonb
         AND jsonb_typeof(${table.credential}->'kind') = 'string'
-        AND (${table.credential}->>'kind') IN ('api_key', 'oauth_access_token', 'access_token')
+        AND (${table.credential}->>'kind') IN ('api_key', 'oauth_access_token')
         AND jsonb_typeof(${table.credential}->'secretRef') = 'object'
         AND ((${table.credential}->'secretRef') ?& ARRAY['name', 'key'])
         AND ((${table.credential}->'secretRef') - 'name' - 'key') = '{}'::jsonb
@@ -234,6 +248,13 @@ export const serviceAccounts = occSchema.table(
         AND (${table.credential} #>> '{secretRef,key}') NOT IN ('.', '..')
       )`,
     ),
+    foreignKey({
+      name: "service_accounts_credential_source_owner",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
   ],
 );
 

@@ -13,7 +13,6 @@ import type {
   SecretBindings,
   SecretMetadata,
 } from "../../packages/contracts/src/index.ts";
-import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -1825,31 +1824,13 @@ test("missing Slack credential fields require both Secret references before savi
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
-// A codex Agent bound to an issued account, on a Credentials tab whose Service Account list is
+// A Codex Agent on a Credentials tab whose ServiceAccount list is
 // denied after Console admission. With `heldList`, the list waits for `list.release()`, so a test
 // can change the method while it is in flight. `denied()` checks the refusal and lifts the denial.
 async function deniedIssuedAccountList(t: TestContext, { heldList = false } = {}) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await createNamespace(fixture, "Issued-account feedback");
-  // Seed an issued account's stored result; listing and source selection still use the real app.
-  assert.ok(fixture.controller, "Fixture Controller must be bootstrapped");
-  const storedAccount: unknown = await fixture.controller.transact(
-    async (state: PlatformUnitOfWork) => {
-      const created = await state.serviceAccounts.createServiceAccount({
-        id: `sa_${randomUUID()}`,
-        namespaceId: namespace.id,
-        name: "Saved issued account",
-      });
-      return state.serviceAccounts.updateCredential(namespace.id, created.id, {
-        kind: "access_token",
-        secretRef: { name: "issued-account-feedback-fixture", key: "token" },
-      });
-    },
-  );
-  const account = {
-    id: stringField(record(storedAccount, "Issued account").id, "Issued account ID"),
-  };
   const agent = await createAgent(
     fixture,
     namespace.id,
@@ -1857,10 +1838,7 @@ async function deniedIssuedAccountList(t: TestContext, { heldList = false } = {}
     nativeValues("issued-account-feedback", { harnessId: "codex" }),
     {
       executionMode: "dedicated",
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
-      },
+      harnessAuth: null,
     },
   );
   const { page } = await newPage(t, fixture);
@@ -1891,10 +1869,10 @@ async function deniedIssuedAccountList(t: TestContext, { heldList = false } = {}
     (response) => new URL(response.url()).pathname === accountsPath,
   );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByLabel("Authentication source", { exact: true }).selectOption("service_account");
   return {
     page,
     requests,
-    account,
     // The held list reaches the server, and is denied, only once released.
     list: held && {
       requested: () => held.requested,
@@ -1918,23 +1896,23 @@ async function deniedIssuedAccountList(t: TestContext, { heldList = false } = {}
 }
 
 test("Credentials shows issued-account denial only while that source is selected", async (t) => {
-  const { page, requests, account, denied, method, issuedAccount, feedback } =
+  const { page, requests, denied, method, issuedAccount, feedback } =
     await deniedIssuedAccountList(t);
   await denied();
   await feedback.waitFor();
-  assert.equal(await issuedAccount.inputValue(), account.id);
+  assert.equal(await issuedAccount.inputValue(), "");
   assert.equal(await issuedAccount.isDisabled(), true);
   // The select cannot be used, but a keyboard reader still reaches it and hears why (finding 2925).
   await expectReachableReason(page, issuedAccount, await feedback.textContent());
 
   // Other methods remain usable without presenting the issued-account permission error.
-  for (const source of ["api_key", "codex_pat", "runtime"]) {
+  for (const source of ["api_key", "runtime"]) {
     await method.selectOption(source);
     assert.equal(await feedback.isVisible(), false);
   }
   await method.selectOption("service_account");
   assert.equal(await feedback.isVisible(), true);
-  assert.equal(await issuedAccount.inputValue(), account.id);
+  assert.equal(await issuedAccount.inputValue(), "");
   assert.equal(await issuedAccount.isDisabled(), true);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });

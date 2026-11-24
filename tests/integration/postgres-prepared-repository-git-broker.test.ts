@@ -47,13 +47,7 @@ import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import {
-  backendDefinition,
-  createAccessTokenServiceAccount,
-  createBackendWorkerDrivers,
-  poolWithOneBackendBindingReadFault,
-  seedBackendBinding,
-} from "../helpers/postgres-backend-state.mjs";
+import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
 import type {
   BackendDefinition,
   ComputeDriver,
@@ -64,7 +58,6 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { removeAccessBindings } from "../helpers/postgres-worker-revision-support.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { waitFor } from "../helpers/wait-for.ts";
@@ -359,13 +352,6 @@ for (const outcome of [
   "draft provider reply lost",
   "unissued draft-capable transport",
   "stored execution admission incompatible",
-  "model account changes",
-  "model account binding revoked",
-  "model account lookup fault cannot mask lost actor authority",
-  "model account Backend missing",
-  "model account binding revoked after custody read",
-  "model account final IAM fault with revoked binding",
-  "model account final read recovers",
   "model Secret unavailable",
 ] as const) {
   test(
@@ -374,21 +360,17 @@ for (const outcome of [
     async (t) => {
       const backendId = "github-fixture";
       const driverId = "repository-credentials";
-      const modelProvider = outcome.startsWith("model account") ? backendDefinition() : undefined;
-      const modelBackends = modelProvider === undefined ? [] : [modelProvider];
       const gitBackend: BackendDefinition = {
         id: backendId,
         type: "github",
         configuration: { registryPath: "/unused/controlled-registry.json" },
         drivers: { repo: driverId },
       };
-      const f = await setupNativeWithdrawal(t, { backends: [...modelBackends, gitBackend] });
+      const f = await setupNativeWithdrawal(t, { backends: [gitBackend] });
       const lostDraftReply = outcome === "draft provider reply lost";
       const draftMustRetire = lostDraftReply || outcome === "unsettled draft receipt";
       const transientRuntime = outcome === "runtime observation is unavailable";
       const persistentRuntime = outcome === "runtime remains unready";
-      const modelBindingRevokedAfterCustody =
-        outcome === "model account binding revoked after custody read";
       const draftTransport =
         outcome === "settled draft-capable transport" ||
         transientRuntime ||
@@ -463,21 +445,7 @@ for (const outcome of [
       t.after(() => prepared.close());
       f.controller.registerDriver(driver);
       f.controller.selectDriver("repo", driver.id);
-      const modelAccount =
-        modelProvider === undefined
-          ? undefined
-          : await createAccessTokenServiceAccount(f.state, f.namespace.id, "native-model");
-      if (modelAccount !== undefined) {
-        await seedBackendBinding(f.observerPool, modelAccount);
-      }
-      const owner = await f.agent("finite-native-withdrawal", {
-        executionMode: "dedicated",
-        ...(modelAccount &&
-          modelProvider && {
-            serviceAccountId: modelAccount.id,
-            backendId: modelProvider.id,
-          }),
-      });
+      const owner = await f.agent("finite-native-withdrawal", { executionMode: "dedicated" });
       const selections = [{ repositoryRef: "repo-a", profile: "git-write" }];
       await f.controller.updateAgent(f.actor.id, {
         namespaceId: f.namespace.id,
@@ -489,15 +457,7 @@ for (const outcome of [
         namespaceId: f.namespace.id,
         bindings: selections,
       }).bindings;
-      const disposableDeployer =
-        outcome === "model account lookup fault cannot mask lost actor authority"
-          ? "deployer-" + randomUUID()
-          : undefined;
-      if (disposableDeployer) {
-        await f.copyActorGrants(disposableDeployer);
-      }
       const candidate = await f.revision(owner, 1, {
-        ...(disposableDeployer && { actorId: disposableDeployer }),
         repositoryCredentials: {
           driver: { id: driver.id, implementation: driver.implementation },
           deadlineWallMs: Date.now() + 55_000,
@@ -509,10 +469,6 @@ for (const outcome of [
       let preparations = 0;
       let runtimeObservations = 0;
       let runtimeStatus: "running" | "unknown" | "timeout" = "running";
-      let failFinalModelRead = false;
-      let failedFinalModelReads = 0;
-      let failFinalIamRead = false;
-      let failedFinalIamReads = 0;
       let checkIncompatibleAdmission = false;
       const incompatibleCompute =
         outcome === "stored execution admission incompatible"
@@ -522,14 +478,6 @@ for (const outcome of [
               ).owner,
             })
           : undefined;
-      const revokeModelBinding = async () => {
-        assert.ok(modelAccount);
-        const binding = await f.observerPool.query(
-          "UPDATE occ.service_account_driver_bindings SET external_credential_id=NULL WHERE namespace_id=$1 AND service_account_id=$2",
-          [f.namespace.id, modelAccount.id],
-        );
-        assert.equal(binding.rowCount, 1);
-      };
       const compute: ComputeDriver = {
         ...f.compute,
         validateExecutionAdmission(revision, source) {
@@ -572,7 +520,7 @@ for (const outcome of [
       assert.ok(observeNativeRepositoryWithdrawal);
       let failCustodyRead = false;
       let failedCustodyReads = 0;
-      const configured = createBackendWorkerDrivers(compute, modelBackends);
+      const configured = createBackendWorkerDrivers(compute, []);
       let omitModelSecret = false;
       let modelSecretMisses = 0;
       const auth = candidate.harnessAuth;
@@ -587,27 +535,6 @@ for (const outcome of [
           return {
             release: (discard) => client.release(discard),
             async query(sql, values) {
-              if (failFinalIamRead && sql.includes("FROM occ.iam_identities) v")) {
-                failFinalIamRead = false;
-                failedFinalIamReads++;
-                return client.query("SELECT 1 / 0");
-              }
-              if (
-                failFinalModelRead &&
-                sql.includes("FROM occ.service_account_driver_bindings AS b") &&
-                values?.[0] === f.namespace.id &&
-                values[1] === modelAccount?.id
-              ) {
-                failFinalModelRead = false;
-                failedFinalModelReads++;
-                if (outcome === "model account lookup fault cannot mask lost actor authority") {
-                  // Exercise a PostgreSQL statement failure that aborts its read transaction.
-                  return client.query("SELECT 1 / 0");
-                }
-                throw Object.assign(new Error("controlled connection loss reading model binding"), {
-                  code: "08006",
-                });
-              }
               const result = await client.query(
                 sql,
                 values === undefined ? undefined : [...values],
@@ -652,21 +579,7 @@ for (const outcome of [
                 code: "08006",
               });
             }
-            const result = await observeNativeRepositoryWithdrawal(revision, sessions);
-            if (result === "disposed") {
-              if (
-                modelBindingRevokedAfterCustody ||
-                outcome === "model account final IAM fault with revoked binding"
-              ) {
-                // Commit model revocation after custody observation and before the locked decision.
-                await revokeModelBinding();
-                failFinalIamRead = outcome === "model account final IAM fault with revoked binding";
-              }
-              if (outcome === "model account final read recovers" && failedFinalModelReads === 0) {
-                failFinalModelRead = true;
-              }
-            }
-            return result;
+            return observeNativeRepositoryWithdrawal(revision, sessions);
           },
           emit: (event) => {
             if (event.event === "worker.completed") {
@@ -679,12 +592,7 @@ for (const outcome of [
         return worker;
       };
       let worker = await startWorker(
-        outcome === "model Secret unavailable" ||
-          outcome === "model account final read recovers" ||
-          outcome === "model account final IAM fault with revoked binding" ||
-          outcome === "model account lookup fault cannot mask lost actor authority"
-          ? modelReadPool
-          : f.workerPool,
+        outcome === "model Secret unavailable" ? modelReadPool : f.workerPool,
       );
       t.after(() => worker.stop());
       await f.work(candidate, "succeeded");
@@ -916,52 +824,8 @@ for (const outcome of [
         assert.equal(deliveries.length, 1);
         return;
       }
-      if (
-        outcome.startsWith("model ") &&
-        !modelBindingRevokedAfterCustody &&
-        outcome !== "model account final IAM fault with revoked binding" &&
-        outcome !== "model account final read recovers"
-      ) {
-        // Leave the issuer unconfirmed after the first fenced cleanup pass.
-        if (outcome === "model account changes") {
-          assert.ok(modelAccount);
-          await worker.stop();
-          worker = await startWorker(poolWithOneBackendBindingReadFault(f.createWorkerPool()));
-          const interrupted = await runCleanupPass();
-          assert.equal(interrupted.code, "REPOSITORY_CLEANUP_PENDING");
-          assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
-          assert.deepEqual(stops, []);
-          assert.ok(
-            (
-              await f.state.transact((unit) =>
-                unit.serviceAccounts.updateCredential(f.namespace.id, modelAccount.id, {
-                  kind: "access_token",
-                  secretRef: { name: `rotated-model-${randomUUID()}`, key: "token" },
-                }),
-              )
-            )?.credential,
-          );
-        } else if (outcome === "model account binding revoked") {
-          await revokeModelBinding();
-        } else if (outcome === "model account lookup fault cannot mask lost actor authority") {
-          const original = await f.state.read((view) => view.operations.findWork(key));
-          assert.ok(original);
-          assert.equal(original.actorId, disposableDeployer);
-          const revoked = await removeAccessBindings(f, original.actorId);
-          assert.ok(revoked.rowCount && revoked.rowCount > 0);
-          const refusal = await new NativeIAMDriver(f.state).authorize({
-            principalId: original.actorId,
-            action: "deploy",
-            resource: { kind: "agent", namespaceId: owner.namespaceId, id: owner.id },
-          });
-          assert.equal(refusal.allowed, false, "Native IAM denies the exact recorded deployer");
-          failFinalModelRead = true;
-        } else if (outcome === "model account Backend missing") {
-          await worker.stop();
-          worker = await startWorker(f.createWorkerPool(), createBackendWorkerDrivers(compute, []));
-        } else {
-          omitModelSecret = true;
-        }
+      if (outcome === "model Secret unavailable") {
+        omitModelSecret = true;
         const retirement = await runCleanupPass();
         assert.equal(retirement.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
         await waitFor(
@@ -972,12 +836,7 @@ for (const outcome of [
         );
         assert.deepEqual(stops, [candidate.id]);
         assert.equal(runtimeObservations, 0);
-        if (outcome === "model Secret unavailable") {
-          assert.equal(modelSecretMisses, 1);
-        }
-        if (outcome === "model account lookup fault cannot mask lost actor authority") {
-          assert.equal(failedFinalModelReads, 1);
-        }
+        assert.equal(modelSecretMisses, 1);
         assert.equal(
           await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
           401,
@@ -1020,7 +879,7 @@ for (const outcome of [
           delete withoutObserver.observeRevision;
           worker = await startWorker(
             f.createWorkerPool(),
-            createBackendWorkerDrivers(withoutObserver, modelBackends),
+            createBackendWorkerDrivers(withoutObserver, []),
           );
         } else {
           worker = await startWorker(f.createWorkerPool());
@@ -1079,21 +938,7 @@ for (const outcome of [
         }
         runtimeStatus = "running";
       }
-      const cleanup = runCleanupPass();
-      if (outcome === "model account final read recovers") {
-        // Settled custody is insufficient when the locked authority read fails.
-        // The lease must permit a safe retry without minting a credential or stopping the Agent.
-        await waitFor(
-          "the locked model read to fail after the custody observation",
-          async () => (failedFinalModelReads === 1 ? true : undefined),
-          4_000,
-        );
-        const work = await f.state.read((view) => view.operations.findWork(key));
-        assert.equal(work?.state, "claimed");
-        assert.equal((await f.currentAgent(owner))?.activeRevisionId, candidate.id);
-        assert.deepEqual(stops, []);
-      }
-      const completion = await cleanup;
+      const completion = await runCleanupPass();
       assert.equal(
         await discoverNativeBearer(git.listeners.address.port, git.tls.ca, admit.files.bearer),
         401,
@@ -1111,9 +956,7 @@ for (const outcome of [
       if (
         outcome === "unexpected custody family" ||
         outcome === "runtime observer is missing" ||
-        draftMustRetire ||
-        modelBindingRevokedAfterCustody ||
-        outcome === "model account final IAM fault with revoked binding"
+        draftMustRetire
       ) {
         assert.equal(completion.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
         await waitFor(
@@ -1123,9 +966,6 @@ for (const outcome of [
           10_000,
         );
         assert.deepEqual(stops, [candidate.id]);
-        if (outcome === "model account final IAM fault with revoked binding") {
-          assert.equal(failedFinalIamReads, 1);
-        }
       } else {
         assert.equal(
           completion.code,

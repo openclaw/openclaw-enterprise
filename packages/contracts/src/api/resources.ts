@@ -43,7 +43,6 @@ import {
   SecretBindings,
   SecretId,
   SecretReference,
-  ServiceAccountCredentialSchema,
   ServiceAccountId,
   Timestamp,
   WorkspaceFileName,
@@ -1242,7 +1241,14 @@ export const ServiceAccountSchema = Type.Object(
     name: Name,
     credential: Type.Optional(
       Type.Object(
-        { kind: ServiceAccountCredentialSchema.properties.kind },
+        {
+          kind: Type.Union([
+            Type.Literal("api_key"),
+            Type.Literal("oauth_access_token"),
+            Type.Literal("access_token"),
+          ]),
+          sourceId: Type.Optional(CredentialSourceId),
+        },
         { additionalProperties: false },
       ),
     ),

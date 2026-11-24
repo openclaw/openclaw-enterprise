@@ -10,7 +10,6 @@ const scenarioPresets = {
   "scratch-volume": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
-  "openshell-git-model": ["Codex"],
   "openshell-template-resources": ["Codex"],
   "openshell-provider-replacement": ["Codex"],
   "openshell-git-replacement": ["Codex"],
@@ -48,7 +47,6 @@ export function selectQaMatrix(env = process.env) {
         "scratch-volume",
         "plugin-install",
         "openshell-linear-read",
-        "openshell-git-model",
         "openshell-template-resources",
         "openshell-provider-replacement",
         "openshell-git-replacement",
@@ -116,7 +114,6 @@ export function selectQaMatrix(env = process.env) {
             "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
-            "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
             "openshell-provider-replacement",
@@ -135,7 +132,6 @@ export function selectQaMatrix(env = process.env) {
             "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
-            "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
             "openshell-provider-replacement",
@@ -156,7 +152,6 @@ export function selectQaMatrix(env = process.env) {
             "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
-            "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
             "openshell-provider-replacement",
@@ -282,7 +277,6 @@ export function selectQaMatrix(env = process.env) {
     );
     requiredEnv.push("OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE");
   }
-  const gitModel = scenarios.includes("openshell-git-model");
   const namespaceLifecycle = scenarios.includes("namespace-lifecycle");
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const scratchVolume = scenarios.includes("scratch-volume");
@@ -358,7 +352,6 @@ export function selectQaMatrix(env = process.env) {
       pluginInstall ||
       linearRead ||
       harnessOverrides ||
-      gitModel ||
       providerReplacement ||
       gitReplacement ||
       optionalPluginWithdrawal,
@@ -376,7 +369,7 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
     );
   }
-  if (namespaceLifecycle || gitModel) {
+  if (namespaceLifecycle) {
     assert.notEqual(installation, "compose", "This OpenShell scenario requires Kubernetes");
     for (const key of ["OCC_TEST_QA_OPENAI_KEY_FILE", "OCC_TEST_QA_OPENAI_MODEL"]) {
       if (!requiredEnv.includes(key)) {
@@ -396,7 +389,7 @@ export function selectQaMatrix(env = process.env) {
       }
     }
   }
-  if (namespaceLifecycle || sandboxPolicy || pluginInstall || scratchVolume || gitModel) {
+  if (namespaceLifecycle || sandboxPolicy || pluginInstall || scratchVolume) {
     if ((sandboxPolicy || pluginInstall) && !requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
@@ -426,7 +419,6 @@ export function selectQaMatrix(env = process.env) {
     installations,
     exclusions,
     namespaceLifecycle,
-    gitModel,
     oidcAgentChat,
     sandboxPolicy,
     scratchVolume,

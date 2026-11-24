@@ -17,7 +17,6 @@ import {
   type ServiceAccountReference,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
-import { validateServiceAccountBackendBinding } from "./backends.ts";
 import { resolveConfiguredHarnessId } from "./configured-harness.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { InstalledDriver } from "./installed-driver.ts";
@@ -27,14 +26,12 @@ import {
   HarnessAuthSecretDriverError,
   ResourceStateConflictError,
   ScopeViolationError,
-  SecretBindingValidationError,
   ServiceAccountDriverNotConfiguredError,
 } from "./errors.ts";
 import { secretOperation, type SecretOperations } from "./secret-operations.ts";
 import type { ServiceAccountOperations } from "./service-account-operations.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
-import { exactServiceAccount } from "./service-account-operations.ts";
 
 interface HarnessAuthDependencies {
   readonly authority: Pick<ControllerAuthority, "authorize" | "authorizeAgentPrincipal">;
@@ -140,15 +137,9 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
       }
       dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
     } else {
-      if (binding.source.namespaceId !== namespaceId) {
-        throw new SecretBindingValidationError(SERVICE_ACCOUNT_CROSS_NAMESPACE);
-      }
-      await dependencies.authority.authorize(principalId, "read", {
-        kind: "service_account",
-        namespaceId,
-        id: binding.source.id,
-      });
-      await exactServiceAccount(state, namespaceId, binding.source.id);
+      throw new ResourceStateConflictError(
+        "Bind the issued ServiceAccount's Credential Source instead.",
+      );
     }
   }
 
@@ -261,29 +252,16 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
   async function serviceAccountHarnessAuthSnapshot(
     state: PlatformUnitOfWork,
     namespaceId: string,
-    backendId: BackendRef,
+    _backendId: BackendRef,
     binding: Extract<HarnessAuthBinding, { readonly source: ServiceAccountReference }>,
   ): Promise<HarnessAuthSnapshot> {
     const account = await state.serviceAccounts.lockServiceAccount(namespaceId, binding.source.id);
     if (account?.credential?.kind !== "access_token") {
       throw missingAccessTokenError();
     }
-    const backendBinding = await state.serviceAccounts.findServiceAccountBackendBinding(
-      namespaceId,
-      binding.source.id,
+    throw new ResourceStateConflictError(
+      "Bind the issued ServiceAccount's Credential Source instead.",
     );
-    validateServiceAccountBackendBinding(dependencies.backends, backendId, backendBinding);
-    const driverId = serviceAccounts.serviceAccountDriverId();
-    if (backendBinding === undefined || driverId !== backendBinding.driverId) {
-      throw new DependencyUnavailableError(
-        "The Harness ServiceAccount Driver does not match the admitted Backend.",
-      );
-    }
-    return immutableCopy({
-      ...binding,
-      credential: { kind: "access_token" as const, secretRef: account.credential.secretRef },
-      backendBinding,
-    });
   }
 
   // Draft validation can snapshot a saved Secret without resolving its value.

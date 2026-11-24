@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 
 import {
@@ -14,13 +15,16 @@ import {
   type PlatformStateStore,
 } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
+import type { FastifyInstance } from "fastify";
 
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
 import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
 import { refreshCodexOAuthGrant } from "../drivers/token-service/codex-device-authorization.ts";
+import type { GitHubAppIssuerOptions } from "../drivers/token-service/github-app-issuer.ts";
 import { OpenShellTokenServiceDriver } from "../drivers/token-service/openshell.ts";
 import type { InstallationRuntimeDrivers } from "./installation-config.ts";
+import { emitOccLogEvent, type OccLogger } from "../logging.ts";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -54,7 +58,8 @@ export async function installTokenServiceDriver(
   controller: OpenClawController,
   drivers: InstallationRuntimeDrivers | undefined,
   state: PlatformStateStore,
-): Promise<void> {
+  githubAppIssuerOptions?: GitHubAppIssuerOptions,
+): Promise<OCCTokenServiceDriver | undefined> {
   const selection = drivers?.installation.drivers.token_service;
   if (!selection || !drivers) {
     return;
@@ -172,7 +177,7 @@ export async function installTokenServiceDriver(
             }
           },
     ),
-    undefined,
+    githubAppIssuerOptions,
     drivers.repositoryRegistry === undefined ? undefined : { registry: drivers.repositoryRegistry },
   );
   controller.registerDriver(owner);
@@ -284,5 +289,59 @@ export async function installTokenServiceDriver(
         activeBindingRefs: new Set(activeBindings.map(({ bindingRef }) => bindingRef)),
       };
     });
+  }
+  return owner;
+}
+
+/** The API owns the Installation-private update, and drains an in-flight page before closing. */
+export function scheduleGitSourceMaintenance(
+  app: FastifyInstance,
+  owner: OCCTokenServiceDriver,
+  logger?: OccLogger,
+): () => Promise<void> {
+  const stop = new AbortController();
+  let running: Promise<void> | undefined;
+  app.addHook("onReady", async () => {
+    running = maintainGitSources(owner, stop.signal, logger);
+  });
+  return async () => {
+    stop.abort();
+    await running;
+  };
+}
+
+async function maintainGitSources(
+  owner: OCCTokenServiceDriver,
+  stop: AbortSignal,
+  logger: OccLogger | undefined,
+): Promise<void> {
+  const batchSize = 4;
+  let cursor: string | undefined;
+  while (!stop.aborted) {
+    try {
+      const result = await owner.maintainSources(batchSize, cursor);
+      if (logger && (result.failed || result.deliveryFailed)) {
+        emitOccLogEvent(logger, {
+          event: "git-source.maintenance-failed",
+          code: result.failed ? "GIT_SOURCE_RENEWAL_FAILED" : "CREDENTIAL_DELIVERY_FAILED",
+        });
+      }
+      cursor = result.cursor;
+      if (cursor !== undefined) {
+        continue;
+      }
+    } catch {
+      if (logger) {
+        emitOccLogEvent(logger, {
+          event: "git-source.maintenance-failed",
+          code: "GIT_SOURCE_SCAN_FAILED",
+        });
+      }
+    }
+    try {
+      await delay(5_000, undefined, { signal: stop, ref: false });
+    } catch {
+      return;
+    }
   }
 }

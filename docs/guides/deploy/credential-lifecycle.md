@@ -8,9 +8,8 @@ the old value has been compromised.
 
 For Credential Proxy setup, protected source withdrawal, and Gateway replacement,
 use [Credential Proxy setup](../credential-proxy.md) and its
-[upgrade procedure](credential-proxy-upgrade.md). Existing static Gateway owners
-can remain. Do not apply a copied-key rotation procedure to live Secret resolution
-or worker-prepared tokens: their owners and recovery requirements differ.
+[upgrade procedure](credential-proxy-upgrade.md). Follow the procedure for the
+recorded owner of each credential and check its current Agent bindings.
 
 ## Before changing a credential
 
@@ -169,9 +168,10 @@ authorizes the grant.
 Deleting a Source that an Agent or revision still references returns `409`; withdraw and
 remove those references first.
 
-New or reauthorized Codex account Sources cannot currently deploy with Repository
-credentials on the same Agent; deployment returns `409`. Existing Gateway-bound
-Repository Agents continue serving.
+A Dedicated Codex Agent can use its ChatGPT OAuth Source and approved GitHub
+repositories together. Select the App Client and repository grants in the
+[Agent repository configuration](../repository-credentials.md). An operator can
+[replace earlier Credential Gateway Sources](credential-proxy-upgrade.md).
 
 If sign-in is unavailable, check the selected TokenService device-login capability.
 For `503 DEPENDENCY_UNAVAILABLE`, check API or Worker connectivity to the issuer

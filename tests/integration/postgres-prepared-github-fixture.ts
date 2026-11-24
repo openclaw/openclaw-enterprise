@@ -137,7 +137,6 @@ export async function preparedLifecycleFixture(
   };
   const options = {
     secretValue,
-    protectedSourceOnly: true,
     ...(now && { now }),
     createPreparedGitHub({
       secretDriver,

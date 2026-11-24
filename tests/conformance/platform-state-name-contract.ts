@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
 import type {
-  LegacyCredentialSource,
+  StaticCredentialSource,
   Namespace,
   Preset,
   Secret,
@@ -58,15 +58,22 @@ export async function verifyDuplicateNameContract(store: PlatformStateStore) {
     namespaceId: namespace.id,
     name: "Taken account " + randomUUID(),
   };
-  const source: LegacyCredentialSource = {
+  const tokenServiceInstanceId = await store.transact(async (transaction) => {
+    const instance = await transaction.installations.selectTokenServiceInstance({
+      id: randomUUID(),
+      driverId: "platform-state-token-service",
+      storeIdentity: "platform-state-contract",
+    });
+    return instance.id;
+  });
+  const source: StaticCredentialSource = {
     id: identifier("cs"),
     namespaceId: namespace.id,
     name: "Taken source " + randomUUID(),
-    type: "openai",
-    config: { base_url: "https://api.openai.com/v1" },
-    secrets: {},
-    ownerCapability: "credential_gateway",
-    driverId: "credential-gateway-contract",
+    type: "static",
+    config: { provider_preset: "openai" },
+    ownerCapability: "token_service",
+    tokenServiceInstanceId,
     state: "ready",
     createdAt,
   };
@@ -141,6 +148,9 @@ export async function verifyDuplicateNameContract(store: PlatformStateStore) {
     ),
     { name: "ResourceConflictError" },
   );
+  await store.transact((transaction) =>
+    transaction.credentialSources.deleteCredentialSource(namespace.id, source.id),
+  );
 }
 
 // Names hold up to 200 characters counted as code points, as the API contract and
@@ -170,15 +180,22 @@ export async function verifyNameLengthContract(store: PlatformStateStore) {
     namespaceId: namespace.id,
     name,
   });
-  const source = (name: string): LegacyCredentialSource => ({
+  const tokenServiceInstanceId = await store.transact(async (transaction) => {
+    const instance = await transaction.installations.selectTokenServiceInstance({
+      id: randomUUID(),
+      driverId: "platform-state-token-service",
+      storeIdentity: "platform-state-contract",
+    });
+    return instance.id;
+  });
+  const source = (name: string): StaticCredentialSource => ({
     id: identifier("cs"),
     namespaceId: namespace.id,
     name,
-    type: "openai",
-    config: { base_url: "https://api.openai.com/v1" },
-    secrets: {},
-    ownerCapability: "credential_gateway",
-    driverId: "credential-gateway-contract",
+    type: "static",
+    config: { provider_preset: "openai" },
+    ownerCapability: "token_service",
+    tokenServiceInstanceId,
     state: "ready",
     createdAt,
   });
@@ -231,4 +248,7 @@ export async function verifyNameLengthContract(store: PlatformStateStore) {
   for (const write of writes) {
     await assert.rejects(store.transact(write), { name: "ScopeViolationError" });
   }
+  await store.transact((transaction) =>
+    transaction.credentialSources.deleteCredentialSource(namespace.id, accepted.source.id),
+  );
 }

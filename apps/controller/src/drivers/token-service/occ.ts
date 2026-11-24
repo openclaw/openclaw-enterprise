@@ -118,9 +118,18 @@ function decodeCredential(value: string): ResolvedCredential {
   return { credential: record.credential, version: record.version };
 }
 
-function encodeGitHubAppCredential(issued: Awaited<ReturnType<GitHubAppSourceIssuer["issue"]>>) {
+function encodeGitHubAppCredential(
+  { credential, expiresAt, providerExpiresAt }: Awaited<ReturnType<GitHubAppSourceIssuer["issue"]>>,
+  deliveryPending = false,
+) {
   const version = randomUUID();
-  const stored = JSON.stringify({ ...issued, version });
+  const stored = JSON.stringify({
+    credential,
+    expiresAt,
+    providerExpiresAt,
+    version,
+    ...(deliveryPending && { deliveryPending: true }),
+  });
   if (Buffer.byteLength(stored, "utf8") > maxSecretValueBytes) {
     throw new TokenServiceSourceInputError(
       "The encoded credential exceeds the Secret storage limit.",
@@ -791,11 +800,11 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         }
         this.assertCurrentGitHubAppRegistryScope(current);
         if (mode === "due") {
-          const { expiresAt } = await withComputeAbortSignal(signal, () =>
+          const receipt = await withComputeAbortSignal(signal, () =>
             this.store.withValue(stored, async (value) => decodeGitHubAppSourceCredential(value)),
           );
-          if (Date.parse(expiresAt) - Date.now() > githubAppRenewalLeadMs) {
-            return undefined;
+          if (Date.parse(receipt.expiresAt) - Date.now() > githubAppRenewalLeadMs) {
+            return receipt.deliveryPending ? receipt.version : undefined;
           }
         }
         this.assertGitHubAppClient(
@@ -803,15 +812,33 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
           current,
         );
         const issued = await this.issueGitHubAppCredential(current, signal);
-        const replacement = encodeGitHubAppCredential(issued);
+        const replacement = encodeGitHubAppCredential(issued, this.credentialProxy !== undefined);
         await withComputeAbortSignal(signal, () => this.store.update(stored, replacement.stored));
         return replacement.version;
       },
     );
-    if (version !== undefined) {
-      // The previous installation token expires at GitHub. Push only the committed version.
-      await this.notifyCredentialUpdated(source, version, signal);
+    if (version === undefined || this.credentialProxy === undefined) {
+      return;
     }
+    // Keep the pending version in custody so another API pass can retry a failed push.
+    await this.notifyCredentialUpdated(source, version, signal);
+    await this.state.transact(async ({ namespaces, credentialSources }) => {
+      const namespace = await namespaces.lockNamespace(ref.namespaceId);
+      const current = this.ownedSource(
+        await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
+      );
+      if (namespace?.status !== "ready" || current?.state !== "ready") {
+        return;
+      }
+      await withComputeAbortSignal(signal, async () => {
+        const { deliveryPending, ...receipt } = await this.store.withValue(stored, async (value) =>
+          decodeGitHubAppSourceCredential(value),
+        );
+        if (deliveryPending && receipt.version === version) {
+          await this.store.update(stored, JSON.stringify(receipt));
+        }
+      });
+    });
   }
 
   async getRefreshStatus(

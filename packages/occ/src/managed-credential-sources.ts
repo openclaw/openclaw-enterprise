@@ -428,6 +428,13 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
           "The credential source does not belong to the exact Namespace.",
         );
       }
+      if (
+        await state.serviceAccounts.findServiceAccountByCredentialSource(ref.namespaceId, source.id)
+      ) {
+        throw new ResourceStateConflictError(
+          "An issued ServiceAccount credential cannot be replaced through Source update.",
+        );
+      }
       if (!isManagedTokenServiceSource(source)) {
         throw new ResourceStateConflictError(
           "The update does not match the credential source owner.",
@@ -741,6 +748,13 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       if (!source) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
+        );
+      }
+      if (
+        await state.serviceAccounts.findServiceAccountByCredentialSource(namespaceId, source.id)
+      ) {
+        throw new ResourceStateConflictError(
+          "Delete the owning ServiceAccount to revoke this issued credential.",
         );
       }
       if (!isManagedTokenServiceSource(source)) {

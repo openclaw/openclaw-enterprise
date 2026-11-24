@@ -42,7 +42,6 @@ test(
     let readsBeforeAdmission: number | undefined;
     const repository = { id: 7311, full_name: "fixture/credential-free" };
     const { f, pool, proxy, receipt, assertLostDispatch } = await commitLossScenario(t, {
-      protectedSourceOnly: true,
       preparedGitHub: new Proxy(
         {},
         {

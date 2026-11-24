@@ -61,21 +61,7 @@ func (r *runner) loadSandboxNetworkPolicies(ctx context.Context, sandboxDriver s
 // A ceiling authorizes future requests; it never becomes a default network grant.
 func (r *runner) loadSandboxNetworkPolicyCeiling(ctx context.Context, sandboxDriver string) ([]any, error) {
 	if r.opts.SandboxNetworkPolicyCeilingFile == "" {
-		if sandboxDriver != "openshell" {
-			return nil, nil
-		}
-		var grants []any
-		for index, binary := range openShellCodexBinaries() {
-			for _, host := range []string{"api.openai.com", "auth.openai.com", "chatgpt.com"} {
-				grants = append(grants, map[string]any{
-					"id":     fmt.Sprintf("first-agent-codex-%d-%s", index, strings.ReplaceAll(host, ".", "-")),
-					"binary": binary,
-					"host":   host,
-					"ports":  []map[string]int{{"from": 443, "to": 443}},
-				})
-			}
-		}
-		return grants, nil
+		return nil, nil
 	}
 	if sandboxDriver == "none" {
 		return nil, fmt.Errorf("--sandbox-network-policy-ceiling-file requires a Sandbox Driver")
@@ -111,4 +97,32 @@ func (r *runner) loadSandboxNetworkPolicyCeiling(ctx context.Context, sandboxDri
 		return nil, fmt.Errorf("Sandbox delegation ceiling validation failed: %s: %w", bytes.TrimSpace(output), err)
 	}
 	return document.Grants, nil
+}
+
+// Normal Codex OAuth admission needs one approved executable for this cluster.
+func (r *runner) setDefaultOpenShellModelCeiling(ctx context.Context, state *developmentState) error {
+	if state.SandboxDriver != "openshell" || len(state.SandboxNetworkPolicyCeiling) != 0 {
+		return nil
+	}
+	nodes, err := r.output(ctx, "kubectl", "get", "nodes", "-o", "json")
+	if err != nil {
+		return err
+	}
+	_, selected, err := agentSandboxControllerForNodes(nodes)
+	if err != nil {
+		return err
+	}
+	binary := openShellCodexBinaries()[0]
+	if selected.platform == "linux/arm64" {
+		binary = openShellCodexBinaries()[1]
+	}
+	for _, host := range []string{"api.openai.com", "auth.openai.com", "chatgpt.com"} {
+		state.SandboxNetworkPolicyCeiling = append(state.SandboxNetworkPolicyCeiling, map[string]any{
+			"id":     "first-agent-codex-" + strings.ReplaceAll(host, ".", "-"),
+			"binary": binary,
+			"host":   host,
+			"ports":  []map[string]int{{"from": 443, "to": 443}},
+		})
+	}
+	return nil
 }

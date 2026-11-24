@@ -13,6 +13,9 @@ import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { composeProduction } from "../helpers/password-hasher.ts";
+import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
+import { githubAppClientSigningKeyRef } from "../../apps/controller/src/drivers/token-service/github-app-source.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
@@ -136,6 +139,7 @@ test(
           ],
         })),
       }),
+      { mode: 0o644 },
     );
 
     // Observe the controlled provider's actual signed TLS issuance, rather than returning an
@@ -214,7 +218,9 @@ test(
     const namespaceObject = core.namespaces.get(workspace);
     assert.ok(namespaceObject);
     Object.assign(namespaceObject, { apiVersion: "v1", kind: "Namespace" });
-    const gatewayClient = workspaceGatewayClient([
+    let deliveryAttempts = 0;
+    const observedCredentials: string[] = [];
+    const gateway = workspaceGatewayClient([
       {
         id: "controlled-workspace",
         name: workspace,
@@ -224,35 +230,100 @@ test(
         },
       },
     ]);
+    const gatewayClient = {
+      ...gateway,
+      async getProviderProfile(_target: string | null, id: string) {
+        const stored = gateway.profiles.get(id);
+        if (stored?.profile) {
+          const credential = stored.profile.credentials[0]!;
+          return {
+            ...stored,
+            definition: {
+              credentials: [
+                {
+                  name: credential.name,
+                  env_vars: credential.envVars,
+                  required: credential.required,
+                  auth_style: credential.authStyle,
+                  header_name: credential.headerName,
+                  stable_placeholder: credential.stablePlaceholder,
+                },
+              ],
+            },
+          };
+        }
+        return stored;
+      },
+      async createProvider(request: Parameters<typeof gateway.createProvider>[0]) {
+        const provider = {
+          ...(await gateway.createProvider(request, t.signal)),
+          id: randomUUID(),
+          workspace: request.workspace,
+          profileWorkspace: request.workspace,
+        };
+        gateway.providers.set(request.name, provider);
+        return provider;
+      },
+      async listSandboxes() {
+        // No stock Sandbox runs in this suite. The real Proxy updates its detached Provider.
+        return [];
+      },
+      async updateProviderCredentialsConditionally(
+        request: Parameters<typeof gateway.createProvider>[0],
+        expectedVersion: string,
+      ) {
+        deliveryAttempts += 1;
+        const provider = gateway.providers.get(request.name);
+        assert.ok(provider);
+        assert.equal(provider.resourceVersion, expectedVersion);
+        assert.ok(request.credentials.GITHUB_TOKEN);
+        observedCredentials.push(request.credentials.GITHUB_TOKEN);
+        if (deliveryAttempts === 1) {
+          throw new Error("Controlled OpenShell outage before the Provider update.");
+        }
+        const updated = {
+          ...provider,
+          config: request.config ?? {},
+          resourceVersion: String(Number(expectedVersion) + 1),
+        };
+        gateway.providers.set(request.name, updated);
+        return { ...updated, mutationId: randomUUID(), targetReceipts: [] };
+      },
+    };
     // Startup must load the real policy registry without a legacy sender or private key file.
-    const runtime = await loadInstallationFile(
-      t,
-      {
-        ...installation,
-        backend: [...installation.backend, backend],
-        repository: { id: backend.drivers.repo, configuration: { sessionDurationSeconds: 600 } },
-      },
-      {
-        createOpenShellBackend: (definition) =>
-          createOpenShellBackend(definition, { gatewayClient }),
-      },
-    );
-    assert.ok(runtime);
-    assert.ok(runtime.repositoryRegistry && runtime.repositoryAdmission);
-    assert.equal(Object.hasOwn(runtime.installation.drivers, "credential_gateway"), false);
-    assert.equal(runtime.repositoryGitDriver, undefined);
-    Reflect.set(
-      runtime.computeDriver,
-      "apiClients",
-      Promise.resolve({
-        core,
-        apps: {
-          async listNamespacedDeployment() {
-            return { items: [] };
-          },
+    const loadRuntime = async () => {
+      const runtime = await loadInstallationFile(
+        t,
+        {
+          ...installation,
+          backend: [...installation.backend, backend],
+          repository: { id: backend.drivers.repo, configuration: { sessionDurationSeconds: 600 } },
         },
-      }),
-    );
+        {
+          createOpenShellBackend: (definition) =>
+            createOpenShellBackend(definition, { gatewayClient }),
+        },
+      );
+      assert.ok(runtime);
+      assert.ok(runtime.repositoryRegistry && runtime.repositoryAdmission);
+      assert.equal(Object.hasOwn(runtime.installation.drivers, "credential_gateway"), false);
+      assert.equal(runtime.repositoryGitDriver, undefined);
+      Reflect.set(
+        runtime.computeDriver,
+        "apiClients",
+        Promise.resolve({
+          core,
+          apps: {
+            async listNamespacedDeployment() {
+              return { items: [] };
+            },
+          },
+        }),
+      );
+      return runtime;
+    };
+    const runtime = await loadRuntime();
+    assert.ok(runtime.repositoryRegistry);
     const delivery = credentialSourceDeliveryBinding(runtime);
     assert.ok(delivery);
     let admissionTime: Date | undefined;
@@ -1157,19 +1228,20 @@ test(
         }
         return result?.state === "succeeded" ? result : undefined;
       });
+    const drivers = {
+      ...runtime,
+      installation: {
+        ...runtime.installation,
+        drivers: {
+          ...runtime.installation.drivers,
+          secret: { ...runtime.installation.drivers.secret, id: driver.id },
+        },
+      },
+      secretDriver: driver,
+    };
     const worker = createControllerWorker({
       pool: new pg.Pool({ connectionString: databaseUrl }),
-      drivers: {
-        ...runtime,
-        installation: {
-          ...runtime.installation,
-          drivers: {
-            ...runtime.installation.drivers,
-            secret: { ...runtime.installation.drivers.secret, id: driver.id },
-          },
-        },
-        secretDriver: driver,
-      },
+      drivers,
       pollIntervalMs: 15,
       maxAttempts: 1,
       emit() {},
@@ -1226,6 +1298,107 @@ test(
     } finally {
       await worker.stop();
     }
+
+    // Make the enrolled receipt due in the controlled Kubernetes store. The actual API
+    // lifecycle runs maintenance against PostgreSQL and the signed TLS issuer.
+    const gitBinding = agedRevision.credentialDeployment?.bindings.find(
+      ({ consumer }) => consumer.kind === "repository",
+    );
+    assert.ok(gitBinding);
+    const provider = await prepareOccTokenServiceProviderCopy({
+      client: gatewayClient,
+      workspace,
+      namespaceId,
+      binding: gitBinding,
+      resolveCredential: () => owner.resolveCredential(installedSource, t.signal),
+      signal: t.signal,
+    });
+    const sourceStorage = {
+      installationId: controller.installation.id,
+      id: JSON.stringify([
+        "token_service",
+        instanceId,
+        "credential_source",
+        namespaceId,
+        gitSource.id,
+      ]),
+    };
+    const signerStorage = githubAppClientSigningKeyRef(
+      controller.installation.id,
+      instanceId,
+      clientId,
+      fixtureAppId,
+    );
+    const signerBefore = await store.withValue(signerStorage, async (value) => value);
+    const receiptBefore = await store.withValue(sourceStorage, async (value) => JSON.parse(value));
+    await store.update(
+      sourceStorage,
+      JSON.stringify({ ...receiptBefore, expiresAt: new Date(Date.now() + 30_000).toISOString() }),
+    );
+    const mintsBeforeAPI = github.issuesOfTokens.length;
+    const startRenewalAPI = async () => {
+      // API processes compose their own Driver registrations and share only external custody.
+      const apiRuntime = await loadRuntime();
+      const apiCompute = apiRuntime.computeDriver;
+      assert.ok(apiCompute instanceof KubernetesComputeDriver);
+      t.mock.method(apiCompute, "preflight", async () => ({ warnings: [] }));
+      const api = await composeProduction(
+        {
+          mode: "production",
+          host: "127.0.0.1",
+          databaseUrl: databaseUrl!,
+          authBaseURL: "https://console.oce.localhost",
+          nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+          authSecret: "staged-repository-source-admission-secret",
+          drivers: { ...apiRuntime, installation: drivers.installation, secretDriver: driver },
+        },
+        { githubAppIssuerOptions: { apiOrigin, ca: tls.ca, clock } },
+      );
+      t.after(() => api.close());
+      await api.ready();
+      assert.equal((await api.inject({ method: "GET", url: "/readyz" })).statusCode, 200);
+      return api;
+    };
+    const readReceipt = () => store.withValue(sourceStorage, async (value) => JSON.parse(value));
+    const firstAPI = await startRenewalAPI();
+    await waitFor(
+      "the API to mint the due Git token",
+      () => github.issuesOfTokens.length === mintsBeforeAPI + 1 || undefined,
+    );
+    await waitFor("the first Provider update attempt", () => deliveryAttempts === 1 || undefined);
+    await firstAPI.close();
+    const pending = await readReceipt();
+    assert.equal(pending.deliveryPending, true);
+    assert.ok(pending.version !== receiptBefore.version);
+    assert.ok(pending.credential !== receiptBefore.credential);
+    assert.equal(gateway.providers.get(provider.name)?.resourceVersion, provider.resourceVersion);
+    assert.equal(github.issuesOfTokens.length, mintsBeforeAPI + 1);
+
+    // A fresh API process retries delivery of exactly the committed replacement.
+    const resumedAPI = await startRenewalAPI();
+    await waitFor(
+      "receipt acknowledged after Provider delivery",
+      async () =>
+        (deliveryAttempts === 2 && (await readReceipt()).deliveryPending === undefined) ||
+        undefined,
+    );
+    await resumedAPI.close();
+    assert.equal((await readReceipt()).version, pending.version);
+    assert.ok(observedCredentials.every((value) => value === pending.credential));
+    assert.equal(github.issuesOfTokens.length, mintsBeforeAPI + 1);
+    assert.equal(
+      await store.withValue(signerStorage, async (value) => value === signerBefore),
+      true,
+    );
+    assert.equal(gateway.providers.get(provider.name)?.id, provider.id);
+    assert.notEqual(
+      gateway.providers.get(provider.name)?.resourceVersion,
+      provider.resourceVersion,
+    );
+    assert.equal(
+      (await state.read((view) => view.agents.findAgent(namespaceId, agentId)))?.activeRevisionId,
+      agedRevision.id,
+    );
 
     // Source-backed authorization still uses finite installation credentials. Cross the issuer
     // receipt's expiry after the Worker has shut down so only custody resolution sees this clock.

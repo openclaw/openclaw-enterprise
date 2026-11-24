@@ -19,6 +19,7 @@ interface GitHubAppSourceReceipt extends Required<
   Pick<ResolvedCredential, "credential" | "version" | "expiresAt">
 > {
   readonly providerExpiresAt: string;
+  readonly deliveryPending?: true;
 }
 
 /** Shared by Client administration and the selected TokenService issuer. */
@@ -107,12 +108,19 @@ export function decodeGitHubAppSourceCredential(value: string): GitHubAppSourceR
     typeof record.expiresAt !== "string" ||
     !Number.isFinite(Date.parse(record.expiresAt)) ||
     typeof record.providerExpiresAt !== "string" ||
-    !Number.isFinite(Date.parse(record.providerExpiresAt))
+    !Number.isFinite(Date.parse(record.providerExpiresAt)) ||
+    (record.deliveryPending !== undefined && record.deliveryPending !== true)
   ) {
     throw new ResourceStateConflictError("The stored GitHub App Source credential is invalid.");
   }
   const { credential, version, expiresAt, providerExpiresAt } = record;
-  return { credential, version, expiresAt, providerExpiresAt };
+  return {
+    credential,
+    version,
+    expiresAt,
+    providerExpiresAt,
+    ...(record.deliveryPending === true && { deliveryPending: true }),
+  };
 }
 
 export function resolveGitHubAppSourceCredential(value: string, now: number) {
