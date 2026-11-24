@@ -45,6 +45,10 @@ redeploy within it. A refused loan logs
 `reason`, `credentialSourceId` and `credentialSourceVersion` and never the value. The current loan stays in the
 Sandbox until it ends.
 
+An upgrade does not carry a running revision's delivery over. Until the Agent is
+redeployed, that revision gets no new loan and no replacement: its Git ends when
+the current loan does, and after a replacement its delivery reads `pending`.
+
 - **Replacement.** `PATCH` of the Source's `secret` commits the replacement.
   The Worker's next refresh (every 10 seconds) rotates it into the same Provider,
   with no redeploy, and logs `worker.openshell-git-delivery-confirmed` with
