@@ -526,6 +526,9 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
           ({ id, implementation }) =>
             id === pluginDriver?.id && implementation === pluginDriver.implementation,
         );
+      if (driver && !driver.credentials) {
+        return false;
+      }
       if (typeof driver?.credentials?.selectedBindings !== "function") {
         if (Object.values(plugins).some((selection) => selection.driverPolicy !== undefined)) {
           throw new DependencyUnavailableError(

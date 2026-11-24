@@ -546,18 +546,17 @@ test(
     );
     assert.equal(slackBearer.statusCode, 201, slackBearer.body);
     const staticId = slackBearer.json().data.id;
+    const staticPath = `${path}/credential-sources/${staticId}`;
     await grant("credential_source", staticId);
     const selectedStatic = await memberPatch(selectSlack(staticId));
     assert.equal(selectedStatic.statusCode, 200, selectedStatic.body);
     assert.deepEqual(selectedStatic.json().data.credentialSources, explicit);
-    const deleteStatic = await inject(
-      "DELETE",
-      `${path}/credential-sources/${staticId}`,
-      undefined,
-      app,
-    );
+    const deleteStatic = await inject("DELETE", staticPath, undefined, app);
     assert.equal(deleteStatic.statusCode, 409, deleteStatic.body);
     assert.match(deleteStatic.json().error.message, /still references the credential source/i);
+    const retained = await inject("GET", staticPath, undefined, app);
+    assert.equal(retained.statusCode, 200, retained.body);
+    assert.equal(retained.json().data.state, "ready");
 
     const slackGrant = await grant("credential_source", sourceId);
     const patched = await memberPatch(body);
@@ -566,6 +565,10 @@ test(
     assert.equal(saved.statusCode, 200, saved.body);
     assert.deepEqual(saved.json().data.plugins, body.plugins);
     assert.deepEqual(saved.json().data.credentialSources, explicit);
+    const retired = await inject("DELETE", staticPath, undefined, app);
+    assert.equal(retired.statusCode, 204, retired.body);
+    const removed = await inject("GET", staticPath, undefined, app);
+    assert.equal(removed.statusCode, 404, removed.body);
 
     const plugins = {
       ...body.plugins,
