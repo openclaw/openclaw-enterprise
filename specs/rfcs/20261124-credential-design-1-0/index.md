@@ -21,15 +21,15 @@ This target consolidates amendments to [RFC-0023](../0023-egress-proxy-credentia
 | GitHubAppClient     | OCC records the App ID. TokenService uses its signing key to mint installation tokens.                                                                            |
 | CredentialSource    | Identifies an enrolled credential in a Namespace. TokenService owns its lifecycle and any Template or client references. OCC exposes metadata and authorizes use. |
 
-Templates and clients are independent. An Installation-wide OAuth Template can use a compatible Namespace client. TokenService declares supported client scopes per purpose. OpenShell supports Namespace-scoped OAuth clients through its Workspace. GitHub App clients originally had Installation scope. [Namespace scope is proposed](https://github.com/openclaw/openclaw-enterprise/blob/4b72938a066b5cb864dcf1dfafbfc72540f46171/specs/rfcs/20261124-credential-design-1-0.md#github-app-sources).
+Both client kinds support Installation or Namespace scope if the selected TokenService supports that scope for their purpose. A Namespace Source may use an eligible Installation or same-Namespace client, never a client from another Namespace. Templates and clients are independent: an Installation-wide OAuth Template can use a compatible Namespace client. OpenShell’s Workspace limits client custody to Namespace scope. See the [submitted scope amendment](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/specs/rfcs/20261124-credential-design-1-0.md#secret-driver-placement).
 
-The Installation selects one TokenService instance to own its Sources and private client material. OCC stores material with SecretDriver. OpenShell can own a native Provider. OCC privately binds registrations to that instance so another store cannot resolve existing Sources under a reused Driver name.
+OCE scope defines ownership, not physical storage. OCC TokenService uses the selected SecretDriver’s private backing store outside tenant workload namespaces. OpenShell can own a native Provider. OCC binds registrations to the selected TokenService instance so another store cannot resolve existing Sources under a reused Driver name.
 
 ## From enrollment to an Agent revision
 
 An authorized caller enrolls a static or account credential. For browser OAuth, the caller selects a compatible Template and OAuth2Client. OCC completes consent and the initial authorization-code exchange, then gives the resulting grant to TokenService. For Codex, TokenService uses a fixed issuer and public client and creates the Source after successful authorization.
 
-The operator selects a Source for model authentication or a named Plugin connection. PluginDriver declares the selected Plugin's tools, network needs, and connections. OCC checks that the deployer and Agent principal can operate each exact Source, applies the Installation ceiling, and derives one admitted binding list for the revision. A shared Git Source binding also requires separate Repository grants.
+The operator selects Sources for the model or named Plugin connections. PluginDriver declares tools, network needs, and connections. OCC checks deployer and Agent authority to operate each Source, applies the Installation ceiling, and derives one admitted binding list for the revision. A shared Git Source binding also requires separate Repository grants.
 
 <a id="template-policy-changes"></a>
 
@@ -71,7 +71,7 @@ flowchart TB
 
 ## Prepare and start the Agent
 
-Compute prepares an idle Sandbox and arranges the tools and credential delivery required by the revision. SandboxDriver applies network access and containment. CredentialProxyDriver configures each binding's injection policy and returns a credential projection descriptor. For OCC custody, the Proxy resolves the exact Source to initialize delivery. For OpenShell custody, it attaches the native Provider.
+Compute prepares an idle Sandbox, tools, and credential delivery for the revision. SandboxDriver applies network access and containment. CredentialProxyDriver configures each binding's injection policy and returns a credential projection descriptor. For OCC custody, the Proxy resolves the exact Source to initialize delivery. For OpenShell custody, it attaches the native Provider.
 
 Compute checks that the required policies and delivery resources are ready. The Worker rechecks Agent and Source authorization before activation. The runtime installs a fresh placeholder at Harness startup. Compute exposes user routes after authenticated readiness. Unsupported required rules prevent startup.
 
@@ -103,23 +103,23 @@ OCC derives injection authority from the Source and the consumer's requested ope
 
 ## Refresh, retry, and withdraw
 
-TokenService owns issuance and renewal. After committing a replacement credential, it notifies the Proxy with the Source reference and version when known. If a delivery resource exists, the Proxy resolves the current value, updates that resource, and acknowledges success after every required serving copy can use the resolved version. Otherwise, notification succeeds without resolving material or creating a resource. OpenShell can renew a provider it owns.
+TokenService issues and renews credentials. After a commit, it notifies the Proxy with the Source reference and version if known. If a delivery resource exists, the Proxy resolves the current value, updates the resource, and acknowledges only when every serving copy can use that version. Otherwise, notification succeeds without resolving material or creating a resource. OpenShell can renew its Provider.
 
 If delivery fails after commit, the replacement remains authoritative. OCC reports delivery separately from issuance or refresh, and authorized operators can retry the push. The [cutover candidate](https://github.com/openclaw/openclaw-enterprise/pull/7224) schedules Git renewal. Until renewal is due, it automatically retries recorded pending delivery with the committed version, without minting again. This narrows the earlier [automatic-retry deferral](token-service-instance-and-updates.md#notify-the-proxy-when-a-credential-changes). Detecting missed notifications without a pending record and broad reconciliation remain deferred.
 
-Withdrawal detaches the Agent binding and removes its request authority. Other Agents can still use the Source. Stop removes the deployment and leaves the Source registered. When the last binding is removed, the Proxy retires its delivery resource. OCC refuses deletion while blocking references remain. After delivery cleanup, TokenService removes the Source and its authoritative material.
+Withdrawal detaches the Agent binding and removes request authority. Other Agents can still use the Source. Stop removes the deployment but preserves Source registration. The Proxy retires its delivery resource after the last binding is removed. OCC refuses deletion while blocking references remain. After delivery cleanup, TokenService removes the Source and authoritative material.
 
 ## Examples
 
-| Use                  | How the design applies                                                                                                                                                                                                                                           |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Model preset         | Select an API-key Source. The model provider's reviewed profile supplies the inference destination and credential header.                                                                                                                                        |
-| Codex OAuth          | Complete device login, then select the resulting Source. Dedicated Codex receives a placeholder and the account context needed for its login state.                                                                                                              |
-| Codex PAT (proposed) | Enroll a new static Codex PAT Source, or issue a fresh ChatGPT ServiceAccount PAT into TokenService. OCC returns a Source reference. The ServiceAccount Driver retains issuer-side revocation.                                                                   |
-| GitHub App           | Select an App installation and approved repositories. At deployment, OCC authorizes Source creation or reuse. TokenService resolves a matching Namespace Source for the approved repository set. Agents share its cached token under separate read/write grants. |
-| Plugin OAuth         | Connect an account with a Template and OAuth2Client, then select the Source for a named Plugin connection. The request rule and granted OAuth scopes constrain the operation.                                                                                    |
-| Static HTTP          | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                                                                                  |
-| MCP                  | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                                                                         |
+| Use                  | How the design applies                                                                                                                                                                                                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model preset         | Select an API-key Source. The model provider's reviewed profile supplies the inference destination and credential header.                                                                                                          |
+| Codex OAuth          | Complete device login, then select the resulting Source. Dedicated Codex receives a placeholder and the account context needed for its login state.                                                                                |
+| Codex PAT (proposed) | Enroll a new static Codex PAT Source, or issue a fresh ChatGPT ServiceAccount PAT into TokenService. OCC returns a Source reference. The ServiceAccount Driver retains issuer-side revocation.                                     |
+| GitHub App           | Select an App installation and approved repositories. At deployment, OCC authorizes creation or reuse of a matching Namespace Source, which TokenService resolves. Agents share its cached token under separate read/write grants. |
+| Plugin OAuth         | Connect an account with a Template and OAuth2Client, then select the Source for a named Plugin connection. The request rule and granted OAuth scopes constrain the operation.                                                      |
+| Static HTTP          | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                                                    |
+| MCP                  | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                                           |
 
 Multiple accounts need distinct projections and a Plugin that selects the account per invocation.
 
