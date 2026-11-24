@@ -4,7 +4,10 @@ export default { title: "Components/Deletion" };
 
 export const DeletionConfirm = { ...story("deletionConfirm"), name: "Confirmation" };
 export const Deleting = { ...story("deleting"), name: "Cleanup in progress" };
-export const DeletionStatusUnavailable = story("deletionStatusUnavailable");
+export const DeletionStatusUnavailable = {
+  ...story("deletionStatusUnavailable"),
+  name: "Status unavailable after deletion request",
+};
 export const DeletionDenied = { ...story("deletionDenied"), name: "Permission denied" };
 export const DeletionConflict = { ...story("deletionConflict"), name: "Conflict" };
 export const DeletionUnknown = { ...story("deletionUnknown"), name: "Outcome unknown" };

@@ -1859,6 +1859,8 @@ async function loadPage({
     current.feature === "agents" && current.namespace && !current.agentId && !current.creating
       ? routeKey(current)
       : null;
+  const trackDeletionLanding =
+    agentsLanding === "deletion-status-unavailable" && listRoute !== null;
   let search =
     retrySearch ??
     (listRoute && previousMountedRouteKey === listRoute
@@ -1887,12 +1889,10 @@ async function loadPage({
     current.feature === "secrets" &&
     retainedFocus != null &&
     "key" in retainedFocus;
-  let secretReturnMoved = false;
+  let returnFocusMoved = false;
   const onFocus = (event: FocusEvent) => {
     if (event.target !== expectedHeading && event.target !== document.body) {
-      if (trackSecretReturn) {
-        secretReturnMoved = true;
-      }
+      returnFocusMoved = true;
       // Both snapshots can return focus to Search if the new control later blurs.
       refocused = null;
       search = null;
@@ -1902,7 +1902,7 @@ async function loadPage({
       }
     }
   };
-  if (search || trackSecretReturn) {
+  if (search || trackSecretReturn || trackDeletionLanding) {
     document.addEventListener("focusin", onFocus, { capture: true, signal: lifetime.signal });
   }
   const pendingSearch = () =>
@@ -1919,6 +1919,7 @@ async function loadPage({
   let restoreRefocus: (() => void) | null = null;
   let pendingAgentHeading: HTMLHeadingElement | null = null;
   let focusAgentResult = false;
+  let showDeletionStatusNotice = false;
   // The page kept on screen while an Agent's overview renders behind it, and the Agent's title
   // until it reveals (findings 1516, 1526).
   let shownStandIn: { view: HTMLElement } | null = null;
@@ -2214,9 +2215,8 @@ async function loadPage({
       )?.id ??
       null;
     const selectedNamespace = namespaceId;
-    const showDeletionStatusNotice =
-      agentsLanding === "deletion-status-unavailable" &&
-      listRoute !== null &&
+    showDeletionStatusNotice =
+      trackDeletionLanding &&
       selectedNamespace === current.namespace &&
       previousOwner !== null &&
       owner === previousOwner;
@@ -3192,7 +3192,18 @@ async function loadPage({
         }
       }
       restoreRefocus?.();
-      if (focusAgentResult && document.activeElement === document.body) {
+      if (showDeletionStatusNotice && mountedRouteKey === listRoute) {
+        // The retained scroll and row focus can leave the new status above the viewport.
+        const heading = app.querySelector<HTMLHeadingElement>(".content h1")!;
+        if (
+          !returnFocusMoved &&
+          document.hasFocus() &&
+          (document.activeElement === document.body || document.activeElement === heldHeading)
+        ) {
+          heading.focus({ preventScroll: true });
+        }
+        window.scrollTo({ top: 0, left: 0 });
+      } else if (focusAgentResult && document.activeElement === document.body) {
         const heading =
           shell.view.querySelector<HTMLHeadingElement>(":scope > .state-panel > h2") ??
           app.querySelector<HTMLHeadingElement>(".content h1")!;
@@ -3200,7 +3211,7 @@ async function loadPage({
         heading.focus({ preventScroll: true });
       } else if (
         fromNavigation &&
-        (!trackSecretReturn || (!secretReturnMoved && document.hasFocus())) &&
+        (!trackSecretReturn || (!returnFocusMoved && document.hasFocus())) &&
         previousMountedRouteKey !== routeKey(current) &&
         (document.activeElement === document.body ||
           (returnFocus && document.activeElement === heldHeading))

@@ -28,6 +28,7 @@ import {
   grantMember,
   hasFocus,
   holdRequests,
+  inViewport,
   login,
   loginThroughForm,
   nativeValues,
@@ -828,6 +829,68 @@ test("A missing deletion status returns to the Agents list with a notice and dro
   await page.goBack();
   await row.getByText("Deleting", { exact: true }).waitFor();
   assert.equal(await page.getByText(text, { exact: true }).count(), 0);
+});
+
+test("A missing deletion status brings the notice into view on return to a scrolled phone list", async (t) => {
+  const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deletion status", { ready: true });
+  for (let number = 1; number <= 6; number++) {
+    await fixture.createAgent(
+      namespace.id,
+      `Draft Agent ${number}`,
+      nativeValues(`draft-${number}`),
+    );
+  }
+  const agent = await fixture.createAgent(namespace.id, "Retiring Agent", nativeValues("retire"));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const agentUrl = fixture.origin + agentPath;
+  // A deletion accepted outside this browser leaves the previously opened list reusable.
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 664 } },
+  });
+  await page.clock.install();
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, listUrl(namespace.id));
+  const listHeading = page.getByRole("heading", { name: "Agents", exact: true });
+  const row = page.getByRole("row").filter({ hasText: agent.name });
+  const link = row.getByRole("link", { name: agent.name, exact: true });
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await inViewport(link), false, "the Agent starts below the fold");
+  await link.scrollIntoViewIfNeeded();
+  assert.equal(await inViewport(listHeading), false, "the list is scrolled past its heading");
+  await link.click();
+  await page.getByRole("heading", { name: agent.name, exact: true }).waitFor();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+
+  // Only the detail poll misses. The revalidated list still includes the deleting Agent.
+  const missingStatus = await holdRequests(t, page, agentUrl, {
+    method: "GET",
+    once: true,
+    fulfill: apiErrorResponse(404, "NOT_FOUND", "Agent not found."),
+  });
+  await Promise.all([missingStatus.requested, page.clock.runFor(DELETION_POLL_MS)]);
+  const statusResponse = responseTo(page, "GET", agentUrl);
+  missingStatus.release();
+  assert.equal((await statusResponse).status(), 404);
+  await page.waitForURL(
+    (current) =>
+      current.pathname === "/console/agents" &&
+      current.searchParams.get("namespace") === namespace.id,
+  );
+  const notice = page.getByRole("status").filter({ hasText: "cleanup is unconfirmed" });
+  await notice.waitFor();
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(
+    await inViewport(notice),
+    true,
+    "the returned list shows the notice without scrolling",
+  );
+  assert.equal(await inViewport(listHeading), true);
+  assert.equal(await hasFocus(listHeading), true);
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 0);
 });
 
 test("Agent detail hides sharing instead of showing an error to non-administrators", async (t) => {
