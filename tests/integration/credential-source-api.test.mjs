@@ -957,3 +957,137 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
   assert.equal(unavailable.status, 409, JSON.stringify(unavailable.body));
   await f.assertNothingSaved();
 });
+
+test("registering an existing source replaces the provider's stored credentials", async (t) => {
+  const f = await fixture(t);
+  const { stored, name } = await f.seedStoredRecord("openai", {});
+  const workspace = openShellWorkspaceName(f.namespace);
+  const provider = f.providers.get(workspace + "/" + name);
+  assert.deepEqual(provider.credentials, {});
+  f.mutations.length = 0;
+  const status = await f.driver.registerSource(
+    {
+      namespace: { ...f.namespace, name: workspace },
+      source: stored,
+      signal: AbortSignal.timeout(5000),
+    },
+    {
+      type: "openai",
+      config: stored.config,
+      secrets: { api_key: "synthetic-fresh-key" },
+    },
+  );
+  assert.equal(status.state, "ready");
+  // A replay must push the current value instead of keeping the one OpenShell already has.
+  assert.deepEqual(provider.credentials, { OPENAI_API_KEY: "synthetic-fresh-key" });
+  assert.ok(f.mutations.includes("updateProvider"));
+  assert.ok(!f.mutations.includes("createProvider"));
+});
+
+test("registration replay replaces credentials after an already-exists response", async (t) => {
+  const f = await fixture(t);
+  const workspace = openShellWorkspaceName(f.namespace);
+  const source = {
+    id: "cs_" + randomUUID(),
+    namespaceId: f.namespace.id,
+    name: "replay",
+    type: "openai",
+    config: {},
+  };
+  const name = openShellProviderName(source.id);
+  const getProvider = f.client.getProvider.bind(f.client);
+  let reads = 0;
+  f.client.getProvider = (...args) => {
+    reads += 1;
+    // Hide the provider from the first read so registration takes the create path.
+    return reads === 1 ? undefined : getProvider(...args);
+  };
+  const createProvider = f.client.createProvider.bind(f.client);
+  f.client.createProvider = async (input) => {
+    await createProvider(input);
+    throw new OpenShellProviderAlreadyExistsError();
+  };
+  const status = await f.driver.registerSource(
+    {
+      namespace: { ...f.namespace, name: workspace },
+      source,
+      signal: AbortSignal.timeout(5000),
+    },
+    {
+      type: "openai",
+      config: {},
+      secrets: { api_key: "synthetic-replay-key" },
+    },
+  );
+  assert.equal(status.state, "ready");
+  // The replay adopts the provider that won the race, then replaces its stored value.
+  assert.deepEqual(f.providers.get(workspace + "/" + name).credentials, {
+    OPENAI_API_KEY: "synthetic-replay-key",
+  });
+  assert.ok(f.mutations.includes("createProvider"));
+  assert.ok(f.mutations.includes("updateProvider"));
+});
+
+test("a static Secret value with CR or LF is refused with a field-specific 400 before effects", async (t) => {
+  const f = await fixture(t);
+  // A key file read with its trailing newline: valid generic Secret material (multiline storage
+  // is supported), but OpenShell refuses it as a credential. The caller must learn the field and
+  // the rule at the request, not a runtime probe failure after deployment. CR and LF are driven
+  // separately so the whole prohibited class is pinned, not just the incident's character.
+  for (const [label, suffix] of [
+    ["line feed", "\n"],
+    ["carriage return", "\r"],
+  ]) {
+    await t.test(label, async () => {
+      f.mutations.length = 0;
+      const bad = await f.createSecret(
+        f.namespace.id,
+        "newline-key-" + label,
+        "synthetic-model-key" + suffix,
+      );
+      const response = await f.request("POST", f.path, {
+        body: {
+          name: "newline-" + label,
+          type: "openai",
+          config: {},
+          secrets: { api_key: bad.ref },
+        },
+      });
+      assert.equal(response.status, 400, JSON.stringify(response.body));
+      assert.equal(response.body.error.code, "INVALID_REQUEST");
+      assert.deepEqual(response.body.error.details, [
+        { path: "/secrets/api_key", code: "INVALID_VALUE" },
+      ]);
+      assert.match(response.body.error.message, /cannot contain CR, LF, or NUL/);
+      // The refusal precedes every credential-bearing gateway write: no provider or profile was
+      // created. The only mutation is the abandonment cleanup deleting the never-created profile.
+      assert.deepEqual(f.mutations, ["deleteProfile"]);
+      assert.equal(f.providers.size, 0);
+      assert.equal(f.profiles.size, 0);
+      // A registration-time refusal after the record commit leaves a deleting record, as any
+      // gateway-time failure does; the caller sees the 400 and can retry with a clean value.
+      const listed = (await f.request("GET", f.path)).data;
+      assert.ok(listed.length >= 1);
+      assert.ok(listed.every((source) => source.state === "deleting"));
+    });
+  }
+});
+
+test("updating a source to a CR or LF Secret value is refused before effects", async (t) => {
+  const f = await fixture(t);
+  const { stored } = await f.seedStoredRecord("openai", {});
+  const bad = await f.createSecret(f.namespace.id, "newline-key", "synthetic-model-key\n");
+  const response = await f.request("PATCH", f.path + "/" + stored.id, {
+    body: { secrets: { api_key: bad.ref } },
+  });
+  assert.equal(response.status, 400, JSON.stringify(response.body));
+  assert.equal(response.body.error.code, "INVALID_REQUEST");
+  assert.deepEqual(response.body.error.details, [
+    { path: "/secrets/api_key", code: "INVALID_VALUE" },
+  ]);
+  assert.match(response.body.error.message, /cannot contain CR, LF, or NUL/);
+  // The refusal precedes every gateway write, including the profile narrowing an update
+  // would apply, and the ready source keeps its stored credentials.
+  assert.deepEqual(f.mutations, []);
+  assert.equal((await f.request("GET", f.path + "/" + stored.id)).data.status.state, "ready");
+});

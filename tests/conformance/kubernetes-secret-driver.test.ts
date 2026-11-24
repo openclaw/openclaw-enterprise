@@ -309,6 +309,13 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
   assert.equal(client.calls.replaceNamespacedSecret, 0);
   assert.equal(await driver.withValue(secret, async (value) => value), largest);
 
+  // Multiline values are supported Secret material: a PEM private key must stay storable and
+  // readable. Only values that become OpenShell credentials refuse CR, LF, and NUL, at that
+  // boundary; generic Secret storage must not reject them.
+  const pem = "-----BEGIN PRIVATE KEY-----\nmulti-line\n-----END PRIVATE KEY-----\n";
+  await driver.update(secret, pem);
+  assert.equal(await driver.withValue(secret, async (value) => value), pem);
+
   // Each create gets a fresh backend name, so a failed create's cleanup can only find its own.
   const again = await driver.create(identity, "safe-value");
   assert.notEqual(again.name, backendRef.name);
