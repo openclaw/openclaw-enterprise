@@ -59,21 +59,25 @@ export function startObservabilityPhase(lane: string, phase: string) {
   }
 }
 
-export function startImageRuntimeStartupPhase(lane: string, phase: string) {
-  if (lane !== "images-runtime-startup") {
-    return;
-  }
+function isMainImageRuntimeStartupLane(lane: string | undefined) {
   const {
     GITHUB_REPOSITORY: repository,
     GITHUB_EVENT_NAME: event,
     GITHUB_REF: ref,
     GITHUB_WORKFLOW_REF: workflow,
   } = process.env;
-  if (
+  return (
+    lane === "images-runtime-startup" &&
     repository === "openclaw/openclaw-enterprise" &&
     event === "push" &&
     ref === "refs/heads/main" &&
-    workflow === "openclaw/openclaw-enterprise/.github/workflows/ci.yml@refs/heads/main" &&
+    workflow === "openclaw/openclaw-enterprise/.github/workflows/ci.yml@refs/heads/main"
+  );
+}
+
+export function startImageRuntimeStartupPhase(lane: string, phase: string) {
+  if (
+    isMainImageRuntimeStartupLane(lane) &&
     [
       "runtime-image-build-cluster",
       "image-load",
@@ -85,5 +89,29 @@ export function startImageRuntimeStartupPhase(lane: string, phase: string) {
   ) {
     // Six phases share the Actions step's budget of ten notices.
     return startPhaseNotice("Image Runtime Startup preparation", lane, phase, "finish-only");
+  }
+}
+
+function uptimeMs(value: string | undefined) {
+  const match = /^([0-9]{1,9})\.([0-9]{2})$/u.exec(value ?? "");
+  if (match) {
+    return Number(match[1]) * 1_000 + Number(match[2]) * 10;
+  }
+}
+
+if (import.meta.main) {
+  const [lane, entry, prepare] = process.argv.slice(2);
+  if (isMainImageRuntimeStartupLane(lane)) {
+    const entryMs = uptimeMs(entry);
+    const prepareMs = uptimeMs(prepare);
+    if (entryMs !== undefined && prepareMs !== undefined) {
+      const finish = startPhaseNotice(
+        "Image Runtime Startup setup",
+        "images-runtime-startup",
+        "entry-to-prepare",
+        "finish-only",
+      );
+      finish?.("success", prepareMs - entryMs);
+    }
   }
 }

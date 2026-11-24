@@ -67,7 +67,14 @@ runs:
         JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
         QA_TIMING: ${{ inputs.lane == 'qa-matrix' }}
         OPENSHELL_TIMING: ${{ (inputs.lane == 'openshell' || inputs.lane == 'openshell-policy' || inputs.lane == 'openshell-installers') }}
+        STARTUP_TIMING: >-
+          ${{ inputs.lane == 'images-runtime-startup' && github.repository == 'openclaw/openclaw-enterprise' &&
+              github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+              github.workflow_ref == 'openclaw/openclaw-enterprise/.github/workflows/ci.yml@refs/heads/main' }}
       run: |
+        if [[ "$STARTUP_TIMING" == true ]] && { read -r uptime _ </proc/uptime; } 2>/dev/null; then
+          { printf 'startup-entry-uptime=%s\n' "$uptime" >> "$GITHUB_OUTPUT"; } 2>/dev/null || true
+        fi
         if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 5 )); then
           echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 5." >&2
           exit 1
@@ -362,7 +369,12 @@ runs:
         OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: ${{ inputs.runtime-artifact-source-sha }}
         OCC_CI_RUNTIME_ARTIFACT_RUN_ID: ${{ inputs.runtime-artifact-run-id }}
         OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: ${{ inputs.runtime-artifact-attempt }}
+        CI_SELECTED_LANE: ${{ inputs.lane }}
+        STARTUP_ENTRY_UPTIME: ${{ steps.deadline.outputs.startup-entry-uptime }}
       run: |
+        if [[ -n "$STARTUP_ENTRY_UPTIME" ]] && { read -r uptime _ </proc/uptime; } 2>/dev/null; then
+          node scripts/ci/observability-phase-notice.ts "$CI_SELECTED_LANE" "$STARTUP_ENTRY_UPTIME" "$uptime" || true
+        fi
         selection=()
         if [[ -n "$CI_SELECTED_TEST_FILE" ]]; then
           selection=(--selected-file "$CI_SELECTED_TEST_FILE")
