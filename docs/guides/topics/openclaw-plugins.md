@@ -146,7 +146,7 @@ If the deployment reports a warning such as `PLUGIN_INSTALL_FAILED`, review the 
 
 ## 4. Verify tool calls with the OpenClaw TUI
 
-When browser chat is enabled and you have access, use [**Open chat**](../../reference/console.md#open-the-native-admin-ui) to talk to the Agent. To inspect live tool calls in this procedure, attach the **OpenClaw TUI**. HTTP model verification checks connectivity without showing tool events.
+When browser chat is enabled and you have access, choose [**Open chat** or **Open Agent UI**](../../reference/console.md#open-the-native-admin-ui) to talk to the Agent. To inspect live tool calls in this procedure, attach the **OpenClaw TUI**. HTTP model verification checks connectivity without showing tool events.
 
 ### Attach to the Agent
 

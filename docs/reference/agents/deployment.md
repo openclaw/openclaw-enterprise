@@ -1,6 +1,6 @@
 # Agent identity and deployment
 
-Select an [Agent](../agents.md) execution mode. Creating or editing an Agent does not start a workload.
+Select an [Agent](../agents.md) execution mode. Saving a draft alone does not start a workload.
 
 ## Agent service principal and workload credentials
 

@@ -61,8 +61,9 @@ output or the applicable access or availability message, even from the draft or 
 
 **Run diagnostics for this version** fills **Current observations** with a
 bodyless POST that checks the exact viewed version. It requires Agent
-`read`/`operate` and exact AgentRevision `read`. Kubernetes checks cover only
-Slack (`NOT_CONFIGURED`: no Slack channel), never model credentials. Each check
+`read`/`operate` and exact AgentRevision `read`. On Kubernetes, channel checks cover only
+Slack (`NOT_CONFIGURED` means no Slack channel). Diagnostics can also report
+startup failures and Harness Sandbox status. They don’t test model credentials. Each check
 is timestamped `succeeded`, `failed`, or `unknown`; recorded failures stay shown,
 and unavailable requests show an error. Results do not change deployment
 history, repeat the startup model probe, or prove message delivery.

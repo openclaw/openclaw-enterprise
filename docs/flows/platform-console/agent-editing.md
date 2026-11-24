@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-24 16:36"
-last_updated_session: "authoring-run/1a56db49-0f69-4836-8921-ba746a9bd026"
+updated: "2026-11-24 21:14"
+last_updated_session: "authoring-run/b770071f-a9c8-4726-8278-51870f444984"
 ---
 
 # Console Agent editing and runtime requests
@@ -166,7 +166,7 @@ Pending requests lock controls. Failed reads block the [POST](../../reference/ap
 Console sends `harnessOverrides` and the reviewed `expectedRepositoryPolicyVersion`.
 Without review, a `github-repository` binding and empty readable history yield
 `null`. Otherwise Console omits the field. Admission rechecks independently.
-Success opens the version. Uncertainty disables Deploy. Check history before retrying.
+Success opens the version. Uncertainty disables Deploy. Don’t resubmit. [Follow the identified revision or ask an administrator to reconcile](../../guides/topics/agent-revisions.md#update-and-deploy).
 
 `apps/controller/src/console/drafts.mts:createDraftStore` isolates in-memory drafts by Namespace
 and Agent. `console.mts:resetReads` and `detail.mts:renderTab` exclude passwords.
@@ -262,10 +262,9 @@ says access was not verified until **Reload draft**. An administrator's console 
 bound Secret's grant, as deployment does, with Slack on or off; Deploy waits for those reads and
 rechecks before its POST, and a save or Retry during one reads again before naming Deploy. With
 Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018),
-whose success names the granted access. A Retry carries no Secret choices into **Reload draft** (3021).
-A Retry's warning names only the grant, and a later save's names the Configuration save (3023,
-3029); after **Reload draft** the section waits for its grant read instead of restating that outcome.
-If it finds nothing outstanding, the section says access is confirmed and focuses that line (3030).
+whose success names the grant. Retry carries no Secret choices into **Reload draft** (3021).
+Warnings distinguish grant retries from Configuration saves (3023, 3029).
+**Reload draft** waits for a fresh grant read. If nothing remains, it focuses the access confirmation (3030).
 `agents/credentials.mts:missingChannelCredentialGroups` reads token keys as the Slack Channel
 Driver does; pickers appear only for standard keys. A 400 that
 `agents/list.mts:channelBindingRefusal` matches shows the API's message. An uncertain PATCH
@@ -363,6 +362,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-24 21:14: Reconcile uncertain deployments. (authoring-run/b770071f-a9c8-4726-8278-51870f444984 - 1a01465bed4be5f374bfc3b4cb86eee604907ab6)
 - 2026-11-24 16:36: Reconcile Channels and reload. (authoring-run/1a56db49-0f69-4836-8921-ba746a9bd026 - ad89333393b92bf2c7020d5fa3b480a74ab4dbec)
 - 2026-11-24 15:51: Trace draft Channels access confirmation. (authoring-run/0e68027f-b229-42d4-8639-87267b4b6363 - fccad45bda2c0004ecf6ee4cdd93a3cefbfd089e)
 - 2026-11-24 15:51: Distinguish draft reload outcomes. (authoring-run/acb5e9f3-ca5f-443d-ba44-31a213dffc65 - 7b0d04f59c01e53e3f19e1e744daee1e428e851c)
