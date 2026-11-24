@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-19
-last_updated_session: authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a
+updated: 2026-11-23
+last_updated_session: authoring-run/07352eb0-f0e9-4aa3-bbe2-6be9c96a1476
 ---
 
 # Installation Profile Rendering Flow
@@ -299,8 +299,10 @@ activation, and repository registry creation need separate evidence.
 - Inspect `<out-dir>/preflight.json` first. `ok:false` means required input is
   missing, supplied input is invalid, or hosted discovery DNS failed; `values.yaml` and
   `installation.yaml` are intentionally absent.
-- Run `helm template oce deploy/helm/openclaw-enterprise --namespace <namespace> --values <out-dir>/values.yaml`
-  to check chart-level validation before applying the chart.
+- Preview chart validation without cluster changes with
+  `helm template <release-name> deploy/helm/openclaw-enterprise --namespace <namespace> --values <out-dir>/values.yaml`.
+  Use the input JSON’s `controlPlane.releaseName` for `<release-name>` and
+  `controlPlane.namespace` for `<namespace>`.
 - Startup-only input changes should change `controlPlane.installationChecksum`
   in `values.yaml` and the API/worker deployment pod-template annotations in
   Helm output.
@@ -324,6 +326,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 12:51: Match Helm preview name. (authoring-run/07352eb0-f0e9-4aa3-bbe2-6be9c96a1476 - 7ef4d08319f4ad8dfd1dd52473db764ccad53235)
 
 - 2026-11-19 05:13: Replace the shared channel proxy setting with managed channel egress inputs. (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - fc683cdfe9b73215d0503cdfaf7917f54be7f17e)
 

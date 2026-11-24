@@ -137,7 +137,7 @@ type UpgradeFixture = {
   evidence: string;
   commands: readonly unknown[];
   readEvidence(name: string): Promise<string>;
-  run(...args: string[]): Promise<unknown>;
+  run(...args: string[]): Promise<{ stderr: string }>;
   state(): Promise<RecoveryState>;
   events(): Promise<string[]>;
   failNext(fault: string): Promise<void>;
@@ -200,6 +200,7 @@ type CompatibilityFileReceipt = {
   issues: readonly unknown[];
   cleanup: { status: "passed" | "failed" } | null;
   fileFailure?: { error: { message: string } };
+  measurements?: { kind: "released-controller-history"; status: "unsupported" }[];
 };
 
 type CompatibilityReceipt = {
@@ -650,6 +651,22 @@ export function registerUpgradeContinuityTests({
       ],
     };
   }
+
+  test("controller compatibility warns about unsupported released migration history during preflight", async (t) => {
+    const f = await fixture(t, { controllerOnly: true });
+    const path = join(f.directory, "compatibility.json");
+    const receipt = controllerCompatibilityResults();
+    receipt.files[0].measurements = [
+      { kind: "released-controller-history", status: "unsupported" },
+    ];
+    await writeFile(path, JSON.stringify(receipt));
+    // The advisory must be visible while writers are still serving, with a successful rehearsal.
+    const { stderr } = await f.run("--preflight-only", "--controller-compatibility-results", path);
+    assert.match(
+      stderr,
+      /^warning: The released controller rejected the candidate migration history\. Qualify another recovery controller before maintenance\.$/m,
+    );
+  });
 
   test("controller compatibility preserves Agent continuity through interrupted upgrade recovery", async (t) => {
     const f = await controllerContinuityFixture(t, continuityFixture());

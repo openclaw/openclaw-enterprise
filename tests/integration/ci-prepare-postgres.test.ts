@@ -7,6 +7,7 @@ import test from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { spawnResult } from "../helpers/ci-prepare-fixture.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
+import { startFakePostgres } from "../helpers/fake-postgres-server.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -195,31 +196,37 @@ esac`,
   });
 }
 
-for (const [failure, subnetExhaustion] of [
-  ["all predefined address pools have been fully subnetted", true],
-  ["permission denied while trying to connect to the Docker daemon socket", false],
-  ["container is unhealthy", false],
-] as const) {
-  test(`PostgreSQL preparation reports Compose failure: ${failure}`, async (t) => {
-    const root = await temporaryDirectory(t, "ci-prepare-postgres-");
-    const statePath = join(root, "run's state.json");
-    const log = join(root, "docker.log");
-    const docker = await writeCommand(
-      root,
-      "docker",
-      `case "$1:$6" in
+const composeSubnetFailure = "all predefined address pools have been fully subnetted";
+const composePermissionFailure =
+  "permission denied while trying to connect to the Docker daemon socket";
+
+async function failingPostgresCompose(root: string, failure: string) {
+  const log = join(root, "docker.log");
+  const docker = await writeCommand(
+    root,
+    "docker",
+    `case "$1:$6" in
   version:|compose:down) exit 0 ;;
   compose:up) printf '%s\\n' "$TEST_DOCKER_FAILURE" >&2; exit 17 ;;
   *) exit 99 ;;
 esac`,
-      { log },
-    );
-    const env = {
-      ...process.env,
-      OCC_DOCKER_BIN: docker,
-      OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
-      TEST_DOCKER_FAILURE: failure,
-    };
+    { log },
+  );
+  const env = {
+    OCC_DOCKER_BIN: docker,
+    OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
+    TEST_DOCKER_FAILURE: failure,
+  };
+  return { docker, env, log };
+}
+
+for (const failure of [composeSubnetFailure, composePermissionFailure, "container is unhealthy"]) {
+  test(`PostgreSQL preparation reports Compose failure: ${failure}`, async (t) => {
+    const root = await temporaryDirectory(t, "ci-prepare-postgres-");
+    const statePath = join(root, "run's state.json");
+    const fixture = await failingPostgresCompose(root, failure);
+    const { docker, log } = fixture;
+    const env = { ...process.env, ...fixture.env };
     const prepared = spawnSync(
       process.execPath,
       [preparePath, "--lane", "postgres-auth", "--state", statePath],
@@ -230,7 +237,7 @@ esac`,
     assert.equal(resources.length, 1);
     const { server, compose, directory } = observedProject(resources);
     const originalError = `${docker} ${compose} up -d --wait failed: ${failure}\n`;
-    if (!subnetExhaustion) {
+    if (failure !== composeSubnetFailure) {
       assert.equal(prepared.stderr, originalError);
       return;
     }
@@ -259,6 +266,141 @@ esac`,
     await assert.rejects(stat(statePath), { code: "ENOENT" });
     await assert.rejects(stat(directory), { code: "ENOENT" });
   });
+}
+
+async function expectFailedPrepareLifecycle(
+  root: string,
+  env: NodeJS.ProcessEnv,
+  expectedError: { code: "phase-failed"; reason?: string },
+  privateFragments: readonly string[],
+) {
+  const attempt = join(root, "attempt");
+  const result = await spawnResult(
+    process.execPath,
+    [
+      join(repositoryRoot, "scripts/ci/run-tests.ts"),
+      "run",
+      "postgres-auth",
+      "--lifecycle",
+      "complete",
+      "--attempt",
+      attempt,
+    ],
+    { env: { ...env, PATH: root }, timeout: 30_000 },
+  );
+  assert.ifError(result.error);
+  assert.equal(result.status, 1, result.stderr);
+
+  // The public receipt and logs carry a fixed category and never include raw diagnostics.
+  const receipt = await readFile(join(attempt, "result.json"), "utf8");
+  for (const output of [receipt, result.stdout, result.stderr]) {
+    for (const fragment of privateFragments) {
+      assert.ok(!output.includes(fragment));
+    }
+  }
+  const decoded: unknown = JSON.parse(receipt);
+  const summary = asRecord(decoded);
+  const phases = asRecord(asRecord(summary?.lifecycle)?.phases);
+  const prepare = asRecord(phases?.prepare);
+  assert.equal(prepare?.status, "failed");
+  assert.deepEqual(prepare?.error, expectedError);
+
+  // Preparation failure blocks tests and leaves only the result after cleanup.
+  assert.equal(asRecord(phases?.run)?.status, "not-run");
+  assert.equal(asRecord(summary?.counts)?.total, 0);
+  assert.equal(asRecord(phases?.cleanup)?.status, "passed");
+  assert.deepEqual(await readdir(attempt), ["result.json"]);
+}
+
+for (const failure of [composeSubnetFailure, composePermissionFailure]) {
+  test(
+    `complete lifecycle records PostgreSQL preparation failure: ${failure}`,
+    { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+    async (t) => {
+      const root = await temporaryDirectory(t, "ci-postgres-lifecycle-");
+      const privateOutput = "fixture-compose-stderr-must-stay-private";
+      const { env, log } = await failingPostgresCompose(root, `${failure}\n${privateOutput}`);
+      await expectFailedPrepareLifecycle(
+        root,
+        env,
+        failure === composeSubnetFailure
+          ? { code: "phase-failed", reason: "docker-subnet-exhausted" }
+          : { code: "phase-failed" },
+        [privateOutput],
+      );
+
+      const calls = await commandCalls(log);
+      const project = /^(compose -f .+ -p \S+) up -d --wait$/u.exec(calls[1] ?? "")?.[1];
+      assert.ok(project, "Compose startup reached the failing fixture");
+      assert.deepEqual(calls, [
+        "version --format {{.Server.Version}}",
+        `${project} up -d --wait`,
+        `${project} down --volumes --remove-orphans`,
+      ]);
+    },
+  );
+}
+
+for (const failure of ["connection refused", "missing socket", "statement rejected"] as const) {
+  test(
+    `complete lifecycle records initial PostgreSQL settings failure: ${failure}`,
+    { skip: process.platform !== "linux" && "lifecycle process ownership reads /proc" },
+    async (t) => {
+      const root = await temporaryDirectory(t, "ci-postgres-settings-");
+      const log = join(root, "docker.log");
+      const port = 45327;
+      const socketPath = join(root, `.s.PGSQL.${port}`);
+      const privateOutput = "ECONNREFUSED fixture-statement-message";
+      // Linux refuses a Unix socket connection to a regular file. An absent path
+      // instead produces ENOENT, and a live fixture rejects the SQL after startup.
+      if (failure === "connection refused") {
+        await writeFile(socketPath, "");
+      }
+      const postgres =
+        failure === "statement rejected"
+          ? await startFakePostgres({ socketPath, onQuery: () => ({ error: privateOutput }) })
+          : undefined;
+      if (postgres) {
+        t.after(() => postgres.close());
+      }
+      const docker = await writeCommand(
+        root,
+        "docker",
+        `case "$1:$6" in
+  version:|compose:up|compose:down) exit 0 ;;
+  compose:ps) printf '%s\\n' '${container}'; exit 0 ;;
+  inspect:) printf '%s\\n' '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"${port}"}]}'; exit 0 ;;
+  *) exit 99 ;;
+esac`,
+        { log },
+      );
+      await expectFailedPrepareLifecycle(
+        root,
+        {
+          OCC_DOCKER_BIN: docker,
+          OPENCLAW_CI_COREPACK_BIN: await allowDependencyPreflight(root),
+          OPENCLAW_CI_POSTGRES_SOCKET_DIR: root,
+        },
+        failure === "connection refused"
+          ? { code: "phase-failed", reason: "postgres-connection-refused" }
+          : { code: "phase-failed" },
+        ["ECONNREFUSED", privateOutput, socketPath],
+      );
+      if (postgres) {
+        assert.deepEqual(postgres.queries(), ["postgres\tALTER SYSTEM SET fsync = off"]);
+      }
+      const calls = await commandCalls(log);
+      const project = /^(compose -f .+ -p \S+) up -d --wait$/u.exec(calls[1] ?? "")?.[1];
+      assert.ok(project, "Compose startup reached the fixture");
+      assert.deepEqual(calls, [
+        "version --format {{.Server.Version}}",
+        `${project} up -d --wait`,
+        `${project} ps -q postgres`,
+        `inspect --format {{json .NetworkSettings.Ports}} ${container}`,
+        `${project} down --volumes --remove-orphans`,
+      ]);
+    },
+  );
 }
 
 test(

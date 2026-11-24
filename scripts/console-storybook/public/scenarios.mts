@@ -575,14 +575,14 @@ const authoredScenarios = {
     emptyAgents: true,
     readOnlyPermissionSummary: true,
     description:
-      "A member without Agent create sees no Agents. The heading says none are shared with them, not that the Namespace has none, and nothing invites creating.",
+      "A member without Agent create sees no readable Agents. Create Agent is disabled and asks the member to have an Installation administrator check their access.",
   } satisfies LocalScenario,
   agentsCreateBlockedByRestriction: {
     group: "Pages/Agents",
     name: "Create blocked by a Restriction",
     agentCreateRestricted: true,
     description:
-      "An Installation administrator in a Namespace whose deny Restriction blocks Agent create. Create Agent is disabled, and the note names the Restriction and who can lift it, not an administrator to ask.",
+      "A simulated Restriction blocks Agent create for an Installation administrator. The advisory note names Agent create in this Namespace and asks them to check their access and whether an IAM Restriction applies.",
     steps: [
       "Check that Create Agent is disabled and that a screen reader names the note as its description.",
     ],
@@ -848,7 +848,7 @@ const authoredScenarios = {
     emptyAgents: true,
     readOnlyPermissionSummary: true,
     description:
-      "A caller who cannot create Agents in an empty Namespace is told shared Agents appear here, not invited to create one.",
+      "When the caller cannot create Agents and sees no readable Agents, the page explains which Agents appear here.",
   } satisfies LocalScenario,
   agentsNamespaceProvisioning: {
     group: "Pages/Agents",

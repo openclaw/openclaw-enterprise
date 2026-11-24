@@ -25,6 +25,7 @@ type TopologyLogInputs = {
   gatewayPassword: string | undefined;
   agent: unknown;
   revision: unknown;
+  protectedModelCredential(): string;
 };
 
 export async function assertKubernetesOtelLogs(topology: TopologyLogInputs) {
@@ -48,7 +49,7 @@ export async function assertKubernetesOtelLogs(topology: TopologyLogInputs) {
     ),
   };
   await observation.assertRecords({
-    forbidden: [process.env.OPENAI_API_KEY, topology.gatewayPassword],
+    forbidden: [topology.protectedModelCredential(), topology.gatewayPassword],
     expected: [
       {
         label: `${topology.mode} gateway operational record`,
@@ -79,6 +80,7 @@ export type ModelTurnTopology = {
   gatewayPod: unknown;
   harnessPod: unknown;
   refreshGatewayUrl(): Promise<string>;
+  protectedModelCredential(): string;
 };
 
 type PodLocation = { name: string; namespace: string };
@@ -140,7 +142,7 @@ export async function reportFailedModelTurn(
   const serialized = JSON.stringify(logs);
   const exposes = (secret: string) =>
     containsLogSecret(diagnostic, secret) || serialized.includes(secret);
-  const modelKey = process.env.OPENAI_API_KEY;
+  const modelKey = topology.protectedModelCredential();
   if (modelKey) {
     assert.equal(exposes(modelKey), false, "Runtime logs expose the model key");
   }

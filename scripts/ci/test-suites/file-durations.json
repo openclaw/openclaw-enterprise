@@ -77,6 +77,7 @@
     "tests/conformance/k3d-failure-diagnostics.test.ts": 700,
     "tests/conformance/kubernetes-api-read.test.ts": 3400,
     "tests/conformance/kubernetes-client.test.ts": 6100,
+    "tests/conformance/kubernetes-channel-egress-drain.test.ts": 2100,
     "tests/conformance/kubernetes-compute.test.mjs": 11900,
     "tests/conformance/kubernetes-configuration.test.ts": 600,
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs": 800,

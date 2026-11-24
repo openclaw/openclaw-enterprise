@@ -4044,7 +4044,9 @@ jq -e --arg recovered "$recovered_revision" --slurpfile submission "$evidence_di
   : >"$evidence_dir/completed"
 ) ||
   die "could not record upgrade completion; preserve the evidence and investigate before recovery."
-if [[ -n "$runtime_image" && -n "$controller_image" && "$controller_image" != "$current_controller" ]]; then
+if [[ "$channel_egress_enabled" == true ]]; then
+  printf 'Upgrade and channel transition complete. See channel-agent-operations.json in the evidence directory for Agent deployment results.\n'
+elif [[ -n "$runtime_image" && -n "$controller_image" && "$controller_image" != "$current_controller" ]]; then
   printf 'Upgraded controller and runtime images; %s running Agents selected new revisions.\n' "$target_count"
 elif [[ -n "$runtime_image" ]]; then
   printf 'Upgraded runtime image; controller image remained unchanged and %s running Agents selected new revisions.\n' "$target_count"

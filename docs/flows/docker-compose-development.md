@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-16
-last_updated_session: 01a1e535-91ca-7273-913f-aaacfd69c1c2
+updated: 2026-11-23
+last_updated_session: authoring-run/6fb5b1fd-3462-4afa-b59a-da8a6412cdfe
 ---
 
 # Compose development flow
@@ -65,38 +65,43 @@ graph TD
   Guard -->|No| Refuse
   Guard -->|Yes| Profile{"Compute profile"}
   Profile -->|Docker| B["Preflight host tools, resolve Podman machine connection,<br/>and inspect Compose config"]
-  Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
-  KPre --> KControl{"Control-plane profile"}
-  KControl -->|Kubernetes| KOwned["Create owned cluster,<br/>verify DNS/API and select kubeconfig"]
+  Profile -->|Kubernetes default| KPre["Pin engine endpoint<br/>reject existing resources"]
+  KPre --> KControl{"Control plane"}
+  KControl -->|Kubernetes default| KOwned["Create cluster<br/>check DNS and API<br/>select kubeconfig"]
   KOwned --> KDriver{"Sandbox Driver"}
-  KDriver -->|none| KCodex["Import runtime and verify<br/>the normal Codex sandbox"]
-  KCodex -->|success| KRoutingFirst["Install routing controllers<br/>and remaining images"]
-  KCodex -->|failure| KRollback
-  KDriver -->|OpenShell| KOpenFirst["Prepare OpenShell assets,<br/>install routing, then import runtime"]
-  KRoutingFirst --> KOnly["Install selected control-plane profile<br/>and retain all readiness gates"]
-  KOpenFirst --> KGateway["Install authenticated Gateway<br/>and wait for readiness"]
+  KDriver -->|none default| KRuntime["Import runtime"]
+  KRuntime --> KCodex["Verify Codex sandbox<br/>if workspace-write (default)"]
+  KCodex --> KRouting["Install routing"]
+  KRuntime --> KImages["Import images<br/>check network isolation"]
+  KRouting --> KJoin["Join setup"]
+  KImages --> KJoin
+  KDriver -->|OpenShell| KOpenPrep["Import images and runtime<br/>prepare assets and routing<br/>check network isolation"]
+  KOpenPrep --> KJoin
+  KJoin -->|OpenShell| KGateway["Install authenticated Gateway"]
+  KJoin -->|none| KOnly["Install and wait for<br/>control plane"]
   KGateway --> KOnly
-  KOnly --> KWait["Complete control-plane readiness gates"]
-  KWait --> KWorkspace
-  KControl -->|Compose| KConfig["Validate Compose and claim<br/>private state with snapshot"]
-  KConfig --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
-  KStart --> KReady["Import runtime and start<br/>API and Kubernetes worker"]
-  KReady --> KSandbox{"Sandbox profile"}
-  KSandbox -->|none| KProof
-  KSandbox -->|OpenShell| KOpenShell["Install pinned Agent Sandbox,<br/>Gateway, and render workspace resources"]
-  KOpenShell -->|Compose| KRouting["Install private Envoy route and project<br/>its service key and public CA"]
-  KRouting --> KWorkspace["Driver applies workspace resources and creates<br/>the default Namespace's owned Workspace"]
-  KOpenShell -->|Kubernetes| KWorkspace
-  KWorkspace --> KFailClosed["Default Namespace ready;<br/>Agent projection remains fail closed"]
-  KFailClosed --> KProof
-  KProof["Prove authenticated<br/>Installation access"]
-  KProof --> KDown["./bin/occ dev down reuses<br/>recorded endpoint and project"]
-  KStart -->|failure| KRollback["Roll back owned resources<br/>retain state if cleanup fails"]
-  KReady -->|failure| KRollback
-  KProof -->|failure| KRollback
+  KOnly --> KProof
+  KControl -->|Compose| KConfig["Claim Compose snapshot"]
+  KConfig --> KStart["Default cold build or Podman<br/>bootstrap database<br/>create cluster"]
+  KStart --> KSandbox{"Sandbox Driver"}
+  KSandbox -->|none default| KComposeCodex["Import runtime<br/>verify Codex sandbox<br/>if workspace-write (default)"]
+  KComposeCodex --> KReady["Start API and worker"]
+  KSandbox -->|OpenShell| KOpenShell["Import runtime<br/>prepare Gateway<br/>and routing controllers"]
+  KOpenShell --> KPrivate["Prepare private route<br/>and key/CA mounts"]
+  KPrivate --> KReady
+  KReady -->|OpenShell| KFinalize["Finalize routing"]
+  KReady -->|none| KProof["Verify authenticated<br/>Installation"]
+  KFinalize --> KProof
+  KProof -->|Kubernetes only or Compose OpenShell| KNamespace["Wait for Namespace<br/>OpenShell worker ensures Workspace"]
+  KNamespace -->|Kubernetes only| KPost["Check gateway isolation"]
+  KNamespace -->|Compose OpenShell| KRunning["Running"]
+  KPost --> KRunning
+  KProof -->|Compose none| KRunning
+  KRunning -->|operator runs dev down| KDown["Reuse recorded endpoint<br/>and project"]
   KDown --> KRemove["Stop reconcilers and delete<br/>owned cluster and volumes"]
   KRemove -->|success| KDone["Remove private state"]
   KRemove -->|failure| KRetain["Keep state for recovery"]
+  KFailure["Kubernetes setup failure<br/>after ownership"] --> KRollback["Roll back by default<br/>retain on request or<br/>incomplete cleanup"]
   B --> C["Select quickstart runtime image or validate custom images"]
   C --> Cred["Prepare private input files and local CLI key JSON"]
   Cred --> D["Selected Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
@@ -181,16 +186,20 @@ networks in place because the Compose project does not own them. See
 follows profile selection, the private Compose snapshot, k3d creation, runtime
 import, authenticated readiness, and cleanup through the recorded engine.
 
-For the Kubernetes-only profile, `internal/occdev/openshell_k3d.go:upK3d`
-creates the owned cluster, checks node DNS, and writes and selects its kubeconfig.
-With Sandbox Driver `none`, it then imports the runtime image and runs
-`prepareDevelopmentCodexSandbox` before installing private routing controllers.
-Meanwhile, `internal/occdev/concurrent.go:concurrently` imports the controller
-image, then checks network isolation while importing PostgreSQL and, when
-configured, repository images. The first independent failure cancels the others
-and is reported. A sandbox refusal or failed check rolls back the owned cluster
-before Installation setup or credential delivery. Both paths install
-the platform only after the check, then gate on authenticated readiness.
+`internal/occdev/openshell_k3d.go:upK3d` creates the owned cluster, checks DNS
+and selects its kubeconfig. Sandbox Driver `none` imports runtime, verifies
+[Codex confinement](docker-compose-development/startup.md#kubernetes-only-startup),
+then installs private routing. Explicit full-access mode skips this check.
+Controller import precedes network checks, which overlap PostgreSQL and optional
+repository image imports. Failure cancels siblings and triggers default rollback
+of owned resources.
+`OCC_DEVELOPMENT_KEEP_ON_FAILURE` retains the failed stack for `occ dev down`.
+Both Drivers join before platform installation and authenticated readiness.
+Gateway Namespace isolation follows bootstrap Namespace readiness.
+
+Compose cold builds and Podman bootstrap before cluster preparation. With a selected
+runtime image, Docker overlaps bootstrap and cluster preparation, and OpenShell
+controllers with runtime preparation. Private routing joins all branches. See [startup details](docker-compose-development/startup.md#13-bootstrap-occ-create-k3d-and-prepare-runtime-configuration).
 
 `internal/occdev/kubernetes.go:importDevelopmentImage` exports each selected
 image to its own temporary archive, with an explicit Linux platform on Docker.
@@ -206,12 +215,11 @@ only a runtime image with the current checkout label. Both detach after imports
 and on rollback, including recovery after interrupted startup.
 State rewrites set mode `0600` before writing so recovery can read
 `state.json` under a restrictive umask.
-For Kubernetes-only OpenShell, runtime import follows PostgreSQL/repository imports
-in their existing concurrent branch. OpenShell asset preparation follows those
-imports while network probes finish. This installs the Agent Sandbox controller
-and CRDs and imports images; platform installation and credential delivery still
-wait for every branch, including successful network verification. Image builds
-remain serial, and the large runtime import precedes smaller OpenShell assets.
+For Kubernetes-only OpenShell, the image branch imports runtime after PostgreSQL
+and optional repository images, then prepares the Agent Sandbox controller, CRDs
+and images while network checks finish. Platform installation and credential
+delivery wait for every branch. Image builds remain serial, with the large runtime
+import before smaller OpenShell assets.
 
 ### 5. Prepare the optional OpenShell development profile
 
@@ -238,11 +246,9 @@ routing resources, and copies the generated public CA and a dedicated service
 key into the private state directory. The Installation uses the k3d node name
 and Envoy HTTPS NodePort. After Compose starts, the launcher reapplies Envoy
 ingress with the controller, Kubernetes worker, and k3d node `/32` addresses.
-In both modes, the worker
-creates the bootstrap Namespace through the regular Compute workflow. The
-Sandbox Driver applies rendered workspace resources and the operator label
-before creating the corresponding Gateway Workspace. Startup waits until the
-OCC Namespace becomes ready. See the
+In both modes, the worker reconciles the bootstrap Namespace through Compute.
+The OpenShell Sandbox Driver applies rendered workspace resources and the operator
+label, then ensures its owned Gateway Workspace. Startup waits for Namespace readiness. See the
 [OpenShell flow](openshell-sandbox-provisioning.md#0-create-the-development-control-plane).
 
 <a id="6-start-protected-openshell-transport"></a>
@@ -294,29 +300,30 @@ describes accepted selectors.
 
 ## Debugging and Verification
 
-- `./scripts/dev-up` should show PostgreSQL readiness, migration completion,
-  API listening on `127.0.0.1:${OPENCLAW_DEV_PORT:-3000}`,
-  fresh-database initialization, `worker.started` with `computeDriverId` set to
-  `compute-docker-development`, a private locally prepared service-key path, and a
-  successful authenticated `/installation` proof.
-- With `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes`, startup should instead
-  report Kubernetes Compute, a private kubeconfig, and the disposable k3d
-  context; it does not mount the engine socket into the Kubernetes worker.
+- Default `./scripts/dev-up` reports
+  `Deployment: Kubernetes only`, `Compute Driver: Kubernetes`,
+  `Sandbox Driver: none`, a private kubeconfig and the k3d context. The
+  Kubernetes worker has no engine socket mount.
+- `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./scripts/dev-up` reports
+  `Compute Driver: Docker (control-plane preview; it cannot deploy Agents)`,
+  the API URL, Installation ID and service key file. The printed command checks
+  authenticated access.
 - With `OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell` and
-  `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, startup reports
-  Kubernetes-only deployment, one ready `oce-system/openshell-gateway` Service, the
-  Agent Sandbox CRD and workspace
-  resources in the bootstrap Namespace. The selected real dev-up case also
-  reads the owned Workspace through the Gateway API. This proves infrastructure
-  readiness, not a model turn. The expected Agent result is the explicit
-  unsupported `secretKeyRef` projection failure with no Sandbox or Agent Pod.
-- With `OCC_DEVELOPMENT_CONTROL_PLANE=compose`, OpenShell startup should report
-  `Control plane: Compose`, retain a private Compose snapshot, install the
-  Gateway in `openshell-system`, program
-  `oce-system/openclaw-enterprise-agent-gateways`, and create the bootstrap
-  Namespace's operator-mode Workspace. `installation.yaml` must contain the
-  Envoy NodePort endpoint, while only the controller and `worker-kubernetes`
-  receive `gateway-api-key` and `gateway-ca.crt` mounts.
+  `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, startup reports the deployment and Sandbox
+  Driver. Startup checks infrastructure readiness. The
+  [Kubernetes-only integration test](../testing/openshell.md#test-setup-and-cleanup)
+  inspects the ready `oce-system/openshell-gateway` Service, Agent Sandbox CRD
+  and bootstrap Namespace workspace resources. It reads the owned Workspace
+  through the Gateway API and checks a real model reply with an OIDC fixture and
+  sandboxed browser. OpenShell rejects Agent deployments with unsupported
+  `secretKeyRef` environment variables.
+- With `OCC_DEVELOPMENT_CONTROL_PLANE=compose`, OpenShell startup reports
+  `Control plane: Compose`. The launcher retains the private Compose snapshot,
+  installs the Gateway in `openshell-system` and programs
+  `oce-system/openclaw-enterprise-agent-gateways`. The worker ensures the bootstrap Namespace's operator-mode
+  Workspace during reconciliation. `installation.yaml` contains the Envoy NodePort endpoint. Only
+  the controller and `worker-kubernetes` receive `gateway-api-key` and
+  `gateway-ca.crt` mounts.
 - Docker Compute on Podman startup verification should show Podman as the
   selected engine, mount only its reported API socket into the worker, and
   complete the same authenticated Installation proof without a `docker` alias.
@@ -348,6 +355,8 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 06:11: Correct startup ordering, defaults and OpenShell verification. (authoring-run/6fb5b1fd-3462-4afa-b59a-da8a6412cdfe - 7e51be77638e6784b75a12f2b4b5c6fc3c0222c4)
 
 - 2026-11-16 13:04: Remove RuntimeClass and PSA setup. (01a1e535-91ca-7273-913f-aaacfd69c1c2 - edbe5ec43)
 

@@ -2,7 +2,8 @@ import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
-import { supportsOpenShellModelCredentialDeployment } from "./openshell-model-admission.ts";
+import { supportsOpenShellCredentialDeployment } from "./openshell-credential-admission.ts";
+import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
   openShellProxyConfiguration,
@@ -14,8 +15,12 @@ import {
 import { githubRepositoryConfiguration } from "../drivers/repo/github/installation.ts";
 import type { GitHubRepositoryRegistry } from "../drivers/repo/github/access/registry.ts";
 import { openAiStaticProviderRef } from "../drivers/egress-proxy/openai-provider.ts";
+import { openShellGitOriginRefusal } from "../drivers/sandbox/openshell-git-network-policy.ts";
 import type { RepositoryTransportBinding } from "./repository-credentials/contracts.ts";
-import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
+import type {
+  OpenShellSandboxDriver,
+  OpenShellSandboxDriverSelection,
+} from "../drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../drivers/sandbox/openshell.ts";
 import type {
   CredentialProxyDriver,
@@ -229,11 +234,11 @@ export function installationControllerOptions(
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
   | "modelCredentialPreset"
-  | "supportsModelCredentialDeployment"
+  | "supportsCredentialDeployment"
 > {
   return {
     modelCredentialPreset: resolveModelCredentialPreset,
-    supportsModelCredentialDeployment: supportsOpenShellModelCredentialDeployment,
+    supportsCredentialDeployment: supportsOpenShellCredentialDeployment,
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
     repositoryNetworkPolicyCeiling: installation?.repositoryNetworkPolicyCeiling ?? [],
@@ -294,6 +299,26 @@ export interface InstallationRuntimeDrivers {
     backendId: string;
   }>;
   readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
+}
+
+/** Bind Source retirement to the concrete selected Proxy and its Sandbox placement. */
+export function credentialSourceDeliveryBinding(
+  drivers: InstallationRuntimeDrivers | undefined,
+): ControllerOptions["credentialSourceDelivery"] {
+  if (!drivers?.credentialDeliveryRegistration) {
+    return undefined;
+  }
+  return async (proxy, namespace, source, signal) => {
+    const compute = drivers.computeDriver;
+    if (!(proxy instanceof OpenShellCredentialProxyDriver) || !compute.resolveSandboxNamespace) {
+      throw new DependencyUnavailableError(
+        "The selected credential delivery Proxy cannot retire this Source.",
+      );
+    }
+    const placed = await compute.resolveSandboxNamespace(namespace);
+    signal.throwIfAborted();
+    await proxy.retireSource(placed, source, signal);
+  };
 }
 
 /**
@@ -1571,14 +1596,19 @@ async function composeInstallationConfiguration(
     pairedSandbox: SandboxDriver,
     tokenServiceImplementation: string,
   ): Promise<CredentialProxyDriver> => {
-    const { OpenShellCredentialProxyDriver } =
-      await import("../drivers/credential-proxy/openshell.ts");
+    const sandbox = pairedSandbox as SandboxDriver &
+      Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
+    if (typeof sandbox.withdrawStagedCredentialRoute !== "function") {
+      throw new Error(
+        "Native credential delivery requires the paired OpenShell Sandbox policy owner.",
+      );
+    }
     return new OpenShellCredentialProxyDriver({
       id: pairedSandbox.id,
       implementation: pairedSandbox.implementation,
       tokenServiceImplementation,
       backend: openShell!,
-      sandbox: pairedSandbox,
+      sandbox,
     });
   };
   const { sandboxDriver, protectedDriver, repositoryTransport } = await (async (): Promise<
@@ -1652,6 +1682,10 @@ async function composeInstallationConfiguration(
         id: proxySelection.id,
         configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
         preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
+        repositoryOriginRefusal:
+          repositoryTransportConfiguration && preparedRepositoryGit?.apiOrigin !== undefined
+            ? openShellGitOriginRefusal(preparedRepositoryGit.apiOrigin)
+            : undefined,
         ...(egressAuthority && { exchangeAuthority: egressAuthority }),
       },
     });

@@ -1,5 +1,7 @@
 import { story } from "./story.ts";
 
+export const CreateNetworkProxy = { ...story("createNetworkProxy"), name: "Gateway Channel Proxy" };
+
 export default { title: "Pages/Create Agent" };
 
 export const CreateStart = { ...story("createStart"), name: "Choose a starting point" };
@@ -25,6 +27,10 @@ export const CreateSecretOperateDenied = {
   ...story("createSecretOperateDenied"),
   name: "Secret operate not permitted",
 };
+export const CreateAgentSaveRefused = story("createAgentSaveRefused");
+export const CreateAgentSaveConfigurationReadRefused = story(
+  "createAgentSaveConfigurationReadRefused",
+);
 export const CreateRepositoryOnlyCredentialProxy = story("createRepositoryOnlyCredentialProxy");
 export const CreateRepositoryNotConfigured = {
   ...story("createRepositoryNotConfigured"),

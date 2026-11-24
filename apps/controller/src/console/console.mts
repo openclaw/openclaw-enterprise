@@ -11,6 +11,7 @@ import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
   button,
+  isUnavailable,
   requestIdDisclosure,
   setUnavailable,
   setFieldError,
@@ -1014,7 +1015,7 @@ function clearPasswordInputs() {
     });
 }
 
-function retainMountedView(returnLink: Element | null) {
+function retainMountedView(returnLink: Element | null, scrollY = window.scrollY) {
   const owner = sessionOwnerKey(session);
   // The mounted view's own node, never another page shown in its place: an Agent page renders
   // hidden behind the page that stands in for it (finding 1542).
@@ -1031,7 +1032,7 @@ function retainMountedView(returnLink: Element | null) {
     state: mountedViewState?.reusable && mountedViewState.pending === 0 ? mountedViewState : null,
     title: app.querySelector<HTMLHeadingElement>(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
-    scrollY: window.scrollY,
+    scrollY,
     returnHref:
       returnLink instanceof HTMLAnchorElement && view.contains(returnLink)
         ? (returnLink.dataset.returnFocusHref ?? returnLink.href)
@@ -1062,8 +1063,8 @@ function forgetRetainedView(taken: ReturnType<typeof peekRetainedView>) {
   }
 }
 
-// Names a recheck that outlasts stillCheckingDelayMs, so a held page is not mistaken
-// for a stuck one (finding 1442). Mounted Agent checks stay visible beside scrolled drafts.
+// Names a pending recheck so a held page is not mistaken for a stuck one (finding 1442).
+// Mounted Agent checks stay visible beside scrolled drafts.
 function showStillChecking({ mountedAgent = false } = {}) {
   const container = mountedAgent ? app : app.querySelector(".content .page-actions");
   if (!container) {
@@ -1265,7 +1266,13 @@ function resetReads({
   retainView = false,
   returnLink = null,
   keepShell = false,
-}: { retainView?: boolean; returnLink?: Element | null; keepShell?: boolean } = {}) {
+  retainedScrollY,
+}: {
+  retainView?: boolean;
+  returnLink?: Element | null;
+  keepShell?: boolean;
+  retainedScrollY?: number | undefined;
+} = {}) {
   const resumeDrafts = drafts.suspend();
   if (mountedViewState) {
     mountedViewState.deferredConfigurationFocus?.cancel.abort();
@@ -1285,7 +1292,7 @@ function resetReads({
     shellUI.reset();
   }
   if (retainView) {
-    retainMountedView(returnLink);
+    retainMountedView(returnLink, retainedScrollY);
   } else {
     mountedRouteKey = null;
   }
@@ -2212,6 +2219,8 @@ async function loadPage({
       unchanged =
         namespaceId === current.namespace &&
         validations.every((result) => result.status === "fulfilled") &&
+        (!current.agentId ||
+          matchesAgentIdentity(firstAgent, current.agentId, selectedNamespace)) &&
         // A matching refusal or malformed summary cannot readmit a foreground Agent view.
         (!confirmDetailPermissions || isAgentPermissionSummary(fresh.get(agentPermissionsPath))) &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
@@ -2251,6 +2260,9 @@ async function loadPage({
     if (unchanged && retainedView && retainedState) {
       stopLoadingTimer();
       forgetRetainedView(taken);
+      if (firstAgent) {
+        retainedView.title = firstAgent.name;
+      }
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       shell = restoredShell;
       // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
@@ -3180,16 +3192,9 @@ async function revalidateMountedAgent(current: Route) {
     activeElement === document.body && !previousFocus?.cancel.signal.aborted
       ? previousFocus
       : undefined;
-  let editorFocus = deferredFocus;
-  if (
-    focused instanceof HTMLTextAreaElement &&
-    focused.id === "configuration-json" &&
-    view.contains(focused) &&
-    focused.selectionStart !== focused.selectionEnd
-  ) {
+  const watchFocus = () => {
     const cancel = new AbortController();
-    editorFocus = { editor: focused, cancel };
-    // Returning to the tab can focus the same textarea as the check starts. A different
+    // Returning to the tab can focus the same control as the check starts. A different
     // control taking focus cancels restoration even if focus later falls to the body.
     document.addEventListener(
       "focusin",
@@ -3200,6 +3205,19 @@ async function revalidateMountedAgent(current: Route) {
       },
       { signal: AbortSignal.any([cancel.signal, lifetime.signal]) },
     );
+    return cancel;
+  };
+  const recoveryFocus = focused?.matches('#configuration-editor-feedback[role="status"]')
+    ? watchFocus()
+    : undefined;
+  let editorFocus = deferredFocus;
+  if (
+    focused instanceof HTMLTextAreaElement &&
+    focused.id === "configuration-json" &&
+    view.contains(focused) &&
+    focused.selectionStart !== focused.selectionEnd
+  ) {
+    editorFocus = { editor: focused, cancel: watchFocus() };
   }
   if (previousFocus !== editorFocus) {
     previousFocus?.cancel.abort();
@@ -3208,7 +3226,11 @@ async function revalidateMountedAgent(current: Route) {
     focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement ? focused : null;
   const selection =
     typeof textField?.selectionStart === "number"
-      ? ([textField.selectionStart, textField.selectionEnd] as const)
+      ? ([
+          textField.selectionStart,
+          textField.selectionEnd,
+          textField.selectionDirection ?? undefined,
+        ] as const)
       : null;
   const restoreFocus = (afterRetry = false) => {
     if (!focused || !document.hasFocus() || document.activeElement !== document.body) {
@@ -3235,13 +3257,27 @@ async function revalidateMountedAgent(current: Route) {
       }
       return;
     }
+    // A stale save can describe Reload draft but cannot focus it while this view is inert.
+    if (!afterRetry && recoveryFocus && target === focused) {
+      if (recoveryFocus.signal.aborted || document.getSelection()?.isCollapsed === false) {
+        return;
+      }
+      const reload = view.querySelector<HTMLButtonElement>("#configuration-conflict-reload");
+      if (reload?.checkVisibility() && !isUnavailable(reload)) {
+        reload.focus();
+        if (document.activeElement === reload) {
+          target.scrollIntoView({ block: "nearest" });
+        }
+        return;
+      }
+    }
     target.focus({ preventScroll: true });
     if (
       selection &&
       (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) &&
       target.value === textField?.value
     ) {
-      target.setSelectionRange(selection[0], selection[1]);
+      target.setSelectionRange(...selection);
     }
   };
   let checking = "session";
@@ -3255,10 +3291,24 @@ async function revalidateMountedAgent(current: Route) {
   }
   const mountedTitle = heading.textContent;
   let admittedAgentName: string | undefined;
-  let identityConcealed = false;
+  let scrollBeforeConceal: number | undefined;
+  let clearStillChecking: (() => void) | undefined;
+  const showPendingStatus = () => {
+    if (isCurrent()) {
+      clearStillChecking ??= showStillChecking({ mountedAgent: true });
+    }
+  };
   const concealDetails = () => {
     if (!isCurrent()) {
       return;
+    }
+    if (admittedAgentName === undefined) {
+      // Hiding the Agent ID can remove a header row and move the scroll anchor.
+      scrollBeforeConceal ??= window.scrollY;
+      heading.textContent = "Agent details";
+      if (agentIdentity) {
+        agentIdentity.hidden = true;
+      }
     }
     // Hold the page's space without painting details whose access check failed.
     view.style.opacity = "0";
@@ -3268,30 +3318,21 @@ async function revalidateMountedAgent(current: Route) {
     if (diagnostics) {
       diagnostics.hidden = true;
     }
-    if (admittedAgentName === undefined) {
-      identityConcealed = true;
-      heading.textContent = "Agent details";
-      if (agentIdentity) {
-        agentIdentity.hidden = true;
-      }
-    }
   };
   let retryNotBefore = 0;
   const detailFailure = (error: unknown): never => {
     concealDetails();
-    const { retryAfterSeconds } = requestFailure(error);
+    const { status, retryAfterSeconds } = requestFailure(error);
+    if (status !== 401 && !isAccessRefusal(status)) {
+      showPendingStatus();
+    }
     if (retryAfterSeconds !== undefined) {
       retryNotBefore = Math.max(retryNotBefore, performance.now() + retryAfterSeconds * 1000);
     }
     throw error;
   };
   let checked = false;
-  let clearStillChecking: (() => void) | undefined;
-  const stillChecking = setTimeout(() => {
-    if (isCurrent()) {
-      clearStillChecking = showStillChecking({ mountedAgent: true });
-    }
-  }, stillCheckingDelayMs);
+  const stillChecking = setTimeout(showPendingStatus, stillCheckingDelayMs);
   try {
     const resolvedSession = await readSession();
     if (!isCurrent()) {
@@ -3548,7 +3589,7 @@ async function revalidateMountedAgent(current: Route) {
         }, Math.ceil(delay));
       }
       // Retain the editor in memory only. A Retry goes through normal page admission.
-      resetReads({ retainView: true, keepShell: true });
+      resetReads({ retainView: true, keepShell: true, retainedScrollY: scrollBeforeConceal });
       view.replaceWith(warning);
       pageActions?.remove();
       if (refresh) {
@@ -3572,7 +3613,7 @@ async function revalidateMountedAgent(current: Route) {
     clearStillChecking?.();
     // A newer load may hold this same node on screen; only this check's lifetime releases it.
     if (checked && isCurrent()) {
-      if (identityConcealed) {
+      if (scrollBeforeConceal !== undefined) {
         heading.textContent = mountedTitle;
         if (agentIdentity) {
           agentIdentity.hidden = false;
@@ -3612,6 +3653,7 @@ async function revalidateMountedAgent(current: Route) {
     if (state.deferredConfigurationFocus !== editorFocus) {
       editorFocus?.cancel.abort();
     }
+    recoveryFocus?.abort();
   }
 }
 

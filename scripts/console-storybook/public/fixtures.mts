@@ -636,8 +636,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             delete: !scenario.namespaceDeleteDenied && !scenario.namespaceDeleteRestricted,
             agents: { create: true },
             secrets: { create: true },
-            // A member refused delete is no Installation administrator; an administrator is
-            // refused it only by a Restriction.
+            // The fixtures model a member or administrator with an advisory delete refusal.
             installation: {
               administer: !scenario.observabilityDenied && !scenario.namespaceDeleteDenied,
             },
@@ -1126,7 +1125,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             // "replaced" only the version selected for service still runs.
             pods.length = 0;
           }
-          if (scenario.runtimePod === "rollover") {
+          if (
+            scenario.runtimePod === "rollover" ||
+            (scenario.runtimePod === "scaleDown" && podRolloverStatusReads === 0)
+          ) {
             const retiring = podRolloverStatusReads++ === 0;
             pods.push({
               ...pod,

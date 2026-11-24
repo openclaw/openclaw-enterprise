@@ -1,5 +1,10 @@
 /// <reference lib="es2024.string" />
-import type { ChannelEgressOptions } from "../apps/controller/src/drivers/compute/kubernetes/channel-egress-policy.ts";
+import type {
+  ChannelEgressOptions,
+  ChannelUpstreamProxyEndpoint,
+} from "../apps/controller/src/drivers/compute/kubernetes/channel-egress-policy.ts";
+import { proxyAddressForbidden } from "../apps/controller/src/drivers/compute/kubernetes/channel-proxy-address.ts";
+import { normalizeAgentNetworkProxy } from "../packages/contracts/src/agent-network-proxy.ts";
 import { oidcEnrollmentPolicy } from "../apps/controller/src/auth/oidc-enrollment.ts";
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
@@ -1394,7 +1399,12 @@ function buildInput(rawInput: unknown, diagnostics: Errors) {
     ],
     diagnostics,
   );
-  closed(channels, "channels", ["managedEgress", "excludedCidrs"], diagnostics);
+  closed(
+    channels,
+    "channels",
+    ["managedEgress", "excludedCidrs", "upstreamProxies", "proxyTrust"],
+    diagnostics,
+  );
   closed(codex, "codex", ["managedServiceAccounts", "modelDiscoveryCidrs"], diagnostics);
   closed(
     repository,
@@ -1778,6 +1788,78 @@ function buildRendered(
     diagnostics,
     true,
   );
+  const exclusions = managedEgressEnabled
+    ? (stringArray(channels, ["channels", "excludedCidrs"], diagnostics, {
+        validate: isCidr,
+        description: "a canonical installation network CIDR",
+      }) as string[])
+    : [];
+  const upstreamProxies: ChannelUpstreamProxyEndpoint[] = [];
+  if (channels.upstreamProxies !== undefined) {
+    if (!Array.isArray(channels.upstreamProxies) || channels.upstreamProxies.length > 32) {
+      diagnostics.errors.push("channels.upstreamProxies must contain at most 32 endpoints.");
+    } else {
+      for (const [index, raw] of channels.upstreamProxies.entries()) {
+        const path = `channels.upstreamProxies[${index}]`;
+        const endpoint = record(raw, path, diagnostics);
+        closed(endpoint, path, ["url", "addresses"], diagnostics);
+        let url = "";
+        try {
+          url = normalizeAgentNetworkProxy({ url: endpoint.url }).url;
+        } catch {
+          diagnostics.errors.push(
+            `${path}.url must be an HTTP or HTTPS endpoint without credentials.`,
+          );
+        }
+        const addresses = stringArray(
+          endpoint,
+          ["channels", `upstreamProxies[${index}]`, "addresses"],
+          diagnostics,
+          {
+            validate: (value) => {
+              const address = value.endsWith("/32") ? value.slice(0, -3) : "";
+              return isIP(address) === 4 && !proxyAddressForbidden(address, exclusions);
+            },
+            description: "an approved IPv4 /32 outside metadata and cluster infrastructure ranges",
+          },
+        ) as string[];
+        if (addresses.length > 16 || new Set(addresses).size !== addresses.length) {
+          diagnostics.errors.push(
+            `${path}.addresses must contain 1 to 16 unique IPv4 /32 addresses.`,
+          );
+        }
+        if (upstreamProxies.some((entry) => entry.url === url)) {
+          diagnostics.errors.push(`${path}.url must be unique.`);
+        }
+        upstreamProxies.push({ url, addresses });
+      }
+    }
+  }
+  let proxyTrust: ChannelEgressOptions["proxyTrust"];
+  if (channels.proxyTrust !== undefined) {
+    const trust = record(channels.proxyTrust, "channels.proxyTrust", diagnostics);
+    closed(trust, "channels.proxyTrust", ["caSecretName", "caKey"], diagnostics);
+    proxyTrust = {
+      caSecretName: asString(
+        trust,
+        ["channels", "proxyTrust", "caSecretName"],
+        diagnostics,
+        namespaceRule,
+      ),
+      caKey: asString(trust, ["channels", "proxyTrust", "caKey"], diagnostics, {
+        pattern: /^[-._A-Za-z0-9]+$/,
+        description: "a Kubernetes Secret key",
+      }),
+    };
+  }
+  if (
+    (!managedEgressEnabled || upstreamProxies.length === 0) &&
+    (upstreamProxies.length > 0 || proxyTrust !== undefined)
+  ) {
+    diagnostics.errors.push(
+      "Channel proxy inputs require managed egress and at least one upstream endpoint.",
+    );
+  }
   const channelEgress: ChannelEgressOptions | undefined = managedEgressEnabled
     ? {
         gatewayName: "openclaw-channel-egress",
@@ -1788,10 +1870,9 @@ function buildRendered(
         listenerPortEnd: 10062,
         occListenerPort: 10000,
         inspectionPort: 19004,
-        excludedCidrs: stringArray(channels, ["channels", "excludedCidrs"], diagnostics, {
-          validate: isCidr,
-          description: "a canonical installation network CIDR",
-        }) as string[],
+        excludedCidrs: exclusions,
+        ...(upstreamProxies.length === 0 ? {} : { upstreamProxies }),
+        ...(proxyTrust === undefined ? {} : { proxyTrust }),
       }
     : undefined;
   if (profile.name === "openclaw" && Object.keys(codex).length > 0) {

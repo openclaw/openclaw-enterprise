@@ -7,6 +7,11 @@ export const upstreamOutageCase = Object.freeze({
   declaration: "tests/helpers/openshell-sandbox-workflows.mjs",
   name: "OpenShell model and tool upstream outages fail closed",
 });
+export const credentialReplacementCase = Object.freeze({
+  entry: "tests/integration/openshell-credentials-real.test.ts",
+  declaration: "tests/helpers/openshell-sandbox-workflows.mjs",
+  name: "OpenShell credential replacement preserves isolation",
+});
 export const openShellReplacementCheckpoints = Object.freeze([
   "redeploy-request",
   "activation",
@@ -80,6 +85,20 @@ export type OpenShellProgress =
 
 function isOneOf<T>(values: readonly T[], value: unknown): value is T {
   return values.some((allowed) => value === allowed);
+}
+
+const credentialReplacementStages = [
+  "installation",
+  "exposure-auth",
+  "initial-model",
+  "credential-route",
+  "replacement",
+] as const;
+// The notice covers only these stages; later audit/absence checks remain unclassified.
+export function credentialReplacementDiagnostic(stage: unknown) {
+  return isOneOf(credentialReplacementStages, stage)
+    ? ({ kind: "openshell-credential-replacement", stage } as const)
+    : undefined;
 }
 
 function hasProperties(value: unknown): value is Record<string, unknown> {

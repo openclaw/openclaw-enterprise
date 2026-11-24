@@ -118,8 +118,12 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
       }
       if (specifier === "node:child_process") {
         return {
-          spawn(command, args) {
-            calls.push({ command, args });
+          spawn(command, args, spawnOptions) {
+            calls.push({
+              command,
+              args,
+              ...(options.gatewayEntrypoint === undefined ? {} : { options: spawnOptions }),
+            });
             return {
               on() {},
               kill(signal) {
@@ -213,7 +217,7 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
 result.value = installOpenClawPlugins(${JSON.stringify(runtime)}, ${JSON.stringify(options.failures ?? [])});`
         : options.launcher === "docker"
           ? DOCKER_GATEWAY_RUNTIME_ENTRYPOINT
-          : GATEWAY_RUNTIME_ENTRYPOINT,
+          : (options.gatewayEntrypoint ?? GATEWAY_RUNTIME_ENTRYPOINT),
       sandbox,
     );
     if (gatewayRuntime) {

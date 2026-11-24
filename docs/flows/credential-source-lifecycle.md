@@ -1,98 +1,140 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-22
-last_updated_session: 01a1ec21-b384-7472-887f-945ae0ab16fc
+updated: 2026-11-24
+last_updated_session: authoring-run/2270a9df-5f0f-4c15-b5e2-1f37520233e3
 ---
 
 # Credential source lifecycle flow
 
 ## Overview
 
-OpenClaw Control Plane (OCC) authorizes Source operations and governs IAM, Agent bindings, policy, and audit. The selected TokenService creates and owns [managed static Sources](token-service-static-custody.md), including their metadata and credentials. A caller supplies the credential through write-only Source registration. OCC admits the reviewed managed model route, and Worker prepares it through the selected Sandbox and Credential Proxy. The native Proxy observes delivery readiness; full runtime qualification remains pending.
+An operator registers a credential with TokenService and selects its Source for an Agent. OpenClaw Control Plane (OCC) authorizes the Source, checks the model destination against the saved network permission, and records the approved policy in an Agent revision. Compute, Worker, Sandbox, and Credential Proxy then prepare the credential route before starting the Harness. The [credential reference](../reference/credential-sources.md#intended-credential-flow) describes the broader proposed model and plugin design; its [status table](../reference/credential-sources.md#implementation-status) separates current support from remaining work.
 
 ## Entry Points
 
-- Trigger: CredentialSource create, update, or delete; Agent draft binding or deployment.
-- Source: `apps/controller/src/http/credential-sources.ts:createCredentialSource`
+- Trigger: register, bind, deploy, withdraw, update, retry delivery for, or retire a managed credential Source.
 - Source: `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
-- Source: `packages/occ/src/agent-credential-access.ts:authorizeAgentCredentialSources`
-- Context: a ready Namespace, selected owner Driver, and grants for the exact source operation.
+- Source: `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
+- Source: `packages/occ/src/agent-credential-retry.ts:pushAgentCredentials`
+- Context: a ready Namespace, selected TokenService, Sandbox and Credential Proxy, and the caller's and Agent's required Source permissions.
 
 ## Flow
 
 ```mermaid
 graph TD
-  API["<b>Source API</b><br/>Write-only credential"] -->|authorize create| OCC["<b>OCC</b><br/>IAM, policy, and audit"]
-  OCC -->|create Source| Owner["<b>TokenService</b><br/>Create Source and credential"]
-  Owner -->|return ready Source| Grants["<b>OCC</b><br/>Grant creator and audit success"]
-  Grants -->|authorized binding| Draft["<b>Agent draft</b><br/>Source identity"]
-  Draft -->|admit exact route| Revision["<b>Agent revision</b><br/>Frozen Source and policy"]
-  Revision -->|dispatch| Delivery["<b>Worker and Proxy</b><br/>Prepare delivery copy"]
-  Delivery -. native readiness pending .-> Start["<b>Sandbox</b><br/>Start Harness after authorization"]
-  classDef pending fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-dasharray:4 4
-  class Start pending
+  Register["<b>TokenService</b><br/>Store credential and Source"] --> Admit["<b>OCC</b><br/>Authorize Source and save policies"]
+  Admit --> Target["<b>Compute</b><br/>Create idle Sandbox"]
+  Target --> Delivery["<b>Worker and Proxy</b><br/>Authorize and prepare delivery"]
+  Delivery --> Ready["<b>Compute and Sandbox</b><br/>Apply and verify policy"]
+  Ready --> Activate["<b>Worker and Sandbox</b><br/>Reauthorize and start Harness"]
+  Activate --> Traffic["<b>Compute</b><br/>Verify runtime and publish routes"]
+  Traffic --> Update["<b>TokenService</b><br/>Commit replacement credential"]
+  Update --> Notify["<b>Proxy</b><br/>Update Provider and verify targets"]
+  Notify -->|delivery failed| Retry["<b>Operator</b><br/>Request manual retry"]
+  Retry --> Preflight["<b>OCC</b><br/>Authorize all selected Sources"]
+  Preflight -->|authorized| Notify
+  Preflight -->|ineligible or denied| Reject["<b>OCC</b><br/>Reject before delivery"]
+  Traffic --> Deny["<b>OCC</b><br/>Record withdrawal and deny use"]
+  Deny --> WithdrawalTarget{"Sandbox exists?"}
+  WithdrawalTarget -->|Present| Policy["<b>Sandbox Driver</b><br/>Apply and verify reduced policy"]
+  WithdrawalTarget -->|Confirmed absent| Complete
+  WithdrawalTarget -->|Unconfirmed| Pending
+  Policy --> Detach["<b>Credential Proxy</b><br/>Detach exact binding"]
+  Detach --> Receipt{"Detach receipt REVOKED?"}
+  Receipt -->|No| Pending["<b>Worker</b><br/>Keep pending and retry"]
+  Pending --> WithdrawalTarget
+  Receipt -->|Yes| Complete["<b>Worker and Proxy</b><br/>Record revoked; retire last copy"]
 ```
 
-The dashed edge marks the remaining native readiness dependency. A prepared revision does not prove a successful runtime request.
+The arrows show implemented control flow. Readiness checks do not by themselves prove a successful model request or all enforcement guarantees.
 
 ## Execution Trace
 
 ### 1. Register a source
 
-`apps/controller/src/http/credential-sources.ts:createCredentialSource`, `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
+`packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 
-The caller sends the credential in the write-only `secret` field of Source POST. OCC authorizes `credential_source:create` on the ready Namespace, validates approved destination policy, and records the request audit. It calls `TokenServiceDriver.createSource`; TokenService assigns the ID, creates the canonical Source and credential, and returns the ready Source. TokenService commits independently; OCC grants the creator access and records success in a separate transaction. Responses contain sanitized metadata and never return the credential.
+OCC checks `credential_source:create` for the Namespace and calls the selected TokenService. TokenService creates the Source and stores the write-only credential in its private custody. OCC grants the creator access and records completion. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
 
-A failure can leave orphaned credential material or a committed Source without its creator IAM grant. OCC reports failure and retains the request audit; the current private Secret store does not provide orphan inventory. See the [managed static reference](../reference/credential-sources/managed-static.md) for inputs and the [custody flow](token-service-static-custody.md) for execution.
+<a id="3-bind-and-admit-an-agent-revision"></a>
 
-The deprecated `CredentialGatewayDriver` and transitional protected Source forms are deferred to separate cutovers.
+### 2. Bind and admit an Agent revision
 
-### 2. Update a source
+`packages/occ/src/harness-auth.ts:authorizeHarnessAuthSource`, `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
 
-`packages/occ/src/credential-source-operations.ts:credentialSourceUpdateIdentity`, `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`
+The caller binds a ready Source in the same Namespace and selects it for Harness authentication. OCC verifies the Source owner, the provider's authorized destination, the caller's and Agent's Source permissions, and one matching saved network grant within the Installation ceiling. OCC records the Source reference and separate network and per-binding injection policies in the Agent revision. An unsupported or ambiguous route is refused before deployment work is created.
 
-OCC authorizes exact `credential_source:update` and dispatches PATCH by the locked Source owner. For a managed static Source, TokenService replaces material from the write-only `secret` field; omitted fields retain their values. A provider-preset change or removal requires an unbound Source and a separate request from credential replacement. A credential update is refused while an active staged revision uses the Source, until source-scoped delivery updates are supported. Draft selection alone does not prevent credential replacement. OCC commits policy-only changes itself; credential updates go through TokenService in its own transaction before OCC records completion. See the [managed static reference](../reference/credential-sources/managed-static.md) for PATCH rules.
+<a id="4-resolve-the-source-at-dispatch"></a>
+<a id="pending-native-integration"></a>
 
-### 3. Bind and admit an Agent revision
+### 3. Prepare credential delivery
 
-`packages/occ/src/harness-auth.ts:authorizeHarnessAuthSource`
+`apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevisionWorkloads`, `apps/controller/src/worker.ts:configureCredentialDeployment`, `apps/controller/src/drivers/credential-proxy/openshell.ts:configureDeployment`
 
-OCC requires exact `credential_source:operate` for a new binding to a ready Source in the same Namespace. A caller can remove an obsolete binding without looking up its Source. Under the Source lock, admission matches the selected TokenService instance, approved provider preset, model destination, and one unambiguous network grant. It freezes the Source reference, delivery Driver, and separate network and injection policies in a v8 revision. An unsupported route or active staged replacement returns `409` before creating work. PostgreSQL records references and prevents deletion while the Source is bound.
+Compute creates and records an idle Sandbox, with the model credential route withheld, and makes the authenticated Gateway operator route available for node enrollment. It asks Worker to configure the recorded target. Worker rechecks the deploying actor and Agent's access to each Source, matches its identity, type, and TokenService instance against the revision snapshot, and refuses withdrawn or unavailable Sources. It gives Credential Proxy a resolver limited to the admitted Sources. The selected TokenService determines which credential it can resolve.
 
-### 4. Resolve the source at dispatch
+The OpenShell Proxy creates or reuses a Provider for each credential projection. Two bindings can use the same Source with different environments and disjoint endpoint paths. Worker resolves each Source at most once when Proxy needs material to create its delivery copies. Existing Providers are attached without renewal. The Harness receives a fresh Sandbox placeholder for each binding. Failed attachment triggers cleanup of the prepared copies. OpenShell refuses to delete a Provider still attached to another Sandbox.
 
-`apps/controller/src/composition/installation-config.ts:composeInstallationConfiguration`, `apps/controller/src/drivers/credential-proxy/openshell.ts:OpenShellCredentialProxyDriver`, `apps/controller/src/worker.ts:authorizeRevision`, `apps/controller/src/worker/revision-inputs.ts:createRevisionCredentialResolver`
+Sandbox compiles HTTP and managed MCP routes from the frozen bindings and injection policies. Managed MCP uses exact RPC and selected tool rules at the reviewed endpoint. Sandbox checks for overlap with credential-free routes and refuses broad Plugin network grants it cannot preserve. The [Proxy Driver reference](../reference/drivers/credential-proxy.md) records the accepted temporary MCP exceptions. A sole model route keeps the established endpoint shape for recovery. Compute checks that the Harness can launch with its selected authentication method and waits for Sandbox policy and Proxy readiness before preparing launch. The ordinary Agent workflow still needs Plugin admission and pinned Template authority. The [status table](../reference/credential-sources.md#implementation-status) records the current limits.
 
-Composition passes the Installation-selected TokenService implementation to the native Proxy. The Proxy accepts only OCC TokenService and rejects unsupported implementations during construction, before credential resolution or Gateway access.
+### 4. Activate and stop the Agent
 
-Worker checks actor and Agent grants, selected Driver identity, Source ownership, and withdrawal state. It asks Compute for the placed Sandbox Namespace and gives the Proxy a resolver bound to the exact Source reference and TokenService instance. Compute makes the authenticated Gateway operator route available for node enrollment and provisions an idle Sandbox with the credential route withheld. The Proxy creates and attaches the Provider, then Sandbox applies the admitted credential rule through OpenShell UpdateConfig, using the revision UUID as the native replay ID. After policy and Provider status checks succeed, Sandbox completes initial workspace setup and prepares fresh launch inputs. The idle supervisor receives the launch arguments through the bounded command encoding. Worker commits the selected revision and authorizes the Agent and exact Source once before activation. The Sandbox starts the Harness. Compute reconciles workspace-node enrollment and waits for authenticated readiness before publishing user chat and delegated browser routes.
+`apps/controller/src/worker.ts:authorizedCredentialDeployment`, `apps/controller/src/drivers/compute/kubernetes/index.ts:activateRevision`
 
-#### Pending native integration
+Worker selects the Agent revision and checks Source authorization again before each activation attempt. Sandbox starts the Harness. Compute waits for authenticated runtime readiness and workspace-node enrollment before publishing user chat and delegated browser routes. A pending readiness result leaves activation pending; a terminal error fails the operation.
 
-Stop deletes the Sandbox before asking the Proxy to remove the frozen bindings, and retains the target record until removal succeeds. Full native model-request qualification remains pending.
+On Stop, Compute deletes the Sandbox, then asks Proxy to remove or confirm absence of the revision's binding. It retains the saved target until cleanup succeeds. If a cleanup operation instead keeps the Sandbox, Sandbox must remove the policy's reference to the Provider before Proxy detaches it. Proxy attempts to delete its owned Provider and profile after cleanup; an attached-Provider refusal means it retains the shared copy until the last detach. The TokenService Source remains available for another deployment.
 
-The native Proxy compares the binding and injection policy with the frozen v8 admission and checks the target before resolving material. The binding uses the runtime provider key, which is distinct from the catalog ModelProvider ID. For pushed delivery, the Proxy resolves the current Source credential and version only when it creates the OpenShell Provider delivery copy. It reuses an existing owned Provider without resolving or updating the credential. The Proxy attaches the Provider, validates the receipt, and checks identity, version, and membership before returning a runtime placeholder projection.
+### 5. Withdraw an Agent binding
 
-Native status checks the loaded source policy and effective enforced route, configuration admission, attached Provider identity and resource version, and the supervisor's matching credential, policy, environment, and serving observation. The Gateway creates an internal `OBSERVE` receipt for this status query. The Provider's Source version identifies the last delivered material; status does not independently query TokenService or detect a later missed push. The [Proxy reference](../reference/drivers/credential-proxy.md) records the temporary executable and Bearer deviations.
+`packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawCredentialSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:removeDeployment`
 
-For a surviving target, the Sandbox owner must first remove the credential-binding rule from its policy. OpenShell rejects detach while a policy still references the Provider. `removeDeployment` then detaches only this revision's Provider binding and confirms membership is absent. A missing target requires confirmed Workspace access and a second Sandbox read, since OpenShell also hides unauthorized Sandboxes as not found. An absent binding is already clean; the Provider delivery copy and TokenService Source remain intact. Stop and failure still need this coordinated order. Attach, detach, and Exec address a Sandbox by name rather than an atomic identity precondition, so concurrent name reuse can affect a replacement ([#5794](https://github.com/ai-openshell/openshell/issues/5794), [#5872](https://github.com/ai-openshell/openshell/issues/5872)).
+OCC checks `agent:operate` on the exact Agent, saves a pending withdrawal for each affected Agent revision, and queues Worker reconciliation in the same transaction. That record denies further admitted or routed use of the Source before native reconciliation begins. Worker checks each withdrawal requester’s current authority. Compute asks the selected native Credential Proxy to remove the admitted binding from the recorded target. The paired Sandbox Driver derives the reduced policy from the Agent revision, applies it, and checks that the loaded and effective policies no longer permit the credential destination. Proxy then detaches the Provider and checks the corresponding receipt. For a present Sandbox, `REVOKED` confirms native revocation. Proxy can also complete removal when it independently confirms that the Sandbox is absent. An unconfirmed policy, receipt, or absence leaves the withdrawal pending with `DEPENDENCY_UNAVAILABLE` for retry or operator replay.
 
-### 5. Retire a source
+After confirmed detachment of each binding for the Source, Proxy attempts to retire those delivery Providers and profiles. OpenShell’s attached-Provider refusal preserves a copy still used by another Agent. The last binding removes that copy, while TokenService retains the Source and credential. Withdrawal does not undo an upstream request already sent, and stock OpenShell’s name-based detach retains the [documented same-name replacement limit](../reference/credential-sources.md#implementation-status).
 
-`packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
+<a id="2-update-a-source"></a>
+<a id="5-retire-a-source"></a>
 
-DELETE requires exact `credential_source:delete` and rejects blocking Agent, revision, deployment, provisioning, or withdrawal references. Active staged Source withdrawal returns `409` before recording withdrawal state or work. OCC commits `deleting` and retirement intent, then calls TokenService without holding a transaction. TokenService independently removes custody, the Source, and its IAM bindings. OCC records completion separately. Uncertain removal can leave `deleting` for retry; if removal committed, a later audit failure cannot restore the Source.
+### 6. Update or retire a Source
+
+`packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
+
+OCC checks permission on the exact Source and dispatches credential changes to its TokenService owner. Credential replacement is allowed while an active Agent revision uses the Source. Changing or removing the provider preset still requires an unbound Source and a separate request.
+
+#### Deliver Source updates
+
+`apps/controller/src/composition/token-service.ts:installTokenServiceDriver`, `apps/controller/src/drivers/token-service/occ.ts:updateSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
+
+API composition connects the selected native Proxy to TokenService and binds a trusted Source Namespace placement resolver. After committing replacement material, TokenService sends the exact Source reference and version, with a lazy resolver bound to that Source and TokenService instance. The Proxy returns without resolution or creation if no Provider exists. Otherwise it resolves the Source once and updates each owned Provider through conditional `UpdateProvider`. After each update, it validates the target receipts and waits for each activated Sandbox to observe it before updating the next Provider. A never-activated target needs no serving observation. The wait does not repeat the update.
+
+If delivery fails, the replacement remains in TokenService custody. OCC audits the committed update and delivery failure separately, and PATCH returns `503 DEPENDENCY_UNAVAILABLE`.
+
+#### Retry delivery
+
+`apps/controller/src/http/credential-sources.ts:pushAgentCredentials`, `packages/occ/src/agent-credential-retry.ts:pushAgentCredentials`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
+
+An operator sends an Agent credential push request. OCC reads the deployed Agent revision, selects its unwithdrawn Credential Proxy bindings, and checks `agent:operate` on the exact Agent, caller `credential_source:update` on every selected Source, and Agent service-principal `credential_source:operate` on each Source. It completes all checks before any notification or resolution. An ineligible or unauthorized selection rejects the whole request.
+
+For a denied Agent service-principal grant, the response tells the operator to restore Source access and retry delivery. The response names the Source if the caller explicitly selected its ID or can read the bound Source and Agent.
+
+For each authorized Source, OCC sends Proxy the exact Source reference and a lazy resolver bound to its TokenService instance. It does not update the Source credential or version. Proxy either completes delivery or returns an error; OCC reports `succeeded`, `resolution_failed`, or `delivery_failed` per Source. The native Proxy reissues the conditional Provider update and verifies fresh target receipts, including when the Provider already records the Source version but a serving target is stale. A shared Provider can affect other Agents. Live rotation in the same running Harness remains unqualified.
+
+#### Retire the Source
+
+DELETE refuses blocking references and records retirement intent. OCC asks the selected Proxy to retire its delivery copies before TokenService removes the Source and credential from custody. Proxy retirement failure returns `503` and retains the Source and credential for retry. See the [custody flow](token-service-static-custody.md#4-retire-the-source) for ordering and failure handling.
 
 ## Debugging and Verification
 
-Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment). It covers real Fastify routes, PostgreSQL, Native IAM, TokenService custody, sanitized reads, update and denial audit, retirement, Source POST, and staged Agent admission. The [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts) covers the pointer and activation authorization with controlled Compute. Kubernetes transport is simulated; these tests do not prove native delivery or a model turn. The [custody flow](token-service-static-custody.md#debugging-and-verification) owns detailed Source verification.
+Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment) for the [managed Source and Agent integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) and [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts). The first exercises Source DELETE, Agent Stop, and active withdrawal through the Fastify API, PostgreSQL Worker, Compute, Sandbox, and Proxy. It simulates prior activation and controls the Kubernetes and OpenShell transports; live withdrawal requires separate qualification. The second sends authenticated active-Source PATCH and manual delivery retry requests through the selected native Proxy and checks authorization preflight and target receipts. Worker-side credential configuration is controlled, Provider attachment is modeled, and resolver failures and stale Gateway observations are simulated. These transports do not establish live delivery, a supervisor, rotation within a running Harness, or a model turn. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) for details.
+
+For a failed retry result, check `credential.resolution_failed` or `credential.delivery_failed` logs and the mutation audit. Logs identify the Namespace, Source, request, and fixed error code without exposing credential material or backend errors.
 
 ## Related docs
 
 - [Credential sources](../reference/credential-sources.md)
 - [Managed static Sources](../reference/credential-sources/managed-static.md)
-- [Secret storage and delivery](secret-storage-and-delivery.md)
-- [Managed static TokenService custody](token-service-static-custody.md)
+- [Credential custody](token-service-static-custody.md)
 
 ## Manual Notes
 
@@ -100,7 +142,36 @@ Run the [managed PostgreSQL integration](../../tests/integration/postgres-staged
 
 ## Changelog
 
+- 2026-11-24 09:12: Describe managed MCP compilation from frozen bindings and its enforcement limits. (authoring-run/2270a9df-5f0f-4c15-b5e2-1f37520233e3 - 7bba27408a4ae30c1f7066b7d250b24ec0b36dd0)
+
+- 2026-11-24 00:18: Describe per-binding delivery and Source-wide rotation and retirement. (authoring-run/71b868ab-4583-4018-8755-568a186c1c69 - 9ee73bafa34d54d0081e3fe1437c0f302ec1821f)
+
+- 2026-11-23 16:40: Resolve admitted Sources through their selected TokenService after checking the frozen Source snapshot. (authoring-run/de26f92b-d7fd-42e6-a746-6a046aa3e0bf - f6c697e0d752b15132d5b4e9c1e8c06ccfec26cc)
+
+- 2026-11-23 16:03: Narrow the broad network grant exception to the unique model grant. (authoring-run/9c98e573-cb4a-4060-a169-eccbce1e83cc - 5ce2820dff8456af43fe2444afae1ae63996ec31)
+
+- 2026-11-23 15:59: Preserve the canonical single-model endpoint during serving recovery. (authoring-run/9c98e573-cb4a-4060-a169-eccbce1e83cc - af8cd7ac6bc79de5ebb104461f212ac3df6e250b)
+
+- 2026-11-23 15:50: Describe staged Agent withdrawal, policy reduction, revocation receipts, and shared Provider retirement. (authoring-run/b7ff67de-4bf2-49de-9896-f5a97e79e49b - 82ab46ced89791f2283c64847c68c68bc54b1c02)
+
+- 2026-11-23 15:48: Record native binding isolation, model authentication, and broad network grant refusals. (authoring-run/9c98e573-cb4a-4060-a169-eccbce1e83cc - 9d2d4df6ffdb04c76d4a1443f1f5aeaad00933d7)
+
+- 2026-11-23 13:39: Describe native aggregate HTTP Plugin delivery and its admission proof boundary. (authoring-run/e1b79e98-189c-4036-9eec-f550acf642b9 - 44e86dc26055e434c3690e8601c66d52e6ef0968)
+
+- 2026-11-23 05:38: Trace manual Agent credential delivery retry, authorization preflight, and per-Source outcomes. (authoring-run/7ccae64a-f7c3-40b7-8cc2-d7825d7b0eb4 - 44e86dc26)
+
+- 2026-11-22 14:53: Combine the credential workflow with committed Source delivery updates and controlled caller proof. (authoring-run/bdd1048e-11c2-4f1f-9021-5069535f66bf - ad9964a9b2975199780000000c6ada2a2e8b376a)
+
+- 2026-11-22 12:21: Combine committed Source notification with native Provider receipt readiness. (authoring-run/52979f29-7db2-44bf-a8e4-3a7d8a6b9134 - 4df883ed81bb92632f909d76346d7874ec2761c5)
+
+- 2026-11-22 12:28: Describe native Provider cleanup after failed attachment and Agent teardown. (authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc - 802c9adb9)
+
+- 2026-11-22 12:08: Explain first-use Provider creation and the accepted stale-copy limitation. (authoring-run/193bbeb9-3f9b-4d51-a11f-6f763c5a299f - a6b923bad)
+
 - 2026-11-22 11:54: Restore first-use-only Provider delivery and update the Worker resolver source pointer. (01a1ec21-b384-7472-887f-945ae0ab16fc - 2c2c13373)
+
+- 2026-11-22 10:07: Explain Source authorization, policy, delivery, activation, and cleanup in runtime order. (authoring-run/3ab053df-6573-4709-94ef-7e3feb6a77f2 - 591f2311a)
+
 - 2026-11-22 08:39: Bind native delivery to the selected OCC TokenService implementation before Gateway access. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - f3a2121af)
 - 2026-11-21 22:19: Integrate TokenService-owned Source enrollment and Worker startup with native Proxy delivery and cleanup. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 86772f7b5)
 - 2026-11-21 22:05: Refresh retained pushed Providers during configuration and confirm Gateway authority before cleanup. (authoring-run/068f73af-8c65-4481-b861-0f2d1fc3fb46 - 82926b330)

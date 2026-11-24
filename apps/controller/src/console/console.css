@@ -3407,6 +3407,12 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .connection-destination-table :is(th, td):nth-child(2) {
   width: 5.5rem;
 }
+.connection-destination-table--static :is(th, td):nth-child(2) {
+  width: auto;
+}
+.connection-destination-table--static :is(th, td):is(:first-child, :nth-child(3)) {
+  width: 5.5rem;
+}
 .connection-destination-table :is(th, td):last-child {
   width: 2.5rem;
   padding-inline-end: 0;
@@ -3440,6 +3446,12 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   .connection-destination-table td:last-child {
     width: auto;
     padding: 0;
+  }
+  .connection-destination-table--static td:is(:first-child, :nth-child(3)) {
+    width: auto;
+  }
+  .connection-destination-table--static tr {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .connection-destination-table td[data-label]::before {
     display: block;
@@ -4996,6 +5008,25 @@ html:has(#create-agent-form) {
 .runtime-pod .credential-status-list {
   grid-template-columns: 120px minmax(0, 1fr);
   margin: var(--space-2) 0 0;
+}
+@media (width > 1100px) {
+  .runtime-pod {
+    container: runtime-pod / inline-size;
+  }
+  @container runtime-pod (min-width: 21rem) {
+    .runtime-pod .credential-status-list {
+      grid-template-columns: min(23%, 120px) minmax(0, 3fr) max-content minmax(3.25rem, 2fr);
+      row-gap: var(--space-2);
+    }
+    /* Start each container on its own row and give termination details the remaining width. */
+    .runtime-container-label,
+    .runtime-termination-label {
+      grid-column: 1;
+    }
+    .runtime-termination-label + dd {
+      grid-column: 2 / -1;
+    }
+  }
 }
 .runtime-events {
   margin: var(--space-3) 0 0;

@@ -117,10 +117,10 @@ built-in `default` namespace.
 
 Prepare the shared deployment guide's operator variables in Bash from this
 checkout. Keep `OCC_URL` and `OCC_SERVICE_KEY_FILE` from the authenticated check
-above. The launcher already configured this installation's private routing,
-Envoy source CIDRs, and tenant RoleBindings; keep those grants instead of
-applying the production examples with different release and ServiceAccount
-names. Use this shell and the bootstrap service key as the operator session; this
+above. The launcher configured private routing and Envoy source CIDRs. It grants
+the API and worker access across this disposable cluster with ClusterRoleBindings.
+Skip the production tenant RoleBinding steps here.
+Use this shell and the bootstrap service key as the operator session; this
 local installation needs no separate operator shell or service principal.
 
 ```bash
