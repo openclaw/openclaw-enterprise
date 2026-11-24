@@ -1,3 +1,5 @@
+import { crc32 } from "node:zlib";
+
 import { asRecord } from "@openclaw-enterprise/utils";
 import { parseUnambiguousJson } from "../json-members.ts";
 
@@ -194,12 +196,237 @@ const outputText = object(
 const textPart = object({ type: oneOf("input_text", "output_text"), text });
 const contentParts = array(textPart);
 const content: Validator = (value) => text(value) || contentParts(value);
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+function pngRaster(bytes: Buffer): boolean {
+  if (
+    bytes.length < 57 ||
+    !bytes.subarray(0, 8).equals(pngSignature) ||
+    bytes.readUInt32BE(8) !== 13 ||
+    bytes.toString("latin1", 12, 16) !== "IHDR" ||
+    bytes.readUInt32BE(16) === 0 ||
+    bytes.readUInt32BE(20) === 0
+  ) {
+    return false;
+  }
+  let offset = 8;
+  let imageBytes = 0;
+  const zlibHeader: number[] = [];
+  while (offset + 12 <= bytes.length) {
+    const length = bytes.readUInt32BE(offset);
+    if (length > bytes.length - offset - 12) {
+      return false;
+    }
+    const end = offset + length + 12;
+    const type = bytes.toString("latin1", offset + 4, offset + 8);
+    if (
+      !/^[A-Za-z]{4}$/.test(type) ||
+      crc32(bytes.subarray(offset + 4, end - 4)) !== bytes.readUInt32BE(end - 4)
+    ) {
+      return false;
+    }
+    if (type === "IDAT" && length > 0) {
+      for (let i = 0; i < length && zlibHeader.length < 2; i += 1) {
+        zlibHeader.push(bytes[offset + 8 + i]!);
+      }
+      imageBytes += length;
+    }
+    if (type === "IEND") {
+      const [cmf, flg] = zlibHeader;
+      return (
+        length === 0 &&
+        end === bytes.length &&
+        imageBytes >= 8 &&
+        cmf !== undefined &&
+        flg !== undefined &&
+        (cmf & 0x0f) === 8 &&
+        cmf >> 4 <= 7 &&
+        ((cmf << 8) | flg) % 31 === 0 &&
+        (flg & 0x20) === 0
+      );
+    }
+    if (offset !== 8 && type === "IHDR") {
+      return false;
+    }
+    offset = end;
+  }
+  return false;
+}
+
+function jpegRaster(bytes: Buffer): boolean {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    return false;
+  }
+  let offset = 2;
+  const components = new Set<number>();
+  let imageData = false;
+  while (offset < bytes.length && bytes[offset] === 0xff) {
+    while (bytes[offset] === 0xff) {
+      offset += 1;
+    }
+    const marker = bytes[offset++];
+    if (marker === 0xd9) {
+      return offset === bytes.length && components.size > 0 && imageData;
+    }
+    if (
+      marker === undefined ||
+      marker === 0 ||
+      marker === 0xd8 ||
+      (marker >= 0xd0 && marker <= 0xd7) ||
+      offset + 2 > bytes.length
+    ) {
+      return false;
+    }
+    const length = bytes.readUInt16BE(offset);
+    if (length < 2 || length > bytes.length - offset) {
+      return false;
+    }
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      const count = bytes[offset + 7];
+      if (
+        length < 8 ||
+        count === undefined ||
+        count === 0 ||
+        length !== 8 + 3 * count ||
+        bytes.readUInt16BE(offset + 3) === 0 ||
+        bytes.readUInt16BE(offset + 5) === 0
+      ) {
+        return false;
+      }
+      for (let i = 0; i < count; i += 1) {
+        components.add(bytes[offset + 8 + 3 * i]!);
+      }
+      if (components.size !== count) {
+        return false;
+      }
+    }
+    if (marker === 0xda) {
+      const count = bytes[offset + 2];
+      if (
+        count === undefined ||
+        count === 0 ||
+        count > components.size ||
+        length !== 6 + 2 * count
+      ) {
+        return false;
+      }
+      for (let i = 0; i < count; i += 1) {
+        if (!components.has(bytes[offset + 3 + 2 * i]!)) {
+          return false;
+        }
+      }
+    }
+    offset += length;
+    if (marker === 0xda) {
+      while (offset < bytes.length) {
+        if (bytes[offset] !== 0xff) {
+          imageData = true;
+          offset += 1;
+        } else if (bytes[offset + 1] === 0) {
+          imageData = true;
+          offset += 2;
+        } else if (bytes[offset + 1]! >= 0xd0 && bytes[offset + 1]! <= 0xd7) {
+          offset += 2;
+        } else {
+          break;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function webpChunks(bytes: Buffer, start: number, end: number, animation: boolean): boolean {
+  let offset = start;
+  let imageData = false;
+  while (offset + 8 <= end) {
+    const type = bytes.toString("latin1", offset, offset + 4);
+    const length = bytes.readUInt32LE(offset + 4);
+    const data = offset + 8;
+    if (length > end - data || length + (length & 1) > end - data) {
+      return false;
+    }
+    if (type === "VP8 ") {
+      const partition = length >= 3 ? bytes.readUIntLE(data, 3) >>> 5 : 0;
+      if (
+        length <= 10 ||
+        partition === 0 ||
+        partition >= length - 10 ||
+        bytes.toString("hex", data + 3, data + 6) !== "9d012a" ||
+        (bytes.readUInt16LE(data + 6) & 0x3fff) === 0 ||
+        (bytes.readUInt16LE(data + 8) & 0x3fff) === 0
+      ) {
+        return false;
+      }
+      imageData = true;
+    } else if (type === "VP8L") {
+      if (length <= 5 || bytes[data] !== 0x2f) {
+        return false;
+      }
+      imageData = true;
+    } else if (type === "ANMF") {
+      if (!animation || length < 24 || !webpChunks(bytes, data + 16, data + length, false)) {
+        return false;
+      }
+      imageData = true;
+    }
+    offset = data + length + (length & 1);
+  }
+  return offset === end && imageData;
+}
+
+function webpRaster(bytes: Buffer): boolean {
+  return (
+    bytes.length >= 20 &&
+    bytes.toString("latin1", 0, 4) === "RIFF" &&
+    bytes.readUInt32LE(4) === bytes.length - 8 &&
+    bytes.toString("latin1", 8, 12) === "WEBP" &&
+    ["VP8 ", "VP8L", "VP8X"].includes(bytes.toString("latin1", 12, 16)) &&
+    webpChunks(bytes, 12, bytes.length, true)
+  );
+}
+
+function inlineRaster(value: unknown): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const prefix = /^data:image\/(png|jpeg|webp);base64,/.exec(value);
+  if (prefix === null) {
+    return false;
+  }
+  const encoded = value.slice(prefix[0].length);
+  if (encoded.length === 0 || encoded.length % 4 !== 0) {
+    return false;
+  }
+  // The exchange owns the whole-request byte bound. Do not apply the text-field
+  // limit to images; Codex serializes their full base64 data in this field.
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.toString("base64") !== encoded) {
+    return false;
+  }
+  switch (prefix[1]) {
+    case "png":
+      return pngRaster(bytes);
+    case "jpeg":
+      return jpegRaster(bytes);
+    case "webp":
+      return webpRaster(bytes);
+    default:
+      return false;
+  }
+}
+const imagePart = object(
+  { type: oneOf("input_image"), image_url: inlineRaster },
+  { detail: oneOf("auto", "low", "high", "original") },
+);
+const imageContentParts = array((value) => textPart(value) || imagePart(value));
+const imageContent: Validator = (value) => text(value) || imageContentParts(value);
 const phase = oneOf("commentary", "partial_answer", "final_answer");
 const status = oneOf("in_progress", "completed", "incomplete");
 const summary = object({ type: oneOf("summary_text"), text });
 const inputMessage = (role: Validator, content: Validator) =>
   object({ role, content }, { type: oneOf("message"), id: text, phase, status });
-const plainInputMessage = inputMessage(oneOf("system", "developer", "user"), content);
+const plainInputMessage = inputMessage(oneOf("system", "developer"), content);
+const userInputMessage = inputMessage(oneOf("user"), imageContent);
 const assistantContentParts = array((value) => textPart(value) || outputText(value));
 const assistantInputMessage = inputMessage(
   oneOf("assistant"),
@@ -240,7 +467,7 @@ const toolOutput = object(
   {
     type: oneOf("function_call_output", "custom_tool_call_output"),
     call_id: text,
-    output: content,
+    output: imageContent,
   },
   { id: text, name, namespace: name },
 );
@@ -263,6 +490,7 @@ const additionalLocalTools = object(
 const inputItems = array(
   (item) =>
     plainInputMessage(item) ||
+    userInputMessage(item) ||
     assistantInputMessage(item) ||
     agentInputMessage(item) ||
     inputReasoningItem(item) ||

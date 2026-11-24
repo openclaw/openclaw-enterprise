@@ -112,10 +112,18 @@ the same type remain supported. Reordering distinct providers does not change th
 provider selected for an existing source update.
 
 The static OpenAI profile admits an explicitly configured model and a closed set of
-text inference requests. Unsupported operations, remote provider tools, arbitrary
+inference requests. Unsupported operations, remote provider tools, arbitrary
 model selection and discovery are refused before reading the Secret. The trusted
 sender injects the selected version. Neither the Agent nor the admission snapshot
 receives its value.
+
+Responses user messages and structured function or custom tool outputs can include
+`input_image` parts. Each part requires an `image_url` containing canonical base64
+data for PNG, JPEG or WebP, with matching raster-data framing. Optional `detail`
+accepts `auto`, `low`, `high` or `original`. The proxy refuses remote URLs, local
+paths, file IDs, unknown fields and images in other message roles. The serialized
+request, including base64 expansion, remains subject to the proxy's whole-request
+body limit.
 
 Responses requests may declare local function and custom tools, including namespaces,
 in the top-level `tools` list or a developer `additional_tools` input item. Inline
