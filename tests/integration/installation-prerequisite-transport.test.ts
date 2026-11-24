@@ -117,6 +117,8 @@ function api(
 const apiPath = "/api/v1/namespaces/default/services/kubernetes";
 const apiSlicesPath = "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices";
 const rolloutPath = "/apis/apps/v1/namespaces/default/deployments/controller";
+const policyPath =
+  "/apis/networking.k8s.io/v1/namespaces/default/networkpolicies/dependency-egress";
 const servicePath = "/api/v1/namespaces/default/services/dependency";
 const secretPath = "/api/v1/namespaces/default/secrets/leaf";
 const dnsName = "gateway.test.invalid";
@@ -202,7 +204,7 @@ test(
     let firstServiceRead: (() => void) | undefined;
     let onServingSecretRead: (() => void) | undefined;
     let pauseServiceRead = false;
-    let denyDependency = false;
+    let deniedPath: string | undefined;
     let serveValidLeaf = false;
     let dependencyReply: Reply | undefined;
     let secretReply: Reply | undefined;
@@ -338,7 +340,7 @@ test(
       if (requestPath === apiSlicesPath && apiSlicesReply) {
         return apiSlicesReply;
       }
-      if (denyDependency && [servicePath, secretPath].includes(requestPath)) {
+      if (requestPath === deniedPath) {
         return kubernetesStatus(403, "Forbidden");
       }
       if (requestPath === servicePath) {
@@ -451,11 +453,57 @@ test(
       },
     };
     await writeFile(plan, JSON.stringify(planInput));
+
+    // Exercise the private child with synthetic, pinned credentials for variants
+    // that only change the response to a named GET. The public CLI cases below
+    // cover plan validation, credential pinning, child isolation and cleanup.
+    const projectionDirectory = await mkdtemp(join(directory, "oce-prerequisites-"));
+    const snapshot = join(projectionDirectory, "kubeconfig.json");
+    const unrelated = randomUUID();
+    const companion = "companion-key";
+    const clientData = Buffer.from(client.cert).toString("base64");
+    const clientKey = Buffer.from(client.key).toString("base64");
+    await writeFile(
+      snapshot,
+      config(
+        "verified",
+        { token, "client-certificate-data": clientData, "client-key-data": clientKey },
+        {
+          server: endpoint.verified.server,
+          "certificate-authority-data": caBundle.toString("base64"),
+        },
+      ),
+      { mode: 0o600 },
+    );
+    const servingCheck = {
+      kind: "serving",
+      selection: { namespace: "default", name: "leaf" },
+      serverName: dnsName,
+    } as const;
+    const mount = "/etc/openclaw/client";
+    const clientSelection = (filename: string) => ({
+      workload: { kind: "Deployment", namespace: "default", name: "client" },
+      container: "admin",
+      certificatePath: `${mount}/${filename}`,
+    });
+    type ProjectionCheck =
+      typeof servingCheck | { kind: "client"; selection: ReturnType<typeof clientSelection> };
+    function projectionRequest(check: ProjectionCheck) {
+      return {
+        check,
+        kubeconfig: snapshot,
+        context: "selected",
+        socketPrefix: join(projectionDirectory, "1"),
+        timeout: 10_000,
+      };
+    }
     function collect(
       environment: NodeJS.ProcessEnv = {},
       expectCleanup = true,
-      args = ["--config", plan, "--json"],
+      invocation: string[] | ProjectionCheck = ["--config", plan, "--json"],
     ) {
+      const isCli = Array.isArray(invocation);
+      const args = isCli ? invocation : [];
       const processHandle = spawn(
         process.execPath,
         ["scripts/diagnose-kubernetes-prerequisites.ts", ...args],
@@ -470,12 +518,16 @@ test(
             KUBECACHEDIR: join(directory, "cache"),
             ...environment,
           },
-          stdio: ["ignore", "pipe", "pipe"],
+          stdio: isCli ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "ipc"],
           signal: t.signal,
         },
       );
+      if (!isCli) {
+        processHandle.send(projectionRequest(invocation));
+      }
       let stdout = "";
       let stderr = "";
+      assert.ok(processHandle.stdout && processHandle.stderr);
       processHandle.stdout.setEncoding("utf8").on("data", (chunk: string) => {
         stdout += chunk;
       });
@@ -484,6 +536,7 @@ test(
       });
       const result = once(processHandle, "close").then(async ([code]) => {
         const output = stdout + stderr;
+        // Check for leaked values before a detailed assertion can print them.
         assert.equal(
           [
             token,
@@ -494,6 +547,11 @@ test(
             currentIdToken,
             expiredIdToken,
             keyData,
+            certData,
+            clientData,
+            clientKey,
+            unrelated,
+            companion,
             "PRIVATE KEY",
           ].some((value) => output.includes(value)),
           false,
@@ -508,6 +566,22 @@ test(
         return { code, output, stdout, stderr };
       });
       return { processHandle, result };
+    }
+    async function project(check: ProjectionCheck) {
+      httpsRequests.length = 0;
+      httpRequests.length = 0;
+      const { code, stdout, stderr } = await collect({}, true, check).result;
+      assert.equal(code, 0);
+      assert.ok(!stderr);
+      assert.equal(httpRequests.length, 0);
+      assert.ok(
+        httpsRequests.length > 0 &&
+          httpsRequests.every(
+            (read) => read.hasClientCertificate && read.bearer === `Bearer ${token}`,
+          ),
+      );
+      assert.deepEqual(await readdir(projectionDirectory), ["kubeconfig.json"]);
+      return JSON.parse(stdout) as Omit<Observation, "id">;
     }
     async function observations(
       kubeconfig: string,
@@ -660,52 +734,21 @@ test(
       async () => {
         // Even a request with the expected files and names must enter through
         // the parent process after the public command validates the plan.
-        const candidate = join(directory, "oce-prerequisites-direct");
-        await mkdir(candidate, { mode: 0o700 });
-        const kubeconfig = join(candidate, "kubeconfig.json");
-        await writeFile(
-          kubeconfig,
-          config(
-            "bearer",
-            { token },
-            {
-              ...endpoint.bearer,
-              "certificate-authority": ca.caPath,
-            },
-          ),
-          { mode: 0o600 },
-        );
-        const request = {
-          check: {
-            kind: "serving",
-            selection: { namespace: "default", name: "leaf" },
-            serverName: dnsName,
-          },
-          kubeconfig,
-          context: "selected",
-          socketPrefix: join(candidate, "1"),
-          timeout: 1_000,
-        };
         httpsRequests.length = 0;
         httpRequests.length = 0;
         const { code, stdout } = await collect({}, true, [
           "--inspect-prerequisite-resource",
-          JSON.stringify(request),
+          JSON.stringify(projectionRequest(servingCheck)),
         ]).result;
         assert.equal(code, 2);
         assert.equal(stdout, "");
         assert.equal(httpsRequests.length + httpRequests.length, 0);
-        assert.deepEqual(await readdir(candidate), ["kubeconfig.json"]);
+        assert.deepEqual(await readdir(projectionDirectory), ["kubeconfig.json"]);
       },
     );
     await t.test("mounted certificates use pinned reads and reconcile each workload", async () => {
       const workloadPath = "/apis/apps/v1/namespaces/default/deployments/client";
       const mountedSecretPath = "/api/v1/namespaces/default/secrets/mounted-client";
-      const mount = "/etc/openclaw/client";
-      const unrelated = randomUUID();
-      const companion = "companion-key";
-      const clientData = Buffer.from(client.cert).toString("base64");
-      const clientKey = Buffer.from(client.key).toString("base64");
       const workloadMetadata = {
         namespace: "default",
         name: "client",
@@ -723,10 +766,9 @@ test(
       let current = workloadMetadata;
       let observeSecret: (() => void) | undefined;
       let optional = false;
-      let mapped = true;
-      let companionPresent = true;
       const publicItem = { key: "tls.crt", path: "client.pem" };
-      const companionItem = { key: companion, path: "companion.txt" };
+      const mappedItems = [publicItem, { key: companion, path: "companion.txt" }];
+      let items: typeof mappedItems | undefined = mappedItems;
       clientFixture = (path) => {
         if (path === workloadPath || path === rolloutPath) {
           return {
@@ -766,7 +808,7 @@ test(
                         secret: {
                           secretName: secretMetadata.name,
                           optional,
-                          ...(mapped ? { items: [publicItem, companionItem] } : {}),
+                          items,
                         },
                       },
                     ],
@@ -788,7 +830,7 @@ test(
                 "tls.crt": clientData,
                 "tls.key": clientKey,
                 "unrelated-key": unrelated,
-                ...(companionPresent ? { [companion]: "" } : {}),
+                [companion]: "",
               },
             },
           };
@@ -797,11 +839,7 @@ test(
       const { serviceDependency, ...basePlan } = planInput;
       const planWithClient = (filename = publicItem.path) => ({
         ...basePlan,
-        clientCertificate: {
-          workload: { kind: "Deployment", namespace: "default", name: "client" },
-          container: "admin",
-          certificatePath: `${mount}/${filename}`,
-        },
+        clientCertificate: clientSelection(filename),
       });
       // Observe the actual child pipes with the normal spawn implementation.
       // Store digests only, even if a regression emits a complete resource.
@@ -870,14 +908,6 @@ syncBuiltinESMExports();
           [workloadPath, mountedSecretPath, workloadPath],
         );
         assert.ok(selectedReads.every(({ hasClientCertificate }) => hasClientCertificate));
-        // Check for leaked values before a detailed assertion can print them.
-        const report = JSON.stringify([...checks.values()]);
-        assert.equal(
-          [unrelated, companion, clientData, clientKey, certData, keyData].some((value) =>
-            report.includes(value),
-          ),
-          false,
-        );
         const expected = [
           {
             kind: "controller",
@@ -959,27 +989,39 @@ syncBuiltinESMExports();
           sibling = "companion.txt",
           omitCompanion,
         } of projections) {
-          publicItem.path = leaf;
-          companionItem.path = sibling;
+          items = [
+            { key: publicItem.key, path: leaf },
+            { key: omitCompanion ? "missing-companion" : companion, path: sibling },
+          ];
           optional = omitCompanion === true;
-          companionPresent = !omitCompanion;
-          await writeFile(plan, JSON.stringify(planWithClient()));
-          const observed = await observations(verifiedConfig, null);
-          assert.equal(observed.get("client-certificate")?.status, status, name);
+          const observed = await project({
+            kind: "client",
+            selection: clientSelection(leaf),
+          });
+          assert.equal(observed.status, status, name);
+          assert.deepEqual(
+            observed.resources,
+            [workloadIdentity, { kind: "Secret", ...secretMetadata }],
+            name,
+          );
+          if (status === "failed") {
+            assert.match(
+              observed.summary,
+              /NUL byte or exceeds the filesystem path length limit/u,
+              name,
+            );
+          }
         }
-        publicItem.path = "client.pem";
-        companionItem.path = "companion.txt";
-        companionPresent = true;
 
         // Change only the follow-up workload observation at the HTTPS API.
         // A healthy public leaf cannot make any of these races pass.
         for (const mode of ["required", "optional", "default", "replacement"] as const) {
           current = workloadMetadata;
           optional = mode === "optional";
-          mapped = mode !== "default";
+          items = mode === "default" ? undefined : mappedItems;
           await writeFile(
             plan,
-            JSON.stringify(planWithClient(mapped ? publicItem.path : "tls.crt")),
+            JSON.stringify(planWithClient(items ? publicItem.path : "tls.crt")),
           );
           observeSecret = () => {
             current =
@@ -994,7 +1036,7 @@ syncBuiltinESMExports();
         }
         observeSecret = undefined;
         current = workloadMetadata;
-        mapped = true;
+        items = mappedItems;
         await writeFile(plan, JSON.stringify(planWithClient()));
         for (const redirectedPath of [workloadPath, mountedSecretPath]) {
           redirect = { path: redirectedPath, location: endpoint.plaintext.server + "/sink" };
@@ -1565,20 +1607,27 @@ esac
       assert.equal(httpsRequests.length + httpRequests.length, 0);
     });
     await t.test("denied dependency reads give access guidance", async () => {
-      denyDependency = true;
+      dependencyReply = object("Service", "dependency", {
+        spec: { clusterIP: "10.32.0.2", selector: { app: "dependency" }, ports: [{ port: 443 }] },
+      });
       try {
-        // Direct reads also establish that other prerequisites in this fixture are missing.
-        const checks = await observations(verifiedConfig);
-        for (const [id, action] of [
-          ["service-egress", /read access/u],
-          ["service-tls", /Secret read access/u],
-        ] as const) {
-          const check = checks.get(id);
+        for (const path of [servicePath, policyPath]) {
+          deniedPath = path;
+          const check = (await observations(verifiedConfig)).get("service-egress");
+          const reads = httpsRequests
+            .map((request) => request.path)
+            .filter((p) => p === servicePath || p === policyPath);
+          assert.deepEqual(reads, path === servicePath ? [servicePath] : [servicePath, policyPath]);
           assert.equal(check?.status, "unknown");
-          assert.match(check?.action ?? "", action);
+          assert.match(check?.action ?? "", /read access/u);
         }
+        deniedPath = secretPath;
+        const check = (await observations(verifiedConfig)).get("service-tls");
+        assert.equal(check?.status, "unknown");
+        assert.match(check?.action ?? "", /Secret read access/u);
       } finally {
-        denyDependency = false;
+        dependencyReply = undefined;
+        deniedPath = undefined;
       }
     });
     await t.test(
@@ -1666,14 +1715,26 @@ esac
         // A matching certificate cannot establish the identity of the returned object.
         const leaf = object("Secret", "leaf", { data: { "tls.crt": certData } });
         assert.equal((await collectSecret(leaf)).status, "passed");
-        for (const mismatch of [{ kind: "ConfigMap" }, { apiVersion: "example.test/v1" }]) {
-          const invalid = await collectSecret({ ...leaf, body: { ...leaf.body, ...mismatch } });
-          assert.equal(invalid.status, "unknown", JSON.stringify(mismatch));
-        }
-
-        for (const body of ["", "null", "[]", "42", "{}", "{"]) {
-          const invalid = await collectSecret({ status: 200, body });
-          assert.equal(invalid.status, "unknown", body || "empty response");
+        assert.equal((await project(servingCheck)).status, "passed");
+        const malformed = [
+          { ...leaf.body, kind: "ConfigMap" },
+          { ...leaf.body, apiVersion: "example.test/v1" },
+          "",
+          "null",
+          "[]",
+          "42",
+          "{}",
+          "{",
+        ];
+        for (const body of malformed) {
+          secretReply = { status: 200, body };
+          const invalid = await project(servingCheck);
+          assert.deepEqual(
+            httpsRequests.map(({ path }) => path),
+            [secretPath],
+          );
+          const description = typeof body === "string" ? body || "empty response" : body.kind;
+          assert.equal(invalid.status, "unknown", description);
           assert.doesNotMatch(invalid.summary, /does not exist/u);
         }
       } finally {

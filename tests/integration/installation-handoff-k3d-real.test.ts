@@ -368,7 +368,7 @@ test(
     // The Service observes a live allocated address and a named target port.
     // The two policy grants cover the Service and its translated destination independently.
     const serviceName = "middleware";
-    const policyName = "middleware-egress";
+    const policyName = "middleware-egress".padEnd(64, "s");
     // A Secret name can exceed the 63-character limit for a DNS label.
     const secretName = "middleware-tls".padEnd(64, "s");
     const serverName = "middleware.example.test";
@@ -444,11 +444,9 @@ test(
         subjectAltName: dnsName === undefined ? undefined : `DNS:${dnsName}`,
         keyPem: expired.key,
       });
-    async function setLeaf(pem: string, name = secretName) {
-      const encoded = Buffer.from(pem).toString("base64");
-      protectedValues.push(pem, encoded);
-      const patch = join(dir, "certificate-patch.json");
-      await writeFile(patch, JSON.stringify({ data: { "tls.crt": encoded } }));
+    async function patchSecretData(name: string, data: Record<string, string | null>) {
+      const patch = join(dir, "secret-patch.json");
+      await writeFile(patch, JSON.stringify({ data }), { mode: 0o600 });
       await kubectl(
         "-n",
         namespace,
@@ -459,6 +457,11 @@ test(
         "--patch-file",
         patch,
       );
+    }
+    async function setLeaf(pem: string, name = secretName) {
+      const encoded = Buffer.from(pem).toString("base64");
+      protectedValues.push(pem, encoded);
+      await patchSecretData(name, { "tls.crt": encoded });
     }
     const identity = async (
       kind: "Service" | "NetworkPolicy" | "Secret" | "Deployment" | "StatefulSet",
@@ -491,7 +494,14 @@ test(
       policy: { namespace, name: policyName },
     };
     const dependency = { ...egressOnly, tls: { secretName, serverName } };
-    const dependencyPlan = { ...config, serviceDependency: dependency };
+    // The initial diagnosis already covers multiple controllers and CRDs.
+    // Keep one of each for the certificate and egress scenarios.
+    const focusedPlan = {
+      ...config,
+      controllers: config.controllers.slice(0, 1),
+      crds: config.crds.slice(0, 1),
+    };
+    const dependencyPlan = { ...focusedPlan, serviceDependency: dependency };
     // A misspelled optional selection must not silently remove the requested checks.
     for (const [invalidPlan, message] of [
       [{ ...config, serviceDependecy: dependency }, /only supported top-level fields/u],
@@ -645,18 +655,10 @@ test(
     const selectedMappingKey = "mapped-companion-fixture-key";
     const unrelatedSecretKey = "unrelated-fixture-key";
     const unrelatedSecretValue = Buffer.from(randomUUID()).toString("base64");
-    await kubectl(
-      "-n",
-      namespace,
-      "patch",
-      "secret",
-      clientSecret,
-      "--type=merge",
-      "-p",
-      JSON.stringify({
-        data: { [unrelatedSecretKey]: unrelatedSecretValue, [selectedMappingKey]: "" },
-      }),
-    );
+    await patchSecretData(clientSecret, {
+      [unrelatedSecretKey]: unrelatedSecretValue,
+      [selectedMappingKey]: "",
+    });
     protectedValues.push(unrelatedSecretKey, unrelatedSecretValue);
     const clientLabels = { app: clientName };
     const excludedValue = randomUUID();
@@ -725,18 +727,20 @@ test(
         },
       }),
     );
-    const clientPlan = { ...config, clientCertificate };
+    const clientPlan = { ...focusedPlan, clientCertificate };
     const overlapPlan = {
       ...clientPlan,
-      controllers: [...config.controllers, { namespace, name: clientName }],
+      controllers: [{ namespace, name: clientName }],
     };
 
     const clientCheck = async (plan: Plan = clientPlan) =>
       (await diagnose(plan, protectedValues)).checks.get("client-certificate");
-    await waitFor("client Deployment generation observation", async () => {
-      const deployment = await resource("deployment", clientName);
-      return deployment.status?.observedGeneration === deployment.metadata.generation;
-    });
+    const waitForClientGeneration = () =>
+      waitFor("client Deployment generation observation", async () => {
+        const deployment = await resource("deployment", clientName);
+        return deployment.status?.observedGeneration === deployment.metadata.generation;
+      });
+    await waitForClientGeneration();
     const workloadIdentity = await identity("Deployment", clientName);
     const secretIdentity = await identity("Secret", clientSecret);
     const { checks: observedChecks } = await diagnose(overlapPlan, [
@@ -918,10 +922,12 @@ test(
       }),
       { mode: 0o600 },
     );
-    const denied = await diagnose(
-      { ...dependencyPlan, kubeconfig: deniedConfig, context: "reader" },
-      [token, ...protectedValues],
-    );
+    const diagnoseAsReader = (plan: Plan) =>
+      diagnose({ ...plan, kubeconfig: deniedConfig, context: "reader" }, [
+        token,
+        ...protectedValues,
+      ]);
+    const denied = await diagnoseAsReader(dependencyPlan);
     for (const id of [
       "resource-quotas",
       "api-addresses",
@@ -934,30 +940,39 @@ test(
     }
     assert.equal(denied.status, 2);
 
-    await kubectl(
-      "-n",
-      namespace,
-      "create",
-      "role",
+    async function grantNamedReads(
+      role: string,
+      resourceKinds: string,
+      ...names: [string, ...string[]]
+    ) {
+      await kubectl(
+        "-n",
+        namespace,
+        "create",
+        "role",
+        role,
+        "--verb=get",
+        `--resource=${resourceKinds}`,
+        ...names.map((name) => `--resource-name=${name}`),
+      );
+      await kubectl(
+        "-n",
+        namespace,
+        "create",
+        "rolebinding",
+        role,
+        `--role=${role}`,
+        `--serviceaccount=${namespace}:reader`,
+      );
+    }
+    await grantNamedReads(
       "client-workload-reader",
-      "--verb=get",
-      "--resource=deployments.apps,statefulsets.apps",
-      `--resource-name=${clientName}`,
-      ...[claimName, aliasName].map((name) => `--resource-name=${name}`),
+      "deployments.apps,statefulsets.apps",
+      clientName,
+      claimName,
+      aliasName,
     );
-    await kubectl(
-      "-n",
-      namespace,
-      "create",
-      "rolebinding",
-      "client-workload-reader",
-      "--role=client-workload-reader",
-      `--serviceaccount=${namespace}:reader`,
-    );
-    const deniedClient = await diagnose(
-      { ...clientPlan, kubeconfig: deniedConfig, context: "reader" },
-      [token, ...protectedValues],
-    );
+    const deniedClient = await diagnoseAsReader(clientPlan);
     const deniedSecret = deniedClient.checks.get("client-certificate");
     assert.equal(deniedSecret?.status, "unknown");
     assert.match(deniedSecret?.summary ?? "", /not authorized to read this resource/u);
@@ -966,100 +981,10 @@ test(
     assert.doesNotMatch(deniedSecret?.action ?? "", /renew/u);
 
     const workerMounts = "/spec/template/spec/containers/0/volumeMounts";
-    async function patchWorkerMounts(operations: object[]) {
-      await kubectl(
-        "-n",
-        namespace,
-        "patch",
-        "deployment",
-        clientName,
-        "--type=json",
-        "-p",
-        JSON.stringify(operations),
-      );
-    }
-    const selectedMount = `${workerMounts}/0/mountPath`;
-    // An equivalent spelling of the only mount path still resolves to the leaf.
-    await patchWorkerMounts([{ op: "replace", path: selectedMount, value: `${mountPath}//./` }]);
-    assert.equal((await clientCheck())?.status, "passed");
-
-    // A differently written parent path still shadows the selected file. The
-    // reader has no Secret access, so a premature Secret GET would be unknown.
-    const shadow = { name: "scratch", mountPath: "/etc/openclaw//./" };
-    await patchWorkerMounts([{ op: "add", path: `${workerMounts}/-`, value: shadow }]);
-    await waitFor("shadow mount Deployment generation observation", async () => {
-      const deployment = await resource("deployment", clientName);
-      return deployment.status?.observedGeneration === deployment.metadata.generation;
-    });
-    const overlap = await diagnose({ ...clientPlan, kubeconfig: deniedConfig, context: "reader" }, [
-      token,
-      ...protectedValues,
-    ]);
-    const shadowed = overlap.checks.get("client-certificate");
-    assert.equal(shadowed?.status, "failed");
-    assert.match(shadowed?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
-    assert.deepEqual(shadowed?.resources, [await identity("Deployment", clientName)]);
-    await patchWorkerMounts([
-      { op: "test", path: `${workerMounts}/2/mountPath`, value: shadow.mountPath },
-      { op: "remove", path: `${workerMounts}/2` },
-      { op: "replace", path: selectedMount, value: mountPath },
-    ]);
-
-    // A Secret read under this identity would be unknown, like the control above.
-    for (const name of [claimName, aliasName]) {
-      const invalid = await diagnose(
-        { ...peerClientPlan(name), kubeconfig: deniedConfig, context: "reader" },
-        [token, ...protectedValues],
-      );
-      const result = invalid.checks.get("client-certificate");
-      assert.equal(result?.status, "failed");
-      assert.match(result?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
-      assert.deepEqual(result?.resources, [await identity("StatefulSet", name)]);
-    }
-
-    // Grant only the missing Secret read. The same identity can now check
-    // the client certificate without access to unrelated resources.
-    await kubectl(
-      "-n",
-      namespace,
-      "create",
-      "role",
-      "client-secret-reader",
-      "--verb=get",
-      "--resource=secrets",
-      `--resource-name=${clientSecret}`,
-    );
-    await kubectl(
-      "-n",
-      namespace,
-      "create",
-      "rolebinding",
-      "client-secret-reader",
-      "--role=client-secret-reader",
-      `--serviceaccount=${namespace}:reader`,
-    );
-    const scoped = await diagnose({ ...clientPlan, kubeconfig: deniedConfig, context: "reader" }, [
-      token,
-      ...protectedValues,
-    ]);
-    assert.equal(scoped.checks.get("client-certificate")?.status, "passed");
-    assert.equal(scoped.checks.get("resource-quotas")?.status, "unknown");
-
-    const companionItems = [publicItem, { key: "companion", path: "companion.txt" }];
-    async function updateClientVolume(
-      secret: Omit<typeof clientVolume.secret, "items"> & {
-        items?: (typeof clientVolume.secret)["items"];
-        optional?: boolean;
-      },
-    ) {
-      const patchPath = join(dir, "client-volume-patch.json");
-      await writeFile(
-        patchPath,
-        JSON.stringify([
-          { op: "replace", path: "/spec/template/spec/volumes/0/secret", value: secret },
-        ]),
-        { mode: 0o600 },
-      );
+    async function patchClientDeployment(operations: object[]) {
+      // Large item mappings can exceed the command-line argument limit.
+      const patchPath = join(dir, "client-deployment-patch.json");
+      await writeFile(patchPath, JSON.stringify(operations), { mode: 0o600 });
       await kubectl(
         "-n",
         namespace,
@@ -1070,6 +995,57 @@ test(
         "--patch-file",
         patchPath,
       );
+      // Finish the controller's status update before checking the workload version.
+      await waitForClientGeneration();
+    }
+    const selectedMount = `${workerMounts}/0/mountPath`;
+    // An equivalent spelling of the only mount path still resolves to the leaf.
+    await patchClientDeployment([
+      { op: "replace", path: selectedMount, value: `${mountPath}//./` },
+    ]);
+    assert.equal((await clientCheck())?.status, "passed");
+
+    // A differently written parent path still shadows the selected file. The
+    // reader has no Secret access, so a premature Secret GET would be unknown.
+    const shadow = { name: "scratch", mountPath: "/etc/openclaw//./" };
+    await patchClientDeployment([{ op: "add", path: `${workerMounts}/-`, value: shadow }]);
+    const overlap = await diagnoseAsReader(clientPlan);
+    const shadowed = overlap.checks.get("client-certificate");
+    assert.equal(shadowed?.status, "failed");
+    assert.match(shadowed?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
+    assert.deepEqual(shadowed?.resources, [await identity("Deployment", clientName)]);
+    await patchClientDeployment([
+      { op: "test", path: `${workerMounts}/2/mountPath`, value: shadow.mountPath },
+      { op: "remove", path: `${workerMounts}/2` },
+      { op: "replace", path: selectedMount, value: mountPath },
+    ]);
+
+    // A Secret read under this identity would be unknown, like the control above.
+    for (const name of [claimName, aliasName]) {
+      const invalid = await diagnoseAsReader(peerClientPlan(name));
+      const result = invalid.checks.get("client-certificate");
+      assert.equal(result?.status, "failed");
+      assert.match(result?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
+      assert.deepEqual(result?.resources, [await identity("StatefulSet", name)]);
+    }
+
+    // Grant only the missing Secret read. The same identity can now check
+    // the client certificate without access to unrelated resources.
+    await grantNamedReads("client-secret-reader", "secrets", clientSecret);
+    const scoped = await diagnoseAsReader(clientPlan);
+    assert.equal(scoped.checks.get("client-certificate")?.status, "passed");
+    assert.equal(scoped.checks.get("resource-quotas")?.status, "unknown");
+
+    const companionItems = [publicItem, { key: "companion", path: "companion.txt" }];
+    async function updateClientVolume(
+      secret: Omit<typeof clientVolume.secret, "items"> & {
+        items?: (typeof clientVolume.secret)["items"];
+        optional?: boolean;
+      },
+    ) {
+      await patchClientDeployment([
+        { op: "replace", path: "/spec/template/spec/volumes/0/secret", value: secret },
+      ]);
     }
     // The large mapping fits in a Kubernetes object. The check must handle it
     // and accept a required key with an empty value.
@@ -1078,20 +1054,7 @@ test(
       path: `mapped-${index}.txt`,
     }));
     const data = Object.fromEntries(largeItems.map(({ key }) => [key, ""]));
-    const secretPatch = join(dir, "client-secret-patch.json");
-    await writeFile(secretPatch, JSON.stringify({ data: { ...data, companion: "" } }), {
-      mode: 0o600,
-    });
-    await kubectl(
-      "-n",
-      namespace,
-      "patch",
-      "secret",
-      clientSecret,
-      "--type=merge",
-      "--patch-file",
-      secretPatch,
-    );
+    await patchSecretData(clientSecret, { ...data, companion: "" });
     await updateClientVolume({ ...clientVolume.secret, items: [...companionItems, ...largeItems] });
     assert.equal((await clientCheck())?.status, "passed");
 
@@ -1108,16 +1071,7 @@ test(
 
     // Removing one companion key blocks a required volume. An optional volume
     // omits that file, so the remaining projection can supply the public leaf.
-    await kubectl(
-      "-n",
-      namespace,
-      "patch",
-      "secret",
-      clientSecret,
-      "--type=merge",
-      "-p",
-      JSON.stringify({ data: { companion: null } }),
-    );
+    await patchSecretData(clientSecret, { companion: null });
     const requiredCompanion = await clientCheck();
     assert.equal(requiredCompanion?.status, "failed");
     assert.match(requiredCompanion?.summary ?? "", /maps a required key that the Secret lacks/u);
@@ -1168,38 +1122,14 @@ test(
     assert.deepEqual(missingClient?.resources, [await identity("Deployment", clientName)]);
 
     const missingService = "missing-middleware";
-    const role = "missing-service-reader";
-    await kubectl(
-      "-n",
-      namespace,
-      "create",
-      "role",
-      role,
-      "--verb=get",
-      "--resource=services",
-      `--resource-name=${missingService}`,
-    );
-    await kubectl(
-      "-n",
-      namespace,
-      "create",
-      "rolebinding",
-      role,
-      `--role=${role}`,
-      `--serviceaccount=${namespace}:reader`,
-    );
-    const missing = await diagnose(
-      {
-        ...config,
-        kubeconfig: deniedConfig,
-        context: "reader",
-        serviceDependency: {
-          service: { ...dependency.service, name: missingService },
-          policy: dependency.policy,
-        },
+    await grantNamedReads("missing-service-reader", "services", missingService);
+    const missing = await diagnoseAsReader({
+      ...focusedPlan,
+      serviceDependency: {
+        service: { ...dependency.service, name: missingService },
+        policy: dependency.policy,
       },
-      [token, ...protectedValues],
-    );
+    });
     assert.equal(missing.checks.get("service-egress")?.status, "failed");
     assert.match(missing.checks.get("service-egress")?.summary ?? "", /Service does not exist/u);
     assert.equal(missing.status, 1);

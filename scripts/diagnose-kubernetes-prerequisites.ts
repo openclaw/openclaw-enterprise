@@ -94,6 +94,7 @@ type NamedObject = {
 type TlsSecret = NamedObject & { data?: Record<string, unknown> };
 type ClientWorkload = NamedObject & { spec?: unknown };
 type SecretVolumeMapping = {
+  name: string;
   optional: boolean;
   items: { key: string; path: string; invalidPath: boolean }[];
 };
@@ -868,10 +869,7 @@ function namedReader(kube: <T>(path: string, optional: boolean) => Promise<T | n
     const { apiVersion, plural } = namedResources[kind];
     const api = apiVersion === "v1" ? "/api/v1" : `/apis/${apiVersion}`;
     const scope = namespace === undefined ? api : `${api}/namespaces/${namespace}`;
-    const item = await kube<T & { apiVersion: string; kind: string; metadata: NamedMetadata }>(
-      `${scope}/${plural}/${name}`,
-      optional,
-    );
+    const item = await kube<T & NamedObject>(`${scope}/${plural}/${name}`, optional);
     if (
       item !== null &&
       (item.apiVersion !== apiVersion ||
@@ -1067,8 +1065,7 @@ async function serviceEgress(
 function inspectCertificate(
   selection: DeploymentSelection,
   secret: TlsSecret | null,
-  serverName?: string,
-  volume?: SecretVolumeMapping,
+  purpose: { serverName: string } | { volume: SecretVolumeMapping },
 ): CheckResult {
   const secretAction = "Verify the selected TLS Secret with the certificate owner.";
   if (secret === null) {
@@ -1087,12 +1084,13 @@ function inspectCertificate(
   if (data !== undefined && !isObject(data)) {
     throw new DiagnosticError("The selected Secret has unreadable key data.");
   }
-  if (volume) {
+  if ("volume" in purpose) {
+    const { items, optional } = purpose.volume;
     const itemPathAction = "Ask the workload owner to correct the Secret volume's item paths.";
     const paths = new Set<string>();
-    for (const { key, path, invalidPath } of volume.items) {
+    for (const { key, path, invalidPath } of items) {
       const value = data && Object.hasOwn(data, key) ? data[key] : undefined;
-      if (value === undefined && volume.optional) {
+      if (value === undefined && optional) {
         continue;
       }
       if (typeof value !== "string") {
@@ -1156,39 +1154,39 @@ function inspectCertificate(
       "Ask the certificate owner to renew the expired leaf.",
     );
   }
-  if (
-    serverName !== undefined &&
-    !leaf.checkHost(serverName, { subject: "never", partialWildcards: false })
-  ) {
-    return failure(
-      "The selected TLS leaf lacks a DNS SAN matching the expected serverName.",
-      "Confirm the expected serverName and ask the certificate owner to correct the DNS SAN if needed.",
-    );
-  }
-  if (serverName === undefined) {
-    const usages = leaf.keyUsage;
-    // Node reports undefined for both absent and undecodable extensions.
-    if (usages === undefined) {
-      return {
-        status: "unknown",
-        summary:
-          "The mounted TLS leaf is current. Its extended key usage does not establish client authentication suitability.",
-        resources,
-      };
-    }
-    if (!usages.includes("1.3.6.1.5.5.7.3.2") && !usages.includes("2.5.29.37.0")) {
+  if ("serverName" in purpose) {
+    if (!leaf.checkHost(purpose.serverName, { subject: "never", partialWildcards: false })) {
       return failure(
-        "The selected TLS leaf's extended key usage does not permit client authentication.",
-        secretAction,
+        "The selected TLS leaf lacks a DNS SAN matching the expected serverName.",
+        "Confirm the expected serverName and ask the certificate owner to correct the DNS SAN if needed.",
       );
     }
+    return {
+      status: "passed",
+      summary: "The selected TLS leaf is within its validity window and has a matching DNS SAN.",
+      resources,
+    };
+  }
+  const usages = leaf.keyUsage;
+  // Node reports undefined for both absent and undecodable extensions.
+  if (usages === undefined) {
+    return {
+      status: "unknown",
+      summary:
+        "The mounted TLS leaf is current. Its extended key usage does not establish client authentication suitability.",
+      resources,
+    };
+  }
+  if (!usages.includes("1.3.6.1.5.5.7.3.2") && !usages.includes("2.5.29.37.0")) {
+    return failure(
+      "The selected TLS leaf's extended key usage does not permit client authentication.",
+      secretAction,
+    );
   }
   return {
     status: "passed",
     summary:
-      serverName === undefined
-        ? "The mounted TLS leaf is within its validity window and its extended key usage permits client use."
-        : "The selected TLS leaf is within its validity window and has a matching DNS SAN.",
+      "The mounted TLS leaf is within its validity window and its extended key usage permits client use.",
     resources,
   };
 }
@@ -1200,7 +1198,7 @@ function objectList(value: unknown): Record<string, unknown>[] | undefined {
 function mountedClientSecret(
   selection: ClientCertificate,
   workload: ClientWorkload,
-): (SecretVolumeMapping & { name: string }) | undefined {
+): SecretVolumeMapping | undefined {
   const { spec } = workload;
   if (!isObject(spec) || !isObject(spec.template) || !isObject(spec.template.spec)) {
     throw new DiagnosticError("The selected workload response lacks its Pod template.");
@@ -1285,10 +1283,13 @@ function mountedClientSecret(
   if (!items || (secret.optional !== undefined && typeof secret.optional !== "boolean")) {
     throw new DiagnosticError("The response lacks the selected Secret volume's item mapping.");
   }
-  const volume = { name: secret.secretName, optional: secret.optional === true };
-  const mappedItems: SecretVolumeMapping["items"] = [];
+  const volume: SecretVolumeMapping = {
+    name: secret.secretName,
+    optional: secret.optional === true,
+    items: [],
+  };
   if (!items.length) {
-    return file === "tls.crt" ? { ...volume, items: mappedItems } : undefined;
+    return file === "tls.crt" ? volume : undefined;
   }
   let certificateMapped = false;
   for (const { key, path: itemPath } of items) {
@@ -1319,9 +1320,9 @@ function mountedClientSecret(
       itemPath.includes("\0") ||
       Buffer.byteLength(itemPath) > 4_096 ||
       itemPath.split("/").some((component) => Buffer.byteLength(component) > 255);
-    mappedItems.push({ key, path: target, invalidPath });
+    volume.items.push({ key, path: target, invalidPath });
   }
-  return certificateMapped ? { ...volume, items: mappedItems } : undefined;
+  return certificateMapped ? volume : undefined;
 }
 
 const projectionTimeout = 45_000;
@@ -1401,11 +1402,9 @@ async function projectCheck(
     );
   }
   if (check.kind === "serving") {
-    return inspectCertificate(
-      check.selection,
-      await read<TlsSecret>("Secret", check.selection),
-      check.serverName,
-    );
+    return inspectCertificate(check.selection, await read<TlsSecret>("Secret", check.selection), {
+      serverName: check.serverName,
+    });
   }
   const { selection } = check;
   const { kind, namespace } = selection.workload;
@@ -1444,7 +1443,7 @@ async function projectCheck(
         "The response could not bind the selected Secret to the observed workload volume. Run the check again.",
       );
     }
-    const result = inspectCertificate(secretSelection, secret, undefined, mount);
+    const result = inspectCertificate(secretSelection, secret, { volume: mount });
     return { ...result, resources: [...resources, ...(result.resources ?? [])] };
   } catch (error) {
     signal.throwIfAborted();
