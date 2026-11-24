@@ -5875,17 +5875,22 @@ html:has(#create-agent-form) {
 }
 .repository-api-resource {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
   padding-block: var(--space-2);
 }
+.repository-api-resource > div {
+  flex: 1 1 7.5rem;
+}
 .repository-api-resource select {
   width: min(61%, 15rem);
+  min-width: min(14rem, 100%);
   flex-shrink: 0;
 }
 .sandbox-repository-grant label {
-  font-size: 1rem;
+  font-size: var(--text-base);
   font-weight: var(--weight-medium);
 }
 .sandbox-repository-grant .repository-customize .hint {
@@ -5895,16 +5900,8 @@ html:has(#create-agent-form) {
 .sandbox-repository-grant:has(details[open]) > .sandbox-repository-restrictions {
   display: none;
 }
-@media (max-width: 600px) {
+@media (max-width: 520px) {
   .sandbox-repository-grant > select {
-    width: 100%;
-  }
-}
-@media (max-width: 375px) {
-  .repository-api-resource {
-    display: grid;
-  }
-  .repository-api-resource select {
     width: 100%;
   }
 }
