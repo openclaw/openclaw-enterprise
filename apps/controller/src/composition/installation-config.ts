@@ -1245,6 +1245,22 @@ async function composeInstallationConfiguration(
   );
   const sshCompute = computePackage === undefined && computeSelection.id === "compute-ssh";
   const kubernetesCompute = computePackage === undefined && !sshCompute;
+  const repositoryDeliveryMode = selectGitHubRepositoryDelivery(repositoryConfiguration, {
+    externalProxy: packageProxyId !== undefined,
+    bundledProxy: proxySelection !== undefined,
+    sandbox: sandboxSelection !== undefined,
+    bundledSandbox: sandboxSelection !== undefined && sandboxSelection.package === undefined,
+    openShellBackend: openShellBackend !== undefined,
+    kubernetes: kubernetesCompute,
+    stagedTokenService:
+      asRecord(drivers.token_service)?.id === "occ" &&
+      openShellBackend !== undefined &&
+      kubernetesCompute &&
+      sandboxSelection !== undefined &&
+      sandboxSelection.package === undefined &&
+      sandboxSelection.id !== "strands-box-sandbox" &&
+      options.createSandboxDriver === undefined,
+  });
   if (sshCompute && sandboxSelection !== undefined) {
     throw new Error(
       "drivers.sandbox is unsupported with compute-ssh; it requires the bundled Kubernetes Compute Driver.",
@@ -1297,19 +1313,6 @@ async function composeInstallationConfiguration(
     sandboxPackage === undefined &&
     (sandbox.configuration as unknown as OpenShellSandboxDriverOptions).integrationMode ===
       "service";
-  const repositoryDeliveryMode = selectGitHubRepositoryDelivery(repositoryConfiguration, {
-    externalProxy: packageProxyId !== undefined,
-    bundledProxy: proxySelection !== undefined,
-    sandbox: sandboxSelection !== undefined,
-    bundledSandbox: sandboxSelection !== undefined && sandboxSelection.package === undefined,
-    openShellBackend: openShellBackend !== undefined,
-    kubernetes: kubernetesCompute,
-    stagedTokenService:
-      tokenServiceSelection !== undefined &&
-      openShellBackend !== undefined &&
-      openShellServiceIntegration &&
-      !boxPackage,
-  });
   if (openShellServiceIntegration && options.createSandboxDriver !== undefined) {
     throw new Error(
       "Managed Kubernetes + OpenShell Compute requires its bundled Sandbox collaborator.",
@@ -1711,6 +1714,7 @@ async function composeInstallationConfiguration(
           implementation: sandbox.implementation,
           backend: openShell!,
           operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
+          stagedRepositoryPolicy: repositoryDeliveryMode === "token-service",
         }),
       };
     }

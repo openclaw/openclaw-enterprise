@@ -50,10 +50,11 @@ import {
 
 registerSandboxDriverStartupWiringCases(credentialGatewayOverProviders);
 
-test(
-  "OpenShell observes canonical staged model and exact Repository policies",
-  verifyStagedModelPolicyObservation,
-);
+test("OpenShell observes canonical staged model and exact Repository policies", async (t) => {
+  for (const mode of ["service", "legacy"] as const) {
+    await t.test(mode, (t) => verifyStagedModelPolicyObservation(t, mode));
+  }
+});
 
 test("OpenShell qualifies and stages the managed MCP session and selected tool policy", async () => {
   await stagedManagedMcpPolicy();

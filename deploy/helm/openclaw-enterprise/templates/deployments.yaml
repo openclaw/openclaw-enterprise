@@ -1,5 +1,6 @@
 {{- $repositoryBroker := .Values.repositoryCredentials.enabled }}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . }}
+{{- $repositoryRegistry := .Values.repositoryCredentials.registryConfigMapName }}
 {{- range $component := list "api" "worker" }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
@@ -128,13 +129,15 @@ spec:
               - key: {{ $.Values.executionCluster.kubeconfigKey | quote }}
                 path: kubeconfig
         {{- end }}
-        {{- if $repositoryGit }}
+        {{- if $repositoryRegistry }}
         - name: repository-registry
           configMap:
             name: {{ $.Values.repositoryCredentials.registryConfigMapName | quote }}
             items:
               - key: {{ $.Values.repositoryCredentials.registryKey | quote }}
                 path: registry.json
+        {{- end }}
+        {{- if $repositoryGit }}
         {{- if $repositoryBroker }}
         - name: repository-public-ca
           secret:
@@ -513,10 +516,12 @@ spec:
               mountPath: /etc/openclaw/execution
               readOnly: true
             {{- end }}
-            {{- if $repositoryGit }}
+            {{- if $repositoryRegistry }}
             - name: repository-registry
               mountPath: /etc/openclaw/repository-registry
               readOnly: true
+            {{- end }}
+            {{- if $repositoryGit }}
             {{- if $repositoryBroker }}
             - name: repository-public-ca
               mountPath: /etc/openclaw/repository-ca

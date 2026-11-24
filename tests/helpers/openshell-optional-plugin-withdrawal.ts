@@ -309,18 +309,15 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
     "POST",
     "/oauth-clients",
     {
-      connectionTemplateId: googleTemplate.id,
-      connectionTemplateVersion: googleTemplate.current.version,
+      namespaceId: namespace.id,
+      issuer: googleSlot.issuer,
+      tokenUrl: googleSlot.tokenEndpoint,
       displayName: "Google fixture client",
       clientId: randomUUID(),
       tokenEndpointAuthMethod: "none",
     },
     201,
   );
-  const pinned = await request("PATCH", `/connection-templates/${googleTemplate.id}`, {
-    ...templateSettings,
-    oauthClientId: client.id,
-  });
   const googleSource = await owner.createSource(
     {
       kind: "oauth_refresh_token",
@@ -330,7 +327,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
       consent: {
         kind: "connection_template",
         ownerPrincipalId: principal.id,
-        version: pinned.current.version,
+        version: googleTemplate.current.version,
         oauthClientId: client.id,
       },
       grant: {

@@ -30,6 +30,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { encodeReplacementRuntime } from "../../apps/controller/src/drivers/compute/kubernetes/replacement-runtime.ts";
 import { inspectedWorkspaceBuild } from "../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { ManagedOpenShellSandbox } from "../../apps/controller/src/drivers/sandbox/openshell/managed.ts";
 import { workspaceNodePathFor } from "../../apps/controller/src/drivers/sandbox/openshell-workspace-node-policy.ts";
 import {
@@ -55,17 +56,29 @@ import {
 } from "./sandbox-driver-startup-orchestration.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
-export async function verifyStagedModelPolicyObservation(t: TestContext): Promise<void> {
+export async function verifyStagedModelPolicyObservation(
+  t: TestContext,
+  mode: "service" | "legacy",
+): Promise<void> {
   const gateway = workspaceGatewayClient();
   const configuration = openShellWorkspaceHarnessConfiguration();
-  configuration.integrationMode = "service";
-  configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
-  const driver = new ManagedOpenShellSandbox(configuration, {
+  configuration.integrationMode = mode;
+  if (mode === "service") {
+    configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+  }
+  const selection = {
     id: "openshell-sandbox",
     backend: backendFor(gateway),
-  });
+    stagedRepositoryPolicy: true,
+  };
+  const driver =
+    mode === "service"
+      ? new ManagedOpenShellSandbox(configuration, selection)
+      : new OpenShellSandboxDriver(configuration, selection);
   const fixture = runtimeSandboxFixture(driver);
-  fixture.requirements.workspaceMounts = [];
+  if (mode === "service") {
+    fixture.requirements.workspaceMounts = [];
+  }
   fixture.requirements.credentialAttachments = [];
   const grant = {
     id: "model",
@@ -90,7 +103,19 @@ export async function verifyStagedModelPolicyObservation(t: TestContext): Promis
     projection: { environment: "OPENAI_API_KEY", presentation: "bearer" as const },
   };
   const revision: AgentRevision = {
-    ...completeSandboxRevision(fixture.revision),
+    ...completeSandboxRevision(fixture.revision, {
+      method: "credential_source",
+      sourceId: binding.sourceRef.id,
+      sourceType: "static",
+      tokenServiceInstanceId: "tokens-fixture",
+    }),
+    credentialSources: [
+      {
+        sourceId: binding.sourceRef.id,
+        sourceType: "static",
+        tokenServiceInstanceId: "tokens-fixture",
+      },
+    ],
     executionAdmission: { version: 8, mode: "standalone" },
     sandboxPolicy: driver.admitNetworkPolicy([grant], 1),
     credentialDeployment: {
@@ -162,6 +187,19 @@ export async function verifyStagedModelPolicyObservation(t: TestContext): Promis
     activeVersion: 1,
     state: "POLICY_STATUS_LOADED",
   });
+  async function assertBaselineMismatch(
+    target: typeof context,
+    snapshot: NonNullable<AgentRevision["sandboxPolicy"]>,
+  ): Promise<void> {
+    if (mode === "service") {
+      await assert.rejects(
+        driver.observeNetworkPolicy(target, snapshot),
+        /Live Sandbox policy differs from its admitted baseline/,
+      );
+    } else {
+      assert.equal((await driver.observeNetworkPolicy(target, snapshot)).matches, false);
+    }
+  }
   assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
   for (const name of ["oce-proxy-credential-unadmitted", "oce-staged-http-unadmitted"]) {
     loaded = {
@@ -171,10 +209,7 @@ export async function verifyStagedModelPolicyObservation(t: TestContext): Promis
         [name]: retained.network_policies["oce-agent-model"],
       },
     };
-    await assert.rejects(
-      driver.observeNetworkPolicy(context, revision.sandboxPolicy!),
-      /Live Sandbox policy differs from its admitted baseline/,
-    );
+    await assertBaselineMismatch(context, revision.sandboxPolicy!);
   }
   loaded = retained;
 
@@ -221,8 +256,28 @@ export async function verifyStagedModelPolicyObservation(t: TestContext): Promis
         gateway: gatewayImage,
         agent: agentImage,
         compatibility: "a".repeat(64),
-        workspace: { url: workspaceUrl, mode: "service" },
+        workspace: { url: workspaceUrl, mode },
       }),
+    },
+    credentialSources: [
+      ...revision.credentialSources!,
+      {
+        sourceId: repositoryBinding.sourceRef.id,
+        sourceType: "github-app-installation",
+        tokenServiceInstanceId: "tokens-fixture",
+      },
+    ],
+    repositoryCredentials: {
+      driver: { id: "repository", implementation: "github" },
+      deadlineWallMs: Date.now() + 600_000,
+      bindings: [
+        {
+          repositoryRef: "repository",
+          profile: "github-repository",
+          backendId: "github-primary",
+          grant: { providerInstanceId: "github", repositoryId: "42", grantId: "repository" },
+        },
+      ],
     },
     sandboxPolicy: {
       ...revision.sandboxPolicy!,
@@ -279,11 +334,17 @@ export async function verifyStagedModelPolicyObservation(t: TestContext): Promis
           }),
         )
       : readSecret(request);
-  // Exercise Repository composition on a fresh managed target, separate from model-only recovery.
+  // Exercise native Repository composition on a fresh target; the staged recipient must not
+  // enter the old prepared Git broker or attach its Provider before Proxy configuration.
   gateway.sandboxes.clear();
   await driver.provisionStagedHarness(repositoryContext);
   const repositorySandboxName = driver.harnessResource(repositoryContext).resourceName;
   const repositorySandbox = gateway.sandboxes.get(repositorySandboxName)!;
+  const repositoryProvider = openShellCredentialProviderName(repositoryBinding);
+  const idleProviders = repositorySandbox.spec!.providers;
+  assert.ok(Array.isArray(idleProviders));
+  assert.equal(idleProviders.includes(repositoryProvider), false);
+  assert.equal(Object.hasOwn(repositorySandbox.spec!.environment ?? {}, "GITHUB_TOKEN"), false);
   const repositoryIdle = repositorySandbox.spec!.policy as Record<string, unknown>;
   const repositoryRoutes = narrowOpenShellRepositoryRoutes(
     repositoryRevision,
@@ -299,7 +360,6 @@ export async function verifyStagedModelPolicyObservation(t: TestContext): Promis
   ).combined as Record<string, unknown> & {
     network_policies: Record<string, Record<string, unknown>>;
   };
-  const repositoryProvider = openShellCredentialProviderName(repositoryBinding);
   gateway.sandboxes.set(repositorySandboxName, {
     ...repositorySandbox,
     spec: {
@@ -368,10 +428,7 @@ export async function verifyStagedModelPolicyObservation(t: TestContext): Promis
   const changedBaseline = structuredClone(combined);
   changedBaseline.network_policies["unadmitted-fixed"] = structuredClone(discoveryEntry[1]);
   loaded = changedBaseline;
-  await assert.rejects(
-    driver.observeNetworkPolicy(repositoryContext, repositoryRevision.sandboxPolicy!),
-    /Live Sandbox policy differs from its admitted baseline/,
-  );
+  await assertBaselineMismatch(repositoryContext, repositoryRevision.sandboxPolicy!);
 
   // A broad discovery query or a missing Git rule must not be accepted as ready.
   const queryless = structuredClone(combined);

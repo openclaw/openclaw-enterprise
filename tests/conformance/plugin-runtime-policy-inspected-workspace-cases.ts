@@ -118,7 +118,9 @@ export function registerInspectedWorkspaceCases() {
     const permits = (protocol: string, method: string, requestPath: string) =>
       endpoints.some((item) => {
         const endpoint = record(item);
-        if (endpoint.protocol !== protocol || !matches(endpoint.path, requestPath)) {return false;}
+        if (endpoint.protocol !== protocol || !matches(endpoint.path, requestPath)) {
+          return false;
+        }
         const denied =
           Array.isArray(endpoint.deny_rules) &&
           endpoint.deny_rules.some((item) => {

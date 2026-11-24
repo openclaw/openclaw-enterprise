@@ -166,6 +166,7 @@ test(
     // The OAuth caller must reject a static template without reserving a source or consent state.
     const refused = await first.inject("POST", `/namespaces/${namespaceId}/connections`, {
       connectionTemplateId: staticTemplate.json().data.id,
+      oauthClientId: `ccr_${randomUUID()}`,
     });
     assert.equal(refused.statusCode, 409, refused.body);
     const reservations = await first.pool.query(
@@ -192,8 +193,9 @@ test(
     });
     assert.equal(template.statusCode, 201, template.body);
     const client = await first.inject("POST", "/oauth-clients", {
-      connectionTemplateId: template.json().data.id,
-      connectionTemplateVersion: template.json().data.current.version,
+      namespaceId,
+      issuer: consentIssuer,
+      tokenUrl: `${consentIssuer}/token`,
       displayName: "Public test client",
       clientId: randomUUID(),
       tokenEndpointAuthMethod: "none",
@@ -202,6 +204,7 @@ test(
     async function startOAuth() {
       const response = await first.inject("POST", `/namespaces/${namespaceId}/connections`, {
         connectionTemplateId: template.json().data.id,
+        oauthClientId: client.json().data.id,
       });
       assert.equal(response.statusCode, 201, response.body);
       const data = response.json().data;

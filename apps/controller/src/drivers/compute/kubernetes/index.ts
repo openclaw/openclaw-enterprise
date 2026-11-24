@@ -4897,7 +4897,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       this.stagedRepositoryComposition(sandboxDriverId) &&
       (hasInspectedWorkspaceImages(this.options.images) ||
-        hasInspectedOpenClawImage(this.options.images.gateway))
+        (this.selectedHarness instanceof ManagedOpenShellHarnessRuntime &&
+          hasInspectedOpenClawImage(this.options.images.gateway)))
     ) {
       return;
     }
@@ -4924,7 +4925,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (
         harness.mode === "dedicated" &&
         ((harness.id === "codex" && hasInspectedWorkspaceImages(this.options.images)) ||
-          (harness.id === "openclaw" && hasInspectedOpenClawImage(this.options.images.gateway)))
+          (harness.id === "openclaw" &&
+            this.selectedHarness instanceof ManagedOpenShellHarnessRuntime &&
+            hasInspectedOpenClawImage(this.options.images.gateway)))
       ) {
         return;
       }
@@ -4954,7 +4957,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.sandboxDriver?.repositoryAccess === undefined &&
       sandboxDriverId !== undefined &&
       sandboxDriverId === this.sandboxDriver?.id &&
-      this.selectedHarness instanceof ManagedOpenShellHarnessRuntime &&
+      this.selectedHarness.kind === "sandbox" &&
       this.credentialDeliveryRegistration?.require("sandbox") === this.sandboxDriver &&
       this.credentialDeploymentProxyDriver?.capability === "credential_proxy_delivery" &&
       this.credentialDeploymentProxyDriver.id === sandboxDriverId
@@ -8519,7 +8522,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
           const snapshot = revision.sandboxPolicy!;
           let network = await sandboxDriver.observeNetworkPolicy!(proxyContext, snapshot);
-          if (!serving && !network.matches && network.state !== "failed") {
+          if (
+            !serving &&
+            !network.matches &&
+            network.state !== "failed" &&
+            !isNativeStagedRepositoryRevision(revision)
+          ) {
             if (sandboxDriver.applyNetworkPolicy === undefined) {
               throw new DependencyUnavailableError(
                 "The staged Sandbox cannot apply its network policy.",
@@ -10749,6 +10757,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private projectsRepositoryMaterial(revision: AgentRevision): boolean {
     return (
       revision.repositoryCredentials !== undefined &&
+      !isNativeStagedRepositoryRevision(revision) &&
       this.options.network.repositoryCredentials !== undefined
     );
   }
@@ -10757,6 +10766,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): RepositoryMaterialSpec | undefined {
+    if (isNativeStagedRepositoryRevision(revision)) {
+      this.validateRepositoryCredentials(revision.harness, revision.sandboxDriverId);
+      if (context?.repositoryCredentials !== undefined) {
+        throw new ConfigurationFailure("Staged Repository delivery cannot use broker material.");
+      }
+      return undefined;
+    }
     if (this.sandboxDriver?.repositoryAccess && revision.repositoryCredentials !== undefined) {
       this.validateRepositoryCredentials(revision.harness, revision.sandboxDriverId);
       // The worker transfers prepared material directly to OpenShell. No broker bearer,
@@ -16514,9 +16530,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.selectedHarness instanceof ManagedOpenShellHarnessRuntime ? "service" : "legacy";
     const inspectedWorkspace =
       revision.harness.id === "openclaw"
-        ? admitsInspectedOpenClawWorkspace({ gateway, agent }, revision, url)
+        ? mode === "service" && admitsInspectedOpenClawWorkspace({ gateway, agent }, revision, url)
         : admitsInspectedWorkspace({ gateway, agent }, revision, url);
-    if (stagedRepository && (mode !== "service" || !inspectedWorkspace)) {
+    if (stagedRepository && !inspectedWorkspace) {
       throw new ConfigurationFailure(
         "Staged repository credentials require a qualified inspected Workspace route and image.",
       );
@@ -17599,7 +17615,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       },
     ];
     const repositoryEgress =
-      revision.repositoryCredentials === undefined ||
+      !this.projectsRepositoryMaterial(revision) ||
       this.sandboxDriver?.repositoryAccess !== undefined
         ? []
         : [

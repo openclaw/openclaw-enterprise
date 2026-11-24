@@ -6,6 +6,8 @@ The worker Token Service owns GitHub App credentials. Choose an
 
 For a dedicated OpenShell Agent with managed GitHub App credentials, follow
 [Push a Git branch from an OpenShell Agent](repository-credentials/openshell-git-push.md).
+For an Installation with TokenService and native Credential Proxy, use
+[a GitHub Source](#select-a-github-source-for-an-openshell-agent).
 
 Keep the gateway private to approved clients, with enforced NetworkPolicies and
 HTTPS on port 443. A `.svc` hostname or ClusterIP alone does not establish isolation;
@@ -13,8 +15,9 @@ check forwarding, Ingress, load balancers and effective policy enforcement.
 
 ## Prepare the platform installation
 
-Select `repository.nativeSender` with `repository.preparedGitHub`. Controller
-startup rejects the legacy Installation `drivers.repo` selection. Drain accepted
+For the prepared repository sender, select `repository.nativeSender` with
+`repository.preparedGitHub`. Controller startup rejects the legacy Installation
+`drivers.repo` selection. Drain accepted
 work on its original owner before cutover; do not replay an unknown result. See
 [prepared native setup](../reference/repository-credentials/prepared-native-git.md#install-and-check).
 
@@ -49,10 +52,14 @@ import it, select its digest and configure model authentication.
 ## Select a GitHub Source for an OpenShell Agent
 
 This path requires the selected TokenService, the paired OpenShell Sandbox and
-Credential Proxy in service mode, and qualified runtime images. Select the
-GitHub Backend and its approved registry with `repository.id` and
+Credential Proxy, and qualified runtime images. Dedicated Codex can use the
+operator-managed or service-mode Sandbox. Select the GitHub Backend and its
+approved registry with `repository.id` and
 `repository.configuration.sessionDurationSeconds`. The Client registration
 supplies the signing key for this path.
+In Helm, set `repositoryCredentials.registryConfigMapName` to the approved
+registry ConfigMap. Set the GitHub Backend's `registryPath` to
+`/etc/openclaw/repository-registry/registry.json`.
 
 1. As Installation administrator, open **Credentials → Credential clients →
    Register client**. Select **GitHub App**, enter the App ID, and select its

@@ -1464,6 +1464,7 @@ test("selected repository collaborators never override an explicit Read-only Age
 
 for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
   test(`saved inherited ${defaultProfile} survives repository offering changes without edits`, async (t) => {
+    const approvedProfile: GitHubProfile = defaultProfile === "git-read" ? "git-write" : "git-read";
     const entries = (namespaceId: string, selected: boolean) =>
       ["a", "b"].map((repositoryRef, index) => ({
         repositoryRef,
@@ -1473,11 +1474,8 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
           {
             namespaceId,
             profiles: selected
-              ? ["github-repository" as const]
+              ? [approvedProfile]
               : (["git-read", "git-write", "git-full"] as const),
-            ...(selected
-              ? { permissions: { metadata: "read" as const, contents: "write" as const } }
-              : {}),
           },
         ],
       }));
@@ -1525,7 +1523,11 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
         await page.getByRole("button", { name: `Access for example/${ref}`, exact: true }).click();
       }
       await inherit.uncheck();
-      await page.locator(`#repository-override-${ref}-git-full`).check();
+      await page
+        .locator(
+          `#repository-override-${ref}-${approvedProfile === "git-write" ? "git-full" : approvedProfile}`,
+        )
+        .check();
     }
     const response = page.waitForResponse(
       (r) => r.url().endsWith(`/agents/${agent.id}`) && r.request().method() === "PATCH",
@@ -1536,7 +1538,7 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
       defaultProfile,
       repositories: ["a", "b"].map((repositoryRef) => ({
         repositoryRef,
-        profile: "github-repository",
+        profile: approvedProfile,
       })),
     });
     assert.deepEqual(saved.data.repositoryBindings, saved.data.repositoryAccess.repositories);

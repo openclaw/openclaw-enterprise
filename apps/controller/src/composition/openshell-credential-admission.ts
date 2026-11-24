@@ -65,10 +65,8 @@ export function admitOpenShellRepositoryCredentials(
       return undefined;
     }
     const selected = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
-    // TODO(GitHub API cutover): admit REST and PR profiles only when their exact saved restrictions are enforced.
     if (
       selected.nativeGit !== "v1" ||
-      selected.scopedRest.length > 0 ||
       !grants.every(
         ({ repository, access }) =>
           selected.repositories.some(

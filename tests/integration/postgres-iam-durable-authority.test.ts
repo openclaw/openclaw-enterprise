@@ -462,10 +462,11 @@ test(
         }),
         201,
       );
-      data(
+      const client = data<{ id: string }>(
         await f.inject("POST", "/oauth-clients", {
-          connectionTemplateId: template.id,
-          connectionTemplateVersion: template.current.version,
+          namespaceId,
+          issuer,
+          tokenUrl,
           displayName: "Durable public fixture",
           clientId: "durable-" + randomUUID(),
           tokenEndpointAuthMethod: "none",
@@ -475,6 +476,7 @@ test(
       const started = data<{ authorizationUrl: string; expiresAt: string }>(
         await f.request("POST", `/namespaces/${namespaceId}/connections`, {
           connectionTemplateId: template.id,
+          oauthClientId: client.id,
         }),
         201,
       );
@@ -483,6 +485,7 @@ test(
       assert.equal(Object.hasOwn(started, "credentialSourceId"), false);
       return {
         connectionTemplateId: template.id,
+        oauthClientId: client.id,
         complete: () =>
           f.request(
             "GET",
@@ -553,6 +556,7 @@ test(
           const before = exchanges;
           const start = await f.request("POST", `/namespaces/${namespaceId}/connections`, {
             connectionTemplateId: attempt.connectionTemplateId,
+            oauthClientId: attempt.oauthClientId,
           });
           assert.equal(start.statusCode, 503, start.body);
           const states = await f.pool.query<{ count: number }>(

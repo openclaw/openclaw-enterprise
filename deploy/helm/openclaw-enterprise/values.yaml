@@ -156,7 +156,9 @@ repositoryCredentials:
   # Preserve the current hostname during upgrades; it pins TLS and sessions.
   hostname: ""
   backendId: ""
-  # Operator-created immutable, versioned ConfigMap shared by all three consumers.
+  # Mount this operator-created versioned ConfigMap in API, worker and Installation checks.
+  # Set it for selected TokenService Git even when the legacy sender is disabled; configure
+  # the GitHub Backend registryPath as /etc/openclaw/repository-registry/registry.json.
   registryConfigMapName: ""
   registryKey: registry.json
   serviceConfigSecretName: ""

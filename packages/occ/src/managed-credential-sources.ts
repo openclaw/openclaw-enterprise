@@ -509,29 +509,36 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       await dependencies.authority.authorize(principalId, "update", resource);
       await dependencies.authority.authorize(principalId, "operate", resource);
       const namespace = await lockNamespace(state, ref.namespaceId);
-      if (namespace.status !== "ready") {throw new NamespaceNotReadyError();}
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
       const source = await state.credentialSources.lockCredentialSource(
         ref.namespaceId,
         resource.id,
       );
-      if (!source) {throw new ScopeViolationError("The credential source is unavailable.");}
+      if (!source) {
+        throw new ScopeViolationError("The credential source is unavailable.");
+      }
       if (
         source.ownerCapability !== "credential_gateway" ||
         source.type !== "codex-pat" ||
         source.state !== "ready" ||
         source.egress !== undefined ||
         Object.keys(source.secrets).length !== 1
-      )
-        {throw new ResourceStateConflictError(
+      ) {
+        throw new ResourceStateConflictError(
           "Only an unbound Gateway Codex PAT Source can be adopted.",
-        );}
+        );
+      }
       const secretRef = source.secrets.access_token;
       if (!secretRef || secretRef.namespaceId !== ref.namespaceId) {
         throw new ResourceStateConflictError("The Codex PAT input is unavailable.");
       }
       await dependencies.authority.authorize(principalId, "operate", secretRef);
       const secret = await state.secrets.findSecret(ref.namespaceId, secretRef.id);
-      if (!secret) {throw new ScopeViolationError("The Codex PAT input is unavailable.");}
+      if (!secret) {
+        throw new ScopeViolationError("The Codex PAT input is unavailable.");
+      }
       const secretDriver = dependencies.secretDriver(secret.driverId);
       if (!secretDriver.withValue) {
         throw new DependencyUnavailableError(
@@ -539,8 +546,9 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
         );
       }
       const owner = dependencies.sourceDrivers.credentialSourceOwner(source);
-      if (owner.kind !== "gateway")
-        {throw new ResourceStateConflictError("The Gateway owner is unavailable.");}
+      if (owner.kind !== "gateway") {
+        throw new ResourceStateConflictError("The Gateway owner is unavailable.");
+      }
       const tokenService = ownedTokenServiceDriver();
       const adoptSource = tokenService.adoptSource?.bind(tokenService);
       if (!adoptSource) {

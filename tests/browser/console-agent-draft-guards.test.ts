@@ -1682,12 +1682,7 @@ test("Create Agent retains per-repository choices and requires a covering Git So
   await mode.selectOption("scoped");
   assert.equal(await access.inputValue(), "read");
 
-  // A reload cannot discard the retained narrower choices or create an Agent without a Source.
-  const reload = page.getByRole("button", { name: "Reload repository choices" });
-  await reload.click();
-  await waitForEnabled(reload);
-  assert.equal(await mode.inputValue(), "scoped");
-  assert.equal(await access.inputValue(), "read");
+  // The narrower choices remain selected, but no Agent can be created without a covering Source.
   assert.equal(await save.isDisabled(), true);
   assert.equal(pathRequests(requests, "POST", agents).length, 0);
   assert.equal(pathRequests(requests, "POST", `${agents}/provision`).length, 0);

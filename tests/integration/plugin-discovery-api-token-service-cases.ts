@@ -102,8 +102,9 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
   const client = fixture.fixtureResponse(
     await fixture.request("POST", "/oauth-clients", {
       body: {
-        connectionTemplateId: template.id,
-        connectionTemplateVersion: template.current.version,
+        namespaceId: fixture.namespace.id,
+        issuer,
+        tokenUrl: `${issuer}/token`,
         displayName: "External application",
         clientId: "public-fixture-client",
         tokenEndpointAuthMethod: "none",

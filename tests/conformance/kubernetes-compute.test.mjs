@@ -40,6 +40,7 @@ import { withYieldingComputeStop } from "../../apps/controller/src/drivers/compu
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { ManagedOpenShellSandbox } from "../../apps/controller/src/drivers/sandbox/openshell/managed.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { inspectedWorkspaceBuild } from "../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
 import {
   decodeReplacementRuntime,
@@ -933,24 +934,40 @@ for (const { name, ...auth } of [
 }
 
 test("staged Repository Compute freezes and revalidates only inspected dedicated Harness releases", async (t) => {
-  for (const harnessId of ["codex", "openclaw"]) {
-    await t.test(harnessId, async (t) => {
+  for (const [harnessId, mode] of [
+    ["codex", "legacy"],
+    ["codex", "service"],
+    ["openclaw", "service"],
+  ]) {
+    await t.test(`${harnessId} ${mode}`, async (t) => {
       const base = buildSandboxInstallation().drivers.sandbox.configuration;
-      const sandbox = new ManagedOpenShellSandbox(
-        {
-          ...base,
-          integrationMode: "service",
-          gateway: {},
-          kubernetes: {
-            ...base.kubernetes,
-            sandboxDataMount: {
-              ...base.kubernetes.sandboxDataMount,
-              mountPath: "/sandbox/oce/workspace",
-            },
+      const selection = {
+        id: "openshell-sandbox",
+        backend: backendFor({
+          async getSandbox() {
+            return undefined;
           },
-        },
-        { id: "openshell-sandbox", backend: backendFor({}) },
-      );
+        }),
+        stagedRepositoryPolicy: true,
+      };
+      const sandbox =
+        mode === "legacy"
+          ? new OpenShellSandboxDriver(base, selection)
+          : new ManagedOpenShellSandbox(
+              {
+                ...base,
+                integrationMode: "service",
+                gateway: {},
+                kubernetes: {
+                  ...base.kubernetes,
+                  sandboxDataMount: {
+                    ...base.kubernetes.sandboxDataMount,
+                    mountPath: "/sandbox/oce/workspace",
+                  },
+                },
+              },
+              selection,
+            );
       const captured = new Error("captured fresh staged Harness requirements");
       let requirements;
       t.mock.method(sandbox, "provisionStagedHarness", async (context) => {
@@ -1044,8 +1061,25 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
                 sourceType: auth.sourceType,
                 tokenServiceInstanceId: "tokens",
               },
+              {
+                sourceId: repository.sourceRef.id,
+                sourceType: "github-app-installation",
+                tokenServiceInstanceId: "tokens",
+              },
             ],
             executionAdmission: { version: 8, mode: "standalone" },
+            repositoryCredentials: {
+              driver: { id: "repository", implementation: "github" },
+              deadlineWallMs: Date.now() + 600_000,
+              bindings: [
+                {
+                  repositoryRef: "project",
+                  profile: "github-repository",
+                  backendId: "github-primary",
+                  grant: { providerInstanceId: "github", repositoryId: "42", grantId: "project" },
+                },
+              ],
+            },
             sandboxPolicy: {
               driverId: sandbox.id,
               implementation: sandbox.implementation,
@@ -1082,7 +1116,7 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
       );
       const frozen = decodeReplacementRuntime(fixture.revision.compute.runtimeInputs);
       assert.equal(frozen.scope, "repository-policy");
-      assert.equal(frozen.workspace.mode, "service");
+      assert.equal(frozen.workspace.mode, mode);
       assert.match(frozen.workspace.url, /\/node$/);
       fixture.driver.validateRepositoryCredentials(fixture.revision.harness, sandbox.id);
       // Revision activation must recheck the frozen route before it provisions the Sandbox.

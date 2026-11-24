@@ -287,7 +287,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
   ): SourceProviderPresetId | "builtin_codex" {
     if (source.type === "static") {
       const presetId = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
-      if (isSourceProviderPresetId(presetId)) {return presetId;}
+      if (isSourceProviderPresetId(presetId)) {
+        return presetId;
+      }
     } else if (source.type === "oauth2-refresh-token" && source.consent.kind === "builtin_codex") {
       return "builtin_codex";
     }
@@ -303,7 +305,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     configuration: OpenClawConfigurationDocument,
     sandbox: SandboxDriver | undefined,
   ): PreparedModelCredentialDeployment | undefined {
-    if (!source || !presetId) {return undefined;}
+    if (!source || !presetId) {
+      return undefined;
+    }
     const delivery = prepareCredentialDelivery(sandbox);
     let preset: ModelCredentialPreset | undefined;
     try {

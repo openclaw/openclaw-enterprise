@@ -33,6 +33,7 @@
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/postgres-static-token-service-lifecycle.test.ts",
     "tests/integration/postgres-staged-agent-credential-binding.test.ts",
+    "tests/integration/postgres-staged-github-source-admission.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
     "tests/integration/postgres-secret-state.test.ts",
@@ -218,11 +219,17 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-staged-github-source-admission.test.ts",
+      "expectedTests": [
+        "two Codex OAuth Agents admit distinct repository grants against one GitHub App Source"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-connection-templates.test.ts",
       "expectedTests": [
         "static Connection Templates preserve configured request destinations across scoped CRUD and immutable versions",
         "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
-        "an administrator registers OAuth clients against a pinned template and its availability",
+        "an administrator registers independent OAuth clients and Namespace consent discovers compatible choices",
         "OAuth client secret mutations refuse an enclosing controller transaction",
         "OAuth client rotation updates its stable private reference across an unknown commit",
         "the worker removes an unpublished OAuth client after interrupted creation",

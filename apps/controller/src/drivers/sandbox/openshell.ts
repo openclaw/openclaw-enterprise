@@ -298,6 +298,7 @@ export interface OpenShellSandboxDriverOptions {
 export interface OpenShellSandboxDriverSelection {
   readonly openShellGit?: OpenShellGitRuntime;
   readonly operatorOwnedKubernetesResources?: boolean;
+  readonly stagedRepositoryPolicy?: boolean;
   readonly id?: string;
   readonly implementation?: string;
   readonly backend: Backend<OpenShellGateway>;
@@ -3255,6 +3256,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   protected readonly options: OpenShellSandboxDriverOptions;
   private readonly backend: Backend<OpenShellGateway>;
   private readonly operatorOwnedKubernetesResources: boolean;
+  private readonly stagedRepositoryPolicy: boolean;
   protected readonly openShellGit: OpenShellGitRuntime | undefined;
   readonly repositoryAccess?: NonNullable<SandboxDriver["repositoryAccess"]>;
 
@@ -3324,6 +3326,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     this.backend = selection.backend;
     this.operatorOwnedKubernetesResources = selection.operatorOwnedKubernetesResources === true;
+    this.stagedRepositoryPolicy = selection.stagedRepositoryPolicy === true;
     if (
       this.operatorOwnedKubernetesResources &&
       options.gateway.namespaceGatewayResources !== undefined
@@ -3840,6 +3843,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // Backstop for the admission check (finding 2144): the revision's own policy is immutable,
     // so a retry cannot clear an overlap.
     const gitOverlap =
+      stagedRepository ||
       context.revision.repositoryCredentials === undefined ||
       context.requirements.proxyWiring !== undefined
         ? undefined
@@ -3860,7 +3864,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ? await harnessRuntimeCredentials(context)
         : undefined;
     const git =
-      context.revision.repositoryCredentials === undefined
+      stagedRepository || context.revision.repositoryCredentials === undefined
         ? undefined
         : await this.openShellGit!.prepare(
             context.revision,
@@ -5234,7 +5238,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     policy: RepositoryNetworkPolicy,
     network: SandboxPolicySnapshot,
   ): SandboxPolicySnapshot["defaults"] {
-    if (this.options.integrationMode === "service") {
+    if (this.options.integrationMode === "service" || this.stagedRepositoryPolicy) {
       if (
         Array.isArray(policy.grants) &&
         isDeepStrictEqual(network, this.admitNetworkPolicy(network.additions, network.version))

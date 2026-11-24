@@ -814,6 +814,73 @@ test(
 );
 
 test(
+  "TokenService Git mounts the finite registry without legacy Git components",
+  tooling,
+  async () => {
+    const objects = await resources(
+      (
+        await render({
+          "repositoryCredentials.registryConfigMapName": "repository-registry-v1",
+          "repositoryCredentials.registryKey": "repositories.json",
+        })
+      ).stdout,
+    );
+    const api = findResource(objects, "Deployment", "openclaw-enterprise-api");
+    const worker = findResource(objects, "Deployment", "openclaw-enterprise-worker");
+    const initialization = findResource(objects, "Job", "oce-initialization");
+    for (const [workload, containerName] of [
+      [api, "api"],
+      [worker, "worker"],
+      [initialization, "installation-check"],
+    ]) {
+      assert.ok(workload);
+      const pod = workload.spec.template.spec;
+      assert.deepEqual(pod.volumes.find(({ name }) => name === "repository-registry")?.configMap, {
+        name: "repository-registry-v1",
+        items: [{ key: "repositories.json", path: "registry.json" }],
+      });
+      const container = [...(pod.initContainers ?? []), ...pod.containers].find(
+        ({ name }) => name === containerName,
+      );
+      assert.deepEqual(
+        container?.volumeMounts.find(({ name }) => name === "repository-registry"),
+        {
+          name: "repository-registry",
+          mountPath: "/etc/openclaw/repository-registry",
+          readOnly: true,
+        },
+      );
+      assert.equal(
+        pod.volumes.some(({ name }) =>
+          /prepared-repository|repository-control|worker-api-access/.test(name),
+        ),
+        false,
+      );
+      assert.equal(
+        pod.containers.some(({ name }) => name === "repository-credentials"),
+        false,
+      );
+    }
+    assert.equal(
+      objects.some(({ kind, metadata }) => kind === "Service" && metadata.name === "git"),
+      false,
+    );
+    await assert.rejects(
+      render({ "repositoryCredentials.registryConfigMapName": "INVALID" }),
+      /repositoryCredentials.registryConfigMapName/,
+    );
+    await assert.rejects(
+      render({
+        "repositoryCredentials.registryConfigMapName": "repository-registry-v1",
+        "database.caSecretName": "database-ca",
+        "database.caMountPath": "/etc/openclaw/repository-registry",
+      }),
+      /database.caMountPath.*distinct/,
+    );
+  },
+);
+
+test(
   "prepared Git broker Helm selection omits App credentials and preserves TLS/control",
   tooling,
   async () => {

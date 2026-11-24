@@ -111,6 +111,7 @@ true
 {{- define "openclaw.validate" -}}
 {{- $repositoryBroker := .Values.repositoryCredentials.enabled -}}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . -}}
+{{- $repositoryRegistry := .Values.repositoryCredentials.registryConfigMapName -}}
 {{- if or (gt (len .Release.Namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Release.Namespace)) -}}
 {{- fail "Helm release namespace must be a DNS-1123 label of at most 63 characters" -}}
 {{- end -}}
@@ -426,8 +427,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.executionCluster.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/execution" -}}
 {{- end -}}
+{{- if $repositoryRegistry -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/repository-registry" -}}
+{{- end -}}
 {{- if $repositoryGit -}}
-{{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/repository-registry" "/var/run/secrets/kubernetes.io/serviceaccount") -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/var/run/secrets/kubernetes.io/serviceaccount" -}}
 {{- if $repositoryBroker -}}
 {{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/repository-ca" "/run/openclaw/repository-control") -}}
 {{- end -}}
@@ -541,6 +545,13 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if has (int $port) (list 19000 19001 19003) -}}{{- fail "channelEgress OCC and inspection ports must not use Envoy administrative ports" -}}{{- end -}}
 {{- end -}}
 {{- end -}}
+{{- if and $repositoryGit (not $repositoryRegistry) -}}
+{{- fail "repositoryCredentials.registryConfigMapName is required when enabled" -}}
+{{- end -}}
+{{- if $repositoryRegistry -}}
+{{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.registryConfigMapName" "value" $repositoryRegistry) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.registryKey" "value" .Values.repositoryCredentials.registryKey) -}}
+{{- end -}}
 {{- if $repositoryGit -}}
 {{- if .Values.openshellGit.enabled -}}
 {{- if ne .Values.openshellGit.mode "protected" -}}
@@ -563,9 +574,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and (eq $credentials.authority "prepared-git") (not $credentials.preparedCustodySecretName) -}}
 {{- fail "repositoryCredentials.preparedCustodySecretName is required for prepared-git" -}}
 {{- end -}}
-{{- $registryName := required "repositoryCredentials.registryConfigMapName is required when enabled" $credentials.registryConfigMapName -}}
-{{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.registryConfigMapName" "value" $registryName) -}}
-{{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.registryKey" "value" $credentials.registryKey) -}}
 {{- with $credentials.preparedProviderCaConfigMapName -}}
 {{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.preparedProviderCaConfigMapName" "value" .) -}}
 {{- end -}}
