@@ -1,3 +1,4 @@
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import { takeUnloggedRuntimeFields } from "../helpers/openshell-git-runtime.ts";
@@ -24,7 +25,10 @@ import { loadRepositoryPolicy } from "../../apps/controller/src/composition/repo
 import type { RepositorySelectionMode } from "../helpers/repository-selection-load.ts";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:https";
-import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
+import {
+  installedDriverPackage,
+  protectedDriverPackage,
+} from "../helpers/protected-driver-package.ts";
 import { join } from "node:path";
 import test, { afterEach, type TestContext } from "node:test";
 import type {
@@ -43,6 +47,7 @@ import {
   type PostgresPool,
 } from "../../packages/occ/src/index.ts";
 import {
+  installationControllerOptions,
   loadInstallationConfiguration,
   type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
@@ -89,6 +94,194 @@ test("incomplete credential delivery Driver registration is refused before selec
   assert.throws(
     () => controller.selectDriver("credential_proxy_delivery", incomplete.id),
     /No registered Driver matches/,
+  );
+});
+
+test("an external raw Sandbox can define its own capabilities field", async (t) => {
+  const id = "raw-sandbox-fixture";
+  const { directory } = await installedDriverPackage(t, id, "external-sandbox-driver", ["index"]);
+  const base = createInstallationDriverConfiguration();
+  const path = join(directory, "installation.json");
+  const load = async (tokenService: boolean, legacyProxy = false) => {
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...base,
+        presets: { includeDefaults: false },
+        drivers: {
+          ...base.drivers,
+          sandbox: { id, package: id, configuration: { malformed: { capabilities: {} } } },
+          ...(tokenService && { token_service: { id: "occ", configuration: {} } }),
+          ...(legacyProxy && { credential_proxy: { id, configuration: {} } }),
+        },
+      }),
+    );
+    return loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: path },
+      packageRoot: directory,
+    });
+  };
+
+  for (const tokenService of [false, true]) {
+    await t.test(tokenService ? "with TokenService" : "without TokenService", async () => {
+      const runtime = await load(tokenService);
+      assert.ok(runtime);
+      const sandbox = runtime.sandboxDriver;
+      assert.ok(sandbox && "capabilities" in sandbox);
+      assert.equal(sandbox.id, id);
+      assert.equal(sandbox.capability, "sandbox");
+      assert.deepEqual(sandbox.capabilities, {});
+      assert.equal(runtime.credentialDeliveryRegistration, undefined);
+    });
+  }
+  await assert.rejects(load(true, true), {
+    name: "DriverSelectionError",
+    message: "A Driver registration must provide a capability.",
+  });
+});
+
+test("an installed delivery-only Driver owns the staged Sandbox without legacy egress", async (t) => {
+  const id = "delivery-only-fixture";
+  const { directory, entry } = await installedDriverPackage(t, id, "protected-execution-driver", [
+    "delivery-only",
+  ]);
+  const { observations } = (await import(
+    join(entry, "delivery-only.mjs")
+  )) as typeof import("../fixtures/driver-packages/protected-execution-driver/delivery-only.ts");
+  const base = createInstallationDriverConfiguration();
+  const path = join(directory, "installation.json");
+  const load = async (
+    options: {
+      tokenService?: boolean;
+      legacyProxy?: boolean;
+      contract?: "complete" | "missing-method" | "foreign-identity";
+    } = {},
+  ) => {
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...base,
+        presets: { includeDefaults: false },
+        drivers: {
+          ...base.drivers,
+          sandbox: { id, package: id, configuration: { contract: options.contract } },
+          ...((options.tokenService ?? true) && {
+            token_service: { id: "occ", configuration: {} },
+          }),
+          ...(options.legacyProxy && { credential_proxy: { id, configuration: {} } }),
+        },
+      }),
+    );
+    return (await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: path },
+      packageRoot: directory,
+    }))!;
+  };
+
+  const api = await load();
+  const owner = api.credentialDeliveryRegistration!;
+  t.after(() => owner.close());
+  assert.equal(api.protectedDriver, undefined);
+  assert.equal(api.proxyDriver, undefined);
+  const installation = {
+    id: "installation",
+    name: "installation",
+    createdAt: "2026-10-01T00:00:00Z",
+  };
+  const controller = new OpenClawController(
+    installation,
+    installationControllerOptions(api.installation),
+  );
+  installSelectedSandboxDrivers(controller, api);
+  const compute = createReadyComputeDriver("namespace-contract-compute");
+  controller.registerDriver(compute);
+  controller.selectDriver("compute", compute.id);
+  await controller.validateBackendConfiguration();
+  assert.throws(() => controller.selectedDriver("credential_proxy"), DriverSelectionError);
+  assert.equal(
+    controller.selectedDriver("credential_proxy_delivery"),
+    owner.require("credential_proxy_delivery"),
+  );
+  // The real controller performs Namespace work through the package registration's owner.
+  const namespace: Namespace = {
+    id: "staged-namespace",
+    name: "staged",
+    status: "ready",
+    createdAt: installation.createdAt,
+  };
+  await controller.observeNamespaceLifecycle(namespace, "ready", t.signal, () => {});
+  assert.deepEqual(observations.namespaces, [namespace.id]);
+
+  const workerDrivers = await load();
+  const endpoint = {
+    binary: "/app/bin/model-client",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  // A stored standalone plan carries the API's durable owner, not its process-local object.
+  const revision = {
+    executionAdmission: { version: 8, mode: "standalone" },
+    credentialDeployment: {
+      driver: owner.ref,
+      proxyDriverId: id,
+      networkAccessPolicy: { allowed: [endpoint] },
+      bindings: [
+        {
+          bindingRef: "model",
+          sourceRef: { kind: "credential_source", namespaceId: namespace.id, id: "cs_model" },
+          consumer: { kind: "model", providerId: "openai" },
+          projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+        },
+      ],
+      injectionPolicies: [
+        {
+          bindingRef: "model",
+          allowedRequests: [
+            {
+              ...endpoint,
+              requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+            },
+          ],
+        },
+      ],
+    },
+  } satisfies Pick<AgentRevision, "executionAdmission" | "credentialDeployment">;
+  workerDrivers.computeDriver.validateExecutionAdmission!(revision, "stored");
+  assert.throws(
+    () => workerDrivers.computeDriver.validateExecutionAdmission!(revision, owner),
+    /staged credential composition is unavailable/,
+  );
+  const worker = createControllerWorker({
+    mode: "production",
+    drivers: workerDrivers,
+    pool: {
+      async connect() {
+        assert.fail("constructing and stopping an unstarted Worker must not open PostgreSQL");
+      },
+      async query() {
+        assert.fail("constructing and stopping an unstarted Worker must not query PostgreSQL");
+      },
+      async end() {},
+    },
+    emit: () => {},
+  });
+  await worker.stop();
+  assert.equal(observations.closed, 1, "Worker shutdown closes its selected delivery package");
+
+  await assert.rejects(load({ tokenService: false }), /requires drivers.token_service/);
+  // A requested legacy capability cannot be silently replaced by delivery.
+  await assert.rejects(load({ legacyProxy: true }), /no longer supplies the selected capability/);
+  await assert.rejects(load({ contract: "missing-method" }), /exact selected capability contracts/);
+  await assert.rejects(
+    load({ contract: "foreign-identity" }),
+    /exact selected capability contracts/,
+  );
+  assert.equal(
+    observations.closed,
+    5,
+    "each refused package closes before startup reports failure",
   );
 });
 

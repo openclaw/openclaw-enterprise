@@ -407,6 +407,14 @@ export function createExternalDriver(
       ...(capability === "compute" ? { getOperationAbortSignal: currentComputeAbortSignal } : {}),
     }),
   );
+  return validateExternalDriver(created, selection, capability);
+}
+
+function validateExternalDriver(
+  created: ConfigurationRecord | undefined,
+  selection: SelectedDriverConfiguration,
+  capability: "configuration" | "iam" | "compute" | "sandbox",
+): ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver {
   if (created === undefined) {
     throw new Error(`drivers.${capability} factory result must be one object.`);
   }
@@ -453,21 +461,35 @@ export function createExternalDriver(
 
 /** Load one package instance for the selected capabilities; the sandbox selection owns its configuration.
  * A registration this refuses is closed before the refusal returns, so a refused startup can exit. */
-export async function createExternalProtectedDriver(
+export async function createExternalSandboxDriver(
   implementation: ExternalDriverModule,
   selection: SelectedDriverConfiguration,
-  // Composition that changes the installed authority must also change its durable identity.
-  repositoryAuthorityIdentity?: string,
-): Promise<InstalledDriver> {
+  options: {
+    readonly legacyProxySelected: boolean;
+    readonly tokenServiceSelected: boolean;
+    // Composition that changes the installed authority must also change its durable identity.
+    readonly repositoryAuthorityIdentity?: string | undefined;
+  },
+): Promise<InstalledDriver | SandboxDriver> {
   const { id, configuration } = selection;
   const registration = asRecord(
     implementation.createDriver({ id, configuration, implementation: selection.implementation }),
   );
+  const { legacyProxySelected, tokenServiceSelected, repositoryAuthorityIdentity } = options;
+  if (
+    !legacyProxySelected &&
+    (!registration || registration.capability === "sandbox" || !("capabilities" in registration))
+  ) {
+    return validateExternalDriver(registration, selection, "sandbox") as SandboxDriver;
+  }
   try {
     if (!registration || !asRecord(registration.capabilities)) {
       throw new Error(
         "The selected package must return one Driver registration for Sandbox and Credential Proxy.",
       );
+    }
+    if (!legacyProxySelected && !tokenServiceSelected) {
+      throw new Error("An external Sandbox delivery registration requires drivers.token_service.");
     }
     const owner = new InstalledDriver(
       repositoryAuthorityIdentity === undefined
@@ -476,7 +498,7 @@ export async function createExternalProtectedDriver(
       registration as unknown as DriverRegistration,
     );
     owner.require("sandbox");
-    owner.require("credential_proxy");
+    owner.require(legacyProxySelected ? "credential_proxy" : "credential_proxy_delivery");
     return owner;
   } catch (error) {
     try {

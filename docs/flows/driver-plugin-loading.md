@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-20
-last_updated_session: authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d
+updated: 2026-11-24
+last_updated_session: authoring-run/b90389a6-2971-47ba-96d9-576c6f384595
 ---
 
 # Installation Driver Package Loading Flow
@@ -86,6 +86,20 @@ and named contributions in `packages/occ/src/configuration-registry.ts`, and
 rejects missing owner bindings, duplicate identities, or unsupported schemas before
 construction. Invalid package exports, identity, capability, or lifecycle wiring reject
 startup without fallback.
+
+`apps/controller/src/composition/driver-packages.ts:createExternalSandboxDriver`
+constructs an external Sandbox package once. With OCC TokenService selected, the
+package can return one registration containing `sandbox` and
+`credential_proxy_delivery` without selecting `credential_proxy`. If the legacy
+Proxy is selected, the registration must also supply `credential_proxy`. A
+registration that advertises both serving capabilities can supply both selections.
+`packages/occ/src/installed-driver.ts:InstalledDriver` checks each capability's
+contract and selected identity. OCC requires Sandbox and delivery to share that
+registration. Invalid registrations fail startup and are closed. The worker uses
+the registration's lifecycle hooks and closes that owner during shutdown.
+New staged Agent deployments still require the bundled OpenShell pair to
+validate the complete policy. Delivery alone enables neither the legacy
+issuer exchange nor Credential Refresh.
 
 `apps/controller/src/composition/installation-config.ts:selected` captures inspection
 values immediately after validation, before any constructor or package factory.
@@ -231,6 +245,8 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 02:40: Trace external Sandbox and credential-delivery package admission in the accompanying implementation. (authoring-run/b90389a6-2971-47ba-96d9-576c6f384595 - 09e5b0f9886e8aa07e8c8d573414638ac3b5cdf8)
 
 - 2026-11-20 16:36: Point discovery to the setup catalog module. (authoring-run/81560d43-8d6a-40f6-8c1a-fa669ed36e0d - d7da2d9c7716128fb51147656fec44d22b896cc2)
 

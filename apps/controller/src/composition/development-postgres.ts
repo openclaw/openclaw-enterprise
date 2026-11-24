@@ -124,7 +124,12 @@ export async function composePostgresDevelopment(
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, drivers?.protectedDriver, drivers?.preparedGitHub, database);
+    closeResources(
+      exchange,
+      drivers?.protectedDriver ?? drivers?.credentialDeliveryRegistration,
+      drivers?.preparedGitHub,
+      database,
+    );
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,

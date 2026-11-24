@@ -105,7 +105,7 @@ import { ManagedOpenShellSandbox } from "../drivers/sandbox/openshell/managed.ts
 import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
 import {
   createExternalDriver,
-  createExternalProtectedDriver,
+  createExternalSandboxDriver,
   loadDriverPackage,
 } from "./driver-packages.ts";
 import { SshComputeDriver, type SshComputeDriverOptions } from "../drivers/compute/ssh/index.ts";
@@ -1611,8 +1611,10 @@ async function composeInstallationConfiguration(
       sandbox,
     });
   };
-  const { sandboxDriver, protectedDriver, repositoryTransport } = await (async (): Promise<
-    Pick<InstallationRuntimeDrivers, "sandboxDriver" | "protectedDriver" | "repositoryTransport">
+  const { sandboxDriver, registration, repositoryTransport } = await (async (): Promise<
+    Pick<InstallationRuntimeDrivers, "sandboxDriver" | "repositoryTransport"> & {
+      registration?: InstalledDriver;
+    }
   > => {
     if (sandbox === undefined) {
       return {};
@@ -1643,22 +1645,17 @@ async function composeInstallationConfiguration(
       };
     }
     if (sandboxPackage !== undefined) {
-      if (proxySelection === undefined) {
-        return {
-          sandboxDriver: createExternalDriver(
-            sandboxPackage.module,
-            sandbox,
-            "sandbox",
-          ) as SandboxDriver,
-        };
+      const external = await createExternalSandboxDriver(sandboxPackage.module, sandbox, {
+        legacyProxySelected: proxySelection !== undefined,
+        tokenServiceSelected: tokenServiceSelection !== undefined,
+        repositoryAuthorityIdentity:
+          repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
+      });
+      if (!(external instanceof InstalledDriver)) {
+        return { sandboxDriver: external };
       }
-      const owner = await createExternalProtectedDriver(
-        sandboxPackage.module,
-        sandbox,
-        repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
-      );
-      loaded.externalOwner = owner;
-      return { sandboxDriver: owner.require("sandbox"), protectedDriver: owner };
+      loaded.externalOwner = external;
+      return { sandboxDriver: external.require("sandbox"), registration: external };
     }
     if (proxySelection === undefined) {
       return {
@@ -1726,14 +1723,15 @@ async function composeInstallationConfiguration(
     );
     return {
       sandboxDriver: owner.require("sandbox"),
-      protectedDriver: owner,
+      registration: owner,
       ...(repositoryTransport && { repositoryTransport }),
     };
   })();
+  const protectedDriver = proxySelection === undefined ? undefined : registration;
   let credentialDeliveryRegistration =
     tokenServiceSelection !== undefined &&
-    protectedDriver?.capabilities.includes("credential_proxy_delivery")
-      ? protectedDriver
+    registration?.capabilities.includes("credential_proxy_delivery")
+      ? registration
       : undefined;
   if (
     credentialDeliveryRegistration === undefined &&
