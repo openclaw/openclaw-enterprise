@@ -1128,6 +1128,8 @@ type ProtectedPolicyFixture = Pick<
   "collection" | "controller" | "registry" | "request" | "state"
 > & {
   readonly actorId: string;
+  readonly configuration: { readonly id: string };
+
   readonly namespace: Pick<Namespace, "id">;
   readonly protectedDriver: InstalledDriver;
   readonly iamState: Parameters<typeof grantRole>[0] & { readonly identities: Identity[] };
