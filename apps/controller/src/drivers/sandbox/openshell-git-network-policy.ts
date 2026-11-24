@@ -166,7 +166,10 @@ function scopedApiEndpoints(
   permissions: readonly OpenShellScopedRestGrant[] | undefined,
 ): readonly OpenShellProviderProfileEndpoint[] {
   const endpoints: OpenShellProviderProfileEndpoint[] = [];
-  for (const { repository, issues, pull_requests: pulls } of repositoryGitRestOperations(policy, permissions)) {
+  for (const { repository, issues, pull_requests: pulls } of repositoryGitRestOperations(
+    policy,
+    permissions,
+  )) {
     const rules = [];
     if (pulls === "write") {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });

@@ -28,19 +28,29 @@ export const SandboxPolicyRevisionParams = Type.Object(
   { additionalProperties: false },
 );
 
-const RepositoryApiLevelSchema = Type.Union([Type.Literal("none"), Type.Literal("read"), Type.Literal("write")]);
+const RepositoryApiLevelSchema = Type.Union([
+  Type.Literal("none"),
+  Type.Literal("read"),
+  Type.Literal("write"),
+]);
 const RepositoryNetworkGrantSchema = Type.Object(
   {
     ...RepositoryNetworkLimitSchema.properties,
-    apiLimits: Type.Optional(Type.Object({
-      default: Type.Optional(Type.Literal("none")),
-      issues: Type.Optional(RepositoryApiLevelSchema),
-      pull_requests: Type.Optional(RepositoryApiLevelSchema),
-    }, {
-      additionalProperties: false,
-      minProperties: 1,
-      description: "Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply.",
-    })),
+    apiLimits: Type.Optional(
+      Type.Object(
+        {
+          default: Type.Optional(Type.Literal("none")),
+          issues: Type.Optional(RepositoryApiLevelSchema),
+          pull_requests: Type.Optional(RepositoryApiLevelSchema),
+        },
+        {
+          additionalProperties: false,
+          minProperties: 1,
+          description:
+            "Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply.",
+        },
+      ),
+    ),
   },
   { additionalProperties: false },
 );

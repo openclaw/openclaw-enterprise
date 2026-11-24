@@ -1340,7 +1340,9 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
           200,
         );
         assert.equal(before.repositoryNetworkPolicySaveSupported, true);
-        assert.deepEqual(before.repositoryApiMaxima, [{ ...selected, issues: "none", pull_requests: "none" }]);
+        assert.deepEqual(before.repositoryApiMaxima, [
+          { ...selected, issues: "none", pull_requests: "none" },
+        ]);
         const { data: saved } = checkedEnvelope(
           await f.request("PUT", policyPath, {
             expectedVersion: before.policy.version,
@@ -1401,6 +1403,17 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
         };
       },
     });
+    // Only the authenticated policy edit accepts limits. Draft creation must
+    // reject a wider shape instead of silently saving an unrestricted grant.
+    checkedEnvelope(
+      await f.request("POST", f.collection, {
+        name: "Limited repository draft",
+        configurationId: f.configuration.id,
+        repositoryNetworkPolicy: [{ ...writeGrant, apiLimits: { default: "none" } }],
+      }),
+      ErrorResponse,
+      400,
+    );
     const agent = await createSelectedAgent();
     const path = `${f.collection}/${agent.id}`;
     const credentialStatus = t.mock.fn(async () => ({ transportConfigured: true }));
@@ -1436,7 +1449,8 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     const options = [
       {
         ...writeGrant,
-        issues: "read", pull_requests: "write",
+        issues: "read",
+        pull_requests: "write",
       },
     ];
     assert.deepEqual(editable.repositoryApiMaxima, options);
@@ -1793,7 +1807,11 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     assert.deepEqual(available.repositoryNetworkPolicyCeiling, [writeGrant, unselected]);
     assert.equal(available.repositoryNetworkPolicySaveSupported, true);
     assert.equal(available.repositoryApiMaxima, undefined);
-    checkedEnvelope(await put([{ ...selected, apiLimits: { default: "none" } }]), ErrorResponse, 409);
+    checkedEnvelope(
+      await put([{ ...selected, apiLimits: { default: "none" } }]),
+      ErrorResponse,
+      409,
+    );
     checkedEnvelope(
       await f.request("PUT", policyPath, {
         expectedVersion: before.policy.version,

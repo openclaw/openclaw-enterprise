@@ -42,7 +42,7 @@ function storedRevisionWriter(pool: PolicyApp["pool"], originalId: string) {
 }
 
 function snapshotPolicy(grants: readonly RepositoryNetworkGrant[]) {
-  const ceiling = grants.map(({ repository, access }) => ({repository, access}));
+  const ceiling = grants.map(({ repository, access }) => ({ repository, access }));
   return admitRepositoryNetworkPolicy(grants, ceiling)!;
 }
 

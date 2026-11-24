@@ -96,8 +96,10 @@ repositories remain denied. See [Known limits](#known-limits) for indirect effec
 #### API limits
 
 Omit `apiLimits` for the Contributor defaults in the table above. To narrow
-direct REST access, set `apiLimits` on the selected native Namespace
-registration for the repository. Git access stays the same.
+direct REST access for all Agents, set `apiLimits` on the native repository's
+Namespace registration. To limit one Agent, set `apiLimits` on its
+[saved grant](../sandbox-policies.md#repository-network-policy) and redeploy.
+Both limits apply. Git access stays the same.
 
 Each resource, `issues` or `pull_requests`, accepts `none` (no routes), `read`
 (list and detail) or `write` (read and create). A limit cannot add permissions,

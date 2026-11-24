@@ -431,7 +431,12 @@ function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"
   }
   const access = (resource: "issues" | "pull_requests"): RepositoryApiLevel => {
     const permission = permissions[resource];
-    return limitRepositoryApi(apiLimits, resource, permission === "read" || permission === "write", permission === "write");
+    return limitRepositoryApi(
+      apiLimits,
+      resource,
+      permission === "read" || permission === "write",
+      permission === "write",
+    );
   };
   const issues = access("issues");
   const pulls = access("pull_requests");

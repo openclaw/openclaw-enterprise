@@ -40,8 +40,18 @@ export function repositoryGitRestOperations(
       return Object.freeze({
         repository,
         access,
-        issues: limitRepositoryApi(apiLimits, "issues", rest?.readIssues === true, write && rest?.createIssues === true),
-        pull_requests: limitRepositoryApi(apiLimits, "pull_requests", rest?.readPullRequests === true, write && rest?.createPullRequests === true),
+        issues: limitRepositoryApi(
+          apiLimits,
+          "issues",
+          rest?.readIssues === true,
+          write && rest?.createIssues === true,
+        ),
+        pull_requests: limitRepositoryApi(
+          apiLimits,
+          "pull_requests",
+          rest?.readPullRequests === true,
+          write && rest?.createPullRequests === true,
+        ),
       });
     }),
   );
