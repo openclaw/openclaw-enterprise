@@ -162,6 +162,14 @@ for the next successful check. **Search Agents** has focus with `rch` still
 selected. Type `X` and check that the query becomes `ReseaX`. Repeat at desktop
 and phone widths.
 
+Reset the same story. Type `Research` in **Search Agents**, select `rch`
+backwards, then switch windows and return. Stay in the foreground while the
+delayed healthy check is pending. Tab to the **Namespace**
+selector, then click the plain **Namespace · Research** line below the Agents
+heading. When the check finishes, type `X` without clicking or tabbing. Search
+must not regain focus, and the query must remain `Research`. Repeat at desktop
+and phone widths.
+
 ## Agent collection access checks
 
 Open **Pages / Agents / Populated Namespace leaves the list** at desktop and

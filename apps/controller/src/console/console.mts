@@ -1822,7 +1822,7 @@ async function loadPage({
   // admitted deployment opens, say; finding 1626), or the Agent's link on a return to the Agents
   // list (finding 1636). The pending shell also replaces a pressed sidebar link (finding 1653).
   // On refocus, restore the reader’s place only if we reuse the view (finding 1654).
-  const refocused = resumingView ? focusInShownView() : null;
+  let refocused = resumingView ? focusInShownView() : null;
   const listRoute =
     current.feature === "agents" && current.namespace && !current.agentId && !current.creating
       ? routeKey(current)
@@ -1850,6 +1850,8 @@ async function loadPage({
   let expectedHeading: HTMLElement | null = null;
   const onFocus = (event: FocusEvent) => {
     if (event.target !== expectedHeading && event.target !== document.body) {
+      // Both snapshots can return focus to Search if the new control later blurs.
+      refocused = null;
       search = null;
       if (mountedViewState?.deferredAgentSearch) {
         delete mountedViewState.deferredAgentSearch;

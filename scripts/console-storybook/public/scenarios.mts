@@ -734,6 +734,8 @@ const authoredScenarios = {
       "Press Tab to continue from the selector, then Shift+Tab to return to it.",
       "Reset the story. Type Research in Search Agents and press Shift+Left Arrow three times to select rch backwards. Switch away and back, then switch away again while the simulated list refresh is pending. Stay away for 6.5 seconds.",
       "Return and wait for the next successful check. Search Agents has focus with rch still selected. Type X and check that the query becomes ReseaX. Repeat at desktop and phone widths.",
+      "Reset the story. Type Research in Search Agents, select rch backwards, then switch windows and return. Stay in the foreground while the delayed healthy check is pending.",
+      "Tab to the Namespace selector, then click the plain Namespace · Research line below the Agents heading. When the check finishes, type X without clicking or tabbing. Search Agents must not regain focus, and the query must remain Research. Repeat at desktop and phone widths.",
     ],
   } satisfies LocalScenario,
   agentsRowRefocusStopped: {
@@ -1988,7 +1990,7 @@ const authoredScenarios = {
     description:
       "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View separate cleanup commands to find the full resource IDs.",
     steps: [
-      "Press Enter on Copy Configuration command, then on Copy Secret command if shown. Only the latest row shows feedback. If copying fails, its full command is selected. Choose Cancel.",
+      "Review the Agent name and ID. Press Enter on Copy Configuration command, then on Copy Secret command if shown. Only the latest row shows feedback. If copying fails, its full command is selected. Choose Cancel.",
     ],
   } satisfies LocalScenario,
   deleting: {
@@ -2447,7 +2449,7 @@ const authoredScenarios = {
     actions: [click("Stop Agent")],
     description: "Confirm stopping the Agent or cancel without changing its requested state.",
     steps: [
-      "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
+      "Review the Agent name and ID, then confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
       "For the revision clearing after Stop, use Flows / Stop an Agent.",
     ],
   } satisfies LocalScenario,

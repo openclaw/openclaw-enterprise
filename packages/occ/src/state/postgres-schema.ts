@@ -544,6 +544,7 @@ export const credentialSources = occSchema.table(
       () => tokenServiceInstances.id,
       { onDelete: "restrict", onUpdate: "restrict" },
     ),
+    backendRef: jsonb("backend_ref").$type<Readonly<Record<string, string>>>(),
     state: text("state").$type<CredentialSourceState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
@@ -580,6 +581,15 @@ export const credentialSources = occSchema.table(
       OR (${table.type} <> 'oauth2-refresh-token' AND ${table.tokenServiceInstanceId} IS NOT NULL AND ${table.state} IN ('ready', 'deleting'))
     ) ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL
       AND (${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL)) END IS TRUE`,
+    ),
+    check(
+      "credential_sources_backend_ref_valid",
+      sql`${table.backendRef} IS NULL OR (
+      ${table.tokenServiceInstanceId} IS NOT NULL
+      AND jsonb_typeof(${table.backendRef}) = 'object'
+      AND ${table.backendRef} <> '{}'::jsonb
+      AND NOT jsonb_path_exists(${table.backendRef}, 'strict $.* ? (@.type() != "string" || @ == "")', '{}'::jsonb, true)
+    )`,
     ),
     check(
       "credential_sources_driver_id_valid",
