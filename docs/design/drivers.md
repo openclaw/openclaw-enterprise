@@ -94,10 +94,9 @@ another identity, grant permissions, or replace an Agent's gateway.
 
 ## Drivers and Backends
 
-A **Driver** is the common integration boundary for a selected platform
-capability. OCC selects each Driver implementation through Installation
-configuration and passes the exact operation, scope, identity, and applicable
-Restrictions relevant to that capability. After OAG admits the request, the
+A **Driver** integrates a selected platform capability. OCC selects its
+implementation through Installation configuration and passes the exact operation,
+scope, identity, and applicable Restrictions. After OAG admits the request, the
 selected authorization Driver evaluates the exact requested operation; an
 execution Driver receives admitted intent only after OCC verifies that
 authorization. A Driver reports its decision, readiness, or operational result
@@ -113,20 +112,21 @@ without acquiring platform-resource ownership or permission to select itself.
 | `SecretDriver`            | Store Namespace-owned secret material and validate safe delivery references. KubernetesSecretDriver is the default.                                                                                                  |
 | `TokenServiceDriver`      | Register managed Sources and own their credential custody and lifecycle.                                                                                                                                             |
 | `CredentialProxyDriver`   | Prepare and withdraw delivery for admitted bindings and configure credential injection.                                                                                                                              |
-| `CredentialGatewayDriver` | For existing Gateway-owned Sources, hold credentials and issue revision attachments that the paired Sandbox applies.                                                                                                 |
-| `CredentialRefreshDriver` | For existing Gateway refresh Sources, obtain and renew tokens with their issuers.                                                                                                                                    |
+| `CredentialGatewayDriver` | **Legacy.** Hold credentials for existing Gateway-owned Sources and issue revision attachments that the paired Sandbox applies.                                                                                      |
+| `CredentialRefreshDriver` | **Legacy.** Obtain and renew tokens for existing Gateway refresh Sources.                                                                                                                                            |
 | `ChannelDriver`           | Realize authorized Namespace-local messaging operations while the messaging provider retains independent authorization and credentials.                                                                              |
+
+The credential cutover is in progress. The two legacy contracts still serve
+existing Sources; Credential Design 1.0 replaces their custody and renewal with
+`TokenServiceDriver` and their delivery with `CredentialProxyDriver`. See the
+[credential implementation status](../reference/credential-sources.md#implementation-status).
 
 One implementation may satisfy multiple Driver contracts, but OCC selects each
 role explicitly. Authority for one role does not grant another role, resource
-ownership, or permission. The selected `IAMDriver` evaluates authorization
-before side effects; an effectful Driver handling a caller request runs only
-after OAG admits that caller and OCC authorizes the exact operation.
-`ComputeDriver` ensures backing Namespace infrastructure through an
-independently authorized Namespace lifecycle operation, then creates each
-Agent-owned gateway from the saved Agent revision for that deployment. Each
-relevant Driver enforces applicable platform Restrictions, and unsupported or
-unverifiable enforcement fails closed.
+ownership, or permission. `ComputeDriver` ensures backing Namespace infrastructure
+through an independently authorized Namespace lifecycle operation, then creates
+each Agent-owned gateway from the saved Agent revision. Drivers fail closed when
+applicable Restrictions cannot be enforced or verified.
 
 `ChatGPTServiceAccountDriver` is one concrete implementation of the
 `ServiceAccountDriver` capability. It receives `Backend<ChatGPTClient>`; the
