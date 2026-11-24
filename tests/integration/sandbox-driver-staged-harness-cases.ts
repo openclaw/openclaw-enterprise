@@ -380,6 +380,7 @@ export async function verifyStagedModelPolicyObservation(
   assert.ok(allowedCredential.stdout.includes(`password=${marker}\n`));
   for (const denied of [
     credential("github.com", "fixture/unapproved.git"),
+    credential("github.com", `${repositoryGrants[0]!.repository}.git/unapproved`),
     credential("github.com.evil.test", `${repositoryGrants[0]!.repository}.git`),
     credential("github.com", `${repositoryGrants[0]!.repository}.git`, "http"),
   ]) {

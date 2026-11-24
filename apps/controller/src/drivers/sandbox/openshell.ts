@@ -676,17 +676,22 @@ function environment(
 function stagedGitClientEnvironment(
   grants: readonly { readonly repository: string }[],
 ): Record<string, string> {
-  const helper =
-    "!f() { test \"$1\" = get || exit 0; printf '%s\\n' 'username=x-access-token' \"password=$GITHUB_TOKEN\"; }; f";
   const settings: [string, string][] = [
     ["credential.helper", ""],
     ["credential.useHttpPath", "true"],
     ["http.sslVerify", "true"],
     ["http.followRedirects", "false"],
-    ...grants.map(({ repository }): [string, string] => [
-      `credential.https://github.com/${repository}.git.helper`,
-      helper,
-    ]),
+    ...grants.map(({ repository }): [string, string] => {
+      // Quote the exact saved path even though Repository admission accepts only canonical slugs.
+      const path = `'${`${repository}.git`.replaceAll("'", "'\\''")}'`;
+      const helper =
+        '!f() { test "$1" = get || exit 0; protocol= host= path=; ' +
+        'while IFS= read -r field && test -n "$field"; do ' +
+        'case "$field" in protocol=*) protocol=${field#protocol=};; host=*) host=${field#host=};; path=*) path=${field#path=};; esac; done; ' +
+        `test "$protocol" = https && test "$host" = github.com && test "$path" = ${path} && test -n "$GITHUB_TOKEN" || exit 0; ` +
+        "printf '%s\\n' 'username=x-access-token' \"password=$GITHUB_TOKEN\"; }; f";
+      return [`credential.https://github.com/${repository}.git.helper`, helper];
+    }),
   ];
   return Object.fromEntries([
     ["GIT_TERMINAL_PROMPT", "0"],

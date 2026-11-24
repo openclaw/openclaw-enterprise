@@ -3543,9 +3543,13 @@ test(
     const delivery = "repositoryCredentials.delivery";
     const selected = { ...protectedRepositoryValues, [delivery]: "credential-proxy" };
 
-    // Staging the registry, issuer key and custody does not select a protected sender.
+    // The registry can be mounted on its own. Staging legacy custody values
+    // still leaves the render identical until a protected sender is selected.
     const inactive = (await render(protectedRepositoryValues)).stdout;
-    assert.equal(inactive, (await render()).stdout);
+    const registryName = "repositoryCredentials.registryConfigMapName";
+    const registryOnly = (await render({ [registryName]: protectedRepositoryValues[registryName] }))
+      .stdout;
+    assert.equal(inactive, registryOnly);
 
     for (const isUpgrade of [false, true]) {
       const { stdout } = await render(selected, { isUpgrade });
