@@ -170,6 +170,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   const rotatedRefresh = randomUUID();
   const rotatedAgain = randomUUID();
   const scopedRefresh = randomUUID();
+  const clientRotatedRefresh = randomUUID();
   const initialExpiry = Math.floor(Date.now() / 1000) + 3600;
   const renewedExpiry = initialExpiry + 3600;
   const renewedAccess = jwt({
@@ -225,6 +226,10 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
       return;
     }
     if (index === 7) {
+      response.end(JSON.stringify({ refresh_token: clientRotatedRefresh }));
+      return;
+    }
+    if (index === 8) {
       response.end(JSON.stringify({ access_token: renewedAccess }));
       return;
     }
@@ -380,6 +385,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   const scopedFailure = await owner.getRefreshStatus(scopedOperation, signal);
   assert.equal(scopedFailure.state, "failed");
   assert.equal(scopedFailure.failureCode, "grant_scope_mismatch");
+  assert.equal(scopedFailure.recoveryAction, "reauthorize");
   const unchanged = await f.state.read(({ credentialSources }) =>
     credentialSources.findCredentialSource(f.namespace.id, scopedSource.id),
   );
@@ -401,9 +407,17 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   assert.equal(clientFailure.state, "failed");
   assert.equal(clientFailure.failureCode, "client_refused");
   assert.equal(clientFailure.recoveryAction, "fix_configuration");
+  // A partial retry retains the rotated grant but cannot restore previously unavailable access.
   const clientRetry = await owner.forceRefresh(clientInstance, signal);
-  assert.equal((await owner.getRefreshStatus(clientRetry, signal)).state, "ready");
+  const pending = await owner.getRefreshStatus(clientRetry, signal);
+  assert.equal(pending.state, "pending");
   assert.equal(received[7].body.refresh_token, clientRefresh);
+  await assert.rejects(owner.resolveCredential(clientInstance, signal), {
+    name: "ResourceStateConflictError",
+  });
+  const recovered = await owner.forceRefresh(clientInstance, signal);
+  assert.equal((await owner.getRefreshStatus(recovered, signal)).state, "ready");
+  assert.equal(received[8].body.refresh_token, clientRotatedRefresh);
 });
 
 function jwt(payload) {

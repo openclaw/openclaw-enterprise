@@ -242,7 +242,7 @@ test("the Token Service keeps the first access token in custody and serializes r
   assert.deepEqual((await service.observe(custody, t.signal)).status, {
     state: "failed",
     failureCode: "grant_scope_mismatch",
-    recoveryAction: "fix_configuration",
+    recoveryAction: "reauthorize",
   });
   await worker.renew(custody, t.signal, resolveClient, renewed.version);
   assert.equal(requests.length, 3, "even an operator rotation cannot replay a refused grant");

@@ -135,7 +135,11 @@ function ready(
 function status(current: StoredConnection): OAuthConnectionStatus {
   if (current.phase === "failed") {
     const failureCode = current.failureCode;
-    const recoveryAction = ["grant_refused", "refresh_outcome_unknown"].includes(failureCode)
+    const recoveryAction = [
+      "grant_refused",
+      "grant_scope_mismatch",
+      "refresh_outcome_unknown",
+    ].includes(failureCode)
       ? "reauthorize"
       : "fix_configuration";
     return { state: "failed", failureCode, recoveryAction };
@@ -348,15 +352,9 @@ export class OAuthGrantStore {
         refreshToken: issued.refreshToken ?? current.refreshToken,
       };
       const partial = issued.accessToken === undefined;
-      const scopesChanged =
-        grant.grantedScopes.length !== current.grantedScopes.length ||
-        !grant.grantedScopes.every((scope) => current.grantedScopes.includes(scope));
       const now = Date.now();
-      if (
-        partial &&
-        (current.phase !== "ready" || Date.parse(grant.expiresAt) <= now || scopesChanged)
-      ) {
-        // Keep the rotated grant for retry without delivering expired or broader access.
+      if (partial && (current.phase !== "ready" || Date.parse(grant.expiresAt) <= now)) {
+        // Keep the rotated grant for retry without delivering unavailable or expired access.
         next = {
           ...grant,
           phase: "access_pending",
