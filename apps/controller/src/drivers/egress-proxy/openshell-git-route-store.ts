@@ -857,7 +857,10 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       );
       return rows.map((row) => {
         const record = row as Record<string, unknown>;
-        return Object.freeze({ ...sourceCopy(record), namespaceName: String(record.namespace_name) });
+        return Object.freeze({
+          ...sourceCopy(record),
+          namespaceName: String(record.namespace_name),
+        });
       });
     });
   }
