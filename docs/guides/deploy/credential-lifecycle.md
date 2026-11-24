@@ -76,8 +76,8 @@ Proxy delivery Driver. Check the [managed Source prerequisites](../../reference/
    from an active Agent that still uses the Source, without sending the secret
    again. Confirm that the Source result is `succeeded`.
 3. Send a new model request through each affected running Agent using its existing
-   chat or supported endpoint. If the provider permits overlap, verify a response,
-   revoke the old key, and verify another response. The update path does not create
+   chat or supported endpoint and verify a response. If the provider permits
+   overlap, revoke the old key and verify another response. The update path does not create
    an Agent revision; rotation in the same running Harness still needs qualification.
    See [managed Source updates](../../reference/credential-sources/managed-static.md#update-a-source).
 

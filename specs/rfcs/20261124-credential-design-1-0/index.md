@@ -109,14 +109,14 @@ Withdrawal detaches the binding for that Agent and removes its request authority
 
 ## Examples
 
-| Use          | How the design applies                                                                                                                                                                                       |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Model preset | Select an API-key Source. The model provider's reviewed profile supplies the inference destination and credential header.                                                                                    |
-| Codex OAuth  | Complete device login, then select the resulting Source. Dedicated Codex receives a placeholder and the account context needed for its login state.                                                          |
-| GitHub App   | Select an App installation and approved repositories. At deployment, OCC asks TokenService to reuse or enroll a matching finite Namespace Source. Agents can share its token: one reads A, another writes B. |
-| Plugin OAuth | Connect an account with a Template and OAuth2Client, then select the Source for a named Plugin connection. Both the admitted request rule and the provider's granted OAuth scopes constrain the operation.   |
-| Static HTTP  | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                              |
-| MCP          | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                     |
+| Use          | How the design applies                                                                                                                                                                                      |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model preset | Select an API-key Source. The model provider's reviewed profile supplies the inference destination and credential header.                                                                                   |
+| Codex OAuth  | Complete device login, then select the resulting Source. Dedicated Codex receives a placeholder and the account context needed for its login state.                                                         |
+| GitHub App   | Select an App installation and approved repositories. At deployment, OCC asks TokenService to reuse or enroll a matching finite Namespace Source. Agents share its token. One reads A and another writes B. |
+| Plugin OAuth | Connect an account with a Template and OAuth2Client, then select the Source for a named Plugin connection. Both the admitted request rule and the provider's granted OAuth scopes constrain the operation.  |
+| Static HTTP  | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                             |
+| MCP          | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                    |
 
 Multiple accounts need distinct projections and a Plugin that selects the account per invocation.
 
