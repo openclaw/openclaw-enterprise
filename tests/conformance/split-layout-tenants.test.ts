@@ -11,7 +11,7 @@ import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
 import { listen } from "../helpers/listen.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 import {
   createTenantReaderFixture,

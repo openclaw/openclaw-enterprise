@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
-import { readJsonLines } from "../helpers/json-lines.mjs";
+import { readJsonLines } from "../helpers/json-lines.ts";
 import { loadYaml, yamlMapping } from "../helpers/kubernetes-yaml.ts";
 
 type SuiteFile = Record<string, unknown> & { path: string; expectedTests?: string[] };

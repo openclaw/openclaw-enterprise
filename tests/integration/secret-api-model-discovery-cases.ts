@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { assertApiError } from "../helpers/api-error.ts";
 import type { ModelDiscoveryFixture } from "./secret-api.test.ts";

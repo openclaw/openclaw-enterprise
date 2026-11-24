@@ -46,7 +46,7 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";

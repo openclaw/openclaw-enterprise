@@ -42,7 +42,7 @@ import {
 } from "../helpers/auth-session.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 type ControllerOptions = NonNullable<ConstructorParameters<typeof OpenClawController>[1]>;
 type FixturePlatformState = NonNullable<ControllerOptions["state"]>;

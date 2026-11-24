@@ -14,7 +14,7 @@ import {
   createInstallationDriverConfiguration as installation,
 } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
-import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
+import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.ts";
 import { testPool } from "../helpers/postgres-database.mjs";
 
 test("secret-driver-startup constructs the bundled KubernetesSecretDriver from Installation YAML", async (t) => {
@@ -181,7 +181,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
   assert.equal(core.secrets.size, 2);
   assert.deepEqual(
     [...core.secrets.values()]
-      .map((secret) => secret.metadata.annotations["openclaw.dev/secret-driver-id"])
+      .map((secret) => secret.metadata.annotations?.["openclaw.dev/secret-driver-id"])
       .sort(),
     ["secret-a", "secret-b"],
   );

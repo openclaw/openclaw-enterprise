@@ -5,7 +5,7 @@
 import type { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.ts";
 import assert from "node:assert/strict";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { randomBytes } from "node:crypto";
 import { copyFile, chmod, readFile, writeFile } from "node:fs/promises";
 import { isIPv4 } from "node:net";

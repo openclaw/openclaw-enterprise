@@ -9,7 +9,7 @@ import {
 } from "../helpers/harness-overrides.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 
 test(
   "PostgreSQL preserves Harness destinations across restart and default replacement",

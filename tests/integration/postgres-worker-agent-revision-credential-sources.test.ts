@@ -42,7 +42,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import type { RevisionFixture } from "../helpers/postgres-worker-refused-candidate.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
-import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.ts";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
 import {

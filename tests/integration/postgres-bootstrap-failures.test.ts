@@ -29,7 +29,7 @@ import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { workerEnvironmentSettings } from "../../apps/controller/src/worker/timer-settings.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { injectJson } from "../helpers/inject-json.ts";
-import { jsonLines as parseJsonLines } from "../helpers/json-lines.mjs";
+import { jsonLines as parseJsonLines } from "../helpers/json-lines.ts";
 import { withPool } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor } from "../helpers/wait-for.ts";
@@ -40,7 +40,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import {
   bootstrapInstallationInProcess,
   developmentBootstrapEnvironment,

@@ -36,14 +36,14 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
-} from "../helpers/development.mjs";
+} from "../helpers/development.ts";
 import {
   bindRole,
   grantRole,
   principalIAMState,
   type ActionsByKind,
 } from "../helpers/iam-grants.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { servedAs } from "../helpers/agent-identity.ts";
 import { withGatewaySecurityDefaults } from "../helpers/admitted-configuration.mjs";
 

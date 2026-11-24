@@ -6,7 +6,7 @@ import type {
   RepositoryPolicyDriver,
 } from "../../packages/contracts/src/index.ts";
 import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "./kubernetes-compute.ts";
 import { repositoryBoundary } from "./postgres-worker-revision-support.mjs";
 import { SAVED_REPOSITORY_SELECTION_NOT_APPROVED } from "./refusal-text.mjs";
 

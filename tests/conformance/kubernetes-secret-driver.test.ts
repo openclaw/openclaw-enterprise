@@ -16,7 +16,7 @@ import {
   untilSent,
   withRetryTimers,
 } from "../helpers/kubernetes-core-api.ts";
-import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
+import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.ts";
 import type { Secret, SecretBackendRef } from "../../packages/contracts/src/index.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { registerSecretRequestCases } from "./kubernetes-secret-driver-request-cases.ts";

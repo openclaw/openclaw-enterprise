@@ -22,7 +22,7 @@ import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { unconfiguredGateway } from "../helpers/openshell-gateway-client.ts";
 import { DEVICE_LOGIN_FAILED } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";

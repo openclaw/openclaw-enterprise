@@ -345,7 +345,7 @@ export function createWorkerRevisionFixtures(
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
-      import("./development.mjs"),
+      import("./development.ts"),
       import("../../apps/controller/src/composition/production-harness.ts"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),

@@ -25,11 +25,11 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { presetVariableTemplate } from "../helpers/configuration-preset-template.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
   authenticatedHeaders,
   createTestAuthPrincipal,

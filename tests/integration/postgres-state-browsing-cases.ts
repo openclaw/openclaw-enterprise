@@ -527,7 +527,7 @@ export async function refuseUnreadableDeployment(context: TestContext): Promise<
   ] = await Promise.all([
     import("pg"),
     import("../helpers/configuration-driver.ts"),
-    import("../helpers/secret-driver.mjs"),
+    import("../helpers/secret-driver.ts"),
     import("../../apps/controller/src/http/errors.ts"),
   ]);
   const pool = new Pool({ connectionString: databaseUrl });

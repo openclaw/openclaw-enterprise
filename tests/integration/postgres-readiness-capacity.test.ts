@@ -15,7 +15,7 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { bootstrapInstallation } from "../../scripts/bootstrap-installation.mjs";
 import { productionBootstrapEnvironment } from "../helpers/bootstrap-installation.mjs";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 

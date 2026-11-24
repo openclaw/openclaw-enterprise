@@ -26,7 +26,7 @@ import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/inde
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { signedLeaf } from "../helpers/certificates.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 const accessToken = "at-plugin-discovery-private-fixture";
 const pluginId = "codex-plugin:knowledge@openai-curated-remote";

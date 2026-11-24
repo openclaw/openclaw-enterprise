@@ -17,7 +17,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { DEVICE_ACCESS_TOKEN } from "../helpers/device-credential-gateway.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { DEVICE_LOGIN_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
 import { createDenied } from "../helpers/refusal-access.ts";
 import {

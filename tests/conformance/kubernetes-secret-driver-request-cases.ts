@@ -18,7 +18,7 @@ import {
   untilSent,
   withRetryTimers,
 } from "../helpers/kubernetes-core-api.ts";
-import type { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
+import type { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.ts";
 import { assertProtectedStaticSecretRead } from "../helpers/protected-static-secret-read.ts";
 import type { SecretApi, SecretRequestFixtures } from "./kubernetes-secret-driver.test.ts";
 
@@ -26,23 +26,11 @@ type Failure = string | number;
 type Method = keyof FakeSecretCoreV1Api["failureCodes"];
 
 function queueFailures(client: FakeSecretCoreV1Api, method: Method, ...failures: Failure[]) {
-  // The legacy fake's JS initializer cannot express the failure types accepted by every queue.
-  const queue: unknown = client.failureCodes[method];
-  assert.ok(isFailureQueue(queue));
-  queue.push(...failures);
+  client.failureCodes[method].push(...failures);
 }
 
 function queueAppliedFailure(client: FakeSecretCoreV1Api, failure: Failure) {
-  const queue: unknown = client.createAppliedFailureCodes;
-  assert.ok(isFailureQueue(queue));
-  queue.push(failure);
-}
-
-function isFailureQueue(queue: unknown): queue is Failure[] {
-  return (
-    Array.isArray(queue) &&
-    queue.every((value: unknown) => typeof value === "number" || typeof value === "string")
-  );
+  client.createAppliedFailureCodes.push(failure);
 }
 
 export function registerSecretRequestCases({
@@ -298,7 +286,7 @@ export function registerSecretRequestCases({
       request: Parameters<SecretApi["deleteNamespacedSecret"]>[0],
     ) => {
       deleted.push(`${request.namespace}/${request.name}`);
-      return realDelete({ ...request, body: request.body });
+      return realDelete(request);
     };
     return { client, create: createFresh, requested, deleted };
   }

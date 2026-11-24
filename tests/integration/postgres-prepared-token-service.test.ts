@@ -50,7 +50,7 @@ import {
   dispatchMetadata,
   raceMaintenance,
 } from "../helpers/github-metadata-exchange.mjs";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import {

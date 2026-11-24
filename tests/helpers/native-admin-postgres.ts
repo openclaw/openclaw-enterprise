@@ -32,7 +32,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createFixtureResponse } from "./console-fixture-response.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
-import { createTestSecretDriver } from "./secret-driver.mjs";
+import { createTestSecretDriver } from "./secret-driver.ts";
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
 import { injectJson as inject } from "./inject-json.ts";
 import {
@@ -40,7 +40,7 @@ import {
   privateBootstrapDirectory,
 } from "./bootstrap-installation.mjs";
 import { createHarnessConfiguration, withNativeAdminGateway } from "./harness-configuration.mjs";
-import { createReadyComputeDriver } from "./development.mjs";
+import { createReadyComputeDriver } from "./development.ts";
 import { selfSigned } from "./certificates.ts";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import { fixtureOidcIssuer } from "./production-sign-in.mjs";

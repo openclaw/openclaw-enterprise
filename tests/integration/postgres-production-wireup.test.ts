@@ -33,7 +33,7 @@ import { composePostgresDevelopment, composeProduction } from "../helpers/passwo
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import {
   createConsoleFixtureTransport,
   fetchLoopback,
@@ -43,8 +43,8 @@ import {
   signInWithEmailPassword as signInThroughTransport,
 } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import { normalizePresetTemplate } from "../../packages/contracts/src/index.ts";
 import {

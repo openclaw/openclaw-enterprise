@@ -12,7 +12,7 @@ import { createPostgresControllerAuth } from "../../apps/controller/src/auth/ind
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
-import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 
@@ -266,7 +266,9 @@ test(
       async (request: CreateRequest) => {
         const result = await create(request);
         key = request.namespace + "/" + request.body.metadata.name;
-        f.core.secrets.get(key).immutable = true;
+        const stored = f.core.secrets.get(key);
+        assert.ok(stored);
+        stored.immutable = true;
         return { ...result, immutable: true };
       },
       { times: 1 },
@@ -337,7 +339,9 @@ test(
             const result = await create(request);
             requestName = request.body.metadata.name;
             key = request.namespace + "/" + requestName;
-            f.core.secrets.get(key).immutable = true;
+            const stored = f.core.secrets.get(key);
+            assert.ok(stored);
+            stored.immutable = true;
             result.immutable = true;
             if (scenario === "missing-uid") {
               delete result.metadata.uid;
@@ -367,11 +371,14 @@ test(
               namespace: request.namespace,
               ...request.body?.preconditions,
             };
-            if (scenario === "uid-replacement") {
-              f.core.secrets.get(key).metadata.uid = "replacement";
-            }
-            if (scenario === "version-change") {
-              f.core.secrets.get(key).metadata.resourceVersion = "2";
+            if (scenario === "uid-replacement" || scenario === "version-change") {
+              const stored = f.core.secrets.get(key);
+              assert.ok(stored);
+              if (scenario === "uid-replacement") {
+                stored.metadata.uid = "replacement";
+              } else {
+                stored.metadata.resourceVersion = "2";
+              }
             }
             if (scenario === "delete-403" || scenario === "delete-503") {
               f.core.failureCodes.deleteNamespacedSecret.push(
@@ -422,10 +429,10 @@ test(
           });
         }
         if (scenario === "uid-replacement") {
-          assert.equal(f.core.secrets.get(key).metadata.uid, "replacement");
+          assert.equal(f.core.secrets.get(key)?.metadata.uid, "replacement");
         }
         if (scenario === "version-change") {
-          assert.equal(f.core.secrets.get(key).metadata.resourceVersion, "2");
+          assert.equal(f.core.secrets.get(key)?.metadata.resourceVersion, "2");
         }
         // Recovery is a separate current-state observation, never a replay of the uncertain create.
         await f.due(input.clientId);

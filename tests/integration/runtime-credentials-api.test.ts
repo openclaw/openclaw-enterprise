@@ -53,7 +53,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { reservePort } from "../helpers/available-port.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";

@@ -24,7 +24,7 @@ import { reservePort, reservedPortArgs } from "./available-port.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { jsonRequestInit } from "./inject-json.ts";
-import { jsonLines as parseJsonLines } from "./json-lines.mjs";
+import { jsonLines as parseJsonLines } from "./json-lines.ts";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import {
   cleanupKubernetesNamespaces,
@@ -491,7 +491,7 @@ async function createDurableController(pool: Pool) {
     import("../../packages/iam/src/index.ts"),
     import("../../packages/occ/src/index.ts"),
     import("../../packages/occ/src/state/postgres-state.ts"),
-    import("../helpers/development.mjs"),
+    import("../helpers/development.ts"),
     import("../../apps/controller/src/composition/production-harness.ts"),
   ]);
   const state = new PostgresPlatformState(pool);
