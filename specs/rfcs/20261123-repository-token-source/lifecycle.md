@@ -61,6 +61,8 @@ A Source that becomes unauthorized or stale, for example when the Agent principa
 
 Stop retires the Sandbox, as on the App path, and the Worker renews no loan for a stopped revision and retires its recorded copy. The token stays valid at GitHub; OCE cannot revoke it there.
 
+An upgrade does not carry a running revision's delivery over. Until the Agent is redeployed, that revision gets no new loan and no replacement: its Git ends when its current loan does, and after a replacement its delivery reads `pending`. The redeploy records a new copy and retires the old one.
+
 ## Retire
 
 `DELETE` with `credential_source:delete` returns `409`, with a reason that names the blocking condition, while:
