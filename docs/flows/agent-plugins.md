@@ -74,7 +74,7 @@ cross-Namespace requests (`400`), missing Secrets (`404`) and unavailable explic
 CredentialSources (`409`). Saved discovery requires dedicated Agents.
 Unavailable bound sources return `404`. Only hosted catalogs need credentials.
 
-`plugin-discovery.ts:withPluginDiscoveryCredential` checks caller and saved-Agent Source access. Codex resolves its bearer through TokenService and account metadata from consent. Gateway Sources use their reader. Cancellation discards late credentials.
+`plugin-discovery.ts:withPluginDiscoveryCredential` checks caller and saved-Agent Source access. OCC resolves the bearer through TokenService and passes it and consent account metadata to PluginDriver. Gateway Sources use their reader. Cancellation discards late credentials.
 
 `packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools` reads tokens via the Secret Driver,
 rechecking target and grants around `tools/list`. `driverPolicy.toolNames` pins upstream names.
