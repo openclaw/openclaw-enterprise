@@ -11,6 +11,7 @@ import {
   type ChannelDriver,
   type Restriction,
 } from "../../packages/contracts/src/index.ts";
+import { ChannelDirectoryError, DriverSelectionError } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
   bootstrapInstallation,
@@ -97,8 +98,16 @@ test("Channel directory accepts Slack's null terminal cursor without losing prio
 });
 
 test("Channel directory lookup reaches only the named provider's Driver", async () => {
+  // Count Secret value reads: refused lookups must not read the credential at all.
+  const secretDriver = createTestSecretDriver();
+  const withValue = secretDriver.withValue.bind(secretDriver);
+  let secretReads = 0;
+  secretDriver.withValue = (secret, use) => {
+    secretReads += 1;
+    return withValue(secret, use);
+  };
   const { controller, fixture, namespace } = await readyNamespaceFixture(
-    await configuredController(createTestSecretDriver()),
+    await configuredController(secretDriver),
     "channel-provider-dispatch",
   );
   const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
@@ -133,10 +142,33 @@ test("Channel directory lookup reaches only the named provider's Driver", async 
     }),
     async lookupDirectory(input) {
       otherInputs.push(input);
+      if (input.cursor === "foreign") {
+        // A rule no schema can express: a cursor issued for another lookup.
+        throw new ChannelDirectoryError("invalid_request", [
+          { path: "/cursor", code: "INVALID_VALUE", message: "Issued for another Team." },
+        ]);
+      }
       return { workspaceId: input.context?.team ?? "", candidates: [], complete: true };
     },
   };
   assert(fixture.controller, "bootstrap must create the controller");
+  // OCC refuses an open or uncompilable lookup schema when it installs the set, not per request.
+  for (const directoryContextSchema of [
+    () => ({ type: "object" }),
+    () => ({
+      type: "object",
+      additionalProperties: false,
+      properties: { team: { type: "string", pattern: "(" } },
+    }),
+  ]) {
+    assert.throws(
+      () =>
+        fixture.controller!.installChannelDrivers([
+          { provider: "other", driver: { ...other, directoryContextSchema } },
+        ]),
+      DriverSelectionError,
+    );
+  }
   fixture.controller.installChannelDrivers([
     { provider: "slack", driver: slack },
     { provider: "other", driver: other },
@@ -156,6 +188,7 @@ test("Channel directory lookup reaches only the named provider's Driver", async 
   const legacyHydration = await lookup({ ids: ["U123"] });
   assert.equal(legacyHydration.status, 200, JSON.stringify(legacyHydration.body));
   assert.equal(otherInputs.length, 0);
+  const readsBeforeRefusals = secretReads;
 
   // A named provider reaches only its own Driver, with the context that Driver defines.
   slackCalls.length = 0;
@@ -187,13 +220,36 @@ test("Channel directory lookup reaches only the named provider's Driver", async 
       { path: "/context", code: "UNKNOWN_FIELD" },
     ]);
   }
+  // The API contract refuses a malformed key before OCC or a Driver sees it.
+  const malformed = checkedInjectedBody(
+    await lookup({ provider: "other", context: { "tenant-id": "x", team: "T-OTHER" } }),
+    400,
+    ErrorResponse,
+  ).error;
+  assert.equal(malformed.code, "INVALID_REQUEST");
   assert.equal(otherInputs.length, 1);
   assert.deepEqual(slackCalls, []);
+  // One successful routed lookup read the Secret; no refusal did.
+  assert.equal(secretReads, readsBeforeRefusals + 1);
+
+  // A Driver's own refusal keeps its field path and code, never its message.
+  const foreign = checkedInjectedBody(
+    await lookup({
+      provider: "other",
+      context: { team: "T-OTHER" },
+      query: "a",
+      cursor: "foreign",
+    }),
+    400,
+    ErrorResponse,
+  ).error;
+  assert.equal(foreign.code, "INVALID_REQUEST");
+  assert.deepEqual(foreign.details, [{ path: "/cursor", code: "INVALID_VALUE" }]);
 
   // A provider without an installed Driver is unavailable, not a provider failure.
   const uninstalled = await lookup({ provider: "discord", query: "a" });
   assert.equal(checkedInjectedBody(uninstalled, 501, ErrorResponse).error.code, "NOT_IMPLEMENTED");
-  assert.equal(otherInputs.length, 1);
+  assert.equal(otherInputs.length, 2);
 });
 
 test("Channel directory lookup checks the exact edit target and Secret before and after reading", async () => {

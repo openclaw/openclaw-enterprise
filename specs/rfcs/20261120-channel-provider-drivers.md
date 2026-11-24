@@ -83,8 +83,8 @@ drivers:
 
 If the list is absent, composition installs every bundled Driver with default
 configuration. If the list is present, composition installs only the listed
-Drivers; an Agent that enables another provider fails admission because no
-Driver resolves it. Each Driver declares a closed configuration schema, so
+Drivers. Kubernetes Compute refuses an Agent Configuration that enables another
+provider, because no Driver resolves it. Each Driver declares a closed configuration schema, so
 startup refuses unknown fields. The startup configuration inspection reports
 the accepted values, like other Driver selections. A later provider's selection
 can carry its own settings, such as Teams storage hosts.
@@ -101,10 +101,11 @@ Optional `context` carries the provider's own lookup fields, such as a tenant
 ID. The shared API defines only its bounded shape. Each Driver declares its
 provider's fields with `directoryContextSchema()`, a JSON Schema like Driver
 configuration schemas. OCC validates `context`, an absent one as `{}`, against
-it before the Secret read and returns `400 INVALID_REQUEST` with the refused
-field paths. Slack declares a closed empty schema, so any context is refused.
-The Driver keeps only checks that a schema cannot express, such as a cursor
-from another lookup.
+it before the Secret read and returns `400 INVALID_REQUEST` with details: a
+missing or malformed field by name, an unknown key as `/context`. Slack declares
+a closed empty schema, so any context is refused. The Driver keeps only checks
+that a schema cannot express, such as a cursor from another lookup, and OCC
+returns their field details too.
 
 ### Credential validation and deployment admission
 
@@ -135,8 +136,9 @@ No changes.
 
 - [`ChannelDriver`](../../packages/contracts/src/drivers/channel/index.ts)
   gains the required `directoryContextSchema(): JSONSchema`. It describes the
-  provider's lookup fields; OCC validates `context` against it. OCC refuses to
-  install a Channel Driver without it.
+  provider's lookup fields as a closed object schema; OCC validates `context`
+  against it. OCC refuses to install a Channel Driver without one, or with a
+  schema that is open or does not compile.
 - `ChannelDirectoryLookupInput` gains the validated
   `context?: Readonly<Record<string, string>>`, and no `provider` field.
 - `ChannelDirectoryError` gains the `invalid_request` reason, with optional
@@ -163,21 +165,26 @@ destinations as its own.
   with the OCC API channel directory integration test.
 - **AC-3 — Drivers declare their lookup fields:** When a lookup omits a field
   that its provider's Driver declares as required, or sends a value that the
-  schema refuses, OCC returns `400 INVALID_REQUEST` naming the field, without a
-  credential read or provider call. A Slack lookup, with or without `provider`,
+  schema refuses, OCC returns `400 INVALID_REQUEST` naming the field, without
+  reading the Secret or calling the provider. A Slack lookup, with or without `provider`,
   that has any context is refused the same way. Verify with the OCC API channel
   directory integration test.
 - **AC-4 — Selection controls installation:** Given an empty `drivers.channel`
-  list, when an Agent enables Slack, then routing resolution refuses it.
-  Unknown or malformed configuration fails startup. Verify with the Channel
+  list, when an Agent Configuration enables Slack, then the API refuses to save
+  it. Unknown or malformed configuration fails startup. Verify with the Channel
   Driver startup integration test.
+- **AC-5 — Every installed validator gates deployment:** Given two installed
+  providers, when deployment admission runs, then both validators run, and a
+  change to either Driver or validator before the revision is recorded refuses
+  the deployment. Verify with the ordinary deployment admission integration
+  test.
 
 ## Delivery and verification
 
 The [implementation plan](../plans/20261120-channel-provider-drivers.md)
 records delivery. AC-1 to AC-3 pass through the real Fastify API, OCC and the
 Slack Driver, with an HTTP fixture at the Slack boundary; AC-4 passes through
-the real Installation loader.
+the real Installation loader and API; AC-5 through the real deployment admission.
 
 ## Rationale and alternatives
 

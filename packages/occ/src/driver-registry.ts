@@ -9,7 +9,8 @@ import type {
   PluginDriver,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
-import { isNonEmptyString } from "@openclaw-enterprise/utils";
+import { validateConfiguration } from "@openclaw-enterprise/contracts";
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { DriverConfigurationRegistry } from "./configuration-registry.ts";
 import {
   capability,
@@ -45,6 +46,43 @@ interface DriverRegistryDependencies {
   readonly configurations: Pick<DriverConfigurationRegistry, "resolve">;
   readonly namespaceLifecycleBindings: readonly NamespaceLifecycleBinding[];
   readonly hasBuiltInRepositoryPolicy: () => boolean;
+}
+
+/** A Channel Driver's lookup schema must be a closed object schema that compiles. */
+function closedLookupSchema(driver: ChannelDriver): boolean {
+  if (typeof driver.directoryContextSchema !== "function") {
+    return false;
+  }
+  try {
+    const schema = asRecord(driver.directoryContextSchema());
+    if (schema?.type !== "object" || schema.additionalProperties !== false) {
+      return false;
+    }
+    // Compile every pattern now, so a malformed schema fails at install, not per request.
+    const patterns = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(patterns);
+        return;
+      }
+      const record = asRecord(value);
+      if (record === undefined) {
+        return;
+      }
+      for (const [key, child] of Object.entries(record)) {
+        if (key === "pattern" && typeof child === "string") {
+          new RegExp(child, "u");
+        } else if (key === "patternProperties" && asRecord(child) !== undefined) {
+          Object.keys(child as object).forEach((pattern) => new RegExp(pattern, "u"));
+        }
+        patterns(child);
+      }
+    };
+    patterns(schema);
+    validateConfiguration(schema, {});
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function driverKey(capability: DriverCapability, id: string): string {
@@ -137,7 +175,7 @@ export class DriverRegistry {
           !isNonEmptyString(provider) ||
           !/^[a-z][a-z0-9_-]{0,63}$/.test(provider) ||
           driver?.capability !== "channel" ||
-          typeof driver.directoryContextSchema !== "function",
+          !closedLookupSchema(driver),
       ) ||
       new Set(providers.map(({ provider }) => provider)).size !== providers.length ||
       new Set(providers.map(({ driver }) => driver.id)).size !== providers.length
@@ -146,16 +184,34 @@ export class DriverRegistry {
         "Each channel provider must bind one distinct Channel Driver identity.",
       );
     }
-    const registrations = providers.map(({ provider, driver }) => {
-      const [key, entry] = this.driverRegistrationEntry(driver);
-      return [key, Object.freeze({ ...entry, provider })] as const;
-    });
-    const entries = registrations.map(([, entry]) => entry);
-    this.applyLifecycleDrivers(this.selections, [...this.pluginRegistrations, ...entries]);
+    // The new set replaces the previous one, which may share Drivers with it. Release the
+    // previous registrations first and restore them if the new set is refused.
+    const previous = this.channelRegistrations
+      .map((entry) => [driverKey("channel", entry.id), entry] as const)
+      .filter(([key, entry]) => this.registrations.get(key) === entry);
+    for (const [key] of previous) {
+      this.registrations.delete(key);
+    }
+    let registrations: (readonly [string, RegisteredDriver])[];
+    try {
+      registrations = providers.map(({ provider, driver }) => {
+        const [key, entry] = this.driverRegistrationEntry(driver);
+        return [key, Object.freeze({ ...entry, provider })] as const;
+      });
+      this.applyLifecycleDrivers(this.selections, [
+        ...this.pluginRegistrations,
+        ...registrations.map(([, entry]) => entry),
+      ]);
+    } catch (error) {
+      for (const [key, entry] of previous) {
+        this.registrations.set(key, entry);
+      }
+      throw error;
+    }
     for (const [key, entry] of registrations) {
       this.registrations.set(key, entry);
     }
-    this.channelRegistrations = entries;
+    this.channelRegistrations = registrations.map(([, entry]) => entry);
   }
 
   /** Whether composition installed any Channel Driver; reads no Driver member. */

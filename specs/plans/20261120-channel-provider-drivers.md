@@ -44,6 +44,7 @@ more providers, such as Microsoft Teams; their Drivers are separate changes.
 | --------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | AC-1–AC-3 | `tests/integration/occ-api-channel-directory.test.ts`: "Channel directory lookup reaches only the named provider's Driver" |
 | AC-4      | `tests/integration/channel-driver-startup.test.ts`                                                                              |
+| AC-5      | `tests/integration/occ-api.test.mjs`: "ordinary deployment admits only the Configuration and Drivers whose channels were validated" |
 
 Existing deployment admission, Secret, Console and real-cluster Slack lookup
 tests now install Channel Drivers per provider and keep their assertions.

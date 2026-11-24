@@ -36,9 +36,9 @@ export interface ChannelDriver extends Driver {
   /** Deterministic provider requirements; never reads credentials or changes infrastructure. */
   enableRouting(): readonly NetworkDestinationRule[];
   /**
-   * JSON Schema of this provider's lookup fields in `context`. OCC validates every
-   * lookup's `context`, an absent one as `{}`, before it reads the credential. A
-   * provider without lookup fields returns a closed empty object schema.
+   * Closed JSON Schema object for this provider's lookup fields in `context`. OCC
+   * validates every lookup's `context`, an absent one as `{}`, before it reads the
+   * credential. A provider without lookup fields returns a closed empty schema.
    */
   directoryContextSchema(): JSONSchema;
   /** Checks only this Driver's provider section; an absent or disabled section passes. */

@@ -36977,8 +36977,9 @@
                           "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
                           "type": "string"
                         },
-                        "description": "Nonsecret lookup fields that the provider's Channel Driver defines and validates.",
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
                         "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
                         "type": "object"
                       },
                       "cursor": {
@@ -37023,8 +37024,9 @@
                           "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
                           "type": "string"
                         },
-                        "description": "Nonsecret lookup fields that the provider's Channel Driver defines and validates.",
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
                         "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
                         "type": "object"
                       },
                       "cursor": {
@@ -37069,8 +37071,9 @@
                           "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
                           "type": "string"
                         },
-                        "description": "Nonsecret lookup fields that the provider's Channel Driver defines and validates.",
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
                         "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
                         "type": "object"
                       },
                       "cursor": {
@@ -37111,8 +37114,9 @@
                           "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
                           "type": "string"
                         },
-                        "description": "Nonsecret lookup fields that the provider's Channel Driver defines and validates.",
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
                         "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
                         "type": "object"
                       },
                       "ids": {
@@ -37162,8 +37166,9 @@
                           "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
                           "type": "string"
                         },
-                        "description": "Nonsecret lookup fields that the provider's Channel Driver defines and validates.",
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
                         "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
                         "type": "object"
                       },
                       "ids": {
@@ -37213,8 +37218,9 @@
                           "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
                           "type": "string"
                         },
-                        "description": "Nonsecret lookup fields that the provider's Channel Driver defines and validates.",
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
                         "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
                         "type": "object"
                       },
                       "ids": {

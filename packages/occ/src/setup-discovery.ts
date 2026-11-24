@@ -277,11 +277,12 @@ export class SetupDiscovery {
           );
           return safeChannelDirectoryResult(result, ids, token);
         } catch (error) {
-          return {
-            error: new ChannelDirectoryError(
-              error instanceof ChannelDirectoryError ? error.reason : "unavailable",
-            ),
-          };
+          if (!(error instanceof ChannelDirectoryError)) {
+            return { error: new ChannelDirectoryError("unavailable") };
+          }
+          // Keep only the field path and code a Driver names; never its messages.
+          const details = error.details?.slice(0, 32).map(({ path, code }) => ({ path, code }));
+          return { error: new ChannelDirectoryError(error.reason, details) };
         }
       }),
     );

@@ -189,6 +189,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   if (driver.capability === "channel") {
     return (
       typeof candidate.enableRouting === "function" &&
+      typeof candidate.directoryContextSchema === "function" &&
       typeof candidate.lookupDirectory === "function" &&
       (candidate.validateCredentials === undefined ||
         typeof candidate.validateCredentials === "function")
