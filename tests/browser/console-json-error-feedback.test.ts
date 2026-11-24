@@ -100,8 +100,11 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
   assert.equal(patches, 0);
 
   // From the end of a long draft, Save should reveal the bad character on the first line.
-  const syntaxDraft = corrected.replace("{", "{x");
-  await json.fill(syntaxDraft);
+  await json.fill(corrected);
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("x");
+  const syntaxDraft = await json.inputValue();
   await page.keyboard.press("Control+End");
   assert.ok((await json.evaluate((node) => node.scrollTop)) > 0, "first line starts offscreen");
   await page.keyboard.press("Tab");
