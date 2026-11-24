@@ -1166,8 +1166,18 @@ async function openRefocusDraft(
 }
 
 test("a slow Agent refocus shows the pending status beside the scrolled draft", async (t) => {
-  const { fixture, page, artifacts, url, editor, draft, requests, readCount, agentPath } =
-    await openRefocusDraft(t);
+  const {
+    fixture,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  } = await openRefocusDraft(t);
   await tagView(page);
   const scrollY = await editor.evaluate((node) => {
     node.scrollIntoView({ block: "center" });
@@ -1193,19 +1203,34 @@ test("a slow Agent refocus shows the pending status beside the scrolled draft", 
     method: "GET",
     fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
   });
+  const configurationRead = await holdRequests(t, page, fixture.origin + configurationPath, {
+    once: true,
+    method: "GET",
+  });
   const now = Date.now();
-  await page.clock.install({ time: now });
-  await page.clock.pauseAt(now + 1_000);
+  await page.clock.install({ time: now - 60_000 });
+  await page.clock.pauseAt(now);
   const status = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
   const first = responseTo(page, "GET", revisionsUrl);
   await refocus(page);
-  await firstRead.requested;
+  await Promise.all([firstRead.requested, configurationRead.requested]);
   assert.equal(await status.count(), 0, "an ordinary read does not immediately show a cue");
   firstRead.release();
   assert.equal((await first).status(), 500);
-  await retryRead.requested;
-  assert.equal(await status.count(), 1, "the retry shows the cue before the delay expires");
+  await page
+    .locator('.content [inert][style*="opacity: 0"]')
+    .filter({ has: editor })
+    .waitFor({ state: "attached" });
+  assert.equal(readCount(revisionsPath), 1, "the retry waits for the Configuration response");
+  assert.equal(
+    await status.count(),
+    1,
+    "concealing the draft shows the cue while Configuration is pending",
+  );
   const cue = await status.evaluateHandle((node) => node);
+  configurationRead.release();
+  await retryRead.requested;
+  assert.equal(await status.count(), 1, "the cue stays visible while the retry is pending");
   await page.clock.fastForward(1_001);
   assert.equal(await status.count(), 1, "the timer does not add a second cue");
   assert.equal(await cue.evaluate((node) => node.isConnected), true, "the original cue remains");

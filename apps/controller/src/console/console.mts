@@ -3292,6 +3292,12 @@ async function revalidateMountedAgent(current: Route) {
   const mountedTitle = heading.textContent;
   let admittedAgentName: string | undefined;
   let scrollBeforeConceal: number | undefined;
+  let clearStillChecking: (() => void) | undefined;
+  const showPendingStatus = () => {
+    if (isCurrent()) {
+      clearStillChecking ??= showStillChecking({ mountedAgent: true });
+    }
+  };
   const concealDetails = () => {
     if (!isCurrent()) {
       return;
@@ -3316,19 +3322,16 @@ async function revalidateMountedAgent(current: Route) {
   let retryNotBefore = 0;
   const detailFailure = (error: unknown): never => {
     concealDetails();
-    const { retryAfterSeconds } = requestFailure(error);
+    const { status, retryAfterSeconds } = requestFailure(error);
+    if (status !== 401 && !isAccessRefusal(status)) {
+      showPendingStatus();
+    }
     if (retryAfterSeconds !== undefined) {
       retryNotBefore = Math.max(retryNotBefore, performance.now() + retryAfterSeconds * 1000);
     }
     throw error;
   };
   let checked = false;
-  let clearStillChecking: (() => void) | undefined;
-  const showPendingStatus = () => {
-    if (isCurrent()) {
-      clearStillChecking ??= showStillChecking({ mountedAgent: true });
-    }
-  };
   const stillChecking = setTimeout(showPendingStatus, stillCheckingDelayMs);
   try {
     const resolvedSession = await readSession();
@@ -3509,7 +3512,6 @@ async function revalidateMountedAgent(current: Route) {
       if (!isCurrent() || retryNotBefore !== 0 || !retryableAgentRecheck(error)) {
         throw error;
       }
-      showPendingStatus();
       // One more set of detail GETs for this foreground check. Navigation aborts it.
       rechecked = await readDetails();
     }
