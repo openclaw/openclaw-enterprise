@@ -507,13 +507,8 @@ test("Image Runtime Startup retains the failed artifact and cluster preparation 
       assert.ok(line.startsWith(startupBinding), line);
       return line.slice(startupBinding.length + 1);
     });
-  assert.deepEqual(notices.slice(0, 3), [
-    "phase=runtime-image-build-cluster event=start",
-    "phase=image-load event=start",
-    "phase=k3d-create event=start",
-  ]);
-  const [firstChild, secondChild, enclosing] = notices.slice(3);
-  assert.equal(notices.length, 6, prepared.stderr);
+  assert.equal(notices.length, 3, prepared.stderr);
+  const [firstChild, secondChild, enclosing] = notices;
   for (const [phase, notice] of [
     ["image-load", [firstChild, secondChild].find((line) => line?.startsWith("phase=image-load "))],
     ["k3d-create", [firstChild, secondChild].find((line) => line?.startsWith("phase=k3d-create "))],
@@ -528,7 +523,7 @@ test("Image Runtime Startup retains the failed artifact and cluster preparation 
   await commands.cleanupSuccessfully();
 });
 
-test("Image Runtime Startup notices accept only canonical CI bindings and bounded timings", async () => {
+test("Image Runtime Startup terminal notices fit one step and require canonical CI bindings and bounded timings", async () => {
   const noticeModule = new URL("../../scripts/ci/observability-phase-notice.ts", import.meta.url);
   const phases = [
     "runtime-image-build-cluster",
@@ -566,8 +561,8 @@ test("Image Runtime Startup notices accept only canonical CI bindings and bounde
       assert.equal(start(other, phases[0]), undefined);
     }
     assert.equal(start(lane, "image-load\\n::notice::canary"), undefined);
-    for (const phase of phases) {
-      const finish = start(lane, phase);
+    const finishes = phases.map((phase) => start(lane, phase));
+    for (const finish of finishes) {
       for (const invalid of [-1, Infinity, NaN, 1.5, 86400001, Number.MAX_SAFE_INTEGER, "5"]) {
         finish("success", invalid);
       }
@@ -576,10 +571,9 @@ test("Image Runtime Startup notices accept only canonical CI bindings and bounde
       }
       finish("success", 86400000);
     }
-    const finish = start(lane, "image-load");
     closeSync(2);
-    assert.doesNotThrow(() => finish("failure", 0));
-    assert.equal(start(lane, "image-load"), undefined);
+    assert.doesNotThrow(() => finishes[0]("failure", 0));
+    assert.doesNotThrow(() => start(lane, "image-load")?.("failure", 0));
   `;
   const result = await spawnResult(
     process.execPath,
@@ -588,15 +582,18 @@ test("Image Runtime Startup notices accept only canonical CI bindings and bounde
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
+  assert.ok(
+    result.stderr.split("\n").filter((line) => line.startsWith("::notice ")).length <= 10,
+    "all six phase outcomes must fit the Actions step's notice limit",
+  );
   assert.equal(
     result.stderr,
     phases
       .map(
         (phase) =>
-          `${startupBinding} phase=${phase} event=start\n` +
           `${startupBinding} phase=${phase} event=finish outcome=success elapsed_ms=86400000\n`,
       )
-      .join("") + `${startupBinding} phase=image-load event=start\n`,
+      .join(""),
   );
 });
 

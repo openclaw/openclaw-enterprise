@@ -12,7 +12,12 @@ function emit(line: string) {
   }
 }
 
-function startPhaseNotice(title: string, lane: string, phase: string) {
+function startPhaseNotice(
+  title: string,
+  lane: string,
+  phase: string,
+  events: "start-and-finish" | "finish-only",
+) {
   if (process.env.GITHUB_ACTIONS !== "true") {
     return;
   }
@@ -28,7 +33,7 @@ function startPhaseNotice(title: string, lane: string, phase: string) {
     return;
   }
   const binding = `::notice title=${title}::lane=${lane} run_id=${run} run_attempt=${attempt} source_sha=${sha} phase=${phase}`;
-  if (!emit(`${binding} event=start\n`)) {
+  if (events === "start-and-finish" && !emit(`${binding} event=start\n`)) {
     return;
   }
   return (outcome: Outcome, elapsedMs: number) => {
@@ -50,7 +55,7 @@ export function startObservabilityPhase(lane: string, phase: string) {
     lane === "k3d-observability" &&
     ["cluster-build-pull", "workload-image-imports", "lane-cleanup"].includes(phase)
   ) {
-    return startPhaseNotice("Production Observability timing", lane, phase);
+    return startPhaseNotice("Production Observability timing", lane, phase, "start-and-finish");
   }
 }
 
@@ -78,6 +83,7 @@ export function startImageRuntimeStartupPhase(lane: string, phase: string) {
       "codex-seccomp-profile",
     ].includes(phase)
   ) {
-    return startPhaseNotice("Image Runtime Startup preparation", lane, phase);
+    // Six phases share the Actions step's budget of ten notices.
+    return startPhaseNotice("Image Runtime Startup preparation", lane, phase, "finish-only");
   }
 }
