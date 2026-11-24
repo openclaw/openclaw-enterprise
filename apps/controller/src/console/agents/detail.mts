@@ -14,7 +14,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
-import type { AgentRecheck, ConsolePageContext } from "../page-context.mjs";
+import type { AgentRecheck, ConsolePageContext, LeaveGuard } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
   storedConfigurationProblem,
@@ -1133,14 +1133,14 @@ export async function renderAgentDetail(
   context.setPageActions?.(headerActions);
   // The note that holds the tabs also holds ← Agents and the Namespace selector (finding 1902).
   // Refresh rebuilds the page, so only a share in flight holds it.
-  const refuseLeave = ({ pendingOnly = false, refresh = false } = {}) => {
+  const refuseLeave: LeaveGuard = ({ pendingOnly, refresh, focusFeedback } = {}) => {
     if (
       !sharingWrite &&
       (refresh || !(pendingOnly ? draftWriteInFlight() : draftEditorBlocksNavigation()))
     ) {
       return false;
     }
-    showLeaveBlock();
+    showLeaveBlock(focusFeedback);
     return true;
   };
   context.setLeaveGuard?.(refuseLeave);
@@ -1616,7 +1616,8 @@ export async function renderAgentDetail(
   }
   // A tab without its own editor feedback shows its block at the top of the tab panel.
   const showBlockInPanel = () => showLeaveNote(content, draftEditorNavigationBlock, "start");
-  let showDraftEditorNavigationBlock = showBlockInPanel;
+  let showDraftEditorNavigationBlock: (focusFeedback?: (feedback: HTMLElement) => void) => void =
+    showBlockInPanel;
   // Why the page holds, for each write in flight; editor blocks name their own.
   function leaveReason() {
     if (!draftEditorBlocksNavigation()) {
@@ -1636,7 +1637,7 @@ export async function renderAgentDetail(
     }
     return networkProxyNavigationBlock ?? draftEditorNavigationBlock;
   }
-  function showLeaveBlock() {
+  function showLeaveBlock(focusFeedback?: (feedback: HTMLElement) => void) {
     const reason = leaveReason();
     if (deleting) {
       // Delete replaced the page, editors and tab panel included, with its deletion row: a
@@ -1663,7 +1664,7 @@ export async function renderAgentDetail(
     } else if (networkProxyNavigationBlock) {
       showLeaveNote(content, networkProxyNavigationBlock, "start");
     } else {
-      showDraftEditorNavigationBlock();
+      showDraftEditorNavigationBlock(focusFeedback);
     }
   }
   function draftEditorBlocksNavigation() {
@@ -6701,11 +6702,15 @@ export async function renderAgentDetail(
       },
       { ...agent, agentId: agent.id },
     );
-    showDraftEditorNavigationBlock = () => {
-      setStatusTone(feedback, null);
-      feedback.textContent = draftEditorSaving
-        ? draftEditorNavigationBlock
-        : pendingEditGuidance("leaving this tab");
+    showDraftEditorNavigationBlock = (focusFeedback) => {
+      // A stale or uncertain save already explains the recovery action.
+      if (saveState !== "conflict" && saveState !== "uncertain") {
+        setStatusTone(feedback, null);
+        feedback.textContent = draftEditorSaving
+          ? draftEditorNavigationBlock
+          : pendingEditGuidance("leaving this tab");
+      }
+      focusFeedback?.(feedback);
     };
     function saveOffered() {
       return !fields?.notConfigured() || (fields.isDirty() && fields.bindings().length === 0);
