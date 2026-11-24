@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import {
   ScopeViolationError,
   type PlatformOperation,
@@ -19,6 +20,21 @@ import {
 // PostgreSQL refuses a wrong Agent lifecycle target in its one controller work shape check.
 const postgresWorkTargetShape =
   "Controller work requires one exact Namespace, Agent, or revision target shape.";
+
+async function assertUnavailableAgentRevision(
+  store: PlatformStateStore,
+  revision: AgentRevision,
+  description: string,
+): Promise<void> {
+  await assert.rejects(
+    store.transact(async ({ revisions }) => {
+      await revisions.createRevision(revision);
+      assert.fail("createRevision accepted an unavailable AgentRevision.");
+    }),
+    { name: "ScopeViolationError", message: "The AgentRevision belongs to an unavailable Agent." },
+    description,
+  );
+}
 
 async function verifyRevisionOrder(
   store: PlatformStateStore,
@@ -82,8 +98,15 @@ async function verifyRevisionOrder(
     await assertHistory();
   }
 
-  // Read the upper bound before rolling it back to preserve the sibling's history.
   const last = { ...first, id: identifier("rev"), revision: Number.MAX_SAFE_INTEGER };
+  await assertUnavailableAgentRevision(
+    store,
+    { ...last, gatewayManagedMode: !last.gatewayManagedMode },
+    "AgentRevision Gateway managed mode must match the owning Agent.",
+  );
+  await assertHistory();
+
+  // Read the upper bound before rolling it back to preserve the sibling's history.
   const rollback = new Error("Roll back the maximum safe revision.");
   await assert.rejects(
     store.transact(async ({ revisions }) => {
@@ -237,18 +260,16 @@ export async function verifyPlatformStateTransactions(
       providerAgent,
     );
   });
-  await assert.rejects(
-    store.transact((transaction) =>
-      transaction.revisions.createRevision({
-        ...revision,
-        id: identifier("rev"),
-        agentId: providerAgent.id,
-        configurationId: backendConfiguration.id,
-        backendId: "provider-b",
-        servicePrincipalId: providerAgent.servicePrincipalId,
-      }),
-    ),
-    { name: "ScopeViolationError", message: "The AgentRevision belongs to an unavailable Agent." },
+  await assertUnavailableAgentRevision(
+    store,
+    {
+      ...revision,
+      id: identifier("rev"),
+      agentId: providerAgent.id,
+      configurationId: backendConfiguration.id,
+      backendId: "provider-b",
+      servicePrincipalId: providerAgent.servicePrincipalId,
+    },
     "AgentRevision Backend snapshots must match the owning Agent.",
   );
   await store.read(async (state) => {
@@ -315,16 +336,14 @@ export async function verifyPlatformStateTransactions(
     );
   }
 
-  await assert.rejects(
-    store.transact((transaction) =>
-      transaction.revisions.createRevision({
-        ...revision,
-        id: identifier("rev"),
-        revision: 2,
-        servicePrincipalId: identifier("service-agent"),
-      }),
-    ),
-    { name: "ScopeViolationError", message: "The AgentRevision belongs to an unavailable Agent." },
+  await assertUnavailableAgentRevision(
+    store,
+    {
+      ...revision,
+      id: identifier("rev"),
+      revision: 2,
+      servicePrincipalId: identifier("service-agent"),
+    },
     "An AgentRevision cannot claim another service principal.",
   );
 
