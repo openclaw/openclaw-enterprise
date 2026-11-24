@@ -21,12 +21,11 @@ drivers:
         catalogSource: openai-curated
 ```
 
-Dedicated Codex defaults to `catalogSource: hosted`, which discovers plugins
-using a PAT or a Secret containing one. Hosted discovery needs API HTTPS to
-`auth.openai.com` and `chatgpt.com`. The
-[Codex profile](../../guides/deploy/installation-profiles.md#hosted-discovery-connectivity)
-renders matching Helm egress; manual YAML needs equivalent policy. The driver
-does not configure Kubernetes networking.
+Dedicated Codex defaults to `catalogSource: hosted`, using a PAT or authorized Codex
+OAuth Source. Helm allows unrestricted API and refresh-Worker egress. Verify DNS
+and HTTPS access to `auth.openai.com` and `chatgpt.com`; manual deployments need
+equivalent [connectivity](../../guides/deploy/installation-profiles.md#hosted-discovery-connectivity).
+The Driver configures no networking.
 
 The `openai-curated` setting above enables browsing without a credential or
 provider request.
@@ -59,11 +58,12 @@ This reader starts native app-server, calls `plugin/list`, and may update its ca
 
 Hosted Create Agent discovery reads GLOBAL plugin-service pages (maximum 20),
 fetching tools on demand. App-only plugins need no `requires_local_executor` field.
-A same-Namespace Secret can supply the PAT; managed ServiceAccount references are
-unsupported. Queries use hosted search; the curated catalog searches its bundled entries.
-The console preloads the first page when a PAT is entered or selected in Create
-Agent, or an editable Agent's Plugins tab opens with a bound PAT Secret;
-**Configure plugins** reuses that page or its pending request. Replacing the PAT
+A same-Namespace Secret can supply a PAT; TokenService resolves OAuth Sources.
+Managed ServiceAccount references are unsupported.
+Queries use hosted search; the curated catalog searches its bundled entries.
+The Console preloads the first page when a credential is entered or selected in
+Create Agent, or an editable Agent's Plugins tab opens with its bound credential;
+**Configure plugins** reuses that page or its pending request. Replacing the credential
 clears results and preloads a fresh first page; selections remain. Search waits
 300 ms after the last keystroke (Enter, page navigation and explicit loads run at
 once) and resets pagination for a new query. Loading feedback lasts until the

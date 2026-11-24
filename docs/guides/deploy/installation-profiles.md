@@ -370,9 +370,10 @@ the install as ready:
   actual Pod, Service and node ranges, including public node addresses. Rendering
   the fleet does not enable channel consumers. Slack Agents require dedicated
   Codex execution; customer upstream proxies are not supported.
-- For Codex hosted plugin discovery and runtime authentication, a
-  same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
-  See [discovery egress](#hosted-discovery-connectivity).
+- For Codex hosted plugin discovery and runtime authentication, a same-Namespace
+  `codex_pat` token Secret, a PAT entered during Agent creation, or a Codex OAuth
+  Source created by successful ChatGPT sign-in. See
+  [hosted discovery connectivity](#hosted-discovery-connectivity).
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed
