@@ -156,13 +156,18 @@ export function createNetworkPolicyFixture(
     seedAgent: () => { id: unknown; activeRevisionId?: unknown };
   },
 ) {
+  const stagedRepository = scenario.policyState === "stagedRepositoryPermissions";
   const policyGrant = {
-    id: scenario.policyState === "unicode" ? "unicode-tool" : "python-web",
-    binary:
-      scenario.policyState === "unicode"
-        ? "/" + Array(6).fill("\u{10400}".repeat(45)).join("/") + "/tool"
-        : "/usr/bin/python3.11",
-    host: "example.org",
+    ...(stagedRepository
+      ? { id: "codex-model", binary: "/usr/bin/codex", host: "chatgpt.com" }
+      : {
+          id: scenario.policyState === "unicode" ? "unicode-tool" : "python-web",
+          binary:
+            scenario.policyState === "unicode"
+              ? "/" + Array(6).fill("\u{10400}".repeat(45)).join("/") + "/tool"
+              : "/usr/bin/python3.11",
+          host: "example.org",
+        }),
     ports: [{ from: 443, to: 443 }],
   };
   let policyPolls = 0;
@@ -170,7 +175,8 @@ export function createNetworkPolicyFixture(
   const repositoryEditor = scenario.policyState === "repositoryEditor";
   let simulateRepositoryConflict = scenario.policyState === "repositoryEditorConcurrent";
   const blockedByDefault = scenario.policyState === "repositoryPermissionsLimited";
-  const permissions = scenario.policyState === "repositoryPermissions" || blockedByDefault;
+  const permissions =
+    scenario.policyState === "repositoryPermissions" || blockedByDefault || stagedRepository;
   const deployedPermissions = permissions && scenario.deployed === true;
   let policyEditing = permissions ? deployedPermissions : scenario.policyState !== "disabled";
   const canEditRepositoryGrants = repositoryEditor || simulateRepositoryConflict || permissions;
@@ -193,7 +199,7 @@ export function createNetworkPolicyFixture(
       ]
     : [];
   const initialAdditions =
-    scenario.policyState === "protected"
+    scenario.policyState === "protected" || stagedRepository
       ? [policyGrant]
       : Array.from({ length: scenario.policyRuleCount ?? 0 }, (_, index) => ({
           ...structuredClone(policyGrant),
@@ -402,7 +408,7 @@ export function createNetworkPolicyFixture(
         ...(repositoryLimits || protectedExecution || unreadableRevision
           ? {
               repositoryNetworkPolicyCeiling: repositoryCeiling,
-              ...(permissions
+              ...(permissions && !stagedRepository
                 ? {
                     repositoryApiMaxima: [
                       {
@@ -416,6 +422,7 @@ export function createNetworkPolicyFixture(
                 : {}),
               repositoryNetworkPolicySaveSupported:
                 canEditRepositoryGrants || sandboxPolicy.repositoryNetworkPolicy !== undefined,
+              ...(stagedRepository && { repositoryNetworkPolicySupportsAdditions: true }),
             }
           : {}),
         ceiling: policyCeiling,
@@ -507,14 +514,14 @@ export function createNetworkPolicyFixture(
           "The preview requires network additions with string identities and numeric port ranges.",
         );
       }
-      if (protectedExecution && body.additions.length > 0) {
+      const explicit = "repositoryNetworkPolicy" in body;
+      if (protectedExecution && body.additions.length > 0 && !(stagedRepository && explicit)) {
         return error(
           409,
           "SANDBOX_POLICY_PROTECTED_EXECUTION",
           "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
         );
       }
-      const explicit = "repositoryNetworkPolicy" in body;
       const savedGrants = sandboxPolicy.repositoryNetworkPolicy;
       if (simulateRepositoryConflict && explicit && savedGrants?.length === 2) {
         // Simulate a second editor removing the application grant before this save.
@@ -532,7 +539,10 @@ export function createNetworkPolicyFixture(
         return error(409, "RESOURCE_STATE_CONFLICT");
       }
       const requested = explicit ? body.repositoryNetworkPolicy : undefined;
-      if (explicit && (!Array.isArray(requested) || body.additions.length > 0)) {
+      if (
+        explicit &&
+        (!Array.isArray(requested) || (!stagedRepository && body.additions.length > 0))
+      ) {
         return error(409, "RESOURCE_CONFLICT");
       }
       const choices = Array.isArray(requested)

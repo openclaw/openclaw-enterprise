@@ -114,13 +114,12 @@ PUT uses Read Committed to observe revocations during IAM lock waits.
 
 `apps/controller/src/console/agents/sandbox-policy.mts:repositoryApiEditor`
 previews role, Namespace and Agent limits. Refresh and rejected saves retain
-drafts if saved grants match. Otherwise, discard them. PUT validates the list.
-The editor confirms Agent, Namespace, version
-and grants, including limits. First deployment review shows API limits beside each role.
-Deny-all and withdrawal require confirmation.
-Dedicated Agents can save their first TokenService Git grants after standalone
-model-only deployments. Stop before deploying the saved grants. OCC and the
-Worker reject unscoped history through `supportsScopedRepositoryHistory`.
+drafts while saved grants match. PUT validates the list. The editor confirms the
+Agent, Namespace, version and grants. First deployment shows API limits by role.
+Deny-all requires confirmation. TokenService Git withdrawal keeps model network
+rules. Dedicated Agents can save Git grants after standalone model-only
+deployments. Stop before deploying those grants. OCC and the Worker reject
+unscoped history through `supportsScopedRepositoryHistory`.
 Git presents OpenShell's placeholder through a repository-scoped HTTPS credential helper.
 
 Deployment rechecks Repo scope, proxy and Driver identities before credential

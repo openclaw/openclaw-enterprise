@@ -1649,7 +1649,10 @@ export function renderAgentSandboxPolicy(
   }
 
   async function saveRepositoryPolicy(loaded: SandboxPolicyViewWire, grants: RepositoryGrants) {
-    const additions = grants.length > 0 ? loaded.policy.additions : [];
+    const additions =
+      grants.length > 0 || loaded.repositoryNetworkPolicySupportsAdditions === true
+        ? loaded.policy.additions
+        : [];
     const updated = await writePolicy(
       loaded.configuration,
       loaded.policy,
@@ -2010,7 +2013,12 @@ export function renderAgentSandboxPolicy(
         hint(loaded.unavailableReason ?? "The active revision’s policy is unavailable."),
       );
     }
-    if (saved?.length && policy.additions.length && loaded.capability !== null) {
+    if (
+      saved?.length &&
+      policy.additions.length &&
+      loaded.capability !== null &&
+      loaded.repositoryNetworkPolicySupportsAdditions !== true
+    ) {
       if (canSetDenyAll()) {
         panel.append(
           hint("Remove and save the ordinary network rules before withdrawing repository grants."),
@@ -2043,7 +2051,7 @@ export function renderAgentSandboxPolicy(
           title,
           withdrawing ? repositoryGrantList(saved) : null,
           element("p", {}, "This saves a deny-all repository policy."),
-          policy.additions.length
+          policy.additions.length && loaded.repositoryNetworkPolicySupportsAdditions !== true
             ? element("p", {}, "This also removes the saved ordinary network rules.")
             : null,
           agent.desiredRuntimeState === "running"
@@ -3213,7 +3221,7 @@ export function renderAgentSandboxPolicy(
     if (panel) {
       policyPanel.append(panel);
     }
-    if (view.policy.additions.length) {
+    if (view.policy.additions.length && view.repositoryNetworkPolicySupportsAdditions !== true) {
       policyPanel.append(
         element(
           "p",

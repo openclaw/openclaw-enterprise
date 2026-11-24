@@ -2172,7 +2172,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.deepEqual(await saveGrant(), [nativeRepo, peerRepo]);
 });
 
-test("protected execution can withdraw saved repository grants using the current policy version", async (t) => {
+async function protectedPolicyWithdrawalFixture(t: TestContext) {
   let state: PlatformStateStore | undefined;
   const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
   const { backend, sandboxDriver, driverConfigurations } = openShellSandbox(t);
@@ -2240,7 +2240,50 @@ test("protected execution can withdraw saved repository grants using the current
   assert.equal(record(initial.data).protectedExecution, true);
   assert.equal(record(initial.data).repositoryNetworkPolicySaveSupported, true);
   assert.deepEqual(record(record(initial.data).policy).repositoryNetworkPolicy, savedGrants);
+  return { fixture, namespace, agent, base, savedGrants, sandboxDriver };
+}
 
+test("the Console preserves model network rules when staging deny-all Repository access", async (t) => {
+  const { fixture, namespace, agent, base } = await protectedPolicyWithdrawalFixture(t);
+  const { page } = await newPage(t, fixture);
+  // The real staged API reports this qualified flag; the separate PostgreSQL workflow
+  // proves staged admission and persistence. This legacy fixture exercises only the Console
+  // request wiring and remains free to reject the staged combination.
+  await page.route(fixture.origin + base, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    const response = await route.fetch();
+    const body = record(await response.json());
+    record(body.data).repositoryNetworkPolicySupportsAdditions = true;
+    await route.fulfill({ response, json: body });
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  await page.getByRole("button", { name: "Manage rules", exact: true }).click();
+  await page.getByRole("button", { name: "Withdraw saved repository grants", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  assert.equal(
+    await dialog.getByText("This also removes the saved ordinary network rules.").count(),
+    0,
+  );
+  const submitted = responseTo(page, "PUT", fixture.origin + base);
+  await dialog.getByRole("button", { name: "Save deny-all policy", exact: true }).click();
+  const response = await submitted;
+  assert.deepEqual(response.request().postDataJSON(), {
+    expectedVersion: 2,
+    additions: [delegatedPolicyGrant],
+    repositoryNetworkPolicy: [],
+  });
+  assert.equal(response.status(), 409, "the legacy fixture must not admit staged additions");
+  assert.deepEqual(record(record((await fixture.request("GET", base)).data).policy).additions, [
+    delegatedPolicyGrant,
+  ]);
+});
+
+test("protected execution can withdraw saved repository grants using the current policy version", async (t) => {
+  const { fixture, namespace, agent, base, savedGrants, sandboxDriver } =
+    await protectedPolicyWithdrawalFixture(t);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const manage = page.getByRole("button", { name: "Manage rules", exact: true });

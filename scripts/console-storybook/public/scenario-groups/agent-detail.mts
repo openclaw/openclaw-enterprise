@@ -88,7 +88,8 @@ type AgentDetailScenario = {
   harnessId?: "openclaw";
   credentialSources?: AgentCredentialSourceBinding[];
   configurationChangedElsewhere?: { values: OpenClawConfigurationDocument };
-  policyState?: "repositoryPermissions" | "repositoryPermissionsLimited";
+  policyState?:
+    "repositoryPermissions" | "repositoryPermissionsLimited" | "stagedRepositoryPermissions";
   repositoryBindings?: RepositoryBindingSelection[];
   repositoryAccess?: RepositoryAccess;
   repositoryOptions?: RepositoryOption[];
@@ -1898,6 +1899,17 @@ export function createAgentDetailScenarios({
       },
       repositoryPermissionsDraft,
       repositoryPermissions,
+      stagedRepositoryDenyAll: {
+        ...repositoryPermissions,
+        name: "Withdraw Git grants and keep model rules",
+        path: `${draft}&tab=repositories`,
+        policyState: "stagedRepositoryPermissions",
+        description: "The saved TokenService Git policy includes a Codex model network rule.",
+        steps: [
+          "Choose Manage permissions, then Withdraw saved repository grants.",
+          "Save deny-all policy. In Policy denials, verify that the saved model rule for chatgpt.com remains.",
+        ],
+      },
       repositoryPermissionsLimited: {
         ...repositoryPermissions,
         name: "Block unlisted API resources",

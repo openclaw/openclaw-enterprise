@@ -167,7 +167,7 @@ for creation and deployment rules.
 
 ### Profiles
 
-Native Git requires `git-write` and one writable branch. `git-only` permits
+Prepared native Git requires `git-write` and one writable branch. `git-only` permits
 fetch and push. `git-and-draft-pr` also permits draft creation against an
 approved base. Both exclude general REST, GraphQL, issues and arbitrary PR
 operations. The [OpenShell installation profile](repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation)

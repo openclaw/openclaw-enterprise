@@ -57,9 +57,10 @@ operator-managed or service-mode Sandbox. Select the GitHub Backend and its
 approved registry with `repository.id` and
 `repository.configuration.sessionDurationSeconds`. In each registry entry, use
 the short GitHub name, such as `project`, and grant its Namespace access.
-Use that short name in `repositoryNetworkPolicyCeiling`. The selected Client
-supplies the signing key. TokenService verifies the installation owner and saves
-the repository IDs returned by GitHub.
+Use the [TokenService registry example](../reference/repository-credentials/access-levels.md#tokenservice-registry-example)
+for the matching `repositoryNetworkPolicyCeiling`. The selected Client supplies
+the signing key. TokenService verifies the installation owner and saves the
+repository IDs returned by GitHub.
 
 In Helm, set `repositoryCredentials.registryConfigMapName` to the approved
 registry ConfigMap. Set the GitHub Backend's `registryPath` to

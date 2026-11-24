@@ -80,3 +80,9 @@ version**, then follow **Set repository permissions**. This story has a profile
 binding and simulated policy data; it does not cover an empty-binding draft or a
 confirmed deny-all policy. Neither story establishes real deployment, policy
 persistence, authorization, or runtime repository access.
+
+Open **Withdraw Git grants and keep model rules** under **Pages / Agent detail**
+(`stagedRepositoryDenyAll`). Choose **Manage permissions**, then **Withdraw
+saved repository grants**. After **Save deny-all policy**, open **Policy
+denials** to inspect the saved `chatgpt.com` rule. The story simulates the
+policy and save response.

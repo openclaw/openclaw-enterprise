@@ -38,6 +38,46 @@ Installation-wide access uses a separate
 [`installationAccess` entry](protected-openshell-git.md#grant-access-to-a-github-app-installation);
 `github-installation` is not a value in a repository's `profiles` list.
 
+### TokenService registry example
+
+This registry permits read-only Git access to `project` in one Namespace.
+Replace the example Namespace, App, and installation IDs. Set `backendId` to
+the selected GitHub Backend ID.
+
+```json
+{
+  "version": 1,
+  "backendId": "repository-backend",
+  "providerInstanceId": "github-production",
+  "appId": "123456",
+  "githubInstallationId": "789012",
+  "maximumDurationSeconds": 900,
+  "repositories": [
+    {
+      "repositoryRef": "project",
+      "repository": "project",
+      "namespaces": [
+        {
+          "namespaceId": "ns_00000000-0000-4000-8000-000000000001",
+          "profiles": ["github-repository"],
+          "nativeGit": "v1",
+          "permissions": { "contents": "read", "metadata": "read" }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Use the same short repository name in the Installation's ceiling. The registry
+grants access to the Namespace. The ceiling limits the grants its Agents can save.
+
+```yaml
+repositoryNetworkPolicyCeiling:
+  - repository: project
+    access: read
+```
+
 ### Native Git delivery
 
 A Namespace registration can select `nativeGit: "v1"` with the finite
