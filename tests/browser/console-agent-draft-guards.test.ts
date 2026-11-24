@@ -1083,11 +1083,13 @@ test("Agent policy under protected execution offers only removal of saved networ
   );
 });
 
-test("the Console saves repository choices, first deny-all, and withdrawals through the policy API", async (t) => {
+async function repositoryPolicyConsole(t: TestContext, native = false) {
   const namespaceId = `ns_${crypto.randomUUID()}`;
   const app = { repository: "example/application", access: "read" } as const;
   const tooling = { repository: "example/tooling", access: "write" } as const;
   const grants = [app, tooling];
+  const limited = { repository: "example/limited", access: "write" } as const;
+  const registryGrants = native ? [...grants, limited, { repository: "example/outside" }] : grants;
   const repositoryRefs = ["application", "tooling"];
   const registry = {
     version: 1,
@@ -1096,15 +1098,19 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
     appId: "123",
     githubInstallationId: "456",
     maximumDurationSeconds: 3600,
-    repositories: grants.map(({ repository }, index) => ({
-      repositoryRef: repositoryRefs[index],
+    repositories: registryGrants.map(({ repository }, index) => ({
+      repositoryRef: repository.split("/")[1],
       repositoryId: String(789 + index),
       repository,
       namespaces: [
         {
           namespaceId,
           profiles: ["github-repository"],
-          permissions: { contents: "write", metadata: "read" },
+          ...(native ? { nativeGit: "v1" } : {}),
+          permissions: {
+            contents: repository === limited.repository ? "read" : "write",
+            metadata: "read",
+          },
         },
       ],
     })),
@@ -1161,8 +1167,10 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
       backendId: repositoryAdmission.backendId,
       policy: repositoryAdmission.policy,
     },
-    repositoryNetworkPolicyCeiling: grants,
+    repositoryNetworkPolicyCeiling: native ? [...grants, limited] : grants,
     repositoryCredentials: true,
+    agentProvisioning: native,
+    ...(native ? { provisionedPeople: [] } : {}),
     namespaceLifecycleBindings,
     driverConfigurations: [
       {
@@ -1182,8 +1190,13 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   controller.selectDriver("repo", repositoryAdmission.policy.id);
   controller.registerDriver(credentialGateway);
   controller.selectDriver("credential_gateway", credentialGateway.id);
-  let editsAllowed = true;
-  let allowPartialGrants = false;
+  if (native) {
+    Object.assign(compute, {
+      validateRepositoryCredentialSupport() {},
+      validateWorkspaceSetup() {},
+    });
+  }
+  const controls = { editsAllowed: true, allowPartialGrants: false };
   // Admission is real; the test does not start a Compute runtime.
   Object.defineProperty(compute, "requiresAgentRuntimeCredentials", { value: undefined });
   Object.assign(compute, {
@@ -1194,9 +1207,9 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
       repositoryBindings,
       repositoryNetworkPolicy: policy,
     }: ProtectedRepositoryNetworkPolicySaveContext) =>
-      editsAllowed &&
+      controls.editsAllowed &&
       (policy === undefined ||
-        allowPartialGrants ||
+        controls.allowPartialGrants ||
         repositoryBindings.length === 1 ||
         policy.grants.length === 2),
     validateProtectedRepositoryNetworkPolicy() {},
@@ -1241,6 +1254,319 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
     repositoryRef,
     profile: "github-repository",
   }));
+
+  return {
+    fixture,
+    controller,
+    namespaceId,
+    app,
+    tooling,
+    grants,
+    bindings,
+    source,
+    secret,
+    controls,
+  };
+}
+
+async function openRepositoryCreate(t: TestContext) {
+  const setup = await repositoryPolicyConsole(t, true);
+  const { fixture, namespaceId, secret } = setup;
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const agents = `/namespaces/${namespaceId}/agents`;
+  await login(page, fixture, `/console/agents/new?namespace=${namespaceId}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("Scoped assistant");
+  await selectSecret(page, "API key Secret", secret);
+  const model = page.getByLabel("Model ID", { exact: true });
+  if (!(await model.isVisible())) {
+    await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  }
+  await model.fill("gpt-5.1");
+  await model.press("Tab");
+  const mode = page.getByLabel("Repository access mode");
+  await mode.waitFor();
+  return { ...setup, page, requests, agents, mode };
+}
+
+test("Create Agent requests ordinary provisioning when eligible GitHub repositories stay unchecked", async (t) => {
+  const { fixture, page, mode, agents } = await openRepositoryCreate(t);
+  assert.equal(await mode.inputValue(), "scoped");
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await waitForEnabled(create);
+  const provisioned = responseTo(page, "POST", fixture.origin + agents + "/provision");
+  await create.click();
+  const response = await provisioned;
+  // This local fixture has no durable provisioning queue. Check the real
+  // provisioning refusal and submitted intent without claiming a deployment.
+  assert.equal(response.status(), 503, await response.text());
+  assert.equal(record(record(await response.json()).error).code, "DEPENDENCY_UNAVAILABLE");
+  const body = record(response.request().postDataJSON());
+  assert.deepEqual(record(body.repositoryAccess).repositories, []);
+  assert.equal(Object.hasOwn(body, "repositoryNetworkPolicy"), false);
+});
+
+test("Create Agent saves GitHub grants before the first deployment and rolls back a refused draft", async (t) => {
+  const { fixture, controller, namespaceId, app, tooling, grants, page, requests, agents, mode } =
+    await openRepositoryCreate(t);
+  // Return to a retained draft before the first selection. Its empty policy
+  // picker must not become an access-profile picker that provisions immediately.
+  const originalMode = await mode.elementHandle();
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.waitForURL(/\/console\/agents(\?|$)/);
+  // Change a real form dependency so Console rebuilds instead of reusing the DOM.
+  await fixture.createSecret(namespaceId, "additional-model", "synthetic-additional-model");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await mode.waitFor();
+  assert.equal(await originalMode!.evaluate((node) => node.isConnected), false);
+  assert.equal(
+    await page.getByLabel("Agent name", { exact: true }).inputValue(),
+    "Scoped assistant",
+  );
+  // Discovery alone grants nothing. One click must select Contributor without
+  // a separate mode decision. Removing the last selection restores ordinary create.
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await waitForEnabled(create);
+  await repositoryCheckbox(page, tooling.repository).check();
+  const access = page.getByLabel(`GitHub access for ${tooling.repository}`);
+  assert.equal(await mode.inputValue(), "scoped");
+  assert.deepEqual(await access.locator("option").allTextContents(), ["Read-only", "Contributor"]);
+  assert.equal(await access.inputValue(), "write");
+  await waitForEnabled(page.getByRole("button", { name: "Save Agent draft" }));
+  await access.selectOption("read");
+  const remove = page.getByRole("button", { name: `Remove ${tooling.repository}`, exact: true });
+  await remove.press("Enter");
+  await waitForEnabled(create);
+  const undo = page.getByRole("button", { name: "Undo", exact: true });
+  assert.equal(await undo.evaluate((button) => button === document.activeElement), true);
+  await undo.press("Enter");
+  assert.equal(await remove.evaluate((button) => button === document.activeElement), true);
+  assert.equal(await access.inputValue(), "read");
+  await repositoryCheckbox(page, app.repository).check();
+  // Application is capped by the Installation, limited by its Namespace registration.
+  // Outside has no delegated grant. An eligible but unselected repository gets nothing.
+  await repositoryCheckbox(page, "example/limited").check();
+  for (const name of [app.repository, "example/limited"]) {
+    const select = page.getByLabel(`GitHub access for ${name}`);
+    assert.equal(await select.inputValue(), "read");
+    assert.deepEqual(await select.locator("option").allTextContents(), ["Read-only"]);
+  }
+  await repositoryCheckbox(page, "example/limited").uncheck();
+  assert.equal(await repositoryCheckbox(page, "example/outside").isDisabled(), true);
+  await mode.selectOption("profiles");
+  await page.getByText(/After deploying with access profiles, you need a new Agent/).waitFor();
+  await mode.selectOption("scoped");
+  assert.equal(await access.inputValue(), "read");
+  const initial = [app, { ...tooling, access: "read" }];
+  const save = page.getByRole("button", { name: "Save Agent draft" });
+  await waitForEnabled(save);
+  // Agent create alone must never leave a broader draft when policy administration
+  // fails. Reloading the catalog to retry must preserve the narrower selection.
+  const denied = restrict(fixture.policy, "administer", "agent", { namespaceId });
+  const unauthorized = responseTo(page, "POST", fixture.origin + agents);
+  await save.click();
+  assert.equal((await unauthorized).status(), 403);
+  assert.deepEqual((await fixture.request("GET", agents)).data, []);
+  liftRestriction(fixture.policy, denied);
+  const reload = page.getByRole("button", { name: "Reload repository choices" });
+  // Create still permits profile discovery without policy read. Losing every
+  // eligible option must block the retained policy, never switch to provisioning.
+  const noRead = restrict(fixture.policy, "read", "sandbox_policy", { namespaceId });
+  const refreshed = responseTo(page, "GET", fixture.origin + agents + "/repository-options");
+  await reload.click();
+  const restricted = await refreshed;
+  assert.equal(restricted.status(), 200);
+  const options = record(await restricted.json()).data;
+  assert.ok(Array.isArray(options) && options.length === 4);
+  assert.ok(options.every((option) => !Object.hasOwn(record(option), "githubAccess")));
+  await waitForEnabled(reload);
+  assert.equal(await mode.inputValue(), "scoped");
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(await create.count(), 0);
+  liftRestriction(fixture.policy, noRead);
+  await reload.click();
+  await waitForEnabled(save);
+  assert.equal(await mode.inputValue(), "scoped");
+  assert.equal(await access.inputValue(), "read");
+  // An older reader can omit grants. Keep this exact draft and withhold credentials
+  // until a fresh read confirms them. The create, policy save and retry remain real.
+  await page.route(
+    fixture.origin + agents + "/*/sandbox-policy/networking",
+    async (route) => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const json = record(await response.json());
+      const policy = record(record(json.data).policy);
+      assert.deepEqual(policy.repositoryNetworkPolicy, initial);
+      delete policy.repositoryNetworkPolicy;
+      await route.fulfill({ response, json });
+    },
+    { times: 1 },
+  );
+  const posted = responseTo(page, "POST", fixture.origin + agents);
+  await save.click();
+  const response = await posted;
+  assert.equal(response.status(), 201, await response.text());
+  const agent = agentFields(record(await response.json()).data);
+  const path = `${agents}/${agent.id}`;
+  const saved = await fixture.request("GET", `${path}/sandbox-policy/networking`);
+  assert.deepEqual(record(record(saved.data).policy).repositoryNetworkPolicy, initial);
+  assert.equal(record(saved.data).editingEnabled, false);
+  await page.getByText(/GitHub access could not be confirmed/).waitFor();
+  assert.equal(await page.getByRole("link", { name: "Open saved Agent" }).count(), 0);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespaceId}/iam/access-bindings`).length,
+    0,
+  );
+  await page.getByRole("button", { name: "Recheck saved GitHub access" }).click();
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  await waitForEnabled(deploy);
+  await page
+    .locator(".agent-draft-actions")
+    .getByText(
+      "GitHub access saved at creation: example/application (Read-only), example/tooling (Read-only)",
+    )
+    .waitFor();
+  assert.equal(await hasFocus(deploy), true);
+  const revisions = () =>
+    controller.transact((unit) => unit.revisions.listRevisions(namespaceId, agent.id));
+  assert.deepEqual(await revisions(), []);
+  assert.equal(pathRequests(requests, "POST", agents).length, 2);
+  assert.equal(pathRequests(requests, "POST", `${agents}/provision`).length, 0);
+  // An ordinary Agent link has no creation receipt or review query parameter.
+  // It must still show the saved grants and pin this first deployment to them.
+  await page.goto(`${fixture.origin}/console/agents/${agent.id}?namespace=${namespaceId}`);
+  const review = page.getByRole("button", { name: "Review saved GitHub access" });
+  await review.waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  await review.click();
+  await page
+    .getByText("Saved GitHub access: example/application (Read-only), example/tooling (Read-only)")
+    .waitFor();
+  await waitForEnabled(deploy);
+  // A second editor widens only the policy after the Console's final Agent reread.
+  // The bindings and the editing setting seen by the first editor stay identical.
+  const base = `${path}/sandbox-policy/networking`;
+  const version = record(record(saved.data).policy).version;
+  await page.route(
+    fixture.origin + path + "/deploy",
+    async (route) => {
+      assert.equal(
+        (await fixture.request("PATCH", `${base}/editing`, { body: { enabled: true } })).status,
+        200,
+      );
+      const widened = await fixture.request("PUT", base, {
+        body: { expectedVersion: version, additions: [], repositoryNetworkPolicy: grants },
+      });
+      assert.equal(widened.status, 200, JSON.stringify(widened.body));
+      assert.equal(
+        (await fixture.request("PATCH", `${base}/editing`, { body: { enabled: false } })).status,
+        200,
+      );
+      await route.continue();
+    },
+    { times: 1 },
+  );
+  const stale = responseTo(page, "POST", fixture.origin + path + "/deploy");
+  await deploy.click();
+  const conflict = await stale;
+  assert.equal(conflict.status(), 409, await conflict.text());
+  assert.equal(record(conflict.request().postDataJSON()).expectedRepositoryPolicyVersion, version);
+  await page.getByText(/The saved GitHub access changed/).waitFor();
+  assert.deepEqual(await revisions(), []);
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await page.getByText(/GraphQL can permit/).count(), 0);
+  // Reloading this draft keeps the precondition and requires a new review.
+  await review.waitFor();
+  await page.reload();
+  await review.waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  // The shared draft actions survive tab changes. A response from before an
+  // editor visit cannot satisfy the required review after returning.
+  const delayed = await holdRequests(t, page, fixture.origin + base, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await review.click();
+  await delayed.requested;
+  await page.getByRole("link", { name: "Open draft repositories" }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const lateRead = responseTo(page, "GET", fixture.origin + base);
+  delayed.release();
+  const lateResponse = await lateRead;
+  assert.equal(lateResponse.status(), 200);
+  assert.deepEqual(
+    record(record(record(await lateResponse.json()).data).policy).repositoryNetworkPolicy,
+    grants,
+  );
+  await nextFrames(page);
+  assert.equal(await deploy.isDisabled(), true, "a pre-editor policy read cannot unlock Deploy");
+  assert.equal(await review.isVisible(), true);
+  await review.click();
+  await page
+    .getByText(
+      "Saved GitHub access: example/application (Read-only), example/tooling (Contributor)",
+    )
+    .waitFor();
+  await waitForEnabled(deploy);
+  await page.getByRole("link", { name: "Open draft repositories" }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await review.waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  // An older Console must not summarize a newer grant shape as if the extra
+  // operation rules were absent, then use that incomplete review to deploy.
+  await page.route(
+    fixture.origin + base,
+    async (route) => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const json = record(await response.json());
+      const policy = record(record(json.data).policy);
+      assert.deepEqual(policy.repositoryNetworkPolicy, grants);
+      policy.repositoryNetworkPolicy = [app, { ...tooling, futureRule: true }];
+      await route.fulfill({ response, json });
+    },
+    { times: 1 },
+  );
+  await review.click();
+  await page.getByText(/The saved GitHub access could not be confirmed/).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  await review.click();
+  await waitForEnabled(deploy);
+  const deployed = responseTo(page, "POST", fixture.origin + path + "/deploy");
+  await deploy.click();
+  const receipt = await deployed;
+  assert.equal(receipt.status(), 202, await receipt.text());
+  const [revision] = await revisions();
+  assert.equal(
+    record(receipt.request().postDataJSON()).expectedRepositoryPolicyVersion,
+    revision?.sandboxPolicy?.version,
+  );
+  assert.deepEqual(revision?.sandboxPolicy?.repositoryNetworkPolicy?.grants, grants);
+
+  const original = record(response.request().postDataJSON());
+  // The same authorized create exceeds only the application repository ceiling.
+  const refused = await fixture.request("POST", agents, {
+    body: {
+      ...original,
+      name: "Refused assistant",
+      repositoryNetworkPolicy: [{ ...app, access: "write" }, tooling],
+    },
+  });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  const listed = await fixture.request("GET", agents);
+  assert.ok(Array.isArray(listed.data));
+  assert.deepEqual(
+    listed.data.map((entry) => resource(entry).id),
+    [agent.id],
+  );
+});
+
+test("the Console saves repository choices, first deny-all, and withdrawals through the policy API", async (t) => {
+  const { fixture, controller, namespaceId, app, tooling, grants, bindings, source, controls } =
+    await repositoryPolicyConsole(t);
   async function createAgent(name: string, selectedBindings = bindings) {
     const agent = agentFields(
       await fixture.createAgent(namespaceId, name, createHarnessConfiguration("codex", "gpt-5.1"), {
@@ -1265,7 +1591,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
     const view = await read();
     assert.equal(view.repositoryNetworkPolicySaveSupported, true, JSON.stringify(view));
     assert.equal(Object.hasOwn(record(view.policy), "repositoryNetworkPolicy"), false);
-    const deploy = async () => {
+    function grantModel() {
       fixture.policy.identities.push({
         kind: "service_principal",
         id: agent.servicePrincipalId,
@@ -1278,7 +1604,11 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
         permissions: { credential_source: ["operate"] },
         resource: { kind: "credential_source", id: source.id },
       });
-      const response = await fixture.request("POST", `${path}/deploy`);
+    }
+    const deploy = async (expectedRepositoryPolicyVersion?: null) => {
+      const response = await fixture.request("POST", `${path}/deploy`, {
+        body: { expectedRepositoryPolicyVersion },
+      });
       assert.equal(response.status, 202, JSON.stringify(response.body));
       const revisions = await controller.transact((unit) =>
         unit.revisions.listRevisions(namespaceId, agent.id),
@@ -1288,7 +1618,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
       assert.equal(revisions[0].id, resource(response.data).id);
       return revisions[0];
     };
-    return { agent, base, read, deploy };
+    return { agent, base, path, read, grantModel, deploy };
   }
 
   const { page } = await newPage(t, fixture);
@@ -1370,7 +1700,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, narrowed);
 
   // The general hint still supports withdrawal while the Driver rejects a new list.
-  editsAllowed = false;
+  controls.editsAllowed = false;
   await manage.click();
   await waitForInputValue(b, "read");
   assert.equal(await save.isEnabled(), false);
@@ -1383,8 +1713,8 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   await panel.getByRole("button", { name: "Discard repository changes", exact: true }).click();
   await waitForInputValue(a, "read");
   assert.equal(await save.isEnabled(), false);
-  editsAllowed = true;
-  allowPartialGrants = true;
+  controls.editsAllowed = true;
+  controls.allowPartialGrants = true;
   // Give a second administrator a newer saved list while the editor has a draft.
   const writeBaseline = await fixture.request("PUT", mixedAgent.base, {
     body: {
@@ -1446,8 +1776,8 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
     reconciledGrants,
   );
 
-  editsAllowed = false;
-  allowPartialGrants = false;
+  controls.editsAllowed = false;
+  controls.allowPartialGrants = false;
   await manage.click();
   await panel
     .getByRole("button", { name: "Withdraw saved repository grants", exact: true })
@@ -1457,11 +1787,22 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.equal((await withdrawal).status(), 200);
   assert.deepEqual(record((await mixedAgent.read()).policy).repositoryNetworkPolicy, []);
 
-  editsAllowed = true;
+  controls.editsAllowed = true;
   // The same supported installation also serves a fresh Agent with one bound repository.
   const emptyAgent = await createAgent("Deny all on first save", [
     { repositoryRef: "application", profile: "github-repository" },
   ]);
+  // A second tab submits a legacy draft before the first list exists.
+  // Deliver its POST only after the policy editor has saved deny-all.
+  emptyAgent.grantModel();
+  const { page: draft } = await newPage(t, fixture);
+  await login(draft, fixture, detailUrl(fixture, namespaceId, emptyAgent.agent.id, "draft"));
+  const deploy = draft.getByRole("button", { name: "Deploy new version" });
+  await waitForEnabled(deploy);
+  const deployUrl = fixture.origin + emptyAgent.path + "/deploy";
+  const heldDeploy = await holdRequests(t, draft, deployUrl, { once: true, method: "POST" });
+  await deploy.click();
+  await heldDeploy.requested;
   await page.goto(detailUrl(fixture, namespaceId, emptyAgent.agent.id, "draft", "policy").href);
   await manage.click();
   await panel.getByRole("button", { name: "Deny all repositories", exact: true }).click();
@@ -1472,6 +1813,22 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.equal((await initialEmpty).status(), 200);
   const denyAll = record((await emptyAgent.read()).policy);
   assert.deepEqual(denyAll.repositoryNetworkPolicy, []);
+  const staleDeployment = responseTo(draft, "POST", deployUrl);
+  heldDeploy.release();
+  const conflict = await staleDeployment;
+  assert.equal(record(conflict.request().postDataJSON()).expectedRepositoryPolicyVersion, null);
+  assert.equal(conflict.status(), 409, await conflict.text());
+  await draft.getByText(/The saved GitHub access changed/).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.deepEqual(
+    await controller.transact((unit) =>
+      unit.revisions.listRevisions(namespaceId, emptyAgent.agent.id),
+    ),
+    [],
+  );
+  await draft.reload();
+  await draft.getByRole("button", { name: "Review saved GitHub access" }).click();
+  await draft.getByText("Saved GitHub access: No repositories allowed").waitFor();
   await page.reload();
   await manage.click();
   await panel
@@ -1487,7 +1844,24 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
 
   // A real deployment creates history even before a Worker selects an active revision.
   const legacy = await createAgent("Previously deployed");
-  const previous = await legacy.deploy();
+  // Matching the unscoped networking version is insufficient. A caller without
+  // policy read must not learn whether a repository policy exists by probing versions.
+  const guardedDeploy = () =>
+    fixture.request("POST", `/namespaces/${namespaceId}/agents/${legacy.agent.id}/deploy`, {
+      body: { expectedRepositoryPolicyVersion: 1 },
+    });
+  const missing = await guardedDeploy();
+  assert.equal(missing.status, 409, JSON.stringify(missing.body));
+  assert.match(JSON.stringify(missing.body), /saved GitHub access changed/);
+  const deniedRead = restrict(fixture.policy, "read", "sandbox_policy", { namespaceId });
+  assert.equal((await guardedDeploy()).status, 403);
+  const hidden = await fixture.request("POST", `${emptyAgent.path}/deploy`, {
+    body: { expectedRepositoryPolicyVersion: null },
+  });
+  assert.equal(hidden.status, 403);
+  legacy.grantModel();
+  const previous = await legacy.deploy(null);
+  liftRestriction(fixture.policy, deniedRead);
   assert.equal(previous.sandboxPolicy?.repositoryNetworkPolicy, undefined);
   const legacyView = await legacy.read();
   assert.equal(legacyView.repositoryNetworkPolicySaveSupported, false);
@@ -2989,7 +3363,10 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       fixture,
       `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
     );
-    await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+    // The Channel fixture selects v1 for service but still reports its deployment as queued.
+    const readyMessage =
+      mutation === "channel Secrets" ? "v1 was queued at the last check." : "Ready to deploy.";
+    await page.getByText(readyMessage, { exact: true }).waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
     await waitForEnabled(deploy);
     if (mutation === "authentication") {
@@ -3126,7 +3503,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     await page
       .getByRole("button", { name: "Reload draft", exact: true })
       .waitFor({ state: "hidden" });
-    await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+    await page.getByText(readyMessage, { exact: true }).waitFor();
     await page.waitForFunction(() =>
       [...globalThis.document.querySelectorAll("button")].some(
         (button) =>
@@ -3180,7 +3557,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       );
       await page.getByRole("button", { name: "Refresh", exact: true }).click();
       assert.equal((await freshConfiguration).status(), 200);
-      await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+      await page.getByText(readyMessage, { exact: true }).waitFor();
       assert.equal(pathRequests(requests, "PATCH", configurationPath).length, writesBeforeCheck);
       const previousConfigurationWrites = pathRequests(requests, "PATCH", configurationPath).length;
       await page.route(`${fixture.origin}${configurationPath}`, (route) =>

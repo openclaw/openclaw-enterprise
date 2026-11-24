@@ -10,6 +10,7 @@ import type {
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
   SecretMetadata,
+  RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
@@ -80,7 +81,12 @@ import {
   VERSION_UNAVAILABLE,
 } from "./access-reasons.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
-import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
+import { readableRepositoryGrants } from "./sandbox-policy.mjs";
+import {
+  githubAccessLabel,
+  repositoryProfile,
+  repositoryWriteAccessHelp,
+} from "./repository-profiles.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
@@ -583,10 +589,53 @@ const deployedVersions = new Map<string, Map<string, number>>();
 let linkedVersionView: {
   key: string;
   load: number;
+  repositoryReview?: RepositoryReview;
   deploy?: boolean;
   edit?: boolean;
 } | null = null;
 let consoleLoads = 0;
+
+type RepositoryReview = { version: number; grants: readonly RepositoryNetworkGrant[] };
+
+function repositoryPolicyFrom(value: unknown, namespaceId: string, agentId: string) {
+  const policy = responseFields(responseFields(value).policy);
+  const { version, repositoryNetworkPolicy } = policy;
+  if (
+    policy.namespaceId === namespaceId &&
+    policy.agentId === agentId &&
+    typeof version === "number" &&
+    Number.isSafeInteger(version) &&
+    version >= 1
+  ) {
+    return { version, grants: repositoryNetworkPolicy };
+  }
+}
+
+export function repositoryReviewFrom(
+  value: unknown,
+  namespaceId: string,
+  agentId: string,
+): RepositoryReview | undefined {
+  const policy = repositoryPolicyFrom(value, namespaceId, agentId);
+  if (policy && readableRepositoryGrants(policy.grants)) {
+    return { version: policy.version, grants: policy.grants };
+  }
+}
+
+export function reviewRepositoryDraft(
+  namespaceId: string,
+  agentId: string,
+  repositoryReview: RepositoryReview,
+) {
+  const target = `agents/${encodeURIComponent(agentId)}?revision=draft&tab=configuration&reviewRepositories=1`;
+  linkedVersionView = {
+    repositoryReview,
+    key: JSON.stringify([namespaceId, target]),
+    load: consoleLoads + 1,
+    deploy: true,
+  };
+  return target;
+}
 
 /** The console starts a page load (navigation, Back, refocus): earlier link requests lapse. */
 export function noteConsoleLoad() {
@@ -1011,8 +1060,12 @@ export async function renderAgentDetail(
       context.drafts.forget("channelSecretGrants");
     }
   }
+  // Keep the review requirement through draft tab changes and reloads. Never put
+  // grants in the URL. A reload must read them again with current permissions.
+  const reviewRequested = url.searchParams.has("reviewRepositories");
+  let reviewRepositories = reviewRequested;
   const target = (revision = selected, tab = selectedTab) =>
-    `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}`;
+    `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}${reviewRequested && revision === "draft" ? "&reviewRepositories=1" : ""}`;
   const linkedKey = (revision = selected, tab = selectedTab) =>
     JSON.stringify([namespaceId, target(revision, tab)]);
   // A link to one of this Agent's version tabs that brings the tab into view once it opens.
@@ -1949,6 +2002,8 @@ export async function renderAgentDetail(
   // Opened by a recovery link: show its tab once this page shows. Logs waits for its output
   // first and scrolls itself.
   const linkedOnLoad = takeLinkedVersionView(linkedKey());
+  let repositoryReview = linkedOnLoad?.repositoryReview;
+  let repositoryReviewGeneration = 0;
   if (linkedOnLoad && selectedTab !== "logs") {
     scrollOnReveal = () => {
       scrollOnReveal = null;
@@ -2000,7 +2055,8 @@ export async function renderAgentDetail(
   }
   const revealTimer = setTimeout(showDetail, FIRST_ACTIVITY_WAIT_MS);
   function revealSelectedTab() {
-    const strip = tabs.getBoundingClientRect();
+    // Resize can change which edges fade. Refresh them before reading their scroll padding.
+    fadeTabEdges();
     // A tab that has focus (moved there with the arrows) stays in view over the selected one.
     const shown = tabs.contains(document.activeElement)
       ? document.activeElement
@@ -2008,12 +2064,24 @@ export async function renderAgentDetail(
     if (!shown) {
       return;
     }
+    const scrollportLeft = tabs.getBoundingClientRect().left + tabs.clientLeft;
+    const scrollportRight = scrollportLeft + tabs.clientWidth;
+    const style = getComputedStyle(tabs);
+    const left = tabs.hasAttribute("data-more-before")
+      ? scrollportLeft + (Number.parseFloat(style.scrollPaddingLeft) || 0)
+      : scrollportLeft;
+    const right = tabs.hasAttribute("data-more-after")
+      ? scrollportRight - (Number.parseFloat(style.scrollPaddingRight) || 0)
+      : scrollportRight;
     const bounds = shown.getBoundingClientRect();
-    if (bounds.left < strip.left) {
-      tabs.scrollLeft += Math.floor(bounds.left - strip.left);
-    } else if (bounds.right > strip.right) {
-      tabs.scrollLeft += Math.ceil(bounds.right - strip.right);
+    if (bounds.left < left) {
+      tabs.scrollLeft += Math.floor(bounds.left - left);
+    } else if (bounds.right > right) {
+      tabs.scrollLeft += Math.ceil(bounds.right - right);
+    } else {
+      return;
     }
+    fadeTabEdges();
   }
   const tabResize = new ResizeObserver(() => {
     if (!context.isCurrent() || !tabs.isConnected) {
@@ -2021,7 +2089,6 @@ export async function renderAgentDetail(
       return;
     }
     revealSelectedTab();
-    fadeTabEdges();
   });
   tabResize.observe(tabs);
   // Detached views stop observing; Back's retained view re-arms the strip.
@@ -2142,16 +2209,29 @@ export async function renderAgentDetail(
                 : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
   }
 
-  // The newest version while its deployment is queued or running and it is not yet current. Right
-  // after Deploy new version it was called "Historical" beside "Selected version v1" (finding 2065).
+  // The newest version whose deployment is queued or running, including while it is selected
+  // for service and activation is still in progress.
   function deployingRevision() {
     const latest = visibleRevisions[0];
-    return latest &&
-      latest.id !== currentRevisionId &&
-      activityRevisionId === latest.id &&
-      deploymentPending(latestRecordedStatus)
+    return latest && activityRevisionId === latest.id && deploymentPending(latestRecordedStatus)
       ? latest
       : null;
+  }
+
+  function draftPendingDeploymentHint() {
+    const pending = deployingRevision();
+    // The picker retains earlier pages, but the newest page must still list this version.
+    if (
+      !pending ||
+      latestRevisionResult?.status !== "fulfilled" ||
+      latestRevisionResult.value.revisions[0]?.id !== pending.id ||
+      unlisted(currentRevisionId) ||
+      acceptedHiddenVersion(pending.revision)
+    ) {
+      return null;
+    }
+    const state = latestRecordedStatus === "queued" ? "queued" : "in progress";
+    return `v${pending.revision} was ${state} at the last check.`;
   }
 
   // The newest version once its deployment completed, while the Agent reread that would make it
@@ -3189,6 +3269,7 @@ export async function renderAgentDetail(
       versionRecord?.render();
     }
     renderLatestDeployment();
+    refreshDeployControls();
     return revisions;
   }
 
@@ -3409,6 +3490,44 @@ export async function renderAgentDetail(
     const executionMode = agent.executionMode;
     let deployPending = false;
     let deployReloadMessage = "";
+    // A normal Agent link has no creation receipt. The same GitHub credential
+    // profile supports legacy access and saved grants, including deny-all.
+    const firstGitHubDraft =
+      revisionResult.status === "fulfilled" &&
+      revisionResult.value.revisions.length === 0 &&
+      agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
+    async function hasRepositoryPolicy() {
+      const permissions = await latestPermissionsRead;
+      // OCC requires policy read for scoped deployments. Legacy deployers can
+      // deploy without it and should not be sent a forbidden policy read.
+      if (permissions?.deploy === false || permissions?.sandboxPolicyRead === false) {
+        return false;
+      }
+      const view = await request(`${path}/sandbox-policy/networking`, { expectedStatus: 200 });
+      const policy = repositoryPolicyFrom(view, namespaceId, agent.id);
+      if (!policy) {
+        throw new Error("Could not check saved GitHub access.");
+      }
+      return policy.grants !== undefined;
+    }
+    if (firstGitHubDraft && !reviewRepositories) {
+      try {
+        const scoped = await hasRepositoryPolicy();
+        if (generation === detailsGeneration) {
+          reviewRepositories = scoped;
+        }
+      } catch (cause) {
+        if (requestFailure(cause).status === 401) {
+          context.onExpired();
+          return;
+        }
+        deployReloadMessage =
+          "Could not check saved GitHub access. Reload this draft before deploying.";
+      }
+      if (!context.isCurrent() || generation !== detailsGeneration || deleting) {
+        return;
+      }
+    }
     let deployFeedbackIsSecretRefusal = false;
     // A refusal only Kubernetes Compute gives, with its step (checkComputeEntryKeys).
     let computeEntryKeyRefusal: { readonly message: string; readonly step: string } | null = null;
@@ -3776,6 +3895,8 @@ export async function renderAgentDetail(
       const retainedConfiguration = retainedConfigurationState();
       return (
         deployPending ||
+        (reviewRepositories &&
+          (!repositoryReview || callerPermissions?.sandboxPolicyRead !== true)) ||
         proxyDirty ||
         proxyUnknown ||
         networkProxySaving ||
@@ -4011,77 +4132,80 @@ export async function renderAgentDetail(
         setText(deployFeedback, secretReason);
         deployFeedbackIsSecretRefusal = Boolean(secretReason);
       }
+      let pendingDeploymentHint: string | null = null;
       if (!deployPending) {
+        let deployMessage: string | undefined;
         if (callerPermissions?.deploy === false) {
-          deployStatus.textContent = AGENT_DEPLOY_DENIED;
+          deployMessage = AGENT_DEPLOY_DENIED;
         } else if (secretReason) {
           // A refused deployment's alert already says it.
           const deployReason = deployFeedback.textContent === secretReason ? "" : secretReason;
-          deployStatus.textContent = rejectedAccess
+          deployMessage = rejectedAccess
             ? [modelCredentialRejectedReadOnly(rejectedAccess), deployReason]
                 .filter(Boolean)
                 .join(" ")
             : deployReason;
+        } else if (reviewRepositories && callerPermissions?.sandboxPolicyRead !== true) {
+          deployMessage = "Reading the saved GitHub access requires SandboxPolicy read.";
+        } else if (reviewRepositories && !repositoryReview) {
+          deployMessage = "Review saved GitHub access before deploying.";
         } else if (deployReloadMessage) {
-          deployStatus.textContent = deployReloadMessage;
+          deployMessage = deployReloadMessage;
         } else if (authenticationSaveState === "saving") {
-          deployStatus.textContent = "Wait for the authentication save to finish before deploying.";
+          deployMessage = "Wait for the authentication save to finish before deploying.";
         } else if (authenticationSaveState === "uncertain") {
-          deployStatus.textContent =
-            "Authentication may have been saved. Reload this draft before deploying.";
+          deployMessage = "Authentication may have been saved. Reload this draft before deploying.";
         } else if (harnessGrantChecking) {
           // A read that settles within 250 ms never shows this text (finding 2576).
           setDelayedText(deployStatus, "", CHECKING_CREDENTIAL_ACCESS);
         } else if (proxyUnknown) {
-          deployStatus.textContent = "Reload the Network proxy draft before deploying.";
+          deployMessage = "Reload the Network proxy draft before deploying.";
         } else if (networkProxySaving) {
-          deployStatus.textContent = "Wait for the Network proxy save before deploying.";
+          deployMessage = "Wait for the Network proxy save before deploying.";
         } else if (proxyDirty) {
-          deployStatus.textContent = "Save or cancel Network proxy edits before deploying.";
+          deployMessage = "Save or cancel Network proxy edits before deploying.";
         } else if (authenticationPending || harnessGrantMissing) {
-          deployStatus.textContent =
+          deployMessage =
             "Confirm authentication and Secret access in Credentials before deploying.";
         } else if (authenticationUnsaved) {
-          deployStatus.textContent =
+          deployMessage =
             "Save or reload the authentication source in Credentials before deploying.";
         } else if (retainedConfiguration.reloadRequired) {
-          deployStatus.textContent = "Reload the Configuration draft before deploying.";
+          deployMessage = "Reload the Configuration draft before deploying.";
         } else if (retainedConfiguration.dirty) {
-          deployStatus.textContent = "Save or cancel Configuration edits before deploying.";
+          deployMessage = "Save or cancel Configuration edits before deploying.";
         } else if (draftEditorState.outcomeUnknown) {
-          deployStatus.textContent = `Reload this draft before deploying because the last ${editedSubject()} save outcome is unknown.`;
+          deployMessage = `Reload this draft before deploying because the last ${editedSubject()} save outcome is unknown.`;
         } else if (draftEditorState.reloadRequired) {
-          deployStatus.textContent = "Reload this draft before deploying.";
+          deployMessage = "Reload this draft before deploying.";
         } else if (draftEditorState.saving) {
-          deployStatus.textContent = `Wait for ${editedSubject()} save to finish before deploying.`;
+          deployMessage = `Wait for ${editedSubject()} save to finish before deploying.`;
         } else if (draftEditorState.dirty) {
-          deployStatus.textContent = `Save or cancel ${editedSubject()} edits before deploying.`;
+          deployMessage = `Save or cancel ${editedSubject()} edits before deploying.`;
         } else if (pluginEditorState.outcomeUnknown) {
-          deployStatus.textContent =
+          deployMessage =
             "Refresh this Agent before deploying because the last plugin save outcome is unknown.";
         } else if (pluginEditorState.reloadRequired) {
-          deployStatus.textContent = "Reload plugin selections before deploying.";
+          deployMessage = "Reload plugin selections before deploying.";
         } else if (pluginEditorState.saving) {
-          deployStatus.textContent =
-            "Wait for plugin selections to finish saving before deploying.";
+          deployMessage = "Wait for plugin selections to finish saving before deploying.";
         } else if (pluginEditorState.dirty) {
-          deployStatus.textContent = "Save or discard plugin changes before deploying.";
+          deployMessage = "Save or discard plugin changes before deploying.";
         } else if (deployFeedback?.textContent) {
-          deployStatus.textContent = "";
+          deployMessage = "";
         } else if (configurationRefusal() !== null) {
-          deployStatus.textContent = configurationRefusal()?.message ?? "";
+          deployMessage = configurationRefusal()?.message ?? "";
         } else if (computeEntryKeyChecking) {
           // A check that settles within 250 ms never shows this text, as for credential access.
           setDelayedText(deployStatus, "", CHECKING_COMPUTE_CONFIGURATION);
         } else if (revisionResult.status !== "fulfilled") {
-          deployStatus.textContent =
-            "Version history is required before deploying this new version.";
+          deployMessage = "Version history is required before deploying this new version.";
         } else if (!agent.harnessAuth) {
-          deployStatus.textContent =
+          deployMessage =
             "Select a harness authentication source in Credentials before deployment.";
         } else if (runtimeAuth) {
           // A rejected operator-managed credential is fixed on the runtime host, not by Deploy.
-          deployStatus.textContent = credentialRejected()
+          deployMessage = credentialRejected()
             ? "The last deployment's model credential was rejected; ask an operator to replace it on the runtime host before deploying again."
             : "Configured on the runtime host; OpenClaw Enterprise does not check it. Gateway readiness does not confirm model access.";
         } else {
@@ -4102,11 +4226,17 @@ export async function renderAgentDetail(
             // A read that settles within 250 ms never shows this text (finding 2576).
             setDelayedText(deployStatus, "", status);
           } else {
-            deployStatus.textContent =
+            deployMessage =
               draftReadOnly() && status !== "Ready to deploy." && !credentialRejected()
                 ? `${status} Your access does not include changing this version draft.`
                 : status;
           }
+        }
+        if (deployMessage !== undefined) {
+          if (deployMessage === "Ready to deploy." && !deployUnavailable) {
+            pendingDeploymentHint = draftPendingDeploymentHint();
+          }
+          setText(deployStatus, pendingDeploymentHint ?? deployMessage);
         }
       }
       // An unavailable Deploy is described by the line that says why, or by a refused
@@ -4114,6 +4244,9 @@ export async function renderAgentDetail(
       // while one of them shows (finding 2878).
       const deployReason = deployStatus.textContent ? deployStatus : deployFeedback;
       setUnavailable(deploy, deployUnavailable, deployReason);
+      if (deploy.ariaDescription !== pendingDeploymentHint) {
+        deploy.ariaDescription = pendingDeploymentHint;
+      }
       updateChecklist();
     }
     // The last deployment's model credential was rejected and the draft still uses it.
@@ -4149,6 +4282,43 @@ export async function renderAgentDetail(
       { className: "checklist", role: "list" },
       ...checklistSteps.map((step) => step.item),
     );
+    const confirmation = element("p", { className: "hint", role: "status" });
+    const adjustRepositories = versionLink("Open draft repositories", "draft", "repositories");
+    const reviewAccess = button("Review saved GitHub access", async () => {
+      const generation = repositoryReviewGeneration;
+      const current = () =>
+        context.isCurrent() &&
+        reviewAccess.isConnected &&
+        generation === repositoryReviewGeneration;
+      reviewAccess.disabled = true;
+      try {
+        const view = await request(`${path}/sandbox-policy/networking`, { expectedStatus: 200 });
+        if (!current()) {
+          return;
+        }
+        repositoryReview = repositoryReviewFrom(view, namespaceId, agent.id);
+        if (!repositoryReview) {
+          deployFeedback.textContent =
+            "The saved GitHub access could not be confirmed. Check this Agent’s policy before deploying.";
+          return;
+        }
+        deployFeedback.textContent = "";
+        updateDeployControls();
+        confirmation.tabIndex = -1;
+        confirmation.focus();
+      } catch (cause) {
+        if (!current()) {
+          return;
+        }
+        if (requestFailure(cause).status === 401) {
+          context.onExpired();
+        } else {
+          deployFeedback.textContent = rejectionMessage(cause);
+        }
+      } finally {
+        reviewAccess.disabled = false;
+      }
+    });
     const draftActionsHeading = element("h2", {}, "Prepare this version");
     function setStep(
       step: (typeof checklistSteps)[number] | undefined,
@@ -4175,6 +4345,22 @@ export async function renderAgentDetail(
       // (finding 2421); Deploy says why it is disabled.
       const reader = draftReadOnly() && callerPermissions?.deploy === false;
       checklist.hidden = reader;
+      adjustRepositories.hidden = selectedTab === "repositories";
+      const canReview = reviewRepositories && callerPermissions?.sandboxPolicyRead === true;
+      confirmation.hidden = !canReview || !repositoryReview;
+      reviewAccess.hidden = !canReview || Boolean(repositoryReview);
+      if (canReview && repositoryReview) {
+        const label =
+          repositoryReview === linkedOnLoad?.repositoryReview
+            ? "GitHub access saved at creation"
+            : "Saved GitHub access";
+        const grants = repositoryReview.grants
+          .map(({ repository, access }) => `${repository} (${githubAccessLabel(access)})`)
+          .join(", ");
+        setText(confirmation, `${label}: ${grants || "No repositories allowed"}`);
+      } else {
+        setText(confirmation, "");
+      }
       setText(draftActionsHeading, reader ? "Version draft" : "Prepare this version");
       const retainedConfiguration = retainedConfigurationState();
       const saving = draftEditorState.saving || pluginEditorState.saving;
@@ -4325,6 +4511,7 @@ export async function renderAgentDetail(
         deployFeedbackIsSecretRefusal = false;
         deployFeedback.textContent = "";
         deploy.disabled = true;
+        deploy.removeAttribute("aria-description");
         deployPending = true;
         deployInFlight = true;
         content.toggleAttribute("inert", true);
@@ -4406,9 +4593,24 @@ export async function renderAgentDetail(
               "Confirm authentication and Secret access in Credentials before deploying.";
             return;
           }
+          if (
+            reviewRepositories &&
+            (!repositoryReview || callerPermissions?.sandboxPolicyRead !== true)
+          ) {
+            return;
+          }
           submitted = true;
           const revision = revisionForPage(
-            await request(`${path}/deploy`, { method: "POST", body: { harnessOverrides } }),
+            await request(`${path}/deploy`, {
+              method: "POST",
+              body: {
+                harnessOverrides,
+                // Adding a first policy need not change these bindings.
+                ...(repositoryReview || firstGitHubDraft
+                  ? { expectedRepositoryPolicyVersion: repositoryReview?.version ?? null }
+                  : {}),
+              },
+            }),
           );
           if (
             !("configurationGeneration" in revision) ||
@@ -4438,6 +4640,13 @@ export async function renderAgentDetail(
             return;
           }
           const failure = requestFailure(error);
+          if (submitted && failure.status === 409) {
+            if (reviewRepositories) {
+              repositoryReview = undefined;
+            } else if (firstGitHubDraft && failure.code === "RESOURCE_CONFLICT") {
+              deployReloadMessage = "Reload this draft before deploying again.";
+            }
+          }
           // A caller's own denial names no bound Secret: an older API's says nothing, and a named
           // one (finding 2534) names no ID the request did not send. When the Secret operate
           // answer, read again, names bound Secrets this caller may not operate, the alert names
@@ -4580,6 +4789,9 @@ export async function renderAgentDetail(
       { className: "card agent-draft-actions" },
       draftActionsHeading,
       checklist,
+      reviewRepositories ? confirmation : null,
+      reviewRepositories ? reviewAccess : null,
+      reviewRepositories ? adjustRepositories : null,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
       deployFeedback,
@@ -5024,7 +5236,6 @@ export async function renderAgentDetail(
       tabControls.get(tab)?.focus({ preventScroll: true });
     }
     revealSelectedTab();
-    fadeTabEdges();
     refreshDeployControls();
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
@@ -5283,12 +5494,18 @@ export async function renderAgentDetail(
           () => {},
         );
       }
+      const opener = document.activeElement;
       // Finish the overview layout and the Logs view's first reads before bringing this
       // version's output into view, so nothing above it grows afterwards (finding 1413).
       await Promise.all([details, revealed, logs.firstView]);
       // Lay the view out in one frame and scroll in the next: content below that moves in the
       // frame that scrolls counts as shifted (finding 1413).
       await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve)));
+      // A reader can move to another control while the first Logs read is pending.
+      const focused = document.activeElement;
+      if (activated && focused && focused !== document.body && focused !== opener) {
+        return;
+      }
       if (tabContext.isCurrent() && !deleting) {
         // A strip clicked in view with the output starting on screen stays put (finding 1518).
         // A link or address that opens Logs scrolls the output into view as before.
@@ -6130,7 +6347,7 @@ export async function renderAgentDetail(
         ],
         ["Backend (experimental)", draft ? agent.backendId : snapshot.backendId],
         [
-          "Repository access",
+          draft && reviewRepositories ? "Repository credential profiles" : "Repository access",
           repositoryBindings
             ?.map(
               (binding) =>
@@ -6216,7 +6433,8 @@ export async function renderAgentDetail(
           { className: "agent-card" },
           snapshotHeading ?? element("h2", {}, "Configuration draft"),
           summary(values, details),
-          repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
+          !(draft && reviewRepositories) &&
+            repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
             : null,
           draft
@@ -7059,6 +7277,7 @@ export async function renderAgentDetail(
       !context.isCurrent() ||
       deleting ||
       next.pathname !== url.pathname ||
+      next.searchParams.has("reviewRepositories") !== reviewRequested ||
       next.searchParams.get("namespace") !== namespaceId
     ) {
       return false;
@@ -7086,6 +7305,14 @@ export async function renderAgentDetail(
       return false;
     }
     const linked = takeLinkedVersionView(linkedKey(nextRevision, nextTab));
+    if (
+      reviewRepositories &&
+      [selectedTab, nextTab].some((tab) => tab === "repositories" || tab === "policy")
+    ) {
+      // Draft actions stay mounted across tabs, including any outstanding policy read.
+      repositoryReviewGeneration += 1;
+      repositoryReview = undefined;
+    }
     selectedTab = nextTab;
     showTabNotice(unavailableTabNotice(requestedTab));
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.

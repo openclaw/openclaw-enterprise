@@ -49,6 +49,7 @@ import {
   CONFIGURATION_CREATE_REFUSED,
   notIncluded,
 } from "./access-reasons.mjs";
+import { repositoryReviewFrom, reviewRepositoryDraft } from "./detail.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
@@ -192,6 +193,7 @@ export interface CreateAgentDraft {
   modelCredentialSource: CredentialReference | null | undefined;
   modelCredentialSecret: SecretMetadata | CredentialSourceReference | null | undefined;
   repositoryAccess: ReturnType<Repositories["access"]>;
+  scopedGrants?: ReturnType<Repositories["scopedGrants"]>;
   stagedChannelSecrets: SecretMetadata[];
   savedSecret: SecretMetadata | undefined;
   savedCredentialSource: RegisteredCredential | undefined;
@@ -2208,6 +2210,7 @@ function renderAgentForm(
   let savedSecret = draft.savedSecret;
   let savedConfiguration = draft.savedConfiguration;
   let savedAgent: SavedAgent | undefined;
+  let policyUnconfirmed = false;
   let stagedChannelSecrets = draft.stagedChannelSecrets ?? [];
   const feedback = element("p", { className: "error", role: "alert" });
   const savedStatus = element("p", { className: "hint", role: "status" });
@@ -2397,8 +2400,9 @@ function renderAgentForm(
         case "success":
           rejectedAgentAttempt = { kind: "repository-scoped", repositoryPolicy: "current" };
           recovery.hidden = false;
-          recoveryMessage.textContent =
-            "Select at least one current repository and an authorization level to retry this Agent. To continue without repository access, start a new draft; the saved Configuration will remain available.";
+          recoveryMessage.textContent = repositories.scoped()
+            ? "Review the retained GitHub selections against the current limits before retrying."
+            : "Select at least one current repository and an authorization level to retry this Agent. To continue without repository access, start a new draft; the saved Configuration will remain available.";
           savedStatus.textContent = `Repository choices reloaded. Configuration ${savedConfiguration.id} remains saved and will be reused if you retry Agent creation.`;
           return;
         case "denied":
@@ -2530,7 +2534,11 @@ function renderAgentForm(
         feedback.textContent = "";
         updateControls();
       },
-      { ...agent, ...(draft.repositoryAccess ? { repositoryAccess: draft.repositoryAccess } : {}) },
+      {
+        ...agent,
+        scopedGrants: draft.scopedGrants,
+        ...(draft.repositoryAccess ? { repositoryAccess: draft.repositoryAccess } : {}),
+      },
       // New-Agent repository choices authorize Agent create: read them once an answer allows it,
       // never to learn the answer (finding 2909).
       { held: namespacePermissions?.agents?.create !== true },
@@ -2548,7 +2556,7 @@ function renderAgentForm(
       field(
         "Configuration JSON",
         configuration,
-        "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
+        "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form unless you set GitHub access per repository. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
         configurationError.node,
       ),
       reset,
@@ -2646,6 +2654,7 @@ function renderAgentForm(
     modelCredentialSecret,
     oauthLogin: oauthLogin.capture(),
     repositoryAccess: repositories.access(),
+    scopedGrants: repositories.scopedGrants(),
     savedSecret,
     savedCredentialSource,
     savedConfiguration,
@@ -2846,10 +2855,11 @@ function renderAgentForm(
   }
   // Device-login sources keep their create-then-deploy flow; API-key and PAT
   // registration can hand their exact source to guided provisioning.
-  const shouldProvision = () =>
+  const canProvision = () =>
     (binding?.method ?? authMethod.value) !== "credential_source" &&
     mode.value === "dedicated" &&
     provisionableExecutionModes.has(mode.value);
+  const shouldProvision = () => !repositories.scoped() && canProvision();
   function modelSourceType() {
     const candidates = (credentialSourceTypes ?? []).filter(
       (type) =>
@@ -3039,7 +3049,7 @@ function renderAgentForm(
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
-    (!(shouldProvision() || capabilitiesUnreadable) || !modelSourceType());
+    (!(canProvision() || capabilitiesUnreadable) || !modelSourceType());
   const updateControls = () => {
     setText(intro, introText(!repositories.unavailable()));
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
@@ -3207,16 +3217,18 @@ function renderAgentForm(
             ? "This Namespace cannot hold new Agents, so Create Agent is unavailable."
             : "Create Agent is unavailable until this Namespace is ready.";
       } else if (!modeUnavailable) {
-        nextStatus = shouldProvision()
-          ? notReady
-            ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then."
-            : "Dedicated Agents are provisioned and deployed when created."
-          : capabilitiesUnreadable
-            ? // Without the Installation's capabilities, deploying may need an administrator.
-              "Agents you create here are saved as drafts for later deployment."
-            : mode.value === "embedded"
-              ? "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation."
-              : "This installation creates draft Agents for later deployment.";
+        nextStatus = repositories.scoped()
+          ? "Save the Agent and its GitHub access as a draft. Review it before deploying a new version."
+          : shouldProvision()
+            ? notReady
+              ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then."
+              : "Dedicated Agents are provisioned and deployed when created."
+            : capabilitiesUnreadable
+              ? // Without the Installation's capabilities, deploying may need an administrator.
+                "Agents you create here are saved as drafts for later deployment."
+              : mode.value === "embedded"
+                ? "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation."
+                : "This installation creates draft Agents for later deployment.";
       }
       if (capabilityStatus.textContent !== nextStatus) {
         capabilityStatus.textContent = nextStatus;
@@ -3483,7 +3495,13 @@ function renderAgentForm(
     retryCapabilityDiscovery.disabled = pending;
     retryPermissionCheck.disabled = pending || permissionsReading;
     submit.hidden = credentialGrantRefused;
-    submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
+    submit.textContent = savedAgent
+      ? policyUnconfirmed
+        ? "Recheck saved GitHub access"
+        : "Retry credential access"
+      : repositories.scoped()
+        ? "Save Agent draft"
+        : "Create Agent";
     submit.setAttribute("aria-busy", createPending ? "true" : "false");
     waitForNamespace();
     if (focusTakenName && !name.disabled) {
@@ -3529,8 +3547,12 @@ function renderAgentForm(
         ]
           .filter(Boolean)
           .join(" "),
-        savedAgent
-          ? link(" Open saved Agent", `agents/${savedAgent.id}?revision=draft`, context)
+        savedAgent && !policyUnconfirmed
+          ? link(
+              " Open saved Agent",
+              `agents/${savedAgent.id}?revision=draft${repositories.scoped() ? "&reviewRepositories=1" : ""}`,
+              context,
+            )
           : null,
       ].filter((node) => node !== null),
     );
@@ -4038,6 +4060,12 @@ function renderAgentForm(
       return;
     }
     const repositoryBindings = repositories.bindings();
+    const repositoryNetworkPolicy = repositories.scoped()
+      ? repositories
+          .scopedGrants()
+          ?.map(([, grant]) => grant)
+          .sort((a, b) => (a.repository < b.repository ? -1 : 1))
+      : undefined;
     const body = {
       name: name.value.trim(),
       executionMode: mode.value,
@@ -4241,7 +4269,7 @@ function renderAgentForm(
         }
         harnessAuth = { method: "credential_source", sourceId: savedCredentialSource.id };
       }
-      if (shouldProvision()) {
+      if (!savedAgent && repositoryNetworkPolicy === undefined && shouldProvision()) {
         const plan = {
           requestId: provisioningRequestId,
           ...(nativeAdmin.checked && nativeAdminAvailable ? { nativeAdmin: true } : {}),
@@ -4320,6 +4348,7 @@ function renderAgentForm(
         mutationStarted = true;
         const agentBody = {
           ...body,
+          ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
           harnessAuth,
           credentialSources,
           configurationId: savedConfiguration.id,
@@ -4361,6 +4390,7 @@ function renderAgentForm(
           throw new Error("The Agent creation response did not identify the expected Agent.");
         }
         savedAgent = { id, name: body.name, configurationId: savedConfiguration.id };
+        policyUnconfirmed = repositoryNetworkPolicy !== undefined;
         createdServicePrincipalId = servicePrincipalId;
         repositories.recordSuccessfulSave();
         if (!context.isCurrent()) {
@@ -4370,6 +4400,34 @@ function renderAgentForm(
       }
       // Grant retries reread exact bindings, so uncertain model or channel grants never recreate the Agent.
       mutationStarted = false;
+      let repositoryReview: ReturnType<typeof repositoryReviewFrom>;
+      if (repositoryNetworkPolicy !== undefined) {
+        policyUnconfirmed = true;
+        showSavedStatus();
+        // Even a server that ignored an unfamiliar field must not lead us to grant
+        // credentials or deploy. Retries inspect this draft and never repeat creation.
+        const path = `${namespacePath(namespaceId)}/agents/${encodeURIComponent(savedAgent.id)}/sandbox-policy/networking`;
+        const view = responseFields(
+          await request(path, { expectedStatus: 200 }).catch((cause: unknown) => {
+            if (requestFailure(cause).status === 401) {
+              throw cause;
+            }
+            return undefined;
+          }),
+        );
+        if (!context.isCurrent()) {
+          return;
+        }
+        repositoryReview = repositoryReviewFrom(view, namespaceId, savedAgent.id);
+        if (!repositoryReview || !sameValue(repositoryReview.grants, repositoryNetworkPolicy)) {
+          feedback.textContent =
+            "The Agent draft was saved, but its GitHub access could not be confirmed. Do not deploy it. Select Recheck saved GitHub access.";
+          focusFeedbackLine(feedback);
+          return;
+        }
+        policyUnconfirmed = false;
+        showSavedStatus();
+      }
       const credential =
         savedSecret ??
         modelCredentialSecret ??
@@ -4421,7 +4479,11 @@ function renderAgentForm(
         await grantConfigurationSecretAccess(grantAgent, stagedChannelSecrets, savedConfiguration);
       }
       if (context.isCurrent()) {
-        context.navigate(`agents/${savedAgent.id}?revision=draft`);
+        context.navigate(
+          repositoryReview
+            ? reviewRepositoryDraft(namespaceId, savedAgent.id, repositoryReview)
+            : `agents/${savedAgent.id}?revision=draft`,
+        );
       }
     } catch (cause) {
       const error = requestFailure(cause);
