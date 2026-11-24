@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { inspect } from "node:util";
 import test from "node:test";
+import { inflateRawSync } from "node:zlib";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
@@ -1028,13 +1029,16 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
           path: harnessId === "codex" ? "/backend-api/codex/responses" : "/v1/responses",
         },
       };
-      const repositoryRequest = {
+      const grants = [
+        { repository: "octo/project", access: "read" },
+        { repository: "octo/second", access: "read" },
+      ];
+      const repositoryRequests = grants.map(({ repository }) => ({
         binary: "/usr/bin/git",
         host: "github.com",
         ports: [{ from: 443, to: 443 }],
-        requestPolicy: { type: "http", method: "GET", path: "/octo/project.git/info/refs" },
-      };
-      const grants = [{ repository: "octo/project", access: "read" }];
+        requestPolicy: { type: "http", method: "GET", path: `/${repository}.git/info/refs` },
+      }));
       const makeFixture = () =>
         dedicatedFirstDeployFixture({
           images: { ...fixtureRelease, requireImmutableDigest: true },
@@ -1071,14 +1075,16 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
             repositoryCredentials: {
               driver: { id: "repository", implementation: "github" },
               deadlineWallMs: Date.now() + 600_000,
-              bindings: [
-                {
-                  repositoryRef: "project",
-                  profile: "github-repository",
-                  backendId: "github-primary",
-                  grant: { providerInstanceId: "github", repositoryId: "42", grantId: "project" },
+              bindings: grants.map(({ repository }, index) => ({
+                repositoryRef: repository.split("/")[1],
+                profile: "github-repository",
+                backendId: "github-primary",
+                grant: {
+                  providerInstanceId: "github",
+                  repositoryId: String(42 + index),
+                  grantId: repository,
                 },
-              ],
+              })),
             },
             sandboxPolicy: {
               driverId: sandbox.id,
@@ -1092,10 +1098,10 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
               proxyDriverId: proxy.id,
               driver: registration.ref,
               bindings: [model, repository],
-              networkAccessPolicy: { allowed: [modelRequest, repositoryRequest] },
+              networkAccessPolicy: { allowed: [modelRequest, ...repositoryRequests] },
               injectionPolicies: [
                 { bindingRef: model.bindingRef, allowedRequests: [modelRequest] },
-                { bindingRef: repository.bindingRef, allowedRequests: [repositoryRequest] },
+                { bindingRef: repository.bindingRef, allowedRequests: repositoryRequests },
               ],
             },
           },
@@ -1110,6 +1116,25 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
         }));
       }
       const fixture = makeFixture();
+      const browserEnabled = harnessId === "codex" && mode === "legacy";
+      if (browserEnabled) {
+        fixture.revision.configuration = {
+          ...fixture.revision.configuration,
+          gateway: {
+            ...fixture.revision.configuration.gateway,
+            controlUi: { enabled: true, allowedOrigins: ["https://agent.example.test"] },
+            auth: {
+              mode: "trusted-proxy",
+              trustedProxy: {
+                userHeader: "x-occ-identity",
+                requiredHeaders: ["x-openclaw-scopes"],
+                allowUsers: ["occ-workspace-files"],
+              },
+              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+            },
+          },
+        };
+      }
       fixture.revision.compute.admission = fixture.driver.admitRevision(fixture.revision);
       fixture.revision.compute.runtimeInputs = fixture.driver.snapshotRuntimeInputs(
         fixture.revision,
@@ -1131,6 +1156,59 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
       );
       fixture.revision.compute.runtimeInputs = originalInputs;
       assert.equal((await fixture.prepare()).ready, false);
+      if (browserEnabled) {
+        const pod = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
+        const [gateway] = pod.containers;
+        const config = pod.volumes.find(({ name }) => name === "openclaw-configuration");
+        const baseConfig = JSON.parse(
+          fixture.read("ConfigMap", config.configMap.name).data["openclaw.json"],
+        );
+        assert.equal(gateway.volumeMounts.find(({ name }) => name === config.name)?.readOnly, true);
+        assert.equal(
+          gateway.volumeMounts.find(({ name }) => name === config.name)?.mountPath,
+          "/etc/openclaw",
+        );
+        const browser = await fixture.driver.getGatewayBrowserRequest(
+          fixture.revision,
+          { installationId: "installation-a", principalId: "principal-a", mode: "chat" },
+          AbortSignal.timeout(1000),
+        );
+        assert.match(browser.endpoint, /\/native-browser\//);
+        assert.equal(browser.headers["x-openclaw-scopes"], "operator.sessions.write");
+        assert.equal(
+          baseConfig.gateway.auth.trustedProxy.delegation.credentialFile,
+          "/var/run/openclaw/browser-delegation/browser-key",
+        );
+
+        // Run the generated launcher with the Pod config and revision identity. This
+        // fixture has no status server or mounted image assets.
+        const [, ...programPieces] = gateway.args;
+        const pluginVolume = pod.volumes.find(({ name }) => name === "openclaw-plugin-runtime");
+        const pluginConfig = fixture.read("ConfigMap", pluginVolume.configMap.name);
+        const manifest = gateway.env.find(
+          ({ name }) => name === "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
+        );
+        const launched = await runOpenClawRuntimeHelper(undefined, [], {
+          baseConfig,
+          files: [[manifest.value, pluginConfig.data["runtime.json"]]],
+          env: Object.fromEntries(
+            gateway.env
+              .filter(
+                ({ name, value }) =>
+                  name !== "OPENCLAW_RUNTIME_STATUS_PORT" &&
+                  name !== "OPENCLAW_WORKSPACE_DIR" &&
+                  value !== undefined,
+              )
+              .map(({ name, value }) => [name, value]),
+          ),
+          gatewayEntrypoint: inflateRawSync(Buffer.from(programPieces.join(""), "base64")).toString(
+            "utf8",
+          ),
+          setTimeout: () => ({ unref() {} }),
+        });
+        const spawned = launched.calls.find(({ args }) => args?.[1] === "gateway");
+        assert.equal(spawned?.options?.env?.OPENCLAW_CONFIG_READONLY, "1");
+      }
       fixture.markReady(fixture.gatewayName);
       // Capture the real Compute-to-Sandbox request before any native runtime is launched.
       await assert.rejects(fixture.prepare(), (error) => error === captured);

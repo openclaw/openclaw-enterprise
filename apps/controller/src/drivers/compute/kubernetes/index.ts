@@ -18482,9 +18482,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       Object.keys(environment).length === 0 &&
       secretEnvironment.length === 0 &&
       repositoryMaterial === undefined;
+    // Browser delegation has its own Secret mount. The inspected launcher must
+    // start from the read-only revision snapshot even when Browser chat is enabled.
     const writableConfiguration =
       role === "gateway" &&
       configuration !== undefined &&
+      configuration.inspectedWorkspace !== true &&
       (configuration.gatewayManagedMode === false ||
         (runtime !== undefined &&
           this.options.gatewayRouting !== undefined &&

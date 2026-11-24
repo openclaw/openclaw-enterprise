@@ -360,6 +360,7 @@ export interface OpenShellBackendDefinition {
     readonly credential_proxy?: string;
     /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
     readonly credential_refresh?: string;
+    readonly token_service?: string;
   };
 }
 
@@ -641,6 +642,8 @@ interface TokenServiceCredentialSource {
   readonly name: string;
   readonly ownerCapability: "token_service";
   readonly tokenServiceInstanceId: string;
+  /** Private, nonsecret reference interpreted by the selected TokenService. */
+  readonly backendRef?: Readonly<Record<string, string>>;
   readonly state: "ready" | "deleting";
   readonly createdAt: string;
 }

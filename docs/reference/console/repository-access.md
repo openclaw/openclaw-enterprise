@@ -42,6 +42,8 @@ deployment. Push and PR permissions remain bundled; see
 merges, and the API contract. Edit saved drafts in **Open draft** >
 **Repositories**; saved versions stay unchanged. Save or cancel edits before
 navigating away; returning to the tab can refresh the session and discard them.
+While a repository save is pending, **Account → Settings** keeps the editor open
+and asks you to wait. After a successful save, Settings opens normally.
 An interrupted save may complete; inspect the saved draft before retrying.
 
 Failed rediscovery keeps unsaved repository choices for retry and

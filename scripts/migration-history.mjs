@@ -157,24 +157,27 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preAgentRepositoryApiLimits";
   }
   if (count === 93 && completedCount > 93) {
-    return "preTokenServiceCredentialSources";
+    return "preTokenServiceSourceBackendRef";
   }
   if (count === 94 && completedCount > 94) {
-    return "preCodexDeviceTokenService";
+    return "preTokenServiceCredentialSources";
   }
   if (count === 95 && completedCount > 95) {
-    return "prePluginCredentialDeployment";
+    return "preCodexDeviceTokenService";
   }
   if (count === 96 && completedCount > 96) {
-    return "preOAuthInitialGrantedScopes";
+    return "prePluginCredentialDeployment";
   }
   if (count === 97 && completedCount > 97) {
-    return "preCredentialClientsAndGitHubSource";
+    return "preOAuthInitialGrantedScopes";
   }
   if (count === 98 && completedCount > 98) {
-    return "preCodexPatSourceAdoption";
+    return "preCredentialClientsAndGitHubSource";
   }
   if (count === 99 && completedCount > 99) {
+    return "preCodexPatSourceAdoption";
+  }
+  if (count === 100 && completedCount > 100) {
     return "preAgentRepositoryClientIntent";
   }
   if (count === completedCount) {

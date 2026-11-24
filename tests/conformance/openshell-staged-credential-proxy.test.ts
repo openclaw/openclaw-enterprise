@@ -4,7 +4,10 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  OpenShellGateway,
+  openShellProviderName,
+} from "../../apps/controller/src/backends/openshell.ts";
 import { resolveModelCredentialPreset } from "../../apps/controller/src/composition/model-credential-presets.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { openShellRepositoryCredentialRequests } from "../../apps/controller/src/drivers/credential-proxy/openshell-repository-policy.ts";
@@ -22,6 +25,7 @@ import type {
   Backend,
   DeploymentRequestMatch,
   CredentialDeploymentContext,
+  CredentialSourceReference,
   SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
@@ -1670,9 +1674,59 @@ test("OpenShell Source retry updates each owned copy in workspace inventory", as
 
 test("staged OpenShell Proxy rejects an unsupported TokenService before resolving or mutating the Gateway", async (t) => {
   const f = await fixture(t);
-  assert.throws(() => f.createProxy("openshell/token-service"), {
-    message: "Native credential delivery requires the OCC TokenService implementation.",
+  assert.throws(() => f.createProxy("unsupported/token-service"), {
+    message: "OpenShell credential delivery requires a supported TokenService implementation.",
   });
+});
+
+test("staged OpenShell Proxy attaches and detaches an authoritative Provider without copying it", async (t) => {
+  const f = await fixture(t);
+  const proxy = f.createProxy("openshell/token-service");
+  const name = openShellProviderName(binding.sourceRef.id);
+  const id = randomUUID();
+  const provider = {
+    metadata: {
+      name,
+      id,
+      workspace: namespace.name,
+      resource_version: "3",
+      labels: {},
+    },
+    type: name,
+    profile_workspace: namespace.name,
+    config: {},
+  };
+  // TokenService verifies custody separately. This case exercises the Proxy against an
+  // existing Provider and checks that Proxy cleanup leaves its owner's material in place.
+  f.state.provider = provider;
+  proxy.bindNativeSourceResolver(async (source: CredentialSourceReference) => {
+    assert.deepEqual(source, binding.sourceRef);
+    return {
+      workspace: namespace.name,
+      workspaceId: "workspace-id",
+      name,
+      id,
+      resourceVersion: "3",
+      profileVersion: "1",
+    };
+  });
+  await proxy.configureDeployment(f.context, {
+    ...configuration,
+    bindings: [f.suppliedBinding],
+    injectionPolicies: [injection],
+  });
+  assert.deepEqual(f.sandbox.spec.providers, [name]);
+  f.observeServing();
+  assert.deepEqual(await proxy.getDeploymentStatus(f.context, configuration), { state: "ready" });
+
+  f.removeCredentialRoute();
+  await proxy.removeDeployment(f.context, { targetRef: configuration.targetRef });
+  await proxy.retireSource(namespace, binding.sourceRef, t.signal);
+  assert.deepEqual(f.sandbox.spec.providers, []);
+  assert.equal(f.state.provider, provider);
+  assert.equal(f.resolutions(), 0);
+  assert.equal(f.state.creates.length, 0);
+  assert.equal(f.state.deletes.length, 0);
 });
 
 test("OpenShell Source notification leaves an absent delivery Provider absent", async (t) => {

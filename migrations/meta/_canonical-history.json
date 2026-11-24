@@ -750,55 +750,63 @@
       "idx": 94,
       "version": "7",
       "when": 1787000000094,
-      "tag": "0094_token_service_credential_sources",
+      "tag": "0094_token_service_source_backend_ref",
       "breakpoints": true,
-      "sha256": "7a0e2bce0fa92d1d40b7409cf1cc173a65c5fa42f1850c727faba612bffc1e33"
+      "sha256": "e2d54419f1fc467e59f83030cd9398809ac35cc33824ee7e0746a7d681b50c85"
     },
     {
       "idx": 95,
       "version": "7",
       "when": 1787000000095,
-      "tag": "0095_codex_device_token_service",
+      "tag": "0095_token_service_credential_sources",
       "breakpoints": true,
-      "sha256": "1560946c9c2444203b009beabe84fb781ae3810862fcd4a20e80a799853950f6"
+      "sha256": "7a0e2bce0fa92d1d40b7409cf1cc173a65c5fa42f1850c727faba612bffc1e33"
     },
     {
       "idx": 96,
       "version": "7",
       "when": 1787000000096,
-      "tag": "0096_plugin_credential_deployment",
+      "tag": "0096_codex_device_token_service",
       "breakpoints": true,
-      "sha256": "c4d4905729b7e4aa8ffd0fd6934e894122935596e2889affc992641a69a0bbb0"
+      "sha256": "1560946c9c2444203b009beabe84fb781ae3810862fcd4a20e80a799853950f6"
     },
     {
       "idx": 97,
       "version": "7",
       "when": 1787000000097,
-      "tag": "0097_oauth_initial_granted_scopes",
+      "tag": "0097_plugin_credential_deployment",
       "breakpoints": true,
-      "sha256": "94b3302d33c419793d62a43a44f3b0f697eb6e5893130345327e402937b64410"
+      "sha256": "c4d4905729b7e4aa8ffd0fd6934e894122935596e2889affc992641a69a0bbb0"
     },
     {
       "idx": 98,
       "version": "7",
       "when": 1787000000098,
-      "tag": "0098_credential_clients_and_github_source",
+      "tag": "0098_oauth_initial_granted_scopes",
       "breakpoints": true,
-      "sha256": "0088d0c9ab1c9120358e107a3c315f3e9f63db641be2bef5b38c1a01c6ebd78d"
+      "sha256": "94b3302d33c419793d62a43a44f3b0f697eb6e5893130345327e402937b64410"
     },
     {
       "idx": 99,
       "version": "7",
       "when": 1787000000099,
-      "tag": "0099_codex_pat_source_adoption",
+      "tag": "0099_credential_clients_and_github_source",
       "breakpoints": true,
-      "sha256": "dcc11cfeadd8fd9c86fdc211ff40ac1220084d958a30884329b202e658ac3cf9"
+      "sha256": "0088d0c9ab1c9120358e107a3c315f3e9f63db641be2bef5b38c1a01c6ebd78d"
     },
     {
       "idx": 100,
       "version": "7",
       "when": 1787000000100,
-      "tag": "0100_agent_repository_client_intent",
+      "tag": "0100_codex_pat_source_adoption",
+      "breakpoints": true,
+      "sha256": "dcc11cfeadd8fd9c86fdc211ff40ac1220084d958a30884329b202e658ac3cf9"
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1787000000101,
+      "tag": "0101_agent_repository_client_intent",
       "breakpoints": true,
       "sha256": "85f8b3a956dcfed553c1ea115a37e7d49de14be80fb7e30dfa8b153d2a572163"
     }
@@ -814,8 +822,18 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        ["occ_migrator", "occ_migrator", "CREATE", false],
-        ["occ_migrator", "occ_migrator", "USAGE", false]
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "CREATE",
+          false
+        ],
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "USAGE",
+          false
+        ]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -1010,72 +1028,81 @@
       "b5650d39fc5a73696389c816c15e124eb64e90cbc5a996053bf404e168b3707e",
       "c0a6af53240acda9c9e56fdf2539711ca33242e6ebedbf80a06884dacbd7f040"
     ],
-    "5a59ba102f1bdfb851c67dda7c71fd9247eaa5ff87170709b1c57448e333f8a5": [
-      "0754b64c09ef46151ee3375dd7326e7597cc7ec21926780d67ba28615aa1d0c5",
-      "09eeea379b24b0df384a021c976ef63dbb1452b4eeb2bdb4faa6852f958d1cc0",
-      "46498e9e8d2bfeeddec0bd54aca02f06e88c57a6bb38fd7144cc7184274f11f8",
-      "6803f273710fe5af17c7effe55b2256c51581ac91496823c5f8da3adc23164a8",
-      "bcc2279cb2a2e08ce2792babe3efb67075f187fa43b08978b58f30fbbe84ac83",
-      "d373079913a6e941818d04d75cdde16e4a72a2250737fdf960522f7c5edbd5d1",
-      "e613a7283948bf71c107759bcade68a7795a36729c3ab5e80c7c28997b1de9c7"
+    "f643644ede20df1495b56b330f7b12997d659ae29807484f16a546a160ec8f3e": [
+      "03694ea197a6ec8b3a530831900f0a0206b88d09fbc10da6d42c8e37a7982a82",
+      "0d3b7fe0cc7b917f631331047467397789b6c9569d9d395df31fb4c9661e3976",
+      "2889b952dae8980cce8db7ced6d4610f5e84df02699e73c084d788c8cd14353d",
+      "3772c18c381c1283d40f4502c31cfb233cd7b4ae0dd5fd79098adf363a346945",
+      "9b7afeb544cbf6519f0cd4972de1a0ff719823a0e0e67d2b0eaf62016c891613",
+      "a577c19d9d1738c96fc101351fc0c7b6f11ed80290fbdc5c85f1cd66989175d1",
+      "e974a14d21876b0601847b3770a03eca92713eaf384772b37b4f70f74ca7b3ff"
     ],
-    "7561cbc57e83f812a3b15b4e0c40370d989868eff21577bfd476f660afe819b0": [
-      "194de24fca5013db3b9c13a9690cedbb96c10b7f16df346bc88960397fcc80bf",
-      "37a7f96f0ba999f3775321576ed6994eec14a547c7f7f4d2f9883444f485b490",
-      "78f85575b5bfd90ccc6198c4ccdfc855f2d7811e22cc0464167be403d96d7696",
-      "a56658eef9476c748829b05b71978a816733d1eb71ebd8d6ff45e152a3cee95f",
-      "a88c23906b76777f866b59870ff59c11552324115f55d778451708fec9152933",
-      "bd60f6eff1a98cb92af579c4925e87c5a180abd4118410abccea57e15a156302",
-      "c07c72111cc9945d7e4e0e56b9a3c75fad73986d4dc31c4cc6794a568e29ab95"
+    "ec20075288e15a49cc8f92bf0768d567cf80ac4ee15490e7577ce643f1aecb72": [
+      "0df75d42f913d0a9b50900c2f0d9faa6055518b7a2ebbb423000437e6e661354",
+      "410bf80d70c96a64c33035f28eb3caaeeff584d35bfc203507f7eccbba947176",
+      "6c517a383d89c0a501a3507c9991c4fa5cc1733a28fcb96a86ac355109fd4e57",
+      "6c85f2be0aa5ec4da21a3ed83d3c971a098de99efd056f598dfea4d23c985a8f",
+      "908adb4892ae112304f9f605f97069fe1fe54f8e5335b8e753174b120af4361e",
+      "d6b971ce9d867f5b8419af8bcc8fbba1188bd19f978a3ae451e917a62ed6d62a",
+      "df571b279cc35d68499c402cbcd6bec40364256f6f91744def468ddd7ecadbe0"
     ],
-    "e05134374e1cdaa168be01292bbc12f6ee5020be1577a03f1314899a18b26baf": [
-      "6be77e737a85259146481cee5b625374cc0ccd2a5e6cd208ae1414ad475b6ff8",
-      "7f45a4698122ceb9448bdf81cce36e57983210b98b7963623ef16dadc82fa751",
-      "993f352dbbfa67c98b9e957b9a0256715109c233593037b5a4f46c1e5116c6ea",
-      "aa719ac4d8d5bfb9ef5a5f4ecff01d2e45e809343dfc2a7c59418a98437f87ce",
-      "d036b28c2c93a868e1f893b88e42385a06864bbaeb2cf78cd464ab72ee87f06e",
-      "d069ddfd327eba5aa60bea660f9d5421c426201b9a94205b0cadf1acedb63cf2",
-      "e62dc3a126799c69602a442f988dbccfd4afb7181033c705a8254ce869020660"
+    "851d669635c8b5be3168f00b270850760e325346dfe1234736a1c11a581fa5f2": [
+      "0c33cae25cd4866de0f56c85c7f992b95f4c6699d9058a73cfae455e4daa5e86",
+      "27ec684251174e7c14f0f3eb25612b1fd4bdb2bbb08ef4f936333f5bd0d4178f",
+      "2b3d0caa4581ccb0a305a05fbcaf04fdc523836eb45010ca57bbfd297a96a4df",
+      "3bf400b21d0890bf0e8970045680e9c9c585a178ab93c29f2aac257d55193dd9",
+      "4b7bf1b656e449b5e231ed1707bc81c39f34b3c9d73e504925318be5287628c2",
+      "89ccc50f5adc32d91b843321a377e249d0891ded557f33be233024b1b28d89b6",
+      "e57737492b0ed281bc0b17552aae2edef68128cb4f518cddb3506bab93fca981"
     ],
-    "7728836f60d1fd649accb885be7126b6c525b4432ef68b4e3919501c7d3e2432": [
-      "1726e384904c187b9ab0b51fa11b8c04a68537ddf19a5a942051ee0c0980538e",
-      "30c3426f36469456db91e49cad2ff18e6bcce035812070fbd3087ae63a59572d",
-      "456f5d7cf5f3e45e7915ab2b5bc564a249373a36c825701561565489e6cae5e6",
-      "7cf92f3a682381e36180d9a1b3e7d80b5ddc6ad92d9446a3305ee05758116526",
-      "a128a65ab3e3f25b89a0422fcb5e2b0c4505191b7e90839238252c1d37c2860e",
-      "ab0717deffab97468c0a3d42a010cae212d415185da58e4a87a825cc73f593c9",
-      "cb38d06b94450c8ce4030a1f142ef38c7cc572aef431ce25f4b56ac878bcdb54"
+    "3e4b8261d8e5dd883e410fa01785a187fd043070d2014ecbd80bd6bc6d0ee8ed": [
+      "24c3dc164ff1c67d3a01bf6d9ca57a4b0e7b7c616fc81e08898a7caa18ac647a",
+      "2ea4e74a3741f1b70bfae23fd874d83d3a340513543b9180c405462dedc11fd1",
+      "5540fbb2594b8c85039e3cc45332c4b1e098f9ead9bc1f871a7314b394e56a6a",
+      "8586ee3744317a31791ea0d9b23cc02ae0c43a2ea74c36e231bc3414788842cb",
+      "9552231fee14ecca83853f175c61c8b7fa6110929a53734cfa747dba95999b8f",
+      "988f916f0bdcd62f3dfe55eadbc0120d97a1c3c43dbdbbc26a8e5f4ab264e5bf",
+      "fa25e278175ce2ab6582ccf43feaf8c67b4d2f0607de5e854cc0abdaa7037b00"
     ],
-    "54f6df0532a985b6c703103e65be113fb611d24b76404e2b2527f660ed89696f": [
-      "0ea4912a4090066ba0393ad6b18d213670ddb369a7f714d92edbdaaab938c417",
-      "15839f2df49f199b53e25da36ed728503cb489f58c8597e7eeb849d86054a39b",
-      "2120beef6badbe49361b5dd05122a607035edaf59945770b03502047adda12d5",
-      "341e5eaad211dcb5938f2e9768fd15a22e1a5be6c394665325694938e431e908",
-      "8e892ede08c258960e5774b53cd1e8568635441754e1f969db85a30490010b19",
-      "a89e877167f4b9d5104e255626261ccacb3929457730e81efa810f672c822bec",
-      "b41556ff91649a39efa94f7a16db9cd80cf788e406e34d4cd8f9c64347e8fe8a"
+    "87f193f54b130e4ff88a719c8002c9ff468e38a41f7302cb4887dfbd9cdccf9f": [
+      "00f18e388d499e2718bac62449128787aaf66b4670ec5608e4cfea8803d57ee2",
+      "41cdbdac4eb8d76ee0890f76e5619d3cfc0a9d8e7e70c50aa3bf8a387d17016b",
+      "69da765c25bc2dadae2c6964619a0cea232e489b081625b375b5d5287c8612e5",
+      "74c8bb4504eed1e98ef006b651f62e7c434e917d40415cd61af48b8f84a6f488",
+      "7c58e3e716c069b8cbb1c9c734b08e9610be1a71246ed777fdf3012b073e9074",
+      "aeffe17c67733bf5032f9365137a45e74e302b199d341579a78ba379c52e6d43",
+      "d2bb2f8e10cd99809bbcc5842bae6c7f1d99913b80f752a5f250aeb6abe3d234"
     ],
-    "abb1ff1d3f446efec699523c070d0403a75de1b987add41c2bb19aab5046181f": [
-      "001b3e77e7b9bb3f7229e81ffd9060535f9f96dd5448c0b5205aeb620d79c0d7",
-      "258931646abf4016fcc6345832194be5e6c6fddb4eb963674bec66ab918ec0ec",
-      "8920a85770f36295a947081ac158ee501079bb4fdb26d65ee45550bccff78861",
-      "b8127e8d2df25c6ddae1b225640607f1b3f18029a50e5cfe675717f9051a3970",
-      "bf489d56d8ab6e2a0c95e437e0f4a383110cb40d276b39b6c0fffa7fc8a4960f",
-      "e2bd1e8d15eb48d91a2492ace446ef6e6c1e298347da6b97b18d10150d70d44e",
-      "efa859dc56333cad0f52fbeadb81cdd047f9f10aefd9fbd64f352f79d785c0ef"
+    "cc8e5e5d238af47d6a920890f6cf5e0de1257a5f581a4d8ce594dfc07137bc70": [
+      "17513e68ebc9274cd73ee3cd9d356365d26249c29a99a9e2075b659e048f1725",
+      "6a1e8d9ee293fd8e43b79c6c8d8620e1840286fbcbccd91d13b0b42f6cfb9ae2",
+      "c382c6d74ae6dc8d06a48ceef1e647a5a91ce05516402f9ce6f5d8748fcd92fa",
+      "c8ed5c540d125045b7ccb0812ecbeaf4d863c2c025e58570674b5129f568805a",
+      "d3842dd32082c5eae320764924731574ff9cd60289a3e3401fa2cc6a45aa8d0b",
+      "dd791e1cc2d165d79258f291a112a0c916b31befa637f46c290dc0a763baa806",
+      "e225edbd2a91b795f0ec054ce74d2a584b9341b0ec73b8997c1052a1a4f26831"
     ],
-    "a89f1128beb89b647244c726505500de5b72cfe48ef2d04abab3c5ef859d20a5": [
-      "09662cd93019b0e8c4c3ee789c35295e71b952c1f030693d0a74586d88723b37",
-      "4b09ad59b86e863c96e7b765410fe431eadc9e80be39f31f721964a3474ccceb",
-      "6f3837e69a89d77fcae60b219b1559c4d9a263abdd043722c964df1c99d57b59",
-      "828dfc13e4350823bb1a31109ab6a40058ec185c04bf92d90e6381c330869a3c",
-      "9ef9409c17d311899db73c1923456d7c32f755b0220ca75e1c083d44f9d5705f",
-      "d8aa1f03bd63d9e0907a78ca1abf3094dd395be759095a3746fb1998f31fbcc6",
-      "e837448646105967c3ca4f098666c867197c9ffa84bf12152721df76a73e7ccc"
+    "b9864094d6a001499d1ee9b4bcbb533d4483d3d2c0d6680ae817fc32ff1e782e": [
+      "124d2e9802e52296e48d739cb2f7301b229d21e997436cba5ee509317327f518",
+      "1ac125fe79751c7e03f541392bb197a70c665e6690380bcd377f67f335f0f51f",
+      "850e508b2eba17c8b192aaa6d81d75ebab8a43d4907aef037c1ea83104d5f78e",
+      "adcfb4818c6aa87f3df85bfd41fe4e1a5590b5e13a7fcbe1fc26ba0339a34395",
+      "b86335cb879b04248e472cc0c3eacecec3058a1b1da40ca80fd220380344ef75",
+      "c42c2151daaa63c1ba67a1692fa22cd613dd9cec8d0df5719b1a402c2284f464",
+      "d76149a0572cb47a1e29b203a58976e5f8815aebb253ee265ab45499952cc227"
+    ],
+    "15b2bcc779a7d0e08f554df2f05672c9044eb60c0ef55acceb16fbae38f4e52c": [
+      "123985e6f279e588f540ba4027910ed9bc7fc9dc5e06d90c6b17ee878a893c67",
+      "3c9264cf134719ecc6eb14cec6ce298b23fe911d1943acff52142463c2c9ad1a",
+      "47f88fa9bfd2d1583b1d735bf1e3c47fd0570b47297cc36993a97b2e46f88b2a",
+      "5a656398b22c0223d034885b59c9dea6bcd3b2a140444c78956ca1f6c0d7d80c",
+      "601f4b664932e0b3f2bb72f1ef00e7089f23b0f393aa5e8f69a785a06323b41f",
+      "7d513c3e3fd5ce3e2d2c003d6ba70294ffdf20ece9cfab3365d8974ebff992de",
+      "fbd2a14b5a7a68afe3c13e3997b4d76e772b6bdaff1f48b6adbf34e7ffa74817"
     ]
   },
   "catalogs": {
-    "completed": "a89f1128beb89b647244c726505500de5b72cfe48ef2d04abab3c5ef859d20a5",
+    "completed": "15b2bcc779a7d0e08f554df2f05672c9044eb60c0ef55acceb16fbae38f4e52c",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -1144,13 +1171,14 @@
     "preAgentNetworkProxy": "0ab6fa92112169e58c54a516e5333303417a4b9b3c1f65f625f8d869ab81e31b",
     "preAgentNetworkProxyAdmission": "df92ef74e54d39b560f4b33118a8560b68e57c02636342bde80b8c9309ea07d3",
     "preAgentRepositoryApiLimits": "38db6291bcefdfd438f397b5dac550104c9f322aa2aec119ca0cc4c7c31acebf",
-    "preTokenServiceCredentialSources": "3142f5cd7ac198011875f0a0b26e23a9a795a1541acb7a67cf2eea62473088b9",
-    "preCodexDeviceTokenService": "5a59ba102f1bdfb851c67dda7c71fd9247eaa5ff87170709b1c57448e333f8a5",
-    "prePluginCredentialDeployment": "7561cbc57e83f812a3b15b4e0c40370d989868eff21577bfd476f660afe819b0",
-    "preOAuthInitialGrantedScopes": "e05134374e1cdaa168be01292bbc12f6ee5020be1577a03f1314899a18b26baf",
-    "preCredentialClientsAndGitHubSource": "7728836f60d1fd649accb885be7126b6c525b4432ef68b4e3919501c7d3e2432",
-    "preCodexPatSourceAdoption": "54f6df0532a985b6c703103e65be113fb611d24b76404e2b2527f660ed89696f",
-    "preAgentRepositoryClientIntent": "abb1ff1d3f446efec699523c070d0403a75de1b987add41c2bb19aab5046181f"
+    "preTokenServiceSourceBackendRef": "3142f5cd7ac198011875f0a0b26e23a9a795a1541acb7a67cf2eea62473088b9",
+    "preTokenServiceCredentialSources": "f643644ede20df1495b56b330f7b12997d659ae29807484f16a546a160ec8f3e",
+    "preCodexDeviceTokenService": "ec20075288e15a49cc8f92bf0768d567cf80ac4ee15490e7577ce643f1aecb72",
+    "prePluginCredentialDeployment": "851d669635c8b5be3168f00b270850760e325346dfe1234736a1c11a581fa5f2",
+    "preOAuthInitialGrantedScopes": "3e4b8261d8e5dd883e410fa01785a187fd043070d2014ecbd80bd6bc6d0ee8ed",
+    "preCredentialClientsAndGitHubSource": "87f193f54b130e4ff88a719c8002c9ff468e38a41f7302cb4887dfbd9cdccf9f",
+    "preCodexPatSourceAdoption": "cc8e5e5d238af47d6a920890f6cf5e0de1257a5f581a4d8ce594dfc07137bc70",
+    "preAgentRepositoryClientIntent": "b9864094d6a001499d1ee9b4bcbb533d4483d3d2c0d6680ae817fc32ff1e782e"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -1159,7 +1187,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0078 was measured on PostgreSQL 18.6 with stock Drizzle after the unchanged public 0077. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, 76, and 77 upgraded to 0078. The 0079 catalogs were measured with stock Drizzle on PostgreSQL 18.6 for canonical and Provider histories, including pg_dump and pg_restore of prefixes 51, 74 through 79. The same procedure qualified 0080, including archives through 0080. The native catalog through 0081 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51 and 74 through 80 upgraded to 0081. The same PostgreSQL 18.6 procedure qualified 0082 on canonical and Provider histories, including their completed archives and restored canonical prefixes 51 and 74 through 81 upgraded to 0082. The native catalog through 0083 was measured on PostgreSQL 18.6 after stock Drizzle execution as occ_migrator. Logical restore aliases for 0083 were measured with real pg_dump/pg_restore for completed canonical and Provider histories and restored canonical prefixes 51 and 74 through 82 upgraded with stock Drizzle. The native catalog through 0084 was measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator. Logical restore aliases were measured with pg_dump/pg_restore of completed canonical and Provider histories and canonical prefixes 51 and 74 through 83 upgraded with stock Drizzle. The native catalog through 0085 was measured on PostgreSQL 18.6 after stock Drizzle execution as occ_migrator. Its completed canonical logical restore alias was measured with real pg_dump/pg_restore. Its upgraded logical restore aliases were measured with real pg_dump/pg_restore of canonical prefixes 51 and 63 through 84 upgraded with stock Drizzle. The native catalog through 0086 was measured on PostgreSQL 18.6 after stock Drizzle execution as occ_migrator. Its completed canonical logical restore alias was measured with real pg_dump/pg_restore. Its upgraded logical restore aliases were measured with real pg_dump/pg_restore of canonical prefixes 51 and 63 through 85 upgraded with stock Drizzle. The native catalogs through 0085\u20130087 were measured on PostgreSQL 18.6 using stock Drizzle. The 0085 aliases include a restore at 0084 followed by stock 0085. The 0086 and 0087 aliases were measured with pg_dump/pg_restore at 0051 and 0074 through the target migration followed by the stock suffix. A further 0087 alias was measured the same way from canonical prefixes 63 through 68 upgraded to 0087 with stock Drizzle. The native catalog through 0088 was measured on PostgreSQL 18.6 after stock Drizzle execution as occ_migrator for canonical and Provider histories. Its logical restore aliases were measured with pg_dump/pg_restore for completed canonical and Provider histories and restored canonical prefixes 51 and 74 through 87 upgraded with stock Drizzle. A further 0088 alias was measured with real pg_dump/pg_restore of canonical prefixes 63 through 68 upgraded with stock Drizzle, directly and through 0085 and 0086. The native catalog through 0089 was measured on PostgreSQL 18.6 after stock Drizzle execution as occ_migrator. Its completed canonical restore and restored prefix representatives 51, 63, 74, 75, 81, 84, and 88 upgraded through the stock and production suffixes were measured with real pg_dump/pg_restore. The 0090 catalog and seven logical restore variants were measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator, using pg_dump and pg_restore on completed canonical and Provider histories and canonical prefixes 51, 63 through 68 and 74 through 89. The 0091 and 0092 Agent network proxy catalogs were measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator. Completed canonical logical restores and seven supported restored-prefix catalog variants were measured with pg_dump and pg_restore. The 0093 catalog and seven logical restore variants were measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator, using pg_dump and pg_restore on completed canonical and Provider histories and canonical prefixes 51 and 63 through 92. The 0094 Source catalog and seven logical restore aliases were measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator, using pg_dump and pg_restore for the completed canonical archive and canonical prefixes 51 and 63 through 93. The 0095 completed catalog and seven logical restore variants were measured on PostgreSQL 18.6 with the stock migrator as occ_migrator and pg_dump/pg_restore for the completed canonical archive and canonical prefixes 51 and 63 through 94. The 0096 catalog and 7 logical restore variants were measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator and pg_dump/pg_restore of the completed canonical archive and canonical prefixes 51 and 63 through 95. The 0097 native catalog and its seven logical restore variants were measured on PostgreSQL 18.6. Native catalogs for 0098 Client/Git Source and 0099 Codex PAT adoption, their completed canonical restore, and all seven accepted 0097 logical restore variants upgraded through both migrations were measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator, pg_dump and pg_restore. The production migrator separately upgraded a restored 0097 predecessor retaining a public OAuth Client through both migrations and verified current receipts. The 0100 Agent GitHub access catalog and its seven restore aliases were measured on PostgreSQL 18.6 with the limited migrator, stock Drizzle and pg_dump/pg_restore, including the 0099 predecessor and a completed 0100 archive."
+    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0078 was measured on PostgreSQL 18.6 with stock Drizzle after the unchanged public 0077. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, 76, and 77 upgraded to 0078. The 0079 catalogs were measured with stock Drizzle on PostgreSQL 18.6 for canonical and Provider histories, including pg_dump and pg_restore of prefixes 51, 74 through 79. The same procedure qualified 0080, including archives through 0080. The native catalog through 0081 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51 and 74 through 80 upgraded to 0081. The same PostgreSQL 18.6 procedure qualified 0082 on canonical and Provider histories, including their completed archives and restored canonical prefixes 51 and 74 through 81 upgraded to 0082. The native catalog through 0083 was measured on PostgreSQL 18.6 after stock Drizzle execution as occ_migrator. Logical restore aliases for 0083 were measured with real pg_dump/pg_restore for completed canonical and Provider histories and restored canonical prefixes 51 and 74 through 82 upgraded with stock Drizzle. The native catalog through 0084 was measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator. Logical restore aliases were measured with pg_dump/pg_restore of completed canonical and Provider histories and canonical prefixes 51 and 74 through 83 upgraded with stock Drizzle. The native catalog through 0085 was measured on PostgreSQL 18.6 after stock Drizzle execution as occ_migrator. Its completed canonical logical restore alias was measured with real pg_dump/pg_restore. Its upgraded logical restore aliases were measured with real pg_dump/pg_restore of canonical prefixes 51 and 63 through 84 upgraded with stock Drizzle. The native catalog through 0086 was measured on PostgreSQL 18.6 after stock Drizzle execution as occ_migrator. Its completed canonical logical restore alias was measured with real pg_dump/pg_restore. Its upgraded logical restore aliases were measured with real pg_dump/pg_restore of canonical prefixes 51 and 63 through 85 upgraded with stock Drizzle. The native catalogs through 0085\u20130087 were measured on PostgreSQL 18.6 using stock Drizzle. The 0085 aliases include a restore at 0084 followed by stock 0085. The 0086 and 0087 aliases were measured with pg_dump/pg_restore at 0051 and 0074 through the target migration followed by the stock suffix. A further 0087 alias was measured the same way from canonical prefixes 63 through 68 upgraded to 0087 with stock Drizzle. The native catalog through 0088 was measured on PostgreSQL 18.6 after stock Drizzle execution as occ_migrator for canonical and Provider histories. Its logical restore aliases were measured with pg_dump/pg_restore for completed canonical and Provider histories and restored canonical prefixes 51 and 74 through 87 upgraded with stock Drizzle. A further 0088 alias was measured with real pg_dump/pg_restore of canonical prefixes 63 through 68 upgraded with stock Drizzle, directly and through 0085 and 0086. The native catalog through 0089 was measured on PostgreSQL 18.6 after stock Drizzle execution as occ_migrator. Its completed canonical restore and restored prefix representatives 51, 63, 74, 75, 81, 84, and 88 upgraded through the stock and production suffixes were measured with real pg_dump/pg_restore. The 0090 catalog and seven logical restore variants were measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator, using pg_dump and pg_restore on completed canonical and Provider histories and canonical prefixes 51, 63 through 68 and 74 through 89. The 0091 and 0092 Agent network proxy catalogs were measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator. Completed canonical logical restores and seven supported restored-prefix catalog variants were measured with pg_dump and pg_restore. The 0093 catalog and seven logical restore variants were measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator, using pg_dump and pg_restore on completed canonical and Provider histories and canonical prefixes 51 and 63 through 92. The 0094 native catalog was measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator. Seven 0094 logical restore aliases were measured with pg_dump and pg_restore of canonical prefix lengths 51, 63, 69, 75, 76, 82, and 85 upgraded through 0094. A completed 0094 restore matched one of those aliases. The native catalogs through 0095\u20130101 were measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator after the immutable main 0094 backend-reference migration. Seven logical restore aliases for each suffix prefix were measured with pg_dump/pg_restore of canonical prefixes 51, 63, 69, 75, 76, 82, 85 and 94, upgraded by stock Drizzle; completed-prefix restores matched a measured alias."
   },
   "compatibleLineages": {
     "providerCompleted": {

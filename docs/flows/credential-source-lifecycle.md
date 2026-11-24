@@ -31,12 +31,12 @@ graph TD
   Kind -->|No, model preset| Admit["<b>OCC</b><br/>Authorize Sources and save policies"]
   Discover --> Admit
   Admit --> Target["<b>Compute</b><br/>Create idle Sandbox"]
-  Target --> Delivery["<b>Worker and Proxy</b><br/>Authorize and prepare delivery"]
+  Target --> Delivery["<b>Worker and Proxy</b><br/>Authorize and attach Provider"]
   Delivery --> Ready["<b>Compute and Sandbox</b><br/>Apply and verify policy"]
   Ready --> Activate["<b>Worker and Sandbox</b><br/>Reauthorize and start Harness"]
   Activate --> Traffic["<b>Compute</b><br/>Verify runtime and publish routes"]
   Traffic --> Update["<b>TokenService</b><br/>Commit replacement credential"]
-  Update --> Notify["<b>Proxy</b><br/>Update Provider and verify targets"]
+  Update --> Notify["<b>Proxy</b><br/>Update delivery copy or<br/>verify native Provider"]
   Notify -->|delivery failed| Retry["<b>Operator</b><br/>Request manual retry"]
   Retry --> Preflight["<b>OCC</b><br/>Authorize all selected Sources"]
   Preflight -->|authorized| Notify
@@ -50,7 +50,7 @@ graph TD
   Detach --> Receipt{"Detach receipt REVOKED?"}
   Receipt -->|No| Pending["<b>Worker</b><br/>Keep pending and retry"]
   Pending --> WithdrawalTarget
-  Receipt -->|Yes| Complete["<b>Worker and Proxy</b><br/>Record revoked; retire last copy"]
+  Receipt -->|Yes| Complete["<b>Worker and Proxy</b><br/>Record revocation<br/>Retire unused delivery copy"]
 ```
 
 The arrows show implemented control flow. Readiness checks do not by themselves prove a successful model request or all enforcement guarantees.
@@ -88,7 +88,9 @@ The caller binds a ready Source in the same Namespace and selects it for Harness
 
 Compute records an idle Sandbox with model credential routes withheld, opens the authenticated operator enrollment route, and requests Worker configuration. Worker rechecks the deploying actor and Agent's Source access, matches each Source's identity, type, and TokenService instance to the revision snapshot, and refuses withdrawn or unavailable Sources. Proxy receives a resolver limited to admitted Sources.
 
-OpenShell Proxy creates or reuses a Provider per projection, resolving each Source at most once for new copies. Existing Providers attach without renewal. Each binding receives a fresh placeholder; failed attachment triggers cleanup. OpenShell refuses to delete an attached Provider.
+For OCC custody, OpenShell Proxy creates or reuses a Provider per projection, resolving each Source at most once for new copies. Existing Providers attach without renewal. Each binding receives a fresh placeholder; failed attachment triggers cleanup. OpenShell refuses to delete an attached Provider.
+
+In the [OpenShell custody preview](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/token-service/openshell.ts:resolveNativeProvider` verifies the Source locator, Workspace, and Provider. Proxy attaches the authoritative Provider directly. Stop and withdrawal detach it; Source DELETE removes it. Updates modify that Provider, and delivery retry checks its version. Serving still requires running-Harness qualification.
 
 For a built-in Codex account, OCC freezes three fixed requests in one Model binding. Worker projects the authorized account metadata with the placeholder; Compute and Sandbox receive no access or refresh token. See the [native policy limits](../reference/credential-sources.md#implementation-status).
 
@@ -106,9 +108,9 @@ On Stop, Compute deletes the Sandbox, then asks Proxy to remove or confirm absen
 
 `packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawCredentialSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:removeDeployment`
 
-OCC checks exact `agent:operate`, records each pending revision withdrawal, and queues reconciliation in one transaction. Worker rechecks the requester. Compute asks Proxy to remove the binding from its recorded target. Sandbox verifies the reduced injection policy and removes exclusive network access while retaining independently approved routes. Proxy detaches the Provider and confirms a `REVOKED` receipt or Sandbox absence. Unconfirmed removal stays pending with `DEPENDENCY_UNAVAILABLE`.
+OCC checks exact `agent:operate`, records pending withdrawals, and queues reconciliation. Worker rechecks the requester. Sandbox verifies the reduced injection policy and preserves independent network grants. Proxy detaches the binding from its recorded target and confirms a `REVOKED` receipt or Sandbox absence. Unconfirmed removal remains pending with `DEPENDENCY_UNAVAILABLE`.
 
-Worker derives active bindings from the immutable revision and confirmed withdrawals. It omits a revoked optional Plugin binding during retry and maintenance. Pending withdrawal, a missing required model, or failed policy or Provider readiness prevents activation. After the reduced policy loads, Proxy reports readiness as pending until the supervisor reports the Gateway’s current Provider-environment fingerprint.
+Worker derives active bindings from the revision and confirmed withdrawals, omitting revoked optional Plugin bindings. Pending withdrawal, a missing required model, or failed readiness blocks activation. Proxy remains pending until the loaded policy and Provider fingerprint agree.
 
 After confirmed detachment of each binding for the Source, Proxy attempts to retire those delivery Providers and profiles. OpenShell’s attached-Provider refusal preserves a copy still used by another Agent. The last binding removes that copy, while TokenService retains the Source and credential. Withdrawal does not undo an upstream request already sent, and stock OpenShell’s name-based detach retains the [documented same-name replacement limit](../reference/credential-sources.md#implementation-status).
 
@@ -139,7 +141,7 @@ An operator sends an Agent credential push request. OCC reads the deployed Agent
 
 For a denied Agent service-principal grant, the response tells the operator to restore Source access and retry delivery. The response names the Source if the caller explicitly selected its ID or can read the bound Source and Agent.
 
-For each authorized Source, OCC sends Proxy its exact reference and TokenService-bound resolver without changing custody or version. Proxy reissues the conditional update and verifies target receipts, including for stale targets with the same Provider version. OCC reports `succeeded`, `resolution_failed`, or `delivery_failed` per Source. Shared Providers can affect other Agents; live Harness rotation remains unqualified.
+OCC sends Proxy each authorized Source reference and TokenService-bound resolver. Proxy retries the conditional update and verifies receipts, including stale targets at the same version. OCC reports `succeeded`, `resolution_failed`, or `delivery_failed`. Shared Providers can affect other Agents; live Harness rotation remains unqualified.
 
 #### Retire the Source
 
@@ -170,6 +172,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 ## Changelog
 
 - 2026-11-24 15:22: Verify GitHub installation and mint by name. (authoring-run/2fff43ca-53a8-4cd9-a462-25f833fec902 - 83575ae57607ec1302aa119523df6e3b39a53c50)
+
+- 2026-11-24 13:46: Trace static Source custody, direct Provider attachment, and retirement in the OpenShell development preview. (authoring-run/ee107727-89f5-45e8-b411-3dfb7b7aa9b5 - b3d10d91c1e7ae20dadcf22eb4b7e350df96b234)
 
 - 2026-11-24 12:24: Trace PAT adoption and its failure boundary. (authoring-run/cb980faf-dd8e-4334-bc01-d795ff83eaeb - eefcbef7958ee233386b3172384d1777ebbb693d)
 - 2026-11-24 10:41: Trace grant-only Codex login, native account delivery, renewal notification, and referenced Source refusal before revocation. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)

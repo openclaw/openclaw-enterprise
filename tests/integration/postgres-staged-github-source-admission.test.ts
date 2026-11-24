@@ -468,15 +468,24 @@ test(
       assert.deepEqual(updated.json().data.credentialSources, [{ sourceId: modelSource.id }]);
       assert.equal(github.issuesOfTokens.length, issueCountBeforeSave + agents.length);
       const path = `${base}/agents/${agent.id}/sandbox-policy/networking`;
-      assert.equal((await request("PATCH", `${path}/editing`, { enabled: true })).statusCode, 200);
       const current = await request("GET", path);
       assert.equal(current.statusCode, 200, current.body);
       assert.equal(current.json().data.policy.repositoryNetworkPolicy, undefined);
-      const saved = await request("PUT", path, {
-        expectedVersion: current.json().data.policy.version,
-        additions: [modelGrant],
-      });
-      assert.equal(saved.statusCode, 200, saved.body);
+      if (agents.length === 0) {
+        // The ordinary Console draft has no manually authored model network rule.
+        assert.deepEqual(current.json().data.policy.additions, []);
+      } else {
+        // Preserve coverage for an independently saved model rule on the peer Agent.
+        assert.equal(
+          (await request("PATCH", `${path}/editing`, { enabled: true })).statusCode,
+          200,
+        );
+        const saved = await request("PUT", path, {
+          expectedVersion: current.json().data.policy.version,
+          additions: [modelGrant],
+        });
+        assert.equal(saved.statusCode, 200, saved.body);
+      }
       assert.equal(github.issuesOfTokens.length, issueCountBeforeSave + agents.length);
       if (agents.length === 0) {
         // The saved Agent already pins this Client before its first Git Source exists.
@@ -610,6 +619,24 @@ test(
         [modelSource.id, gitSourceId],
       );
       assert.deepEqual(revision.sandboxPolicy?.repositoryNetworkPolicy?.grants, grants);
+      if (agents.length === 0) {
+        // Admission derives only the reviewed preset requests for the ceiling-covered stock executable.
+        assert.deepEqual(
+          revision.credentialDeployment?.networkAccessPolicy.allowed.filter(
+            ({ host }) => host === "chatgpt.com",
+          ),
+          [
+            { method: "POST", path: "/backend-api/codex/responses" },
+            { method: "GET", path: "/backend-api/wham/accounts/check" },
+            { method: "GET", path: "/backend-api/wham/config/bundle" },
+          ].map(({ method, path }) => ({
+            binary: OPEN_SHELL_CODEX_BINARIES[0],
+            host: "chatgpt.com",
+            ports: [{ from: 443, to: 443 }],
+            requestPolicy: { type: "http", method, path },
+          })),
+        );
+      }
       const repositoryBinding = revision.credentialDeployment?.bindings.find(
         ({ consumer }) => consumer.kind === "repository",
       );
@@ -673,6 +700,10 @@ test(
     assert.equal(outside.statusCode, 409, outside.body);
     // The wider registry allows issues access. This staged Agent can only admit Git requests.
     const policyPath = `${base}/agents/${agents[0]}/sandbox-policy/networking`;
+    assert.equal(
+      (await request("PATCH", `${policyPath}/editing`, { enabled: true })).statusCode,
+      200,
+    );
     const current = await request("GET", policyPath);
     assert.equal(current.statusCode, 200, current.body);
     const issues = await request("PUT", policyPath, {

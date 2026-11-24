@@ -657,49 +657,56 @@
       "idx": 94,
       "version": "7",
       "when": 1787000000094,
-      "tag": "0094_token_service_credential_sources",
+      "tag": "0094_token_service_source_backend_ref",
       "breakpoints": true
     },
     {
       "idx": 95,
       "version": "7",
       "when": 1787000000095,
-      "tag": "0095_codex_device_token_service",
+      "tag": "0095_token_service_credential_sources",
       "breakpoints": true
     },
     {
       "idx": 96,
       "version": "7",
       "when": 1787000000096,
-      "tag": "0096_plugin_credential_deployment",
+      "tag": "0096_codex_device_token_service",
       "breakpoints": true
     },
     {
       "idx": 97,
       "version": "7",
       "when": 1787000000097,
-      "tag": "0097_oauth_initial_granted_scopes",
+      "tag": "0097_plugin_credential_deployment",
       "breakpoints": true
     },
     {
       "idx": 98,
       "version": "7",
       "when": 1787000000098,
-      "tag": "0098_credential_clients_and_github_source",
+      "tag": "0098_oauth_initial_granted_scopes",
       "breakpoints": true
     },
     {
       "idx": 99,
       "version": "7",
       "when": 1787000000099,
-      "tag": "0099_codex_pat_source_adoption",
+      "tag": "0099_credential_clients_and_github_source",
       "breakpoints": true
     },
     {
       "idx": 100,
       "version": "7",
       "when": 1787000000100,
-      "tag": "0100_agent_repository_client_intent",
+      "tag": "0100_codex_pat_source_adoption",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1787000000101,
+      "tag": "0101_agent_repository_client_intent",
       "breakpoints": true
     }
   ]

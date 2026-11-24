@@ -1990,7 +1990,7 @@ const authoredScenarios = {
     description:
       "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View separate cleanup commands to find the full resource IDs.",
     steps: [
-      "Press Enter on Copy Configuration command, then on Copy Secret command if shown. Only the latest row shows feedback. If copying fails, its full command is selected. Choose Cancel.",
+      "Review the Agent name and ID. Press Enter on Copy Configuration command, then on Copy Secret command if shown. Only the latest row shows feedback. If copying fails, its full command is selected. Choose Cancel.",
     ],
   } satisfies LocalScenario,
   deleting: {
@@ -2449,7 +2449,7 @@ const authoredScenarios = {
     actions: [click("Stop Agent")],
     description: "Confirm stopping the Agent or cancel without changing its requested state.",
     steps: [
-      "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
+      "Review the Agent name and ID, then confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
       "For the revision clearing after Stop, use Flows / Stop an Agent.",
     ],
   } satisfies LocalScenario,

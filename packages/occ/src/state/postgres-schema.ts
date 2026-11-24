@@ -546,6 +546,7 @@ export const credentialSources = occSchema.table(
       () => tokenServiceInstances.id,
       { onDelete: "restrict", onUpdate: "restrict" },
     ),
+    backendRef: jsonb("backend_ref").$type<Readonly<Record<string, string>>>(),
     connectionTemplateId: text("connection_template_id").references(() => connectionTemplates.id, {
       onDelete: "restrict",
       onUpdate: "restrict",
@@ -625,6 +626,15 @@ export const credentialSources = occSchema.table(
     check(
       "credential_sources_owner_capability_valid",
       sql`CASE WHEN ${table.ownerCapability}='token_service' THEN ${table.driverId} IS NULL AND ${table.egress} IS NULL AND ${table.tokenServiceInstanceId} IS NOT NULL AND ${table.type} IN ('static','oauth2-refresh-token','github-app-installation') AND ${table.state} IN ('ready','deleting') ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL AND ${table.connectionTemplateId} IS NULL AND (${table.ownerCapability}='credential_gateway' OR (${table.ownerCapability}='credential_proxy' AND ${table.egress} IS NOT NULL)) END IS TRUE`,
+    ),
+    check(
+      "credential_sources_backend_ref_valid",
+      sql`${table.backendRef} IS NULL OR (
+      ${table.tokenServiceInstanceId} IS NOT NULL
+      AND jsonb_typeof(${table.backendRef}) = 'object'
+      AND ${table.backendRef} <> '{}'::jsonb
+      AND NOT jsonb_path_exists(${table.backendRef}, 'strict $.* ? (@.type() != "string" || @ == "")', '{}'::jsonb, true)
+    )`,
     ),
     check(
       "credential_sources_oauth_shape",

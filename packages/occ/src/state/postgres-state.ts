@@ -665,7 +665,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
-  cs.token_service_instance_id, cs.connection_template_id, cs.oauth_provenance, cs.oauth_account, cs.oauth_consent_version, cs.oauth_client_id, cs.oauth_owner_principal_id, cs.oauth_requested_scopes, cs.oauth_granted_scopes, cs.oauth_revocation_requested_by, cs.oauth_revoked_at, cs.github_app_client_id, cs.github_app_scope,
+  cs.token_service_instance_id, cs.backend_ref, cs.connection_template_id, cs.oauth_provenance, cs.oauth_account, cs.oauth_consent_version, cs.oauth_client_id, cs.oauth_owner_principal_id, cs.oauth_requested_scopes, cs.oauth_granted_scopes, cs.oauth_revocation_requested_by, cs.oauth_revoked_at, cs.github_app_client_id, cs.github_app_scope,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -734,6 +734,9 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
       ...common,
       ownerCapability,
       tokenServiceInstanceId: text(row, "token_service_instance_id"),
+      ...(row.backend_ref == null
+        ? {}
+        : { backendRef: jsonObject(row.backend_ref) as Record<string, string> }),
       state,
     } as const;
     if (type === "static") {
@@ -3460,8 +3463,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         try {
           await client.query(
             `INSERT INTO occ.credential_sources
-             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, connection_template_id, oauth_provenance, oauth_account, oauth_consent_version, oauth_client_id, oauth_owner_principal_id, oauth_requested_scopes, oauth_granted_scopes, oauth_revocation_requested_by, oauth_revoked_at, github_app_client_id, github_app_scope)
-             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb)`,
+             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, connection_template_id, oauth_provenance, oauth_account, oauth_consent_version, oauth_client_id, oauth_owner_principal_id, oauth_requested_scopes, oauth_granted_scopes, oauth_revocation_requested_by, oauth_revoked_at, github_app_client_id, github_app_scope, backend_ref)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24::jsonb)`,
             [
               source.id,
               source.namespaceId,
@@ -3508,6 +3511,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               source.type === "github-app-installation"
                 ? [source.clientId, JSON.stringify(source.scope)]
                 : [null, null]),
+              source.ownerCapability === "token_service" && source.backendRef !== undefined
+                ? JSON.stringify(source.backendRef)
+                : null,
             ],
           );
         } catch (error) {

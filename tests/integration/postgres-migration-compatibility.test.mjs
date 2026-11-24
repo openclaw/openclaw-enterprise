@@ -1500,12 +1500,14 @@ test(
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preAgentRepositoryApiLimits"],
-      [93, "preTokenServiceCredentialSources"],
-      [94, "preCodexDeviceTokenService"],
-      [95, "prePluginCredentialDeployment"],
-      [96, "preOAuthInitialGrantedScopes"],
-      [97, "preCredentialClientsAndGitHubSource"],
-      [98, "preCodexPatSourceAdoption"],
+      [93, "preTokenServiceSourceBackendRef"],
+      [94, "preTokenServiceCredentialSources"],
+      [95, "preCodexDeviceTokenService"],
+      [96, "prePluginCredentialDeployment"],
+      [97, "preOAuthInitialGrantedScopes"],
+      [98, "preCredentialClientsAndGitHubSource"],
+      [99, "preCodexPatSourceAdoption"],
+      [100, "preAgentRepositoryClientIntent"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1770,8 +1772,9 @@ test(
       sources: (
         await database.app.query(
           `SELECT id, namespace_id, name, type, config, driver_id, state, created_at,
-                  owner_capability, egress, token_service_instance_id
-             FROM occ.credential_sources`,
+                  owner_capability, egress, token_service_instance_id,
+                  to_jsonb(source)->'backend_ref' AS backend_ref
+             FROM occ.credential_sources AS source`,
         )
       ).rows,
     });
@@ -1783,6 +1786,7 @@ test(
     assert.equal(staticMetadata.sources[0].token_service_instance_id, instance);
     assert.equal(staticMetadata.sources[0].owner_capability, "token_service");
     assert.equal(staticMetadata.sources[0].driver_id, null);
+    assert.equal(staticMetadata.sources[0].backend_ref, null);
     const before = await historySnapshot(db);
     const stockArchive = await dumpHistoryArchive(fixture, db);
     assert.deepEqual(
@@ -1970,12 +1974,14 @@ test(
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preAgentRepositoryApiLimits"],
-      [93, "preTokenServiceCredentialSources"],
-      [94, "preCodexDeviceTokenService"],
-      [95, "prePluginCredentialDeployment"],
-      [96, "preOAuthInitialGrantedScopes"],
-      [97, "preCredentialClientsAndGitHubSource"],
-      [98, "preCodexPatSourceAdoption"],
+      [93, "preTokenServiceSourceBackendRef"],
+      [94, "preTokenServiceCredentialSources"],
+      [95, "preCodexDeviceTokenService"],
+      [96, "prePluginCredentialDeployment"],
+      [97, "preOAuthInitialGrantedScopes"],
+      [98, "preCredentialClientsAndGitHubSource"],
+      [99, "preCodexPatSourceAdoption"],
+      [100, "preAgentRepositoryClientIntent"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2312,11 +2318,72 @@ test(
 );
 
 test(
+  "Credential cutover preserves an existing backend-owned TokenService Source",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "backend_source_cutover", { prefix: 94 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const instanceId = randomUUID();
+    const sourceId = `cs_${randomUUID()}`;
+    const backendRef = { workspaceId: "fixture-workspace", providerId: "fixture-provider" };
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Migration fixture','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
+       VALUES($1,$2,'openshell-token-service','fixture-store')`,
+      [installationId, instanceId],
+    );
+    // A Source enrolled on main already pins the selected native custody backend.
+    await db.app.query(
+      `INSERT INTO occ.credential_sources
+         (id,namespace_id,name,type,config,owner_capability,state,created_at,token_service_instance_id,backend_ref)
+       VALUES($1,$2,'Native static Source','static','{}','token_service','ready',now(),$3,$4::jsonb)`,
+      [sourceId, namespaceId, instanceId, JSON.stringify(backendRef)],
+    );
+    const readSource = async () =>
+      (
+        await db.app.query(
+          `SELECT id,namespace_id,name,type,config,owner_capability,state,created_at,
+                  token_service_instance_id,backend_ref FROM occ.credential_sources WHERE id=$1`,
+          [sourceId],
+        )
+      ).rows[0];
+    const before = await readSource();
+    assert.deepEqual(await runHistoryCommand(db, "production"), {
+      ok: true,
+      history: "preTokenServiceCredentialSources",
+    });
+    assert.deepEqual(await readSource(), before);
+    assert.deepEqual(await runHistoryCommand(db, "production", "--require-current"), {
+      ok: true,
+      history: "completed",
+    });
+    // The main-owned immutable reference still rejects a privileged row mutation.
+    await assert.rejects(
+      db.migrator.query("UPDATE occ.credential_sources SET backend_ref=$1::jsonb WHERE id=$2", [
+        JSON.stringify({ workspaceId: "other-workspace", providerId: "other-provider" }),
+        sourceId,
+      ]),
+      { code: "55000" },
+    );
+    assert.deepEqual(await readSource(), before);
+  },
+);
+
+test(
   "TokenService Source migration refuses a retained pending OAuth Source without mutation",
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const prefix = 93;
+    const prefix = 94;
     const db = await historyDatabase(context, fixture, "oauth_source_cutover", { prefix });
     const installationId = `ins_${randomUUID()}`;
     const namespaceId = `ns_${randomUUID()}`;
@@ -2412,7 +2479,7 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "codex_device_cutover", { prefix: 94 });
+    const db = await historyDatabase(context, fixture, "codex_device_cutover", { prefix: 95 });
     const installationId = `ins_${randomUUID()}`;
     const namespaceId = `ns_${randomUUID()}`;
     const actorId = `usr_${randomUUID()}`;
@@ -2463,7 +2530,7 @@ test(
       ).rows;
     const before = await historySnapshot(db);
     const retainedBefore = await retainedData();
-    assert.equal(before.receipts.length, 94);
+    assert.equal(before.receipts.length, 95);
     assert.equal(retainedBefore.length, 1);
     assert.deepEqual(
       await runHistoryMigration(db, "production", undefined, undefined, (error) => {
@@ -2679,12 +2746,14 @@ test(
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preAgentRepositoryApiLimits"],
-      [93, "preTokenServiceCredentialSources"],
-      [94, "preCodexDeviceTokenService"],
-      [95, "prePluginCredentialDeployment"],
-      [96, "preOAuthInitialGrantedScopes"],
-      [97, "preCredentialClientsAndGitHubSource"],
-      [98, "preCodexPatSourceAdoption"],
+      [93, "preTokenServiceSourceBackendRef"],
+      [94, "preTokenServiceCredentialSources"],
+      [95, "preCodexDeviceTokenService"],
+      [96, "prePluginCredentialDeployment"],
+      [97, "preOAuthInitialGrantedScopes"],
+      [98, "preCredentialClientsAndGitHubSource"],
+      [99, "preCodexPatSourceAdoption"],
+      [100, "preAgentRepositoryClientIntent"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2820,12 +2889,14 @@ test(
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preAgentRepositoryApiLimits"],
-      [93, "preTokenServiceCredentialSources"],
-      [94, "preCodexDeviceTokenService"],
-      [95, "prePluginCredentialDeployment"],
-      [96, "preOAuthInitialGrantedScopes"],
-      [97, "preCredentialClientsAndGitHubSource"],
-      [98, "preCodexPatSourceAdoption"],
+      [93, "preTokenServiceSourceBackendRef"],
+      [94, "preTokenServiceCredentialSources"],
+      [95, "preCodexDeviceTokenService"],
+      [96, "prePluginCredentialDeployment"],
+      [97, "preOAuthInitialGrantedScopes"],
+      [98, "preCredentialClientsAndGitHubSource"],
+      [99, "preCodexPatSourceAdoption"],
+      [100, "preAgentRepositoryClientIntent"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2994,12 +3065,14 @@ test(
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preAgentRepositoryApiLimits"],
-      [93, "preTokenServiceCredentialSources"],
-      [94, "preCodexDeviceTokenService"],
-      [95, "prePluginCredentialDeployment"],
-      [96, "preOAuthInitialGrantedScopes"],
-      [97, "preCredentialClientsAndGitHubSource"],
-      [98, "preCodexPatSourceAdoption"],
+      [93, "preTokenServiceSourceBackendRef"],
+      [94, "preTokenServiceCredentialSources"],
+      [95, "preCodexDeviceTokenService"],
+      [96, "prePluginCredentialDeployment"],
+      [97, "preOAuthInitialGrantedScopes"],
+      [98, "preCredentialClientsAndGitHubSource"],
+      [99, "preCodexPatSourceAdoption"],
+      [100, "preAgentRepositoryClientIntent"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3028,10 +3101,13 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [98, "CREATE TRIGGER"],
-                [97, "CREATE FUNCTION"],
-                [95, "CREATE FUNCTION"],
-                [94, "GRANT"],
+                [100, "CREATE FUNCTION"],
+                [99, "CREATE TRIGGER"],
+                [98, "CREATE FUNCTION"],
+                [96, "CREATE FUNCTION"],
+                [95, "GRANT"],
+                [94, "CREATE FUNCTION"],
+                [93, "CREATE TRIGGER"],
                 [92, "CREATE FUNCTION"],
                 [91, "ALTER TABLE"],
                 [90, "ALTER TABLE"],
@@ -3068,26 +3144,38 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
-        } else if (prefix === 98) {
+        } else if (prefix === 100) {
+          // Abort the policy guard replacement after the desired-access validator changed.
+          failAt = `IF NOT occ.repository_access_is_valid(
+            '{"defaultProfile":"github-repository","githubAppClientId":"ccr_00000000-0000-4000-8000-000000000000","repositories":[]}'::jsonb,
+            '[]'::jsonb
+          ) THEN RETURN; END IF;`;
+        } else if (prefix === 99) {
           // Abort PAT trigger installation after its transition validator was created.
           failAt =
             "IF to_regprocedure('occ.codex_pat_source_transition_is_valid(occ.credential_sources,occ.credential_sources)') IS NULL THEN RETURN; END IF;";
-        } else if (prefix === 97) {
+        } else if (prefix === 98) {
           // Abort the Client migration after its table alterations, before the new guards exist.
           failAt =
             "IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='occ.oauth_clients'::regclass AND attname='kind' AND NOT attisdropped) THEN RETURN; END IF;";
-        } else if (prefix === 95) {
+        } else if (prefix === 96) {
           // Abort the second function replacement after the snapshot validator accepts a Template receipt.
           failAt = `IF NOT occ.credential_source_snapshots_are_valid(
             '[{"sourceId":"cs_00000000-0000-4000-8000-000000000000","sourceType":"static",
               "tokenServiceInstanceId":"00000000-0000-4000-8000-000000000000",
               "connectionTemplate":{"id":"ctp_00000000-0000-4000-8000-000000000000","version":1}}]'::jsonb
           ) THEN RETURN; END IF;`;
-        } else if (prefix === 94) {
-          // Abort 0095 at its grant after the device Source column and owner check exist.
+        } else if (prefix === 95) {
+          // Abort 0096 at its grant after the device Source column and owner check exist.
           failAt = `IF NOT EXISTS (
             SELECT 1 FROM pg_constraint WHERE conrelid='occ.authentication_states'::regclass
               AND conname='authentication_states_device_source_owner'
+          ) THEN RETURN; END IF;`;
+        } else if (prefix === 93) {
+          // Abort the immutability trigger after 0094 installs the reference constraint.
+          failAt = `IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conrelid='occ.credential_sources'::regclass
+            AND conname='credential_sources_backend_ref_valid'
           ) THEN RETURN; END IF;`;
         } else if (prefix === 92) {
           // Fail replacement of the policy validator after the action check and grants exist.

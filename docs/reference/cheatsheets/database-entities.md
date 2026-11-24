@@ -222,6 +222,7 @@ Stores the canonical static and OAuth Sources created by the selected TokenServi
 - `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service`)
 - `driver_id` (Gateway and Proxy sources)
 - `token_service_instance_id` (selected TokenService owner)
+- `backend_ref` (optional private, nonsecret TokenService locator)
 - `connection_template_id` (optional immutable association)
 - `oauth_provenance`, `oauth_account` (Template consent or the fixed Codex preset)
 - `oauth_consent_version`, `oauth_client_id`, `oauth_owner_principal_id`

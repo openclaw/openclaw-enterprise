@@ -331,6 +331,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     { source, preset }: PreparedModelCredentialDeployment,
     networkGrants: readonly DeploymentRequestMatch[],
   ) {
+    const automaticNetwork: DeploymentRequestMatch[] = [];
     const requests: DeploymentRequestMatch[] = preset.destinations.map((destination) => {
       const grants = networkGrants.filter(
         (grant) =>
@@ -338,19 +339,37 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           (preset.binaries === undefined || preset.binaries.includes(grant.binary)) &&
           grant.ports.some(({ from, to }) => from <= destination.port && destination.port <= to),
       );
-      if (grants.length !== 1 || destination.path.includes("*")) {
+      const route = {
+        host: destination.host,
+        ports: [{ from: destination.port, to: destination.port }],
+        requestPolicy: { type: "http", method: destination.method, path: destination.path },
+      } satisfies Omit<DeploymentRequestMatch, "binary">;
+      // Codex OAuth selects a stock executable and fixed model routes. The Installation must
+      // still allow exactly one eligible executable when the Agent has no matching saved grant.
+      const usePresetNetwork =
+        grants.length === 0 &&
+        source.type === "oauth2-refresh-token" &&
+        source.consent.kind === "builtin_codex";
+      const binaries = usePresetNetwork
+        ? (preset.binaries ?? []).filter((binary) =>
+            sandboxNetworkGrantsWithinCeiling(
+              [{ binary, ...route }],
+              dependencies.sandboxNetworkPolicyCeiling,
+            ),
+          )
+        : grants.map(({ binary }) => binary);
+      if (binaries.length !== 1 || destination.path.includes("*")) {
         throw new ResourceStateConflictError(
           preset.destinations.length === 1
             ? "The staged model credential needs one exact, unambiguous network grant for its approved inference route."
             : "The staged model credential needs one exact, unambiguous network grant for each approved request.",
         );
       }
-      return {
-        binary: grants[0]!.binary,
-        host: destination.host,
-        ports: [{ from: destination.port, to: destination.port }],
-        requestPolicy: { type: "http", method: destination.method, path: destination.path },
-      };
+      const request = { binary: binaries[0]!, ...route };
+      if (usePresetNetwork) {
+        automaticNetwork.push(request);
+      }
+      return request;
     });
     const binding: DeploymentCredentialBinding = {
       bindingRef: "model",
@@ -360,7 +379,10 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     };
     let approved: boolean;
     try {
-      approved = sandboxNetworkGrantsWithinCeiling(requests, networkGrants);
+      approved = sandboxNetworkGrantsWithinCeiling(requests, [
+        ...networkGrants,
+        ...automaticNetwork,
+      ]);
     } catch {
       approved = false;
     }
@@ -372,6 +394,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     return {
       binding,
       injectionPolicy: { bindingRef: binding.bindingRef, allowedRequests: requests },
+      automaticNetwork,
     };
   }
 
@@ -394,7 +417,11 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     const bindings: DeploymentCredentialBinding[] = [];
     const injections: CredentialInjectionPolicy[] = [];
     if (stagedModel !== undefined) {
-      const { binding, injectionPolicy } = admitModelCredentialBinding(stagedModel, network);
+      const { binding, injectionPolicy, automaticNetwork } = admitModelCredentialBinding(
+        stagedModel,
+        network,
+      );
+      network.push(...automaticNetwork);
       bindings.push(binding);
       injections.push(injectionPolicy);
     }
