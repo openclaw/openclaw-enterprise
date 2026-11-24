@@ -364,33 +364,24 @@ test("repository capability admits only configured Compute-owned native topologi
       () => driver.validateRepositoryCredentials(harness, "selected-sandbox"),
       /without a SandboxDriver/,
     );
-    // Each Driver misses one prerequisite: a runtime, the credential endpoint, or the
-    // absence of a SandboxDriver.
+    // Construction must succeed so each refusal comes from credential validation.
     const { runtime: _runtime, ...withoutRuntime } = configured;
     const unsupported = {
       message:
         "Repository credentials require a configured Kubernetes runtime and credential endpoint without a SandboxDriver.",
     };
-    assert.throws(
-      () => new KubernetesComputeDriver(withoutRuntime).validateRepositoryCredentials(harness),
-      unsupported,
-    );
-    assert.throws(
-      () =>
-        new KubernetesComputeDriver({
-          ...configured,
-          network: options().network,
-        }).validateRepositoryCredentials(harness),
-      unsupported,
-    );
+    const noRuntimeDriver = new KubernetesComputeDriver(withoutRuntime);
+    assert.throws(() => noRuntimeDriver.validateRepositoryCredentials(harness), unsupported);
+    const noEndpointDriver = new KubernetesComputeDriver({
+      ...configured,
+      network: options().network,
+    });
+    assert.throws(() => noEndpointDriver.validateRepositoryCredentials(harness), unsupported);
     const sandboxDriver = { id: "sandbox", implementation: "sandbox", capability: "sandbox" };
-    assert.throws(
-      () =>
-        new KubernetesComputeDriver(configured, { sandboxDriver }).validateRepositoryCredentials(
-          harness,
-        ),
-      { code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED" },
-    );
+    const sandboxCompute = new KubernetesComputeDriver(configured, { sandboxDriver });
+    assert.throws(() => sandboxCompute.validateRepositoryCredentials(harness), {
+      code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED",
+    });
   }
   for (const [id, mode] of [
     ["codex", "embedded"],
