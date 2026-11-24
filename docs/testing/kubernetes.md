@@ -219,8 +219,12 @@ A skipped or missing case fails the lane.
 
 ### Run the Keycloak lane
 
-You need Node.js 24, Docker, OpenSSL, [Chromium](local.md#console-browser-checks),
-and a free, bindable `127.0.0.1:443`. Run only one Keycloak lane per host.
+You need Node.js 24, Docker or Podman, OpenSSL, and
+[Chromium](local.md#console-browser-checks). Docker requires a free, bindable
+`127.0.0.1:443`. Set `OCC_DOCKER_BIN=podman` for Podman and keep
+`127.0.0.1:18443` free. The browser and host-side test requests use that socket
+while preserving the HTTPS issuer and certificate checks. Run one Keycloak
+lane per host.
 
 ```sh
 state="$PWD/.ci-state/keycloak-oidc.json"
@@ -230,9 +234,10 @@ node scripts/ci/cleanup.ts --state "$state"
 ```
 
 Preparation creates a private CA, fixture credentials and a Keycloak container.
-It may add a tagged line to `/etc/hosts` using `sudo -n`; cleanup removes its
-container, private files, and the line it added. If passwordless `sudo` is
-unavailable, add this line yourself before preparation and remove it afterward:
+With Docker, preparation may add a tagged line to `/etc/hosts` using `sudo -n`.
+Cleanup removes the container, private files, and any line preparation added.
+If passwordless `sudo` is unavailable on Docker, add this line before
+preparation and remove it afterward:
 
 ```sh
 echo '127.0.0.1 keycloak.oce.localhost keycloak.oce.test' | sudo tee -a /etc/hosts
