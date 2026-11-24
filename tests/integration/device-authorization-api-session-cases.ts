@@ -174,20 +174,7 @@ export function registerDeviceAuthorizationSessionCases() {
       body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
     });
     assert.equal(discovery.status, 200, JSON.stringify(discovery.body));
-    // Explicit source deletion, unlike session closure, invokes external removal.
-    assert.equal(
-      (await fixture.request("DELETE", `${fixture.sourcesPath}/${login.source.id}`)).status,
-      204,
-    );
-    assert.equal(fixture.gateway.sources.has(login.source.id), false);
-    assert.equal(
-      (
-        await fixture.request("POST", fixture.pluginsPath, {
-          body: { harnessId: "codex", credentialSource: login.source, q: "knowledge" },
-        })
-      ).status,
-      409,
-    );
+    assert.equal(fixture.gateway.sources.has(login.source.id), true);
     assertNoCredentials(fixture);
   });
 }

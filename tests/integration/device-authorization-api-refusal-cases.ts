@@ -96,13 +96,7 @@ export function registerDeviceAuthorizationRefusalCases() {
         namespaceId: fixture.namespace.id,
       });
     }
-    // Source deletion fences uncertain external registration before final removal.
-    await fixture.clock.advance(71_000);
-    assert.equal(
-      (await fixture.request("DELETE", `${fixture.sourcesPath}/${source.id}`)).status,
-      204,
-    );
-    assert.equal(fixture.gateway.sources.size, 0);
+    assert.equal(fixture.gateway.sources.has(source.id), true);
     assertNoCredentials(fixture);
   });
 

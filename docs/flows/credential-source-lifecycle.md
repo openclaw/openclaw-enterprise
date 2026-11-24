@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-24
-last_updated_session: authoring-run/71b868ab-4583-4018-8755-568a186c1c69
+last_updated_session: authoring-run/460fd0ef-1bc5-4950-85de-bf351916de43
 ---
 
 # Credential source lifecycle flow
@@ -106,7 +106,7 @@ After confirmed detachment of each binding for the Source, Proxy attempts to ret
 
 `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
-OCC checks permission on the exact Source and dispatches credential changes to its TokenService owner. Credential replacement is allowed while an active Agent revision uses the Source. Changing or removing the provider preset still requires an unbound Source and a separate request.
+OCC checks permission on the exact Source and dispatches static credential replacement to its TokenService owner. An active Agent revision can keep using the Source during replacement. Changing or removing the provider preset requires an unbound Source and a separate request.
 
 #### Deliver Source updates
 
@@ -128,7 +128,9 @@ For each authorized Source, OCC sends Proxy the exact Source reference and a laz
 
 #### Retire the Source
 
-Static Source DELETE refuses blocking references and records retirement intent. OCC asks the selected Proxy to retire its delivery copies before TokenService removes the Source and credential from custody. Proxy retirement failure returns `503` and retains the Source and credential for retry. For OAuth disconnect, OCC records the revocation request before TokenService retires the private grant. See the [custody flow](token-service-static-custody.md#4-retire-the-source) for static Source retirement.
+To delete a static Source, OCC checks for blocking references and records retirement intent. It asks the selected Proxy to retire the Source's delivery copies before TokenService removes the Source and credential. If Proxy retirement fails, OCC returns `503` and leaves the Source and credential available for retry. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
+
+For OAuth disconnect, OCC records the revocation request before TokenService retires the private grant.
 
 ## Debugging and Verification
 
@@ -147,6 +149,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 09:12: Describe static Source retirement and OAuth disconnect alongside per-binding HTTP delivery. (authoring-run/460fd0ef-1bc5-4950-85de-bf351916de43 - 03091f9a99ec9cbc18e88f97c297e0e7c217054d)
 
 - 2026-11-24 00:18: Describe per-binding delivery and Source-wide rotation and retirement. (authoring-run/71b868ab-4583-4018-8755-568a186c1c69 - 9ee73bafa34d54d0081e3fe1437c0f302ec1821f)
 

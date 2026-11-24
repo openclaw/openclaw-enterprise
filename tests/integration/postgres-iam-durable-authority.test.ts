@@ -418,6 +418,7 @@ test(
     const f = await createFixture(t);
     const originalFetch = globalThis.fetch;
     let exchanges = 0;
+    let refreshes = 0;
     t.mock.method(
       globalThis,
       "fetch",
@@ -428,6 +429,11 @@ test(
         }
         assert.equal(request.method, "POST");
         const body = new URLSearchParams(await request.text());
+        if (body.get("grant_type") === "refresh_token") {
+          assert.ok(body.get("refresh_token")?.startsWith("fixture-refresh-"));
+          refreshes++;
+          return Response.json({ error: "invalid_grant" }, { status: 400 });
+        }
         assert.equal(body.get("grant_type"), "authorization_code");
         assert.ok(body.get("code")?.startsWith("fixture-"));
         assert.ok(body.get("code_verifier"));
@@ -638,6 +644,43 @@ test(
         ]);
       },
     );
+
+    await t.test("OAuth Source refuses PATCH and audits a failed issuer refresh", async () => {
+      await f.reset();
+      const namespaceId = await f.namespace();
+      const attempt = await connection(namespaceId);
+      const connected = await attempt.complete();
+      assert.equal(connected.statusCode, 303);
+      assert.match(String(connected.headers.location), /connection=connected/);
+      const sourceId = await connectionEffects(namespaceId, 1);
+      assert.ok(sourceId);
+      const sourcePath = `/namespaces/${namespaceId}/credential-sources/${sourceId}`;
+
+      // OAuth material can change only through provider exchange, even for an administrator.
+      const before = refreshes;
+      const rejected = await f.inject("PATCH", sourcePath, { secret: { opaque: randomUUID() } });
+      assert.equal(rejected.statusCode, 409, rejected.body);
+      assert.equal(rejected.json().error.message, "Only a static Source can be updated.");
+      assert.equal(refreshes, before);
+      const failed = await f.inject("POST", `${sourcePath}/rotate`);
+      assert.equal(failed.statusCode, 503, failed.body);
+      assert.equal(refreshes, before + 1);
+
+      const audit = await f.pool.query(
+        `SELECT actor_id, outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason_code
+         FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2
+           AND action='openclaw.credential_sources.rotate'
+           AND details->'__occAuditMetadata'->>'requestId'=$3`,
+        [namespaceId, sourceId, failed.headers["x-request-id"]],
+      );
+      assert.deepEqual(audit.rows, [
+        {
+          actor_id: f.principal.id,
+          outcome: "failure",
+          reason_code: "CREDENTIAL_REFRESH_ROTATION_FAILED",
+        },
+      ]);
+    });
 
     function repositoryCompute() {
       const resources = {
