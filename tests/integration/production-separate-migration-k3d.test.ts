@@ -70,7 +70,6 @@ test(
     const recordPhaseTiming = (
       stage:
         | "fixture-bootstrap"
-        | "cli-rebuild"
         | "initial-apply-writer-pause"
         | "migration-apply-verify"
         | "attested-resume",
@@ -149,10 +148,8 @@ test(
     // Exercise the ordinary helper against this installed API and database. A
     // runtime-only plan selects the incumbent controller for compatibility checks;
     // no Agent is admitted until these checks finish.
+    // Reuse the fixture-local CLI that bootstrap built and ran.
     const occ = join(f.directory, "occ");
-    const cliRebuildStarted = performance.now();
-    await f.run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
-    recordPhaseTiming("cli-rebuild", cliRebuildStarted);
     const source = (await f.run("git", ["rev-parse", "HEAD"])).trim();
     const keyPath = join(f.directory, "service-key.json");
     // The fixture has already removed the fresh-install credential Secret.
