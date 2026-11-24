@@ -8,6 +8,7 @@ import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/
 import {
   MANAGED_BY,
   MANAGED_BY_LABEL,
+  createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import {
@@ -86,10 +87,6 @@ test(
                 certificatePath: required("MANAGEMENT_CERT_FILE"),
                 privateKeyPath: required("MANAGEMENT_KEY_FILE"),
               },
-              operatorTls: {
-                certificatePath: required("OPERATOR_CERT_FILE"),
-                privateKeyPath: required("OPERATOR_KEY_FILE"),
-              },
             },
           },
         ],
@@ -102,6 +99,19 @@ test(
     });
     assert.ok(loaded?.openShellTokenServiceBackend);
     const backend = loaded.openShellTokenServiceBackend;
+    const gatewayDefinition = loaded.installation.backend.find(({ type }) => type === "openshell");
+    assert.ok(gatewayDefinition?.type === "openshell");
+    const verificationBackend = createOpenShellBackend({
+      ...gatewayDefinition,
+      configuration: {
+        ...gatewayDefinition.configuration,
+        operatorTls: {
+          certificatePath: required("OPERATOR_CERT_FILE"),
+          privateKeyPath: required("OPERATOR_KEY_FILE"),
+        },
+      },
+    });
+    t.after(() => verificationBackend.client.close());
     const proxy = loaded.credentialDeliveryRegistration?.require("credential_proxy_delivery");
     assert.ok(proxy);
     // Resolve fixture-selected placement without allocating a Kubernetes Namespace or workload.
@@ -222,8 +232,14 @@ test(
         grpcStatus: 7,
       },
     );
+    await assert.rejects(
+      owner.resolveCredential({ sourceRef, tokenServiceInstanceId }, t.signal),
+      /requires operatorTls/,
+    );
+    // The test verifier has its own operator identity. The application has only management access.
+    const verifier = verificationBackend.client.credentialClientForNamespace(workspace);
     const readNativeValue = async () =>
-      (await owner.resolveCredential({ sourceRef, tokenServiceInstanceId }, t.signal)).credential;
+      (await verifier.getProviderCredential(workspace, name, "OPENAI_API_KEY", t.signal)).value;
     assert.ok(
       (await readNativeValue()) === original,
       "The native Provider must contain the enrolled key.",

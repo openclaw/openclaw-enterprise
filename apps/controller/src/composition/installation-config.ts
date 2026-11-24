@@ -1781,13 +1781,12 @@ async function composeInstallationConfiguration(
     selectsOpenShellTokenService &&
     (!openShell ||
       !openShellBackend?.configuration.endpoint ||
-      !openShellBackend.configuration.operatorTls ||
       !isOpenShellGatewayEligible(openShellBackend) ||
       !credentialDeliveryRegistration ||
       !kubernetesCompute)
   ) {
     throw new Error(
-      "The OpenShell TokenService preview requires a fixed authenticated TLS Gateway, operator TLS, and paired Kubernetes Compute and OpenShell Sandbox and Credential Proxy.",
+      "The OpenShell TokenService preview requires a fixed authenticated TLS Gateway and paired Kubernetes Compute and OpenShell Sandbox and Credential Proxy.",
     );
   }
   const credentialRefreshDriver =

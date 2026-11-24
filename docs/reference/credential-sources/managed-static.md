@@ -21,7 +21,7 @@ If the private-store write cannot be confirmed, registration can fail while leav
 
 ### Preview OpenShell custody
 
-A development Installation can select `drivers.token_service: { id: openshell, configuration: {} }` and add `token_service: openshell` to the selected OpenShell Backend's `drivers`. Use the bundled Kubernetes Compute and OpenShell Sandbox and Credential Proxy. Configure one fixed HTTPS Gateway endpoint with authenticated management access and separate operator mTLS for credential reads.
+A development Installation can select `drivers.token_service: { id: openshell, configuration: {} }` and add `token_service: openshell` to the selected OpenShell Backend's `drivers`. Use the bundled Kubernetes Compute and OpenShell Sandbox and Credential Proxy. Configure one fixed HTTPS Gateway endpoint with authenticated management access. Direct Provider attachment uses that management connection. Configure separate operator mTLS only for authorized control-plane callers that need to read the credential.
 
 Use a Gateway that keeps its Provider records and credentials in its own database. OCC uses the Gateway database's built-in `default` Workspace ID to recognize the store and refuses advertised external credential drivers. The management identity must be able to read Gateway info and the default Workspace. PostgreSQL stores each Source's private Workspace and Provider IDs. The selected TokenService stores the credential in the Source's OpenShell Provider, which the Proxy attaches directly.
 
