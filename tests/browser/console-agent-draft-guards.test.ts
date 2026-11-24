@@ -1,5 +1,6 @@
 import { focusedDescription, focusedText, LIVE_BUTTON } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
+import { createServer } from "node:https";
 import test, { type TestContext } from "node:test";
 import {
   InstalledDriver,
@@ -7,6 +8,7 @@ import {
   type PlatformStateStore,
   type NamespaceLifecycleBinding,
 } from "../../packages/occ/src/index.ts";
+import { prepareOpenShellRepositorySource } from "../../apps/controller/src/composition/openshell-credential-admission.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -32,6 +34,13 @@ import type {
   ComputeDriver,
   SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import {
+  createGitHubProtocol,
+  fixtureAppId,
+} from "../fixtures/repository-credentials/github/protocol.ts";
+import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
@@ -1095,6 +1104,7 @@ async function repositoryPolicyConsole(
   t: TestContext,
   native = false,
   logger?: ReturnType<typeof createOccLogger>,
+  appId = "123",
 ) {
   const namespaceId = `ns_${crypto.randomUUID()}`;
   const app = { repository: "example/application", access: "read" } as const;
@@ -1107,7 +1117,7 @@ async function repositoryPolicyConsole(
     version: 1,
     backendId: "console-repository",
     providerInstanceId: "console-test",
-    appId: "123",
+    appId,
     githubInstallationId: "456",
     maximumDurationSeconds: 3600,
     repositories: registryGrants.map(({ repository }, index) => ({
@@ -1196,6 +1206,7 @@ async function repositoryPolicyConsole(
       }),
   });
   const owner = installation.protectedDriver;
+  const repositoryRegistry = installation.repositoryRegistry;
   const { credentialGatewayDriver: credentialGateway, repositoryAdmission } = installation;
   assert.ok(owner && credentialGateway && repositoryAdmission);
   t.after(() => owner.close());
@@ -1212,8 +1223,13 @@ async function repositoryPolicyConsole(
     sandbox_policy: "sbp",
   };
   const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
+  let state: PlatformStateStore | undefined;
   const fixture = await createConsoleAppFixture(t, {
     logger,
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
     createId(kind: ResourceKind) {
       if (kind === "namespace" && createdNamespaces++ === 1) {
         return namespaceId;
@@ -1227,6 +1243,12 @@ async function repositoryPolicyConsole(
       backendId: repositoryAdmission.backendId,
       policy: repositoryAdmission.policy,
     },
+    ...(native &&
+      repositoryRegistry && {
+        prepareStagedRepositorySource: (
+          input: Parameters<typeof prepareOpenShellRepositorySource>[1],
+        ) => prepareOpenShellRepositorySource(repositoryRegistry, input),
+      }),
     repositoryNetworkPolicyCeiling: native
       ? [...grants, limited]
       : [...grants, nativeRepo, peerRepo],
@@ -1253,6 +1275,7 @@ async function repositoryPolicyConsole(
   });
   await fixture.bootstrap();
   const controller = checkedController(fixture.controller);
+  assert.ok(state);
   const compute = controller.selectedDriver("compute");
   namespaceLifecycleBindings.push(sandboxNamespaceLifecycleBinding(compute, sandbox, owner));
   controller.installDriver(owner, ["sandbox", "credential_proxy"]);
@@ -1324,6 +1347,7 @@ async function repositoryPolicyConsole(
   return {
     fixture,
     controller,
+    state,
     namespaceId,
     app,
     tooling,
@@ -1339,8 +1363,9 @@ async function openRepositoryCreate(
   t: TestContext,
   modelAuth: "api_key" | "codex_pat" = "api_key",
   logger?: ReturnType<typeof createOccLogger>,
+  suppliedSetup?: Awaited<ReturnType<typeof repositoryPolicyConsole>>,
 ) {
-  const setup = await repositoryPolicyConsole(t, true, logger);
+  const setup = suppliedSetup ?? (await repositoryPolicyConsole(t, true, logger));
   const { fixture, namespaceId, secret } = setup;
   const modelSecret =
     modelAuth === "codex_pat"
@@ -1388,6 +1413,87 @@ test("Console requires a registered GitHub App Client for per-repository Agent a
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespaceId}/credential-sources`).length,
     0,
+  );
+});
+
+test("Console saves, reopens, and edits GitHub repository access through Agent-scoped options", async (t) => {
+  // Register through the real Client route and TokenService signing-key verifier; no live credentials are used.
+  const clock = createControlledClock();
+  const tls = await createTlsMaterial(t);
+  const github = createGitHubProtocol({ clock });
+  const apiOrigin = await listen(
+    t,
+    createServer(tls, (request, response) => github.handleRequest(request, response)),
+  );
+  const setup = await repositoryPolicyConsole(t, true, undefined, fixtureAppId);
+  const { controller, state, fixture, namespaceId, tooling } = setup;
+  const store = controller.selectedDriver("secret").installationSecrets;
+  assert.ok(store);
+  const instance = await controller.activateTokenServiceInstance(
+    "console-git-clients",
+    crypto.randomUUID(),
+  );
+  const tokenService = new OCCTokenServiceDriver(
+    "console-git-clients",
+    controller.installation.id,
+    store,
+    instance,
+    state,
+    undefined,
+    undefined,
+    { apiOrigin, ca: tls.cert, clock },
+  );
+  controller.registerDriver(tokenService);
+  controller.selectDriver("token_service", tokenService.id);
+  const registered = await fixture.request("POST", "/oauth-clients", {
+    body: {
+      kind: "github-app",
+      displayName: "Repository App",
+      appId: fixtureAppId,
+      privateKey: github.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    },
+  });
+  assert.equal(registered.status, 201);
+  const client = resource(registered.data);
+  const { page, agents } = await openRepositoryCreate(t, "api_key", undefined, setup);
+  await repositoryCheckbox(page, tooling.repository).check();
+  await page.getByLabel("GitHub App Client").selectOption(String(client.id));
+  await page.getByLabel(`GitHub access for ${tooling.repository}`).selectOption("read");
+  const created = responseTo(page, "POST", `${fixture.origin}${agents}`);
+  await page.getByRole("button", { name: "Save Agent draft" }).click();
+  const response = await created;
+  assert.equal(response.status(), 201, await response.text());
+  const agent = (await response.json()).data;
+  assert.deepEqual(agent.repositoryAccess.repositories, [
+    { repositoryRef: "tooling", access: "read" },
+  ]);
+  // Reopening uses Agent-scoped options; omitting GitHub metadata here made the saved grant uneditable.
+  const optionsPath = `${fixture.origin}${agents}/${agent.id}/repository-options`;
+  const options = responseTo(page, "GET", optionsPath);
+  await page.goto(String(detailUrl(fixture, namespaceId, agent.id, "draft", "repositories")));
+  const exactOptions = await options;
+  assert.equal(exactOptions.status(), 200);
+  const optionData = (await exactOptions.json()).data;
+  assert.ok(
+    optionData.some(
+      (entry: { repositoryRef: string; githubAccess?: unknown }) =>
+        entry.repositoryRef === "tooling" && entry.githubAccess,
+    ),
+  );
+  const access = page.getByLabel(`GitHub access for ${tooling.repository}`);
+  assert.equal(await access.inputValue(), "read");
+  await access.selectOption("write");
+  const saved = responseTo(page, "PATCH", `${fixture.origin}${agents}/${agent.id}`);
+  await page.getByRole("button", { name: "Save repository access" }).click();
+  const update = await saved;
+  assert.equal(update.status(), 200, await update.text());
+  assert.deepEqual((await update.json()).data.repositoryAccess.repositories, [
+    { repositoryRef: "tooling", access: "write" },
+  ]);
+  await page.reload();
+  assert.equal(
+    await page.getByLabel(`GitHub access for ${tooling.repository}`).inputValue(),
+    "write",
   );
 });
 

@@ -488,6 +488,17 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     });
   }
 
+  function authorizeDeploymentConfiguration(
+    principalId: string,
+    agent: Pick<Agent, "configurationId" | "namespaceId">,
+  ) {
+    return dependencies.authority.authorize(principalId, "read", {
+      kind: "configuration",
+      id: agent.configurationId,
+      namespaceId: agent.namespaceId,
+    });
+  }
+
   async function admitConfiguration(
     state: PlatformUnitOfWork,
     principalId: string,
@@ -495,11 +506,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     prepared: PreparedDeploymentChannels | undefined,
     guarded: boolean,
   ) {
-    await dependencies.authority.authorize(principalId, "read", {
-      kind: "configuration",
-      id: agent.configurationId,
-      namespaceId: agent.namespaceId,
-    });
+    await authorizeDeploymentConfiguration(principalId, agent);
     const metadata = await state.configurations.lockConfiguration(
       agent.namespaceId,
       agent.configurationId,
@@ -697,6 +704,15 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         id: input.agentId,
         namespaceId: input.namespaceId,
       });
+      await authorizeDeploymentConfiguration(principalId, candidate);
+      assertAgentConfiguration(
+        await state.configurations.findConfiguration(
+          candidate.namespaceId,
+          candidate.configurationId,
+        ),
+        candidate.namespaceId,
+        candidate.configurationId,
+      );
       const policy = await deploymentSandboxPolicy(
         state,
         dependencies.authority,
@@ -757,7 +773,6 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       clientId: access.githubAppClientId!,
       appId: registration.appId,
       installationId: registration.installationId,
-      scopeKey: registration.scopeKey,
       repositoryRefs: access.repositories.map(({ repositoryRef }) => repositoryRef),
       matches: (source) => registration.resolveGrants(source) !== undefined,
     });

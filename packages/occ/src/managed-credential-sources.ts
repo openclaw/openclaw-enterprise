@@ -1,5 +1,4 @@
 import { driverOperation } from "./driver-operation.ts";
-import { createHash } from "node:crypto";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   isSourceProviderPresetId,
@@ -329,13 +328,19 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     });
   }
 
-  async function validateDeploymentGitHubAppClient(clientId: string, appId: string): Promise<void> {
-    const client = await dependencies.transactions.read((state) =>
-      state.connectionTemplates.findCredentialClient(clientId),
-    );
+  async function validateDeploymentGitHubAppClient(
+    clientId: string,
+    appId: string | undefined,
+    draftState?: PlatformUnitOfWork,
+  ): Promise<void> {
+    const client = draftState
+      ? await draftState.connectionTemplates.lockCredentialClient(clientId)
+      : await dependencies.transactions.read((state) =>
+          state.connectionTemplates.findCredentialClient(clientId),
+        );
     if (
       client?.kind !== "github-app" ||
-      client.appId !== appId ||
+      (appId !== undefined && client.appId !== appId) ||
       client.namespaceId !== undefined ||
       client.tokenServiceInstanceId !== currentTokenServiceInstanceId()
     ) {
@@ -353,7 +358,6 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       readonly appId: string;
       readonly installationId: string;
       readonly repositoryRefs: readonly string[];
-      readonly scopeKey: readonly string[];
       readonly matches: (source: Readonly<GitHubAppInstallationCredentialSource>) => boolean;
     },
   ): Promise<string> {
@@ -382,16 +386,13 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
         return source.id;
       }
     }
-    const key = createHash("sha256")
-      .update(JSON.stringify([instanceId, input.clientId, input.installationId, input.scopeKey]))
-      .digest("hex");
     const source = await createManagedCredentialSource(
       principalId,
       namespaceId,
       {
         kind: "github_app_installation",
         clientId: input.clientId,
-        name: `GitHub repository access ${key}`,
+        name: `GitHub repository access ${crypto.randomUUID()}`,
         repositoryRefs: input.repositoryRefs,
       },
       (resource, phase) => ({

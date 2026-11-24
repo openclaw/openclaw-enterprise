@@ -42,6 +42,7 @@ import {
   type RepositoryPolicyResolution,
   delegatedRepositoryCeiling,
   repositoryGrantAuthority,
+  repositoryNetworkLimitForSelection,
   type RepositoryGrantPolicy,
   admitDeploymentRepositoryPolicy,
   assertSelectedRepositoryGrants,
@@ -142,7 +143,11 @@ interface RepositoryPolicyDependencies {
     | undefined;
   readonly stagedRepositoryCeiling: StagedRepositoryCeiling | undefined;
   readonly prepareStagedRepositorySource: PrepareStagedRepositorySource | undefined;
-  readonly validateDeploymentGitHubAppClient: (clientId: string, appId: string) => Promise<void>;
+  readonly validateDeploymentGitHubAppClient: (
+    clientId: string,
+    appId: string | undefined,
+    draftState: PlatformUnitOfWork,
+  ) => Promise<void>;
   readonly repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling;
   readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
   readonly selectedRepository: () => RepositoryPolicyDriver;
@@ -451,11 +456,10 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         "The selected repository credential Driver returned invalid repository options.",
       );
     }
-    // The create picker has no Agent yet. Only an administrator with Namespace-wide
-    // read access to Agents and their policies may see delegated policy limits here.
+    // Both pickers disclose limits only to an Installation administrator with Namespace-wide
+    // read access to Agents and their policies. The exact-Agent route also requires Agent update.
     const { authority } = dependencies;
     const showLimits =
-      agentId === undefined &&
       admission !== undefined &&
       result.options.some((option) => "githubRepository" in option) &&
       (
@@ -477,32 +481,20 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       if (!grantAuthority) {
         return undefined;
       }
-      const shortName = repository.slice(repository.indexOf("/") + 1);
-      const configured = dependencies.repositoryNetworkPolicyCeiling.filter(
-        ({ repository: limit }) =>
-          limit === repository ||
-          (dependencies.stagedRepositoryCeiling !== undefined &&
-            !(repository.includes("/") && limit.includes("/")) &&
-            limit.slice(limit.indexOf("/") + 1) === shortName),
+      const limit = repositoryNetworkLimitForSelection(
+        dependencies.repositoryNetworkPolicyCeiling,
+        repository,
+        dependencies.stagedRepositoryCeiling !== undefined,
       );
-      const qualified = repository.includes("/")
-        ? [repository]
-        : configured.flatMap(({ repository: limit }) => (limit.includes("/") ? [limit] : []));
-      if (!configured.length || qualified.length > 1) {
+      if (!limit) {
         return undefined;
       }
-      // Catalog metadata may include the owner from a configured limit. Save and
-      // deploy independently qualify it using the selected Source's verified owner.
+      // An owner supplied by the configured limit is provisional until Deploy verifies the Source.
       const [allowed] = delegatedRepositoryCeiling(
-        [
-          {
-            repository,
-            access: configured.every(({ access }) => access === "write") ? "write" : "read",
-          },
-        ],
+        [{ repository, access: limit.access }],
         grantAuthority,
       );
-      return allowed && { ...allowed, repository: qualified[0] ?? repository };
+      return allowed && { ...allowed, repository: limit.repository };
     };
     if (!owner.unchanged()) {
       throw new DependencyUnavailableError("The repository policy changed while listing options.");
@@ -849,13 +841,11 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         "The selected GitHub App and repository access are unavailable. Review the approved repositories and access levels before deploying.",
       );
     }
-    return {
-      ...prepared,
-      scopeKey: resolved.resolution.bindings.map(({ grant }) => grant.grantId).sort(),
-    };
+    return prepared;
   }
 
   async function validateRepositoryClientSelection(
+    state: PlatformUnitOfWork,
     principalId: string,
     agent: Pick<Agent, "namespaceId" | "repositoryAccess" | "repositoryBindings">,
     previousClientId?: string,
@@ -871,9 +861,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       });
     }
     const registration = prepareRepositorySource(agent);
-    if (registration) {
-      await dependencies.validateDeploymentGitHubAppClient(clientId, registration.appId);
-    }
+    // Serialize a new or retained reference with Client retirement.
+    await dependencies.validateDeploymentGitHubAppClient(clientId, registration?.appId, state);
   }
 
   function admitRepositoryCredentials(

@@ -1903,6 +1903,10 @@ function repositories(
     },
     deleteCredentialClient: async (registrationId, retainForCleanup) => {
       if (
+        (snapshot.clientRegistrations.get(registrationId)?.kind === "github-app" &&
+          [...snapshot.agents.values()].some(
+            (agent) => agent.repositoryAccess?.githubAppClientId === registrationId,
+          )) ||
         [...snapshot.credentialSources.values()].some(
           (source) =>
             (source.type === "oauth2-refresh-token" &&

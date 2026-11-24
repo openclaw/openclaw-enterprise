@@ -523,6 +523,9 @@ export async function createConsoleAppFixture(t, options = {}) {
           ? {}
           : { supportsCredentialDeployment: options.supportsCredentialDeployment }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
+        ...(options.prepareStagedRepositorySource === undefined
+          ? {}
+          : { prepareStagedRepositorySource: options.prepareStagedRepositorySource }),
         ...(options.repositoryNetworkPolicyCeiling === undefined
           ? {}
           : { repositoryNetworkPolicyCeiling: options.repositoryNetworkPolicyCeiling }),

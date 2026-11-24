@@ -8,19 +8,39 @@ last_updated_session: "authoring-run/7a822e28-b4b9-453a-ae0d-313b27e85a4e"
 
 ## Overview
 
-For TokenService Git, Deploy authorizes Source use or creation before revision
-admission. OpenShell injects the finite token on admitted Git routes.
-[Git setup](../guides/repository-credentials.md); [qualification](../testing/repository-credentials.md).
+See [Git setup](../guides/repository-credentials.md) and
+[qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
 - `apps/controller/src/console/agents/repositories.mts:createRepositoryFields`
   renders approved choices.
 - `packages/occ/src/agent-deployment-admission.ts:prepareGitHubRepository` resolves the Source.
-- `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` prepares
-  repository sessions before invoking Compute.
+- `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` starts runtime preparation.
 
 ## Flow
+
+### TokenService Git
+
+```mermaid
+---
+config:
+  htmlLabels: true
+---
+flowchart TB
+  Draft["<b>Agent draft</b><br/>Client and repo access"] --> Deploy["<b>Deploy</b><br/>Authorizes caller and scope"]
+  Deploy --> Source["<b>TokenService Source</b><br/>Reuse or mint"]
+  Source --> Revision["<b>Agent revision</b><br/>Source and exact Git rules"]
+  Revision --> Proxy["<b>Credential Proxy</b><br/>Worker configures delivery"]
+  Proxy --> Git["<b>OpenShell</b><br/>Injects on admitted Git routes"]
+
+  classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
+  classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  class Draft,Revision state
+  class Deploy,Source,Proxy,Git operation
+```
+
+### Prepared repository sessions
 
 ```mermaid
 graph TD
@@ -91,22 +111,25 @@ graph TD
 
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
-`listRepositoryOptions` checks Agent `create` in the Namespace or `update` on the
-exact Agent, plus Compute availability. Bundled listings use the bound GitHub
-catalog. Programmatic listings use the registered Repo Driver. Both reject stale
-owner results. Deploy checks the exact Harness. Empty catalogs return `[]`.
-Absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
-Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
+`listRepositoryOptions` checks Namespace Agent `create` or exact Agent `update`
+and Compute support. It reads the bound GitHub catalog or the registered Repo
+Driver catalog and rejects stale owner results. Eligible Installation
+administrators see configured Git access limits. A missing selection adds
+`meta.notConfigured`. Closed Namespaces conflict. Classified discovery failures
+return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
-The catalog allows 1,000 repositories plus the Installation option. Overflow returns `503 DEPENDENCY_UNAVAILABLE`. The editor searches choices and limits attachments to 16.
-`packages/occ/src/repository-policy.ts:repositorySettings` enforces bound Installation policy for explicit and
-inherited saves. Unbound saves use the registered Repo Driver. The database
-checks bindings. Only fresh, empty drafts tolerate classified outages.
-Catalogs omit sender metadata, credentials and provider descriptions.
+The catalog accepts 1,000 repositories plus the Installation option. Overflow
+returns `503 DEPENDENCY_UNAVAILABLE`. The editor allows 16 selections.
+`repositorySettings` uses the bound policy or selected Repo Driver for both
+explicit and inherited selections. PostgreSQL checks bindings. Fresh, empty
+drafts tolerate classified outages. Catalogs omit credentials and sender metadata.
 
-Save Configuration first. Reuse it after a confirmed Agent rejection. For scoped retries, reload successfully and select a repository and profile. After an uncertain outcome, read both resources.
+Save Configuration first. Reuse it after a confirmed Agent rejection. For scoped
+retries, reload and select a repository and profile. After an uncertain outcome,
+read both resources.
 
-Requests carry refs and optional profiles. TokenService Git also saves a Client and access per ref. Nonempty selections require bound policy or a selected Repo Driver. Legacy GitHub defaults to `git-write` without provider calls.
+Requests carry refs and optional profiles. TokenService Git also saves a Client
+and access per ref. Legacy GitHub defaults to `git-write` without provider calls.
 
 `apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
 requires an exact Namespace/ref/profile. Each binding gets one grant with a
@@ -122,7 +145,8 @@ allowlist. Omitted selections persist. `[]` clears them.
 matches GitHub Backend and registry IDs. It snapshots policy before loading
 packages or registries, preserving protected Driver identity.
 `packages/occ/src/repository-policy.ts:bindInstallation` binds that owner.
-File-based `repository` uses `built-in` policy, including explicit `repository.policyMode: built-in`. Startup rejects other modes, `drivers.repo` and separate Repo Drivers. Programmatic registration remains available.
+File-based `repository` requires `built-in` policy. Startup rejects other modes,
+`drivers.repo`, and separate Repo Drivers. Programmatic registration remains available.
 `apps/controller/src/drivers/egress-proxy/openshell-configuration.ts` owns
 OpenShell parsing and chart constraints.
 

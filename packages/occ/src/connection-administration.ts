@@ -569,7 +569,9 @@ export function createConnectionAdministration({
         ))
       ) {
         throw new ResourceStateConflictError(
-          "A Source or pending consent still references this client.",
+          client.kind === "github-app"
+            ? "An Agent draft or a Source still references this GitHub App Client."
+            : "A Source or pending consent still references this client.",
         );
       }
       if (audit) {

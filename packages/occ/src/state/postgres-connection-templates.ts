@@ -329,7 +329,9 @@ export function postgresConnectionTemplates(
         `${mutation} WHERE r.id=$1
          AND NOT EXISTS(SELECT 1 FROM occ.credential_sources s
                         WHERE s.oauth_client_id=r.id OR s.github_app_client_id=r.id)
-         AND NOT EXISTS(SELECT 1 FROM occ.authentication_states a WHERE a.oauth_client_id=r.id)`,
+         AND NOT EXISTS(SELECT 1 FROM occ.authentication_states a WHERE a.oauth_client_id=r.id)
+         AND NOT EXISTS(SELECT 1 FROM occ.agents a
+                        WHERE r.kind='github-app' AND a.repository_access->>'githubAppClientId'=r.id)`,
         [id],
       );
       return result.rowCount === 1;

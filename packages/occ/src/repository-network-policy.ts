@@ -57,6 +57,31 @@ export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
   readonly selectedRepositoryNetworkGrants?: RepositoryNetworkPolicyCeiling;
 };
 
+/** Match an operator ceiling for an editable selection before GitHub verifies its owner. */
+export function repositoryNetworkLimitForSelection(
+  ceiling: RepositoryNetworkPolicyCeiling,
+  repository: string,
+  allowShortNameMatch: boolean,
+): RepositoryNetworkGrant | undefined {
+  const isQualified = repository.includes("/");
+  const shortName = repository.slice(repository.indexOf("/") + 1);
+  const matching = ceiling.filter(
+    ({ repository: limit }) =>
+      limit === repository ||
+      (allowShortNameMatch &&
+        !(isQualified && limit.includes("/")) &&
+        limit.slice(limit.indexOf("/") + 1) === shortName),
+  );
+  const qualified = matching.filter(({ repository: limit }) => limit.includes("/"));
+  if (!matching.length || qualified.length > 1) {
+    return undefined;
+  }
+  return {
+    repository: qualified[0]?.repository ?? repository,
+    access: matching.every(({ access }) => access === "write") ? "write" : "read",
+  };
+}
+
 type RepositoryGrantMethod = NonNullable<RepositoryGrantPolicy["repositoryNetworkPolicyAllows"]>;
 
 function repositoryGrantMethod(policy: RepositoryGrantPolicy): RepositoryGrantMethod | undefined {

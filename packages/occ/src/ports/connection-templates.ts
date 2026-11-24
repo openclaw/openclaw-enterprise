@@ -34,7 +34,7 @@ export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepo
     registration: StoredCredentialClient,
     cleanupAfter?: string,
   ): Promise<Readonly<StoredCredentialClient>>;
-  /** False while a Source or pending OAuth consent still names the registration. */
+  /** False while an Agent draft, Source or pending OAuth consent still names the Client. */
   deleteCredentialClient(registrationId: string, retainForCleanup?: boolean): Promise<boolean>;
   /** Inserts the template and its first version together. */
   createConnectionTemplate(template: ConnectionTemplate): Promise<Readonly<ConnectionTemplate>>;

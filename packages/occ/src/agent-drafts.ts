@@ -524,7 +524,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       );
       const { repositoryBindings, repositoryAccess } =
         dependencies.repositoryPolicy.repositorySettings(namespace.id, input);
-      await dependencies.repositoryPolicy.validateRepositoryClientSelection(principalId, {
+      await dependencies.repositoryPolicy.validateRepositoryClientSelection(state, principalId, {
         namespaceId: namespace.id,
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
@@ -958,6 +958,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         settings === undefined ? undefined : (settings.repositoryAccess ?? null);
       if (settings !== undefined) {
         await dependencies.repositoryPolicy.validateRepositoryClientSelection(
+          state,
           principalId,
           {
             namespaceId: namespace.id,

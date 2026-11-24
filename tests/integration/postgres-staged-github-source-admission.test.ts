@@ -165,9 +165,11 @@ test(
     };
     const installation = {
       ...buildSandboxInstallation(),
+      iam: defaultUsersIAM(),
       sandboxNetworkPolicyCeiling: [modelGrant],
+      // The deployed selections exercise a qualified owner limit and a short-name limit.
       repositoryNetworkPolicyCeiling: registryRepositories.map(({ repository }, index) => ({
-        repository: index === 2 ? repository : repository.split("/")[1]!.toUpperCase(),
+        repository: index === 1 ? repository.split("/")[1]!.toUpperCase() : repository,
         access: index === 0 ? ("read" as const) : ("write" as const),
       })),
       runtime: { nativeWorkerSupport: "custom-image" },
@@ -287,8 +289,11 @@ test(
     nativeController.selectDriver("compute", runtime.computeDriver.id);
     installSelectedSandboxDrivers(nativeController, runtime);
     const app = createApp(nativeController);
-    const request = (method: "GET" | "POST" | "PATCH" | "PUT", url: string, body?: unknown) =>
-      inject(method, url, body, app);
+    const request = (
+      method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
+      url: string,
+      body?: unknown,
+    ) => inject(method, url, body, app);
     // Controlled metadata exercises the image-pin checks without qualifying a real runtime.
     selectFixtureRelease(t);
     const catalog = await request("GET", `${base}/agents/repository-options`);
@@ -305,7 +310,7 @@ test(
       registryRepositories.map(({ repository, repositoryRef }, index) => ({
         repositoryRef,
         githubAccess: {
-          repository: index === 2 ? repository : repository.split("/")[1],
+          repository: index === 1 ? repository.split("/")[1] : repository,
           access: index === 0 ? "read" : "write",
         },
       })),
@@ -474,6 +479,21 @@ test(
       assert.equal(saved.statusCode, 200, saved.body);
       assert.equal(github.issuesOfTokens.length, issueCountBeforeSave + agents.length);
       if (agents.length === 0) {
+        // The saved Agent already pins this Client before its first Git Source exists.
+        const clientDelete = await request("DELETE", `/oauth-clients/${clientId}`);
+        assert.equal(clientDelete.statusCode, 409, clientDelete.body);
+        assert.match(
+          clientDelete.json().error.message,
+          /Agent draft.*references this GitHub App Client/i,
+        );
+        assert.equal(github.issuesOfTokens.length, issueCountBeforeSave);
+        const beforeDeployment = await request("GET", `${base}/credential-sources`);
+        assert.equal(beforeDeployment.statusCode, 200, beforeDeployment.body);
+        assert.ok(
+          beforeDeployment
+            .json()
+            .data.every(({ type }: { type: string }) => type !== "github-app-installation"),
+        );
         const denied = await app.inject({
           method: "POST",
           url: `${base}/agents/${agent.id}/deploy`,
@@ -800,5 +820,196 @@ test(
         requestedNames: undefined,
       })),
     );
+
+    // A short registry name can be selected under its matching full-name Installation ceiling.
+    // Neither saving nor changing this intent creates a Source or calls the provider.
+    const beforeMixedSave = github.issuesOfTokens.length;
+    const mixed = await request("POST", `${base}/agents`, {
+      name: `Mixed selector ${randomUUID()}`,
+      configurationId: config.json().data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+      credentialSources: [{ sourceId: modelSource.id }],
+      repositoryAccess: {
+        githubAppClientId: clientId,
+        defaultProfile: "github-repository",
+        repositories: [{ repositoryRef: ungranted.repositoryRef, access: "read" }],
+      },
+    });
+    assert.equal(mixed.statusCode, 201, mixed.body);
+    const mixedId = mixed.json().data.id;
+    const options = await request("GET", `${base}/agents/${mixedId}/repository-options`);
+    assert.equal(options.statusCode, 200, options.body);
+    assert.deepEqual(
+      options
+        .json()
+        .data.find(
+          ({ repositoryRef }: { repositoryRef: string }) =>
+            repositoryRef === ungranted.repositoryRef,
+        )?.githubAccess,
+      { repository: ungranted.repository, access: "write" },
+    );
+    const mixedUpdated = await request("PATCH", `${base}/agents/${mixedId}`, {
+      configurationId: config.json().data.id,
+      repositoryAccess: {
+        githubAppClientId: clientId,
+        defaultProfile: "github-repository",
+        repositories: [{ repositoryRef: ungranted.repositoryRef, access: "write" }],
+      },
+    });
+    assert.equal(mixedUpdated.statusCode, 200, mixedUpdated.body);
+    assert.equal(github.issuesOfTokens.length, beforeMixedSave);
+
+    // Another caller may create Sources but cannot operate the first caller's exact Git Source.
+    // It must receive its own finite Source instead of reusing or gaining access to that Source.
+    const creatorRoleId = `role-${randomUUID()}`;
+    await pool.query("INSERT INTO occ.iam_roles (id,name,permissions) VALUES ($1,$2,$3::jsonb)", [
+      creatorRoleId,
+      "Repository Source creator",
+      JSON.stringify([
+        { action: "create", resourceKind: "credential_source" },
+        { action: "deploy", resourceKind: "agent" },
+        { action: "read", resourceKind: "agent" },
+        { action: "operate", resourceKind: "agent" },
+        { action: "update", resourceKind: "agent" },
+        { action: "manage_policy", resourceKind: "agent" },
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "sandbox_policy" },
+        { action: "update", resourceKind: "sandbox_policy" },
+      ]),
+    ]);
+    const creatorCredentials = {
+      email: `creator-${randomUUID()}@example.test`,
+      password: randomUUID(),
+    };
+    const creatorAccount = await inject("POST", "/api/auth/accounts", {
+      ...creatorCredentials,
+      name: "Repository Source creator",
+      roleId: creatorRoleId,
+    });
+    assert.equal(creatorAccount.statusCode, 201, creatorAccount.body);
+    const creatorId = creatorAccount.json().data.principalId;
+    await pool.query(
+      "INSERT INTO occ.iam_access_bindings (id,namespace_id,identity_subject_id,role_id) VALUES ($1,$2,$3,$4)",
+      [`binding-${randomUUID()}`, namespaceId, creatorId, creatorRoleId],
+    );
+    const modelOperatorRole = await request("POST", `${base}/iam/roles`, {
+      name: "Exact model Source operator",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    });
+    assert.equal(modelOperatorRole.statusCode, 201, modelOperatorRole.body);
+    const modelOperator = await request("POST", `${base}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: creatorId,
+      roleId: modelOperatorRole.json().data.id,
+      resourceKind: "credential_source",
+      resourceId: modelSource.id,
+    });
+    assert.equal(modelOperator.statusCode, 201, modelOperator.body);
+    const creatorSession = await signInToControllerApp(app, creatorCredentials);
+    const creatorRequest = (method: "GET" | "POST", url: string, payload?: object) =>
+      app.inject({
+        method,
+        url,
+        headers: {
+          host: new URL(creatorSession.origin).host,
+          ...authenticatedHeaders(creatorSession),
+        },
+        ...(payload === undefined ? {} : { payload }),
+      });
+    const creatorOptions = await creatorRequest(
+      "GET",
+      `${base}/agents/${mixedId}/repository-options`,
+    );
+    assert.equal(creatorOptions.statusCode, 200, creatorOptions.body);
+    assert.ok(creatorOptions.json().data.every((option: object) => !("githubAccess" in option)));
+    const canOperate = async (sourceId: string) =>
+      (
+        await nativeController.selectedDriver("iam").authorize({
+          principalId: creatorId,
+          action: "operate",
+          resource: { kind: "credential_source", namespaceId, id: sourceId },
+        })
+      ).allowed;
+    assert.equal(await canOperate(modelSource.id), true);
+    assert.equal(await canOperate(gitSource.id), false);
+    const creatorAgent = await request("PATCH", `${base}/agents/${mixedId}`, {
+      configurationId: config.json().data.id,
+      repositoryAccess: selected("read"),
+    });
+    assert.equal(creatorAgent.statusCode, 200, creatorAgent.body);
+    const creatorAgentId = creatorAgent.json().data.id;
+    const creatorPolicyPath = `${base}/agents/${creatorAgentId}/sandbox-policy/networking`;
+    assert.equal(
+      (await request("PATCH", `${creatorPolicyPath}/editing`, { enabled: true })).statusCode,
+      200,
+    );
+    const creatorPolicy = await request("GET", creatorPolicyPath);
+    assert.equal(creatorPolicy.statusCode, 200, creatorPolicy.body);
+    assert.equal(
+      (
+        await request("PUT", creatorPolicyPath, {
+          expectedVersion: creatorPolicy.json().data.policy.version,
+          additions: [modelGrant],
+        })
+      ).statusCode,
+      200,
+    );
+    const beforeCreatorDeploy = github.issuesOfTokens.length;
+    const unreadConfiguration = await creatorRequest(
+      "POST",
+      `${base}/agents/${creatorAgentId}/deploy`,
+      {},
+    );
+    assert.equal(unreadConfiguration.statusCode, 403, unreadConfiguration.body);
+    assert.match(unreadConfiguration.json().error.message, /Configuration read/i);
+    assert.equal(github.issuesOfTokens.length, beforeCreatorDeploy);
+    const configurationReader = await request("POST", `${base}/iam/roles`, {
+      name: "Exact Configuration reader",
+      permissions: [{ action: "read", resourceKind: "configuration" }],
+    });
+    assert.equal(configurationReader.statusCode, 201, configurationReader.body);
+    const configurationGrant = await request("POST", `${base}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: creatorId,
+      roleId: configurationReader.json().data.id,
+      resourceKind: "configuration",
+      resourceId: config.json().data.id,
+    });
+    assert.equal(configurationGrant.statusCode, 201, configurationGrant.body);
+    const creatorDeploy = await creatorRequest(
+      "POST",
+      `${base}/agents/${creatorAgentId}/deploy`,
+      {},
+    );
+    assert.equal(creatorDeploy.statusCode, 202, creatorDeploy.body);
+    assert.equal(github.issuesOfTokens.length, beforeCreatorDeploy + 1);
+    const creatorRevision = await state.read((view) =>
+      view.revisions.findRevision(namespaceId, creatorAgentId, creatorDeploy.json().data.id),
+    );
+    const creatorGitSourceId = creatorRevision?.credentialSources?.find(
+      ({ sourceType }) => sourceType === "github-app-installation",
+    )?.sourceId;
+    assert.ok(creatorGitSourceId);
+    assert.notEqual(creatorGitSourceId, gitSource.id);
+    assert.equal(await canOperate(gitSource.id), false);
+    assert.equal(await canOperate(creatorGitSourceId), true);
+    const creatorSource = await state.read((view) =>
+      view.credentialSources.findCredentialSource(namespaceId, creatorGitSourceId),
+    );
+    assert.ok(
+      creatorSource?.ownerCapability === "token_service" &&
+        creatorSource.type === "github-app-installation",
+    );
+    assert.deepEqual(creatorSource.scope, gitSource.scope);
+    const creatorCredential = await owner.resolveCredential(
+      {
+        sourceRef: { kind: "credential_source", namespaceId, id: creatorGitSourceId },
+        tokenServiceInstanceId: nativeController.currentTokenServiceInstanceId(),
+      },
+      t.signal,
+    );
+    assert.ok(creatorCredential.version);
+    assert.ok(creatorCredential.credential);
   },
 );

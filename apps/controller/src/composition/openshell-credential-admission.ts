@@ -5,7 +5,10 @@ import type {
   RepositoryNetworkGrant,
   RepositoryNetworkPolicyCeiling,
 } from "@openclaw-enterprise/contracts";
-import type { ControllerOptions } from "@openclaw-enterprise/occ";
+import {
+  repositoryNetworkLimitForSelection,
+  type ControllerOptions,
+} from "@openclaw-enterprise/occ";
 
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
 import { OpenShellSandboxDriver } from "../drivers/sandbox/openshell.ts";
@@ -123,23 +126,11 @@ export function prepareOpenShellRepositorySource(
       if (!repository || !level) {
         return [];
       }
-      const limits = ceiling.filter(
-        ({ repository: limit }) =>
-          limit === repository.repository ||
-          (repository.repository.includes("/") &&
-            matchesConfiguredGitHubRepository(
-              { repository: limit },
-              { repository: repository.repository },
-            )),
-      );
-      if (
-        !limits.length ||
-        (level === "write" &&
-          (contents !== "write" || limits.some((limit) => limit.access !== "write")))
-      ) {
+      const limit = repositoryNetworkLimitForSelection(ceiling, repository.repository, true);
+      if (!limit || (level === "write" && (contents !== "write" || limit.access !== "write"))) {
         return [];
       }
-      return [{ repository, access: level }];
+      return [{ repository, limit, access: level }];
     });
     if (requested.length !== bindings.length || requested.length !== access.repositories.length) {
       return undefined;
@@ -155,9 +146,11 @@ export function prepareOpenShellRepositorySource(
         ) {
           return undefined;
         }
-        const grants = requested.flatMap(({ repository, access }) => {
-          const match = source.scope.repositories.find((entry) =>
-            matchesConfiguredGitHubRepository(repository, entry),
+        const grants = requested.flatMap(({ repository, limit, access }) => {
+          const match = source.scope.repositories.find(
+            (entry) =>
+              matchesConfiguredGitHubRepository(repository, entry) &&
+              matchesConfiguredGitHubRepository(limit, entry),
           );
           return match ? [{ repository: match.repository, access }] : [];
         });
