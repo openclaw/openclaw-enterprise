@@ -8,9 +8,15 @@ An operator enrolls a Codex personal access token (PAT) as a new static Source i
 
 ## Ownership and cutover
 
-An operator stops affected Agents and settles pending deployment, withdrawal, or dispatch under the old owner to retire the Provider copies. Cutover removes obsolete Gateway selections from Agent drafts and deletes the old Source records and their Source-specific links. It preserves Agents, Namespace Secrets, and inactive revision history. Active revisions and unsettled work must finish with their original delivery owner before the upgrade can discard that required state.
+An operator stops affected Agents and settles pending deployment, withdrawal, or dispatch before cutover. Cutover clears obsolete Gateway selections and deletes the old Source records and their Source-specific links. It preserves Agents, Namespace Secrets, and inactive revision history. OpenShell Providers can retain usable old credentials. The OpenShell operator inventories and removes any retained copies and profiles and verifies their absence.
 
 For an Agent bound directly to a PAT Secret, the operator re-enters the PAT through ordinary Source enrollment before using hosted Apps. The replacement Source receives a new ID and ordinary Source grants. The operator binds it to the Agent draft and deploys a new revision. [Codex device login](https://github.com/openclaw/openclaw-enterprise/blob/c561b70b559dbce49d53c0842b30e8d3ca0f319a/specs/rfcs/20261124-credential-design-1-0/codex-device-login.md) remains a separate OAuth path.
+
+## Issue a new PAT from a ChatGPT ServiceAccount
+
+OCC checks exact ServiceAccount update and Namespace Source create permissions before asking the ServiceAccount Driver to mint. The Driver passes the freshly issued bearer in-process to the selected TokenService's existing static Codex PAT enrollment. The API returns the Source reference. The Agent uses ordinary exact Source operate grants.
+
+TokenService commits custody in its own Namespace transaction. The ServiceAccount issuance flow resumes to record the Source reference and issuer receipt, then audits completion. On a failed enrollment, the issuer revokes the new credential. The ServiceAccount Driver retains the private issuer credential ID for exact revocation and removes the upstream credential when the ServiceAccount is deleted. A managed binding cannot be replaced or discarded through generic static Source mutation. TokenService holds the sole stored bearer. Existing issued Secret credentials require replacement through fresh issuance.
 
 ## PAT recipient and enforcement
 
@@ -35,7 +41,7 @@ Worker resolves the Source through TokenService; Credential Proxy creates and up
 
 ### API
 
-Add Codex PAT to static Source permitted-use selection. Accept an authorized TokenService Source reference for hosted Apps discovery.
+Add Codex PAT to static Source permitted-use selection. Accept an authorized TokenService Source reference for hosted Apps discovery. Return a Source reference from ChatGPT ServiceAccount credential issuance.
 
 ### IAM
 
@@ -47,7 +53,7 @@ Use the existing static Source state. Cutover clears obsolete Agent draft select
 
 ### Driver contract
 
-Reuse TokenService `createSource` and `resolveCredential`. Withdraw the proposed `adoptSource` operation.
+Reuse TokenService `createSource` and `resolveCredential`. The ChatGPT ServiceAccount Driver hands off a transient bearer and returns a managed Source reference instead of a Secret reference. Retain issuer-owned revocation. Withdraw the proposed `adoptSource` operation.
 
 Add optional fourth argument `modelPreset?: SourceProviderPresetId` to Compute's `resolveHarnessConfiguration`. Admission derives it from the locked Source before building the preset. Compute uses it to distinguish Codex PAT from an OpenAI API key and reject incompatible `modelProvider` overrides. Do not persist another copy. Credential Proxy and Sandbox reuse the [staged deployment contract](https://github.com/openclaw/openclaw-enterprise/blob/c561b70b559dbce49d53c0842b30e8d3ca0f319a/specs/rfcs/20261124-credential-design-1-0/worker-credential-configuration.md).
 
@@ -58,5 +64,6 @@ Reuse static custody, Source IAM, and ordinary Proxy push. Specialize only the C
 ## Acceptance criteria
 
 - Through authenticated Fastify and PostgreSQL, enroll a PAT as a static Source, bind it to an Agent, and verify that hosted Apps gets its account identity from the issuer. Check permission denial before hosted requests and preserve Namespace Secrets and inactive revisions during cutover.
+- Through authenticated ServiceAccount issuance, verify that a caller missing Source create cannot mint, a new Source binds as the Codex PAT, and a failed enrollment revokes the minted credential. Verify issuer revocation on ServiceAccount deletion.
 - Through ordinary Agent deployment, verify the trusted executable, admitted request policy, native Provider delivery and Source-update push, placeholder-only startup, and serving-process `personalAccessToken` readiness. Invalid authority, policy, or login must prevent activation.
 - Separately qualify a genuine Codex model turn and native Git on the final candidate. PostgreSQL and controlled transport checks do not prove live enforcement or authentication.
