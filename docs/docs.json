@@ -545,7 +545,15 @@
                       },
                       {
                         "page": "reference/drivers/plugin-bundled",
-                        "label": "Bundled"
+                        "label": "Overview"
+                      },
+                      {
+                        "page": "reference/drivers/openclaw-plugin",
+                        "label": "OpenClaw"
+                      },
+                      {
+                        "page": "reference/drivers/codex-plugin",
+                        "label": "Codex"
                       }
                     ]
                   },
