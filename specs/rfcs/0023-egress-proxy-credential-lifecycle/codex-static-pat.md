@@ -59,7 +59,9 @@ No second Source or account record. Add the restricted owner/type/instance trans
 
 ### Driver contract
 
-Add one TokenService adoption operation for an existing Source identity. It accepts the admitted Source reference, expected Gateway owner and Secret reference, selected instance, reviewed static preset, a callback bound to the authorized Secret Driver read, an exact Gateway-retirement callback, and cancellation. TokenService owns the transaction, Source lock, custody, restricted owner transition, and returned Source. `createSource` continues to allocate identities only for new enrollment. Reuse Credential Proxy deployment/update and Sandbox staged operations; qualify the exact PAT recipient, requests, placeholder launch, and serving-process authentication observation.
+Add an optional TokenService adoption operation for an existing Source identity; refuse adoption if the selected Driver does not support it. It accepts the admitted Source reference, expected Gateway owner and Secret reference, selected instance, reviewed static preset, a callback bound to the authorized Secret Driver read, an exact Gateway-retirement callback, and cancellation. TokenService owns the transaction, Source lock, custody, restricted owner transition, and returned Source. `createSource` continues to allocate identities only for new enrollment.
+
+Extend Compute's `resolveHarnessConfiguration` with an optional fourth `modelPreset?: SourceProviderPresetId` argument. Agent admission derives it from the locked static Source and supplies it before the preset is built; Compute uses it to distinguish Codex PAT from an OpenAI API-key Source and reject incompatible `modelProvider` overrides. This value is not another persisted Source or revision field. Existing callers and Drivers may omit it. Reuse Credential Proxy deployment/update and Sandbox staged operations; qualify the exact PAT recipient, requests, placeholder launch, and serving-process authentication observation.
 
 ## Simplifications
 
