@@ -17,14 +17,18 @@
     "OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_RUNTIME_IMAGE",
     "OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_GITHUB_APP_CLIENT_ID",
     "OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_ALLOWED_REPOSITORY_REF",
-    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_DENIED_REPOSITORY_REF"
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_DENIED_REPOSITORY_REF",
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_DISPOSABLE_WRITE_REPOSITORY",
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_TCP_CONTROL_HOST",
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_TCP_CONTROL_ADDRESS",
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_TCP_CONTROL_PORT"
   ],
   "prepare": {},
   "files": [
     {
       "path": "tests/integration/openshell-token-service-git-agent-real.test.ts",
       "expectedTests": [
-        "OCC TokenService deploys one Dedicated Codex Agent with a real model turn and scoped native Git"
+        "Dedicated Codex Agents enforce Contributor and Read access on a shared Git Source and keep serving the model after Git withdrawal"
       ]
     }
   ]

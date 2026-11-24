@@ -8,11 +8,16 @@ import { openShellProviderName } from "../../apps/controller/src/backends/opensh
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { openShellProjectedCredentialProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
-import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  type OpenShellSandboxLogLine,
+  GrpcOpenShellGatewayClient,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type {
   AgentRevisionWire,
   CredentialSourceWire,
 } from "../../packages/contracts/src/api/resources.ts";
+import { startNativeTcpProbe } from "../helpers/openshell-token-service-raw-tcp.ts";
+import { verifyNativeGitPush } from "../helpers/openshell-token-service-git-push.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
 
@@ -61,12 +66,12 @@ type RepositoryOption = {
 };
 
 test(
-  "OCC TokenService deploys one Dedicated Codex Agent with a real model turn and scoped native Git",
+  "Dedicated Codex Agents enforce Contributor and Read access on a shared Git Source and keep serving the model after Git withdrawal",
   {
     skip:
       process.env[`${selection}_REAL`] !== "1" &&
       "requires an owned prepared OCC TokenService Installation",
-    timeout: 25 * 60_000,
+    timeout: 45 * 60_000,
   },
   async (t) => {
     const origin = loopback("OCC_URL", "http:");
@@ -80,6 +85,7 @@ test(
     const runtimeImage = required(`${selection}_RUNTIME_IMAGE`);
     const clientId = required(`${selection}_GITHUB_APP_CLIENT_ID`);
     const allowedRef = required(`${selection}_ALLOWED_REPOSITORY_REF`);
+    const writableRepository = required(`${selection}_DISPOSABLE_WRITE_REPOSITORY`);
     const deniedRef = required(`${selection}_DENIED_REPOSITORY_REF`);
     assert.ok(/^ns_[a-f0-9-]{36}$/.test(namespaceId) && /^cs_[a-f0-9-]{36}$/.test(modelSourceId));
     assert.ok(/^ccr_[a-f0-9-]{36}$/.test(clientId));
@@ -140,36 +146,7 @@ test(
       return ((await (await request(method, path, expected, body)).json()) as { data: T }).data;
     }
 
-    const created: { configurationId?: string; agentId?: string; gitSourceId?: string } = {};
-    t.after(async () => {
-      try {
-        if (created.agentId) {
-          const path = `${base}/agents/${created.agentId}`;
-          await (await request("DELETE", path, 202)).body?.cancel();
-          await waitUntil(
-            "test Agent deletion",
-            async () => {
-              const response = await request("GET", path, [200, 404]);
-              await response.body?.cancel();
-              return response.status === 404;
-            },
-            poll,
-          );
-        }
-        if (created.gitSourceId) {
-          await (
-            await request("DELETE", `${base}/credential-sources/${created.gitSourceId}`, 204)
-          ).body?.cancel();
-        }
-        if (created.configurationId) {
-          await (
-            await request("DELETE", `${base}/configurations/${created.configurationId}`, 204)
-          ).body?.cancel();
-        }
-      } finally {
-        gateway.close();
-      }
-    });
+    t.after(() => gateway.close());
 
     const namespace = await data<{ status: string }>("GET", base, 200);
     assert.ok(namespace.status === "ready", "Use a ready disposable Namespace.");
@@ -199,6 +176,13 @@ test(
         repositoryName.test(denied.repository),
       "Both repository references must be in the finite Namespace registry.",
     );
+    const hostName = required(`${selection}_TCP_CONTROL_HOST`);
+    const port = Number(required(`${selection}_TCP_CONTROL_PORT`));
+    const tcpProbe = await startNativeTcpProbe(t, {
+      host: hostName,
+      address: required(`${selection}_TCP_CONTROL_ADDRESS`),
+      port,
+    });
     const previous = new Set(
       (await data<CredentialSourceWire[]>("GET", `${base}/credential-sources`, 200)).map(
         ({ id }) => id,
@@ -209,50 +193,108 @@ test(
       kind: "agent",
       values: createHarnessConfiguration("codex", model),
     });
-    created.configurationId = configuration.id;
-    const agent = await data<Agent>("POST", `${base}/agents`, 201, {
-      name: `native-git-${randomUUID()}`,
-      configurationId: configuration.id,
-      executionMode: "dedicated",
-      credentialSources: [{ sourceId: modelSourceId }],
-      harnessAuth: { method: "credential_source", sourceId: modelSourceId },
-      repositoryAccess: {
-        githubAppClientId: clientId,
-        defaultProfile: "github-repository",
-        repositories: [{ repositoryRef: allowedRef, access: "read" }],
-      },
+    const newGitSources = new Set<string>();
+    const agentIds: string[] = [];
+    t.after(async () => {
+      for (const id of agentIds) {
+        const path = `${base}/agents/${id}`;
+        await (await request("DELETE", path, 202)).body?.cancel();
+        await waitUntil(
+          "test Agent deletion",
+          async () => {
+            const response = await request("GET", path, [200, 404]);
+            await response.body?.cancel();
+            return response.status === 404;
+          },
+          poll,
+        );
+      }
+      for (const sourceId of newGitSources) {
+        await (
+          await request("DELETE", `${base}/credential-sources/${sourceId}`, 204)
+        ).body?.cancel();
+      }
+      await (
+        await request("DELETE", `${base}/configurations/${configuration.id}`, 204)
+      ).body?.cancel();
     });
-    const agentId = agent.id;
-    created.agentId = agentId;
-    const agentPath = `${base}/agents/${agentId}`;
-    const deployed = await data<AgentRevisionWire>("POST", `${agentPath}/deploy`, 202);
-    const submittedSourceIds = deployed.credentialSources?.map(({ sourceId }) => sourceId) ?? [];
-    const gitSourceId = submittedSourceIds.find((id) => id !== modelSourceId);
-    if (gitSourceId && !previous.has(gitSourceId)) {
-      created.gitSourceId = gitSourceId;
+    async function deploy(access: "read" | "write") {
+      const agent = await data<Agent>("POST", `${base}/agents`, 201, {
+        name: `native-git-${access}-${randomUUID()}`,
+        configurationId: configuration.id,
+        executionMode: "dedicated",
+        credentialSources: [{ sourceId: modelSourceId }],
+        harnessAuth: { method: "credential_source", sourceId: modelSourceId },
+        repositoryAccess: {
+          githubAppClientId: clientId,
+          defaultProfile: "github-repository",
+          repositories: [{ repositoryRef: allowedRef, access }],
+        },
+      });
+      const agentId = agent.id;
+      agentIds.push(agentId);
+      const agentPath = `${base}/agents/${agentId}`;
+      if (access === "read") {
+        const path = `${agentPath}/sandbox-policy/networking`;
+        await data("PATCH", `${path}/editing`, 200, { enabled: true });
+        const current = await data<{ policy: { version: number } }>("GET", path, 200);
+        await data("PUT", path, 200, {
+          expectedVersion: current.policy.version,
+          additions: [
+            {
+              id: "tcp-control",
+              binary: "/usr/bin/curl",
+              host: hostName,
+              ports: [{ from: port, to: port }],
+            },
+          ],
+        });
+      }
+      const deployed = await data<AgentRevisionWire>("POST", `${agentPath}/deploy`, 202);
+      const submittedSourceIds = deployed.credentialSources?.map(({ sourceId }) => sourceId) ?? [];
+      const gitSourceId = submittedSourceIds.find((id) => id !== modelSourceId);
+      if (gitSourceId && !previous.has(gitSourceId)) {
+        newGitSources.add(gitSourceId);
+      }
+      await waitUntil(
+        "native Git Agent deployment",
+        async () => {
+          const result = await data<{ status: string; error?: { code: string } }>(
+            "GET",
+            `${agentPath}/deployments/${deployed.id}`,
+            200,
+          );
+          assert.ok(
+            result.status !== "failed",
+            `Deployment failed (${result.error?.code ?? "unknown"}).`,
+          );
+          return result.status === "succeeded";
+        },
+        poll,
+      );
+      assert.ok((await data<Agent>("GET", agentPath, 200)).activeRevisionId === deployed.id);
+      const revision = await data<AgentRevisionWire>(
+        "GET",
+        `${agentPath}/revisions/${deployed.id}`,
+        200,
+      );
+      const sandboxName = `os-${createHash("sha256").update(deployed.id).digest("hex").slice(0, 16)}`;
+      const sandbox = await gateway.getSandbox({ workspace, name: sandboxName }, rpc());
+      assert.ok(
+        sandbox?.id &&
+          sandbox.mainProcessInstanceId &&
+          asRecord(sandbox.spec?.template)?.image === runtimeImage,
+        "The inspected digest-pinned Dedicated Codex runtime must be running.",
+      );
+      const workspacePath = asRecord(sandbox.spec?.environment)?.OPENCLAW_WORKSPACE_DIR;
+      assert.ok(
+        typeof workspacePath === "string" && /^\/sandbox\/[A-Za-z0-9_./-]+$/.test(workspacePath),
+        "The inspected Sandbox must declare its approved Harness workspace mount.",
+      );
+      return { agentId, agentPath, revision, sandbox, sandboxName, workspacePath, gitSourceId };
     }
-    await waitUntil(
-      "native Git Agent deployment",
-      async () => {
-        const result = await data<{ status: string; error?: { code: string } }>(
-          "GET",
-          `${agentPath}/deployments/${deployed.id}`,
-          200,
-        );
-        assert.ok(
-          result.status !== "failed",
-          `Deployment failed (${result.error?.code ?? "unknown"}).`,
-        );
-        return result.status === "succeeded";
-      },
-      poll,
-    );
-    assert.ok((await data<Agent>("GET", agentPath, 200)).activeRevisionId === deployed.id);
-    const revision = await data<AgentRevisionWire>(
-      "GET",
-      `${agentPath}/revisions/${deployed.id}`,
-      200,
-    );
+    const reader = await deploy("read");
+    const { agentPath, revision, sandbox, sandboxName, gitSourceId } = reader;
     const sourceIds = revision.credentialSources?.map(({ sourceId }) => sourceId) ?? [];
     assert.ok(
       sourceIds.includes(modelSourceId) &&
@@ -269,7 +311,8 @@ test(
     assert.ok(
       gitSource.type === "github-app-installation" &&
         gitSource.clientId === clientId &&
-        gitSource.scope.repositories.length === 1,
+        gitSource.scope.repositories.length === 1 &&
+        gitSource.scope.permissions.contents === "write",
       "Deployment must derive the finite Git Source from the selected Client.",
     );
     const allowedName = gitSource.scope.repositories[0]!.repository;
@@ -295,20 +338,7 @@ test(
       "Only the selected Repository may enter the active revision.",
     );
 
-    const sandboxName = `os-${createHash("sha256").update(deployed.id).digest("hex").slice(0, 16)}`;
-    const sandbox = await gateway.getSandbox({ workspace, name: sandboxName }, rpc());
     const gitProvider = openShellProjectedCredentialProviderName(gitSourceId, "GITHUB_TOKEN");
-    assert.ok(
-      sandbox?.id &&
-        sandbox.mainProcessInstanceId &&
-        asRecord(sandbox.spec?.template)?.image === runtimeImage,
-      "The inspected digest-pinned Dedicated Codex runtime must be running.",
-    );
-    const workspacePath = asRecord(sandbox.spec?.environment)?.OPENCLAW_WORKSPACE_DIR;
-    assert.ok(
-      typeof workspacePath === "string" && /^\/sandbox\/[A-Za-z0-9_./-]+$/.test(workspacePath),
-      "The inspected Sandbox must declare its approved Harness workspace mount.",
-    );
     assert.ok(
       Array.isArray(sandbox.spec?.providers) && sandbox.spec.providers.includes(gitProvider),
       "The running Sandbox must attach its native Git Provider.",
@@ -324,7 +354,8 @@ test(
       policies &&
         Array.isArray(nodeEndpoints) &&
         nodeEndpoints.some(
-          (entry) => asRecord(entry)?.path === `/namespaces/${namespaceId}/agents/${agentId}/node`,
+          (entry) =>
+            asRecord(entry)?.path === `/namespaces/${namespaceId}/agents/${reader.agentId}/node`,
         ),
       "Dedicated Codex requires the exact managed Workspace node route.",
     );
@@ -367,7 +398,7 @@ test(
       "The loaded credential policy must admit only the selected repository.",
     );
 
-    async function chat(message: string): Promise<string> {
+    async function chat(agentId: string, message: string): Promise<string> {
       const response = await request(
         "POST",
         `/agents/${agentId}/chat`,
@@ -379,36 +410,178 @@ test(
         choices?: { message?: { role?: string; content?: string } }[];
       };
       assert.ok(result.choices?.[0]?.message?.role === "assistant");
-      return result.choices[0]!.message!.content?.trim() ?? "";
+      return result.choices[0].message.content?.trim() ?? "";
     }
-    const modelNonce = `MODEL-${randomUUID()}`;
-    assert.ok(
-      (await chat(`Reply with exactly this text and no other words: ${modelNonce}`)) === modelNonce,
-      "A genuine model turn must return the exact nonce.",
+
+    // Run Git with the Harness's startup environment and native shell. Management
+    // exec stages the script and checks its exit marker without supplying a token.
+    async function runInHarness(runtime: typeof reader, script: string) {
+      const file = `${runtime.workspacePath}/.occ-git-${randomUUID()}`;
+      const nonce = randomUUID();
+      const exec = (command: string[], stdin = "") =>
+        gateway.execSandbox(
+          {
+            workspace,
+            sandbox: runtime.sandboxName,
+            command,
+            environment: {},
+            stdin,
+            timeoutSeconds: 20,
+          },
+          rpc(),
+        );
+      const input = `set -eu\n(\n${script}\n)\nprintf '%s' '${nonce}' > "${file}.ok"\n`;
+      assert.equal(
+        await exec(["sh", "-ceu", 'cat > "$1" && chmod 0444 "$1"', "sh", file], input),
+        0,
+      );
+      try {
+        await chat(
+          runtime.agentId,
+          `Use your native shell tool to run sh ${file} exactly once. Reply when the command finishes.`,
+        );
+        assert.equal(
+          await exec(["sh", "-ceu", 'test "$(cat "$1.ok")" = "$2"', "sh", file, nonce]),
+          0,
+          "The Harness command must complete successfully.",
+        );
+      } finally {
+        await exec(["sh", "-ceu", 'rm -f "$1" "$1.ok"', "sh", file]);
+      }
+    }
+    const url = `https://github.com/${allowedName}.git`;
+    const read = `git ls-remote --exit-code ${url} HEAD`;
+    await runInHarness(
+      reader,
+      `${read} >/dev/null && ! git ls-remote --exit-code https://github.com/${deniedName}.git HEAD >/dev/null 2>&1 || exit 1`,
     );
-    const gitNonce = `GIT-${randomUUID()}`;
-    const marker = `${workspacePath}/.occ-git-${randomUUID()}`;
-    const script = `git ls-remote --exit-code https://github.com/${allowedName}.git HEAD >/dev/null 2>&1 && ! git ls-remote --exit-code https://github.com/${deniedName}.git HEAD >/dev/null 2>&1 && printf %s ${gitNonce} > ${marker}`;
+    await tcpProbe.verify((script) => runInHarness(reader, script));
+    // Write only to the disposable repository explicitly named for this run.
     assert.ok(
-      (await chat(
-        `Use your native shell tool to run exactly this command, without changing Git settings or credentials: sh -ceu '${script}'. Reply with exactly ${gitNonce} only if it succeeds.`,
-      )) === gitNonce,
-      "The Agent must complete the stock Git allow/deny command.",
+      allowedName === writableRepository,
+      "The installed repository must match the disposable write target.",
     );
-    const markerStatus = await gateway.execSandbox(
-      {
-        workspace,
-        sandbox: sandboxName,
-        command: ["sh", "-ceu", 'test "$(cat "$1")" = "$2"; rm -f "$1"', "sh", marker, gitNonce],
-        environment: {},
-        stdin: "",
-        timeoutSeconds: 20,
+    const contributor = await deploy("write");
+    assert.equal(contributor.gitSourceId, gitSourceId);
+    assert.ok(
+      Array.isArray(contributor.sandbox.spec?.providers) &&
+        contributor.sandbox.spec.providers.includes(gitProvider),
+    );
+    const version = (await gateway.getProvider(workspace, gitProvider, rpc()))?.config
+      .oce_source_version;
+    assert.ok(version);
+    async function expectNativeDenial(
+      matches: (line: OpenShellSandboxLogLine) => boolean,
+      run: () => Promise<void>,
+    ) {
+      const lastDenial = async () => {
+        const logs = await gateway.getSandboxLogs(
+          { workspace, sandbox: sandboxName, lines: 2000 },
+          rpc(),
+        );
+        return logs.lines.findLast(
+          (line) =>
+            line.sandboxId === sandbox.id &&
+            line.source === "sandbox" &&
+            line.target === "ocsf" &&
+            line.level.toUpperCase() === "OCSF" &&
+            matches(line),
+        )?.time;
+      };
+      const before = await lastDenial();
+      await run();
+      await waitUntil(
+        "OpenShell reports a fresh denial for the reader's Git command",
+        async () => {
+          const after = await lastDenial();
+          return after && after !== before;
+        },
+        { timeoutMs: 30_000, intervalMs: 500 },
+      );
+    }
+    // OpenShell can redact the service query in the denial event. The stock push
+    // and fetch choose different services on the same discovery path.
+    function discoveryDenied(
+      line: OpenShellSandboxLogLine,
+      service: "git-receive-pack" | "git-upload-pack",
+    ) {
+      const path = `L7_REQUEST deny GET github.com:443/${allowedName}.git/info/refs`;
+      return (
+        line.message.startsWith("HTTP:GET [MED] DENIED ") &&
+        (line.message.includes(`${path} reason=`) ||
+          line.message.includes(`${path}?service=${service} reason=`))
+      );
+    }
+    await verifyNativeGitPush({
+      repository: allowedName,
+      runReader: (script) =>
+        expectNativeDenial(
+          (line) => discoveryDenied(line, "git-receive-pack"),
+          () => runInHarness(reader, script),
+        ),
+      runContributor: (script) => runInHarness(contributor, script),
+    });
+    assert.equal(
+      (await gateway.getProvider(workspace, gitProvider, rpc()))?.config.oce_source_version,
+      version,
+      "Both pushes must use the same write-capable credential version.",
+    );
+
+    await data("PATCH", agentPath, 200, {
+      configurationId: configuration.id,
+      repositoryAccess: { defaultProfile: "github-repository", repositories: [] },
+    });
+    await waitUntil(
+      "Worker withdraws Git from the running reader",
+      async () => {
+        const running = await gateway.getSandbox({ workspace, name: sandboxName }, rpc());
+        assert.equal(running?.id, sandbox.id);
+        assert.equal(running?.mainProcessInstanceId, sandbox.mainProcessInstanceId);
+        const providers = running?.spec?.providers;
+        return (
+          Array.isArray(providers) &&
+          providers.includes(modelProvider) &&
+          !providers.includes(gitProvider)
+        );
       },
-      rpc(),
+      poll,
     );
-    assert.ok(
-      markerStatus === 0,
-      "The actual Harness shell must create the exact Git success marker.",
+    const reduced = await gateway.getPolicyStatus({ workspace, sandbox: sandboxName }, rpc());
+    const effective = await gateway.getSandboxConfig(workspace, sandboxName, rpc());
+    assert.equal(reduced.state, "POLICY_STATUS_LOADED");
+    assert.equal(reduced.activeVersion, reduced.version);
+    assert.notEqual(reduced.version, loaded.version);
+    assert.equal(effective.configuration_admitted, true);
+    assert.equal(effective.version, reduced.version);
+    for (const policy of [reduced.policy, effective.policy]) {
+      const networks = asRecord(asRecord(policy)?.network_policies);
+      assert.ok(networks);
+      const endpoints = Object.values(networks).flatMap((rule) => {
+        const items = asRecord(rule)?.endpoints;
+        return Array.isArray(items) ? items.map(asRecord) : [];
+      });
+      assert.ok(!endpoints.some((entry) => entry?.host === "github.com"));
+      assert.ok(
+        endpoints.some(
+          (entry) =>
+            entry?.host === host && asRecord(entry.credential_binding)?.provider === modelProvider,
+        ),
+      );
+    }
+    await expectNativeDenial(
+      (line) =>
+        /^NET:OPEN \[MED\] DENIED \/usr\/(?:lib|libexec)\/git-core\/git-remote-https?\(\d+\) -> github\.com:443 \[reason:transparent_tcp_policy_denied\]$/.test(
+          line.message,
+        ) || discoveryDenied(line, "git-upload-pack"),
+      () =>
+        runInHarness(reader, `code=0; ${read} >/dev/null 2>&1 || code=$?; test "$code" -eq 128`),
     );
+    await runInHarness(contributor, `${read} >/dev/null`);
+    const modelNonce = `MODEL-${randomUUID()}`;
+    assert.equal(
+      await chat(reader.agentId, `Reply with exactly this text and no other words: ${modelNonce}`),
+      modelNonce,
+    );
+    assert.equal((await data<Agent>("GET", agentPath, 200)).activeRevisionId, revision.id);
   },
 );
