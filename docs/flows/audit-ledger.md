@@ -97,9 +97,21 @@ handler starts.
 During graceful shutdown, OCC waits for covered non-streaming handlers to
 finish their result audit attempt before closing State, even if the client
 disconnects. This wait excludes Agent chat, which can take over the socket.
-If the process is killed or the audit append fails, a committed change can
-still lack a result record. Check the resource and its mutation audit before
-retrying a write.
+If requests remain after sockets close, `http.audit_drain_started` reports
+their count and the oldest pending request and operation IDs. On completion,
+`http.audit_drain_finished` reports the elapsed milliseconds and an outcome.
+
+- `recorded` means OCC saved the result audits for this wait. Requests can
+  still have failed.
+- `reconcile` warns that at least one outcome needs investigation. It names
+  the first affected request. `AUDIT_RESULT_UNCONFIRMED` means OCC could
+  not confirm the audit append. `COMMIT_OUTCOME_UNKNOWN` means PostgreSQL
+  may still commit the change, even after the API exits.
+
+Check `http.audit_append_failed` and `http.commit_outcome_unknown` for
+other affected requests. A forced stop can leave no finish event. Keep
+writers stopped during maintenance until outstanding transactions settle.
+Check the resource and mutation audit before retrying a write.
 
 Both records carry the API-generated request ID, registered operation,
 HTTP method, and Installation ID. The result adds the HTTP status. The hook
