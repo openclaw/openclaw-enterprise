@@ -1186,22 +1186,30 @@ test("a slow Agent refocus shows the pending status beside the scrolled draft", 
   }
   const revisionsPath = `${agentPath}/revisions`;
   const revisionsUrl = fixture.origin + revisionsPath;
-  // Hold the genuine retry response until the delayed cue can appear.
+  // Hold the retry across the delayed cue deadline.
   const retryRead = await holdRequests(t, page, revisionsUrl, { once: true, method: "GET" });
   const firstRead = await holdRequests(t, page, revisionsUrl, {
     once: true,
     method: "GET",
     fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
   });
+  const now = Date.now();
+  await page.clock.install({ time: now });
+  await page.clock.pauseAt(now + 1_000);
+  const status = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
   const first = responseTo(page, "GET", revisionsUrl);
   await refocus(page);
   await firstRead.requested;
+  assert.equal(await status.count(), 0, "an ordinary read does not immediately show a cue");
   firstRead.release();
   assert.equal((await first).status(), 500);
   await retryRead.requested;
-  const status = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
-  await status.waitFor();
-  assert.equal(await status.count(), 1);
+  assert.equal(await status.count(), 1, "the retry shows the cue before the delay expires");
+  const cue = await status.evaluateHandle((node) => node);
+  await page.clock.fastForward(1_001);
+  assert.equal(await status.count(), 1, "the timer does not add a second cue");
+  assert.equal(await cue.evaluate((node) => node.isConnected), true, "the original cue remains");
+  await page.clock.resume();
   const pending = await status.evaluate((node) => {
     const { top, right, bottom, left } = node.getBoundingClientRect();
     return {

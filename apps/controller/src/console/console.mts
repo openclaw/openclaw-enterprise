@@ -1063,8 +1063,8 @@ function forgetRetainedView(taken: ReturnType<typeof peekRetainedView>) {
   }
 }
 
-// Names a recheck that outlasts stillCheckingDelayMs, so a held page is not mistaken
-// for a stuck one (finding 1442). Mounted Agent checks stay visible beside scrolled drafts.
+// Names a pending recheck so a held page is not mistaken for a stuck one (finding 1442).
+// Mounted Agent checks stay visible beside scrolled drafts.
 function showStillChecking({ mountedAgent = false } = {}) {
   const container = mountedAgent ? app : app.querySelector(".content .page-actions");
   if (!container) {
@@ -3324,11 +3324,12 @@ async function revalidateMountedAgent(current: Route) {
   };
   let checked = false;
   let clearStillChecking: (() => void) | undefined;
-  const stillChecking = setTimeout(() => {
+  const showPendingStatus = () => {
     if (isCurrent()) {
-      clearStillChecking = showStillChecking({ mountedAgent: true });
+      clearStillChecking ??= showStillChecking({ mountedAgent: true });
     }
-  }, stillCheckingDelayMs);
+  };
+  const stillChecking = setTimeout(showPendingStatus, stillCheckingDelayMs);
   try {
     const resolvedSession = await readSession();
     if (!isCurrent()) {
@@ -3508,6 +3509,7 @@ async function revalidateMountedAgent(current: Route) {
       if (!isCurrent() || retryNotBefore !== 0 || !retryableAgentRecheck(error)) {
         throw error;
       }
+      showPendingStatus();
       // One more set of detail GETs for this foreground check. Navigation aborts it.
       rechecked = await readDetails();
     }

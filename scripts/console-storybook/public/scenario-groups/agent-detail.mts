@@ -3376,7 +3376,7 @@ export function createAgentDetailScenarios({
         description: "The Console retries one temporary Configuration read failure on tab return.",
         steps: [
           "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit, select text in the editor, and scroll until the page header is out of view.",
-          "Switch to another browser tab and return. When Still checking… appears at the bottom of the viewport and the draft is hidden, switch away again. Let the delayed retry finish while the preview tab is hidden.",
+          "Switch to another browser tab and return. When the draft hides for the automatic retry, confirm Still checking… appears immediately and only once at the bottom of the viewport, then switch away again. Let the delayed retry finish while the preview tab is hidden.",
           "Return to the preview. After the next access check succeeds, confirm the status disappears and the editor regains focus with the unsaved draft, selection, and scroll position intact. Type without clicking the editor to verify that only the selected text changes. Reset the story and repeat at 390 px wide. Confirm the status fits the viewport and navigation remains available.",
         ],
       },
