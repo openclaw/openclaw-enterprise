@@ -10,9 +10,9 @@ kind: reference/driver
 
 `LegacyEgressProxyDriver` serves protected-egress deployments. See its [walkthrough](../../contributing/credential-proxy-driver.md) and [selection rules](selection.md#select-a-protected-sender).
 
-OpenClaw Control Plane (OCC) owns authorization, bindings, execution identity, expiry, and withdrawal. TokenService acquires, stores, renews, and retires credentials. Provider adapters define scope, injection, and response rules. The Proxy enforces requests and resolves credentials.
+OpenClaw Control Plane (OCC) owns authorization, bindings, execution identity, expiry, and withdrawal. TokenService acquires, stores, renews, and retires credentials. Legacy provider adapters define scope, injection, and response rules. The Proxy enforces injection. It resolves a Source for OCC delivery copies or directly attaches a native OpenShell Provider.
 
-[TokenService](../../flows/token-service-static-custody.md) owns managed static Sources. Gateway-owned Sources use the recorded Gateway. When the legacy protected path requires static material, neither
+TokenService owns [managed static Sources](../credential-sources.md#implementation-status). Gateway-owned Sources use the recorded Gateway. When the legacy protected path requires static material, neither
 the Gateway nor the Proxy may declare refresh, device authorization or managed
 login tokens. Capabilities omit incompatible types. If OCC detects a mismatch
 before the Secret read, creation and adoption return 409 without reading material.
