@@ -78,6 +78,8 @@ export type UpdateManagedCredentialSourceInput =
  * gateway copy does not prove that no late create is still in flight, so the record is kept.
  */
 const CREDENTIAL_GATEWAY_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
+/** Sees rows committed during a lock wait, whatever the connection default isolation. */
+const READ_COMMITTED = { readCommitted: true } as const;
 
 function assertManagedSourceLifecycleSettings(settings: Readonly<Record<string, string>>): void {
   if (
@@ -629,7 +631,9 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           );
         }
         // Read under the Namespace and Source row locks this transaction already holds: a deploy
-        // records its copy under the same Source lock, and the Worker only retires copies.
+        // records its copy under the same Source lock, and the Worker only retires copies. The
+        // transaction reads committed whatever the connection default, so a copy or a Provider
+        // write committed while it waited on the Source row is seen.
         const unretired = await state.credentialSources.findUnretiredRepositorySourceCopies(
           locked.id,
           found.id,
@@ -681,7 +685,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           source: deleting,
           gateway: owner?.kind === "gateway" ? owner.driver : undefined,
         };
-      })
+      }, READ_COMMITTED)
       .catch(async (error: unknown) => {
         throw error instanceof RepositorySourceCopiesUnretiredError ||
           error instanceof RepositorySourceWriteUnreconciledError
