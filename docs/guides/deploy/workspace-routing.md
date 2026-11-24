@@ -356,18 +356,18 @@ before retrying. Verify existing PVC identities, sessions and channels after cut
 cert-manager renews both 30 days before expiry. Leaf renewal under the trusted
 CA needs no restart.
 
-**CA rollover.** Back up the signing Secret. A separate trust bundle requires an explicit issuer. Selecting an
-[external issuer](../../reference/gateway-routing.md#tls-and-certificate-lifecycle)
-changes the listener issuer and removes the generated issuers and root Certificate
-from the chart. Plan downtime unless you can stage trust first.
+**CA rollover.** Back up the signing Secret. A separate trust bundle requires an
+[explicit issuer](../../reference/gateway-routing.md#tls-and-certificate-lifecycle).
+It replaces the listener issuer and removes the chart’s generated issuers
+and root Certificate. Stage trust first or plan downtime.
 
-1. Keep serving the old chain through an independently managed issuer. Select
-   both public roots with `gatewayRouting.caSecretName` and `gatewayRouting.caSecretKey`.
-2. Replace API and worker Pods and affected Harness workloads. API Pod replacement
-   rebuilds [private IdP trust](oidc-sign-in.md#trust-a-private-idp-ca).
-3. Switch Envoy’s certificate. Verify fresh connections.
-4. Once no serving certificate needs the old root, remove it from the public
-   bundle and repeat step 2.
+1. Serve the old chain through an independent issuer. Select both roots with
+   `gatewayRouting.caSecretName` and `gatewayRouting.caSecretKey`.
+2. Replace API and worker Pods. API replacement rebuilds [IdP trust](oidc-sign-in.md#trust-a-private-idp-ca).
+   Once they load the bundle, [deploy new versions](../topics/agent-revisions.md#update-and-deploy)
+   of affected Agents through OCC. Confirm each new workspace node trusts the intended roots.
+3. Switch Envoy’s certificate. Verify fresh OCC and authenticated Harness connections.
+4. Remove the old root once no chain needs it. Repeat step 2 and connection checks.
 
 OCC uses the service key over WSS with CA and hostname verification.
 The pinned native client has no mTLS client-certificate option.
