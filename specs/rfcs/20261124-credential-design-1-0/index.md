@@ -27,7 +27,7 @@ The Installation selects one TokenService instance to own its Sources and privat
 
 ## From enrollment to an Agent revision
 
-An authorized caller enrolls a static or account credential. For Git, OCC authorizes Source creation or reuse before TokenService resolves it at deployment. For browser OAuth, the caller selects a compatible Template and OAuth2Client. OCC completes consent and the initial authorization-code exchange, then gives the resulting grant to TokenService. The built-in Codex device flow uses its fixed issuer and public client through TokenService and creates the Source after authorization succeeds.
+An authorized caller enrolls a static or account credential. For Git, OCC authorizes Source creation or reuse before TokenService resolves it at deployment. For browser OAuth, the caller selects a compatible Template and OAuth2Client. OCC completes consent and the initial authorization-code exchange, then gives the resulting grant to TokenService. For Codex, TokenService uses a fixed issuer and public client and creates the Source after successful authorization.
 
 The operator selects a Source for model authentication or a named Plugin connection. PluginDriver describes the selected Plugin's tools, network requirements, and credential connections. OCC checks that the deployer and Agent principal can operate each exact Source, applies the Installation ceiling, and derives one admitted binding list for the revision. A shared Git token also uses a Source binding. Separate Repository grants constrain its use.
 
@@ -109,21 +109,21 @@ Withdrawal detaches the binding for that Agent and removes its request authority
 
 ## Examples
 
-| Use          | How the design applies                                                                                                                                                                                                        |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Model preset | Select an API-key Source. The model provider's reviewed profile supplies the inference destination and credential header.                                                                                                     |
-| Codex OAuth  | Complete device login, then select the resulting Source. Dedicated Codex receives a placeholder and the account context needed for its login state.                                                                           |
-| GitHub App   | Select an App installation and approved repositories. At deployment, OCC asks TokenService to reuse or enroll a matching finite Namespace Source. Agents selecting A and B share its token under different read/write grants. |
-| Plugin OAuth | Connect an account with a Template and OAuth2Client, then select the Source for a named Plugin connection. Both the admitted request rule and the provider's granted OAuth scopes constrain the operation.                    |
-| Static HTTP  | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                                               |
-| MCP          | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                                      |
+| Use          | How the design applies                                                                                                                                                                                                 |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model preset | Select an API-key Source. The model provider's reviewed profile supplies the inference destination and credential header.                                                                                              |
+| Codex OAuth  | Complete device login, then select the resulting Source. Dedicated Codex receives a placeholder and the account context needed for its login state.                                                                    |
+| GitHub App   | Select an App installation and approved repositories. At deployment, OCC asks TokenService to reuse or enroll a matching Namespace Source. Agents selecting A and B share its token under different read/write grants. |
+| Plugin OAuth | Connect an account with a Template and OAuth2Client, then select the Source for a named Plugin connection. The request rule and granted OAuth scopes constrain the operation.                                          |
+| Static HTTP  | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                                        |
+| MCP          | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                               |
 
 Multiple accounts need distinct projections and a Plugin that selects the account per invocation.
 
 ## 1.0 scope and tradeoffs
 
 - OCC TokenService can use OpenShell's embedded Proxy or a compatible standalone Proxy such as iron-proxy, with routing enforced by the Sandbox. OpenShell TokenService uses native OpenShell delivery. Each composition requires qualification.
-- Git uses one cached installation token per Source with finite repository scope. Agent policy supplies the finer request restrictions. The shared-token path excludes pull request creation until it can authorize the head and base repositories. Existing PR-capable and stronger ref modes continue to serve those operations. Per-Agent token downscoping is future work.
+- Git uses a cached, short-lived token per Source with finite repository scope. TokenService renews the token independently of Agent grants, which can expire at their own deadline or last until removed. The shared-token path excludes pull request creation until it can authorize the head and base repositories. Existing PR-capable and stronger ref modes remain available. Per-Agent token downscoping is future work.
 - Sandbox delivery uses push or native providers. Request-time credential pulls, automatic push recovery, and embedded Harness adoption are deferred. Trusted Console and OpenClaw Gateway consumers use separately authorized access to supported Sources.
 - Credential Gateway and Credential Refresh Drivers retire after their consumers migrate. The OpenClaw Gateway continues to serve the Agent.
 
