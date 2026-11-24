@@ -159,3 +159,29 @@ JSON by default. Use `-o yaml` for YAML. Policy reads show saved Agent rules
 and admitted or Driver defaults. Generated model and Git rules can still apply
 when the arrays are empty. See [Local Setup policy files](../deploy/local-sandbox-network-policy.md)
 for defaults and operator ceiling inputs.
+
+## Set GitHub access before the first deployment
+
+In **Create Agent → Repository access**, choose **Per-repository access**.
+OCE recommends this mode when an Installation administrator can read policies
+and the Namespace offers eligible GitHub repositories. If you first deploy with
+**Access profiles**, you need a new Agent to use Per-repository access.
+
+Select repositories by owner/name. Each selection starts at **Contributor** if
+the Installation and Namespace allow writes. Otherwise, it starts at **Read-only**.
+Read-only allows clone and fetch. Contributor adds push. Creating pull requests
+or issues also requires deployment support, GitHub permissions and applicable
+API rules. Choose Read-only wherever the Agent does not need write access.
+
+Choose **Save Agent draft**. The Agent and its grants are saved together, with
+policy editing off. This requires Installation and Agent administration, permission
+to manage, read and update policy, and a supported Dedicated runtime and model
+Credential Source. If saving is refused, the Configuration and model credentials
+can remain saved. If the Console cannot confirm the grants, do not deploy.
+Select **Recheck saved GitHub access** to read the same draft again.
+
+Check the grants shown beside **Deploy new version**. To change repository
+selections, select **Open draft repositories**. The credential profiles listed
+in Configuration do not override the saved network policy. If the policy changes
+before deployment, the Console stops the request. Select **Review saved GitHub
+access** and check the current grants before you deploy again.

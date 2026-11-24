@@ -77,6 +77,7 @@ interface SelectedRepositoryPolicyOwner {
 }
 
 interface RepositoryPolicyDependencies {
+  readonly installationId: string;
   readonly configurationDriver: () => ConfigurationDriver;
   readonly credentialSourceOwner: ReturnType<
     typeof createCredentialSourceDrivers
@@ -88,7 +89,7 @@ interface RepositoryPolicyDependencies {
   readonly selectedCompute: () => ComputeDriver;
   readonly backends: ReadonlyMap<string, BackendDefinition>;
   readonly sandboxDriver: () => SandboxDriver | undefined;
-  readonly authority: Pick<ControllerAuthority, "authorize">;
+  readonly authority: Pick<ControllerAuthority, "authorize" | "authorizationDecision" | "canRead">;
   readonly holdNamespacePolicyActor: (
     state: PlatformUnitOfWork,
     principalId: string,
@@ -390,7 +391,53 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         "The selected repository credential Driver returned invalid repository options.",
       );
     }
-    return immutableCopy(result);
+    // The create picker has no Agent yet. Only an administrator with Namespace-wide
+    // read access to Agents and their policies may see delegated policy limits here.
+    const { authority } = dependencies;
+    const showLimits =
+      agentId === undefined &&
+      admission !== undefined &&
+      result.options.some((option) => "githubRepository" in option) &&
+      (
+        await authority.authorizationDecision(principalId, "administer", {
+          kind: "installation",
+          id: dependencies.installationId,
+        })
+      ).decision.allowed &&
+      (await authority.canRead(principalId, { kind: "agent", namespaceId, id: namespaceId })) &&
+      (await authority.canRead(principalId, {
+        kind: "sandbox_policy",
+        namespaceId,
+        id: namespaceId,
+      }));
+    const limits = new Map(
+      (showLimits ? namespaceRepositoryNetworkPolicyCeiling(namespaceId) : []).map(
+        (grant) => [grant.repository, grant] as const,
+      ),
+    );
+    if (!owner.unchanged()) {
+      throw new DependencyUnavailableError("The repository policy changed while listing options.");
+    }
+    return immutableCopy({
+      options: result.options.map(
+        ({ repositoryRef, displayName, allowedProfiles, description, ...provider }) => {
+          // Never accept a provider-supplied limit or infer identity from display names.
+          const githubAccess =
+            "githubRepository" in provider &&
+            typeof provider.githubRepository === "string" &&
+            allowedProfiles.includes("github-repository")
+              ? limits.get(provider.githubRepository)
+              : undefined;
+          return {
+            repositoryRef,
+            displayName,
+            allowedProfiles,
+            ...(description === undefined ? {} : { description }),
+            ...(githubAccess === undefined ? {} : { githubAccess }),
+          };
+        },
+      ),
+    });
   }
 
   async function listAgentStandingApprovals(

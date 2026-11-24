@@ -1701,6 +1701,28 @@ export const createAgentProvisioningScenarios = {
     description:
       "The picker shows bidi controls and stray joiners as escapes. It preserves a single joiner between letters, marks, or symbols, and the England, Scotland, and Wales flag sequences. In the Team row, the joiner between A and B is present even if it looks like plain AB.",
   },
+  createGitHubRepositoryGrants: {
+    group: "Pages/Create Agent",
+    name: "GitHub repository access",
+    path: create,
+    repositoryOptions: ["application", "tooling"].map((name) => ({
+      repositoryRef: name,
+      githubAccess: {
+        repository: `example/${name}`,
+        access: name === "tooling" ? "write" : "read",
+      },
+      displayName: `example/${name}`,
+      allowedProfiles: ["github-repository"],
+    })),
+    actions: [
+      ...repositoryForm,
+      { selector: "#repository-mode", value: "scoped" },
+      { selector: 'input[data-repository-ref="application"]', click: true },
+      { selector: 'input[data-repository-ref="tooling"]', click: true },
+    ],
+    description:
+      "With Per-repository access, application allows only Read-only. Tooling starts at Contributor. Change tooling to Read-only, remove it and undo the removal to check that the narrower choice stays selected. Saving and deployment require a supporting Installation.",
+  },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",
     name: "Contributor access and write limits",

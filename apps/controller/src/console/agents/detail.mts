@@ -10,6 +10,7 @@ import type {
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
   SecretMetadata,
+  RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
@@ -81,7 +82,12 @@ import {
   VERSION_UNAVAILABLE,
 } from "./access-reasons.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
-import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
+import { readableRepositoryGrants } from "./sandbox-policy.mjs";
+import {
+  githubAccessLabel,
+  repositoryProfile,
+  repositoryWriteAccessHelp,
+} from "./repository-profiles.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
@@ -584,10 +590,47 @@ const deployedVersions = new Map<string, Map<string, number>>();
 let linkedVersionView: {
   key: string;
   load: number;
+  repositoryReview?: RepositoryReview;
   deploy?: boolean;
   edit?: boolean;
 } | null = null;
 let consoleLoads = 0;
+
+type RepositoryReview = { version: number; grants: readonly RepositoryNetworkGrant[] };
+
+export function repositoryReviewFrom(
+  value: unknown,
+  namespaceId: string,
+  agentId: string,
+): RepositoryReview | undefined {
+  const policy = responseFields(responseFields(value).policy);
+  const { version, repositoryNetworkPolicy } = policy;
+  if (
+    policy.namespaceId === namespaceId &&
+    policy.agentId === agentId &&
+    typeof version === "number" &&
+    Number.isSafeInteger(version) &&
+    version >= 1 &&
+    readableRepositoryGrants(repositoryNetworkPolicy)
+  ) {
+    return { version, grants: repositoryNetworkPolicy };
+  }
+}
+
+export function reviewRepositoryDraft(
+  namespaceId: string,
+  agentId: string,
+  repositoryReview: RepositoryReview,
+) {
+  const target = `agents/${encodeURIComponent(agentId)}?revision=draft&tab=configuration&reviewRepositories=1`;
+  linkedVersionView = {
+    repositoryReview,
+    key: JSON.stringify([namespaceId, target]),
+    load: consoleLoads + 1,
+    deploy: true,
+  };
+  return target;
+}
 
 /** The console starts a page load (navigation, Back, refocus): earlier link requests lapse. */
 export function noteConsoleLoad() {
@@ -1018,8 +1061,11 @@ export async function renderAgentDetail(
       context.drafts.forget("channelSecretGrants");
     }
   }
+  // Keep the review requirement through draft tab changes and reloads. Never put
+  // grants in the URL. A reload must read them again with current permissions.
+  const reviewRepositories = url.searchParams.has("reviewRepositories");
   const target = (revision = selected, tab = selectedTab) =>
-    `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}`;
+    `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}${reviewRepositories && revision === "draft" ? "&reviewRepositories=1" : ""}`;
   const linkedKey = (revision = selected, tab = selectedTab) =>
     JSON.stringify([namespaceId, target(revision, tab)]);
   // A link to one of this Agent's version tabs that brings the tab into view once it opens.
@@ -1962,6 +2008,8 @@ export async function renderAgentDetail(
   // Opened by a recovery link: show its tab once this page shows. Logs waits for its output
   // first and scrolls itself.
   const linkedOnLoad = takeLinkedVersionView(linkedKey());
+  let repositoryReview = linkedOnLoad?.repositoryReview;
+  let repositoryReviewGeneration = 0;
   if (linkedOnLoad && selectedTab !== "logs") {
     scrollOnReveal = () => {
       scrollOnReveal = null;
@@ -3803,6 +3851,8 @@ export async function renderAgentDetail(
       const retainedConfiguration = retainedConfigurationState();
       return (
         deployPending ||
+        (reviewRepositories &&
+          (!repositoryReview || callerPermissions?.sandboxPolicyRead !== true)) ||
         proxyDirty ||
         proxyUnknown ||
         networkProxySaving ||
@@ -4051,6 +4101,8 @@ export async function renderAgentDetail(
                 .filter(Boolean)
                 .join(" ")
             : deployReason;
+        } else if (reviewRepositories && callerPermissions?.sandboxPolicyRead !== true) {
+          deployMessage = "Reading the saved GitHub access requires SandboxPolicy read.";
         } else if (deployReloadMessage) {
           deployMessage = deployReloadMessage;
         } else if (authenticationSaveState === "saving") {
@@ -4184,6 +4236,43 @@ export async function renderAgentDetail(
       { className: "checklist", role: "list" },
       ...checklistSteps.map((step) => step.item),
     );
+    const confirmation = element("p", { className: "hint", role: "status" });
+    const adjustRepositories = versionLink("Open draft repositories", "draft", "repositories");
+    const reviewAccess = button("Review saved GitHub access", async () => {
+      const generation = repositoryReviewGeneration;
+      const current = () =>
+        context.isCurrent() &&
+        reviewAccess.isConnected &&
+        generation === repositoryReviewGeneration;
+      reviewAccess.disabled = true;
+      try {
+        const view = await request(`${path}/sandbox-policy/networking`, { expectedStatus: 200 });
+        if (!current()) {
+          return;
+        }
+        repositoryReview = repositoryReviewFrom(view, namespaceId, agent.id);
+        if (!repositoryReview) {
+          deployFeedback.textContent =
+            "The saved GitHub access could not be confirmed. Check this Agent’s policy before deploying.";
+          return;
+        }
+        deployFeedback.textContent = "";
+        updateDeployControls();
+        confirmation.tabIndex = -1;
+        confirmation.focus();
+      } catch (cause) {
+        if (!current()) {
+          return;
+        }
+        if (requestFailure(cause).status === 401) {
+          context.onExpired();
+        } else {
+          deployFeedback.textContent = rejectionMessage(cause);
+        }
+      } finally {
+        reviewAccess.disabled = false;
+      }
+    });
     const draftActionsHeading = element("h2", {}, "Prepare this version");
     function setStep(
       step: (typeof checklistSteps)[number] | undefined,
@@ -4210,6 +4299,22 @@ export async function renderAgentDetail(
       // (finding 2421); Deploy says why it is disabled.
       const reader = draftReadOnly() && callerPermissions?.deploy === false;
       checklist.hidden = reader;
+      adjustRepositories.hidden = selectedTab === "repositories";
+      const canReview = reviewRepositories && callerPermissions?.sandboxPolicyRead === true;
+      confirmation.hidden = !canReview || !repositoryReview;
+      reviewAccess.hidden = !canReview || Boolean(repositoryReview);
+      if (canReview && repositoryReview) {
+        const label =
+          repositoryReview === linkedOnLoad?.repositoryReview
+            ? "GitHub access saved at creation"
+            : "Saved GitHub access";
+        const grants = repositoryReview.grants
+          .map(({ repository, access }) => `${repository} (${githubAccessLabel(access)})`)
+          .join(", ");
+        setText(confirmation, `${label}: ${grants || "No repositories allowed"}`);
+      } else {
+        setText(confirmation, "");
+      }
       setText(draftActionsHeading, reader ? "Version draft" : "Prepare this version");
       const retainedConfiguration = retainedConfigurationState();
       const saving = draftEditorState.saving || pluginEditorState.saving;
@@ -4442,9 +4547,23 @@ export async function renderAgentDetail(
               "Confirm authentication and Secret access in Credentials before deploying.";
             return;
           }
+          if (
+            reviewRepositories &&
+            (!repositoryReview || callerPermissions?.sandboxPolicyRead !== true)
+          ) {
+            return;
+          }
           submitted = true;
           const revision = revisionForPage(
-            await request(`${path}/deploy`, { method: "POST", body: { harnessOverrides } }),
+            await request(`${path}/deploy`, {
+              method: "POST",
+              body: {
+                harnessOverrides,
+                ...(repositoryReview
+                  ? { expectedRepositoryPolicyVersion: repositoryReview.version }
+                  : {}),
+              },
+            }),
           );
           if (
             !("configurationGeneration" in revision) ||
@@ -4474,6 +4593,9 @@ export async function renderAgentDetail(
             return;
           }
           const failure = requestFailure(error);
+          if (reviewRepositories && submitted && failure.status === 409) {
+            repositoryReview = undefined;
+          }
           // A caller's own denial names no bound Secret: an older API's says nothing, and a named
           // one (finding 2534) names no ID the request did not send. When the Secret operate
           // answer, read again, names bound Secrets this caller may not operate, the alert names
@@ -4626,6 +4748,9 @@ export async function renderAgentDetail(
           )
         : null,
       checklist,
+      reviewRepositories ? confirmation : null,
+      reviewRepositories ? reviewAccess : null,
+      reviewRepositories ? adjustRepositories : null,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
       deployFeedback,
@@ -6196,7 +6321,7 @@ export async function renderAgentDetail(
         ],
         ["Backend (experimental)", draft ? agent.backendId : snapshot.backendId],
         [
-          "Repository access",
+          draft && reviewRepositories ? "Repository credential profiles" : "Repository access",
           repositoryBindings
             ?.map(
               (binding) =>
@@ -6286,7 +6411,8 @@ export async function renderAgentDetail(
           { className: "agent-card" },
           snapshotHeading ?? element("h2", {}, "Configuration draft"),
           summary(values, details),
-          repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
+          !(draft && reviewRepositories) &&
+            repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
             : null,
           draft
@@ -7129,6 +7255,7 @@ export async function renderAgentDetail(
       !context.isCurrent() ||
       deleting ||
       next.pathname !== url.pathname ||
+      next.searchParams.has("reviewRepositories") !== reviewRepositories ||
       next.searchParams.get("namespace") !== namespaceId
     ) {
       return false;
@@ -7156,6 +7283,14 @@ export async function renderAgentDetail(
       return false;
     }
     const linked = takeLinkedVersionView(linkedKey(nextRevision, nextTab));
+    if (
+      reviewRepositories &&
+      [selectedTab, nextTab].some((tab) => tab === "repositories" || tab === "policy")
+    ) {
+      // Draft actions stay mounted across tabs, including any outstanding policy read.
+      repositoryReviewGeneration += 1;
+      repositoryReview = undefined;
+    }
     selectedTab = nextTab;
     showTabNotice(unavailableTabNotice(requestedTab));
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.

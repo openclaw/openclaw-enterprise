@@ -586,6 +586,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           principalId,
           namespace.id,
           agent.id,
+          input.expectedRepositoryPolicyVersion,
         );
         if (!preview) {
           await dependencies.provisioningWorker.guardAgentProvisioning(
@@ -680,6 +681,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         principalId,
         namespace.id,
         lockedAgent.id,
+        input.expectedRepositoryPolicyVersion,
       );
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();

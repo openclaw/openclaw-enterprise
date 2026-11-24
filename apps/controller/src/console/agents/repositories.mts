@@ -2,7 +2,8 @@ import type {
   RepositoryAccess,
   RepositoryBindingRequest,
   RepositoryBindingSelection,
-  RepositoryOption,
+  RepositoryOption as CatalogOption,
+  RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
@@ -15,10 +16,13 @@ import {
 import { describeFailure, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
+  githubAccessLabel,
   repositoryProfiles,
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
+
+type RepositoryOption = CatalogOption & { githubAccess?: RepositoryNetworkGrant };
 
 type RepositoryContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
@@ -197,6 +201,7 @@ export function createRepositoryFields(
   initial: {
     agentId?: string;
     repositoryAccess?: RepositoryAccess;
+    scopedGrants?: [string, RepositoryNetworkGrant][] | undefined;
     repositoryBindings?: readonly RepositoryBindingRequest[];
   } = {},
   // Read no choices until start(): Create Agent's permission answer is not known yet.
@@ -264,6 +269,32 @@ export function createRepositoryFields(
     await loading;
   });
   retry.hidden = true;
+  const mode = element(
+    "select",
+    { id: "repository-mode", "aria-describedby": "repository-mode-help" },
+    element("option", { value: "", disabled: true }, "Choose access mode"),
+    element("option", { value: "scoped" }, "Per-repository access"),
+    element("option", { value: "profiles" }, "Access profiles"),
+  );
+  const scoped = () => mode.value === "scoped";
+  const grants = new Map(initial.scopedGrants);
+  mode.value = initial.scopedGrants ? "scoped" : "";
+  const scopeHint = element("p", { className: "hint", id: "repository-mode-help" });
+  const modeField = element(
+    "div",
+    { className: "field" },
+    element("label", { for: mode.id }, "Repository access mode"),
+    mode,
+    scopeHint,
+  );
+  mode.addEventListener("change", () => {
+    if (scoped()) {
+      for (const ref of state.selected.keys()) {
+        selectDefault(ref);
+      }
+    }
+    changed();
+  });
   const section = element(
     "section",
     {
@@ -274,6 +305,7 @@ export function createRepositoryFields(
     element("h2", { id: "repository-selection-title" }, "Repository access"),
     status,
     retry,
+    modeField,
     access,
     choices,
     cards,
@@ -306,13 +338,37 @@ export function createRepositoryFields(
   // Only new selections may derive the collaborator profile from the Contributor default.
   // Keep this intent through remove/undo; saved inheritance is never inferred from discovery.
   const newCollaborators = new Set<string>();
+  const githubLimit = (entry: RepositoryOption | undefined) =>
+    entry?.allowedProfiles.includes("github-repository") &&
+    typeof entry.githubAccess?.repository === "string" &&
+    Object.keys(entry.githubAccess).length === 2 &&
+    ["read", "write"].includes(entry.githubAccess.access)
+      ? entry.githubAccess
+      : undefined;
+  const githubName = (ref: string) => githubLimit(option(ref))?.repository;
+  // Never derive a grant from a refreshed ceiling. Default only when the
+  // creator selects a repository or opts into policy for selected repositories.
+  function selectDefault(ref: string) {
+    const limit = githubLimit(option(ref));
+    if (limit && !grants.has(ref)) {
+      grants.set(ref, limit);
+    }
+  }
+  const needsMode = () => !modeField.hidden && mode.value === "";
   const effective = (ref: string) =>
-    state.selected.get(ref) ??
-    (newCollaborators.has(ref) && state.profile === "git-full"
+    scoped()
       ? "github-repository"
-      : state.profile);
+      : (state.selected.get(ref) ??
+        (newCollaborators.has(ref) && state.profile === "git-full"
+          ? "github-repository"
+          : state.profile));
   const initialAccess = JSON.stringify(accessIntent());
-  const invalid = (ref: string) => !option(ref)?.allowedProfiles.includes(effective(ref));
+  const invalid = (ref: string) =>
+    scoped()
+      ? !githubName(ref) ||
+        githubName(ref) !== grants.get(ref)?.repository ||
+        (grants.get(ref)?.access === "write" && githubLimit(option(ref))?.access !== "write")
+      : !option(ref)?.allowedProfiles.includes(effective(ref));
   const profileLabel = (profile: string) =>
     repositoryProfile(profile)?.label ?? "Unknown access level";
   const isSettled = () => state.discovery !== "loading" && state.discovery !== "held";
@@ -479,7 +535,24 @@ export function createRepositoryFields(
     return [group, details];
   }
   function renderAccess() {
-    access.hidden = !state.options.length && !state.selected.size;
+    modeField.hidden =
+      !scoped() &&
+      (Boolean(initial.agentId) ||
+        context.installationAdmin === false ||
+        !state.options.some(githubLimit));
+    mode.disabled = state.disabled;
+    scopeHint.textContent = scoped()
+      ? "Read-only allows clone and fetch. Contributors can also push. Opening PRs and creating issues require support in the deployed policy and permission from GitHub."
+      : "We recommend Per-repository access for GitHub. After deploying with access profiles, you need a new Agent to switch.";
+    const help = section.querySelector<HTMLElement>(".repository-access-details");
+    if (help) {
+      help.hidden = scoped() || needsMode();
+    }
+    access.hidden = scoped() || needsMode() || (!state.options.length && !state.selected.size);
+    if (scoped() || needsMode()) {
+      access.replaceChildren();
+      return;
+    }
     const expanded = access.querySelector("details")?.open;
     const allowed = repositoryProfiles.filter((p) => p.id !== "github-repository").map((p) => p.id);
     const custom = [...state.selected].filter(
@@ -535,6 +608,12 @@ export function createRepositoryFields(
       }
       state.selected.set(ref, null);
     }
+    if (scoped()) {
+      if (grants.get(ref)?.repository !== githubName(ref)) {
+        grants.delete(ref);
+      }
+      selectDefault(ref);
+    }
     state.undo = undefined;
     announcements.textContent = `${option(ref)?.displayName ?? ref} added.`;
     changed({ preserveResults: true });
@@ -556,6 +635,9 @@ export function createRepositoryFields(
     }
     entries.splice(undo.index, 0, [undo.ref, undo.override]);
     state.selected = new Map(entries);
+    if (scoped()) {
+      selectDefault(undo.ref);
+    }
   }
   search.addEventListener("focus", () => {
     searchState.dismissed = false;
@@ -640,7 +722,11 @@ export function createRepositoryFields(
         type: "checkbox",
         "data-repository-ref": entry.repositoryRef,
         checked: selected,
-        disabled: !editable() || (!selected && state.selected.size >= MAX_SELECTED),
+        disabled:
+          !editable() ||
+          (!selected &&
+            (state.selected.size >= MAX_SELECTED ||
+              (scoped() && !githubName(entry.repositoryRef)))),
       });
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) {
@@ -657,7 +743,14 @@ export function createRepositoryFields(
         element(
           "span",
           { className: "repository-identity" },
-          element("strong", {}, entry.displayName),
+          element(
+            "strong",
+            {},
+            scoped() ? (githubName(entry.repositoryRef) ?? entry.displayName) : entry.displayName,
+          ),
+          scoped() && !githubName(entry.repositoryRef)
+            ? element("span", { className: "hint" }, "Requires profile access")
+            : null,
           typeof entry.description === "string" && entry.description.trim()
             ? element(
                 "span",
@@ -766,18 +859,103 @@ export function createRepositoryFields(
         element("h3", {}, `Selected repositories (${state.selected.size})`),
         element(
           "span",
-          { className: "hint" },
+          { className: "hint", hidden: scoped() || needsMode() },
           `${state.selected.size - custom} inherited · ${custom} custom`,
         ),
       ),
     );
     [...state.selected].forEach(([ref, override], index) => {
       const entry = option(ref);
-      if (!state.showAll && index >= 5 && !invalid(ref)) {
+      if (!scoped() && !state.showAll && index >= 5 && !invalid(ref)) {
         return;
       }
-      const label = entry?.displayName ?? ref;
+      const grant = grants.get(ref);
+      const label = (scoped() ? grant?.repository : undefined) ?? entry?.displayName ?? ref;
       const card = element("div", { className: "repository-card" });
+      const remove = button(
+        "Remove",
+        () => {
+          removeSelection(ref);
+          changed();
+          focusDiscovery();
+        },
+        {
+          tone: "ghost",
+          size: "sm",
+          className: "repository-remove",
+          "aria-label": `Remove ${label}`,
+          title: `Remove ${label}`,
+          disabled: state.disabled,
+        },
+      );
+      if (needsMode()) {
+        card.append(
+          element(
+            "div",
+            { className: "repository-grant" },
+            element("strong", { className: "repository-identity" }, label),
+            remove,
+          ),
+        );
+        cards.append(card);
+        return;
+      }
+      if (scoped()) {
+        const limit = githubLimit(entry);
+        const available = limit && grant?.repository === limit.repository;
+        const level = element(
+          "select",
+          { "aria-label": `GitHub access for ${label}`, disabled: !editable() || !available },
+          element("option", { value: "read" }, githubAccessLabel("read")),
+          limit?.access === "write"
+            ? element("option", { value: "write" }, githubAccessLabel("write"))
+            : grant?.access === "write"
+              ? element("option", { value: "write", disabled: true }, "Unavailable")
+              : null,
+        );
+        level.value = grant?.access ?? "read";
+        level.addEventListener("change", () => {
+          if (grant) {
+            grants.set(ref, { ...grant, access: level.value === "write" ? "write" : "read" });
+            if (limit?.access === "read" && grant.access === "write") {
+              changed();
+              cards
+                .querySelector<HTMLSelectElement>(
+                  `select[aria-label="${CSS.escape(level.ariaLabel!)}"]`,
+                )
+                ?.focus();
+            } else {
+              onChange(true);
+            }
+          }
+        });
+        card.append(
+          element(
+            "div",
+            { className: "repository-grant" },
+            element("strong", { className: "repository-identity" }, label),
+            !available
+              ? element(
+                  "p",
+                  { className: "hint" },
+                  entry
+                    ? "GitHub policy is unavailable or the repository changed. Remove this selection and choose a current GitHub repository."
+                    : unlistedSelectionText(),
+                )
+              : element("div", { className: "field" }, level),
+            remove,
+            available && invalid(ref)
+              ? element(
+                  "p",
+                  { className: "hint" },
+                  "Contributor is no longer available. Choose Read-only or remove this repository.",
+                )
+              : null,
+          ),
+        );
+        cards.append(card);
+        return;
+      }
       const settings = element("div", {
         role: "group",
         "aria-label": `Access for ${label}`,
@@ -802,22 +980,6 @@ export function createRepositoryFields(
           "aria-describedby": `repository-summary-${ref}`,
           "aria-controls": settings.id,
           "aria-label": `Access for ${label}`,
-        },
-      );
-      const remove = button(
-        "Remove",
-        () => {
-          removeSelection(ref);
-          changed();
-          focusDiscovery();
-        },
-        {
-          tone: "ghost",
-          size: "sm",
-          className: "repository-remove",
-          "aria-label": `Remove ${label}`,
-          title: `Remove ${label}`,
-          disabled: state.disabled,
         },
       );
       expand.append(
@@ -903,7 +1065,7 @@ export function createRepositoryFields(
       }
       cards.append(card);
     });
-    if (state.selected.size > 5) {
+    if (!scoped() && state.selected.size > 5) {
       cards.append(
         button(
           state.showAll ? "Show fewer repositories" : `Show all ${state.selected.size} selected`,
@@ -944,6 +1106,9 @@ export function createRepositoryFields(
       ...section.querySelectorAll<HTMLDetailsElement>("details[data-access-customize][open]"),
     ].map((details) => details.dataset.accessCustomize);
     renderAccess();
+    if (state.discovery === "ready") {
+      showReadyStatus();
+    }
     const needsSearch = state.options.length > 5;
     if (!results.isConnected || needsSearch !== search.isConnected) {
       discovery.replaceChildren(
@@ -960,7 +1125,11 @@ export function createRepositoryFields(
         'input[type="checkbox"][data-repository-ref]',
       )) {
         input.checked = state.selected.has(input.dataset.repositoryRef ?? "");
-        input.disabled = !editable() || (!input.checked && state.selected.size >= MAX_SELECTED);
+        input.disabled =
+          !editable() ||
+          (!input.checked &&
+            (state.selected.size >= MAX_SELECTED ||
+              (scoped() && !githubName(input.dataset.repositoryRef ?? ""))));
       }
       const limit = results.querySelector<HTMLElement>(".repository-limit");
       if (limit) {
@@ -989,13 +1158,21 @@ export function createRepositoryFields(
       section.focus();
       return false;
     }
-    if (state.selected.size === 0 && !required) {
+    if (state.selected.size === 0 && !required && !scoped()) {
       return true;
     }
+    if (needsMode()) {
+      validation.textContent = "Choose an access mode before continuing.";
+      validation.hidden = false;
+      mode.focus();
+      return false;
+    }
     if (!state.selected.size || [...state.selected.keys()].some(invalid)) {
-      validation.textContent = state.selected.size
-        ? "Choose approved access for each selected repository."
-        : "Select at least one current repository and an authorization level to retry this Agent, or start a new draft.";
+      validation.textContent = scoped()
+        ? "Select at least one supported GitHub repository and remove any unavailable selections."
+        : state.selected.size
+          ? "Choose approved access for each selected repository."
+          : "Select at least one current repository and an authorization level to retry this Agent, or start a new draft.";
       validation.hidden = false;
       revealInvalidSelections();
       renderCards();
@@ -1011,6 +1188,9 @@ export function createRepositoryFields(
     }));
   }
   function accessIntent(): RepositoryAccess {
+    if (scoped()) {
+      return { defaultProfile: "git-read", repositories: bindings() };
+    }
     return {
       defaultProfile: state.profile,
       repositories: [...state.selected].map(([repositoryRef, profile]) => ({
@@ -1043,6 +1223,7 @@ export function createRepositoryFields(
     if (clearSelections) {
       state.options = [];
       state.selected.clear();
+      grants.clear();
       newCollaborators.clear();
       state.undo = undefined;
       state.expanded.clear();
@@ -1160,9 +1341,11 @@ export function createRepositoryFields(
         : " You can continue without repository access.";
       status.textContent = `No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories.${next}`;
     } else {
-      status.textContent = loadedAfterReset
-        ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
-        : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
+      status.textContent = scoped()
+        ? "Only selected GitHub repositories receive grants."
+        : loadedAfterReset
+          ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
+          : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
     }
   }
 
@@ -1213,13 +1396,18 @@ export function createRepositoryFields(
 
   return {
     section,
+    scoped,
+    scopedGrants: () =>
+      scoped() ? [...grants].filter(([ref]) => state.selected.has(ref)) : undefined,
     bindings,
     access: accessIntent,
     recordSuccessfulSave,
     validate,
     hasValidSelection,
     setDisabled,
-    reload: () => load(true),
+    // Keep scoped intent for comparison with the refreshed catalog. Clearing it
+    // here could turn an explicit Read-only selection back into Contributor.
+    reload: () => load(!scoped()),
     /** Reads the choices a held form has not read yet; once read, retries go through Retry. */
     start: () => {
       if (state.discovery === "held") {

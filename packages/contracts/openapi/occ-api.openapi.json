@@ -17037,6 +17037,30 @@
                     "maxItems": 16,
                     "type": "array"
                   },
+                  "repositoryNetworkPolicy": {
+                    "description": "Save the initial GitHub grants on this draft atomically. Requires permission to enable editing, save and read the Agent networking policy. Omit for ordinary profile access.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "access": {
+                          "anyOf": [
+                            { "const": "read", "type": "string" },
+                            { "const": "write", "type": "string" }
+                          ]
+                        },
+                        "repository": {
+                          "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                          "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                          "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["repository", "access"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  },
                   "workspaceDefaultsId": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                 },
                 "required": ["name", "configurationId"],
@@ -20412,6 +20436,26 @@
                             "minLength": 1,
                             "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
                             "type": "string"
+                          },
+                          "githubAccess": {
+                            "additionalProperties": false,
+                            "description": "Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions.",
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
                           },
                           "repositoryRef": {
                             "maxLength": 128,
@@ -23818,6 +23862,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "expectedRepositoryPolicyVersion": {
+                    "description": "Requires SandboxPolicy read. Deployment returns HTTP 409 if no repository policy is saved or the networking policy version differs from the one reviewed.",
+                    "maximum": 2147483647,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "harnessOverrides": {
                     "additionalProperties": {},
                     "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
@@ -30660,6 +30710,26 @@
                             "minLength": 1,
                             "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
                             "type": "string"
+                          },
+                          "githubAccess": {
+                            "additionalProperties": false,
+                            "description": "Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions.",
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
                           },
                           "repositoryRef": {
                             "maxLength": 128,

@@ -1,5 +1,9 @@
 import { Type } from "typebox";
 import {
+  maxRepositoryNetworkGrants,
+  repositoryNetworkGrantPattern,
+} from "../repository-network-policy.ts";
+import {
   BACKEND_ID_MAX_CHARACTERS,
   BACKEND_ID_PATTERN,
   NAME_MAX_CHARACTERS,
@@ -67,8 +71,18 @@ export const RevisionHarnessSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+export const SandboxPolicyVersion = Type.Integer({ minimum: 1, maximum: 2147483647 });
 export const AgentDeploymentBody = Type.Object(
-  { harnessOverrides: Type.Optional(HarnessSettings) },
+  {
+    harnessOverrides: Type.Optional(HarnessSettings),
+    expectedRepositoryPolicyVersion: Type.Optional(
+      Type.Integer({
+        ...SandboxPolicyVersion,
+        description:
+          "Requires SandboxPolicy read. Deployment returns HTTP 409 if no repository policy is saved or the networking policy version differs from the one reviewed.",
+      }),
+    ),
+  },
   { additionalProperties: false },
 );
 export const AgentStopQuery = Type.Object(
@@ -80,7 +94,7 @@ export const FirstDeploymentIntent = Type.Object(
     key: Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$" }),
     expectedConfigurationId: ConfigurationId,
     expectedGeneration: ConfigurationGeneration,
-    ...AgentDeploymentBody.properties,
+    harnessOverrides: AgentDeploymentBody.properties.harnessOverrides,
   },
   { additionalProperties: false },
 );
@@ -802,6 +816,18 @@ export const AgentNetworkProxySchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const RepositoryNetworkGrantSchema = Type.Object(
+  {
+    repository: Type.String({
+      pattern: repositoryNetworkGrantPattern.source,
+      description: "Canonical lowercase GitHub owner/name without a .git suffix.",
+      not: { type: "string", pattern: "\\.git$|\\s" },
+    }),
+    access: Type.Union([Type.Literal("read"), Type.Literal("write")]),
+  },
+  { additionalProperties: false },
+);
+
 export const CreateAgentBody = Type.Object(
   {
     initialWorkspaceFiles: Type.Optional(
@@ -836,6 +862,13 @@ export const CreateAgentBody = Type.Object(
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
+    repositoryNetworkPolicy: Type.Optional(
+      Type.Array(RepositoryNetworkGrantSchema, {
+        description:
+          "Save the initial GitHub grants on this draft atomically. Requires permission to enable editing, save and read the Agent networking policy. Omit for ordinary profile access.",
+        maxItems: maxRepositoryNetworkGrants,
+      }),
+    ),
   },
   { additionalProperties: false },
 );
