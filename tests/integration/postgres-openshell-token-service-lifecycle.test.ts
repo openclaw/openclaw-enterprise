@@ -193,8 +193,28 @@ test(
 
     const original = randomUUID();
     const deniedValue = randomUUID();
-    const replacement = randomUUID();
+    // The Gateway limit counts encoded bytes. These values span the boundary without
+    // approaching it in JavaScript string length.
+    const replacement = "é".repeat(4096);
+    const oversized = `${replacement}x`;
     const base = `/namespaces/${namespaceId}/credential-sources`;
+    const profilesBefore = await client.listProviderProfiles(workspace, t.signal);
+    const rejectedCreate = await inject("POST", base, {
+      name: "Oversized OpenAI key",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: { opaque: oversized },
+    });
+    const profilesAfter = await client.listProviderProfiles(workspace, t.signal);
+    assert.deepEqual(
+      new Set(profilesAfter.map(({ id }) => id)),
+      new Set(profilesBefore.map(({ id }) => id)),
+      "Rejected enrollment must leave no native Provider profile.",
+    );
+    assert.deepEqual(await client.listProviders(workspace, t.signal), []);
+    assert.equal(rejectedCreate.statusCode, 400, rejectedCreate.body);
+    assert.equal(rejectedCreate.json().error.code, "INVALID_REQUEST");
+
     const created = await inject("POST", base, {
       name: "Isolated OpenAI key",
       type: "static",
@@ -286,6 +306,18 @@ test(
       [sourceRef.id, readerId],
     );
     assert.deepEqual(denialAudit.rows, [{ kind: "authorization_denial", outcome: "denied" }]);
+
+    const rejectedUpdate = await inject("PATCH", sourcePath, { secret: { opaque: oversized } });
+    assert.equal(rejectedUpdate.statusCode, 400, rejectedUpdate.body);
+    assert.equal(rejectedUpdate.json().error.code, "INVALID_REQUEST");
+    assert.equal(
+      (await client.getProvider(workspace, name, t.signal))?.resourceVersion,
+      provider.resourceVersion,
+    );
+    assert.ok(
+      (await readNativeValue()) === original,
+      "A rejected replacement must leave native custody untouched.",
+    );
 
     const updated = await inject("PATCH", sourcePath, { secret: { opaque: replacement } });
     assert.equal(updated.statusCode, 200, updated.body);

@@ -22,6 +22,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialDeliveryFailedError,
+  DependencyUnavailableError,
   ResourceStateConflictError,
   ScopeViolationError,
   TokenServiceSourceInputError,
@@ -35,6 +36,8 @@ import {
   SOURCE_ID_LABEL,
   openShellOwnedBy,
   openShellProviderName,
+  openShellStaticBearerProfile,
+  openShellStaticBearerProfileVersion,
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
@@ -49,6 +52,8 @@ const namespaceLabel = "openclaw.dev/namespace-id";
 const tokenServiceLabel = "openclaw.dev/token-service";
 const deliveryLabel = "openclaw.dev/credential-proxy-delivery";
 const environment = "OPENAI_API_KEY";
+const maxProviderCredentialBytes = 8192;
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export interface OpenShellNativeProvider {
   readonly workspace: string;
@@ -63,11 +68,9 @@ interface OpenShellTokenServiceOptions {
   readonly id: string;
   readonly tokenServiceInstanceId: string;
   readonly backend: Backend<OpenShellGateway>;
+  readonly storeIdentity: string;
   readonly state: PlatformStateStore;
-  readonly resolveNamespace: (
-    namespace: Readonly<Namespace>,
-    signal: AbortSignal,
-  ) => Promise<Readonly<Namespace>>;
+  readonly resolveNamespace: (namespace: Readonly<Namespace>) => Promise<Readonly<Namespace>>;
   readonly credentialProxy?: Pick<CredentialProxyDriver, "notifyCredentialUpdated">;
 }
 
@@ -104,6 +107,11 @@ function staticCredential(secret: SourceRegistrationInput["secret"]): string {
       "A static Source requires one nonempty UTF-8 credential value.",
     );
   }
+  if (Buffer.byteLength(value, "utf8") > maxProviderCredentialBytes) {
+    throw new TokenServiceSourceInputError(
+      "OpenShell Provider credentials must be at most 8,192 UTF-8 bytes.",
+    );
+  }
   return value;
 }
 
@@ -118,6 +126,38 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
 
   static validateConfiguration(): readonly ErrorDetail[] {
     return [];
+  }
+
+  static async readStoreIdentity(
+    backend: Backend<OpenShellGateway>,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const client = backend.client.clientForNamespace("");
+    const [workspace, info] = await Promise.all([
+      client.getWorkspace("default", signal),
+      client.getGatewayInfo?.(signal),
+    ]);
+    const extensions = Array.isArray(info?.extensions) ? info.extensions : [];
+    const credentialDrivers = extensions.map(asRecord).filter((extension) => {
+      const kind = extension?.kind;
+      return kind === 2 || kind === "EXTENSION_KIND_CREDENTIAL_DRIVER";
+    });
+    const credentialStore = credentialDrivers[0];
+    if (
+      workspace?.name !== "default" ||
+      !workspace.id ||
+      !uuid.test(workspace.id) ||
+      (workspace.phase !== "WORKSPACE_PHASE_ACTIVE" && workspace.phase !== 1) ||
+      credentialDrivers.length !== 1 ||
+      credentialStore?.configured_name !== "openshell-driver-db-credstore" ||
+      credentialStore.implementation_name !== "openshell/openshell-driver-db-credstore"
+    ) {
+      throw new DependencyUnavailableError(
+        "The OpenShell TokenService preview requires the Gateway's local credential store.",
+      );
+    }
+    // The Gateway persists this undeletable Workspace in the same database as local Providers.
+    return workspace.id;
   }
 
   readonly capability = "token_service";
@@ -179,56 +219,19 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
   }
 
   private profile(ref: CredentialSourceReference): OpenShellProviderProfile {
-    return {
+    return openShellStaticBearerProfile({
       id: openShellProviderName(ref.id),
       displayName: "OpenClaw Enterprise static credential",
-      category: "PROVIDER_PROFILE_CATEGORY_OTHER",
-      credentials: [
-        {
-          name: environment,
-          envVars: [environment],
-          required: true,
-          authStyle: "bearer",
-          headerName: "authorization",
-          stablePlaceholder: true,
-        },
-      ],
-      endpoints: [],
-      binaries: [],
-      inferenceCapable: false,
+      environment,
       annotations: this.labels(ref),
-    };
+    });
   }
 
   private profileVersion(
     profile: OpenShellStoredProviderProfile | undefined,
     ref: CredentialSourceReference,
   ): string {
-    const definition = profile?.definition;
-    const credentials = Array.isArray(definition?.credentials) ? definition.credentials : [];
-    const credential = asRecord(credentials[0]);
-    if (
-      !profile ||
-      profile.id !== openShellProviderName(ref.id) ||
-      !/^[1-9]\d*$/.test(profile.resourceVersion) ||
-      !isDeepStrictEqual(profile.annotations, this.labels(ref)) ||
-      !definition ||
-      definition.inference_capable === true ||
-      (Array.isArray(definition.endpoints) && definition.endpoints.length !== 0) ||
-      (Array.isArray(definition.binaries) && definition.binaries.length !== 0) ||
-      (Array.isArray(definition.files) && definition.files.length !== 0) ||
-      credentials.length !== 1 ||
-      credential?.name !== environment ||
-      !isDeepStrictEqual(credential.env_vars, [environment]) ||
-      credential.required !== true ||
-      credential.auth_style !== "bearer" ||
-      credential.header_name !== "authorization" ||
-      credential.stable_placeholder !== true ||
-      credential.refresh !== undefined
-    ) {
-      ownershipConflict();
-    }
-    return profile.resourceVersion;
+    return openShellStaticBearerProfileVersion(profile, this.profile(ref)) ?? ownershipConflict();
   }
 
   private async workspaceFor(
@@ -237,7 +240,14 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
     expectedId?: string,
   ): Promise<SourceWorkspace> {
     signal.throwIfAborted();
-    const placed = await this.options.resolveNamespace(namespace, signal);
+    const storeIdentity = await OpenShellTokenServiceDriver.readStoreIdentity(
+      this.options.backend,
+      signal,
+    );
+    if (storeIdentity !== this.options.storeIdentity) {
+      throw new DependencyUnavailableError("The OpenShell TokenService store changed.");
+    }
+    const placed = await this.options.resolveNamespace(namespace);
     if (placed.id !== namespace.id || placed.status !== namespace.status) {
       ownershipConflict();
     }
