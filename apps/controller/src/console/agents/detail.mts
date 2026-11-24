@@ -7185,6 +7185,10 @@ export async function renderAgentDetail(
         editorError.show(diagnostic.message);
         feedback.textContent = "";
         feedbackLocked = true;
+        if (diagnostic.kind === "invalid-json" && diagnostic.offset !== undefined) {
+          // Set the caret before focus so the browser scrolls it into view.
+          editor.setSelectionRange(diagnostic.offset, diagnostic.offset);
+        }
         editor.focus();
       }
       return undefined;
