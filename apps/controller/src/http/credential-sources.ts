@@ -5,8 +5,12 @@ import {
   type CredentialSourceStatus,
   type CredentialWithdrawalStatus,
   type PushAgentCredentialsBody,
+  type SecretReference,
 } from "@openclaw-enterprise/contracts";
-import type { UpdateManagedCredentialSourceInput } from "@openclaw-enterprise/occ";
+import type {
+  LegacyCredentialSourceMetadata,
+  UpdateManagedCredentialSourceInput,
+} from "@openclaw-enterprise/occ";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "../backends/token-service/codex-oauth-preset.ts";
 
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
@@ -18,8 +22,40 @@ function phaseAudit(event: AuditEvent, phase: string | undefined): AuditEvent {
 }
 
 function clientCredentialSource(
-  source: Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>,
+  source:
+    | Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>
+    | LegacyCredentialSourceMetadata,
 ): Record<string, unknown> {
+  if ("ownerCapability" in source) {
+    const {
+      id,
+      namespaceId,
+      name,
+      type,
+      ownerCapability,
+      config,
+      secrets,
+      state,
+      ref,
+      egress,
+      status,
+    } = source;
+    return {
+      id,
+      namespaceId,
+      name,
+      type,
+      ownerCapability,
+      config,
+      secrets,
+      state,
+      ref,
+      ...(egress === undefined
+        ? {}
+        : { egress: { adoption: egress.adoption, retention: egress.retention } }),
+      ...(status === undefined ? {} : { status }),
+    };
+  }
   if (source.type === "oauth2-refresh-token" && source.consent.kind === "builtin_codex") {
     return { ...source, consent: { ...source.consent, ...BUILTIN_CODEX_OAUTH_PRESET } };
   }
@@ -62,6 +98,26 @@ export const credentialSourceHandlers = {
     namespaceId,
     mutationEvent,
   }) {
+    // TODO: Remove the legacy Source routes' shapes after the Plugin and Git credential cutovers.
+    if (body && !("secret" in body)) {
+      const created = await controller.createCredentialSource(
+        context.actorId,
+        {
+          namespaceId,
+          name: body.name as string,
+          type: body.type as string,
+          ...(body.config === undefined ? {} : { config: body.config as Record<string, string> }),
+          ...(body.secrets === undefined
+            ? {}
+            : { secrets: body.secrets as Record<string, SecretReference> }),
+        },
+        (source) => mutationEvent({ kind: "credential_source", id: source.id, namespaceId }),
+      );
+      reply
+        .status(201)
+        .send({ data: clientCredentialSource(created), meta: { requestId: request.id } });
+      return;
+    }
     const { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset, ...settings } =
       (body?.config as Record<string, string> | undefined) ?? {};
     const created = await controller.createManagedCredentialSource(
@@ -118,6 +174,31 @@ export const credentialSourceHandlers = {
   }) {
     const credentialSourceId = params.credentialSourceId as string;
     const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
+    const failureAudit = (reasonCode: string) =>
+      mutationEvent(resource, undefined, undefined, { reasonCode });
+    if (!body || (!("secret" in body) && !("config" in body))) {
+      const updated = await controller.transact(async (unit) => {
+        const source = await controller.updateCredentialSource(
+          context.actorId,
+          {
+            namespaceId,
+            credentialSourceId,
+            ...(body?.adoption === undefined ? {} : { adoption: body.adoption as "live" }),
+            ...(body?.authorityScope === undefined
+              ? {}
+              : { authorityScope: body.authorityScope as "execution" }),
+            ...(body?.secrets === undefined
+              ? {}
+              : { secrets: body.secrets as Record<string, SecretReference> }),
+          },
+          failureAudit,
+        );
+        await unit.audit.append(mutationEvent(resource));
+        return source;
+      });
+      reply.send({ data: clientCredentialSource(updated), meta: { requestId: request.id } });
+      return;
+    }
     const config = body?.config as Record<string, string> | undefined;
     const secret = body?.secret as Record<string, string> | undefined;
     const { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset, ...settings } = config ?? {};
@@ -139,7 +220,7 @@ export const credentialSourceHandlers = {
       { namespaceId, credentialSourceId },
       input,
       (target, phase) => phaseAudit(mutationEvent(target), phase),
-      (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
+      failureAudit,
     );
     reply.send({ data: clientCredentialSource(updated), meta: { requestId: request.id } });
   },

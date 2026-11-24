@@ -61,11 +61,13 @@ For example, register an OpenAI API key as a managed static Source with `POST /n
 
 The caller needs `credential_source:create` on a ready Namespace. The response contains the Source ID and metadata, never the credential. See [managed static sources](credential-sources/managed-static.md) for the complete API and first-deployment example. To create an OAuth Source, start the separate [browser consent workflow](connection-templates.md#connect-an-account). TokenService creates that Source only after the provider returns a grant.
 
-The Source API accepts TokenService-owned static and OAuth Sources. It no longer admits or returns the former Gateway and Proxy Source formats.
+Existing Gateway and protected Proxy registrations use the same POST with `type`, `config`, and named Secret references in `secrets`. OCC routes those operations through the existing Drivers. See [other credential delivery modes](credential-sources/other-delivery-modes.md#register-a-source).
 
 ## Read and list sources
 
 Exact GET requires `credential_source:read` and returns all nonsecret metadata for that Source, even when TokenService cannot report refresh status. List requires Namespace `read` and includes only Sources the caller may read. A Source's saved `ready` state does not establish whether a particular deployment can use it.
+
+Gateway and protected Proxy Sources retain their existing metadata and lifecycle operations. OCC uses their recorded owner for exact reads, updates, rotation, and deletion. See [legacy Source reads and status](credential-sources/other-delivery-modes.md#read-and-list-sources).
 
 An associated Source reports `connectionTemplateId`. OAuth consent records its provenance: `connection_template` preserves the original Template version, OAuth client, principal, and scopes; `builtin_codex` has no Template and uses the fixed server-owned Codex issuer/client preset, with trusted account metadata. The Codex device-login cutover to this Source format is a separate dependency. Updating a Template does not rewrite consent or change the Source's Template ID. An Agent revision uses the current approved Template version when admitted; Plugin admission remains pending. Source metadata never contains tokens.
 
