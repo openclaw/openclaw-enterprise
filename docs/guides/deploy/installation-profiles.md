@@ -323,6 +323,11 @@ Both failures exit nonzero and leave no YAML outputs.
 
 ## Use rendered files
 
+To prepare a fresh install from a previous profile, keep the original input
+JSON and checked YAML pair. Review the JSON for the target release, then render
+into a new private directory. Compare any hand edits with the new pair before
+installing. Update the JSON and render again for settings that the profile owns.
+
 Set `OCC_INPUT_DIRECTORY` to the output directory, then complete the
 [production shell and context setup](production-installation.md#configure-the-installation).
 That setup reads the cluster kubeconfig from `$OCC_INPUT_DIRECTORY/kubeconfig`:

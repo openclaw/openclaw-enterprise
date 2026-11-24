@@ -486,6 +486,26 @@ test("Create Agent refuses what the API would refuse before any write", async (t
     assert.deepEqual(nonAuthWriteRequests(requests), [], "nothing is saved");
   });
 
+  // The Gateway channel proxy is on the Channels tab, outside the form. A URL the form refuses
+  // must select that tab, or the field to correct stays hidden and takes no focus.
+  await t.test("a refused Network proxy URL selects the Channels tab", async (t) => {
+    const { page, requests } = await createForm(t, "Proxy rule", "Proxy key");
+    await page.getByLabel("Agent name", { exact: true }).fill("Proxy rule");
+    await openCreateTab(page, "channels");
+    const proxy = page.getByLabel("Network proxy URL", { exact: true });
+    await proxy.fill("http://proxy.example/path");
+    await openCreateTab(page, "basics");
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    await page
+      .getByText("Use an HTTP or HTTPS proxy endpoint without credentials or a path.", {
+        exact: true,
+      })
+      .waitFor();
+    assert.equal(await page.locator("#create-tab-channels").getAttribute("aria-selected"), "true");
+    assert.equal(await hasFocus(proxy), true, "the field to correct takes focus");
+    assert.deepEqual(nonAuthWriteRequests(requests), [], "nothing is saved");
+  });
+
   // Finding 2339: the dialog checked only that its fields were filled, and its password input
   // dropped a pasted value's line breaks.
   await t.test("the inline Create Secret dialog follows the API's Secret rules", async (t) => {

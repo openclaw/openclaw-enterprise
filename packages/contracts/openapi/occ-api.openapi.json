@@ -196,7 +196,7 @@
     "schemas": {
       "PushAgentCredentialsBody": {
         "additionalProperties": false,
-        "description": "Proposed manual delivery retry request. The caller needs agent:operate on the exact Agent and credential_source:update on every selected source. OCC rejects the whole request if any selected source is ineligible or unauthorized, before notifying the Credential Proxy or resolving any credential. Retrying delivery for a shared source can affect other Agents bound to it.",
+        "description": "Manual delivery retry request. The caller needs agent:operate on the exact Agent and credential_source:update on every selected source. OCC rejects the whole request if any selected source is ineligible or unauthorized, before notifying the Credential Proxy or resolving any credential. Retrying delivery for a shared source can affect other Agents bound to it.",
         "properties": {
           "sources": {
             "anyOf": [
@@ -212,7 +212,7 @@
                 "uniqueItems": true
               }
             ],
-            "description": "Select all eligible sources or name each source to retry. Eligible sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on the source."
+            "description": "Select 'all' or 1–64 distinct Source IDs to retry. Eligible Sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on each Source."
           }
         },
         "required": ["sources"],
@@ -221,7 +221,7 @@
       },
       "PushAgentCredentialsResponse": {
         "additionalProperties": false,
-        "description": "Proposed response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again.",
+        "description": "Response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again.",
         "properties": {
           "data": {
             "additionalProperties": false,
@@ -16237,7 +16237,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.",
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources.",
                       "items": {
                         "anyOf": [
                           {
@@ -16423,6 +16423,23 @@
                                 "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
+                              "networkProxy": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "credentialSecretId": {
+                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "url": {
+                                    "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                                    "maxLength": 2048,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["url"],
+                                "type": "object"
+                              },
                               "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                               "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                               "plugins": { "$ref": "#/components/schemas/def-6" },
@@ -16551,6 +16568,7 @@
                                       { "const": "pluginApprovers", "type": "string" },
                                       { "const": "repositoryBindings", "type": "string" },
                                       { "const": "repositoryAccess", "type": "string" },
+                                      { "const": "networkProxy", "type": "string" },
                                       { "const": "harnessAuth", "type": "string" },
                                       { "const": "credentialSources", "type": "string" },
                                       { "const": "secretBindings", "type": "string" },
@@ -16631,7 +16649,7 @@
                             "type": "object"
                           }
                         ],
-                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
+                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources."
                       },
                       "type": "array"
                     },
@@ -16939,6 +16957,23 @@
                     "description": "Enable Agent browser access with server-derived settings. Requires Configuration update permission, expectedConfigurationGeneration, and an unreferenced Configuration. Chat requires Agent operate; full administration requires Agent administer.",
                     "type": "boolean"
                   },
+                  "networkProxy": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "credentialSecretId": {
+                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                        "maxLength": 2048,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": ["url"],
+                    "type": "object"
+                  },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" },
                   "repositoryAccess": {
@@ -17227,6 +17262,23 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "pluginDriver": { "$ref": "#/components/schemas/def-1" },
@@ -19359,6 +19411,23 @@
                     "description": "Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false.",
                     "type": "boolean"
                   },
+                  "networkProxy": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "credentialSecretId": {
+                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                        "maxLength": 2048,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": ["url"],
+                    "type": "object"
+                  },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" },
                   "repositoryAccess": {
@@ -20761,6 +20830,23 @@
                     "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
                     "type": "string"
                   },
+                  "networkProxy": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "credentialSecretId": {
+                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "url": {
+                        "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                        "maxLength": 2048,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": ["url"],
+                    "type": "object"
+                  },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" }
                 },
@@ -21123,6 +21209,23 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "pluginDriver": { "$ref": "#/components/schemas/def-1" },
@@ -21564,6 +21667,23 @@
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "networkProxy": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "credentialSecretId": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "url": {
+                                  "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                                  "maxLength": 2048,
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["url"],
+                              "type": "object"
+                            },
                             "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                             "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                             "plugins": { "$ref": "#/components/schemas/def-6" },
@@ -21692,6 +21812,7 @@
                                     { "const": "pluginApprovers", "type": "string" },
                                     { "const": "repositoryBindings", "type": "string" },
                                     { "const": "repositoryAccess", "type": "string" },
+                                    { "const": "networkProxy", "type": "string" },
                                     { "const": "harnessAuth", "type": "string" },
                                     { "const": "credentialSources", "type": "string" },
                                     { "const": "secretBindings", "type": "string" },
@@ -21772,7 +21893,7 @@
                           "type": "object"
                         }
                       ],
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources."
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -21916,6 +22037,7 @@
                 "anyOf": [
                   { "required": ["configurationId"] },
                   { "required": ["gatewayManagedMode"] },
+                  { "required": ["networkProxy"] },
                   { "required": ["modelProviderId"] }
                 ],
                 "properties": {
@@ -22063,6 +22185,28 @@
                       {
                         "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
+                      },
+                      { "type": "null" }
+                    ]
+                  },
+                  "networkProxy": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "credentialSecretId": {
+                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "url": {
+                            "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                            "maxLength": 2048,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": ["url"],
+                        "type": "object"
                       },
                       { "type": "null" }
                     ]
@@ -22411,6 +22555,23 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "pluginDriver": { "$ref": "#/components/schemas/def-1" },
@@ -23382,6 +23543,238 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/credentials/push": {
+      "post": {
+        "description": "Requires operate permission on the requested Agent. Requires update permission on each selected CredentialSource with an unwithdrawn Credential Proxy binding in the deployed Agent revision. OCC authorizes every selected Source before it begins delivery. The Agent service principal must still have operate permission on every selected CredentialSource.",
+        "operationId": "pushAgentCredentials",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": { "sources": ["cs_123e4567-e89b-42d3-a456-426614174000"] }
+                }
+              },
+              "schema": { "$ref": "#/components/schemas/PushAgentCredentialsBody" }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "results": [
+                          {
+                            "outcome": "succeeded",
+                            "sourceId": "cs_123e4567-e89b-42d3-a456-426614174000"
+                          }
+                        ]
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again.",
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "results": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "outcome": {
+                                "anyOf": [
+                                  {
+                                    "const": "succeeded",
+                                    "description": "The Credential Proxy completed the update notification according to its binding. A push confirms that every serving copy can use the resolved version. If no delivery resource exists, the proxy succeeds without resolving or creating one.",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "const": "resolution_failed",
+                                    "description": "The proxy requested the credential, but its source-bound resolver failed.",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "const": "delivery_failed",
+                                    "description": "The Credential Proxy could not complete the update notification, including when material required for a push had no resolved version.",
+                                    "type": "string"
+                                  }
+                                ]
+                              },
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId", "outcome"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": ["results"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Retry delivery for selected deployed Agent credential sources",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "update",
+            "condition": "bound_credential_source",
+            "resourceKind": "credential_source",
+            "scope": "requested"
+          }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
         "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
@@ -23733,6 +24126,23 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "plugins": {
@@ -30564,6 +30974,23 @@
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
+                          "networkProxy": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "credentialSecretId": {
+                                "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "url": {
+                                "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                                "maxLength": 2048,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": ["url"],
+                            "type": "object"
+                          },
                           "revision": { "minimum": 1, "type": "integer" }
                         },
                         "required": [
@@ -31027,6 +31454,23 @@
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "networkProxy": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "credentialSecretId": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "url": {
+                                  "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                                  "maxLength": 2048,
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["url"],
+                              "type": "object"
+                            },
                             "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                             "plugins": {
                               "additionalProperties": false,
@@ -31176,6 +31620,7 @@
                                     { "const": "pluginApprovers", "type": "string" },
                                     { "const": "repositoryBindings", "type": "string" },
                                     { "const": "repositoryAccess", "type": "string" },
+                                    { "const": "networkProxy", "type": "string" },
                                     { "const": "harnessAuth", "type": "string" },
                                     { "const": "credentialSources", "type": "string" },
                                     { "const": "secretBindings", "type": "string" },
@@ -33847,6 +34292,23 @@
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
+                        },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                         "plugins": { "$ref": "#/components/schemas/def-6" },
@@ -34583,6 +35045,23 @@
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
+                        },
+                        "networkProxy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "credentialSecretId": {
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "url": {
+                              "description": "HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials.",
+                              "maxLength": 2048,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": ["url"],
+                          "type": "object"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "pluginDriver": { "$ref": "#/components/schemas/def-1" },

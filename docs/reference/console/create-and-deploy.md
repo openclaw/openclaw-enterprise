@@ -68,10 +68,11 @@ as the reason Dedicated OpenClaw is disabled.
    **Apply channel settings** stages settings and bindings. **Cancel** discards selections.
    Configuration stores settings and Secret bindings. The Agent stores plugin selections.
    After creation, you can supply Slack credentials on the Agent's **Credentials** tab.
+   See [Gateway channel proxy](../../guides/deploy/channel-egress.md#select-an-agent-proxy).
 7. Optionally edit **Plugins**, **Configuration**, or **Workspace files**. Presets prefill
    overrides. Omitted files use OpenClaw defaults. Clear a field to submit an empty file.
    The browser submits LF newlines. See [initial contents](../agents.md#initial-contents-at-creation) for limits.
-8. Select **Create Agent**, under the page title, to submit Configuration, Secret references,
+8. Select **Create Agent** to submit Configuration, Secret references,
    Agent inputs, repositories, and workspace files for supported Dedicated provisioning.
    A field to correct selects its tab and takes focus.
    Create opens the first revision's **Deployment** tab for progress and recovery as soon as

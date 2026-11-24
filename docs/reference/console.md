@@ -80,11 +80,12 @@ names or IDs and without replay. Session expiry still requires sign-in.
 Clearing search does not restore the removed rows.
 
 Opening an Agent shows its details page immediately. While it loads, **Back to
-Agents** returns to your place. A slow return to a retained page says **Still
-checking…** after one second. Refresh rebuilds; refocusing an unchanged page preserves edits,
-Slack searches, focus, and the Namespace selector; at phone width, focus in the open drawer moves to
-**Open navigation**. Views belong to one account, session, route,
-and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
+Agents** returns to your place. A slow return to a retained page shows **Still
+checking…** after one second. Refresh rebuilds. Refocusing an unchanged page
+preserves edits, Slack searches, focus, and the Namespace selector. At phone
+width, focus in the open drawer moves to **Open navigation**. Views belong to one
+account, session, route, and Namespace. Sign-out, session changes, exit, or
+Backend denial clear them.
 
 A previously shown Configuration denial can leave Agent metadata visible after
 reload and refocus. Refocus still checks current access. If the read before a
@@ -92,13 +93,13 @@ channel Secret save is denied, the Console clears the binding controls and keeps
 the failed attempt's message. No save is sent. After access is restored, use
 **Refresh** to read saved state before retrying.
 
-When you return to an Agent tab, the Console checks access again. Actions such as
-**Delete Agent** and **Save Configuration** need a fresh permission answer, even
-if the Console has to rebuild the page. A temporary detail read error
-can trigger one automatic retry. If the read still fails, the Console hides
-unconfirmed details and shows a warning. **Retry** checks access again when any
-server retry delay ends. A successful check can restore the view and your place
-in it.
+On return to an Agent tab, the Console checks access again. Actions such as
+**Delete Agent** and **Save Configuration** need fresh permission, even if the page
+rebuilds. A failed Agent read that hides unconfirmed details shows **Still
+checking…** immediately during pending checks. A temporary detail read error can
+trigger one automatic retry. If the read still fails, the Console shows a warning.
+**Retry** checks access after any server retry delay. A successful check can restore
+the view and your place.
 
 **Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.

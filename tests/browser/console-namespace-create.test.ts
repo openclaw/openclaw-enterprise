@@ -446,9 +446,17 @@ for (const closeOnRetry of [false, true]) {
         // Advance Chromium's native AbortSignal.timeout while the list has no HTTP response.
         const cdp = await page.context().newCDPSession(page);
         try {
+          const budgetSpent = new Promise<void>((resolve) => {
+            cdp.once("Emulation.virtualTimeBudgetExpired", () => resolve());
+          });
           await cdp.send("Emulation.setVirtualTimePolicy", { policy: "advance", budget: 15_001 });
           assert.match((await timedOut).failure()?.errorText ?? "", /ERR_ABORTED/);
           assert.equal(await originalRequest.response(), null);
+          // Detaching does not end virtual time. A spent budget leaves the page clock paused, so
+          // the retry's own 15 s deadline cannot fire while its answer is held below. Detaching
+          // before the last millisecond is spent leaves the clock fast-forwarding instead, and
+          // that deadline aborts the held retry at once.
+          await budgetSpent;
         } finally {
           await cdp.detach();
         }

@@ -117,6 +117,8 @@ export interface DeniedRequest {
    * the Installation (finding D769).
    */
   readonly administratorRestricted?: boolean;
+  /** A retry can recover after a restored Agent grant without deploying a new revision. */
+  readonly agentPrincipalRecovery?: "retry_credential_delivery";
 }
 
 // A body or query field that names a resource: `id`, or a name ending in `Id` (one ID) or `Ids`
@@ -224,6 +226,7 @@ export function agentPrincipalDenialMessage(
     readonly authorization: { readonly action: PermissionAction; readonly resource: ResourceRef };
   },
   requested: (value: string) => boolean = () => false,
+  recovery?: DeniedRequest["agentPrincipalRecovery"],
 ): string {
   const { action, resource } = denial.authorization;
   const kind = KIND_LABELS[resource.kind] ?? resource.kind;
@@ -234,5 +237,8 @@ export function agentPrincipalDenialMessage(
   const agent = agentId === undefined ? "This Agent" : `Agent ${agentId}`;
   const target =
     resourceId === undefined ? `one of its bound ${pluralKind(kind)}` : `${kind} ${resourceId}`;
+  if (recovery === "retry_credential_delivery") {
+    return `${agent} cannot use ${target}. Ask an Installation administrator to grant its service principal ${resource.kind}:${action}, then retry credential delivery.`;
+  }
   return `${agent} cannot use ${target}: the Agent itself needs ${kind} ${action} on it. Ask an Installation administrator to give the Agent access, then deploy again.`;
 }
