@@ -29,7 +29,7 @@ The preview accepts static Sources with the `openai` preset and the single model
 
 ## Deploy an Agent with the source
 
-This development integration is not production-qualified. Before starting, select OCC TokenService and an OpenShell Sandbox registration that also exposes `credential_proxy_delivery`; see [supported Driver selections](../drivers/selection.md#supported-selections). Selecting legacy `drivers.credential_proxy` makes the policy PUT below return `409`; omit that selection. This path admits exactly one Source and no repository credentials.
+Use a development Installation with the same TokenService that enrolled the Source. For OpenShell custody, keep the [preview selections](#preview-openshell-custody) above. For OCC custody, use OCC TokenService and an OpenShell Sandbox registration that exposes `credential_proxy_delivery`. Omit the legacy `drivers.credential_proxy` selection, which causes the policy PUT below to return `409`. This path admits exactly one Source and no repository credentials. See [supported Driver selections](../drivers/selection.md#supported-selections).
 
 This example covers dedicated OpenClaw. Codex requires a separate Configuration; see [implementation status](../credential-sources.md#implementation-status) for coverage.
 
@@ -110,10 +110,16 @@ Exact GET requires `credential_source:read`; list requires Namespace `read` and 
 
 ## Update a source
 
-Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset; `config: {}` removes it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. Repeating the same preset while replacing the credential does not change policy. Credential replacement is allowed while an active Agent revision uses the Source. After TokenService commits the replacement, it notifies the selected Credential Proxy. The native Proxy updates an existing Provider; it does not create one if none exists. If delivery fails, PATCH returns `503 DEPENDENCY_UNAVAILABLE`; the Source remains ready and the replacement stays in custody. Use [manual credential delivery retry](../credential-sources.md#retry-credential-delivery) to deliver the retained replacement without sending the secret again. See the [lifecycle flow](../../flows/credential-source-lifecycle.md#deliver-source-updates) for execution.
+Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset. Use `config: {}` to remove it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. Keep the `openai` preset for the OpenShell preview's model binding. You can replace a credential while an active Agent revision uses the Source.
+
+For OCC custody, TokenService commits the replacement and notifies the Credential Proxy. The Proxy updates existing delivery Providers. If delivery fails, PATCH returns `503 DEPENDENCY_UNAVAILABLE` and the replacement stays in custody. Use [manual credential delivery retry](../credential-sources.md#retry-credential-delivery) to deliver it without resending the secret.
+
+For OpenShell custody, TokenService updates the Source's Workspace Provider. OpenShell propagates the change to attached Sandboxes. A successful manual push confirms that OCC can read the Provider metadata. Verify delivery by checking the running Sandbox. See the [Source update flow](../../flows/credential-source-lifecycle.md#deliver-source-updates).
 
 ## Delete a source
 
-DELETE requires `credential_source:delete` and returns `409` while blocking references remain. OCC marks the Source `deleting`. If an OpenShell Credential Proxy is selected, OCC asks it to retire its owned Provider and profile before TokenService removes the Source and credential from custody. If Proxy retirement fails, DELETE returns `503` and retains the Source and credential for retry. Success returns `204` after Source removal and completion audit. An uncertain removal can leave the Source in `deleting` for retry. If removal succeeds but the completion audit fails, the Source remains gone; retry returns `403` or `404` depending on the caller's remaining authority.
+DELETE requires `credential_source:delete` and returns `409` while blocking references remain. OCC marks the Source `deleting`. With OCC custody and the OpenShell Credential Proxy, the Proxy retires its delivery Provider and profile before TokenService removes the credential. If Proxy retirement fails, DELETE returns `503` and retains the Source and credential for retry. With OpenShell custody, TokenService deletes the Source's own Workspace Provider and profile.
+
+Success returns `204` after Source removal and completion audit. An uncertain removal can leave the Source in `deleting` for retry. If removal succeeds but the completion audit fails, the Source remains gone. A retry returns `403` or `404` depending on the caller's remaining authority.
 
 If an Installation restarts without the Proxy selected, deletion follows the no-Proxy path. A previously retained Provider copy can remain after Source deletion.

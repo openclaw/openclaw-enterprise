@@ -60,7 +60,7 @@ async function json<T>(response: Response): Promise<T> {
   }
 }
 
-type Agent = { id: string; activeRevisionId?: string; desiredRuntimeState: string };
+type Agent = { id: string; activeRevisionId?: string };
 type Source = {
   id: string;
   namespaceId: string;
@@ -235,20 +235,9 @@ test(
       harnessAuth: { method: "credential_source", sourceId },
     });
     const agentPath = `${base}/agents/${agent.id}`;
+    const deploymentTarget: { sandboxName?: string } = {};
     cleanup.push(async () => {
-      const current = await data<Agent>("GET", agentPath, 200);
-      const expected = current.activeRevisionId
-        ? `?expectedActiveRevisionId=${current.activeRevisionId}`
-        : "";
-      await (await request("POST", `${agentPath}/stop${expected}`, 202)).body?.cancel();
-      await waitUntil(
-        "exact Agent to stop",
-        async () => {
-          const state = await data<Agent>("GET", agentPath, 200);
-          return state.desiredRuntimeState === "stopped" && !state.activeRevisionId;
-        },
-        poll,
-      );
+      // DELETE also retires a deployment that failed after selecting a revision.
       await (await request("DELETE", agentPath, 202)).body?.cancel();
       await waitUntil(
         "exact Agent deletion",
@@ -259,6 +248,13 @@ test(
         },
         poll,
       );
+      if (deploymentTarget.sandboxName !== undefined) {
+        assert.equal(
+          await gateway.getSandbox({ workspace, name: deploymentTarget.sandboxName }, rpc()),
+          undefined,
+          "Agent deletion must remove its exact Sandbox.",
+        );
+      }
     });
 
     const networking = `${agentPath}/sandbox-policy/networking`;
@@ -273,6 +269,8 @@ test(
       })
     ).body?.cancel();
     const revision = await data<{ id: string }>("POST", `${agentPath}/deploy`, 202);
+    const sandboxName = `os-${createHash("sha256").update(revision.id).digest("hex").slice(0, 16)}`;
+    deploymentTarget.sandboxName = sandboxName;
     const deploymentPath = `${agentPath}/deployments/${revision.id}`;
     await waitUntil(
       "dedicated Agent deployment",
@@ -290,7 +288,6 @@ test(
     );
     assert.equal((await data<Agent>("GET", agentPath, 200)).activeRevisionId, revision.id);
 
-    const sandboxName = `os-${createHash("sha256").update(revision.id).digest("hex").slice(0, 16)}`;
     const readSandbox = () => gateway.getSandbox({ workspace, name: sandboxName }, rpc());
     const sandbox = await readSandbox();
     assert.ok(sandbox?.id && sandbox.mainProcessInstanceId);
