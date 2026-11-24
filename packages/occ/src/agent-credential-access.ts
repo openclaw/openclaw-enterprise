@@ -262,13 +262,13 @@ export function createAgentCredentialAccess({
         }
       } else {
         if (
-          current.mode !== "manual" ||
+          current.mode === "static_bearer" ||
           source.consent.kind !== "connection_template" ||
           source.consent.revocationRequestedBy !== undefined ||
           source.consent.revokedAt !== undefined
         ) {
           throw new ResourceStateConflictError(
-            "The Plugin Source requires active OAuth consent for an HTTP Connection Template.",
+            "The Plugin Source requires active consent for an OAuth Connection Template.",
           );
         }
         const consent =
@@ -278,14 +278,25 @@ export function createAgentCredentialAccess({
                 template.id,
                 source.consent.version,
               );
-        if (consent?.mode !== "manual" || consent.oauthClientId !== source.consent.oauthClientId) {
+        if (!consent || consent.oauthClientId !== source.consent.oauthClientId) {
           throw new ResourceStateConflictError(
             "The Plugin Source's original OAuth consent version is unavailable.",
           );
         }
-        if (current.issuer !== consent.issuer) {
+        if (current.mode !== consent.mode || current.issuer !== consent.issuer) {
           throw new ResourceStateConflictError(
-            "Reconnect the Plugin Source after its Connection Template issuer changes.",
+            "Reconnect the Plugin Source after its Connection Template mode or issuer changes.",
+          );
+        }
+        if (
+          current.mode === "mcp_discovery" &&
+          (!current.mcp ||
+            !consent.mcp ||
+            current.mcp.resource !== consent.mcp.resource ||
+            current.mcp.serverUrl !== consent.mcp.serverUrl)
+        ) {
+          throw new ResourceStateConflictError(
+            "The Plugin Source's MCP resource and server URL must match its original consent.",
           );
         }
       }
