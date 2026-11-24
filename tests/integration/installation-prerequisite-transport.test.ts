@@ -38,6 +38,13 @@ type ApiRequest = {
   tlsServerName: unknown;
 };
 
+function kubernetesStatus(code: number, reason: string): Reply {
+  return {
+    status: code,
+    body: { kind: "Status", apiVersion: "v1", status: "Failure", reason, code },
+  };
+}
+
 // Serve the discovery and named reads used by genuine kubectl over loopback.
 // Neither endpoint needs a Kubernetes cluster or any real credential.
 function api(
@@ -55,16 +62,6 @@ function api(
       tlsServerName: "servername" in request.socket ? request.socket.servername : undefined,
     };
     requests.push(received);
-    const status = (code: number, reason: string): Reply => ({
-      status: code,
-      body: {
-        kind: "Status",
-        apiVersion: "v1",
-        status: "Failure",
-        reason,
-        code,
-      },
-    });
     let reply = resource(received);
     if (reply === undefined) {
       if (path === "/api") {
@@ -103,7 +100,7 @@ function api(
           },
         };
       } else {
-        reply = status(404, "NotFound");
+        reply = kubernetesStatus(404, "NotFound");
       }
     }
     // Status zero leaves the API request pending for the interruption case.
@@ -124,7 +121,7 @@ const servicePath = "/api/v1/namespaces/default/services/dependency";
 const secretPath = "/api/v1/namespaces/default/secrets/leaf";
 const dnsName = "gateway.test.invalid";
 
-function object(kind: "Service" | "Secret", name: string, fields: object): Reply {
+function object(kind: "Service" | "Secret", name: string, fields: object) {
   return {
     status: 200,
     body: {
@@ -177,6 +174,8 @@ test(
     });
     const token = randomUUID();
     const rolloutUid = randomUUID();
+    const selectedController = { name: "controller", namespace: "default" };
+    let rolloutIdentity = selectedController;
     const refreshedToken = randomUUID();
     const replacementToken = randomUUID();
     const caBundle = await readFile(ca.caPath);
@@ -205,6 +204,7 @@ test(
     let pauseServiceRead = false;
     let denyDependency = false;
     let serveValidLeaf = false;
+    let dependencyReply: Reply | undefined;
     let secretReply: Reply | undefined;
     let apiServiceReply: Reply | undefined;
     let apiSlicesReply: Reply | undefined;
@@ -272,8 +272,7 @@ test(
             kind: "Deployment",
             apiVersion: "apps/v1",
             metadata: {
-              name: "controller",
-              namespace: "default",
+              ...rolloutIdentity,
               uid: rolloutUid,
               resourceVersion: "42",
               generation: 3,
@@ -326,16 +325,10 @@ test(
         return apiSlicesReply;
       }
       if (denyDependency && [servicePath, secretPath].includes(requestPath)) {
-        return {
-          status: 403,
-          body: {
-            apiVersion: "v1",
-            kind: "Status",
-            status: "Failure",
-            reason: "Forbidden",
-            code: 403,
-          },
-        };
+        return kubernetesStatus(403, "Forbidden");
+      }
+      if (requestPath === servicePath) {
+        return dependencyReply;
       }
       if (requestPath === secretPath) {
         onServingSecretRead?.();
@@ -434,7 +427,7 @@ test(
         name: "gateway",
         controllerName: "example.test/controller",
       },
-      controllers: [{ name: "controller", namespace: "default" }],
+      controllers: [selectedController],
       crds: [{ name: "gateways.gateway.networking.k8s.io", version: "v1" }],
       apiCidrs: ["10.32.0.1/32"],
       serviceDependency: {
@@ -1313,6 +1306,12 @@ esac
             await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
 
             const optedIn = { ...environment, KUBECTL_KUBERC: "false" };
+            async function expectInventoryFailure(reason: RegExp, inventoryArgs = args) {
+              const { code, stdout, stderr } = await collect(optedIn, true, inventoryArgs).result;
+              assert.equal(code, 2, stderr);
+              assert.equal(stdout, "");
+              assert.match(stderr, reason);
+            }
             // An opt-in never authorizes the plugin for a different cluster or CA.
             const mismatches = [
               {
@@ -1330,26 +1329,26 @@ esac
             ];
             for (const mismatch of mismatches) {
               await writeFile(path, mismatch.kubeconfig, { mode: 0o600 });
-              const rejected = await collect(optedIn, true, mismatch.args).result;
-              assert.equal(rejected.code, 2, rejected.stderr);
-              assert.equal(rejected.stdout, "");
-              assert.match(rejected.stderr, /eks-cluster-identity/u);
+              await expectInventoryFailure(/eks-cluster-identity/u, mismatch.args);
               assert.equal(httpsRequests.length + httpRequests.length, 0);
               await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
             }
 
+            function assertAuthenticatedReads() {
+              assert.ok(httpsRequests.length > 0);
+              assert.ok(
+                httpsRequests.every(
+                  ({ bearer, tlsServerName }) =>
+                    bearer === "Bearer " + token && tlsServerName === dnsName,
+                ),
+              );
+              assert.equal(httpRequests.length, 0);
+            }
             const diagnosed = await observations(awsConfig(), 1, optedIn);
             for (const id of ["eks-cluster-identity", "webhook-addresses", "kubernetes-api"]) {
               assert.equal(diagnosed.get(id)?.status, "passed");
             }
-            assert.ok(httpsRequests.length > 0);
-            assert.ok(
-              httpsRequests.every(
-                ({ bearer, tlsServerName }) =>
-                  bearer === "Bearer " + token && tlsServerName === dnsName,
-              ),
-            );
-            assert.equal(httpRequests.length, 0);
+            assertAuthenticatedReads();
             await stat(pluginMarker);
             httpsRequests.length = 0;
 
@@ -1401,13 +1400,7 @@ esac
                 ],
               );
 
-              assert.ok(
-                httpsRequests.every(
-                  ({ bearer, tlsServerName }) =>
-                    bearer === "Bearer " + token && tlsServerName === dnsName,
-                ),
-              );
-              assert.equal(httpRequests.length, 0);
+              assertAuthenticatedReads();
 
               // Valid IPv4 replies cannot conceal a structurally invalid or unrelated item.
               for (const extra of [
@@ -1430,19 +1423,13 @@ esac
                 },
               ]) {
                 apiSlicesReply = { status: 200, body: { ...body, items: [...body.items, extra] } };
-                const invalid = await collect(optedIn, true, args).result;
-                assert.equal(invalid.code, 2, invalid.stderr);
-                assert.equal(invalid.stdout, "");
-                assert.match(invalid.stderr, /EndpointSlice inventory is incomplete/u);
+                await expectInventoryFailure(/EndpointSlice inventory is incomplete/u);
               }
               apiSlicesReply = { status: 200, body };
               apiServiceReply = object("Service", "kubernetes", {
                 spec: { clusterIP: "10.32.0.1", clusterIPs: ["10.32.0.1", "invalid"] },
               });
-              const invalidService = await collect(optedIn, true, args).result;
-              assert.equal(invalidService.code, 2, invalidService.stderr);
-              assert.equal(invalidService.stdout, "");
-              assert.match(invalidService.stderr, /Service address inventory is incomplete/u);
+              await expectInventoryFailure(/Service address inventory is incomplete/u);
               apiServiceReply = undefined;
 
               redirect = {
@@ -1450,10 +1437,7 @@ esac
                 location: endpoint.plaintext.server + secretPath,
               };
               try {
-                const redirected = await collect(optedIn, true, args).result;
-                assert.equal(redirected.code, 2);
-                assert.equal(redirected.stdout, "");
-                assert.match(redirected.stderr, /unexpected redirect/u);
+                await expectInventoryFailure(/unexpected redirect/u);
                 assert.equal(httpRequests.length, 0);
               } finally {
                 redirect = undefined;
@@ -1463,25 +1447,10 @@ esac
                 status: 200,
                 body: { ...body, metadata: { continue: "unread-next-page" } },
               };
-              const incomplete = await collect(optedIn, true, args).result;
-              assert.equal(incomplete.code, 2);
-              assert.equal(incomplete.stdout, "");
-              assert.match(incomplete.stderr, /EndpointSlice inventory is incomplete/u);
+              await expectInventoryFailure(/EndpointSlice inventory is incomplete/u);
 
-              apiSlicesReply = {
-                status: 403,
-                body: {
-                  apiVersion: "v1",
-                  kind: "Status",
-                  status: "Failure",
-                  reason: "Forbidden",
-                  code: 403,
-                },
-              };
-              const denied = await collect(optedIn, true, args).result;
-              assert.equal(denied.code, 2);
-              assert.equal(denied.stdout, "");
-              assert.match(denied.stderr, /not authorized.*read/u);
+              apiSlicesReply = kubernetesStatus(403, "Forbidden");
+              await expectInventoryFailure(/not authorized.*read/u);
             } finally {
               apiServiceReply = undefined;
               apiSlicesReply = undefined;
@@ -1587,6 +1556,37 @@ esac
         denyDependency = false;
       }
     });
+    await t.test("only the selected Service can establish an ExternalName mismatch", async () => {
+      const alias = object("Service", "dependency", {
+        spec: { type: "ExternalName", externalName: dnsName },
+      });
+      try {
+        dependencyReply = alias;
+        const selected = (await observations(verifiedConfig)).get("service-egress");
+        assert.equal(selected?.status, "failed");
+        assert.match(selected.summary, /ExternalName/u);
+
+        dependencyReply = { ...alias, body: { ...alias.body, apiVersion: "example.test/v1" } };
+        const unrelated = (await observations(verifiedConfig)).get("service-egress");
+        assert.equal(unrelated?.status, "unknown");
+        assert.ok(!("resources" in unrelated));
+      } finally {
+        dependencyReply = undefined;
+      }
+    });
+    await t.test("a ready Deployment cannot establish another controller's readiness", async () => {
+      const id = "controller:default/controller";
+      try {
+        for (const mismatch of [{ name: "other-controller" }, { namespace: "other" }]) {
+          rolloutIdentity = { ...selectedController, ...mismatch };
+          const checks = await observations(verifiedConfig);
+          assert.ok(httpsRequests.some(({ path }) => path === rolloutPath));
+          assert.equal(checks.get(id)?.status, "unknown", JSON.stringify(mismatch));
+        }
+      } finally {
+        rolloutIdentity = selectedController;
+      }
+    });
     await t.test("only Kubernetes NotFound reports a selected Secret as absent", async () => {
       const collectSecret = async (reply: Reply) => {
         secretReply = reply;
@@ -1599,16 +1599,7 @@ esac
         return check;
       };
       try {
-        const missing = await collectSecret({
-          status: 404,
-          body: {
-            apiVersion: "v1",
-            kind: "Status",
-            status: "Failure",
-            reason: "NotFound",
-            code: 404,
-          },
-        });
+        const missing = await collectSecret(kubernetesStatus(404, "NotFound"));
         assert.equal(missing.status, "failed");
         assert.match(missing.summary, /does not exist/u);
         const intermediary = await collectSecret({
@@ -1617,6 +1608,14 @@ esac
         });
         assert.equal(intermediary.status, "unknown");
         assert.doesNotMatch(intermediary.summary, /does not exist/u);
+
+        // A matching certificate cannot establish the identity of the returned object.
+        const leaf = object("Secret", "leaf", { data: { "tls.crt": certData } });
+        assert.equal((await collectSecret(leaf)).status, "passed");
+        for (const mismatch of [{ kind: "ConfigMap" }, { apiVersion: "example.test/v1" }]) {
+          const invalid = await collectSecret({ ...leaf, body: { ...leaf.body, ...mismatch } });
+          assert.equal(invalid.status, "unknown", JSON.stringify(mismatch));
+        }
 
         for (const body of ["", "null", "[]", "42", "{}", "{"]) {
           const invalid = await collectSecret({ status: 200, body });

@@ -1,6 +1,6 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
-import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
+import { button, element, focusSaveOutcome, requestIdLine, setUnavailable } from "./dom.mjs";
 import {
   connectionTemplatesPage,
   oauthClientsPage,
@@ -33,7 +33,11 @@ type ShellOptions = Pick<Navigation, "route" | "pageUrl" | "navigate"> & {
   logout(): void;
 };
 
-type LeaveGuard = (options?: { pendingOnly: true } | { refresh: true }) => boolean;
+type LeaveGuard = (options?: {
+  pendingOnly?: true;
+  refresh?: true;
+  focusFeedback?: (feedback: HTMLElement) => void;
+}) => boolean;
 
 export function brandContents(placement: "navigation" | "sign-in") {
   const displayName =
@@ -175,6 +179,14 @@ export function createShell({
   let refuseLeave: LeaveGuard = () => false;
   const mobileLayout = window.matchMedia("(max-width: 760px)");
 
+  function focusLeaveFeedback(feedback: HTMLElement) {
+    // The drawer makes the page inert. Close it without returning focus to its toggle.
+    if (drawerControls?.shell.classList.contains("drawer-open")) {
+      drawerControls.close(false);
+    }
+    focusSaveOutcome(document.body, [], feedback);
+  }
+
   mobileLayout.addEventListener("change", (event) => {
     // The account menu of the layout being left is hidden; close it so it doesn't reappear open.
     menuControls?.close();
@@ -294,7 +306,18 @@ export function createShell({
     });
     enableMenuKeys(menu, closeAccount);
     menu.append(
-      button("Settings", () => navigate("settings"), { role: "menuitem", tabindex: "-1" }),
+      button(
+        "Settings",
+        () => {
+          if (refuseLeave({ focusFeedback: focusLeaveFeedback })) {
+            // Restore the toggle only if the guard left focus in the menu.
+            closeAccount(menu.contains(document.activeElement));
+            return;
+          }
+          navigate("settings");
+        },
+        { role: "menuitem", tabindex: "-1" },
+      ),
       button("Sign out", () => void logout(), { role: "menuitem", tabindex: "-1" }),
     );
     account.append(...(menuFirst ? [menu, toggle] : [toggle, menu]));
@@ -414,7 +437,7 @@ export function createShell({
         return;
       }
       // A page that cannot be left yet keeps its Namespace and says why (finding 1902).
-      if (refuseLeave()) {
+      if (refuseLeave({ focusFeedback: focusLeaveFeedback })) {
         select.value = namespaceId ?? "";
         return;
       }
@@ -515,7 +538,7 @@ export function createShell({
         return;
       }
       event.preventDefault();
-      if (refuseLeave()) {
+      if (refuseLeave({ focusFeedback: focusLeaveFeedback })) {
         return;
       }
       navigate("agents");
@@ -602,7 +625,7 @@ export function createShell({
         event.preventDefault();
         // A page waiting on a write stays and says why, as ← Agents does (finding 1937). On a
         // phone the drawer closes, so the reason is not hidden behind it.
-        if (refuseLeave({ pendingOnly: true })) {
+        if (refuseLeave({ pendingOnly: true, focusFeedback: focusLeaveFeedback })) {
           if (drawerControls?.shell.classList.contains("drawer-open")) {
             drawerControls.close();
           }

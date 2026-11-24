@@ -350,10 +350,10 @@ in-place run. On Linux, provide `certutil` and sandboxed Chromium. Set
 `OCC_TEST_BROWSER_EXECUTABLE` to use an installed browser. Each image must
 serve its source revision in the Console HTML's `occ-build-revision` meta element.
 
-The browser signs in once. At each switch, it checks saved Agents in the
-original tab, a fresh tab and a tab whose entry module was held until after
-the switch. The delayed and fresh entry modules must match. The fixture uses local HTTPS. This checks session and asset
-compatibility across a switch. It cannot establish continuous availability.
+With one login, verify saved Agents in four tabs at each switch. Keep one open,
+load one fresh, delay the third tab's entry and delay the fourth tab's imports.
+Compare the delayed entry and Agent detail module with the fresh tab.
+Local HTTPS tests compatibility across a switch. It cannot establish continuous availability.
 
 Require a pass without skips. The test performs an ordinary controller-only
 forward upgrade. After the candidate acknowledges an Agent draft save, it checks

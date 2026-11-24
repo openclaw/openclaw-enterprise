@@ -90,7 +90,7 @@ the paths.
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 10 operations |
 | [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 55 operations |
+| [Agents](#agents) | 61 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -4459,6 +4459,12 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}`](#get-namespacesnamespaceidagentsagentid) | Get an exact Namespace-owned Agent |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`](#get-namespacesnamespaceidagentsagentidauditevents) | List audit metadata for one Agent |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations`](#get-namespacesnamespaceidagentsagentidautomations) | List an Agent's native cron automations |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/automations`](#post-namespacesnamespaceidagentsagentidautomations) | Create a native cron automation for an Agent |
+| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#delete-namespacesnamespaceidagentsagentidautomationsautomationid) | Delete a native cron automation |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#get-namespacesnamespaceidagentsagentidautomationsautomationid) | Get a native cron automation |
+| [`PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#patch-namespacesnamespaceidagentsagentidautomationsautomationid) | Update a native cron automation |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`](#get-namespacesnamespaceidagentsagentidautomationsautomationidruns) | List native execution history for a cron automation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`](#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw) | Revoke one credential source from the selected Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`](#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal) | Get the withdrawal state of a credential source for an Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credentials/push`](#post-namespacesnamespaceidagentsagentidcredentialspush) | Retry delivery for selected deployed Agent credential sources |
@@ -4743,6 +4749,9 @@ Create a Namespace-owned Agent
 | `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
 | `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Save the initial GitHub grants on this draft atomically. Requires permission to enable editing, save and read the Agent networking policy. Omit for ordinary profile access. |
+| `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `workspaceDefaultsId` | `string` | No | pattern: `^[a-f0-9]{64}$` |
 
 Example request
@@ -5788,6 +5797,9 @@ List approved repository choices for Agent creation in one Namespace
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16; unique items: true |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data[].githubAccess` | `object` | No | Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions. |
+| `data[].githubAccess.access` | `"read" or "write"` | Yes | — |
+| `data[].githubAccess.repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `meta` | `object` | Yes | — |
 | `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
@@ -6401,6 +6413,396 @@ Example response
 }
 ```
 
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations`
+
+<span id="get-namespacesnamespaceidagentsagentidautomations"></span>
+
+List an Agent's native cron automations
+
+**Operation ID:** `listAgentAutomations`
+
+**Permissions:** Requires operate permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `offset` | query | `string` | No | pattern: `^(0\|[1-9][0-9]{0,8})$` | "0" |
+| `limit` | query | `string` | No | pattern: `^([1-9][0-9]?\|100)$` | "20" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object<string, any>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "jobs": [],
+    "nextOffset": null,
+    "total": 0
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/automations`
+
+<span id="post-namespacesnamespaceidagentsagentidautomations"></span>
+
+Create a native cron automation for an Agent
+
+**Operation ID:** `createAgentAutomation`
+
+**Permissions:** Requires operate permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | Yes | — |
+| `name` | `string` | Yes | min length: 1; max length: 200 |
+| `prompt` | `string` | Yes | min length: 1; max length: 16384 |
+| `schedule` | `object or object or object` | Yes | — |
+
+Example request
+```json
+{
+  "enabled": true,
+  "name": "Morning report",
+  "prompt": "Prepare a report.",
+  "schedule": {
+    "expr": "0 9 * * *",
+    "kind": "cron",
+    "tz": "UTC"
+  }
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object<string, any>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configRevision": "revision-1",
+    "enabled": true,
+    "id": "cron-example",
+    "name": "Morning report",
+    "payload": {
+      "kind": "agentTurn",
+      "message": "Prepare a report."
+    },
+    "schedule": {
+      "expr": "0 9 * * *",
+      "kind": "cron",
+      "tz": "UTC"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
+
+<span id="delete-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
+
+Delete a native cron automation
+
+**Operation ID:** `deleteAgentAutomation`
+
+**Permissions:** Requires operate permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `expectedConfigRevision` | query | `string` | Yes | min length: 1; max length: 128 | "revision-1" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 200 | "cron-example" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
+
+<span id="get-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
+
+Get a native cron automation
+
+**Operation ID:** `getAgentAutomation`
+
+**Permissions:** Requires operate permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 200 | "cron-example" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object<string, any>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configRevision": "revision-1",
+    "enabled": true,
+    "id": "cron-example",
+    "name": "Morning report",
+    "schedule": {
+      "expr": "0 9 * * *",
+      "kind": "cron",
+      "tz": "UTC"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `PATCH /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`
+
+<span id="patch-namespacesnamespaceidagentsagentidautomationsautomationid"></span>
+
+Update a native cron automation
+
+**Operation ID:** `updateAgentAutomation`
+
+**Permissions:** Requires operate permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 200 | "cron-example" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | No | — |
+| `expectedConfigRevision` | `string` | Yes | min length: 1; max length: 128 |
+| `name` | `string` | No | min length: 1; max length: 200 |
+| `prompt` | `string` | No | min length: 1; max length: 16384 |
+| `schedule` | `object or object or object` | No | — |
+
+Example request
+```json
+{
+  "enabled": false,
+  "expectedConfigRevision": "revision-1"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object<string, any>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "configRevision": "revision-2",
+    "enabled": false,
+    "id": "cron-example",
+    "name": "Morning report"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}/runs`
+
+<span id="get-namespacesnamespaceidagentsagentidautomationsautomationidruns"></span>
+
+List native execution history for a cron automation
+
+**Operation ID:** `listAgentAutomationRuns`
+
+**Permissions:** Requires operate permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `offset` | query | `string` | No | pattern: `^(0\|[1-9][0-9]{0,8})$` | "0" |
+| `limit` | query | `string` | No | pattern: `^([1-9][0-9]?\|100)$` | "20" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `automationId` | path | `string` | Yes | min length: 1; max length: 200 | "cron-example" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object<string, any>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "entries": [],
+    "nextOffset": null,
+    "total": 0
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`
 
 <span id="post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw"></span>
@@ -6668,6 +7070,7 @@ Save an Agent revision from the Agent's saved settings
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `expectedRepositoryPolicyVersion` | `integer or null` | No | Send the reviewed networking policy version to require a saved repository policy at that version. Send null to require no saved repository policy. Omit to skip this check. A version or a saved repository policy requires SandboxPolicy read. An authorized mismatch returns HTTP 409. |
 | `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 
 Example request
@@ -8260,6 +8663,9 @@ List approved repository choices for updating one Agent
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16; unique items: true |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data[].githubAccess` | `object` | No | Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions. |
+| `data[].githubAccess.access` | `"read" or "write"` | Yes | — |
+| `data[].githubAccess.repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `meta` | `object` | Yes | — |
 | `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
@@ -8658,9 +9064,18 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.policy.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.policy.repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Saved repository grants. An empty array denies all repositories. |
 | `data.policy.repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `data.policy.repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
+| `data.policy.repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |
+| `data.policy.repositoryNetworkPolicy[].apiLimits.issues` | `"none" or "read" or "write"` | No | — |
+| `data.policy.repositoryNetworkPolicy[].apiLimits.pull_requests` | `"none" or "read" or "write"` | No | — |
 | `data.policy.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.policy.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `data.protectedExecution` | `boolean or null` | Yes | Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone. |
+| `data.repositoryApiMaxima` | `array<object>` | No | max items: 32; Selected repositories eligible for API limits and the maximum Git and API levels permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy. |
+| `data.repositoryApiMaxima[].access` | `"read" or "write"` | Yes | — |
+| `data.repositoryApiMaxima[].issues` | `"none" or "read" or "write"` | Yes | — |
+| `data.repositoryApiMaxima[].pull_requests` | `"none" or "read" or "write"` | Yes | — |
+| `data.repositoryApiMaxima[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.repositoryNetworkPolicyCeiling` | `array<object>` | Yes | max items: 32; Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently. |
 | `data.repositoryNetworkPolicyCeiling[].access` | `"read" or "write"` | Yes | — |
 | `data.repositoryNetworkPolicyCeiling[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
@@ -8735,6 +9150,10 @@ Replace one Agent network policy additions
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Omit to preserve the saved grants. Sending an explicit empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported. |
 | `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
+| `repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |
+| `repositoryNetworkPolicy[].apiLimits.issues` | `"none" or "read" or "write"` | No | — |
+| `repositoryNetworkPolicy[].apiLimits.pull_requests` | `"none" or "read" or "write"` | No | — |
 | `repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 
 Example request
@@ -8791,6 +9210,10 @@ Example request
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Saved repository grants. An empty array denies all repositories. |
 | `data.repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `data.repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
+| `data.repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |
+| `data.repositoryNetworkPolicy[].apiLimits.issues` | `"none" or "read" or "write"` | No | — |
+| `data.repositoryNetworkPolicy[].apiLimits.pull_requests` | `"none" or "read" or "write"` | No | — |
 | `data.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `meta` | `object` | Yes | — |
@@ -8908,6 +9331,10 @@ Example request
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Saved repository grants. An empty array denies all repositories. |
 | `data.repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `data.repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
+| `data.repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |
+| `data.repositoryNetworkPolicy[].apiLimits.issues` | `"none" or "read" or "write"` | No | — |
+| `data.repositoryNetworkPolicy[].apiLimits.pull_requests` | `"none" or "read" or "write"` | No | — |
 | `data.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
 | `meta` | `object` | Yes | — |
