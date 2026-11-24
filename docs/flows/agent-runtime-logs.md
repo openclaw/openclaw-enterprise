@@ -277,7 +277,7 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 ## Changelog
 
-- 2026-11-24 18:46: Restore local reading preferences after a same-version Logs tab detour when the fresh container stream matches. (authoring-run/6dfc28c9-6b38-459b-a8ca-820efd40e2b2 - 93c73e9b99562faa2638d0e57103698f27923448)
+- 2026-11-24 18:46: Restore local reading preferences after a same-version Logs tab detour when the fresh container stream matches. (authoring-run/6dfc28c9-6b38-459b-a8ca-820efd40e2b2 - 17b056def389ac3e5f259ea4a2c965b374511402)
 
 - 2026-11-22 16:53: Distinguish runtime paths. (authoring-run/780fdd65-c36c-4e49-96d0-82230c495d93 - 3eedffbaae63cdc1b006e51d49b88504462d2a5c)
 

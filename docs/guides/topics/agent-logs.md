@@ -21,7 +21,7 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
    (policy decisions)**](#sandbox-source) in **Source**. For multiple container streams, choose
    **Pod / container**. A successful init container does not prove the main process
    succeeded. Until a Harness Pod is ready, Gateway logs failed connections
-   (`ECONNREFUSED`). The Console links to Harness output (for example, a failed
+   (`ECONNREFUSED`). The Console points you to Harness output (for example, a failed
    model probe) or Deployment activity if no Harness Pod exists.
 4. Select **Follow** to poll every 2 seconds. It pauses while the browser tab is
    hidden or you scroll up, and stops after a permission denial.

@@ -83,9 +83,10 @@ rejection is simulated UI proof, not a normal browser network failure or proof o
 backend persistence or deployment.
 
 Open **Pages / Agent detail / Runtime logs filtered and downloaded**
-(`pages-agent-detail--runtime-logs-filtered-download`). Wait for v7's Gateway
+(`pages-agent-detail--runtime-logs-filtered-download`). To test Download, open the preview
+in its own tab. Wait for v7's Gateway
 output. Confirm **Filter** contains `slack` and **info** is deselected. Scroll
-within **Runtime log output** toward older lines, note the first visible numbered
+within **Runtime log output** toward older lines, wait for scrolling to settle, note the first visible numbered
 warning, then select **Follow**.
 
 Keep **Viewing version** on v7. Open **Deployment**, then immediately return to
