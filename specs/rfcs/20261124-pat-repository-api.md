@@ -45,7 +45,7 @@ Set `permissions.issues` and `permissions.pull_requests` independently. Write pe
 
 For example, `gh api repos/acme/docs/issues` lists issues with Read. With Write on `acme/web`, `gh api --method POST repos/acme/web/pulls --input pr.json` can open a PR. A direct POST to the read-only repository is denied.
 
-The **repository Worker** owns one endpointless Provider per revision for Git and REST. It reuses [the copy record, Source lock, expiry and retirement checks](https://github.com/openclaw/openclaw-enterprise/blob/a448eac9fdc6ac4040a37f89907432d5da8bf421/docs/reference/repository-credentials/repository-token-source.md#L69-L101). There is no second Credential Proxy copy. The Sandbox binds exact routes to the Provider. Stock OpenShell 0.1.9 checks each request and replaces the placeholder only on an allowed route. No request-time OCE callback is needed.
+The **repository Worker** owns one endpointless Provider per revision for Git and REST. It reuses [the copy record, Source lock, expiry and retirement checks](https://github.com/openclaw/openclaw-enterprise/blob/a448eac9fdc6ac4040a37f89907432d5da8bf421/docs/reference/repository-credentials/repository-token-source.md). There is no second Credential Proxy copy. The Sandbox binds exact routes to the Provider. Stock OpenShell 0.1.9 checks each request and replaces the placeholder only on an allowed route. No request-time OCE callback is needed.
 
 The proposed flow is shown below.
 
