@@ -2717,7 +2717,6 @@ function renderAgentForm(
     const scoped = repositories.scoped();
     if (
       mode.value !== "dedicated" ||
-      (!scoped && !provisionableExecutionModes.has(mode.value)) ||
       (method !== "api_key" && method !== "codex_pat") ||
       (scoped && (harness.value !== "codex" || method !== "api_key"))
     ) {

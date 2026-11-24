@@ -16,7 +16,7 @@ import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-cli
 import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 import { loadedProxyInstallation } from "../helpers/loaded-proxy-installation.ts";
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
-import type { Locator, Page, Route } from "playwright";
+import type { Locator, Page, Response, Route } from "playwright";
 import type { SandboxPolicyViewWire } from "../../packages/contracts/src/api/sandbox-policy.ts";
 import type {
   Agent,
@@ -53,6 +53,7 @@ import {
   holdRequests,
   login,
   loginThroughForm,
+  MEMBER_WRITE,
   nativeValues,
   newPage,
   nextFrames,
@@ -1411,6 +1412,120 @@ test("Create Agent requests ordinary provisioning when eligible GitHub repositor
       assert.equal(pathRequests(requests, "POST", agents).length, 0);
     });
   }
+});
+
+test("a Namespace member enrolls a Gateway model credential before saving a deployable draft", async (t) => {
+  const { fixture, namespaceId, secret } = await repositoryPolicyConsole(t, true);
+  const member = await fixture.createNamespaceMember("gateway-member", namespaceId, [
+    ...MEMBER_WRITE,
+    ["create", "credential_source"],
+    ["read", "credential_source"],
+    ["operate", "credential_source"],
+  ]);
+  const { page } = await newPage(t, fixture);
+  const namespace = `/namespaces/${namespaceId}`;
+  const agents = `${namespace}/agents`;
+  const sources = `${namespace}/credential-sources`;
+  const requests = apiRequests(page, fixture.origin);
+  const enrollments: Response[] = [];
+  page.on("response", (response) => {
+    if (
+      response.url() === `${fixture.origin}${sources}` &&
+      response.request().method() === "POST"
+    ) {
+      enrollments.push(response);
+    }
+  });
+  const installationRead = responseTo(page, "GET", `${fixture.origin}/installation`);
+  const namespaceRead = responseTo(page, "GET", `${fixture.origin}${namespace}/agent-capabilities`);
+  await login(page, fixture, `/console/agents/new?namespace=${namespaceId}`, member.credentials);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  assert.equal((await installationRead).status(), 403);
+  const answer = await namespaceRead;
+  assert.equal(answer.status(), 200);
+  const data = record(record(await answer.json()).data);
+  const capabilities = record(data.capabilities);
+  assert.equal(capabilities.agentProvisioning, undefined);
+  assert.ok(
+    items(record(capabilities.credentialSources).types).some(
+      (type) => record(type).type === "openai",
+    ),
+  );
+
+  await page.getByLabel("Agent name", { exact: true }).fill("Member model Agent");
+  await selectSecret(page, "API key Secret", secret);
+  const model = page.getByLabel("Model ID", { exact: true });
+  if (!(await model.isVisible())) {
+    await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  }
+  await model.fill("gpt-4.1");
+  await model.press("Tab");
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await waitForEnabled(create);
+  const preflight = responseTo(page, "POST", `${fixture.origin}${agents}/validate`);
+  const created = responseTo(page, "POST", `${fixture.origin}${agents}`);
+  await create.click();
+  assert.equal((await preflight).status(), 204);
+  const draft = await created;
+  assert.equal(draft.status(), 201, await draft.text());
+  const agent = agentFields(record(await draft.json()).data);
+  await page.waitForURL(/\/console\/agents\/[^/?]+\?revision=draft/);
+
+  // A bare Secret would fail the earlier Gateway admission check. The fixture's
+  // IAM facade leaves the exact Agent grant to an administrator.
+  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  async function deployDraft() {
+    await waitForEnabled(deploy);
+    const response = responseTo(page, "POST", `${fixture.origin}${agents}/${agent.id}/deploy`);
+    await deploy.click();
+    return response;
+  }
+  const checkpoint = await deployDraft();
+  assert.equal(checkpoint.status(), 403, await checkpoint.text());
+
+  assert.equal(enrollments.length, 1);
+  const [enrolled] = enrollments;
+  assert.ok(enrolled);
+  assert.equal(enrolled.status(), 201, await enrolled.text());
+  const source = record(record(await enrolled.json()).data);
+  const sourceId = text(source.id);
+  assert.equal(source.ownerCapability, "credential_gateway");
+  assert.deepEqual(source.secrets, { api_key: secret.ref });
+  assert.deepEqual(agent.harnessAuth, { method: "credential_source", sourceId });
+  assert.equal(
+    record(record(await checkpoint.json()).error).message,
+    agentPrincipalDenied(
+      `Agent ${agent.id}`,
+      `CredentialSource ${sourceId}`,
+      "CredentialSource operate",
+    ),
+  );
+  const [validation] = pathRequests(requests, "POST", `${agents}/validate`);
+  const [registration] = pathRequests(requests, "POST", sources);
+  assert.ok(validation && registration);
+  assert.deepEqual(record(validation.body).harnessAuth, { method: "api_key" });
+  assert.ok(requests.indexOf(validation) < requests.indexOf(registration));
+  assert.equal(pathRequests(requests, "POST", `${agents}/provision`).length, 0);
+
+  const role = await fixture.request("POST", `${namespace}/iam/roles`, {
+    body: {
+      name: "Test Agent model credential access",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  });
+  assert.equal(role.status, 201, JSON.stringify(role.body));
+  const grant = await fixture.request("POST", `${namespace}/iam/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: resource(role.data).id,
+      resourceKind: "credential_source",
+      resourceId: sourceId,
+    },
+  });
+  assert.equal(grant.status, 201, JSON.stringify(grant.body));
+  const admitted = await deployDraft();
+  assert.equal(admitted.status(), 202, await admitted.text());
 });
 
 test("Create Agent saves GitHub grants before the first deployment and rolls back a refused draft", async (t) => {

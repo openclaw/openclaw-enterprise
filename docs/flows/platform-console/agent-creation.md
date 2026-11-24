@@ -148,17 +148,15 @@ follow the [protected admission flow](../credential-source-egress.md#1-admit-sou
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
 [Per-repository access](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
-defaults selected repositories to their delegated limits. For API key authentication,
-Console registers the selected model Secret with the Credential Gateway and binds
-the returned Source ID. The API saves the Agent draft and its GitHub grants in one
-transaction. Console confirms the grants before granting credential access.
-Deployment checks the reviewed policy version under the Namespace lock and refuses
-stale grants with HTTP 409.
+defaults selected repositories to their delegated limits. The API saves the Agent
+draft and grants in one transaction. Console confirms the grants before granting
+credential access. Deployment refuses stale policy versions with HTTP 409.
 
 Otherwise, eligible Dedicated runtimes can [provision](../agent-provisioning.md)
 with inline Configuration, optional repository access, and Secret references.
-When the Gateway offers model enrollment, Console registers the Secret and
-includes the returned Source ID in the provisioning request.
+When the Credential Gateway offers the selected login method, Console registers
+the model Secret and binds the returned Source ID in the draft or provisioning
+request. Namespace members can enroll from their Agent capabilities and save a draft.
 With **Credential Source** storage, Console validates the Agent, then submits the
 OpenAI API key to TokenService through the Namespace's `credential-sources` collection.
 Console clears the key and opens a draft that binds the returned static Source ID.
