@@ -150,6 +150,10 @@ export function registerWriterHandoffCases({
         /OCC worker Deployment identity or replicas changed during Agent Stop/u,
       ],
       ["api-generation", /OCC api Deployment identity or replicas changed during Agent Stop/u],
+      ["late-worker-access-denial", null],
+      ["late-worker-admission-denial", null],
+      ["unknown-agent-stop", null],
+      ["partial-writer-stop", null],
       ["healthy-direct", null],
       ["healthy-resume", null],
     ] as const) {
@@ -286,7 +290,123 @@ exec "$real_python" "$@"
           return;
         }
 
-        if (scenario === "healthy-resume") {
+        const journal = join(f.evidence, "channel-agent-operations.json");
+        const writerMutations = (events: string[]) =>
+          events.filter((event) =>
+            /^(?:writer-patch-|scale-|migration$|secret-replaced$|agent-deploy )/u.test(event),
+          );
+        if (scenario === "unknown-agent-stop") {
+          // Losing the Stop response leaves a sending journal even after the Agent stops.
+          await assert.rejects(run(), /Agent Stop is incomplete/u);
+          const originalJournal = await readFile(journal, "utf8");
+          const [agent] = list(
+            field(JSON.parse(originalJournal), "targets"),
+            "Agent operation records",
+          );
+          assert.equal(field(agent, "stop"), "sending");
+          await assert.rejects(run("--resume"), /stop outcome is unknown/u);
+          assert.equal(await readFile(journal, "utf8"), originalJournal);
+          const events = await f.events();
+          assert.equal(events.filter((event) => event === "channel-agent-stop").length, 1);
+          assert.deepEqual(writerMutations(events), []);
+          const held = await f.state();
+          assert.deepEqual([held.api, held.worker, held.version, held.dispatches], [1, 1, 1, 0]);
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+          assert.equal(existsSync(join(f.evidence, "worker-stop-confirmed.json")), false);
+          return;
+        }
+
+        if (
+          scenario === "late-worker-access-denial" ||
+          scenario === "late-worker-admission-denial"
+        ) {
+          const access = scenario === "late-worker-access-denial";
+          const diagnostic = access
+            ? /Kubernetes denied patch on worker Deployment/u
+            : /Server-side dry-run of the Worker stop failed/u;
+          const late = await expectUpgradeFailure(run(), "policy changed during Agent Stop");
+          assert.match(late.stderr, diagnostic);
+          assert.match(late.stderr, /Agent Stop was confirmed/u);
+          const originalJournal = await readFile(journal, "utf8");
+          const [agent] = list(
+            field(JSON.parse(originalJournal), "targets"),
+            "Agent operation records",
+          );
+          assert.equal(field(agent, "stop"), "complete");
+          const refusalEvents = access
+            ? ["worker-patch-access-review"]
+            : ["worker-patch-access-review", "writer-preview-worker"];
+          const beforeResume = await f.events();
+          assert.deepEqual(beforeResume, [
+            "worker-patch-access-review",
+            "writer-preview-worker",
+            "writer-preview-api",
+            "channel-agent-stop",
+            ...refusalEvents,
+          ]);
+          await assert.rejects(run("--resume"), diagnostic);
+          assert.equal(await readFile(journal, "utf8"), originalJournal);
+          const heldEvents = await f.events();
+          assert.deepEqual(heldEvents, [...beforeResume, ...refusalEvents]);
+          assert.deepEqual(writerMutations(heldEvents), []);
+          const held = await f.state();
+          assert.deepEqual([held.api, held.worker, held.version, held.dispatches], [1, 1, 1, 0]);
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+          assert.equal(existsSync(join(f.evidence, "worker-stop-confirmed.json")), false);
+
+          // Resolve the policy on the original evidence without replaying Stop.
+          delete held.denyWorkerPatch;
+          delete held.denyWorkerAdmission;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(held));
+          await run("--resume");
+        } else if (scenario === "partial-writer-stop") {
+          // Both previews pass. A later live conflict can stop the API alone.
+          await f.failNext("edit-worker-before-scale");
+          await assert.rejects(run(), /JSON Patch test failed/u);
+          const partial = await f.state();
+          assert.deepEqual(
+            [partial.api, partial.worker, partial.version, partial.dispatches],
+            [0, 1, 1, 0],
+          );
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+          assert.equal(existsSync(join(f.evidence, "worker-stop-confirmed.json")), false);
+          const originalJournal = await readFile(journal, "utf8");
+          const before = await f.events();
+          await assert.rejects(run("--resume"), /OCC API is stopped during partial quiescence/u);
+          assert.deepEqual(await f.events(), before);
+          assert.equal(await readFile(journal, "utf8"), originalJournal);
+
+          // Represent an operator restoring only the same compatible API and no
+          // release, Secret or database changes. No helper action restores it.
+          partial.api = 1;
+          const identities = record(partial.deploymentIdentities, "Deployment identities");
+          const restoredApi = record(identities.api, "API Deployment identity");
+          restoredApi.generation = 3;
+          restoredApi.resourceVersion = "4";
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(partial));
+          await run("--resume");
+          assert.deepEqual(
+            (await f.events()).filter((event) =>
+              /^(?:channel-agent-stop$|writer-patch-|scale-)/u.test(event),
+            ),
+            [
+              "channel-agent-stop",
+              "writer-patch-api",
+              "scale-api",
+              "writer-patch-worker",
+              "writer-patch-api",
+              "scale-api",
+              "writer-patch-worker",
+              "scale-worker",
+            ],
+          );
+          const completed = await f.state();
+          assert.deepEqual(
+            [completed.version, completed.helmSubmissions, completed.dispatches],
+            [2, 1, 1],
+          );
+          return;
+        } else if (scenario === "healthy-resume") {
           // Lose the response after replacing the Installation Secret. Resume
           // must verify the recorded Stops and use the already replaced Secret.
           await f.failNext("lost-secret-response");
@@ -758,10 +878,47 @@ exec "$real_python" "$@"
       failure.stderr,
       /Kubernetes denied patch on worker Deployment system\/openclaw-enterprise-worker/,
     );
+    assert.equal(existsSync(join(f.evidence, "quiescence-worker-preview.err")), false);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
   });
 
-  test("a mismatched worker review leaves the live patch authoritative", async (t) => {
+  test("worker admission can refuse a stop despite named patch access", async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.denyWorkerAdmission = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const failure = await expectUpgradeFailure(f.run(), "admission must stop quiescence");
+    assert.match(failure.stderr, /Server-side dry-run of the Worker stop failed/);
+    assert.doesNotMatch(failure.stderr, /Could not verify patch access/);
+    assert.match(
+      await f.readEvidence("quiescence-worker-preview.err"),
+      /admission webhook "writer-policy\.test" denied the Worker stop/,
+    );
+    const refused = await f.state();
+    assert.deepEqual([refused.api, refused.worker, refused.version], [1, 1, 1]);
+    assert.deepEqual(await f.events(), []);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+
+    // Once the policy permits the stop, resume previews again and each live patch
+    // must still match the replicas and resource version observed before the preview.
+    delete refused.denyWorkerAdmission;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(refused));
+    await f.run("--resume");
+    assert.equal(
+      await readFile(join(f.directory, "worker-patch-previews"), "utf8"),
+      "worker\nworker\n",
+    );
+    assert.deepEqual(await f.events(), [
+      "scale-api",
+      "scale-worker",
+      "secret-replaced",
+      "migration",
+    ]);
+    assert.equal(existsSync(join(f.evidence, "channel-agent-operations.json")), false);
+    assert.equal(existsSync(join(f.evidence, "quiescence-api-preview.err")), false);
+  });
+
+  test("a mismatched worker access review cannot bypass the stop preview", async (t) => {
     const f = await fixture(t);
     const state = await f.state();
     state.denyWorkerPatch = true;
@@ -770,12 +927,31 @@ exec "$real_python" "$@"
     await assert.rejects(f.run(), (error: unknown) => {
       const { stderr } = readUpgradeFailure(error);
       assert.match(stderr, /Could not verify patch access to the worker Deployment/);
-      assert.match(stderr, /Forbidden: cannot patch the worker Deployment/);
+      assert.match(stderr, /Server-side dry-run of the Worker stop failed/);
       return true;
     });
-    assert.deepEqual(await f.events(), ["scale-api"]);
-    assert.equal((await f.state()).worker, 1);
+    assert.match(
+      await f.readEvidence("quiescence-worker-preview.err"),
+      /Forbidden: cannot patch the worker Deployment/,
+    );
+    assert.deepEqual(await f.events(), []);
+    const refused = await f.state();
+    assert.deepEqual([refused.api, refused.worker], [1, 1]);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  });
+
+  test("quiescence requires the Worker stop preview to confirm zero replicas", async (t) => {
+    for (const fault of ["empty-worker-patch-preview", "nonzero-worker-patch-preview"]) {
+      await t.test(fault, async (t) => {
+        const f = await fixture(t);
+        await f.failNext(fault);
+        await assert.rejects(f.run(), /Server-side dry-run did not confirm zero replicas/);
+        assert.deepEqual(await f.events(), []);
+        const state = await f.state();
+        assert.deepEqual([state.api, state.worker, state.version], [1, 1, 1]);
+        assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+      });
+    }
   });
 
   test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {

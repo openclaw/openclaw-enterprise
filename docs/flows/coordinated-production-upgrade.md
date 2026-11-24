@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: 2026-11-24
-last_updated_session: authoring-run/65f2170e-577d-4f04-84c2-0403229d45f7
+last_updated_session: authoring-run/46f01900-6b22-479c-9e19-3ea5a6e7eaaa
 ---
 
 # Production image upgrade flow
@@ -47,10 +47,12 @@ graph TD
     D -->|No| RI{"Writers and required inventory valid?"}
     RI -->|No| X
     RI -->|Yes| CH{"One-off channel transition?"}
-    CH -->|Yes| AS["Stop Agents or verify recorded Stops"]
+    CH -->|Yes| CP{"Writer previews passed?"}
+    CP -->|No| X
+    CP -->|Yes| AS["Stop Agents or verify recorded Stops"]
     AS --> WR{"Writer identities and receipt match?"}
     WR -->|No| X
-    WR -->|Yes| E["Stop writers"]
+    WR -->|Yes| E["Check Worker and stop writers"]
     CH -->|No| E
     E --> DBP{"Separate database deployment?"}
     DBP -->|Yes| PAUSE["Exit 3 with writers stopped"]
@@ -225,25 +227,27 @@ history.
 ### 3. Quiesce writers and run the candidate release
 
 Stop other writers and autoscalers. Keep nodes reachable.
-`observe_quiescence_writers` saves live Deployments separately from submitted
-PATCHes and their inputs. For a running Worker, check named patch access and
-refresh inventory before stopping either writer. Denial or drift blocks.
-Inconclusive reviews warn. PATCH tests UID, resource version and replicas.
-A conflict can leave the API stopped.
+`observe_quiescence_writers` saves live Deployments separately from PATCH inputs.
 
 At zero Worker replicas, resume requires private `worker-stop-confirmed.json`
-for this attempt, UID and generation. The PATCH response must confirm the same
-UID, next generation and zero replicas. A missing or invalid receipt blocks
-without overwriting the request or input. A valid receipt skips Worker PATCH
-and inventory. After drain, recheck both UIDs, zero replicas and the receipt
-before writes. A separate handoff also requires both generations before Helm.
+matching attempt, UID and generation. Missing or invalid receipts block before
+Agent Stop and preserve PATCH inputs. Valid receipts skip Worker PATCH and inventory.
 
 For a [one-off channel transition](channel-egress.md#0-install-or-upgrade-channel-routing),
-check a stopped Worker's receipt before Agent Stop. Stop selected Agents or,
-with the API stopped on resume, verify recorded Stops. Reread both Deployments
-and recheck the receipt. UID, generation or replica changes block. Use fresh
-resource versions for patches. Running Worker inventory can differ from
-preparation only for recorded Stops.
+check running Worker patch access. Preview each running writer's PATCH before
+Agent Stop. With both writers stopped, verify recorded Stops instead.
+Reread Deployments and recheck the receipt. UID, generation or replica changes
+block. Use fresh resource versions.
+
+Before writer shutdown, check named patch access and refresh inventory if the
+Worker runs. Denials block. Inconclusive reviews warn. Only recorded channel
+Stops may change inventory. If both writers run, `preview_writer_stop` checks
+the Worker PATCH before API shutdown. Server dry runs must return zero replicas.
+
+Live PATCHes test UID, resource version and replicas. Conflicts can leave the
+API stopped. The Worker response must confirm UID, next generation and zero
+replicas. After drain, recheck UIDs, zero replicas and receipt. Separate
+handoff also requires both generations before Helm.
 
 Separate mode rechecks Secret identities, records writer UIDs and generations,
 and exits 3. Keep writers stopped. Managed apply requires irreversible SQL
@@ -252,10 +256,8 @@ SQL-capable Job. Unknown effects retain the lock and kubeconfig. Retry requires
 cleanup of failed verification. Resume requires completed verification and
 matching Secret identities. Keep referenced Secrets unchanged.
 
-Preserve evidence after an unconfirmed stop. Reconcile a separate handoff with
-both writers stopped. Otherwise restore the API only under exclusive
-maintenance after verifying the incumbent release, mounted Installation Secret
-and migration history. Destructive recovery requires human risk review.
+Preserve evidence and [reconcile partial quiescence](../guides/deploy/production-upgrade-recovery.md#restore-incumbent-api-access-after-partial-quiescence).
+Destructive recovery requires human risk review.
 
 After quiescence, `verify_pair_nodes` rechecks nodes. Helm status must match
 the reconciled state except live `.info.resources` on Helm v4. Drift blocks writes.
@@ -365,11 +367,16 @@ requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-24 19:54: Clarify writer previews. (authoring-run/46f01900-6b22-479c-9e19-3ea5a6e7eaaa - 071f8b1ec12648ce2d755e86323cb958a3c005f5)
+
 - 2026-11-24 11:03: Detect extra writers. (authoring-run/65f2170e-577d-4f04-84c2-0403229d45f7 - acd247bba5b03788840efc5f0d1dda7b7fe0c63d)
 
 - 2026-11-24 03:54: Preserve writer stop evidence. (authoring-run/1c3ad59b-d58f-4d86-bdd9-767c3a9547d4 - 7f069277c2659c8f2fc5f46b702e6062a852c3b0)
 
 - 2026-11-24 02:21: Recheck writer generations before Helm. (authoring-run/b49fd055-c8ec-4d10-8ba1-536c248c8f66 - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
+- 2026-11-23 04:18: Preview API. (authoring-run/80b539ac-f508-454c-a905-70939d30ec31 - b24f6ec158b861b13f2baff95bf661346de7f767)
+- 2026-11-23 02:02: Preview earlier. (authoring-run/cdd15e8b-8040-4505-bb79-d9ccd1dc5682 - 96519cbee73d4ee54528626c0517ee7aaa6e1822)
+- 2026-11-22 17:37: Preview Worker stop. (authoring-run/8a4cdeff-6237-46d6-ad85-7ea5bfa0c302 - 3eedffbaae63cdc1b006e51d49b88504462d2a5c)
 - 2026-11-21 09:16: Trace rendered mode and retry. (authoring-run/06420637-f403-4d0d-a6b1-acf2f522dcb0 - f9fb2a1f6fed7afd4ba8e69737f611e55604f587)
 - 2026-11-21 03:11: Reconcile publication selection with current upgrade admission and recovery. (authoring-run/5e8acf3b-45b0-4fbd-801d-493e4787e9dc - e67cd3cd0357e002ccc62f410454649ea4bfefd9)
 

@@ -1958,7 +1958,7 @@ verify_agent_continuity() {
 read_restart_inventory() {
   local destination=$1 preflight_rehearsal=${2:-0}
   "${occ_json[@]}" installation deployment-inventory </dev/null >"$destination" ||
-    die "cannot read the complete deployment inventory before stopping the worker. Preserve the original evidence. If quiescence stopped the API, restore the existing API under exclusive maintenance only after verifying compatibility of the selected Helm release, mounted Installation Secret, and database migration history. Keep both writers fenced for a separate migration handoff. No additional OCC writer was stopped."
+    die "cannot read the complete deployment inventory before stopping the worker. Preserve the original evidence. If quiescence stopped the API, restore the existing API under exclusive maintenance only after verifying compatibility of the selected Helm release, mounted Installation Secret, and database migration history. Keep both writers fenced for a separate migration handoff. No additional OCC writer was stopped. See docs/guides/deploy/production-upgrade-recovery.md#restore-incumbent-api-access-after-partial-quiescence."
   jq -es --arg installationId "$installation_id" '
     def identifier: type == "string" and length > 0;
     length == 1 and (.[0] |
@@ -3259,6 +3259,32 @@ if ((helm_complete == 0)); then
       {op: "replace", path: "/spec/replicas", value: 0}
     ]' "$evidence_dir/observed-$1-deployment.json"
   }
+  require_worker_patch_access() {
+    local recovery_note="${1:-}" decision
+    quiescence_remaining
+    if decision=$(named_access_review patch apps deployments openclaw-enterprise-worker "$((remaining_seconds < 15 ? remaining_seconds : 15))"); then
+      [[ "$decision" == true ]] ||
+        die "Kubernetes denied patch on worker Deployment $namespace/openclaw-enterprise-worker. Obtain patch access before resuming.${recovery_note:+ $recovery_note}"
+    else
+      warn "Could not verify patch access to the worker Deployment. The upgrade requires patch permission to stop it."
+    fi
+  }
+  preview_writer_stop() {
+    local component="$1" label="$2" recovery_note="${3:-}" preview
+    local deployment="openclaw-enterprise-$component"
+    local preview_error="quiescence-$component-preview.err"
+    local preview_patch="$evidence_dir/quiescence-$component-preview-patch.json"
+    quiescence_remaining
+    writer_stop_patch "$component" >"$preview_patch"
+    preview=$(
+      "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
+        --type json --patch-file "$preview_patch" \
+        --dry-run=server --output 'jsonpath={.spec.replicas}' 2>>"$evidence_dir/$preview_error"
+    ) || die "Server-side dry-run of the $label stop failed for $namespace/$deployment. No OCC writer was stopped by this attempt. Inspect $preview_error in the evidence directory.${recovery_note:+ $recovery_note}" "$?"
+    [[ "$preview" == 0 ]] ||
+      die "Server-side dry-run did not confirm zero replicas for $namespace/$deployment. No OCC writer was stopped by this attempt.${recovery_note:+ $recovery_note}"
+  }
+  stop_recovery_note=""
   observe_quiescence_writers
   require_confirmed_worker_stop
   if [[ "$channel_egress_enabled" == true ]]; then
@@ -3267,16 +3293,24 @@ if ((helm_complete == 0)); then
     ' "$evidence_dir/observed-api-deployment.json" "$evidence_dir/observed-worker-deployment.json")
     if jq -e '.spec.replicas == 0' "$evidence_dir/observed-api-deployment.json" >/dev/null; then
       ((resume)) && jq -e '.spec.replicas == 0' "$evidence_dir/observed-worker-deployment.json" >/dev/null ||
-        die "OCC API is stopped during partial quiescence. Preserve the original evidence. For a separate migration handoff, keep both writers fenced and reconcile the original migration history. Otherwise, restore API access under exclusive maintenance only after verifying that the selected release, mounted Installation Secret, and database migration history are compatible. This attempt did not stop an additional Agent or writer."
+        die "OCC API is stopped during partial quiescence. Preserve the original evidence. For a separate migration handoff, keep both writers fenced and reconcile the original migration history. Otherwise, restore API access under exclusive maintenance only after verifying that the selected release, mounted Installation Secret, and database migration history are compatible. This attempt did not stop an additional Agent or writer. See docs/guides/deploy/production-upgrade-recovery.md#restore-incumbent-api-access-after-partial-quiescence."
       python3 scripts/upgrade-channel-egress verify-stopped --evidence-dir "$evidence_dir" \
         --occ "$occ" --timeout-seconds "$timeout_seconds" ||
         die "The quiesced upgrade lacks confirmed Agent Stop evidence; inspect the original journal and inventory."
     else
+      # Check admission for each running writer before interrupting Agents.
+      if jq -e '.spec.replicas == 1' "$evidence_dir/observed-worker-deployment.json" >/dev/null; then
+        require_worker_patch_access
+        preview_writer_stop worker Worker
+      fi
+      preview_writer_stop api API
+      quiescence_remaining
       python3 scripts/upgrade-channel-egress stop --evidence-dir "$evidence_dir" \
         --occ "$occ" --timeout-seconds "$timeout_seconds" ||
         die "Agent Stop is incomplete; preserve the original journal and inspect the recorded operations."
       progress "Confirmed Agent Stop. Preserve channel-agent-operations.json if a later step refuses."
     fi
+    stop_recovery_note="Agent Stop was confirmed. Preserve the original Stop journal and reconcile before resuming."
     # Agent Stop can change the Agent inventory. It must leave the writer
     # Deployment specs unchanged, although their resource versions can advance.
     deadline=$((SECONDS + timeout_seconds))
@@ -3292,13 +3326,7 @@ if ((helm_complete == 0)); then
   # Refresh before the first writer stop, including resume when the worker still runs.
   # This detects changed selections; exclusive maintenance ownership is still required.
   if jq -e '.spec.replicas == 1' "$evidence_dir/observed-worker-deployment.json" >/dev/null; then
-    quiescence_remaining
-    if decision=$(named_access_review patch apps deployments openclaw-enterprise-worker "$((remaining_seconds < 15 ? remaining_seconds : 15))"); then
-      [[ "$decision" == true ]] ||
-        die "Kubernetes denied patch on worker Deployment $namespace/openclaw-enterprise-worker. Obtain patch access before resuming."
-    else
-      warn "Could not verify patch access to the worker Deployment. The upgrade requires patch permission to stop it."
-    fi
+    require_worker_patch_access "$stop_recovery_note"
     read_restart_inventory "$evidence_dir/inventory/before-stop.json"
     normalize_restart_inventory "$evidence_dir/inventory/before-stop.json" >"$evidence_dir/inventory/before-stop-selection.json"
     if [[ "$channel_egress_enabled" == true ]]; then
@@ -3311,6 +3339,11 @@ if ((helm_complete == 0)); then
     fi
   fi
   recheck_prepared_migration_secrets
+  if jq -e '.spec.replicas == 1' "$evidence_dir/observed-api-deployment.json" >/dev/null &&
+    jq -e '.spec.replicas == 1' "$evidence_dir/observed-worker-deployment.json" >/dev/null; then
+    # Check admission for the exact Worker stop before stopping the API.
+    preview_writer_stop worker Worker "$stop_recovery_note"
+  fi
   # These writes are sequential; a later conflict can leave the API stopped.
   for component in api worker; do
     if jq -e '.spec.replicas == 0' "$evidence_dir/observed-$component-deployment.json" >/dev/null; then
