@@ -64,7 +64,7 @@ test(
       );
     });
     const upstreamPort = await listen(upstream);
-    const { server, control } = gitCallbackObserver({
+    const { server, control, stop } = gitCallbackObserver({
       ...tls,
       upstreamName: "localhost",
       upstreamPort,
@@ -112,7 +112,13 @@ test(
     }
     assert.deepEqual(received, [evaluate, base + "Describe", base + "ValidateConfig"]);
     assert.deepEqual(await read(), counted);
-    await close(control);
+    const closed = Promise.all([
+      once(server, "close"),
+      once(control, "close"),
+      once(client, "close"),
+    ]);
+    stop();
+    await closed;
     await assert.rejects(read, { name: "TypeError", message: "fetch failed" });
   },
 );
