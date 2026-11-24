@@ -173,6 +173,7 @@ const reviewedImports: ReviewedModules = {
     "@openclaw-enterprise/contracts": ["isOAuthScopeToken"],
     "@openclaw-enterprise/occ": [
       "BrowserAuthorizationError",
+      "CredentialDeliveryFailedError",
       "ResourceStateConflictError",
       "refreshPinnedOAuthGrant",
     ],
