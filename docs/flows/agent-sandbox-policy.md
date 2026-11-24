@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-23"
-last_updated_session: "authoring-run/1188e10e-f3d8-406e-bc7c-a1c5c3c18d80"
+last_updated_session: "authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6"
 ---
 
 # Agent sandbox policy flow
@@ -80,22 +80,19 @@ edits and live apply. Protected dedicated Codex admits the Sandbox-approved
 version and empty additions before credential provisioning. That snapshot
 cannot be applied live. Unreadable scoped revisions report `protectedExecution: null`.
 
-Both protected Codex compilers validate the revision artifact map.
-`openshell-codex-artifacts.ts` excludes ambient defaults. The Sandbox checks
-workspace enrollment against the validated Agent-owned setup binding and returns
-the immutable policy in `SandboxResourceRef.proxyWiring`. The proxy checks the
-map, auxiliary rule and loaded policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
-requires permissions and Namespace opt-in. Admission passes saved or deployed
-`repositoryCredentials`. Binding, deploy and provisioning refuse additions or
-defaults targeting `github.com`, its subdomains or IP addresses. Deploy and
-binding-preserving updates check SandboxPolicy `read` before naming saved additions.
+Both protected Codex compilers validate revision artifacts. `openshell-codex-artifacts.ts`
+excludes ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
+immutable `SandboxResourceRef.proxyWiring`. Proxy checks the map, auxiliary rule and loaded
+policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
+uses selected Namespace permissions and saved grants. Admission passes saved or deployed
+`repositoryCredentials`. Binding, deploy and provisioning refuse additions or defaults targeting
+`github.com`, subdomains or IPs. Deploy and binding-preserving updates require SandboxPolicy
+`read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-binds repository rules to the credential-only Provider. OpenShell alone enforces
-Git, issue and PR reads and [PR creation](../reference/repository-credentials/access-levels.md#pull-request-creation).
-The Git middleware selects no admitted host, so no OCE service is in the request
-path. Request bodies are
-not inspected ([known limits](../reference/repository-credentials/access-levels.md#known-limits)).
+binds rules to the credential-only Provider. OpenShell filters eligible REST routes through
+Namespace `apiActions`. Active filters require native policy. Git and PR safeguards persist. OCE skips body validation
+([limits](../reference/repository-credentials/access-levels.md#known-limits)).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
 and version in the save transaction. The only facet is `networking`.
@@ -273,6 +270,12 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 19:42: Document API filters. (authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6 - d9b229e2ff)
+
+- 2026-11-23 18:58: Explain native REST grants. (authoring-run/d82da0c0-07c4-4cc1-af33-cad1ee4fd3a9 - fc2ffba308)
+
+- 2026-11-23 17:24: Document scoped issue creation. (authoring-run/2ee89ec8-d3b0-4cf3-8484-fe06b6075f69 - c97a1ab0938f8aac3880ad68bc5feaccd118820a)
 
 - 2026-11-23: CLI file apply.
 

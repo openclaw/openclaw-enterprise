@@ -53,34 +53,29 @@ adopting previously deployed legacy Agents.
 
 OpenShell matches discovery and upload-pack for each read grant. Write also
 permits receive-pack. The Sandbox binds each repository path to a credential
-held by the Gateway. By default, this selection grants Git only.
+held by the Gateway. A registration with only metadata and contents permissions
+grants Git only.
 
 Before installing or renewing the credential, OCE checks that the expected
 Sandbox is the Provider's sole recipient and the workspace has no additional
 members. Operators must retain exclusive control of workspace, Sandbox and
 Provider writes for this delivery mode.
 
-To allow GitHub API access with stock OpenShell 0.1.9 and the managed Installation
-Provider, set `scopedRest: "v1"` alongside `nativeGit: "v1"` on the Installation's
-registration for the OCE Namespace. Each operation also requires the registration
-permission in this table, the corresponding GitHub App permission, and a saved
-repository grant:
+Native GitHub App REST access on stock OpenShell 0.1.9 follows the selected
+repository's Namespace `permissions` and the Agent's saved repository grant.
+GitHub App permissions that are not configured on the Namespace registration do
+not grant Agent access.
 
-| Operation                              | `permissions` entry                | Saved grant   |
+| Operation                              | Namespace `permissions` entry      | Saved grant   |
 | -------------------------------------- | ---------------------------------- | ------------- |
 | List issues or read one issue          | `issues`: `read` or `write`        | Read or Write |
+| Create an issue                        | `issues`: `write`                  | Write         |
 | List pull requests or read one of them | `pull_requests`: `read` or `write` | Read or Write |
 | Create a pull request                  | `pull_requests`: `write`           | Write         |
 
-GitHub's issue routes also return pull requests as issue records, so the issue
-permission alone lets an Agent read pull request titles and descriptions.
-
-Complete the compatible Worker rollout before enabling these settings. After
-changing the registration, rebind existing repository access under the usual
-credential approval and deploy or redeploy the Agent. A Worker upgrade does not
-change a running Sandbox. If the registration already had `scopedRest: "v1"` and
-a `pull_requests` permission, the Agent receives the pull request routes at its
-next deployment. Use the supplied `GITHUB_TOKEN` placeholder:
+GitHub's issue routes also return pull requests as issue records, so Issues read
+can expose pull request titles and descriptions. Use the supplied `GITHUB_TOKEN`
+placeholder with stock `gh api`:
 
 ```sh
 gh api --method GET repos/OWNER/REPO/issues
@@ -89,22 +84,95 @@ gh api --method GET repos/OWNER/REPO/pulls
 gh api --method GET repos/OWNER/REPO/pulls/NUMBER
 ```
 
-`NUMBER` must be a positive decimal number of at most 19 digits.
+`NUMBER` must be a positive decimal number of at most 19 digits. OpenShell
+checks the method and path before forwarding and injects the Gateway-held
+credential. The Agent holds only a placeholder. OCE generates the rules at
+deployment and renews the credential, with no request-time callback. GitHub
+applies the token's own permissions and repository scope. Native v9 revision
+custody and recipient checks remain unchanged. Comments, reviews, PR updates or
+merges, other issue-write routes, GraphQL, and direct access to ungranted
+repositories remain denied. See [Known limits](#known-limits) for indirect effects.
 
-Three parties act on a request:
+<a id="api-action-restrictions"></a>
 
-- **OpenShell** checks every request inside the Sandbox. It refuses a request
-  outside the saved grants before GitHub receives it, and adds the real
-  credential to an allowed one. The Agent holds only a placeholder.
-- **OCE** sees no request. It writes the OpenShell rules from the saved grants
-  when the Agent is deployed, and the Worker renews the credential. API access
-  continues without the Worker while the current credential is valid (at most
-  one hour).
-- **GitHub** applies the permissions and repositories of the credential.
+#### Native GitHub API actions
 
-Omitting `scopedRest` keeps native delivery Git-only. These settings do not permit comments, reviews, PR updates or merges, issue writes,
-GraphQL, or direct access to repositories without a saved grant. Pull request
-creation has the exceptions under [Known limits](#known-limits).
+**For one Agent**, edit its [repository network policy](../sandbox-policies.md#repository-network-policy).
+If the draft offers **Repositories → Manage permissions**, start there.
+Choose **Read-only** (Read) or **Contributor** (Write), save the policy, and deploy.
+A Contributor can push, open pull requests, and create issues when each operation
+is approved for that repository.
+
+**For every Agent using the registration**, set `apiActions` in that repository’s
+Namespace entry. The checklist generates the setting; it does not read or save
+your configuration. Leave the filter out for full permitted access. Use **Advanced**
+only to make exceptions:
+
+- **Include new eligible actions automatically** (default): uncheck what to deny.
+  If OCE adds an action later, it is eligible only if the Agent’s grant and the
+  approved permissions also allow it.
+- **Fixed list:** turn off that option. Only checked actions can become eligible,
+  even if every action shown today is checked. Choose **Git only** to allow none.
+
+Filters limit **direct requests**. For example, turning off PR reads does not
+hide PRs returned by an issue read. See [known limits](#known-limits) and
+[when PR creation is blocked](#pull-request-creation).
+
+<div data-repository-actions></div>
+
+A filter takes exactly one key, `allow` or `deny`, with an array of unique action IDs:
+
+| Action ID              | Direct GitHub routes                      |
+| ---------------------- | ----------------------------------------- |
+| `issues:read`          | Issue collection and numbered detail GETs |
+| `issues:create`        | Issue collection POST                     |
+| `pull_requests:read`   | PR collection and numbered detail GETs    |
+| `pull_requests:create` | PR collection POST                        |
+
+For example, `apiActions: { deny: ["issues:create"] }` removes only issue
+creation. `apiActions: { allow: ["pull_requests:read"] }` permits only eligible
+PR GETs. `apiActions: { allow: [] }` removes all API routes while leaving Git
+grants unchanged. Omitting `apiActions` or setting `apiActions: { deny: [] }`
+applies no filter. Reject null or malformed filters, both keys together, extra
+keys, unknown IDs, wildcards and duplicate entries. An allow entry never adds
+a missing Namespace permission, overrides Agent Read, or bypasses the existing
+mixed-grant PR safeguard. Creation does not grant a separate GET.
+
+An allow list, including `allow: []`, or a nonempty deny list is an active
+filter even if no API permission is configured. Active filters require a saved
+repository network ACL and enforceable native policy. If either is missing,
+credential delivery is refused rather than falling back to broader online
+authorization. Withdrawal and Stop remain available.
+
+#### Issue creation
+
+Namespace `permissions.issues: write` and saved Agent Write permit
+`POST /repos/{owner}/{repo}/issues` unless `apiActions` filters it out. Read-only
+or denied repositories bound to the same credential do not block issue creation
+in a writable repository.
+
+Save the request in `issue.json` and send it with stock `gh api`:
+
+```json
+{ "title": "Investigate failure", "body": "Steps to reproduce" }
+```
+
+```sh
+gh api --method POST repos/OWNER/REPO/issues --input issue.json
+```
+
+Inspect the repository before retrying an uncertain creation result.
+
+#### Cut over existing registrations
+
+Remove retired settings such as `scopedRest` and `createIssues`. Review each
+Namespace's Issues and Pull requests permissions and any `apiActions` restriction
+before deployment. An existing Agent draft can gain eligible REST routes at its
+next deployment. Changed grant identities can interrupt an older revision's
+credential preparation or renewal, affecting Git and REST until recovery. Edit
+the normal draft and redeploy, then verify retirement of the old Sandbox. A
+registration edit does not immediately revoke a running Sandbox's loaded policy
+or current credential.
 
 #### Pull request creation
 
@@ -128,22 +196,25 @@ creation route in that state gets no new credential until the Agent is
 redeployed.
 
 If a creation result is uncertain, inspect the repository before submitting again.
-To withdraw creation, save Read for the repository and redeploy. Verify that the
-old Sandbox retires.
-
-#### Native GitHub API actions
-
-The API filter limits direct requests for every Agent using this repository’s
-Namespace registration. [Pull request safeguards](#pull-request-creation) still apply.
-
-<div data-repository-actions></div>
-
-To change **one Agent’s grant**, edit its [repository network policy](../sandbox-policies.md#repository-network-policy).
-If the draft’s **Repositories** tab offers **Manage permissions**, open it there.
-Choose **Read-only** (Read) or **Contributor** (Write) for that repository,
-select **Save repository policy** and redeploy.
+To keep Git push and issue creation eligible but block direct PR creation for
+everyone using this registration, deny `pull_requests:create`. To withdraw
+writes from one Agent instead, save Read for that Agent. Redeploy the affected
+Agents and verify that their old Sandboxes retire.
 
 #### Known limits
+
+Issue creation permits GitHub's full endpoint. GitHub can accept labels,
+assignees, milestone, type, status, issue-field values and `parent_issue_id`,
+and can send notifications. A parent link from writable B can affect read-only A
+or denied C when GitHub gives the caller triage access to both repositories, even
+though a direct issue POST to A or C is denied. Other indirect effects remain
+unverified. Broader rollout is on hold pending safety review. Controlled-origin
+results do not qualify live GitHub effects. Disable issue creation if these
+effects are unacceptable.
+
+The [existing pull-request rule](https://github.com/openclaw/openclaw-enterprise/pull/7135)
+remains independent. Denying `issues:create` does not prevent conversion of an issue
+through an independently permitted PR POST.
 
 OpenShell matches the method, path and query of a request. It does not inspect
 the body, and OCE does not check it. An Agent that can create pull requests in a

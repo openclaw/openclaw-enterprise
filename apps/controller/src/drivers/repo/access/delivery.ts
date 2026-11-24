@@ -7,13 +7,14 @@ import type {
 export type RepositoryGitRestAuthority = readonly Readonly<{
   repository: string;
   readIssues: boolean;
+  createIssues?: true;
   readPullRequests?: true;
   createPullRequests?: true;
 }>[];
 
 /**
  * Intersect the frozen Git grants with the repository owner's scoped REST authority.
- * Creating a pull request also requires the saved Write grant.
+ * Creating an issue or pull request also requires the saved Write grant.
  */
 export function repositoryGitRestOperations(
   grants: readonly RepositoryNetworkGrant[],
@@ -25,6 +26,7 @@ export function repositoryGitRestOperations(
     return {
       repository,
       readIssues: rest?.readIssues === true,
+      createIssues: write && rest?.createIssues === true,
       readPullRequests: rest?.readPullRequests === true,
       createPullRequests: write && rest?.createPullRequests === true,
     };

@@ -806,7 +806,7 @@ test("the log message column stays readable beside the version list", async (t) 
 // cards at about 265 px each beside the version list, Pod names and container states wrapping
 // over 3-4 lines next to about 280 px of blank strip (finding 2100, at 1440 on a live install).
 // Here the strip is a little narrower, so the old layout leaves that gap from 1600 px.
-test("runtime Pod cards fill the status strip at desktop and phone widths", async (t) => {
+test("runtime Pod cards fill the status strip and pair status facts on wide desktop cards", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.harnessPod = { ready: true };
   const { page } = await newPage(t, fixture);
@@ -814,6 +814,7 @@ test("runtime Pod cards fill the status strip at desktop and phone widths", asyn
   const strip = page.locator(".runtime-strip");
   await strip.getByRole("heading", { name: "Agent (Harness)" }).waitFor();
   await strip.getByRole("heading", { name: "Gateway" }).waitFor();
+  const gateway = strip.getByRole("article", { name: /^Gateway Pod / });
   for (const width of [1440, 1600, 390]) {
     await page.setViewportSize({ width, height: 900 });
     const { row, tracks, cards } = await strip.evaluate((node) => {
@@ -844,6 +845,28 @@ test("runtime Pod cards fill the status strip at desktop and phone widths", asyn
         `cards end ${row.right - last.right}px before the strip's edge at ${width}px`,
       );
     }
+    const facts = await gateway.locator("dt").evaluateAll((terms) =>
+      terms.map((term) => ({
+        label: term.textContent,
+        top: term.getBoundingClientRect().top,
+        valueTop: term.nextElementSibling!.getBoundingClientRect().top,
+      })),
+    );
+    for (const { label, top, valueTop } of facts) {
+      assert.equal(top, valueTop, `${label} and its value share a row at ${width}px`);
+    }
+    const factRows = [...Map.groupBy(facts, ({ top }) => top).values()];
+    assert.deepEqual(
+      factRows.map((row) => row.map(({ label }) => label)),
+      width === 390
+        ? [["Phase"], ["Ready"], ["Container"], ["Restarts"], ["State"], ["Age"]]
+        : [
+            ["Phase", "Ready"],
+            ["Container", "Restarts"],
+            ["State", "Age"],
+          ],
+      `Gateway status rows at ${width}px`,
+    );
   }
 });
 

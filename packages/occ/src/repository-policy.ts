@@ -672,6 +672,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       credentials: immutableCopy(snapshot),
       selectedGrants,
       nativeGit: resolved.resolution.nativeGit,
+      requiresNetworkPolicy: resolved.resolution.requiresNetworkPolicy,
     };
   }
 
