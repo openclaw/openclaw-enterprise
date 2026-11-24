@@ -595,7 +595,10 @@ export function registerRetainedFleetPreflightTests(
           (await f.events()).filter((event) => event.startsWith("scale-")),
           ["scale-api"],
         );
-        await assert.rejects(f.run("--resume"), /Restore access to the existing API/u);
+        await assert.rejects(
+          f.run("--resume"),
+          /cannot read the complete deployment inventory before stopping the worker.*restore the existing API under exclusive maintenance only after verifying compatibility/u,
+        );
         assert.equal((await f.state()).api, 0);
         assert.equal((await f.state()).worker, 1);
         assert.equal((await f.state()).version, 1);
