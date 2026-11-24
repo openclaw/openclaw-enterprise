@@ -109,24 +109,19 @@ request that returns `405` records a `methodNotAllowed` result. Google
 and OIDC sign-in callbacks use their own authentication recorder. Runtime
 log views and downloads use their own disclosure recorder.
 
-The request records carry the API-generated request ID, registered operation,
-HTTP method, and Installation ID. The result adds the HTTP status. The hook
-uses the authenticated actor when identity resolution succeeded. A result
-describes the response OCC prepared. If its append fails, the hook logs
-`http.audit_append_failed` and sends the selected response. The resource
-handler still owns its own permission checks and any audit record for a change.
-If a separate authorization-denial record fails to save on a covered route,
-the API logs the write failure and usually sends the selected refusal.
-A [device login scope denial](credential-source-refresh.md) requires its own
-record and returns HTTP `503` if that write fails. A permission denial that
-uses HTTP `404` to conceal a resource still records outcome `denied`.
+Request records contain the server's request ID, operation, method, Installation
+ID and verified actor, if known. The result reports the selected HTTP status.
+If a result write fails, OCC logs `http.audit_append_failed` and sends the
+selected response. Handlers check permissions and record changes.
 
-For example, the `getAgent` handler checks read permission and loads the Agent
-from its Namespace. For an HTTP `200` result from `GET` or `HEAD`, the hook uses
-the IDs from the loaded Agent. State saves its ID in `resource_id`, its
-Namespace ID in `namespace_id`, and `agent` in `resource_kind`. The
-[audit guide](../guides/topics/audit-log.md#api-requests) lists the other
-exact-resource reads. Admission and unsuccessful results identify the Installation.
+A failed denial write usually preserves the refusal. A
+[device login scope denial](credential-source-refresh.md) requires a record
+or OCC returns `503`. A `404` that conceals a resource still records `denied`.
+
+After a successful `getAgent` read, the result identifies the stored Agent
+and Namespace. [Other reads](../guides/topics/audit-log.md#api-requests) also
+identify the returned resource. Admission and unsuccessful results identify
+the Installation.
 
 ### 2. A caller constructs resource evidence
 
@@ -165,16 +160,11 @@ For service API keys, `apps/controller/src/auth/service-keys.ts` commits the
 key change and audit record together. Issuance uses the Better Auth adapter on
 State's PostgreSQL connection. Revocation deletes the current key in State.
 
-The work queue commits queue
-and claim events with the corresponding change. When the API supplies a request
-ID, the queue event records it from
-`packages/occ/src/controller-work-recorder.ts:record`.
-The claim event carries a distinct attempt ID. That ID also identifies later
-evidence for the same claim. A claim insert failure leaves the job available.
-
-Repository cleanup and maintenance recovery save a queue record when they create
-or reopen follow-up work. The queue change and its audit record belong to the
-same SQL statement.
+The work queue commits each change with its event.
+`packages/occ/src/controller-work-recorder.ts:record` includes the API request
+ID if available. The claim and its results share an attempt ID. If the claim
+event fails, the job remains available. Repository cleanup and maintenance
+recovery record new or reopened work in the same SQL statement.
 
 The worker uses `transactWithQueue` for some transitions. It also calls pool-backed
 stale-work recovery, which issues two separate SQL statements. Each statement is
