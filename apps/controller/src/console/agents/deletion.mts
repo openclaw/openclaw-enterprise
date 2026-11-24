@@ -12,6 +12,7 @@ import {
 } from "../dom.mjs";
 import {
   type AgentLifecycleContext,
+  confirmationAgentId,
   DELETE_CONFIRMATION,
   type LifecycleError,
   grantRefusal,
@@ -406,10 +407,11 @@ export function createAgentDeletion(
     }
     const retry = state.deleting;
     state.used = true;
+    const targetId = confirmationAgentId("agent-delete-confirm-id", agent.id);
     const dialog = element("dialog", {
       className: "dialog agent-delete-dialog",
       "aria-labelledby": "agent-delete-confirm-title",
-      "aria-describedby": "agent-delete-confirm-description agent-delete-confirm-kept",
+      "aria-describedby": `${targetId.id} agent-delete-confirm-description agent-delete-confirm-kept`,
     });
     const cancel = button("Cancel", () => dialog.close());
     const confirm = button(
@@ -450,6 +452,7 @@ export function createAgentDeletion(
         { id: "agent-delete-confirm-title" },
         retry ? `Request deletion again for ${agent.name}?` : `Delete ${agent.name}?`,
       ),
+      targetId,
       description,
       kept.summary,
       kept.commands,

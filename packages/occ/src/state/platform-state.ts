@@ -1144,6 +1144,14 @@ function assertCredentialSource(source: CredentialSource): void {
   }
   const config: unknown = source.config;
   const secretInputs: unknown = source.secrets;
+  const backendRef = "backendRef" in source ? source.backendRef : undefined;
+  const validBackendRef =
+    backendRef === undefined ||
+    (source.ownerCapability === "token_service" &&
+      source.tokenServiceInstanceId !== undefined &&
+      isPlainRecord(backendRef) &&
+      Object.keys(backendRef).length > 0 &&
+      Object.values(backendRef).every((value) => typeof value === "string" && value.length > 0));
   const validOwner =
     source.ownerCapability === "token_service"
       ? source.egress === undefined &&
@@ -1182,6 +1190,7 @@ function assertCredentialSource(source: CredentialSource): void {
         value.length > 2048,
     ) ||
     !isPlainRecord(secretInputs) ||
+    !validBackendRef ||
     !validOwner ||
     (source.state !== "registering" && source.state !== "ready" && source.state !== "deleting")
   ) {

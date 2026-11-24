@@ -248,6 +248,7 @@ Records each source owner. Gateway and Proxy sources identify their Driver. Mana
 - `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service`)
 - `driver_id` (Gateway and Proxy sources)
 - `token_service_instance_id` (managed static Source owner)
+- `backend_ref` (optional private, nonsecret TokenService locator)
 - `state`
 - `created_at`
 

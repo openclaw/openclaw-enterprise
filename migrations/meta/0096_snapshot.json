@@ -2766,6 +2766,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "backend_ref": {
+          "name": "backend_ref",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "state": {
           "name": "state",
           "type": "text",
@@ -2858,6 +2864,10 @@
         "credential_sources_owner_capability_valid": {
           "name": "credential_sources_owner_capability_valid",
           "value": "CASE WHEN \"occ\".\"credential_sources\".\"owner_capability\" = 'token_service' THEN \"occ\".\"credential_sources\".\"driver_id\" IS NULL AND \"occ\".\"credential_sources\".\"egress\" IS NULL AND (\n      (\"occ\".\"credential_sources\".\"type\" = 'oauth2-refresh-token' AND \"occ\".\"credential_sources\".\"token_service_instance_id\" IS NULL)\n      OR (\"occ\".\"credential_sources\".\"type\" <> 'oauth2-refresh-token' AND \"occ\".\"credential_sources\".\"token_service_instance_id\" IS NOT NULL AND \"occ\".\"credential_sources\".\"state\" IN ('ready', 'deleting'))\n    ) ELSE \"occ\".\"credential_sources\".\"driver_id\" IS NOT NULL AND \"occ\".\"credential_sources\".\"token_service_instance_id\" IS NULL\n      AND (\"occ\".\"credential_sources\".\"owner_capability\" = 'credential_gateway' OR (\"occ\".\"credential_sources\".\"owner_capability\" = 'credential_proxy' AND \"occ\".\"credential_sources\".\"egress\" IS NOT NULL)) END IS TRUE"
+        },
+        "credential_sources_backend_ref_valid": {
+          "name": "credential_sources_backend_ref_valid",
+          "value": "\"occ\".\"credential_sources\".\"backend_ref\" IS NULL OR (\n      \"occ\".\"credential_sources\".\"token_service_instance_id\" IS NOT NULL\n      AND jsonb_typeof(\"occ\".\"credential_sources\".\"backend_ref\") = 'object'\n      AND \"occ\".\"credential_sources\".\"backend_ref\" <> '{}'::jsonb\n      AND NOT jsonb_path_exists(\"occ\".\"credential_sources\".\"backend_ref\", 'strict $.* ? (@.type() != \"string\" || @ == \"\")', '{}'::jsonb, true)\n    )"
         },
         "credential_sources_driver_id_valid": {
           "name": "credential_sources_driver_id_valid",
@@ -4570,18 +4580,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "startup_configuration": {
-          "name": "startup_configuration",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "management_mode": {
-          "name": "management_mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -4623,10 +4621,6 @@
         "installation_ceiling_rules": {
           "name": "installation_ceiling_rules",
           "value": "occ.sandbox_network_grants_are_valid(\"occ\".\"installation_network_policy_ceiling\".\"rules\")"
-        },
-        "installation_ceiling_mode": {
-          "name": "installation_ceiling_mode",
-          "value": "\"occ\".\"installation_network_policy_ceiling\".\"management_mode\" IN ('console', 'startup')"
         }
       },
       "isRLSEnabled": false
@@ -7837,6 +7831,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a",
-  "prevId": "57be4ec3-81ed-4c74-8fb3-e41316a73ce7"
+  "id": "e54f0d7c-8d0c-4949-bd38-46ec0d60756c",
+  "prevId": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a"
 }
