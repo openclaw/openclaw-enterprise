@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-23
-last_updated_session: authoring-run/c19f29e8-5721-43ff-bada-5264ccb9b4ea
+updated: 2026-11-24
+last_updated_session: authoring-run/ba9ea959-8a2b-4cab-830f-387425ba3574
 ---
 
 # Agent Presets flow
@@ -54,8 +54,10 @@ graph TD
   G -->|Existing credential binding| H
   H -->|Confirmed| I["Agent POST"]
   H -->|Unknown| X0["Creation locked<br/>No Agent POST"]
-  I -->|Saved| A0["Saved Agent"]
-  I -->|Confirmed<br/>rejection| K["Retry Create Agent<br/>in this draft"]
+  I -->|Saved| POL["Saved Agent<br/>Confirm any per-repository grants"]
+  POL -->|Unconfirmed| HOLD["Do not deploy<br/>Recheck saved GitHub access"]
+  POL --->|Confirmed or no policy| A0["Check credential needs"]
+  I -->|Confirmed<br/>rejection| K["Retry save<br/>in this draft"]
   I -->|Outcome<br/>unknown| Q["Creation locked<br/>Check for saved Agent"]
   A0 -->|No check needed<br/>or known non-admin| J["Open draft"]
   A0 -->|Otherwise| O["Check saved Agent<br/>Grant if eligible"]
@@ -270,31 +272,30 @@ reference. Save then creates the Configuration and Agent. Of these save requests
 only Secret creation receives the password. Each request checks schema, credentials
 and authorization before persistence.
 
-A confirmed duplicate-name Secret response offers the permission-aware picker or an
-independent new name in the same form. Selection clears the entered key; neither option
-reads or deletes the existing value, and other draft fields remain. Other known refusals
-retain the masked input for correction or retry; uncertain writes clear it and lock
-creation. Agent-name conflicts do not enable Secret recovery. Credential-context changes
-clear the notice, alternate name and required state; returning to a password method does
-not restore that recovery. The focused notice and choices sit under model credentials
-and belong to the attempted name. Changing that name or submitting a new attempt clears
-feedback but preserves an edited alternate name. Submit trims and validates alternate
-names before writing. Selecting an existing Secret restores the optional service-account
+After a confirmed Secret name conflict, use the permission-aware picker or
+choose a new name in this form. Selection clears the entered key. Both options
+preserve other fields without reading or deleting the existing value. Other known
+refusals retain the masked input. Uncertain writes clear it and lock creation.
+Agent-name conflicts do not enable Secret recovery. Changing credential context clears the notice, alternate name and required
+state. Returning to password input cannot restore recovery. Under model
+credentials, the focused notice and choices apply to the attempted name.
+Renaming or resubmitting clears feedback but preserves edits to the alternate
+name. Submit trims and validates it before writing. Selecting an existing Secret restores the optional service-account
 plugin discovery token field. Later save failures reuse the saved Secret reference.
 An [uncertain Configuration save](platform-console/agent-creation.md#4-submit-provisioning-or-an-ordinary-draft)
 locks creation before Agent POST. Confirmed Agent refusal locks Configuration controls.
-Refresh repository choices if required. Retrying **Create Agent** here reuses
+Refresh repository choices if required. Retry the offered save in place to reuse
 the Configuration ID. An uncertain Agent POST locks creation. Check for the saved Agent. See [creation recovery](../reference/console/create-and-deploy.md#create-an-agent).
 
 ### 5. Hand off to deployment
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-The saved Agent has a new identity and no Preset reference. Variable inputs are
-not stored as a separate map. Rendered values are ordinary Agent/Configuration
-settings. Credential preparation and [version admission](configuration-driver/persistence-and-revisions.md)
-read those resources, not the Preset. Later Preset changes cannot change a draft
-or an immutable saved version.
+The Agent has its own ID and no Preset reference. Variable inputs produce
+settings, with no separate variable map. Credential preparation and
+[version admission](configuration-driver/persistence-and-revisions.md)
+read the Agent and Configuration. Preset edits leave drafts and saved
+versions unchanged.
 
 ## Debugging and Verification
 
@@ -327,6 +328,8 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-24 02:29: Check grants before credential access. (authoring-run/ba9ea959-8a2b-4cab-830f-387425ba3574 - e2d257fbd92637a19042477ef2ad8c6ecf3f9fdf)
 
 - 2026-11-23 14:21: Show the Configuration save lock. (authoring-run/c19f29e8-5721-43ff-bada-5264ccb9b4ea - 54922275aed4dd2c5d6c23901fb0a2ff42a54136)
 - 2026-11-23 13:25: Clarify draft outcomes and refresh. (authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036 - 0844df38c9838ec25596b96b70ba76440c5be22d)

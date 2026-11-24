@@ -295,8 +295,8 @@ or **Use existing Secret**. Existing mode lists readable Namespace Secret metada
 and uses the selected reference without fetching its value. Switching modes clears
 the entered token; the saved Preset remains unchanged.
 
-In new mode, **Use Preset** fills the masked credential input, and **Create Agent**
-creates a Namespace Secret. Both modes follow
+In new mode, **Use Preset** fills the masked credential input. Submitting the
+form creates a Namespace Secret. Both modes follow
 [conditional credential grants](../flows/platform-console/agent-creation.md#5-grant-secret-access-and-edit-authentication).
 The value never enters Preset storage, Agent JSON, or Configuration JSON. API
 clients must create a Secret and replace `secret` with `source: <SecretRef>`

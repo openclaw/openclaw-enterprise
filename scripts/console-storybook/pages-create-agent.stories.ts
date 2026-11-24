@@ -1,5 +1,7 @@
 import { story } from "./story.ts";
 
+export const CreateNetworkProxy = { ...story("createNetworkProxy"), name: "Gateway Channel Proxy" };
+
 export default { title: "Pages/Create Agent" };
 
 export const CreateStart = { ...story("createStart"), name: "Choose a starting point" };
@@ -176,6 +178,10 @@ export const RepositoryDescriptionsPending = story("createRepositoriesDescriptio
 export const RepositoryHiddenCharacters = story("createRepositoriesHiddenCharacters");
 export const RepositoryLocaleSearch = story("createRepositoriesLocaleSearch");
 export const RepositoryNoMatches = story("createRepositoriesNoMatches");
+export const GitHubRepositoryGrants = {
+  ...story("createGitHubRepositoryGrants"),
+  name: "GitHub repository access",
+};
 export const RepositoryContributor = {
   ...story("createRepositoriesContributor"),
   name: "Contributor without issue management",

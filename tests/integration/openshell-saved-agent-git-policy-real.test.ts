@@ -380,35 +380,70 @@ async function exerciseSavedPullReads(
   assert.equal(await callbacks.read(), beforeCallbacks);
 }
 
-async function exerciseSavedPullWrites(
+// C is bound without a saved grant here, so the credential also covers C. A pull request into B
+// could name C's branch as its head, so no creation route is compiled; the reads stay.
+async function exerciseSavedPullsWithheld(
   fixture: GitInstallation,
   execute: GitExec,
   deployed: IssuedDeployment,
-  pushed: string,
+  callbackBaseline: number,
+) {
+  const { origin, callbacks } = fixture;
+  const network = origin.network;
+  assert.ok(callbacks && network);
+  const deny = (path: string, payload: GhBody) =>
+    refuseGh(fixture, execute, deployed, path, payload);
+  // The Worker hook was disabled before the native phases and stays disabled here.
+  assert.equal(await callbacks.read(), callbackBaseline);
+  await exerciseSavedPullReads(fixture, execute, deployed);
+  const created = network.pullRequests("fixture/b");
+  for (const repository of ["a", "b", "c"]) {
+    await deny(`repos/fixture/${repository}/pulls`, pull);
+  }
+  await deny(bPulls, { ...pull, title: "Saved Agent draft", head: "before-rotation", draft: true });
+  await deny(bIssues, issue);
+  await refusePullRedirect(fixture, execute, deployed);
+  assert.deepEqual(network.pullRequests("fixture/b"), created);
+  for (const repository of ["fixture/a", "fixture/c"]) {
+    assert.deepEqual(network.pullRequests(repository), []);
+  }
+  // Reads and denials ran without one Worker callback.
+  assert.equal(await callbacks.read(), callbackBaseline);
+}
+
+// Every bound repository has a saved grant here (A, B and C Write), so B admits creation.
+async function exerciseSavedPullCreation(
+  fixture: GitInstallation,
+  execute: GitExec,
+  deployed: IssuedDeployment,
   callbackBaseline: number,
 ) {
   const { origin, callbacks } = fixture;
   const network = origin.network;
   assert.ok(callbacks && network);
   const { guest } = savedGitProbeTools(fixture, execute);
-  const deny = (path: string, payload: GhBody) =>
-    refuseGh(fixture, execute, deployed, path, payload);
-  // The Worker hook was disabled before the native phases and stays disabled here.
   assert.equal(await callbacks.read(), callbackBaseline);
-  await exerciseSavedPullReads(fixture, execute, deployed);
-  for (const repository of ["a", "c"]) {
-    await deny(`repos/fixture/${repository}/pulls`, pull);
+  const heads = ["permissive-pull", "permissive-draft"] as const;
+  const push = await guest(deployed.target, { kind: "success" }, [
+    "sh",
+    "-ceu",
+    `export LC_ALL=C
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+git clone -q 'https://github.com/fixture/b.git' "$work/checkout"
+git -C "$work/checkout" -c user.name=Fixture -c user.email=fixture@example.test commit -q --allow-empty -m 'Permissive B pull head'
+git -C "$work/checkout" push -q origin ${heads.map((head) => `'HEAD:refs/heads/${head}'`).join(" ")}
+git -C "$work/checkout" rev-parse HEAD`,
+  ]);
+  const headOid = push.stdout.toString("utf8").trim();
+  assert.ok(/^[a-f0-9]{40}$/.test(headOid), "The pull request head push must return a commit");
+  for (const head of heads) {
+    assert.equal(await network.ref("fixture/b", `refs/heads/${head}`), headOid);
   }
-  await deny(bIssues, issue);
-  await refusePullRedirect(fixture, execute, deployed);
   assert.deepEqual(network.pullRequests("fixture/b"), []);
-
-  const draftHead = "before-rotation";
-  const draftOid = await network.ref("fixture/b", `refs/heads/${draftHead}`);
-  assert.ok(draftOid && draftOid !== pushed);
-  for (const [index, payload, headOid] of [
-    [0, pull, pushed],
-    [1, { ...pull, title: "Saved Agent draft", head: draftHead, draft: true }, draftOid],
+  for (const [index, payload] of [
+    [0, { ...pull, head: heads[0] }],
+    [1, { ...pull, title: "Saved Agent draft", head: heads[1], draft: true }],
   ] as const) {
     const before = origin.snapshot();
     const offset = network.requests().length;
@@ -443,12 +478,16 @@ async function exerciseSavedPullWrites(
     assert.deepEqual(JSON.parse(response.stdout.toString("utf8")), expected);
   }
   // The created pull requests read back through the Agent's own list route.
-  await exerciseSavedPullReads(fixture, execute, deployed);
-
+  const seeded = { number: 42, title: "Fixture pull in fixture/b", state: "open" };
+  const list = await guest(deployed.target, { kind: "success" }, ghApi(bPulls));
+  assert.deepEqual(JSON.parse(list.stdout.toString("utf8")), [
+    seeded,
+    ...network.pullRequests("fixture/b"),
+  ]);
   for (const repository of ["fixture/a", "fixture/c"]) {
     assert.deepEqual(network.pullRequests(repository), []);
   }
-  // Reads, denials and both creations ran without one Worker callback.
+  // Both creations ran without one Worker callback.
   assert.equal(await callbacks.read(), callbackBaseline);
 }
 
@@ -743,9 +782,9 @@ git -C "$local_dir" rev-parse 'refs/heads/${branch}^{commit}'`,
   if (issueReads) {
     let created = false;
     await t.test(
-      "Saved Agent reads and creates pull requests while the Worker hook is unavailable",
+      "Saved Agent reads pull requests and is refused creation while a bound repository has no grant",
       async () => {
-        await exerciseSavedPullWrites(fixture, execute, owner, pushed, expectedCallbacks);
+        await exerciseSavedPullsWithheld(fixture, execute, owner, expectedCallbacks);
         created = true;
       },
     );
@@ -1101,10 +1140,14 @@ if (savedAgentAcl === "1" || autonomousExpiry) {
           wirePolicy(gitEndpoints.map(({ path, rules }) => ({ path, rules }))),
           wirePolicy(expected),
         );
+        // Creation also needs a saved grant on every bound repository: A, B and C.
+        const everyBindingGranted = network.repositories.every((repository) =>
+          grants.some((grant) => grant.repository === repository),
+        );
         const restRoutes = restEnabled
           ? grants.map(({ repository, access }) => {
               const root = `/repos/${repository}`;
-              const create = access === "write";
+              const create = access === "write" && everyBindingGranted;
               return {
                 path: `${root}/**`,
                 rules: [
@@ -1396,6 +1439,14 @@ git -C /tmp/legacy-control rev-parse FETCH_HEAD`,
       deadlines.set(deployed.target.sandboxId, deployed.deadlineWallMs);
       const loaded = await loadPolicy(deployed, desired, "permissive");
       await calibratePermissiveSavedGit(t, fixture, exec, deployed);
+      if (issueReads) {
+        await t.test(
+          "Saved Agent creates pull requests while every bound repository has a grant",
+          async () => {
+            await exerciseSavedPullCreation(fixture, exec, deployed, nativeCallbackBaseline);
+          },
+        );
+      }
       const permissive = { deployed, provider: loaded.provider, index: deployed.credentialIndex };
       assert.equal(await callbacks.read(), nativeCallbackBaseline);
 

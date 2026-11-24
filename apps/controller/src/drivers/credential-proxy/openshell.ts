@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 
-import { sandboxNetworkGrantsWithinCeiling } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   CredentialDeploymentConfiguration,
@@ -13,21 +12,28 @@ import type {
   CredentialProxyRouting,
   CredentialSourceReference,
   CredentialUpdateNotification,
+  DeploymentCredentialBinding,
+  DeploymentPolicy,
   Namespace,
   ResolvedCredential,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import {
+  CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
+  SandboxNetworkPolicyConflictError,
 } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { failureAfterCleanup } from "../compute/cleanup-failure.ts";
+import type { OpenShellSandboxDriver } from "../sandbox/openshell.ts";
+import { OpenShellSandboxConfigurationFailure } from "../sandbox/openshell-sandbox-errors.ts";
 import {
-  openShellProviderName,
-  openShellWorkspaceName,
-  type OpenShellGateway,
-} from "../../backends/openshell.ts";
+  compileOpenShellCredentialPolicy,
+  openShellCredentialProviderName,
+} from "../sandbox/openshell-credential-policy.ts";
+import { openShellWorkspaceName, type OpenShellGateway } from "../../backends/openshell.ts";
+import type { OpenShellGatewayClient } from "../sandbox/openshell-gateway-client.ts";
 import {
   confirmSandboxAbsent,
   gatewayIdentityRefusal,
@@ -38,10 +44,10 @@ import {
   assertOpenShellDeploymentConfiguration,
   assertOpenShellDeploymentContext,
   assertOpenShellDeploymentRef,
-  assertOpenShellInjectionPolicy,
-  assertOpenShellPushedBinding,
+  assertOpenShellPushedBindingScope,
   assertOpenShellPushedTarget,
   OpenShellCredentialDeliveryRefusedError,
+  openShellDeliveryProviderNames,
   openShellPushedPolicyMatches,
   prepareOccTokenServiceProviderCopy,
   readOwnedOpenShellPushedProvider,
@@ -56,7 +62,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly id: string;
   readonly implementation: string;
   private readonly backend: Backend<OpenShellGateway>;
-  private readonly sandbox: SandboxDriver;
+  private readonly sandbox: SandboxDriver &
+    Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
   private sourceNamespaceResolver?: (
     sourceRef: CredentialSourceReference,
     signal: AbortSignal,
@@ -67,7 +74,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     readonly implementation: string;
     readonly tokenServiceImplementation: string;
     readonly backend: Backend<OpenShellGateway>;
-    readonly sandbox: SandboxDriver;
+    readonly sandbox: SandboxDriver & Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
   }) {
     // TODO(OpenShell TokenService): Add its shared-Provider path when that implementation is available.
     if (selection.tokenServiceImplementation !== "occ/token-service") {
@@ -98,12 +105,17 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       throw new OpenShellCredentialDeliveryRefusedError();
     }
     const workspace = openShellWorkspaceName(namespace);
-    await retireOccTokenServiceProviderCopy({
-      client: this.backend.client.clientForNamespace(namespace.name),
-      workspace,
-      source,
-      signal,
-    });
+    const client = this.backend.client.clientForNamespace(namespace.name);
+    if ((await client.getWorkspace(workspace, signal)) === undefined) {
+      return;
+    }
+    const [providers, profiles] = await Promise.all([
+      client.listProviders(workspace, signal),
+      client.listProviderProfiles(workspace, signal),
+    ]);
+    for (const name of openShellDeliveryProviderNames(source, providers, profiles)) {
+      await retireOccTokenServiceProviderCopy({ client, workspace, source, name, signal });
+    }
   }
 
   /** Bind server-owned Source placement after platform state and Compute are available. */
@@ -137,14 +149,33 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
     const workspace = openShellWorkspaceName(namespace);
     const client = this.backend.client.clientForNamespace(namespace.name);
-    const result = await updateOccTokenServiceProviderCopy({
-      client,
-      workspace,
+    const names = openShellDeliveryProviderNames(
       sourceRef,
-      ...(notification.version === undefined ? {} : { version: notification.version }),
-      resolveCredential,
-      signal,
-    });
+      await client.listProviders(workspace, signal),
+    );
+    let resolved: Promise<ResolvedCredential> | undefined;
+    // A Sandbox can attach several projections of this Source. Observe each update before the next
+    // changes the Sandbox's Provider environment revision.
+    for (const name of names) {
+      await this.pushCredentialUpdate({
+        client,
+        workspace,
+        sourceRef,
+        name,
+        ...(notification.version === undefined ? {} : { version: notification.version }),
+        resolveCredential: () => (resolved ??= resolveCredential()),
+        signal,
+      });
+    }
+  }
+
+  private async pushCredentialUpdate(
+    input: Parameters<typeof updateOccTokenServiceProviderCopy>[0] & {
+      readonly client: OpenShellGatewayClient;
+    },
+  ): Promise<void> {
+    const { client, workspace, signal } = input;
+    const result = await updateOccTokenServiceProviderCopy(input);
     if (!result) {
       return;
     }
@@ -259,10 +290,15 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   ): Promise<{ readonly proxyRouting?: CredentialProxyRouting }> {
     assertOpenShellDeploymentContext(context, this.sandbox.id);
     assertOpenShellDeploymentRef(context, input.deployment);
-    const request = assertOpenShellInjectionPolicy(input.injectionPolicies);
-    if (!sandboxNetworkGrantsWithinCeiling([request], input.networkAccessPolicy.allowed)) {
-      throw new DependencyUnavailableError("The native credential route is not allowed.");
+    const admitted = context.revision.credentialDeployment;
+    if (!admitted) {
+      throw new OpenShellCredentialDeliveryRefusedError();
     }
+    this.routes({
+      ...admitted,
+      networkAccessPolicy: input.networkAccessPolicy,
+      injectionPolicies: input.injectionPolicies,
+    });
     return {};
   }
 
@@ -272,110 +308,124 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   ): Promise<{ readonly credentialProjections: readonly CredentialProjection[] }> {
     assertOpenShellDeploymentContext(context, this.sandbox.id);
     assertOpenShellDeploymentConfiguration(context, input);
-    const occBinding = input.bindings[0];
-    if (
-      input.bindings.length !== 1 ||
-      !occBinding ||
-      occBinding.sharedProviderRef !== undefined ||
-      typeof occBinding.resolveCredential !== "function"
-    ) {
-      throw new DependencyUnavailableError("The native credential binding is unavailable.");
+    const admitted = context.revision.credentialDeployment;
+    if (!admitted || input.bindings.length !== admitted.bindings.length) {
+      throw new DependencyUnavailableError("The native credential bindings are unavailable.");
     }
-    const { binding } = occBinding;
-    assertOpenShellPushedBinding(context, binding, input.injectionPolicies);
+    this.routes(admitted);
+    if (!isDeepStrictEqual(input.injectionPolicies, admitted.injectionPolicies)) {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
+    const remaining = new Map(admitted.bindings.map((binding) => [binding.bindingRef, binding]));
+    for (const supplied of input.bindings) {
+      const { binding } = supplied;
+      if (
+        !isDeepStrictEqual(binding, remaining.get(binding.bindingRef)) ||
+        supplied.sharedProviderRef !== undefined ||
+        typeof supplied.resolveCredential !== "function"
+      ) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      remaining.delete(binding.bindingRef);
+      assertOpenShellPushedBindingScope(context, binding);
+    }
     const initialTarget = await this.readSandboxTarget(context, input);
     if (typeof initialTarget.client.attachSandboxProviderWithReceipt !== "function") {
       throw new DependencyUnavailableError("Native credential attachment is unavailable.");
     }
-    const deliveryProvider = await prepareOccTokenServiceProviderCopy({
-      client: initialTarget.client,
-      workspace: initialTarget.workspace,
-      namespaceId: context.namespace.id,
-      binding,
-      resolveCredential: async () => {
-        await this.readSandboxTarget(context, input);
-        return occBinding.resolveCredential();
-      },
-      signal: context.signal,
-    });
+    const prepared: DeploymentCredentialBinding[] = [];
     try {
-      const target = await this.readSandboxTarget(context, input);
-      const providers = target.sandbox.spec?.providers;
-      if (!target.sandbox.spec || (providers !== undefined && !Array.isArray(providers))) {
-        throw new DependencyUnavailableError("The native Sandbox has no Provider membership.");
-      }
-      if (!providers?.includes(deliveryProvider.name)) {
-        if (typeof target.client.attachSandboxProviderWithReceipt !== "function") {
-          throw new DependencyUnavailableError("Native credential attachment is unavailable.");
+      for (const supplied of input.bindings) {
+        const { binding } = supplied;
+        const deliveryProvider = await prepareOccTokenServiceProviderCopy({
+          client: initialTarget.client,
+          workspace: initialTarget.workspace,
+          namespaceId: context.namespace.id,
+          binding,
+          resolveCredential: async () => {
+            await this.readSandboxTarget(context, input);
+            return supplied.resolveCredential();
+          },
+          signal: context.signal,
+        });
+        prepared.push(binding);
+        const target = await this.readSandboxTarget(context, input);
+        const providers = target.sandbox.spec?.providers;
+        if (!target.sandbox.spec || (providers !== undefined && !Array.isArray(providers))) {
+          throw new DependencyUnavailableError("The native Sandbox has no Provider membership.");
         }
-        // TODO(CP2): accepted race: a same-name replacement can reuse this version. Remove when
-        // Gateway atomically enforces the expected Sandbox ID: https://github.com/NVIDIA/OpenShell/issues/5794
-        const attached = await target.client.attachSandboxProviderWithReceipt(
-          target.workspace,
-          target.name,
-          deliveryProvider.name,
-          context.signal,
-          { expectedResourceVersion: target.sandbox.resourceVersion, requestId: randomUUID() },
-        );
-        if (
-          !attached ||
-          attached.providerId !== deliveryProvider.id ||
-          attached.providerResourceVersion !== deliveryProvider.resourceVersion
-        ) {
+        if (!providers?.includes(deliveryProvider.name)) {
+          if (typeof target.client.attachSandboxProviderWithReceipt !== "function") {
+            throw new DependencyUnavailableError("Native credential attachment is unavailable.");
+          }
+          // TODO(CP2): accepted race: a same-name replacement can reuse this version. Remove when
+          // Gateway atomically enforces the expected Sandbox ID: https://github.com/NVIDIA/OpenShell/issues/5794
+          const attached = await target.client.attachSandboxProviderWithReceipt(
+            target.workspace,
+            target.name,
+            deliveryProvider.name,
+            context.signal,
+            { expectedResourceVersion: target.sandbox.resourceVersion, requestId: randomUUID() },
+          );
+          if (
+            !attached ||
+            attached.providerId !== deliveryProvider.id ||
+            attached.providerResourceVersion !== deliveryProvider.resourceVersion
+          ) {
+            throw new DependencyUnavailableError(
+              "The native Provider attachment receipt is unavailable.",
+            );
+          }
+          assertOpenShellPushedTarget(attached.sandbox, target.workspace, target.name, input);
+          if (
+            !Array.isArray(attached.sandbox.spec?.providers) ||
+            !attached.sandbox.spec.providers.includes(deliveryProvider.name)
+          ) {
+            throw new DependencyUnavailableError("The native Provider attachment is unavailable.");
+          }
+        }
+        const current = await readOpenShellPushedProvider({
+          client: target.client,
+          workspace: target.workspace,
+          namespaceId: context.namespace.id,
+          binding,
+          signal: context.signal,
+        });
+        if (!isDeepStrictEqual(current, deliveryProvider)) {
           throw new DependencyUnavailableError(
-            "The native Provider attachment receipt is unavailable.",
+            "The native credential Provider changed during attachment.",
           );
         }
-        assertOpenShellPushedTarget(attached.sandbox, target.workspace, target.name, input);
+        const after = await this.readSandboxTarget(context, input);
         if (
-          !Array.isArray(attached.sandbox.spec?.providers) ||
-          !attached.sandbox.spec.providers.includes(deliveryProvider.name)
+          !Array.isArray(after.sandbox.spec?.providers) ||
+          !after.sandbox.spec.providers.includes(deliveryProvider.name)
         ) {
-          throw new DependencyUnavailableError("The native Provider attachment is unavailable.");
+          throw new DependencyUnavailableError("The native Provider attachment changed.");
         }
       }
-      const current = await readOpenShellPushedProvider({
-        client: target.client,
-        workspace: target.workspace,
-        namespaceId: context.namespace.id,
-        binding,
-        signal: context.signal,
-      });
-      if (!isDeepStrictEqual(current, deliveryProvider)) {
-        throw new DependencyUnavailableError(
-          "The native credential Provider changed during attachment.",
-        );
-      }
-      const after = await this.readSandboxTarget(context, input);
-      if (
-        !Array.isArray(after.sandbox.spec?.providers) ||
-        !after.sandbox.spec.providers.includes(deliveryProvider.name)
-      ) {
-        throw new DependencyUnavailableError("The native Provider attachment changed.");
-      }
       return {
-        credentialProjections: [
-          {
-            bindingRef: binding.bindingRef,
-            environment: binding.projection.environment,
-            placeholder: { kind: "runtime" },
-          },
-        ],
+        credentialProjections: input.bindings.map(({ binding }) => ({
+          bindingRef: binding.bindingRef,
+          environment: binding.projection.environment,
+          placeholder: { kind: "runtime" as const },
+        })),
       };
     } catch (attachmentError) {
       throw await failureAfterCleanup(
         attachmentError,
         "Native credential attachment failed and Provider cleanup is unconfirmed.",
-        [
-          () =>
+        prepared.map(
+          (binding) => () =>
             retireOccTokenServiceProviderCopy({
               client: initialTarget.client,
               workspace: initialTarget.workspace,
               source: binding.sourceRef,
+              name: openShellCredentialProviderName(binding),
               signal: context.signal,
               retainIfAttached: true,
             }),
-        ],
+        ),
       );
     }
   }
@@ -388,31 +438,29 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       assertOpenShellDeploymentContext(context, this.sandbox.id);
       assertOpenShellDeploymentConfiguration(context, expected);
       const admitted = context.revision.credentialDeployment;
-      const binding = admitted?.bindings[0];
-      if (!admitted || admitted.proxyDriverId !== this.id || !binding) {
+      if (!admitted || admitted.proxyDriverId !== this.id) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
-      assertOpenShellPushedBinding(context, binding, admitted.injectionPolicies);
-      const request = assertOpenShellInjectionPolicy(
-        admitted.injectionPolicies,
-        binding.bindingRef,
-      );
-      if (!sandboxNetworkGrantsWithinCeiling([request], admitted.networkAccessPolicy.allowed)) {
-        throw new OpenShellCredentialDeliveryRefusedError();
-      }
+      const routes = this.routes(admitted);
+      const bindings = admitted.bindings;
       const target = await this.readSandboxTarget(context, expected);
-      const provider = await readOpenShellPushedProvider({
-        client: target.client,
-        workspace: target.workspace,
-        namespaceId: context.namespace.id,
-        binding,
-        signal: context.signal,
-      });
-      if (
-        !Array.isArray(target.sandbox.spec?.providers) ||
-        !target.sandbox.spec.providers.includes(provider.name)
-      ) {
-        return { state: "pending" };
+      const providers = [];
+      for (const binding of bindings) {
+        assertOpenShellPushedBindingScope(context, binding);
+        const provider = await readOpenShellPushedProvider({
+          client: target.client,
+          workspace: target.workspace,
+          namespaceId: context.namespace.id,
+          binding,
+          signal: context.signal,
+        });
+        if (
+          !Array.isArray(target.sandbox.spec?.providers) ||
+          !target.sandbox.spec.providers.includes(provider.name)
+        ) {
+          return { state: "pending" };
+        }
+        providers.push({ binding, provider });
       }
       if (!target.client.getSandboxConfig || !target.client.getSandboxPolicyStatus) {
         return { state: "pending" };
@@ -462,70 +510,72 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         !config.provider_attachment_epoch ||
         config.provider_attachment_epoch !== target.sandbox.spec?.provider_attachment_epoch ||
         !/^[0-9a-f]{64}$/.test(String(revision.policy_hash)) ||
-        !openShellPushedPolicyMatches(revision.policy, config.policy, request, provider.name)
+        !openShellPushedPolicyMatches(revision.policy, config.policy, routes)
       ) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
-      // Provider-only status reconstruction records a Gateway-owned OBSERVE receipt. It does
-      // not invoke an upstream user operation or claim a missed credential push completed.
-      const status = await target.client.getSandboxProviderStatus(
-        target.workspace,
-        target.name,
-        provider.name,
-        context.signal,
-      );
-      if (
-        status.state === "PROVIDER_READINESS_STATE_PENDING" ||
-        status.state === "PROVIDER_READINESS_STATE_PERSISTED"
-      ) {
-        return { state: "pending" };
-      }
-      const desired = status.receipt?.desired;
-      const observed = status.observed;
-      const unspecified = "PROVIDER_READINESS_REASON_UNSPECIFIED";
-      if (
-        status.state !== "PROVIDER_READINESS_STATE_READY" ||
-        (status.reason !== undefined && status.reason !== unspecified) ||
-        status.receipt?.kind !== "PROVIDER_MUTATION_KIND_OBSERVE" ||
-        !status.receipt.receiptId ||
-        status.receipt.workspace !== target.workspace ||
-        status.receipt.provider !== provider.name ||
-        !desired ||
-        desired.sandboxId !== expected.targetRef.sandboxId ||
-        desired.sandbox !== target.name ||
-        desired.providerId !== provider.id ||
-        desired.providerResourceVersion !== provider.resourceVersion ||
-        desired.attachmentEpoch !== config.provider_attachment_epoch ||
-        desired.providerEnvRevision !== config.provider_env_revision ||
-        desired.configRevision !== config.config_revision ||
-        desired.policyHash !== config.policy_hash ||
-        !observed ||
-        !observed.sessionId ||
-        !positiveRevision(observed.sequence) ||
-        (observed.reason !== "" && observed.reason !== unspecified) ||
-        observed.attachmentEpoch !== desired.attachmentEpoch ||
-        observed.providerEnvRevision !== desired.providerEnvRevision ||
-        observed.configRevision !== desired.configRevision ||
-        observed.policyHash !== desired.policyHash ||
-        !observed.credentialsInstalled ||
-        !observed.policyActive ||
-        !observed.launchEnvironmentInstalled ||
-        !observed.processInstanceId ||
-        !status.networkInstanceId ||
-        target.sandbox.mainProcessInstanceId !== status.networkInstanceId ||
-        !validObservationTimes(status.observedTime, status.evaluatedTime)
-      ) {
-        throw new OpenShellCredentialDeliveryRefusedError();
-      }
-      const after = await readOpenShellPushedProvider({
-        client: target.client,
-        workspace: target.workspace,
-        namespaceId: context.namespace.id,
-        binding,
-        signal: context.signal,
-      });
-      if (!isDeepStrictEqual(after, provider)) {
-        throw new OpenShellCredentialDeliveryRefusedError();
+      for (const { binding, provider } of providers) {
+        // Provider-only status reconstruction records a Gateway-owned OBSERVE receipt. It does
+        // not invoke an upstream user operation or claim a missed credential push completed.
+        const status = await target.client.getSandboxProviderStatus(
+          target.workspace,
+          target.name,
+          provider.name,
+          context.signal,
+        );
+        if (
+          status.state === "PROVIDER_READINESS_STATE_PENDING" ||
+          status.state === "PROVIDER_READINESS_STATE_PERSISTED"
+        ) {
+          return { state: "pending" };
+        }
+        const desired = status.receipt?.desired;
+        const observed = status.observed;
+        const unspecified = "PROVIDER_READINESS_REASON_UNSPECIFIED";
+        if (
+          status.state !== "PROVIDER_READINESS_STATE_READY" ||
+          (status.reason !== undefined && status.reason !== unspecified) ||
+          status.receipt?.kind !== "PROVIDER_MUTATION_KIND_OBSERVE" ||
+          !status.receipt.receiptId ||
+          status.receipt.workspace !== target.workspace ||
+          status.receipt.provider !== provider.name ||
+          !desired ||
+          desired.sandboxId !== expected.targetRef.sandboxId ||
+          desired.sandbox !== target.name ||
+          desired.providerId !== provider.id ||
+          desired.providerResourceVersion !== provider.resourceVersion ||
+          desired.attachmentEpoch !== config.provider_attachment_epoch ||
+          desired.providerEnvRevision !== config.provider_env_revision ||
+          desired.configRevision !== config.config_revision ||
+          desired.policyHash !== config.policy_hash ||
+          !observed ||
+          !observed.sessionId ||
+          !positiveRevision(observed.sequence) ||
+          (observed.reason !== "" && observed.reason !== unspecified) ||
+          observed.attachmentEpoch !== desired.attachmentEpoch ||
+          observed.providerEnvRevision !== desired.providerEnvRevision ||
+          observed.configRevision !== desired.configRevision ||
+          observed.policyHash !== desired.policyHash ||
+          !observed.credentialsInstalled ||
+          !observed.policyActive ||
+          !observed.launchEnvironmentInstalled ||
+          !observed.processInstanceId ||
+          !status.networkInstanceId ||
+          target.sandbox.mainProcessInstanceId !== status.networkInstanceId ||
+          !validObservationTimes(status.observedTime, status.evaluatedTime)
+        ) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        const after = await readOpenShellPushedProvider({
+          client: target.client,
+          workspace: target.workspace,
+          namespaceId: context.namespace.id,
+          binding,
+          signal: context.signal,
+        });
+        if (!isDeepStrictEqual(after, provider)) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
       }
       return { state: "ready" };
     } catch (error) {
@@ -562,13 +612,19 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     try {
       const scope = this.sandboxScope(context);
       const admitted = context.revision.credentialDeployment;
-      const binding = admitted?.bindings[0];
-      if (!admitted || admitted.proxyDriverId !== this.id || !binding) {
+      if (!admitted || admitted.proxyDriverId !== this.id) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
-      assertOpenShellPushedBinding(context, binding, admitted.injectionPolicies);
-      if (input.bindingRefs && !input.bindingRefs.includes(binding.bindingRef)) {
-        return;
+      this.routes(admitted);
+      const selected = new Set(
+        input.bindingRefs ?? admitted.bindings.map(({ bindingRef }) => bindingRef),
+      );
+      const bindings = admitted.bindings.filter((binding) => selected.has(binding.bindingRef));
+      if (bindings.length === 0 || bindings.length !== selected.size) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      for (const binding of bindings) {
+        assertOpenShellPushedBindingScope(context, binding);
       }
       const readSandbox = () =>
         scope.client.getSandbox({ workspace: scope.workspace, name: scope.name }, context.signal);
@@ -585,65 +641,149 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           () => new OpenShellCredentialDeliveryRefusedError(),
           readSandbox,
         );
-      const sandbox = (await refused(readSandbox)) ?? (await absent());
-      if (sandbox) {
-        assertOpenShellPushedTarget(sandbox, scope.workspace, scope.name, expected);
-        const providers = sandbox.spec?.providers;
-        if (!sandbox.spec || (providers !== undefined && !Array.isArray(providers))) {
-          throw new OpenShellCredentialDeliveryRefusedError();
+      const exactWithdrawal = input.bindingRefs !== undefined;
+      const assertTarget = (target: Parameters<typeof assertOpenShellPushedTarget>[0]) => {
+        try {
+          assertOpenShellPushedTarget(target, scope.workspace, scope.name, expected);
+        } catch (error) {
+          if (exactWithdrawal && error instanceof OpenShellCredentialDeliveryRefusedError) {
+            throw new CredentialWithdrawalRefusedError(
+              "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+              "The Sandbox does not match the withdrawn binding target.",
+            );
+          }
+          throw error;
         }
-        if (providers?.includes(openShellProviderName(binding.sourceRef.id))) {
-          const provider = await refused(() =>
-            readOwnedOpenShellPushedProvider({
-              client: scope.client,
-              workspace: scope.workspace,
-              binding,
-              signal: context.signal,
-            }),
-          );
-          // TODO(CP2): accepted same-name replacement race until Gateway can enforce the immutable
-          // Sandbox ID before detach: https://github.com/NVIDIA/OpenShell/issues/5794
-          await refused(() =>
-            scope.client.detachSandboxProvider(
-              scope.workspace,
-              scope.name,
-              provider.name,
-              context.signal,
-            ),
-          );
-          const after = (await refused(readSandbox)) ?? (await absent());
-          if (after) {
-            assertOpenShellPushedTarget(after, scope.workspace, scope.name, expected);
-            const remaining = after.spec?.providers;
-            if (
-              !after.spec ||
-              (remaining !== undefined && !Array.isArray(remaining)) ||
-              remaining?.includes(provider.name)
-            ) {
-              throw new OpenShellCredentialDeliveryRefusedError();
+      };
+      for (const binding of bindings) {
+        const providerName = openShellCredentialProviderName(binding);
+        const sandbox = (await refused(readSandbox)) ?? (await absent());
+        if (sandbox) {
+          assertTarget(sandbox);
+          const providers = sandbox.spec?.providers;
+          if (!sandbox.spec || (providers !== undefined && !Array.isArray(providers))) {
+            throw new OpenShellCredentialDeliveryRefusedError();
+          }
+          if (exactWithdrawal) {
+            await refused(() =>
+              this.sandbox.withdrawStagedCredentialRoute(
+                context,
+                expected.targetRef.sandboxId,
+                binding.bindingRef,
+              ),
+            );
+          }
+          if (providers?.includes(providerName) || exactWithdrawal) {
+            if (providers?.includes(providerName)) {
+              try {
+                await refused(() =>
+                  readOwnedOpenShellPushedProvider({
+                    client: scope.client,
+                    workspace: scope.workspace,
+                    binding,
+                    signal: context.signal,
+                  }),
+                );
+              } catch (error) {
+                if (exactWithdrawal && error instanceof OpenShellCredentialDeliveryRefusedError) {
+                  throw new CredentialWithdrawalRefusedError(
+                    "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+                    "The Provider does not belong to the withdrawn Source.",
+                  );
+                }
+                throw error;
+              }
+            }
+            // TODO(CP2): accepted same-name replacement race until Gateway can enforce the immutable
+            // Sandbox ID before detach: https://github.com/NVIDIA/OpenShell/issues/5794
+            const detached = await refused(() =>
+              scope.client.detachSandboxProvider(
+                scope.workspace,
+                scope.name,
+                providerName,
+                context.signal,
+              ),
+            );
+            if (exactWithdrawal) {
+              if (!detached?.receiptId) {
+                throw new OpenShellCredentialDeliveryRefusedError();
+              }
+              const status = await refused(() =>
+                scope.client.getSandboxProviderStatus(
+                  scope.workspace,
+                  scope.name,
+                  providerName,
+                  context.signal,
+                  detached.receiptId,
+                ),
+              );
+              if (
+                status.state !== "PROVIDER_READINESS_STATE_REVOKED" ||
+                status.receipt?.receiptId !== detached.receiptId ||
+                status.receipt.kind !== "PROVIDER_MUTATION_KIND_DETACH" ||
+                status.receipt.workspace !== scope.workspace ||
+                status.receipt.provider !== providerName ||
+                status.receipt.desired?.sandboxId !== expected.targetRef.sandboxId ||
+                status.receipt.desired.sandbox !== scope.name
+              ) {
+                throw new DependencyUnavailableError(
+                  "The native credential detach receipt is not revoked.",
+                );
+              }
+            }
+            const after = (await refused(readSandbox)) ?? (await absent());
+            if (after) {
+              assertTarget(after);
+              const remaining = after.spec?.providers;
+              if (
+                !after.spec ||
+                (remaining !== undefined && !Array.isArray(remaining)) ||
+                remaining?.includes(providerName)
+              ) {
+                throw new OpenShellCredentialDeliveryRefusedError();
+              }
             }
           }
         }
+        await refused(() =>
+          retireOccTokenServiceProviderCopy({
+            client: scope.client,
+            workspace: scope.workspace,
+            source: binding.sourceRef,
+            name: providerName,
+            signal: context.signal,
+            retainIfAttached: true,
+          }),
+        );
       }
-      await refused(() =>
-        retireOccTokenServiceProviderCopy({
-          client: scope.client,
-          workspace: scope.workspace,
-          source: binding.sourceRef,
-          signal: context.signal,
-          retainIfAttached: true,
-        }),
-      );
     } catch (error) {
       context.signal.throwIfAborted();
       if (
+        error instanceof CredentialWithdrawalRefusedError ||
         error instanceof OpenShellCredentialDeliveryRefusedError ||
         error instanceof OpenShellAdmissionLimitError ||
         error instanceof SandboxGatewayUnauthorizedError
       ) {
         throw error;
       }
+      if (
+        error instanceof OpenShellSandboxConfigurationFailure ||
+        error instanceof SandboxNetworkPolicyConflictError
+      ) {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+          error.message,
+        );
+      }
       throw new DependencyUnavailableError("The native credential withdrawal is unconfirmed.");
+    }
+  }
+
+  private routes(policy: DeploymentPolicy) {
+    try {
+      return compileOpenShellCredentialPolicy(policy).credentialRoutes;
+    } catch {
+      throw new OpenShellCredentialDeliveryRefusedError();
     }
   }
 

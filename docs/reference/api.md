@@ -90,7 +90,7 @@ the paths.
 | [Connections](#connections) | 15 operations |
 | [Installation](#installation) | 10 operations |
 | [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 54 operations |
+| [Agents](#agents) | 55 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -4461,6 +4461,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`](#get-namespacesnamespaceidagentsagentidauditevents) | List audit metadata for one Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`](#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw) | Revoke one credential source from the selected Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`](#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal) | Get the withdrawal state of a credential source for an Agent |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/credentials/push`](#post-namespacesnamespaceidagentsagentidcredentialspush) | Retry delivery for selected deployed Agent credential sources |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy`](#post-namespacesnamespaceidagentsagentiddeploy) | Save an Agent revision from the Agent's saved settings |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy-first`](#post-namespacesnamespaceidagentsagentiddeployfirst) | Admit the first deployment of an exact reviewed Configuration; requires Configuration read |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/deploy-first/{key}/{expectedConfigurationId}/{expectedGeneration}`](#get-namespacesnamespaceidagentsagentiddeployfirstkeyexpectedconfigurationidexpectedgeneration) | Read an exact first-deployment receipt; null does not prove failure; requires Configuration read |
@@ -4632,7 +4633,7 @@ List authorized Agents in one exact Namespace
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources. |
+| `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -4727,6 +4728,9 @@ Create a Namespace-owned Agent
 | `modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `nativeAdmin` | `boolean` | No | Enable Agent browser access with server-derived settings. Requires Configuration update permission, expectedConfigurationGeneration, and an unreferenced Configuration. Chat requires Agent operate; full administration requires Agent administer. |
+| `networkProxy` | `object` | No | — |
+| `networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `pluginApprovers` | `PluginApprovers` | No | max items: 64; unique items: true |
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -4739,6 +4743,9 @@ Create a Namespace-owned Agent
 | `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
 | `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Save the initial GitHub grants on this draft atomically. Requires permission to enable editing, save and read the Agent networking policy. Omit for ordinary profile access. |
+| `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
+| `repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `workspaceDefaultsId` | `string` | No | pattern: `^[a-f0-9]{64}$` |
 
 Example request
@@ -4785,6 +4792,9 @@ Example request
 | `data.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy` | `object` | No | — |
+| `data.networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64; unique items: true |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -5403,6 +5413,9 @@ Create a new Agent and queue first-time provisioning
 | `modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `nativeAdmin` | `boolean` | No | Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false. |
+| `networkProxy` | `object` | No | — |
+| `networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `pluginApprovers` | `PluginApprovers` | No | max items: 64; unique items: true |
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -5778,6 +5791,9 @@ List approved repository choices for Agent creation in one Namespace
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16; unique items: true |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data[].githubAccess` | `object` | No | Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions. |
+| `data[].githubAccess.access` | `"read" or "write"` | Yes | — |
+| `data[].githubAccess.repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `meta` | `object` | Yes | — |
 | `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
@@ -5854,6 +5870,9 @@ Check an unsaved Agent Configuration, plugin selections, initial workspace files
 | `initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$`; The Agent name create will use. A name that another Agent in the Namespace has is refused with create's `409`. |
+| `networkProxy` | `object` | No | — |
+| `networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `pluginApprovers` | `PluginApprovers` | No | max items: 64; unique items: true |
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -6015,6 +6034,9 @@ Begin or retry deletion of the requested Agent and its Agent revisions
 | `data.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy` | `object` | No | — |
+| `data.networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64; unique items: true |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -6103,7 +6125,7 @@ Get an exact Namespace-owned Agent
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources. |
+| `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -6180,6 +6202,7 @@ Replace an exact Namespace-owned Agent's editable draft
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `harnessAuth` | `object or object or object or object or null` | No | — |
 | `modelProviderId` | `string or null` | No | — |
+| `networkProxy` | `object or null` | No | — |
 | `pluginApprovers` | `PluginApprovers or null` | No | — |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
 | `repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
@@ -6242,6 +6265,9 @@ Example request
 | `data.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy` | `object` | No | — |
+| `data.networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64; unique items: true |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -6526,6 +6552,90 @@ Example response
 }
 ```
 
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/credentials/push`
+
+<span id="post-namespacesnamespaceidagentsagentidcredentialspush"></span>
+
+Retry delivery for selected deployed Agent credential sources
+
+**Operation ID:** `pushAgentCredentials`
+
+**Permissions:** Requires operate permission on the requested Agent. Requires update permission on each selected CredentialSource with an unwithdrawn Credential Proxy binding in the deployed Agent revision. OCC authorizes every selected Source before it begins delivery. The Agent service principal must still have operate permission on every selected CredentialSource.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `update` | `credential_source` | `requested` (when bound) |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `sources` | `"all" or array<string>` | Yes | Select 'all' or 1–64 distinct Source IDs to retry. Eligible Sources have an unwithdrawn Credential Proxy binding in the deployed Agent revision. The Agent service principal must still have credential_source:operate on each Source. |
+
+Example request
+```json
+{
+  "sources": [
+    "cs_123e4567-e89b-42d3-a456-426614174000"
+  ]
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Response after authorization. OCC reports one outcome per selected source, including successes when another source fails. A delivery failure does not roll back the authoritative credential. An authorized caller can retry delivery again. |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.results` | `array<object>` | Yes | — |
+| `data.results[].outcome` | `"succeeded" or "resolution_failed" or "delivery_failed"` | Yes | — |
+| `data.results[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "results": [
+      {
+        "outcome": "succeeded",
+        "sourceId": "cs_123e4567-e89b-42d3-a456-426614174000"
+      }
+    ]
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/deploy`
 
 <span id="post-namespacesnamespaceidagentsagentiddeploy"></span>
@@ -6564,6 +6674,7 @@ Save an Agent revision from the Agent's saved settings
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `expectedRepositoryPolicyVersion` | `integer or null` | No | Send the reviewed networking policy version to require a saved repository policy at that version. Send null to require no saved repository policy. Omit to skip this check. A version or a saved repository policy requires SandboxPolicy read. An authorized mismatch returns HTTP 409. |
 | `harnessOverrides` | `object<string, any>` | No | Nonsecret settings owned and validated by the selected Compute Driver. |
 
 Example request
@@ -6614,6 +6725,9 @@ Example request
 | `data.harnessAuth` | `object or object or object or object` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy` | `object` | No | — |
+| `data.networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64; unique items: true |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -8153,6 +8267,9 @@ List approved repository choices for updating one Agent
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16; unique items: true |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data[].githubAccess` | `object` | No | Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions. |
+| `data[].githubAccess.access` | `"read" or "write"` | Yes | — |
+| `data[].githubAccess.repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `meta` | `object` | Yes | — |
 | `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
@@ -8904,6 +9021,9 @@ Example request
 | `data.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy` | `object` | No | — |
+| `data.networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64; unique items: true |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -9087,6 +9207,9 @@ Stop one Agent and keep its saved Agent revision and persistent state
 | `data.modelProviderId` | `string` | No | pattern: `^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy` | `object` | No | — |
+| `data.networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64; unique items: true |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -9853,6 +9976,9 @@ List Agent revision summaries that you can read for the requested Agent, newest 
 | `data[].harness.version` | `string` | Yes | min length: 1 |
 | `data[].id` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].networkProxy` | `object` | No | — |
+| `data[].networkProxy.credentialSecretId` | `string` | No | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].networkProxy.url` | `string` | Yes | min length: 1; max length: 2048; HTTP or HTTPS upstream endpoint for Gateway channel traffic only. Do not include credentials. |
 | `data[].revision` | `integer` | Yes | minimum: 1 |
 | `meta` | `object` | Yes | — |
 | `meta.nextCursor` | `string or null` | Yes | Pass this value as `cursor` to read older Agent revisions. OCC returns a cursor only when it finds an older Agent revision that you can read during this request. A later page can be empty if access changes. `null` means OCC found no older Agent revision that you can read. |

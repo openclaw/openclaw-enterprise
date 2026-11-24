@@ -15,6 +15,8 @@ import {
   ChannelCredentialError,
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
+  NetworkProxyValidationError,
+  NetworkProxyEnforcementUnavailableError,
   ConfigurationSizeError,
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
@@ -864,6 +866,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
           : pointerDetail(destination.bindingsPath, destination.key, destination.code),
     );
   }
+  if (error instanceof NetworkProxyValidationError) {
+    return failure(400, "INVALID_REQUEST", error.message);
+  }
   if (error instanceof NativeWorkerSupportError) {
     return failure(400, "INVALID_REQUEST", error.message);
   }
@@ -922,6 +927,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof NotImplementedError) {
     return failure(501, "NOT_IMPLEMENTED", error.message);
+  }
+  if (error instanceof NetworkProxyEnforcementUnavailableError) {
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
   }
   if (error instanceof PostgresCommitOutcomeUnknownError) {
     return failure(
@@ -1004,7 +1012,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   if (error instanceof AgentPrincipalAuthorizationError) {
     // The Agent's own principal lacks the grant; the caller's denial is below. The text names a
     // stored resource only when the caller sent or may read it (finding 2592).
-    return failure(403, "FORBIDDEN", capped(agentPrincipalDenialMessage(error, denied?.requested)));
+    return failure(
+      403,
+      "FORBIDDEN",
+      capped(agentPrincipalDenialMessage(error, denied?.requested, denied?.agentPrincipalRecovery)),
+    );
   }
   if (error instanceof CallerStateDeniedError) {
     // Fixed text about the caller's own account, session or job, not about a grant.

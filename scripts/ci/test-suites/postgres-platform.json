@@ -204,7 +204,7 @@
     {
       "path": "tests/integration/postgres-staged-agent-credential-binding.test.ts",
       "expectedTests": [
-        "public managed Source enrollment preserves custody and admits an authorized staged Agent"
+        "public managed Source enrollment and active staged Agent withdrawal preserve custody"
       ]
     },
     {
@@ -318,6 +318,7 @@
         "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
         "a provisioning failure takes the Namespace lock before its claimed work row",
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
+        "deploy rechecks a saved Network proxy credential after its exact operate grant is revoked",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
         "Guarded stop protects a queued successor and stops the exact deployed Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
@@ -650,6 +651,7 @@
         "scoped deployment channel observes IAM revocation after the writer lock",
         "scoped deployment admission observes IAM revocation after the writer lock",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
+        "live apply saves edits and enqueues their exact snapshot atomically",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
       ]
     },
@@ -812,6 +814,10 @@
     {
       "path": "tests/integration/postgres-readiness-capacity.test.ts",
       "expectedTests": ["PostgreSQL readiness shares only in-flight application-pool work"]
+    },
+    {
+      "path": "tests/integration/postgres-metrics-listener-capacity.test.ts",
+      "expectedTests": ["metrics listener bounds PostgreSQL scrape waiters and pipelined responses"]
     },
     {
       "path": "tests/integration/postgres-private-secret-create.test.ts",

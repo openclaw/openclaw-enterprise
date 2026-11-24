@@ -2847,6 +2847,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-radius: var(--radius);
   background: var(--bg);
 }
+.repository-selection > .field[hidden] {
+  display: none;
+}
 .repository-selection h2 {
   margin-bottom: var(--space-2);
 }
@@ -4798,6 +4801,69 @@ html:has(#create-agent-form) {
   border-radius: var(--radius);
   margin: var(--space-2) 0;
 }
+.repository-card:has(.repository-grant) {
+  border: 1px solid var(--line);
+  margin: var(--space-1) 0;
+}
+.repository-grant {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+}
+.repository-grant > .repository-identity {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 var(--space-2);
+  align-items: center;
+  padding-right: var(--space-2);
+}
+.repository-grant .action-icon {
+  color: var(--muted);
+}
+.repository-grant .repository-description {
+  grid-column: 2;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.repository-grant > .field {
+  min-width: 0;
+  width: 10.5rem;
+  margin: 0;
+}
+.repository-grant select {
+  min-height: var(--control-h-sm);
+  padding-block: var(--space-1);
+}
+.repository-grant > .repository-remove {
+  grid-column: -2;
+  grid-row: 1;
+}
+.repository-grant > .hint {
+  grid-column: 1 / -1;
+  margin: 0 var(--space-2) var(--space-2) 0;
+}
+@media (max-width: 520px) {
+  .repository-grant:has(select) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding-block: var(--space-2);
+  }
+  .repository-grant:has(select) > .repository-identity {
+    grid-column: 1 / -1;
+  }
+  .repository-grant > .field {
+    width: auto;
+  }
+  .repository-grant select {
+    min-height: var(--touch-min);
+  }
+  .repository-grant:has(select) > .repository-remove {
+    grid-row: 2;
+  }
+}
 .repository-card-heading {
   display: flex;
   align-items: center;
@@ -4850,6 +4916,9 @@ html:has(#create-agent-form) {
   min-height: var(--touch-min);
 }
 .repository-remove {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
   flex-shrink: 0;
 }
 .repository-access-summary {
@@ -5008,6 +5077,25 @@ html:has(#create-agent-form) {
 .runtime-pod .credential-status-list {
   grid-template-columns: 120px minmax(0, 1fr);
   margin: var(--space-2) 0 0;
+}
+@media (width > 1100px) {
+  .runtime-pod {
+    container: runtime-pod / inline-size;
+  }
+  @container runtime-pod (min-width: 21rem) {
+    .runtime-pod .credential-status-list {
+      grid-template-columns: min(23%, 120px) minmax(0, 3fr) max-content minmax(3.25rem, 2fr);
+      row-gap: var(--space-2);
+    }
+    /* Start each container on its own row and give termination details the remaining width. */
+    .runtime-container-label,
+    .runtime-termination-label {
+      grid-column: 1;
+    }
+    .runtime-termination-label + dd {
+      grid-column: 2 / -1;
+    }
+  }
 }
 .runtime-events {
   margin: var(--space-3) 0 0;

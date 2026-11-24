@@ -42,6 +42,18 @@ if (mode === "exit-silent") {
 } else if (mode === "mixed-line-endings" && command === "logs" && target === "--timestamps") {
   process.stdout.write("2026-10-21T08:52:18.75Z newer wrapper failure\r\n");
   process.stderr.write("2026-10-21T08:52:18Z older wrapper warning\n");
+} else if (mode === "gateway-ready-late" && command === "logs") {
+  // The Gateway already answers /readyz, but "gateway ready" reaches the log after a
+  // snapshot read: only a follower sees it.
+  process.stdout.write(
+    '{"subsystem":"gateway","level":"info","message":"gateway startup outcomes: internal-hooks=skipped"}\n',
+  );
+  if (target === "--follow") {
+    setTimeout(() => {
+      process.stdout.write('{"subsystem":"gateway","level":"info","message":"gateway ready"}\n');
+      setInterval(() => {}, 1_000);
+    }, 300);
+  }
 } else if (command === "inspect" && mode.startsWith("wait-")) {
   // Running, exit code, StartedAt and FinishedAt, as the follower's --format asks.
   const finishedAt: Record<string, string | undefined> = {

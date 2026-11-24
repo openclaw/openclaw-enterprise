@@ -89,6 +89,13 @@ project and expose any Secret in that namespace. Distinct identities and exact
 ownership checks do not eliminate this namespace-level trust; independently
 enforced workload admission is required for stronger isolation.
 
+For an [Agent Gateway channel proxy](../agents/network-proxy.md), the worker
+updates only preallocated, exact-name credential slots in the OCC release
+namespace. Envoy Gateway becomes a trusted reader of that credential; the
+Gateway and Harness do not receive it. The inspection listener excludes
+credential-derived SDS versions. A configured upstream proxy is trusted for
+final destination resolution and address enforcement.
+
 The upstream ChatGPT admin key is read only by the API-side `ChatGPTClient`
 owned by its configured [Backend](../backends.md); it
 never appears in startup YAML, persistence, public account data, workload Pods,

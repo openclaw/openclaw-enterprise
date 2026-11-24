@@ -119,6 +119,14 @@ send it as the JSON body:
 gh api --method POST repos/OWNER/REPO/pulls --input pull.json
 ```
 
+OCE writes the creation route only when every repository bound to the Agent has a
+saved Read or Write grant. While one binding has no grant, the Agent keeps Git and
+the read routes, and OpenShell refuses creation with 403 before GitHub receives
+it. To allow creation, save a Read grant for that repository, or remove its
+binding, and redeploy. A Sandbox that an earlier Worker started with the
+creation route in that state gets no new credential until the Agent is
+redeployed.
+
 If a creation result is uncertain, inspect the repository before submitting again.
 To withdraw creation, save Read for the repository and redeploy. Verify that the
 old Sandbox retires.
@@ -130,10 +138,12 @@ the body, and OCE does not check it. An Agent that can create pull requests in a
 repository can also do the following in that repository:
 
 - Name another repository's branch as the head, with `head: "OWNER:BRANCH"` or
-  `head_repo`. The credential covers every repository bound to the Agent,
-  including a binding without a saved grant. If such a repository shares a fork
-  network with the target, its commits become readable through the target's
-  pull request ref and diff.
+  `head_repo`. Commits of that repository become readable through the target's
+  pull request ref and diff. GitHub refuses a head repository that the
+  credential does not cover, with 422 "not all refs are readable" (verified
+  against github.com). The credential covers every repository bound to the
+  Agent, and creation is only available while each of them has a saved grant,
+  so the head can only be a repository the Agent can already read.
 - Convert an existing issue into a pull request, with `issue: NUMBER`, which
   changes that issue.
 
@@ -143,17 +153,9 @@ Two things bound both cases. GitHub applies the permissions and repositories of
 the credential. The target is always a repository for which the Agent already
 holds a saved Write grant.
 
-To avoid the fork exposure, give every repository bound to an Agent that can
-create pull requests a saved Read or Write grant, or remove the bindings the
-Agent does not need, and redeploy. The credential then covers only repositories
-the Agent can already read. Otherwise leave `pull_requests` at `read` on the
-registration, which withholds creation.
-
-Closing it in the product needs one of two changes, and neither exists yet. OCE
-could withhold the creation route unless every bound repository has a saved
-grant. OpenShell could inspect request bodies, which would also cover issue
-conversion. Whether GitHub refuses a head repository that the credential does
-not cover has not been verified.
+Issue conversion stays open: preventing it needs OpenShell to inspect request
+bodies, which it does not. To rule it out, leave `pull_requests` at `read` on
+the registration, which withholds creation.
 
 ## Console access levels
 
