@@ -44,6 +44,9 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
     ...initial,
   };
   const operable = new Set(["agent-a", "agent-b"]);
+  // Revisions with an unretired installed-copy record (deployment writes it, the Worker retires it).
+  const copies = new Set(["revision-agent-a", "revision-agent-b"]);
+  const copyRead = { fails: false };
   // The access each revision was deployed with: its saved repository network policy grants.
   const admitted = new Map<string, { repository: string; access: "read" | "write" }[] | undefined>([
     ["revision-agent-a", [{ repository: "fixture/a", access: "write" }]],
@@ -94,6 +97,12 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
             }
           },
         },
+        async recorded(revisionId: string) {
+          if (copyRead.fails) {
+            throw new Error("connection terminated");
+          }
+          return copies.has(revisionId);
+        },
       };
     },
     async resolve() {
@@ -113,6 +122,8 @@ function custodyFake(initial: Partial<SourceRow> = {}) {
   return {
     row,
     operable,
+    copies,
+    copyRead,
     admitted,
     counts,
     custody,
@@ -220,6 +231,12 @@ test("every loan refusal releases the row, names a code, and is reported once pe
       "source_access_exceeded",
     ],
     ["lost operate", (fake) => fake.operable.delete("agent-a"), "operate_denied"],
+    [
+      "no unretired copy record",
+      (fake) => fake.copies.delete("revision-agent-a"),
+      "source_copy_unrecorded",
+    ],
+    ["copy record unreadable", (fake) => (fake.copyRead.fails = true), "source_lock_failed"],
     ["classic token", (fake) => (fake.row.credential = classic), "token_class_refused"],
     ["unreadable", (fake) => (fake.row.unreadable = true), "source_unreadable"],
     ["lock wait ended", (fake) => (fake.row.lockTimesOut = true), "source_locked"],
@@ -256,6 +273,7 @@ test("every loan refusal releases the row, names a code, and is reported once pe
         "source_preset_refused",
         "source_access_exceeded",
         "operate_denied",
+        "source_copy_unrecorded",
       ].includes(reason)
     ) {
       assert.equal(

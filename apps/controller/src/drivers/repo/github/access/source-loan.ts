@@ -52,6 +52,12 @@ export interface RepositorySourceCustody {
     | {
         readonly source: LockedRepositorySource | undefined;
         readonly hold: MaterialWriteHold;
+        /**
+         * Whether an unretired installed-copy record names this revision's copy of the Source,
+         * read on the holding session. DELETE takes the row exclusively before it reads the
+         * copies, so it cannot pass between this read and the Provider write.
+         */
+        readonly recorded: (revisionId: string) => Promise<boolean>;
       }
     | undefined
   >;
@@ -85,6 +91,7 @@ const reasons = {
   operate_denied: "is not operable by the Agent principal",
   token_class_refused: "holds a token other than a fine-grained token",
   source_unreadable: "could not be read",
+  source_copy_unrecorded: "has no recorded installed copy for this revision; redeploy the Agent",
 } as const;
 export type RepositorySourceRefusalReason = keyof typeof reasons;
 
@@ -129,7 +136,7 @@ type LentSource = {
  * The native material reader for a TokenService Source, in place of App token rows: no copy of
  * the value is kept in the database and no migration is needed. At each loan it rechecks the
  * Source's state, owner, preset and ceiling (against the revision's saved grants),
- * the Agent principal's `operate` and the token class,
+ * the Agent principal's `operate`, the revision's unretired installed-copy record and the token class,
  * then lends the value for at most 15 minutes. Ids derive from the source key, the loan window
  * and the custody version, so a replaced value is new material and the runtime rotates it in.
  * `readWarm` returns its material with the row hold, which the Provider write releases.
@@ -231,6 +238,17 @@ export function createRepositorySourceMaterialReader<
       }
       if (!(await custody.operate(source.session, ref))) {
         throw new RepositorySourceLoanRefusal(sourceId, "operate_denied");
+      }
+      // DELETE refuses while a copy is unretired: a copy without its record would let the
+      // Source be deleted while a Provider holds its value, so nothing is lent for it.
+      let recorded: boolean;
+      try {
+        recorded = await locked.recorded(source.session.revisionId);
+      } catch {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_lock_failed");
+      }
+      if (!recorded) {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_copy_unrecorded");
       }
       let resolved: Awaited<ReturnType<RepositorySourceCustody["resolve"]>>;
       try {
