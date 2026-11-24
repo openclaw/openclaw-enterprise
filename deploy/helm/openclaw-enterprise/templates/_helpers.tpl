@@ -933,6 +933,10 @@ capabilities:
 - name: OCC_CHART_GATEWAY_ROUTING
   value: {{ dict "gatewayName" (include "openclaw.gatewayRouting.gatewayName" .) "gatewayNamespace" .Release.Namespace "envoyNamespace" .Values.gatewayRouting.envoyNamespace "hostname" (include "openclaw.gatewayRouting.hostname" .) "defaultHostname" (include "openclaw.gatewayRouting.defaultHostname" .) | toJson | quote }}
 {{- end }}
+{{- if .Values.backend.openshell.clientSecretName }}
+- name: OCC_CHART_OPENSHELL_CLIENT_DIRECTORY
+  value: "/etc/openclaw/openshell"
+{{- end }}
 {{- end -}}
 
 {{/* Reject obvious quantity syntax errors; Kubernetes owns full quantity validation.

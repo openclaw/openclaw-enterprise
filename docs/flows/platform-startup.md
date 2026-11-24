@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-24
+last_updated_session: authoring-run/125e7e78-98c4-4985-829f-320c7f9ac1c6
 ---
 
 # Platform Startup Flow
@@ -126,6 +126,17 @@ HTTPS endpoint case-insensitively, matching both gateway transports. HTTPS still
 needs bearer-token authentication to count as protected; operator TLS cannot
 replace that ordinary-RPC identity. HTTP still requires the explicit NetworkPolicy
 boundary and cannot carry operator TLS.
+
+When `backend.openshell.clientSecretName` is set, Helm passes the mount directory
+to the installation hook, API and worker in `OCC_CHART_OPENSHELL_CLIENT_DIRECTORY`.
+If either mTLS client file is under `/etc/openclaw/openshell`, the certificate and
+key must use the exact paths `/etc/openclaw/openshell/tls.crt` and
+`/etc/openclaw/openshell/tls.key`. You can also mount both files elsewhere.
+A pair split across the two locations fails startup with `CHART_LISTENER_MISMATCH`.
+The root certificate can be external or `/etc/openclaw/openshell/ca.crt`.
+Without the Helm setting, startup skips this path check. The check leaves file
+availability, certificate validity and Gateway connectivity unverified.
+
 Production requires the startup file. Development may omit it: the API then
 uses PostgreSQL plus the filesystem Configuration Driver rooted at
 `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, and the worker uses the Docker Compute
@@ -289,6 +300,7 @@ execution begins in the adjacent
 
 ## Changelog
 
+- 2026-11-24 04:46: Explain how startup checks OpenShell client paths against the Helm mount. (authoring-run/125e7e78-98c4-4985-829f-320c7f9ac1c6 - 619f3921c231cc892964d78c58d780f650240971)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 18:44: Update controller construction sources. (authoring-run/38e2165b-e5b2-4007-92cf-748673a94e25 - 261eb78aef5e3ae3b61bb0a0ea7e0583b5e59371)
 - 2026-11-18 01:13: Record release-metadata refusal before the migration connection. (authoring-run/9a169618-9c17-48f1-927c-556605a302b2 - 254d0a96f86744b23f2394d233f0d7728480e844)
