@@ -28,9 +28,11 @@ user-visible behavior.
 graph TD
   A["Create Agent form"] --> B["Plugins, model, and repository choices"]
   B -->|repository access required and missing| H["Explain the requirement before provisioning"]
-  B -->|supported Dedicated| C["Queue provisioning with inline Configuration"]
+  B -->|supported Dedicated with profile access| C["Queue provisioning with inline Configuration"]
   C --> D["Worker creates resources, grants and first deployment"]
   B -->|ordinary draft| E["Validate, then POST Configuration and Agent"]
+  B -->|GitHub access per repository| I["Save draft with policy and verify grants"]
+  I --> F
   E --> F["Grant Agent use of selected Secrets"]
   F -->|failed| G["Retry credential access"]
 ```
@@ -142,7 +144,13 @@ Source-free deployment follows the [protected admission flow](../credential-sour
 
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
-Supported Dedicated runtimes submit inline Configuration, optional repository
+[Per-repository access](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
+defaults selected repositories to their delegated limits. With a selection,
+the API saves the draft and grants atomically. Console confirms them before
+granting credentials. Deployment checks the reviewed version under the Namespace lock
+and refuses stale grants with HTTP 409.
+
+Otherwise supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
 a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. Before it saves a model Secret or registers a
 Credential Source for the request, the form runs the preflight below with the planned method.
