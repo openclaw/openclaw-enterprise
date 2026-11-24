@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-24
-last_updated_session: authoring-run/2270a9df-5f0f-4c15-b5e2-1f37520233e3
+last_updated_session: authoring-run/ee107727-89f5-45e8-b411-3dfb7b7aa9b5
 ---
 
 # Credential source lifecycle flow
@@ -24,12 +24,12 @@ An operator registers a credential with TokenService and selects its Source for 
 graph TD
   Register["<b>TokenService</b><br/>Store credential and Source"] --> Admit["<b>OCC</b><br/>Authorize Source and save policies"]
   Admit --> Target["<b>Compute</b><br/>Create idle Sandbox"]
-  Target --> Delivery["<b>Worker and Proxy</b><br/>Authorize and prepare delivery"]
+  Target --> Delivery["<b>Worker and Proxy</b><br/>Authorize and attach Provider"]
   Delivery --> Ready["<b>Compute and Sandbox</b><br/>Apply and verify policy"]
   Ready --> Activate["<b>Worker and Sandbox</b><br/>Reauthorize and start Harness"]
   Activate --> Traffic["<b>Compute</b><br/>Verify runtime and publish routes"]
   Traffic --> Update["<b>TokenService</b><br/>Commit replacement credential"]
-  Update --> Notify["<b>Proxy</b><br/>Update Provider and verify targets"]
+  Update --> Notify["<b>Proxy</b><br/>Update delivery copy or<br/>verify native Provider"]
   Notify -->|delivery failed| Retry["<b>Operator</b><br/>Request manual retry"]
   Retry --> Preflight["<b>OCC</b><br/>Authorize all selected Sources"]
   Preflight -->|authorized| Notify
@@ -43,7 +43,7 @@ graph TD
   Detach --> Receipt{"Detach receipt REVOKED?"}
   Receipt -->|No| Pending["<b>Worker</b><br/>Keep pending and retry"]
   Pending --> WithdrawalTarget
-  Receipt -->|Yes| Complete["<b>Worker and Proxy</b><br/>Record revoked; retire last copy"]
+  Receipt -->|Yes| Complete["<b>Worker and Proxy</b><br/>Record revocation<br/>Retire unused delivery copy"]
 ```
 
 The arrows show implemented control flow. Readiness checks do not by themselves prove a successful model request or all enforcement guarantees.
@@ -73,7 +73,9 @@ The caller binds a ready Source in the same Namespace and selects it for Harness
 
 Compute creates and records an idle Sandbox, with the model credential route withheld, and makes the authenticated Gateway operator route available for node enrollment. It asks Worker to configure the recorded target. Worker rechecks the deploying actor and Agent's access to each Source, matches its identity, type, and TokenService instance against the revision snapshot, and refuses withdrawn or unavailable Sources. It gives Credential Proxy a resolver limited to the admitted Sources. The selected TokenService determines which credential it can resolve.
 
-The OpenShell Proxy creates or reuses a Provider for each credential projection. Two bindings can use the same Source with different environments and disjoint endpoint paths. Worker resolves each Source at most once when Proxy needs material to create its delivery copies. Existing Providers are attached without renewal. The Harness receives a fresh Sandbox placeholder for each binding. Failed attachment triggers cleanup of the prepared copies. OpenShell refuses to delete a Provider still attached to another Sandbox.
+For OCC custody, the OpenShell Proxy creates or reuses a Provider for each credential projection. Two bindings can use the same Source with different environments and disjoint endpoint paths. Worker resolves each Source at most once when Proxy needs material to create its delivery copies. Existing Providers are attached without renewal. The Harness receives a fresh Sandbox placeholder for each binding. Failed attachment triggers cleanup of the prepared copies. OpenShell refuses to delete a Provider still attached to another Sandbox.
+
+In the [OpenShell custody preview](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/token-service/openshell.ts:resolveNativeProvider` reads the Source's private locator and verifies the Workspace and Provider. Proxy attaches that Provider without calling the credential resolver. Agent Stop and withdrawal remove the binding. The Provider remains until Source DELETE.
 
 Sandbox compiles HTTP and managed MCP routes from the frozen bindings and injection policies. Managed MCP uses exact RPC and selected tool rules at the reviewed endpoint. Sandbox checks for overlap with credential-free routes and refuses broad Plugin network grants it cannot preserve. The [Proxy Driver reference](../reference/drivers/credential-proxy.md) records the accepted temporary MCP exceptions. A sole model route keeps the established endpoint shape for recovery. Compute checks that the Harness can launch with its selected authentication method and waits for Sandbox policy and Proxy readiness before preparing launch. The ordinary Agent workflow still needs Plugin admission and pinned Template authority. The [status table](../reference/credential-sources.md#implementation-status) records the current limits.
 
@@ -110,6 +112,8 @@ API composition connects the selected native Proxy to TokenService and binds a t
 
 If delivery fails, the replacement remains in TokenService custody. OCC audits the committed update and delivery failure separately, and PATCH returns `503 DEPENDENCY_UNAVAILABLE`.
 
+In the OpenShell custody preview, `apps/controller/src/drivers/token-service/openshell.ts:updateSource` updates the same Workspace Provider. The Proxy checks the Provider version on notification or manual retry. OpenShell propagates the update to its attached Sandboxes. The preview's retry result confirms the native Provider, and serving confirmation still requires a running Harness.
+
 #### Retry delivery
 
 `apps/controller/src/http/credential-sources.ts:pushAgentCredentials`, `packages/occ/src/agent-credential-retry.ts:pushAgentCredentials`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
@@ -141,6 +145,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 13:46: Trace static Source custody, direct Provider attachment, and retirement in the OpenShell development preview. (authoring-run/ee107727-89f5-45e8-b411-3dfb7b7aa9b5 - b3d10d91c1e7ae20dadcf22eb4b7e350df96b234)
 
 - 2026-11-24 09:12: Describe managed MCP compilation from frozen bindings and its enforcement limits. (authoring-run/2270a9df-5f0f-4c15-b5e2-1f37520233e3 - 7bba27408a4ae30c1f7066b7d250b24ec0b36dd0)
 

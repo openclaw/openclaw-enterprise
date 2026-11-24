@@ -91,7 +91,7 @@ import {
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
-import { createRepositoryFields } from "./repositories.mjs";
+import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
@@ -964,9 +964,10 @@ export async function renderAgentDetail(
   const tab = url.searchParams.get("tab");
   let configureRepositories =
     tab === "repositories" && url.searchParams.get("repositoryAccess") === "1";
+  const isDedicatedCodex = (values: OpenClawConfigurationDocument) =>
+    agent.executionMode === "dedicated" && configuredHarnessId(values) === "codex";
   const hasRepositoryPermissions = (values: OpenClawConfigurationDocument) =>
-    agent.executionMode === "dedicated" &&
-    configuredHarnessId(values) === "codex" &&
+    isDedicatedCodex(values) &&
     agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
   // Sharing policy reads need Installation administration and a denial is audited, so the
   // Access tab is left out (not disabled) when the session probe already showed that access is
@@ -3506,6 +3507,11 @@ export async function renderAgentDetail(
     const executionMode = agent.executionMode;
     let deployPending = false;
     let deployReloadMessage = "";
+    const repositoryDeploymentWarning = element(
+      "p",
+      { className: "hint", hidden: true },
+      FIRST_REPOSITORY_DEPLOYMENT_WARNING,
+    );
     // A normal Agent link has no creation receipt. The same GitHub credential
     // profile supports legacy access and saved grants, including deny-all.
     const firstGitHubDraft =
@@ -4260,8 +4266,25 @@ export async function renderAgentDetail(
       // while one of them shows (finding 2878).
       const deployReason = deployStatus.textContent ? deployStatus : deployFeedback;
       setUnavailable(deploy, deployUnavailable, deployReason);
-      if (deploy.ariaDescription !== pendingDeploymentHint) {
-        deploy.ariaDescription = pendingDeploymentHint;
+      // An empty visible history can hide earlier versions. Bindings can also be empty
+      // with a saved policy, so the guidance describes the consequence conditionally.
+      const showRepositoryWarning =
+        !deployUnavailable &&
+        !reviewRepositories &&
+        callerPermissions?.deploy === true &&
+        callerPermissions.sandboxPolicyRead &&
+        isDedicatedCodex(values) &&
+        visibleRevisions.length === 0 &&
+        !currentRevisionId &&
+        currentRuntimeState === "stopped" &&
+        formerCurrent.size === 0 &&
+        !acceptedHiddenVersion(0);
+      setHidden(repositoryDeploymentWarning, !showRepositoryWarning);
+      const deployDescription = showRepositoryWarning
+        ? FIRST_REPOSITORY_DEPLOYMENT_WARNING
+        : pendingDeploymentHint;
+      if (deploy.ariaDescription !== deployDescription) {
+        deploy.ariaDescription = deployDescription;
       }
       updateChecklist();
     }
@@ -4536,6 +4559,7 @@ export async function renderAgentDetail(
         deploy.disabled = true;
         deploy.removeAttribute("aria-description");
         deployPending = true;
+        setHidden(repositoryDeploymentWarning, true);
         deployInFlight = true;
         content.toggleAttribute("inert", true);
         updateNavigationControls();
@@ -4825,6 +4849,7 @@ export async function renderAgentDetail(
       reviewRepositories ? confirmation : null,
       reviewRepositories ? reviewAccess : null,
       reviewRepositories ? adjustRepositories : null,
+      repositoryDeploymentWarning,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
       deployFeedback,
