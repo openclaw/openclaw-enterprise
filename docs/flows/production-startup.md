@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-24"
-last_updated_session: "authoring-run/e942eb38-a6b6-461f-beaa-0a1efaa489da"
+last_updated_session: "authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c"
 ---
 
 # Production Startup Flow
@@ -73,29 +73,33 @@ Migration, bootstrap, API and worker use
 [`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts) with
 [password or Azure workload-identity authentication](../reference/settings/operations.md#postgresql-connection-authentication).
 The factory parses password-mode URLs before applying caller limits and startup
-options, reads TLS files, and checks IP-host certificates. On failover, restart,
-`idle_session_timeout`, or proxy reset, it discards the idle client and logs
-`database.idle-client-error` to stderr with only the error code. Queries reconnect.
+options. TLS-file reads and IP-host certificate checks remain.
+Failover, maintenance restart, `idle_session_timeout` or proxy reset discards the
+idle client and logs only its error code to stderr as `database.idle-client-error`.
+Queries reconnect.
 
 ### 1. Prepare native production inputs
 
 `scripts/diagnose-kubernetes-prerequisites.ts:diagnose`
 [checks prerequisites](../guides/deploy/prerequisite-diagnosis.md) before Helm.
-Both modes pin the kubeconfig, disable kubectl preferences and use private Unix
-sockets that refuse redirects. Diagnosis requires opt-in for exec credentials.
+It pins the kubeconfig, disables kubectl preferences and rejects redirects over
+private Unix sockets. Exec plugins require opt-in. For a Service dependency, it
+reads the Service and checks the named NetworkPolicy's egress grants.
 [EKS inventory](../guides/deploy/prerequisite-diagnosis.md#collect-eks-addresses)
-requires opt-in for every credential type. It verifies account, ARN, endpoint
-and CA before collecting IPv4 addresses from the API Service and its EndpointSlices.
+requires opt-in for all credentials. It verifies the account, ARN, endpoint
+and CA before reading API Service and EndpointSlice addresses.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
 Keep values, Installation YAML and credentials outside the checkout. Helm
-selects images, endpoint, Secret names, placement and egress. `openclaw.validate`
-limits DNS-1123 release Namespace labels to 63 characters. Installation YAML owns
-Drivers, Backends, runtime images, projected identity, networking and storage.
-File-backed Secrets supply startup credentials, database URLs and optional CA,
-Better Auth signing and optional ChatGPT administrator credentials. Maintain
-matching values and Installation inputs in the operator workflow.
+selects images, endpoint, Secret names, placement and egress.
+`openclaw.validate` limits DNS-1123 release Namespace labels to 63 characters.
+Installation YAML selects Drivers, Backends, runtime images, projected identity,
+networking and storage.
+
+File-backed Secrets supply Installation startup, database URLs/optional CA, Better Auth
+signing, and optional ChatGPT administrator credentials. Helm neither synchronizes
+inputs, rewrites Driver configuration, nor infers runtime images.
 
 ### 2. Precreate the bootstrap credential Secret
 
@@ -113,13 +117,14 @@ retained sources does not rotate credentials.
 ### 3. Run Helm initialization
 
 `internal/occcli/installation_receipt.go:installationInstallCommand` snapshots
-kubeconfig, chart, and values, checks release state, and syncs intent and its
-directory. A failed stdout notice preserves intent and stops dispatch. The CLI
-syncs the unknown marker before Helm. `observeInstallationJob` records the first
-recognized Job UID for the attempt. Report errors never replay Helm.
+kubeconfig/chart/values, checks release states and syncs intent and its directory.
+A failed stdout notice names and preserves intent; dispatch stops. Otherwise the
+CLI syncs the unknown marker before Helm. `observeInstallationJob` records the
+first recognized, attempt-matched install Job UID. Report errors leave Helm's
+outcome unchanged and never replay install.
 
 Template failures add [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
-The CLI keeps up to 4 MiB of Helm stderr in memory and discards raw diagnostics.
+Helm stderr is bounded to 4 MiB in memory; raw diagnostics are not printed or saved.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
 installs isolation before the Job; it and later policies grant configured
@@ -218,11 +223,11 @@ five-second failures.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-On `SIGTERM`, the API stops accepting connections and drains with
-`Connection: close` to skip the 72-second keep-alive wait. The single `Recreate`
-replica has no peer or `preStop`. Its grace period is 30 seconds.
-Logs show `shutdown.started` (`signal`), `shutdown.completed` (`durationMs`), or
-`shutdown.failed` (exit 1). Only `shutdown.started` indicates an interrupted drain.
+On `SIGTERM`, the API stops accepting connections and drains requests with
+`Connection: close`, avoiding the 72-second keep-alive wait. Its single `Recreate`
+replica has no peer or `preStop`; the 30-second grace cuts off unfinished requests.
+Logs show `shutdown.started` (`signal`), then `shutdown.completed` (`durationMs`),
+or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drain.
 
 [Production](../../apps/controller/src/composition/production.ts) and
 [development](../../apps/controller/src/composition/development-postgres.ts)
@@ -272,10 +277,11 @@ authenticated Namespace access. Below the supported 1.35 baseline, the API logs
 `compute.preflight-warning` with both versions and continues. An invalid version
 response, unreachable API, or failed Namespace access fails preflight.
 
-The worker validates settings and IAM, opens the application-role database, loads
-Drivers, and runs Compute preflight with the same warning. It emits `worker.started` and polls durable
-Namespace and AgentRevision work. Readiness needs fresh queue-health observations.
-The bootstrap credential projection stays with the Job.
+The worker independently validates production settings, opens the same
+application-role database, loads selected Drivers, validates IAM, runs Compute
+preflight with the same advisory warning, emits `worker.started`, and polls
+durable Namespace/AgentRevision work. Readiness requires fresh queue-health
+observations; neither process receives the bootstrap credential projection.
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
@@ -369,6 +375,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 21:59: Limit Service checks to egress. (authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c - cabc3559c04447fc30ae80675db688c23d673e48)
 
 - 2026-11-24 02:19: Validate API address inventory and document credential opt-in. (authoring-run/e942eb38-a6b6-461f-beaa-0a1efaa489da - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
 

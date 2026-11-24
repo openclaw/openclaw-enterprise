@@ -81,13 +81,6 @@ function api(
                 namespaced: true,
                 verbs: ["get"],
               },
-              {
-                name: "secrets",
-                singularName: "secret",
-                kind: "Secret",
-                namespaced: true,
-                verbs: ["get"],
-              },
             ],
           },
         };
@@ -109,15 +102,17 @@ function api(
 const apiPath = "/api/v1/namespaces/default/services/kubernetes";
 const apiSlicesPath = "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices";
 const rolloutPath = "/apis/apps/v1/namespaces/default/deployments/controller";
+const rolloutCheck = "controller:default/controller";
 const servicePath = "/api/v1/namespaces/default/services/dependency";
-const secretPath = "/api/v1/namespaces/default/secrets/leaf";
+const policyPath =
+  "/apis/networking.k8s.io/v1/namespaces/default/networkpolicies/dependency-egress";
 const dnsName = "gateway.test.invalid";
 
-function object(kind: "Service" | "Secret", name: string, fields: object) {
+function serviceReply(name: string, spec: object) {
   return {
     status: 200,
     body: {
-      kind,
+      kind: "Service",
       apiVersion: "v1",
       metadata: {
         name,
@@ -125,7 +120,7 @@ function object(kind: "Service" | "Secret", name: string, fields: object) {
         uid: randomUUID(),
         resourceVersion: "1",
       },
-      ...fields,
+      spec,
     },
   };
 }
@@ -172,8 +167,7 @@ test(
     const replacementToken = randomUUID();
     const caBundle = await readFile(ca.caPath);
     const tokenFile = join(source, "reader-token");
-    const certData = Buffer.from(server.cert).toString("base64");
-    const keyData = Buffer.from(server.key).toString("base64");
+    const keyData = Buffer.from(client.key).toString("base64");
     await writeFile(tokenFile, token, { mode: 0o600 });
     const plugin = {
       apiVersion: "client.authentication.k8s.io/v1",
@@ -193,23 +187,13 @@ test(
     const httpRequests: ApiRequest[] = [];
     let firstServiceRead: (() => void) | undefined;
     let pauseServiceRead = false;
-    let denyDependency = false;
-    let serveValidLeaf = false;
     let dependencyReply: Reply | undefined;
-    let secretReply: Reply | undefined;
+    let deniedPath: string | undefined;
     let apiServiceReply: Reply | undefined;
     let apiSlicesReply: Reply | undefined;
     let redirect: { path: string; location: string } | undefined;
     let proxyTunnel: { authority: string; port: number } | undefined;
-    const plaintext = createServer(
-      api(httpRequests, ({ path }) => {
-        if (path === secretPath) {
-          return object("Secret", "leaf", {
-            data: { "tls.crt": certData, "tls.key": keyData },
-          });
-        }
-      }),
-    );
+    const plaintext = createServer(api(httpRequests, () => undefined));
     // The proxy never resolves the CONNECT authority. It can forward the
     // selected test authority only to the independently bound loopback fixture.
     plaintext.on("connect", (request, socket, head) => {
@@ -316,30 +300,16 @@ test(
         firstServiceRead?.();
         return pauseServiceRead
           ? { status: 0, body: {} }
-          : (apiServiceReply ??
-              object("Service", "kubernetes", {
-                spec: { clusterIP: "10.32.0.1" },
-              }));
+          : (apiServiceReply ?? serviceReply("kubernetes", { clusterIP: "10.32.0.1" }));
       }
       if (requestPath === apiSlicesPath && apiSlicesReply) {
         return apiSlicesReply;
       }
-      if (denyDependency && [servicePath, secretPath].includes(requestPath)) {
+      if (requestPath === deniedPath) {
         return kubernetesStatus(403, "Forbidden");
       }
       if (requestPath === servicePath) {
         return dependencyReply;
-      }
-      if (requestPath === secretPath) {
-        return (
-          secretReply ??
-          object("Secret", "leaf", {
-            data: {
-              "tls.crt": serveValidLeaf ? certData : Buffer.from("invalid leaf").toString("base64"),
-              "tls.key": keyData,
-            },
-          })
-        );
       }
     });
     const serverIdentity = { cert: server.cert, key: server.key };
@@ -432,10 +402,8 @@ test(
       serviceDependency: {
         service: { namespace: "default", name: "dependency", port: 443 },
         policy: { namespace: "default", name: "dependency-egress" },
-        tls: { secretName: "leaf", serverName: dnsName },
       },
     };
-    await writeFile(plan, JSON.stringify(planInput));
     function collect(
       environment: NodeJS.ProcessEnv = {},
       expectCleanup = true,
@@ -510,6 +478,32 @@ test(
       return new Map(checks.map((check) => [check.id, check]));
     }
 
+    await t.test("unsupported plan fields stop diagnosis before Kubernetes reads", async () => {
+      await writeFile(path, verifiedConfig, { mode: 0o600 });
+      const { serviceDependency, ...required } = planInput;
+      // A requested check must never disappear from a successful report.
+      for (const [input, message] of [
+        [{ ...required, serviceDependecy: serviceDependency }, /only supported top-level fields/u],
+        [
+          {
+            ...required,
+            serviceDependency: {
+              ...serviceDependency,
+              tls: { secretName: "leaf", serverName: dnsName },
+            },
+          },
+          /serviceDependency accepts only service and policy/u,
+        ],
+      ] as const) {
+        await writeFile(plan, JSON.stringify(input));
+        const { code, stdout, stderr } = await collect().result;
+        assert.equal(code, 2);
+        assert.equal(stdout, "");
+        assert.match(stderr, message);
+        assert.equal(httpsRequests.length + httpRequests.length, 0);
+      }
+    });
+    await writeFile(plan, JSON.stringify(planInput));
     await t.test("mutual TLS refuses missing or untrusted client certificates", async () => {
       const untrustedDirectory = join(source, "untrusted");
       await mkdir(untrustedDirectory, { mode: 0o700 });
@@ -549,7 +543,7 @@ test(
       assert.equal(httpsRequests.length, 0, "kubectl refused the untrusted server certificate");
     });
     await t.test(
-      "replacing the context and CA cannot redirect the rollout or Secret GET",
+      "replacing the context and CA cannot redirect the rollout or Service GET",
       async () => {
         firstServiceRead = () => {
           // Change the context and user, revoke the on-disk CA, and rotate the token
@@ -561,7 +555,6 @@ test(
         try {
           const checks = await observations(verifiedConfig);
           assert.equal(checks.get("kubernetes-api")?.status, "passed");
-          // Before the fix this Secret GET reached the plaintext endpoint and falsely passed.
           assert.equal(httpRequests.length, 0, "no request reached the plaintext endpoint");
           const apiRead = httpsRequests.find(({ path }) => path === apiPath);
           assert.ok(
@@ -575,17 +568,17 @@ test(
               rolloutReads[0].bearer === `Bearer ${refreshedToken}`,
             "the rollout read remains on the pinned authenticated endpoint",
           );
-          assert.equal(checks.get("controller:default/controller")?.status, "passed");
-          const secretRead = httpsRequests.find(({ path }) => path === secretPath);
+          assert.equal(checks.get(rolloutCheck)?.status, "passed");
+          const serviceRead = httpsRequests.find(({ path }) => path === servicePath);
           assert.ok(
-            secretRead?.hasClientCertificate,
+            serviceRead?.hasClientCertificate,
             "kubectl presented the relative client certificate",
           );
           assert.ok(
-            secretRead.bearer === `Bearer ${refreshedToken}`,
+            serviceRead.bearer === `Bearer ${refreshedToken}`,
             "the verified endpoint received the rotated token",
           );
-          assert.equal(checks.get("service-tls")?.status, "failed");
+          assert.equal(checks.get("service-egress")?.status, "failed");
         } finally {
           firstServiceRead = undefined;
           await Promise.all([writeFile(ca.caPath, caBundle), writeFile(tokenFile, token)]);
@@ -603,16 +596,15 @@ test(
             api(alternateRequests, () => undefined),
           ),
         );
-        serveValidLeaf = true;
         try {
           const normal = await observations(verifiedConfig);
           assert.equal(normal.get("kubernetes-api")?.status, "passed");
-          assert.equal(normal.get("service-tls")?.status, "passed");
+          assert.equal(normal.get(rolloutCheck)?.status, "passed");
 
           for (const [path, id, location] of [
             [apiPath, "kubernetes-api", `http://localhost:${plaintextPort}/sink`],
-            [secretPath, "service-tls", `https://127.0.0.1:${alternatePort}/sink`],
-            [secretPath, "service-tls", "/sink"],
+            [rolloutPath, rolloutCheck, `https://127.0.0.1:${alternatePort}/sink`],
+            [rolloutPath, rolloutCheck, "/sink"],
           ] as const) {
             redirect = { path, location };
             const checks = await observations(verifiedConfig, null);
@@ -636,7 +628,6 @@ test(
           }
         } finally {
           redirect = undefined;
-          serveValidLeaf = false;
         }
       },
     );
@@ -691,20 +682,19 @@ fi
       async () => {
         const checks = await observations(execConfig, 1, { KUBERC: "off" });
         assert.equal(checks.get("kubernetes-api")?.status, "passed");
-        const secretRead = httpsRequests.find(({ path }) => path === secretPath);
+        const serviceRead = httpsRequests.find(({ path }) => path === servicePath);
         assert.ok(
-          secretRead?.bearer === `Bearer ${token}`,
+          serviceRead?.bearer === `Bearer ${token}`,
           "kubectl used the relative exec plugin",
         );
-        assert.equal(checks.get("service-tls")?.status, "failed");
-        assert.match(checks.get("service-tls")?.action ?? "", /verify.*tls\.crt/u);
+        assert.equal(checks.get("service-egress")?.status, "failed");
         assert.match(checks.get("service-egress")?.action ?? "", /Service owner/u);
       },
     );
     await t.test("plaintext contexts fail before any Kubernetes request", async () => {
       const checks = await observations(plaintextConfig);
       assert.equal(checks.get("kubernetes-api")?.status, "failed");
-      assert.equal(checks.get("service-tls")?.status, "unknown");
+      assert.equal(checks.get("service-egress")?.status, "unknown");
       assert.equal(httpRequests.length + httpsRequests.length, 0);
     });
     await t.test("a malformed https server never contacts a plaintext proxy", async () => {
@@ -721,7 +711,6 @@ fi
       assert.equal(httpRequests.length + httpsRequests.length, 0);
       assert.equal(checks.get("kubernetes-api")?.status, "failed");
       assert.match(checks.get("service-egress")?.action ?? "", /Resolve kubernetes-api/u);
-      assert.match(checks.get("service-tls")?.action ?? "", /Resolve kubernetes-api/u);
     });
     await t.test("built-in OIDC is refused before refreshing the original credential", async () => {
       const original = config("bearer", {
@@ -871,8 +860,8 @@ esac
           assert.equal(checks.get("eks-cluster-identity")?.status, "passed");
           assert.equal(checks.get("webhook-addresses")?.status, "passed");
           assert.equal(checks.get("kubernetes-api")?.status, "passed");
-          const secretRead = httpsRequests.find(({ path }) => path === secretPath);
-          assert.equal(secretRead?.tlsServerName, dnsName);
+          const serviceRead = httpsRequests.find(({ path }) => path === servicePath);
+          assert.equal(serviceRead?.tlsServerName, dnsName);
           assert.equal(httpRequests.length, 0);
 
           const alias = {
@@ -887,7 +876,10 @@ esac
           );
           assert.equal(refused.get("eks-cluster-identity")?.status, "failed");
           assert.equal(refused.get("kubernetes-api")?.status, "unknown");
-          assert.match(refused.get("service-tls")?.action ?? "", /Resolve eks-cluster-identity/u);
+          assert.match(
+            refused.get("service-egress")?.action ?? "",
+            /Resolve eks-cluster-identity/u,
+          );
           assert.equal(httpsRequests.length + httpRequests.length, 0);
 
           await eksTest.test("EKS inventory keeps its opt-in and exact read scope", async () => {
@@ -1078,15 +1070,16 @@ esac
                 await expectInventoryFailure(/EndpointSlice inventory is incomplete/u);
               }
               apiSlicesReply = { status: 200, body };
-              apiServiceReply = object("Service", "kubernetes", {
-                spec: { clusterIP: "10.32.0.1", clusterIPs: ["10.32.0.1", "invalid"] },
+              apiServiceReply = serviceReply("kubernetes", {
+                clusterIP: "10.32.0.1",
+                clusterIPs: ["10.32.0.1", "invalid"],
               });
               await expectInventoryFailure(/Service address inventory is incomplete/u);
               apiServiceReply = undefined;
 
               redirect = {
                 path: apiSlicesPath,
-                location: endpoint.plaintext.server + secretPath,
+                location: endpoint.plaintext.server + servicePath,
               };
               try {
                 await expectInventoryFailure(/unexpected redirect/u);
@@ -1126,7 +1119,7 @@ esac
                 );
                 assert.equal(accepted.get("eks-cluster-identity")?.status, "passed", authority);
                 assert.equal(accepted.get("kubernetes-api")?.status, "passed", authority);
-                const read = httpsRequests.find(({ path }) => path === secretPath);
+                const read = httpsRequests.find(({ path }) => path === servicePath);
                 assert.equal(read?.tlsServerName, dnsName);
                 assert.ok(httpRequests.length > 0, "kubectl used CONNECT to reach the TLS fixture");
                 assert.ok(
@@ -1192,20 +1185,25 @@ esac
       assert.equal(httpsRequests.length + httpRequests.length, 0);
     });
     await t.test("denied dependency reads give access guidance", async () => {
-      denyDependency = true;
+      dependencyReply = serviceReply("dependency", {
+        clusterIP: "10.32.0.2",
+        selector: { app: "dependency" },
+        ports: [{ port: 443 }],
+      });
       try {
-        // Direct reads also establish that other prerequisites in this fixture are missing.
-        const checks = await observations(verifiedConfig);
-        for (const [id, action] of [
-          ["service-egress", /read access/u],
-          ["service-tls", /Secret read access/u],
-        ] as const) {
-          const check = checks.get(id);
+        for (const path of [servicePath, policyPath]) {
+          deniedPath = path;
+          const check = (await observations(verifiedConfig)).get("service-egress");
+          const reads = httpsRequests
+            .map((request) => request.path)
+            .filter((path) => path === servicePath || path === policyPath);
+          assert.deepEqual(reads, path === servicePath ? [servicePath] : [servicePath, policyPath]);
           assert.equal(check?.status, "unknown");
-          assert.match(check?.action ?? "", action);
+          assert.match(check?.action ?? "", /read access/u);
         }
       } finally {
-        denyDependency = false;
+        dependencyReply = undefined;
+        deniedPath = undefined;
       }
     });
     await t.test(
@@ -1237,74 +1235,58 @@ esac
       },
     );
 
-    await t.test("only the selected Service can establish an ExternalName mismatch", async () => {
-      const alias = object("Service", "dependency", {
-        spec: { type: "ExternalName", externalName: dnsName },
-      });
-      try {
-        dependencyReply = alias;
-        const selected = (await observations(verifiedConfig)).get("service-egress");
-        assert.equal(selected?.status, "failed");
-        assert.match(selected.summary, /ExternalName/u);
-
-        dependencyReply = { ...alias, body: { ...alias.body, apiVersion: "example.test/v1" } };
-        const unrelated = (await observations(verifiedConfig)).get("service-egress");
-        assert.equal(unrelated?.status, "unknown");
-        assert.ok(!("resources" in unrelated));
-      } finally {
-        dependencyReply = undefined;
-      }
-    });
     await t.test("a ready Deployment cannot establish another controller's readiness", async () => {
-      const id = "controller:default/controller";
       try {
         for (const mismatch of [{ name: "other-controller" }, { namespace: "other" }]) {
           rolloutIdentity = { ...selectedController, ...mismatch };
           const checks = await observations(verifiedConfig);
           assert.ok(httpsRequests.some(({ path }) => path === rolloutPath));
-          assert.equal(checks.get(id)?.status, "unknown", JSON.stringify(mismatch));
+          assert.equal(checks.get(rolloutCheck)?.status, "unknown", JSON.stringify(mismatch));
         }
       } finally {
         rolloutIdentity = selectedController;
       }
     });
-    await t.test("only Kubernetes NotFound reports a selected Secret as absent", async () => {
-      const collectSecret = async (reply: Reply) => {
-        secretReply = reply;
-        const check = (await observations(verifiedConfig)).get("service-tls");
+    await t.test("only Kubernetes NotFound reports a selected Service as absent", async () => {
+      const collectService = async (reply: Reply) => {
+        dependencyReply = reply;
+        const check = (await observations(verifiedConfig)).get("service-egress");
         assert.ok(
-          httpsRequests.some(({ path }) => path === secretPath),
-          "the API received the named Secret read",
+          httpsRequests.some(({ path }) => path === servicePath),
+          "the API received the named Service read",
         );
         assert.ok(check);
         return check;
       };
       try {
-        const missing = await collectSecret(kubernetesStatus(404, "NotFound"));
+        const missing = await collectService(kubernetesStatus(404, "NotFound"));
         assert.equal(missing.status, "failed");
         assert.match(missing.summary, /does not exist/u);
-        const intermediary = await collectSecret({
+        const intermediary = await collectService({
           status: 404,
           body: { message: "route missing" },
         });
         assert.equal(intermediary.status, "unknown");
         assert.doesNotMatch(intermediary.summary, /does not exist/u);
 
-        // A matching certificate cannot establish the identity of the returned object.
-        const leaf = object("Secret", "leaf", { data: { "tls.crt": certData } });
-        assert.equal((await collectSecret(leaf)).status, "passed");
+        // An ExternalName mismatch is conclusive only for the selected Service.
+        const alias = serviceReply("dependency", { type: "ExternalName", externalName: dnsName });
+        const selected = await collectService(alias);
+        assert.equal(selected.status, "failed");
+        assert.match(selected.summary, /ExternalName/u);
         for (const mismatch of [{ kind: "ConfigMap" }, { apiVersion: "example.test/v1" }]) {
-          const invalid = await collectSecret({ ...leaf, body: { ...leaf.body, ...mismatch } });
+          const invalid = await collectService({ ...alias, body: { ...alias.body, ...mismatch } });
           assert.equal(invalid.status, "unknown", JSON.stringify(mismatch));
+          assert.ok(!("resources" in invalid));
         }
 
         for (const body of ["", "null", "[]", "42", "{}", "{"]) {
-          const invalid = await collectSecret({ status: 200, body });
+          const invalid = await collectService({ status: 200, body });
           assert.equal(invalid.status, "unknown", body || "empty response");
           assert.doesNotMatch(invalid.summary, /does not exist/u);
         }
       } finally {
-        secretReply = undefined;
+        dependencyReply = undefined;
       }
     });
     await t.test(
@@ -1336,7 +1318,7 @@ esac
           const beforeRejectedReads = httpsRequests.length;
           for (const [method, path] of [
             ["POST", apiPath],
-            ["GET", secretPath],
+            ["GET", servicePath],
           ]) {
             const status = await new Promise<number | undefined>((resolve, reject) => {
               request(

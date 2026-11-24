@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { X509Certificate } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { get, type IncomingMessage } from "node:http";
@@ -16,7 +15,6 @@ type CrdSelection = { name: string; version: string };
 type ServiceDependency = {
   service: DeploymentSelection & { port: number };
   policy: DeploymentSelection;
-  tls?: { secretName: string; serverName: string };
 };
 
 type PlanInput = {
@@ -61,12 +59,11 @@ type NamedMetadata = KubernetesMetadata & {
   resourceVersion?: string;
 };
 type ResourceObservation = DeploymentSelection & {
-  kind: "Service" | "NetworkPolicy" | "Secret";
+  kind: "Service" | "NetworkPolicy";
   uid: string;
   resourceVersion: string;
 };
 type Condition = { type: string; status: string; observedGeneration?: number };
-type TlsSecret = { metadata?: NamedMetadata; data?: { "tls.crt"?: string } };
 
 type KubeConnection = {
   server: string;
@@ -215,16 +212,11 @@ class DiagnosticError extends Error {}
 const namePattern = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?![\s\S])/;
 
-// Kubernetes bounds the whole resource name. A TLS hostname also limits each label.
 function isResourceName(value: string): boolean {
   return (
     value.length <= 253 &&
     value.split(".").every((part) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(part))
   );
-}
-
-function isDnsName(value: string): boolean {
-  return value.length <= 253 && value.split(".").every((part) => dnsLabel.test(part));
 }
 
 function isObject(value: unknown, fields?: string[]): value is Record<string, unknown> {
@@ -294,10 +286,10 @@ function serviceDependency(value: unknown): ServiceDependency | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (!isObject(value, ["service", "policy", "tls"])) {
-    throw new DiagnosticError("serviceDependency accepts only service, policy and tls");
+  if (!isObject(value, ["service", "policy"])) {
+    throw new DiagnosticError("serviceDependency accepts only service and policy");
   }
-  const { service, policy, tls } = value;
+  const { service, policy } = value;
   if (!isObject(service, ["namespace", "name", "port"])) {
     throw new DiagnosticError("serviceDependency.service must specify namespace, name and port");
   }
@@ -321,24 +313,10 @@ function serviceDependency(value: unknown): ServiceDependency | undefined {
       "serviceDependency.service.port must be a TCP port from 1 through 65535",
     );
   }
-  const selection: ServiceDependency = {
+  return {
     service: { namespace: serviceNamespace, name: serviceName, port: service.port },
     policy: { namespace: policyNamespace, name: policyName },
   };
-  if (tls !== undefined) {
-    if (!isObject(tls, ["secretName", "serverName"])) {
-      throw new DiagnosticError("serviceDependency.tls must specify secretName and serverName");
-    }
-    const secretName = requireName(tls.secretName, "serviceDependency.tls.secretName");
-    const serverName = typeof tls.serverName === "string" ? tls.serverName.toLowerCase() : "";
-    if (!isResourceName(secretName) || !isDnsName(serverName) || isIP(serverName)) {
-      throw new DiagnosticError(
-        "serviceDependency.tls requires a Secret name and a DNS serverName",
-      );
-    }
-    selection.tls = { secretName, serverName };
-  }
-  return selection;
 }
 
 function validateConfig(value: unknown): DiagnosticPlan {
@@ -773,7 +751,6 @@ const namedResources = {
   Deployment: { apiVersion: "apps/v1", plural: "deployments" },
   Service: { apiVersion: "v1", plural: "services" },
   NetworkPolicy: { apiVersion: "networking.k8s.io/v1", plural: "networkpolicies" },
-  Secret: { apiVersion: "v1", plural: "secrets" },
   Namespace: { apiVersion: "v1", plural: "namespaces" },
 };
 
@@ -836,15 +813,6 @@ function exactLabels(selector: LabelSelector | undefined, labels: Record<string,
   );
 }
 
-function resourceFailure(resources: ResourceObservation[]) {
-  return (summary: string, action: string): CheckResult => ({
-    status: "failed",
-    summary,
-    action,
-    resources,
-  });
-}
-
 async function serviceEgress(
   selection: ServiceDependency,
   service: ApiService | null,
@@ -860,7 +828,12 @@ async function serviceEgress(
     };
   }
   const resources = [observeResource("Service", selection.service, service.metadata)];
-  const failure = resourceFailure(resources);
+  const failure = (summary: string, action: string): CheckResult => ({
+    status: "failed",
+    summary,
+    action,
+    resources,
+  });
   if (service.metadata?.deletionTimestamp) {
     return failure("The selected Service is terminating.", serviceAction);
   }
@@ -978,72 +951,6 @@ async function serviceEgress(
     status: "passed",
     summary: "The selected NetworkPolicy has both required Service egress grants.",
     missing,
-    resources,
-  };
-}
-
-function servingCertificate(
-  namespace: string,
-  { secretName, serverName }: NonNullable<ServiceDependency["tls"]>,
-  secret: TlsSecret | null,
-): CheckResult {
-  const secretAction = "Verify the selected TLS Secret with the certificate owner.";
-  if (secret === null) {
-    return {
-      status: "failed",
-      summary: "The selected TLS Secret does not exist.",
-      action: secretAction,
-    };
-  }
-  const resources = [observeResource("Secret", { namespace, name: secretName }, secret.metadata)];
-  const failure = resourceFailure(resources);
-  if (secret.metadata?.deletionTimestamp) {
-    return failure("The selected TLS Secret is terminating.", secretAction);
-  }
-  const certificate = secret.data?.["tls.crt"] ?? "";
-  const bytes = Buffer.from(certificate, "base64");
-  const pem = bytes
-    .toString("utf8")
-    .match(/^\s*(-----BEGIN CERTIFICATE-----\s[\s\S]+?-----END CERTIFICATE-----)/u)?.[1];
-  let leaf: X509Certificate;
-  try {
-    if (!pem || bytes.toString("base64") !== certificate) {
-      throw new Error("invalid leaf");
-    }
-    leaf = new X509Certificate(pem);
-  } catch {
-    return failure(
-      "The selected TLS Secret lacks a readable X.509 leaf in tls.crt.",
-      "Ask the certificate owner to verify that tls.crt contains the public serving certificate.",
-    );
-  }
-  const now = Date.now();
-  const notBefore = leaf.validFromDate.getTime();
-  const notAfter = leaf.validToDate.getTime();
-  if (!Number.isFinite(notBefore) || !Number.isFinite(notAfter)) {
-    return failure("The selected TLS leaf has an unreadable validity window.", secretAction);
-  }
-  if (now < notBefore) {
-    return failure(
-      "The selected TLS leaf is not yet valid.",
-      "Check the collection clock and ask the certificate owner to verify the leaf's validity window.",
-    );
-  }
-  if (now > notAfter) {
-    return failure(
-      "The selected TLS leaf has expired.",
-      "Ask the certificate owner to renew the expired leaf.",
-    );
-  }
-  if (!leaf.checkHost(serverName, { subject: "never", partialWildcards: false })) {
-    return failure(
-      "The selected TLS leaf lacks a DNS SAN matching the expected serverName.",
-      "Confirm the expected serverName and ask the certificate owner to correct the DNS SAN if needed.",
-    );
-  }
-  return {
-    status: "passed",
-    summary: "The selected TLS leaf is within its validity window and has a matching DNS SAN.",
     resources,
   };
 }
@@ -1620,32 +1527,16 @@ async function diagnose(
 
   const dependency = config.serviceDependency;
   if (dependency) {
-    const { service: selectedService, policy, tls } = dependency;
     await check(
       "service-egress",
       "Verify read access to the selected Service and NetworkPolicy, then retry the checks.",
       async () => {
-        const observedService = await getNamed<ApiService>("Service", selectedService);
+        const observedService = await getNamed<ApiService>("Service", dependency.service);
         return serviceEgress(dependency, observedService, () =>
-          getNamed<NetworkPolicy>("NetworkPolicy", policy),
+          getNamed<NetworkPolicy>("NetworkPolicy", dependency.policy),
         );
       },
     );
-    if (tls) {
-      await check(
-        "service-tls",
-        "Verify named Secret read access or ask the certificate owner to run this check.",
-        async () =>
-          servingCertificate(
-            selectedService.namespace,
-            tls,
-            await getNamed<TlsSecret>("Secret", {
-              namespace: selectedService.namespace,
-              name: tls.secretName,
-            }),
-          ),
-      );
-    }
   }
 
   await check(
@@ -1751,7 +1642,7 @@ async function diagnose(
       ...(config.serviceDependency
         ? [
             "Verify the selected NetworkPolicy source Pod selector covers the calling workload.",
-            "Verify policy enforcement, the served TLS leaf and its trust chain separately from the caller's network.",
+            "From the caller's network, verify policy enforcement and, for TLS, the served certificate and trust chain.",
           ]
         : []),
       "Quota observations do not predict chart admission, node capacity or storage availability.",
