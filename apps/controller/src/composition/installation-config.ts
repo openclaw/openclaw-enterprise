@@ -1666,8 +1666,11 @@ async function composeInstallationConfiguration(
     tokenServiceImplementation: string,
   ): Promise<CredentialProxyDriver> => {
     const sandbox = pairedSandbox as SandboxDriver &
-      Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
-    if (typeof sandbox.withdrawStagedCredentialRoute !== "function") {
+      Pick<OpenShellSandboxDriver, "gitRuntimeProviderName" | "withdrawStagedCredentialRoute">;
+    if (
+      typeof sandbox.withdrawStagedCredentialRoute !== "function" ||
+      typeof sandbox.gitRuntimeProviderName !== "function"
+    ) {
       throw new Error(
         "Native credential delivery requires the paired OpenShell Sandbox policy owner.",
       );

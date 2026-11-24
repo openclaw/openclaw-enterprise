@@ -81,7 +81,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   private readonly backend: Backend<OpenShellGateway>;
   private readonly nativeSourceOwner: boolean;
   private readonly sandbox: SandboxDriver &
-    Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
+    Pick<OpenShellSandboxDriver, "gitRuntimeProviderName" | "withdrawStagedCredentialRoute">;
   private sourceNamespaceResolver?: (
     sourceRef: CredentialSourceReference,
     signal: AbortSignal,
@@ -105,7 +105,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     readonly implementation: string;
     readonly tokenServiceImplementation: string;
     readonly backend: Backend<OpenShellGateway>;
-    readonly sandbox: SandboxDriver & Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
+    readonly sandbox: SandboxDriver &
+      Pick<OpenShellSandboxDriver, "gitRuntimeProviderName" | "withdrawStagedCredentialRoute">;
   }) {
     this.nativeSourceOwner = selection.tokenServiceImplementation === "openshell/token-service";
     if (!this.nativeSourceOwner && selection.tokenServiceImplementation !== "occ/token-service") {
@@ -437,7 +438,13 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           config.configuration_error ||
           !sameOpenShellPolicy(revision.policy, expected) ||
           !openShellPushedPolicyMatches(revision.policy, config.policy, routes) ||
-          !openShellEffectivePolicyMatches(revision.policy, config.policy)
+          !this.repositoryEffectivePolicyMatches(
+            revision.policy,
+            config.policy,
+            context,
+            sandbox,
+            routes,
+          )
         ) {
           throw new OpenShellCredentialDeliveryRefusedError();
         }
@@ -788,7 +795,13 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             revision.policy,
             this.repositoryPolicies(context, target.sandbox, routes).combined,
           ) ||
-            !openShellEffectivePolicyMatches(revision.policy, config.policy)))
+            !this.repositoryEffectivePolicyMatches(
+              revision.policy,
+              config.policy,
+              context,
+              target.sandbox,
+              routes,
+            )))
       ) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
@@ -1092,6 +1105,28 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
   }
 
+  private repositoryEffectivePolicyMatches(
+    source: unknown,
+    effective: unknown,
+    context: CredentialDeploymentContext,
+    sandbox: OpenShellSandboxResponse,
+    routes: readonly OpenShellCredentialRoute[],
+  ): boolean {
+    const attached = sandbox.spec?.providers ?? [];
+    if (!Array.isArray(attached)) {
+      return false;
+    }
+    const approved = [
+      this.sandbox.gitRuntimeProviderName(context.revision),
+      ...routes.map(({ provider }) => provider),
+    ];
+    return openShellEffectivePolicyMatches(
+      source,
+      effective,
+      approved.filter((name) => attached.includes(name)),
+    );
+  }
+
   private repositoryPolicies(
     context: CredentialDeploymentContext,
     sandbox: Parameters<typeof assertOpenShellPushedTarget>[0],
@@ -1261,7 +1296,13 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       effective.configuration_error ||
       effective.workspace !== target.workspace ||
       !effectiveNetworks ||
-      !openShellEffectivePolicyMatches(observed.policy, effective.policy) ||
+      !this.repositoryEffectivePolicyMatches(
+        observed.policy,
+        effective.policy,
+        context,
+        target.sandbox,
+        routes,
+      ) ||
       (retained.length > 0 &&
         !openShellPushedPolicyMatches(observed.policy, effective.policy, retained)) ||
       overlaps(effectiveNetworks)

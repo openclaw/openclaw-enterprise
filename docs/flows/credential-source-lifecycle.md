@@ -77,7 +77,7 @@ For Codex device login, `packages/occ/src/device-authorization-flow.ts` checks A
 
 `packages/occ/src/harness-auth.ts:authorizeHarnessAuthSource`, `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
 
-The caller binds a ready Source in the same Namespace and selects it for Harness authentication. OCC verifies the Source owner, the provider's authorized destination, the caller's and Agent's Source permissions, and one matching saved network grant within the Installation ceiling. OCC records the Source reference and separate network and per-binding injection policies in the Agent revision. For a Plugin connection, OCC also checks the requests reported by the Plugin Driver against the current Source Template. The [native qualifier](../../apps/controller/src/composition/openshell-credential-admission.ts) compiles the complete proposed policy against the selected Sandbox defaults. OCC refuses an unsupported or ambiguous policy before it saves a revision or queues deployment.
+The caller binds a ready Source in the same Namespace and selects it for Harness authentication. OCC verifies the Source owner, the provider's authorized destination, the caller's and Agent's Source permissions, and a qualifying network rule within the Installation ceiling. OCC records the Source reference and separate network and per-binding injection policies in the Agent revision. For a Plugin connection, OCC also checks the requests reported by the Plugin Driver against the current Source Template. The [native qualifier](../../apps/controller/src/composition/openshell-credential-admission.ts) compiles the complete proposed policy against the selected Sandbox defaults. OCC refuses an unsupported or ambiguous policy before it saves a revision or queues deployment.
 
 <a id="4-resolve-the-source-at-dispatch"></a>
 <a id="pending-native-integration"></a>
@@ -94,7 +94,7 @@ In the [OpenShell custody preview](../reference/credential-sources/managed-stati
 
 For a built-in Codex account, OCC freezes three fixed requests in one Model binding. Worker projects the authorized account metadata with the placeholder; Compute and Sandbox receive no access or refresh token. See the [native policy limits](../reference/credential-sources.md#implementation-status).
 
-Sandbox compiles frozen HTTP and managed MCP bindings. Managed MCP checks exact RPC and selected tool rules at the reviewed endpoint. Sandbox refuses overlaps with credential-free routes and broad Plugin grants it cannot preserve. A sole model route keeps its established endpoint for recovery. Compute checks Harness authentication support and waits for Sandbox policy and Proxy readiness during preparation. See the [Proxy Driver reference](../reference/drivers/credential-proxy.md) for MCP exceptions.
+Sandbox compiles HTTP and managed MCP bindings. MCP checks exact RPCs and selected tools at the approved endpoint. Sandbox refuses overlapping credential-free routes and unsupported broad Plugin grants. For Git, Proxy compares the complete effective policy, allowing name-only rules for approved attached Providers. Compute waits for Sandbox policy and Proxy readiness. See the [Proxy Driver reference](../reference/drivers/credential-proxy.md) for MCP exceptions.
 
 ### 4. Activate and stop the Agent
 

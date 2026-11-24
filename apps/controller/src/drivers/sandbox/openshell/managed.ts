@@ -153,7 +153,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     return `oce-runtime-${sha256Hex(agentId, 24)}`;
   }
 
-  protected override gitRuntimeProviderName(revision: Readonly<AgentRevision>): string {
+  override gitRuntimeProviderName(revision: Readonly<AgentRevision>): string {
     return this.runtimeProviderName(revision.agentId);
   }
 

@@ -606,15 +606,31 @@ export function openShellPushedPolicyMatches(
   );
 }
 
-/** Compare the complete effective policy after removing only Gateway-derived credential markers. */
-export function openShellEffectivePolicyMatches(source: unknown, effective: unknown): boolean {
+/** Compare the complete effective policy, excluding only known inert Gateway derivations. */
+export function openShellEffectivePolicyMatches(
+  source: unknown,
+  effective: unknown,
+  approvedAttachedProviders: readonly string[],
+): boolean {
+  const sourceNetworks = asRecord(asRecord(source)?.network_policies) ?? {};
   const policy = asRecord(effective);
   const networks = asRecord(policy?.network_policies);
   if (!policy || !networks) {
     return false;
   }
+  // Stock OpenShell 0.1.9 composes a named rule even for a Provider with no endpoints
+  // or binaries. Permit only that empty rule for an approved, attached Provider.
+  const inertRuleNames = new Set(
+    approvedAttachedProviders.map((name) => `_provider_${name.replaceAll("-", "_")}`),
+  );
+  const policyRules = Object.entries(networks).filter(
+    ([name, rule]) =>
+      !inertRuleNames.has(name) ||
+      Object.hasOwn(sourceNetworks, name) ||
+      !sameOpenShellPolicy(rule, { name }),
+  );
   const normalized = Object.fromEntries(
-    Object.entries(networks).map(([name, value]) => {
+    policyRules.map(([name, value]) => {
       const rule = asRecord(value);
       if (!rule || !Array.isArray(rule.endpoints)) {
         return [name, value];

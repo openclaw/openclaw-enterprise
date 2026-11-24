@@ -4419,7 +4419,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return sandbox;
   }
 
-  protected gitRuntimeProviderName(revision: Readonly<AgentRevision>): string {
+  gitRuntimeProviderName(revision: Readonly<AgentRevision>): string {
     return runtimeProviderName(revision.id);
   }
 

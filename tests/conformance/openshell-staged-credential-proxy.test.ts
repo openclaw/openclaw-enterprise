@@ -131,7 +131,7 @@ function sourcePolicyFrom(effective: Wire): Wire {
 function policyUsesProvider(policy: unknown, provider: string): boolean {
   const networks = record(policy).network_policies;
   return Object.values(record(networks)).some((rule) =>
-    (record(rule).endpoints as Wire[]).some(
+    ((record(rule).endpoints as Wire[] | undefined) ?? []).some(
       (endpoint) => record(endpoint.credential_binding ?? {}).provider === provider,
     ),
   );
@@ -724,9 +724,11 @@ async function fixture(t: TestContext) {
     client.close();
     server.forceShutdown();
   });
+  const runtimeProvider = "fixture-runtime-files";
   const selectedSandbox = {
     id: "sandbox",
     implementation: "openshell",
+    gitRuntimeProviderName: () => runtimeProvider,
     harnessResource: ({ revision }: { revision: { agentId: string; id: string } }) => ({
       namespaceName: namespace.name,
       resourceName:
@@ -749,7 +751,7 @@ async function fixture(t: TestContext) {
   } as unknown as SandboxDriver &
     Pick<
       import("../../apps/controller/src/drivers/sandbox/openshell.ts").OpenShellSandboxDriver,
-      "withdrawStagedCredentialRoute"
+      "gitRuntimeProviderName" | "withdrawStagedCredentialRoute"
     >;
   const backend = {
     id: "backend",
@@ -956,6 +958,7 @@ async function fixture(t: TestContext) {
     sandbox,
     sandboxes,
     state,
+    runtimeProvider,
     suppliedBinding,
     configure,
     notify,
@@ -2795,9 +2798,36 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
   f.sandbox.spec.policy = source;
   f.state.config!.policy = effective;
   record(f.state.policyStatus!.revision).policy = source;
+  // Stock OpenShell adds name-only rules for attached endpointless Providers, including runtime files.
+  f.sandbox.spec.providers.push(f.runtimeProvider);
+  const effectiveRules = record(effective.network_policies);
+  const inertRules = Object.fromEntries(
+    f.sandbox.spec.providers.map((provider) => {
+      const name = `_provider_${provider.replaceAll("-", "_")}`;
+      return [name, { name }];
+    }),
+  );
+  Object.assign(effectiveRules, inertRules);
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "ready" });
-  const effectiveDiscovery = Object.values(record(effective.network_policies))
-    .flatMap((rule) => record(rule).endpoints as Wire[])
+  const foreignName = "_provider_foreign";
+  effectiveRules[foreignName] = { name: foreignName };
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
+    state: "failed",
+    code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
+  });
+  Reflect.deleteProperty(effectiveRules, foreignName);
+  const runtimeRule = `_provider_${f.runtimeProvider.replaceAll("-", "_")}`;
+  effectiveRules[runtimeRule] = {
+    ...inertRules[runtimeRule],
+    binaries: [{ path: "/usr/bin/curl" }],
+  };
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
+    state: "failed",
+    code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
+  });
+  effectiveRules[runtimeRule] = inertRules[runtimeRule];
+  const effectiveDiscovery = Object.values(effectiveRules)
+    .flatMap((rule) => (record(rule).endpoints as Wire[] | undefined) ?? [])
     .find((endpoint) => endpoint.path === discovery.path)!;
   Reflect.deleteProperty(record(record((effectiveDiscovery.rules as Wire[])[0]!).allow), "query");
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
@@ -2975,11 +3005,12 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
   assert.deepEqual(f.state.detaches, []);
   f.state.policyUpdateReadback = "normal";
   f.state.config!.policy = structuredClone(record(record(f.state.policyStatus!.revision).policy));
+  Object.assign(record(record(f.state.config!.policy).network_policies), inertRules);
   await f.proxy.removeDeployment(context, {
     targetRef: configuration.targetRef,
     bindingRefs: ["repository"],
   });
-  assert.deepEqual(f.sandbox.spec.providers, []);
+  assert.deepEqual(f.sandbox.spec.providers, [f.runtimeProvider]);
   assert.deepEqual(peer.spec.providers, [sharedProvider]);
   assert.deepEqual(peer.spec.policy, peerPolicy);
   assert.equal(f.state.provider!.metadata.name, sharedProvider);
