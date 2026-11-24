@@ -18,8 +18,8 @@ A developer asks an Agent to fix issue 42 and open a pull request (PR). Git acce
 
 ## One token, different grants
 
-1. Save the PAT as a credential Source. List `acme/docs:write:api` to allow Git and API access. Omitting `:api` keeps the Source Git-only. Adding API access later requires a new Source.
-2. Allow Contents write, Issues read and Pull requests write in the Namespace. Select `acme/docs` for two Agents. Give the first Read and the second Write. Both can read issue 42. Only the second can push and open a PR. Neither can create an issue.
+1. Save the PAT as a credential Source. List `acme/docs:write:api` to allow Git and API access. Omitting `:api` keeps that repository Git-only. Adding API access later requires a new Source.
+2. Allow Contents write, Issues read and Pull requests write in the Namespace. Select `acme/docs` for two Agents. Give the first Read and the second Write. Both can read issue 42. Only the second can push and open a PR. Neither can post to the issue creation route.
 3. The controller checks who can grant access. At deployment, the Sandbox Driver translates the grants into OpenShell network rules. OpenShell checks each request and adds the PAT only on allowed routes. GitHub checks the PAT’s permissions.
 
 Both Agents use the standard GitHub CLI with a placeholder in `GITHUB_TOKEN`.
@@ -32,7 +32,7 @@ gh api --method POST repos/acme/docs/pulls --input pr.json
 
 OpenShell blocks the first Agent’s POST even if it uses another HTTP client.
 
-The PAT can do more than the first Agent. When saving or replacing it, the developer checks the owner, selected repositories and permissions in GitHub. OCE cannot verify those settings. [GitHub’s public repository read access](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token) adds no Sandbox routes.
+The PAT can do more than the first Agent. Before saving or replacing it, check the resource owner in GitHub, match the selected repositories to the full set declared for the Source, and grant the minimum permissions. Stop if you cannot verify these settings. OCE cannot check them for you. [GitHub’s public repository read access](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token) adds no Sandbox routes.
 
 ## Interface changes
 
