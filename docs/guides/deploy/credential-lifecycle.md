@@ -30,9 +30,9 @@ and who can stop affected workloads if access must be revoked immediately.
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Human password and session           | The administrator owns the account; Better Auth verifies sessions for OCC API clients.                                                                    | Sign-out revokes the current session. Admins create accounts; no endpoint resets passwords. External sign-in adds online disable and revocation; password-only ends others' sessions only by [stopped maintenance](auth-maintenance.md#choose-the-operation). See [authentication](../../reference/authentication.md#session-lifecycle). |
 | OCC service API key                  | An Installation administrator issues keys for a non-Agent IAM service principal; automation clients consume them.                                         | Multiple keys may overlap. Revocation rejects subsequent requests; an already-authorized request may finish. See [service keys](../../reference/authentication/service-api-keys.md).                                                                                                                                                     |
-| GitHub App installation token        | TokenService holds the short-lived token for the shared Namespace Source. The native Credential Proxy delivers it for each Agent's approved repositories. | The API schedules renewal. TokenService replaces the token and asks the Proxy to redeliver it. Follow [withdrawal](../credential-proxy.md#withdraw-repository-access) to end an Agent's access. See [TokenService lifecycle](../../reference/repository-credentials.md#token-service-lifecycle).                                         |
+| GitHub App installation token        | TokenService holds the short-lived token for the shared Namespace Source. The native Credential Proxy delivers it for each Agent's approved repositories. | The API schedules renewal. TokenService replaces the token and asks the Proxy to redeliver it. Remove the Agent's repository selections to withdraw its access. See [GitHub App access for an OpenShell Agent](../repository-credentials.md#set-github-app-access-for-an-openshell-agent).                                               |
 | Prepared Git session                 | The Worker issues and renews the token. The repository sender uses it for approved requests.                                                              | Renewal preserves the finite session's deadline. A standing approval can authorize a new session for the running Agent. See [sessions and closure](../../reference/repository-credentials.md#sessions-and-closure).                                                                                                                      |
-| ChatGPT ServiceAccount PAT           | The ServiceAccount Driver issues and revokes the upstream credential. TokenService stores the PAT in a Source.                                            | After issuance, select the issued account's Source in Agent Credentials. Deleting the ServiceAccount revokes the issuer credential. See [service-account lifecycle](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                                               |
+| ChatGPT ServiceAccount PAT           | The ServiceAccount Driver issues and revokes the upstream credential. TokenService stores the PAT in a Source.                                            | After issuance, select the issued account's Source in Agent Credentials. Normal deletion revokes the issuer credential. Forced deletion can skip revocation. See [service-account lifecycle](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                      |
 | Native OCC ServiceAccount credential | The operator owns the referenced source Secret.                                                                                                           | The API can replace a native `api_key` reference; that reference cannot select model authentication. See [native API-key references](../../reference/service-accounts.md#native-api-key-references).                                                                                                                                     |
 | Managed Harness API key              | The provider issues the key. TokenService stores it in a Source for the approved model route.                                                             | To rotate the key, update the Source so the Proxy redelivers the replacement to active Agents. Verify model access before revoking the old key at the issuer.                                                                                                                                                                            |
 | Generated transport credentials      | The selected Compute Driver generates per-Agent transport material before the first version.                                                              | Supported Agent creation or the first deployment creates missing transport Secrets. Neither rotates existing values. Replacing transport credentials requires a separate stopped-runtime procedure when supported. See [runtime credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials). |
@@ -57,47 +57,39 @@ and verify that a protected request with the old session fails.
 
 ## Replace runtime values and verify consumption
 
-Obtain replacement API keys and channel credentials through the provider's
-supported process. For a harness API key or Configuration channel Secret, use its
-[supported value update](../../reference/drivers/kubernetes-secret.md#update-and-redeploy)
-instead of editing its backing object directly. Generated transport credentials
-are separate from channel Secrets; the current initial provisioning flow does not
-rotate an existing generated bundle.
+Obtain replacement credentials through the provider's supported process.
 
-List all affected applications or Agents before restarting or deploying them.
-`occ secret get "$SECRET_ID" -o json` lists a Secret's consuming Agents in
-`consumers.agents`; a nonzero `consumers.unreadable` means some references are
-hidden from you (see [Find a Secret's consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers)).
-A running process keeps the environment variables it received, even after the
-source Secret changes. For a model API key, the supported sequence is:
+### Managed model API keys
 
-1. Update the existing OCC Secret through its API, retaining the Secret reference.
-2. Run `occ agent deploy "$AGENT_ID"` for each consuming Agent, even when its
-   Configuration and `harnessAuth` reference are unchanged.
-3. Wait for OCC to select the new version, then perform a
-   [real model request](../operate/model-verification.md).
+1. [Update the existing Credential Source](../../reference/credential-sources.md#update-a-source).
+   TokenService saves the replacement and notifies the Proxy for active Agent bindings.
+2. If delivery fails, [retry delivery](../../reference/credential-sources.md#retry-credential-delivery)
+   for the affected Agent.
+3. Make a [real model request](../operate/model-verification.md) before revoking the
+   old key at the issuer.
 
-With Kubernetes Compute, OCE preparation refreshes the Harness's DP credential
-projection from the CP source. Recreating its Pod or running `kubectl rollout restart` reads the existing
-projection and is not a substitute for this OCE deployment.
+### Channel and transport credentials
 
-For a channel credential, explicitly deploy each consumer and exercise the
-affected channel workflow; a successful model turn does not prove channel authentication. For transport tokens, coordinate
-both endpoints and clients, and verify a fresh allowed connection and rejection
-of the old token. No automatic coordinated transport-token rotation is provided.
+Use `occ secret get "$SECRET_ID" -o json` to list Channel Secret consumers in
+`consumers.agents`. A nonzero `consumers.unreadable` means some references are
+hidden from you. See [Find a Secret's consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers).
 
-Where the provider permits overlap, revoke the old upstream credential after
-successful replacement checks. A stored credential status does not show that
-the provider accepts the value. Dedicated Gateway restarts read current canonical
-channel values; Harness restarts read their existing runtime projection.
-Version history does not restore old source values.
+[Update the Channel Secret](../../reference/drivers/kubernetes-secret.md#update-and-redeploy),
+deploy a new version of each consuming Agent and exercise the affected Channel
+before revoking the old credential. A running Gateway uses its existing
+projection until OCE prepares the new version.
 
-Backend-managed account credentials require separate handling: OCC cannot
-refresh, rotate, or manually replace an issued token. Monitor expiry and arrange
-a separately issued replacement account before it expires. Bind that account
-and explicitly deploy each intended consumer. Account deletion performs upstream
-cleanup and is blocked by Agent drafts, selected versions, and pending deployments;
-inactive history alone does not retain the source indefinitely.
+For transport credentials, coordinate both endpoints and verify a fresh
+connection with the replacement and rejection of the old token.
+
+### Issued ChatGPT ServiceAccount PATs
+
+Issue a replacement account before the token expires. Bind its Source and deploy
+each intended consumer. Normal ServiceAccount deletion revokes the upstream
+token independently of the Source. If the Backend has been removed,
+[force-delete](../../reference/service-accounts.md#force-delete-when-the-backend-is-gone)
+can skip issuer revocation. Retire the old Source separately after removing
+the Agent references.
 
 ## Enroll a Codex PAT Source
 
