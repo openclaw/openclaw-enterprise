@@ -2759,7 +2759,7 @@ test(
 );
 
 test(
-  "Codex device migration refuses a retained closed Gateway login without mutation",
+  "Codex device cutover discards cancelled and expired logins and preserves live logins on refusal",
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
@@ -2767,8 +2767,6 @@ test(
     const installationId = `ins_${randomUUID()}`;
     const namespaceId = `ns_${randomUUID()}`;
     const actorId = `usr_${randomUUID()}`;
-    const sourceId = `cs_${randomUUID()}`;
-    const sessionId = `sec_${randomUUID()}`;
     await db.app.query(
       "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
       [installationId],
@@ -2781,41 +2779,62 @@ test(
       "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','migration-fixture',$1)",
       [actorId],
     );
+    const channelSecretId = `sec_${randomUUID()}`;
     await db.app.query(
-      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,owner_capability,state,created_at)
-       VALUES($1,$2,'Closed Codex login','codex-oauth','{}','credential-gateway-openshell','credential_gateway','ready',now())`,
-      [sourceId, namespaceId],
+      `INSERT INTO occ.secrets
+         (id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
+       VALUES ($1,$2,'Channel startup token','secrets','fixture','slack-bot','value',$3,now())`,
+      [channelSecretId, namespaceId, randomUUID()],
     );
-    // Closing or expiring the old login retained its Gateway-shaped session and registered Source.
-    await db.app.query(
-      `INSERT INTO occ.authentication_states
-         (id,kind,namespace_id,actor_id,expires_at,binding,phase,next_poll_at,version)
-       VALUES($1,'device_authorization',$2,$3,now()-interval '1 hour',$4::jsonb,'cancelled',now()-interval '1 hour',1)`,
-      [
-        sessionId,
-        namespaceId,
-        actorId,
-        JSON.stringify({
-          harnessId: "codex",
-          credentialGatewayId: "credential-gateway-openshell",
-          credentialRefreshId: "credential-refresh-openshell",
-          sourceId,
-          intervalSeconds: 5,
-        }),
-      ],
-    );
+    const addLogin = async (phase, lifetime) => {
+      const sourceId = `cs_${randomUUID()}`;
+      const sessionId = `sec_${randomUUID()}`;
+      await db.app.query(
+        `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,owner_capability,state,created_at)
+         VALUES($1,$2,$1,'codex-oauth','{}','credential-gateway-openshell','credential_gateway','ready',now())`,
+        [sourceId, namespaceId],
+      );
+      await db.app.query(
+        `INSERT INTO occ.authentication_states
+           (id,kind,namespace_id,actor_id,expires_at,binding,phase,next_poll_at,encrypted_challenge,private_state,version)
+         VALUES($1,'device_authorization',$2,$3,now()+$4::interval,$5::jsonb,$6,now(),
+           $7,$8,1)`,
+        [
+          sessionId,
+          namespaceId,
+          actorId,
+          lifetime,
+          JSON.stringify({
+            harnessId: "codex",
+            credentialGatewayId: "credential-gateway-openshell",
+            credentialRefreshId: "credential-refresh-openshell",
+            sourceId,
+            intervalSeconds: 5,
+          }),
+          phase,
+          phase === "cancelled" ? null : "sealed-challenge",
+          phase === "cancelled" ? null : "sealed-poll-state",
+        ],
+      );
+      return sessionId;
+    };
+    // Main retains cancelled handles and can reach cutover before its expiry sweep runs.
+    await addLogin("cancelled", "1 hour");
+    await addLogin("pending", "-1 hour");
+    const activeId = await addLogin("pending", "1 hour");
     const retainedData = async () =>
       (
         await db.app.query(
           `SELECT to_jsonb(s) AS source,to_jsonb(a) AS session
-           FROM occ.credential_sources s JOIN occ.authentication_states a ON a.id=$2 WHERE s.id=$1`,
-          [sourceId, sessionId],
+         FROM occ.authentication_states a JOIN occ.credential_sources s ON s.id=a.binding->>'sourceId'
+         WHERE a.namespace_id=$1 ORDER BY a.id`,
+          [namespaceId],
         )
       ).rows;
     const before = await historySnapshot(db);
     const retainedBefore = await retainedData();
     assert.equal(before.receipts.length, 94);
-    assert.equal(retainedBefore.length, 1);
+    assert.equal(retainedBefore.length, 3);
     assert.deepEqual(
       await runHistoryMigration(db, "production", undefined, undefined, (error) => {
         assert.ok(error instanceof Error);
@@ -2825,13 +2844,37 @@ test(
         assert.equal(failure.code, "55000");
         assert.equal(
           failure.message,
-          "Codex device-login cutover requires disposition of residual temporary device authorization rows",
+          "Cancel or let outstanding Codex device logins expire before cutover",
         );
       }),
       { ok: false, code: "MIGRATION_FAILED" },
     );
     assert.deepEqual(await historySnapshot(db), before);
     assert.deepEqual(await retainedData(), retainedBefore);
+
+    // Complete the old release's normal cancellation, then retry the same database.
+    await db.app.query(
+      `UPDATE occ.authentication_states SET phase='cancelled', encrypted_challenge=NULL,
+         private_state=NULL, version=version+1 WHERE id=$1`,
+      [activeId],
+    );
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preTokenServiceCredentialSources",
+    });
+    assert.equal(
+      (
+        await db.app.query(
+          "SELECT id FROM occ.authentication_states WHERE namespace_id=$1 AND kind='device_authorization'",
+          [namespaceId],
+        )
+      ).rowCount,
+      0,
+    );
+    assert.deepEqual(
+      (await db.app.query("SELECT id FROM occ.secrets WHERE namespace_id=$1", [namespaceId])).rows,
+      [{ id: channelSecretId }],
+    );
   },
 );
 
