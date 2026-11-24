@@ -4801,21 +4801,68 @@ html:has(#create-agent-form) {
   border-radius: var(--radius);
   margin: var(--space-2) 0;
 }
+.repository-card:has(.repository-grant) {
+  border: 1px solid var(--line);
+  margin: var(--space-1) 0;
+}
 .repository-grant {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: var(--space-2) var(--space-3);
-  padding: var(--space-2) var(--space-3);
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
 }
 .repository-grant > .repository-identity {
-  flex: 1 0 min(16rem, 100%);
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 var(--space-2);
+  align-items: center;
+  padding-right: var(--space-2);
+}
+.repository-grant .action-icon {
+  color: var(--muted);
+}
+.repository-grant .repository-description {
+  grid-column: 2;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .repository-grant > .field {
-  flex: 0 0 min(12rem, 100%);
+  min-width: 0;
+  width: 10.5rem;
+  margin: 0;
+}
+.repository-grant select {
+  min-height: var(--control-h-sm);
+  padding-block: var(--space-1);
 }
 .repository-grant > .repository-remove {
-  margin-left: auto;
+  grid-column: -2;
+  grid-row: 1;
+}
+.repository-grant > .hint {
+  grid-column: 1 / -1;
+  margin: 0 var(--space-2) var(--space-2) 0;
+}
+@media (max-width: 520px) {
+  .repository-grant:has(select) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding-block: var(--space-2);
+  }
+  .repository-grant:has(select) > .repository-identity {
+    grid-column: 1 / -1;
+  }
+  .repository-grant > .field {
+    width: auto;
+  }
+  .repository-grant select {
+    min-height: var(--touch-min);
+  }
+  .repository-grant:has(select) > .repository-remove {
+    grid-row: 2;
+  }
 }
 .repository-card-heading {
   display: flex;
@@ -4869,6 +4916,9 @@ html:has(#create-agent-form) {
   min-height: var(--touch-min);
 }
 .repository-remove {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
   flex-shrink: 0;
 }
 .repository-access-summary {

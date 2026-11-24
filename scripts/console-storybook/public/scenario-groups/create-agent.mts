@@ -1705,8 +1705,10 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "GitHub repository access",
     path: create,
+    repositoryDescriptionsPending: false,
     repositoryOptions: ["application", "tooling"].map((name) => ({
       repositoryRef: name,
+      ...(name === "application" ? { description: "Customer portal and API." } : {}),
       githubAccess: {
         repository: `example/${name}`,
         access: name === "tooling" ? "write" : "read",
@@ -1721,7 +1723,7 @@ export const createAgentProvisioningScenarios = {
       { selector: 'input[data-repository-ref="tooling"]', click: true },
     ],
     description:
-      "With Per-repository access, application allows only Read-only. Tooling starts at Contributor. Change tooling to Read-only, remove it and undo the removal to check that the narrower choice stays selected. Saving and deployment require a supporting Installation.",
+      "With Per-repository access, application allows only Read-only. Tooling starts at Contributor. Only application has a description. Change tooling to Read-only, press its × button and undo the removal to check that the narrower choice stays selected. Saving and deployment require a supporting Installation.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",

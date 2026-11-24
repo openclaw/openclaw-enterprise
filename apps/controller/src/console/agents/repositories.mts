@@ -5,6 +5,7 @@ import type {
   RepositoryOption as CatalogOption,
   RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
+import { resourceActionIcon } from "../resource-actions.mjs";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import { element, button, setStatusTone } from "../dom.mjs";
@@ -74,6 +75,22 @@ function descriptionText(value: string) {
   return value.replace(
     DESCRIPTION_CHARACTER,
     (character: string, kept: string | undefined) => kept ?? visibleText(character),
+  );
+}
+
+function repositoryDescription(value: string | undefined) {
+  return value?.trim()
+    ? element("span", { className: "repository-description" }, descriptionText(value))
+    : null;
+}
+
+function grantIdentity(name: string, description?: string) {
+  return element(
+    "span",
+    { className: "repository-identity" },
+    resourceActionIcon("repository"),
+    element("strong", {}, name),
+    repositoryDescription(description),
   );
 }
 
@@ -751,13 +768,7 @@ export function createRepositoryFields(
           scoped() && !githubName(entry.repositoryRef)
             ? element("span", { className: "hint" }, "Requires profile access")
             : null,
-          typeof entry.description === "string" && entry.description.trim()
-            ? element(
-                "span",
-                { className: "repository-description" },
-                descriptionText(entry.description),
-              )
-            : null,
+          repositoryDescription(entry.description),
           showReference || readOnly
             ? element(
                 "span",
@@ -873,11 +884,15 @@ export function createRepositoryFields(
       const label = (scoped() ? grant?.repository : undefined) ?? entry?.displayName ?? ref;
       const card = element("div", { className: "repository-card" });
       const remove = button(
-        "Remove",
+        resourceActionIcon("remove"),
         () => {
           removeSelection(ref);
           changed();
-          focusDiscovery();
+          if (scoped()) {
+            announcements.querySelector("button")?.focus();
+          } else {
+            focusDiscovery();
+          }
         },
         {
           tone: "ghost",
@@ -893,7 +908,7 @@ export function createRepositoryFields(
           element(
             "div",
             { className: "repository-grant" },
-            element("strong", { className: "repository-identity" }, label),
+            grantIdentity(label, entry?.description),
             remove,
           ),
         );
@@ -933,7 +948,7 @@ export function createRepositoryFields(
           element(
             "div",
             { className: "repository-grant" },
-            element("strong", { className: "repository-identity" }, label),
+            grantIdentity(label, available ? entry?.description : undefined),
             !available
               ? element(
                   "p",
@@ -1086,11 +1101,16 @@ export function createRepositoryFields(
             if (state.disabled || state.selected.size >= MAX_SELECTED) {
               return;
             }
+            const index = state.undo?.index;
             restoreUndo();
             state.undo = undefined;
             announcements.textContent = "Repository restored.";
             changed();
-            focusDiscovery();
+            if (scoped() && index !== undefined) {
+              cards.querySelectorAll<HTMLButtonElement>(".repository-remove")[index]?.focus();
+            } else {
+              focusDiscovery();
+            }
           },
           {
             disabled: state.disabled || state.selected.size >= MAX_SELECTED,
