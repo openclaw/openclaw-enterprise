@@ -6,15 +6,31 @@ import {
   kubernetesNamespaceName,
   PreprovisionedKubernetesNamespace,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { networkPolicySpecToJson } from "../../apps/controller/src/drivers/kubernetes/network-policy.ts";
 import { sha256Hex } from "../../packages/utils/src/hashing.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 
+type KubernetesSdk = Awaited<ReturnType<typeof createKubernetesClientConfiguration>>["sdk"];
+type CoreApi = InstanceType<KubernetesSdk["CoreV1Api"]>;
+type NetworkingApi = InstanceType<KubernetesSdk["NetworkingV1Api"]>;
+
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
-const { V1NetworkPolicyIngressRule } = controllerRequire("@kubernetes/client-node");
-const { ObjectSerializer } = controllerRequire("@kubernetes/client-node/dist/serializer.js");
+const { V1NetworkPolicyIngressRule, V1NetworkPolicyList }: KubernetesSdk =
+  controllerRequire("@kubernetes/client-node");
+const {
+  ObjectSerializer,
+}: {
+  ObjectSerializer: { deserialize(data: unknown, type: string): unknown };
+} = controllerRequire("@kubernetes/client-node/dist/serializer.js");
+
+function malformedPolicySpec(spec: unknown): unknown {
+  // Wire nulls and non-list values deliberately fall outside the SDK's declared shape.
+  const result: unknown = Reflect.apply(networkPolicySpecToJson, undefined, [spec]);
+  return result;
+}
 
 const denied = { podSelector: {}, policyTypes: ["Ingress", "Egress"] };
 
@@ -22,13 +38,13 @@ test("null NetworkPolicy rule lists match omitted lists when that direction is e
   // JSON null is a nil list. The API stores it as empty and omits it on read, the same as [].
   const nulled = { ...denied, ingress: null, egress: null };
   const emptied = { ...denied, ingress: [], egress: [] };
-  assert.deepEqual(networkPolicySpecToJson(nulled), networkPolicySpecToJson(denied));
+  assert.deepEqual(malformedPolicySpec(nulled), networkPolicySpecToJson(denied));
   assert.deepEqual(networkPolicySpecToJson(emptied), networkPolicySpecToJson(denied));
-  assert.deepEqual(networkPolicySpecToJson(nulled), networkPolicySpecToJson(emptied));
+  assert.deepEqual(malformedPolicySpec(nulled), networkPolicySpecToJson(emptied));
 
   // One nil direction does not erase the other, and an allow-all rule stays distinct.
   assert.deepEqual(
-    networkPolicySpecToJson({ ...denied, ingress: null, egress: [{ to: [] }] }),
+    malformedPolicySpec({ ...denied, ingress: null, egress: [{ to: [] }] }),
     networkPolicySpecToJson({ ...denied, egress: [{ to: [] }] }),
   );
   assert.notDeepEqual(
@@ -43,20 +59,20 @@ test("null NetworkPolicy rule lists match omitted lists when that direction is e
 
 test("a nil NetworkPolicy list is not inferred when its direction is omitted", () => {
   assert.notDeepEqual(
-    networkPolicySpecToJson({ podSelector: {}, ingress: null }),
+    malformedPolicySpec({ podSelector: {}, ingress: null }),
     networkPolicySpecToJson({ podSelector: {} }),
   );
   assert.notDeepEqual(
-    networkPolicySpecToJson({ podSelector: {}, egress: null }),
+    malformedPolicySpec({ podSelector: {}, egress: null }),
     networkPolicySpecToJson({ podSelector: {} }),
   );
   // A non-list is not an empty list, so it must not match the server's omitted field.
   assert.notDeepEqual(
-    networkPolicySpecToJson({ ...denied, egress: "" }),
+    malformedPolicySpec({ ...denied, egress: "" }),
     networkPolicySpecToJson(denied),
   );
   assert.notDeepEqual(
-    networkPolicySpecToJson({ ...denied, egress: { length: 0 } }),
+    malformedPolicySpec({ ...denied, egress: { length: 0 } }),
     networkPolicySpecToJson(denied),
   );
 });
@@ -103,7 +119,7 @@ test("sealed Namespace preparation admits a null NetworkPolicy list and rejects 
     "app.kubernetes.io/managed-by": "openclaw-enterprise",
     "openclaw.dev/namespace": namespaceId,
   };
-  const policy = (spec) => ({
+  const policy = (spec: Readonly<Record<string, unknown>>) => ({
     apiVersion: "networking.k8s.io/v1",
     kind: "NetworkPolicy",
     metadata: {
@@ -115,11 +131,13 @@ test("sealed Namespace preparation admits a null NetworkPolicy list and rejects 
     spec,
   });
   const driver = createTestKubernetesComputeDriver("null-policy-lists", { routed: false });
-  driver.preprovisionedNamespace = new PreprovisionedKubernetesNamespace(
-    JSON.stringify({ namespaceId, uid }),
-    { gatewayNamespace: "controller", gatewayName: "gateway" },
-    [policy(declared)],
-  );
+  Object.assign(driver, {
+    preprovisionedNamespace: new PreprovisionedKubernetesNamespace(
+      JSON.stringify({ namespaceId, uid }),
+      { gatewayNamespace: "controller", gatewayName: "gateway", envoyNamespace: "envoy" },
+      [policy(declared)],
+    ),
+  });
   const namespace = {
     apiVersion: "v1",
     kind: "Namespace",
@@ -142,39 +160,52 @@ test("sealed Namespace preparation admits a null NetworkPolicy list and rejects 
     status: { phase: "Active" },
   };
   let live = policy(admitted);
-  const reconciled = [];
+  const reconciled: string[] = [];
   const missing = async () => {
     throw Object.assign(new Error("Not found"), { code: 404 });
   };
-  const record = (kind) => async (request) => {
+  const record = (kind: string) => async (request: { name: string }) => {
     reconciled.push(`${kind}/${request.name}`);
+    return {};
   };
-  driver.apiClients = Promise.resolve({
-    core: {
-      async readNamespace({ name }) {
-        assert.equal(name, namespaceName);
-        return structuredClone(namespace);
-      },
-      readNamespacedResourceQuota: missing,
-      readNamespacedLimitRange: missing,
-      patchNamespacedResourceQuota: record("ResourceQuota"),
-      patchNamespacedLimitRange: record("LimitRange"),
+  const core = {
+    async readNamespace({ name }) {
+      assert.equal(name, namespaceName);
+      return structuredClone(namespace);
     },
-    networking: {
-      async listNamespacedNetworkPolicy({ namespace: requested }) {
-        assert.equal(requested, namespaceName);
-        const result = ObjectSerializer.deserialize(
-          { items: [structuredClone(live)] },
-          "V1NetworkPolicyList",
-        );
-        const readback = JSON.parse(JSON.stringify(result.items[0].spec));
-        console.log(`proof readback ${JSON.stringify(readback)}`);
-        return result;
-      },
-      readNamespacedNetworkPolicy: missing,
-      patchNamespacedNetworkPolicy: record("NetworkPolicy"),
+    readNamespacedResourceQuota: missing,
+    readNamespacedLimitRange: missing,
+    patchNamespacedResourceQuota: record("ResourceQuota"),
+    patchNamespacedLimitRange: record("LimitRange"),
+  } satisfies Pick<
+    CoreApi,
+    | "readNamespace"
+    | "readNamespacedResourceQuota"
+    | "readNamespacedLimitRange"
+    | "patchNamespacedResourceQuota"
+    | "patchNamespacedLimitRange"
+  >;
+  const networking = {
+    async listNamespacedNetworkPolicy({ namespace: requested }) {
+      assert.equal(requested, namespaceName);
+      const result: unknown = ObjectSerializer.deserialize(
+        { items: [structuredClone(live)] },
+        "V1NetworkPolicyList",
+      );
+      assert.ok(result instanceof V1NetworkPolicyList);
+      const item = result.items[0];
+      assert.ok(item?.spec);
+      const readback: unknown = JSON.parse(JSON.stringify(item.spec));
+      console.log(`proof readback ${JSON.stringify(readback)}`);
+      return result;
     },
-  });
+    readNamespacedNetworkPolicy: missing,
+    patchNamespacedNetworkPolicy: record("NetworkPolicy"),
+  } satisfies Pick<
+    NetworkingApi,
+    "listNamespacedNetworkPolicy" | "readNamespacedNetworkPolicy" | "patchNamespacedNetworkPolicy"
+  >;
+  Object.assign(driver, { apiClients: Promise.resolve({ core, networking }) });
 
   console.log(`proof admission ${JSON.stringify(declared)}`);
   const prepared = await driver.ensureNamespace({
@@ -222,7 +253,7 @@ test("sealed Namespace preparation admits a null NetworkPolicy list and rejects 
     "The sealed Namespace contains an undeclared or changed NetworkPolicy.",
   );
   assert.notDeepEqual(
-    networkPolicySpecToJson(declared),
+    malformedPolicySpec(declared),
     networkPolicySpecToJson({ ...admitted, ingress: [{}] }),
   );
 });

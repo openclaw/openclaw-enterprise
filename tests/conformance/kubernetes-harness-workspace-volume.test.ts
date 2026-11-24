@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ConfigurationValidationError,
+  type AgentRevision,
+} from "../../packages/contracts/src/index.ts";
+import {
   checkDedicatedHarnessClaim,
   checkPinnedScratchAdmission,
   checkScratchRequirements,
 } from "./kubernetes-workspace-storage-cases.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { podTemplate, resourceRecord } from "../helpers/kubernetes-rendered-resources.ts";
 
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
@@ -20,13 +25,19 @@ const setup = {
   completed: false,
 };
 
-function render(loginMode, node, initialSetup, environment = {}, scratch) {
+const render: Parameters<typeof checkDedicatedHarnessClaim>[1] = (
+  loginMode,
+  node,
+  initialSetup,
+  environment = {},
+  scratch,
+) => {
   const driver = createTestKubernetesComputeDriver("harness-workspace", { channelRuntime: true });
-  const deployment = driver.deployment({
+  const deployment = driver["deployment"]({
     name: "test-agent",
     ownership: owner,
     namespace: { name: "test", plane: "control" },
-    images: { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
+    images: { runtime: "agent:local", workspaceSetup: driver["options"].images.gateway },
     serviceAccountName: "agent",
     role: "agent",
     environment,
@@ -42,15 +53,32 @@ function render(loginMode, node, initialSetup, environment = {}, scratch) {
     },
     scratch,
   });
-  const revision = { agentId: owner.agentId, configuration: { agents: { defaults: {} } } };
+  const revision: AgentRevision = {
+    id: owner.revisionId,
+    namespaceId: owner.namespaceId,
+    agentId: owner.agentId,
+    revision: 1,
+    backendId: null,
+    executionAdmission: { version: 2, mode: "unprotected" },
+    configurationId: "configuration-test",
+    configurationKind: "agent",
+    configurationGeneration: 1,
+    configuration: { agents: { defaults: {} } },
+    gatewayManagedMode: true,
+    harness: { id: "codex", version: "1", mode: "dedicated", overrides: {}, configuration: {} },
+    harnessAuth: { method: "runtime" },
+    compute: { id: driver.id, implementation: driver.implementation },
+    servicePrincipalId: "service-principal-test",
+    createdAt: "2026-08-18T00:00:00.000Z",
+  };
   if (node === "setup-file") {
-    driver.addWorkspaceNode(deployment, nodeName, undefined, revision, true);
+    driver["addWorkspaceNode"](deployment, nodeName, undefined, revision, true);
   }
   if (node === "native") {
-    driver.addNativeWorker(deployment, nodeName, undefined);
+    driver["addNativeWorker"](deployment, nodeName, undefined, undefined);
   }
-  return { driver, deployment, pod: deployment.spec.template.spec };
-}
+  return { driver, pod: podTemplate(deployment).spec };
+};
 
 test("dedicated Harness shares one claim while preserving private subpaths", (t) =>
   checkDedicatedHarnessClaim(t, render, nodeName));
@@ -59,7 +87,7 @@ test("dedicated Harness shares one claim while preserving private subpaths", (t)
 // reconstructing them from a Kubernetes Deployment. Keep scratch on a separate PVC.
 test("scratch requirements keep the durable workspace and exact admitted writable claim", () =>
   checkScratchRequirements(render, owner, (driver, ownership) => {
-    const launch = driver.harnessLaunch({
+    const launch = driver["harnessLaunch"]({
       name: "test-agent",
       ownership,
       image: "agent:local",
@@ -71,11 +99,11 @@ test("scratch requirements keep the durable workspace and exact admitted writabl
     });
     return (scratch) =>
       scratch === undefined
-        ? driver.sandboxRequirements(launch, ownership.agentId)
-        : driver.sandboxRequirements(launch, ownership.agentId, [], scratch);
+        ? driver["sandboxRequirements"](launch, ownership.agentId)
+        : driver["sandboxRequirements"](launch, ownership.agentId, [], scratch);
   }));
 
-function scratchCompute(bindings) {
+const scratchCompute: Parameters<typeof checkPinnedScratchAdmission>[0] = (bindings) => {
   const sandbox = new OpenShellSandboxDriver(
     {
       integrationMode: "legacy",
@@ -114,7 +142,7 @@ function scratchCompute(bindings) {
     sandboxDriver: sandbox,
     scratchVolumes: bindings,
   });
-}
+};
 
 const operatorBinding = {
   namespaceId: tenant.id,
@@ -124,30 +152,32 @@ const operatorBinding = {
   claimUid: "operator-claim-uid",
 };
 
-function scratchRevision(driver) {
-  return routedRevision(driver, { sandboxDriverId: "scratch-openshell" });
-}
+const scratchRevision: Parameters<typeof checkPinnedScratchAdmission>[1] = (driver) =>
+  routedRevision(driver, { sandboxDriverId: "scratch-openshell" });
 
 test("scratch admission pins exact scope and never inherits a later operator selection", () =>
   checkPinnedScratchAdmission(scratchCompute, scratchRevision, operatorBinding, {
-    scratchAdmission: (driver, revision) => driver.scratchAdmission(revision),
-    sandboxDriver: (driver) => driver.sandboxDriver,
-    codexLaunch: (driver, revision, sandbox) => driver.codexLaunch(revision, sandbox),
-    runtimeAdmission: (driver, revision) => driver.runtimeAdmission(revision),
+    scratchAdmission: (driver, revision) => driver["scratchAdmission"](revision),
+    sandboxDriver: (driver) => driver["sandboxDriver"],
+    codexLaunch: (driver, revision, sandbox) => driver["codexLaunch"](revision, sandbox),
+    runtimeAdmission: (driver, revision) => driver["runtimeAdmission"](revision),
   }));
 
 test("saved scratch admissions preserve legacy launch selection and reject misordered launch markers", () => {
   const driver = scratchCompute([operatorBinding]);
   const revision = scratchRevision(driver);
   const prefix = "scratch:v1:";
+  assert.ok(revision.compute.admission);
   assert.match(revision.compute.admission, /^http-chat:v1:scratch:v1:/);
-  const { runtime, binding } = JSON.parse(
+  const admission: unknown = JSON.parse(
     revision.compute.admission.slice("http-chat:v1:".length + prefix.length),
   );
+  const { runtime, binding } = resourceRecord(admission, "saved scratch admission");
+  assert.ok(typeof runtime === "string");
   const marker = "openshell-codex-launch:v1:";
   assert.match(runtime, /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:$/);
   const provider = runtime.slice(0, -marker.length);
-  const saved = (value) => ({
+  const saved = (value: string): AgentRevision => ({
     ...revision,
     compute: {
       ...revision.compute,
@@ -156,11 +186,11 @@ test("saved scratch admissions preserve legacy launch selection and reject misor
   });
 
   const legacy = saved(provider);
-  assert.deepEqual(driver.scratchAdmission(legacy).binding, operatorBinding);
-  assert.equal(driver.codexLaunch(legacy, driver.sandboxDriver).openShellProgram, undefined);
+  assert.deepEqual(driver["scratchAdmission"](legacy).binding, operatorBinding);
+  assert.equal(driver["codexLaunch"](legacy, driver["sandboxDriver"]).openShellProgram, undefined);
   const protectedRuntime = "protected-codex-no-connection-retry:v1";
   for (const launch of [provider, runtime]) {
-    assert.equal(driver.runtimeAdmission(saved(launch + protectedRuntime)), protectedRuntime);
+    assert.equal(driver["runtimeAdmission"](saved(launch + protectedRuntime)), protectedRuntime);
   }
   for (const invalid of [
     marker + provider,
@@ -168,7 +198,7 @@ test("saved scratch admissions preserve legacy launch selection and reject misor
     provider + "openshell-codex-launch:v2:",
   ]) {
     assert.throws(
-      () => driver.scratchAdmission(saved(invalid)),
+      () => driver["scratchAdmission"](saved(invalid)),
       /scratch volume admission is invalid/,
     );
   }
@@ -185,7 +215,7 @@ test("scratch configuration rejects shared allocation and malformed identity bef
     assert.throws(
       () => scratchCompute(bindings),
       (error) => {
-        assert.equal(error.name, "ConfigurationValidationError");
+        assert.ok(error instanceof ConfigurationValidationError);
         assert.ok(
           error.error.details.some(({ path }) => path.startsWith("/runtime/scratchVolumes")),
           JSON.stringify(error.error.details),
