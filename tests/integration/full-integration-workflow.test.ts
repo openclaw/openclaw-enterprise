@@ -136,9 +136,9 @@ test("split dispatcher leaves skipped ticks outside the execution queue", async 
   assert.equal(present(dispatcher.jobs["manual-approval"]).concurrency, undefined);
   assert.equal(execute.needs, "preflight");
   assert.equal(execute.uses, "./.github/workflows/full-integration-execution.yml");
-  assert.deepEqual(execution.on, {
-    workflow_call: { inputs: { lane: { type: "string", default: "" } } },
-  });
+  const trigger = record(execution.on);
+  assert.deepEqual(Object.keys(trigger), ["workflow_call"]);
+  assert.deepEqual(record(trigger.workflow_call).inputs, { lane: { type: "string", default: "" } });
   assert.equal(record(execute.with).lane, "${{ inputs.lane || '' }}");
   assert.equal(execute.secrets, "inherit");
   assert.deepEqual(execution.permissions, dispatcher.permissions);

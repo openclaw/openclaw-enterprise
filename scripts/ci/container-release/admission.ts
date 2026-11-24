@@ -8,6 +8,7 @@ import { integerPattern, shaPattern, field, match } from "./metadata.ts";
 
 export const repository = "openclaw/openclaw-enterprise";
 export const publishWorkflow = ".github/workflows/container-publish.yml";
+export const releaseWorkflow = ".github/workflows/release-oce.yml";
 const releaseVersionPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 
 export function isReleaseVersion(version: string) {
@@ -32,6 +33,10 @@ export function validateContext(
   assert.equal(env.GITHUB_EVENT_NAME, "workflow_dispatch", "Only manual dispatch is supported.");
   assert.equal(env.GITHUB_REF, "refs/heads/main", "Select the trusted main workflow.");
   assert.equal(env.GITHUB_WORKFLOW_REF, `${repository}/${workflow}@refs/heads/main`);
+  if (workflow === releaseWorkflow) {
+    assert.equal(env.GITHUB_REF_PROTECTED, "true", "Release OCE requires protected main.");
+    assert.equal(env.GITHUB_RUN_ATTEMPT, "1", "Start a new authorized release run.");
+  }
   match(env.GITHUB_WORKFLOW_SHA ?? "", shaPattern);
   assert.equal(env.GITHUB_SHA, env.GITHUB_WORKFLOW_SHA);
   match(env.SOURCE_SHA ?? "", shaPattern, "A full immutable source SHA is required.");
@@ -260,7 +265,11 @@ export function publicationAlias(value: string | undefined) {
 
 export async function validate(env: NodeJS.ProcessEnv) {
   publicationAlias(env.IMAGE_TAG);
-  await verifyMainSource(env);
+  const workflow =
+    env.GITHUB_WORKFLOW_REF === `${repository}/${releaseWorkflow}@refs/heads/main`
+      ? releaseWorkflow
+      : publishWorkflow;
+  await verifyMainSource(env, workflow);
   assert.equal(
     env.SOURCE_SHA,
     env.GITHUB_WORKFLOW_SHA,

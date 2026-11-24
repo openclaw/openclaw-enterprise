@@ -33,8 +33,10 @@ credentials; it does not publish container images.
 ## Publication configuration
 
 Protect `main`, require `CI Required`, and review workflow changes. Publication
-requires the entire exact-source main-push CI run to succeed, including First Agent Smoke. Repository writers can dispatch;
-there is no second-person approval or approval-comment requirement.
+requires the entire exact-source main-push CI run to succeed, including First Agent Smoke. Repository writers can dispatch the standalone publication workflows.
+**Release OCE** also requires the dispatcher's approval through
+[`integration-main-approval`](../testing/ci/configuration.md#environments).
+Keep provider credentials in the integration environments.
 
 Create a separate `container-publish` environment: no required reviewers or wait
 timer, administrator bypass disabled, and exactly one deployment rule, branch

@@ -2,6 +2,10 @@ name: Full Integration Execution
 
 on:
   workflow_call:
+    outputs:
+      full_suite:
+        description: Successful full-suite result bound to its source SHA, run and attempt.
+        value: ${{ jobs.full-aggregate.outputs.full_suite }}
     inputs:
       lane:
         type: string
@@ -60,7 +64,8 @@ jobs:
           NODE
       - name: Prepare full admission marker
         id: prepare-admission-marker
-        if: steps.select.outputs.run_all == 'true' && github.run_attempt == '1'
+        # The scheduled dispatcher reads markers from its own workflow history.
+        if: github.workflow == 'Full Integration' && steps.select.outputs.run_all == 'true' && github.run_attempt == '1'
         continue-on-error: true
         run: printf '1\n' > "$RUNNER_TEMP/full-integration-admitted"
       - name: Upload full admission marker
@@ -753,6 +758,8 @@ jobs:
 
   full-aggregate:
     name: Full Integration Aggregate
+    outputs:
+      full_suite: ${{ steps.qualified.outputs.full_suite }}
     env:
       OCC_CI_SUITE_VIEW: full-integration
     runs-on: ubuntu-24.04
@@ -865,7 +872,7 @@ jobs:
           --full-coverage-marker "$RUNNER_TEMP/full-integration-exercised"
       - name: Upload full coverage marker
         id: coverage-marker
-        if: ${{ !cancelled() && steps.aggregate-full.outputs.full_coverage_exercised == 'true' }}
+        if: ${{ !cancelled() && github.workflow == 'Full Integration' && steps.aggregate-full.outputs.full_coverage_exercised == 'true' }}
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -876,6 +883,10 @@ jobs:
       - name: Confirm full coverage marker
         if: ${{ !cancelled() && steps.coverage-marker.outcome == 'success' }}
         run: echo 'Recorded complete full-suite coverage.'
+      - name: Record successful full suite
+        id: qualified
+        if: ${{ success() && needs.preflight.outputs.selected_lane == 'all' && steps.aggregate-full.outcome == 'success' && steps.aggregate-full.outputs.full_coverage_exercised == 'true' }}
+        run: printf 'full_suite=all:%s:%s:%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
   qa-matrix:
     name: Shipped Installation QA Matrix

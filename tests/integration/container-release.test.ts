@@ -19,6 +19,11 @@ import {
   validatePreparedImage,
   verifyGhcr,
 } from "../../scripts/ci/container-release.ts";
+import {
+  prepareReleaseChart,
+  verifyPreparedReleaseChart,
+  readChartVersion,
+} from "../../scripts/ci/prepare-release-chart.ts";
 import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.ts";
 import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import {
@@ -130,13 +135,25 @@ test("staged release chart records both verified digests and defaults to the con
     return;
   }
   const directory = await temporaryDirectory(t, "oce-release-chart-");
-  const staged = await stageReleaseChart(directory, {
-    sourceSha,
-    version: "0.1.0",
-    images: releaseImages,
-  });
-  execFileSync(helm, ["package", staged, "--destination", directory]);
-  const archive = join(directory, "openclaw-enterprise-0.1.0.tgz");
+  const prepared = join(directory, "prepared");
+  const environment = {
+    ...process.env,
+    SOURCE_SHA: sourceSha,
+    GITHUB_WORKFLOW_SHA: sourceSha,
+    GITHUB_RUN_ID: "123",
+    GITHUB_RUN_ATTEMPT: "1",
+    CI_RUN_ID: "456",
+    CI_ATTEMPT: "1",
+    NODE_BASE_IMAGE: `docker.io/library/node:24@sha256:${"f".repeat(64)}`,
+    GHCR_CONTROLLER_IMAGE: controllerReceipt.destination,
+    GHCR_RUNTIME_IMAGE: runtimeReceipt.destination,
+    CONTROLLER_DIGEST: controllerReceipt.digest,
+    RUNTIME_DIGEST: runtimeReceipt.digest,
+  };
+  const receipt = await prepareReleaseChart(prepared, environment);
+  const archive = join(prepared, `openclaw-enterprise-${await readChartVersion()}.tgz`);
+  const bytes = await readFile(archive);
+  assert.equal(receipt.chartSha256, createHash("sha256").update(bytes).digest("hex"));
   const metadata = execFileSync(helm, ["show", "chart", archive], { encoding: "utf8" });
   assert.match(
     metadata,
@@ -154,6 +171,19 @@ test("staged release chart records both verified digests and defaults to the con
     encoding: "utf8",
   });
   assert.match(rendered, /ghcr\.io\/openclaw\/openclaw-enterprise-controller@sha256:c{64}/);
+  // Recovery must reject a different producer, even when the archive is valid,
+  // and reject altered archive bytes from the original producer.
+  const verify = (runId: string) =>
+    verifyPreparedReleaseChart(
+      archive,
+      environment,
+      { runId, attempt: "1" },
+      receipt.controller,
+      receipt.runtime,
+    );
+  await assert.rejects(verify("124"), /Chart preparation receipt must match/);
+  await writeFile(archive, Buffer.concat([bytes, Buffer.from("changed")]));
+  await assert.rejects(verify("123"), /Chart preparation receipt must match/);
 });
 
 test("a chart retry accepts matching files across Helm package timestamps and rejects changed templates", async (t) => {
@@ -166,9 +196,10 @@ test("a chart retry accepts matching files across Helm package timestamps and re
     return;
   }
   const directory = await temporaryDirectory(t, "oce-chart-retry-");
+  const version = await readChartVersion();
   const staged = await stageReleaseChart(directory, {
     sourceSha,
-    version: "0.1.0",
+    version,
     images: releaseImages,
   });
   const first = join(directory, "first");
@@ -183,7 +214,7 @@ test("a chart retry accepts matching files across Helm package timestamps and re
   const laterSecond = (Math.round(Date.now() / 1_000) + 0.5) * 1_000 + 50;
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, laterSecond - Date.now())));
   execFileSync(helm, ["package", staged, "--destination", second]);
-  const archiveName = "openclaw-enterprise-0.1.0.tgz";
+  const archiveName = `openclaw-enterprise-${version}.tgz`;
   const firstArchive = join(first, archiveName);
   const secondArchive = join(second, archiveName);
   if (helmVersion.startsWith("v3.19.2")) {

@@ -1,0 +1,256 @@
+name: Release OCE
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Reviewed main commit (original commit for recovery)
+        type: string
+        required: true
+      ci_run_id:
+        description: Successful push CI run for that commit
+        type: string
+        required: true
+      image_tag:
+        description: Image alias to move after verification (defaults to latest)
+        type: string
+      publish:
+        description: Publish the release (default rehearses without public writes)
+        type: boolean
+        default: false
+      recovery_run_id:
+        description: Original interrupted Release OCE publish run, to reuse its qualified bytes
+        type: string
+
+permissions: {}
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  CI_RUN_ID: ${{ inputs.ci_run_id }}
+  IMAGE_TAG: ${{ inputs.image_tag }}
+  RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+  PUBLISH: ${{ inputs.publish }}
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      ci_attempt: ${{ steps.source.outputs.ci_attempt }}
+      version: ${{ steps.destination.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Validate the dispatch, source and push CI
+        id: source
+        env:
+          NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/release-oce.ts admit
+      - name: Check the destination and show the release for approval
+        id: destination
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_ATTEMPT: ${{ steps.source.outputs.ci_attempt }}
+        run: node scripts/ci/cli-release.ts preflight
+      - name: Show version, source and image alias for approval
+        env:
+          VERSION: ${{ steps.destination.outputs.version }}
+          CI_ATTEMPT: ${{ steps.source.outputs.ci_attempt }}
+        run: |
+          printf 'Version %s, commit `%s`, alias `%s`, publish=%s. CI run %s, attempt %s.\n' \
+            "$VERSION" "$SOURCE_SHA" "${IMAGE_TAG:-latest}" "$PUBLISH" "$CI_RUN_ID" "$CI_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"
+
+  approve:
+    name: Approve release
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: integration-main-approval
+    steps:
+      - run: echo "Approval received."
+
+  approval:
+    name: Verify approval
+    needs: approve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Verify the dispatcher's team approval and environment policy
+        env:
+          INPUT_LANE: all
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/full-integration-preflight.ts
+
+  integration:
+    name: Full Integration
+    if: inputs.recovery_run_id == ''
+    needs: approval
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    uses: ./.github/workflows/full-integration-execution.yml
+    with:
+      lane: all
+    secrets: inherit
+
+  prepare:
+    name: Prepare images
+    if: inputs.recovery_run_id == ''
+    needs: [validate, approval]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/container-check.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      ci_run_id: ${{ inputs.ci_run_id }}
+      ci_attempt: ${{ needs.validate.outputs.ci_attempt }}
+      node_base_image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      prepare_chart: true
+
+  cli:
+    name: Prepare CLI
+    if: inputs.recovery_run_id == ''
+    needs: approval
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/cli-release-prepare.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      ci_run_id: ${{ inputs.ci_run_id }}
+
+  qualify:
+    name: Record qualified release
+    if: ${{ !cancelled() && inputs.recovery_run_id == '' && needs.approval.result == 'success' }}
+    needs: [validate, approval, integration, prepare, cli]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Require completed tests, prepared bytes and the positive full-suite result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          IMAGE_RESULT: ${{ needs.prepare.result }}
+          CLI_RESULT: ${{ needs.cli.result }}
+          FULL_SUITE: ${{ needs.integration.outputs.full_suite }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          IMAGE_VERSION: ${{ needs.prepare.outputs.version }}
+          CLI_VERSION: ${{ needs.cli.outputs.version }}
+          CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
+          CLI_CI_ATTEMPT: ${{ needs.cli.outputs.ci_attempt }}
+          IMAGE_CONTROLLER: ${{ needs.prepare.outputs.controller_digest }}
+          IMAGE_RUNTIME: ${{ needs.prepare.outputs.runtime_digest }}
+          CHART_SHA256: ${{ needs.prepare.outputs.chart_sha256 }}
+          CLI_SHA256SUMS_DIGEST: ${{ needs.cli.outputs.sha256sums_digest }}
+        run: |
+          test "$INTEGRATION_RESULT" = success
+          test "$IMAGE_RESULT" = success
+          test "$CLI_RESULT" = success
+          node scripts/ci/release-oce.ts record "$RUNNER_TEMP"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: qualified-release-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/release.json
+          if-no-files-found: error
+          retention-days: 30
+
+  rehearse:
+    name: Verify registry destinations
+    if: ${{ !inputs.publish }}
+    needs: [validate, qualify]
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    uses: ./.github/workflows/release-registry.yml
+    with:
+      phase: preflight
+      source_sha: ${{ inputs.source_sha }}
+      ci_run_id: ${{ inputs.ci_run_id }}
+      ci_attempt: ${{ needs.validate.outputs.ci_attempt }}
+      image_tag: ${{ inputs.image_tag }}
+      producer_run_id: ${{ github.run_id }}
+      producer_attempt: "1"
+
+  rehearsal-cli:
+    name: Verify CLI destination bytes
+    if: ${{ !inputs.publish }}
+    needs: [validate, qualify, cli]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ${{ needs.cli.outputs.artifact_name }}
+          path: ${{ runner.temp }}/cli
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
+          CLI_SHA256SUMS_DIGEST: ${{ needs.cli.outputs.sha256sums_digest }}
+        run: node scripts/ci/cli-release.ts preflight "$RUNNER_TEMP/cli"
+
+  publish:
+    name: Publish
+    if: >-
+      !cancelled() && inputs.publish && needs.validate.result == 'success' && needs.approval.result == 'success' &&
+      ((inputs.recovery_run_id == '' && needs.qualify.result == 'success') ||
+      (inputs.recovery_run_id != '' && needs.qualify.result == 'skipped'))
+    needs: [validate, approval, qualify]
+    concurrency:
+      group: enterprise-container-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+    uses: ./.github/workflows/release-oce-publish.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      ci_run_id: ${{ inputs.ci_run_id }}
+      ci_attempt: ${{ needs.validate.outputs.ci_attempt }}
+      version: ${{ needs.validate.outputs.version }}
+      image_tag: ${{ inputs.image_tag }}
+      producer_run_id: ${{ inputs.recovery_run_id || github.run_id }}

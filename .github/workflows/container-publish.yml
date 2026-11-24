@@ -73,53 +73,12 @@ jobs:
       ci_run_id: ${{ inputs.ci_run_id }}
       ci_attempt: ${{ needs.validate.outputs.ci_attempt }}
       node_base_image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
-
-  assemble:
-    name: Assemble ${{ matrix.image }} OCI image
-    needs: [validate, prepare]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        image: [controller, runtime]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.workflow_sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        with:
-          node-version: "24.22.1"
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: platform-${{ matrix.image }}-amd64-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/oci/amd64
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: platform-${{ matrix.image }}-arm64-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/oci/arm64
-      - name: Assemble and seal tested platform bytes without rebuilding
-        env:
-          IMAGE: ${{ matrix.image }}
-          CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
-        run: |
-          node scripts/ci/container-release.ts assemble "$RUNNER_TEMP/oci"
-          IMAGE_DIGEST="$(sed -n 's/^digest=//p' "$GITHUB_OUTPUT")"
-          export IMAGE_DIGEST
-          node scripts/ci/container-release.ts seal "$RUNNER_TEMP/oci"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: container-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/oci
-          compression-level: 0
-          retention-days: 7
-          if-no-files-found: error
+      assemble_images: true
 
   publish:
     name: Publish exact OCI digests to public GHCR
     if: ${{ inputs.publish }}
-    needs: [validate, assemble]
+    needs: [validate, prepare]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: container-publish
@@ -139,11 +98,7 @@ jobs:
         with:
           pattern: container-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/prepared
-      - name: Install OCI transport
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
-          skopeo --version | grep -Fx 'skopeo version 1.13.3'
+      - uses: ./.github/actions/setup-registry
       - name: Revalidate public packages, CI and bytes before transfer
         env:
           GH_TOKEN: ${{ github.token }}
@@ -159,10 +114,22 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  prepare-chart:
+    if: ${{ inputs.publish && inputs.publish_chart }}
+    needs: [validate, prepare]
+    uses: ./.github/workflows/release-chart-prepare.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      ci_run_id: ${{ inputs.ci_run_id }}
+      ci_attempt: ${{ needs.validate.outputs.ci_attempt }}
+      node_base_image: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      controller_digest: ${{ needs.prepare.outputs.controller_digest }}
+      runtime_digest: ${{ needs.prepare.outputs.runtime_digest }}
+
   publish-chart:
     name: Publish optional Helm chart and OCE version tags
     if: ${{ inputs.publish && inputs.publish_chart }}
-    needs: [validate, publish]
+    needs: [validate, publish, prepare-chart]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: container-publish
@@ -182,19 +149,13 @@ jobs:
         with:
           name: container-publication-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/prepared
-      - name: Install OCI transport
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
-          skopeo --version | grep -Fx 'skopeo version 1.13.3'
-      - name: Install pinned Helm
-        run: |
-          bash scripts/ci/download-pinned.sh \
-            https://get.helm.sh/helm-v3.19.2-linux-amd64.tar.gz \
-            "$RUNNER_TEMP/helm.tar.gz" \
-            2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e
-          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" linux-amd64/helm
-          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-chart-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared
+      - uses: ./.github/actions/setup-registry
+        with:
+          helm: "true"
       - name: Publish OCE chart and matching image version tags
         env:
           GH_TOKEN: ${{ github.token }}
@@ -213,7 +174,7 @@ jobs:
   summary:
     name: Report publication outcomes
     if: ${{ always() }}
-    needs: [validate, prepare, assemble, publish, publish-chart]
+    needs: [validate, prepare, publish, publish-chart]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

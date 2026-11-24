@@ -152,16 +152,17 @@ test("promotion validation writes only the artifact ID for the selected publicat
     `
 const env = process.env;
 const repository = ${JSON.stringify(repository)};
-const workflow = ${JSON.stringify(publishWorkflow)};
+const workflow = env.FIXTURE_WORKFLOW ?? ${JSON.stringify(publishWorkflow)};
+const headSha = env.FIXTURE_PUBLICATION_SHA ?? env.SOURCE_SHA;
 const repo = { full_name: repository, default_branch: "main", private: false };
 const run = {
-  id: 123, run_attempt: 2, workflow_id: 89, path: workflow, repository: repo,
-  head_repository: repo, head_branch: "main", head_sha: env.SOURCE_SHA,
+  id: 123, run_attempt: Number(env.PUBLICATION_ATTEMPT), workflow_id: 89, path: workflow, repository: repo,
+  head_repository: repo, head_branch: "main", head_sha: headSha,
   event: "workflow_dispatch", status: "completed", conclusion: "success",
 };
 const artifact = {
   id: 789, name: "container-publication-123-" + env.FIXTURE_ARTIFACT_ATTEMPT,
-  expired: false, workflow_run: { id: 123, head_sha: env.SOURCE_SHA },
+  expired: false, workflow_run: { id: 123, head_sha: headSha },
 };
 const prefix = "/repos/" + repository;
 const responses = new Map([
@@ -176,9 +177,16 @@ const responses = new Map([
     branch_policies: [{ name: "main", type: "branch" }],
   }],
   [prefix + "/actions/runs/123", run],
-  [prefix + "/actions/workflows/container-publish.yml", { id: 89, path: workflow, state: "active" }],
+  [prefix + "/actions/workflows/" + workflow.split("/").at(-1), { id: 89, path: workflow, state: "active" }],
+  [prefix + "/actions/runs/123/attempts/1/jobs", { jobs: [{
+    name: "Publish / Aliases / aliases", head_sha: headSha, status: "completed",
+    conclusion: env.FIXTURE_ALIAS_RESULT,
+  }] }],
   [prefix + "/actions/runs/123/artifacts", { artifacts: [artifact] }],
 ]);
+if (headSha !== env.SOURCE_SHA) {
+  responses.set(prefix + "/compare/" + env.SOURCE_SHA + "..." + headSha, {status: "ahead"});
+}
 globalThis.fetch = async (url) => {
   const { origin, pathname } = new URL(url);
   return origin === "https://api.github.com" && responses.has(pathname)
@@ -188,7 +196,7 @@ globalThis.fetch = async (url) => {
 `,
   );
   const command = new URL("../../scripts/ci/container-promote.ts", import.meta.url);
-  const validate = (artifactAttempt: string, outputPath: string) =>
+  const validate = (artifactAttempt: string, outputPath: string, fixture: NodeJS.ProcessEnv = {}) =>
     spawnSync(process.execPath, ["--import", preload, fileURLToPath(command), "validate"], {
       encoding: "utf8",
       env: {
@@ -202,6 +210,7 @@ globalThis.fetch = async (url) => {
         GITHUB_OUTPUT: outputPath,
         GH_TOKEN: "synthetic-workflow-token",
         FIXTURE_ARTIFACT_ATTEMPT: artifactAttempt,
+        ...fixture,
       },
     });
   const admitted = validate("2", output);
@@ -214,5 +223,21 @@ globalThis.fetch = async (url) => {
     [refused.status, refused.stdout, refused.stderr],
     [1, "", "The exact successful publication receipt is required.\n\n0 !== 1\n\n"],
   );
+  await assert.rejects(readFile(refusedOutput), { code: "ENOENT" });
+
+  // A recovery uses the final publisher's newer workflow commit for artifact
+  // and job lookup. A green rehearsal with a skipped alias job cannot promote.
+  const recovered = {
+    FIXTURE_WORKFLOW: ".github/workflows/release-oce.yml",
+    FIXTURE_PUBLICATION_SHA: "d".repeat(40),
+    FIXTURE_ALIAS_RESULT: "success",
+    PUBLICATION_ATTEMPT: "1",
+  };
+  const recoveredOutput = join(directory, "recovered-output");
+  assert.equal(validate("1", recoveredOutput, recovered).status, 0);
+  assert.equal(await readFile(recoveredOutput, "utf8"), "artifact_id=789\n");
+  const skipped = validate("1", refusedOutput, { ...recovered, FIXTURE_ALIAS_RESULT: "skipped" });
+  assert.equal(skipped.status, 1);
+  assert.match(skipped.stderr, /skipped/);
   await assert.rejects(readFile(refusedOutput), { code: "ENOENT" });
 });

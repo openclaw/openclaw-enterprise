@@ -12,6 +12,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 import { array, jsonRecord, present, record, text } from "./full-integration-json-fixture.ts";
 import { readSuiteLane, reuseFixture } from "./full-integration-reuse-fixture.ts";
+import { readWorkflow, workflowCondition } from "./full-integration-workflow-fixture.ts";
 
 function files(lane: Record<string, unknown>) {
   return array(lane.files).map((raw) => {
@@ -87,7 +88,7 @@ test("full coverage receipts require real case evidence and retain approved same
         env: {
           ...process.env,
           GITHUB_SHA: sha,
-          GITHUB_WORKFLOW: "Full Integration",
+          GITHUB_WORKFLOW: "Release OCE",
           OCC_CI_SUITE_VIEW: "full-integration",
           GITHUB_REF: "refs/heads/main",
           GITHUB_RUN_ATTEMPT: "1",
@@ -195,6 +196,9 @@ test("full coverage receipts require real case evidence and retain approved same
   await writeFile(reusedPath, reusedReceipt);
   const policyReceipt = join(fixtureRoot, "results/openshell-policy.json");
   const needsPath = join(fixtureRoot, "needs.json");
+  const execution = await readWorkflow("full-integration-execution");
+  const aggregate = present(execution.jobs["full-aggregate"]);
+  const qualified = present(aggregate.steps?.find((step) => step.id === "qualified"));
   let serial = 0;
   const verify = async (
     expectedExit: number,
@@ -219,6 +223,31 @@ test("full coverage receipts require real case evidence and retain approved same
       assert.equal(jsonRecord(result.stdout).fullCoverageExercised, undefined);
       await assert.rejects(readFile(marker), { code: "ENOENT" });
     }
+    // A coverage marker also records a fully exercised failing suite. Only a
+    // passing full aggregate can supply the release workflow with evidence.
+    const outputs = expectedMarker ? { full_coverage_exercised: "true" } : {};
+    const eligible = workflowCondition(qualified.if, {
+      success: () => result.status === 0,
+      needs: { preflight: { outputs: { selected_lane: "all" } } },
+      steps: {
+        "aggregate-full": { outcome: result.status === 0 ? "success" : "failure", outputs },
+      },
+    });
+    assert.equal(eligible, expectedExit === 0 && expectedMarker);
+    if (eligible) {
+      const qualificationOutput = join(fixtureRoot, `qualified-${serial}`);
+      const emitted = spawnSync("/bin/sh", ["-ec", text(qualified.run)], {
+        env: {
+          GITHUB_OUTPUT: qualificationOutput,
+          GITHUB_SHA: sha,
+          GITHUB_RUN_ID: "456",
+          GITHUB_RUN_ATTEMPT: "1",
+        },
+        encoding: "utf8",
+      });
+      assert.equal(emitted.status, 0, emitted.stderr);
+      assert.equal(await readFile(qualificationOutput, "utf8"), `full_suite=all:${sha}:456:1\n`);
+    }
   };
   const needs = {
     preflight: { result: "success" },
@@ -230,6 +259,7 @@ test("full coverage receipts require real case evidence and retain approved same
   await generate(policyPath, ["sentinel"], "assert.equal(1, 1);");
   assert.equal(produce("openshell-policy").status, 0);
   await verify(0, true);
+  await verify(0, true, { GITHUB_WORKFLOW: "Full Integration" });
   // Installed Skipper always requires file cleanup; ordinary no-callback files
   // can legitimately retain null, so enforce the owning Skipper contract here.
   const installedReceipt = await readFile(skipperPath, "utf8");

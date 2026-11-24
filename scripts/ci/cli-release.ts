@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,7 +12,8 @@ import {
   verifyEnvironment,
 } from "./container-release.ts";
 
-const workflow = ".github/workflows/cli-release.yml";
+const cliWorkflow = `${repository}/.github/workflows/cli-release.yml@refs/heads/main`;
+const releaseWorkflow = `${repository}/.github/workflows/release-oce.yml@refs/heads/main`;
 const platforms = [
   ["darwin", "amd64"],
   ["darwin", "arm64"],
@@ -27,9 +27,10 @@ function assertRecord(value: unknown): asserts value is Record<string, unknown> 
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
 }
 
-function assertRelease(
-  value: unknown,
-): asserts value is Record<string, unknown> & { id: number; assets: { name: string }[] } {
+function assertRelease(value: unknown): asserts value is Record<string, unknown> & {
+  id: number;
+  assets: { id: number; name: string; state: string }[];
+} {
   assertRecord(value);
   assert.equal(typeof value.id, "number");
   assert.ok(Array.isArray(value.assets));
@@ -37,16 +38,21 @@ function assertRelease(
   for (const asset of assets) {
     assertRecord(asset);
     assert.equal(typeof asset.name, "string");
+    assert.equal(typeof asset.state, "string");
+    assert.ok(typeof asset.id === "number" && Number.isSafeInteger(asset.id) && asset.id > 0);
   }
 }
 
-async function releaseVersion() {
-  const manifest: unknown = JSON.parse(await readFile("package.json", "utf8"));
+async function releaseVersion(sha?: string) {
+  // A recovery can use newer trusted main tooling to publish the original commit.
+  const sourceFile = (path: string) =>
+    sha ? command("git", ["show", `${sha}:${path}`]) : readFile(path, "utf8");
+  const manifest: unknown = JSON.parse(await sourceFile("package.json"));
   assertRecord(manifest);
   const version = manifest.version;
   assert.ok(typeof version === "string");
   assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u);
-  const chart = await readFile("deploy/helm/openclaw-enterprise/Chart.yaml", "utf8");
+  const chart = await sourceFile("deploy/helm/openclaw-enterprise/Chart.yaml");
   assert.match(chart, new RegExp(`^version: ${version.replaceAll(".", "\\.")}$`, "mu"));
   assert.match(chart, new RegExp(`^appVersion: "${version.replaceAll(".", "\\.")}"$`, "mu"));
   return `v${version}`;
@@ -73,18 +79,40 @@ async function validate(env: NodeJS.ProcessEnv, publishing = false) {
   assert.equal(repo.default_branch, "main");
   assert.equal(env.GITHUB_EVENT_NAME, "workflow_dispatch");
   assert.equal(env.GITHUB_REF, "refs/heads/main");
-  assert.equal(env.GITHUB_WORKFLOW_REF, `${repository}/${workflow}@refs/heads/main`);
+  assert.ok(
+    env.GITHUB_WORKFLOW_REF === cliWorkflow || env.GITHUB_WORKFLOW_REF === releaseWorkflow,
+    "Only the CLI and OCE release workflows on main can prepare or publish the CLI.",
+  );
   assert.equal(env.GITHUB_SHA, env.GITHUB_WORKFLOW_SHA);
   const comparison: unknown = await github(`repos/${repository}/compare/${env.SOURCE_SHA}...main`);
   assertRecord(comparison);
   assert.ok(comparison.status === "ahead" || comparison.status === "identical");
-  assert.equal(env.SOURCE_SHA, env.GITHUB_WORKFLOW_SHA);
-  assert.equal(command("git", ["rev-parse", "HEAD"]).trim(), env.SOURCE_SHA);
+  let recovery = false;
+  if (env.GITHUB_WORKFLOW_REF === releaseWorkflow) {
+    const event: unknown = JSON.parse(await readFile(env.GITHUB_EVENT_PATH!, "utf8"));
+    assertRecord(event);
+    assertRecord(event.inputs);
+    assert.equal(event.inputs.source_sha, env.SOURCE_SHA);
+    if (publishing) {
+      assert.equal(event.inputs.publish, "true", "Release OCE must explicitly select publication.");
+      assert.equal(repo.private, false, "Release OCE requires public CLI downloads.");
+    }
+    recovery =
+      typeof event.inputs.recovery_run_id === "string" &&
+      /^[1-9][0-9]*$/u.test(event.inputs.recovery_run_id);
+    assert.equal(env.GITHUB_RUN_ATTEMPT, "1");
+  }
+  if (!recovery) {
+    assert.equal(env.SOURCE_SHA, env.GITHUB_WORKFLOW_SHA);
+  }
+  const head = command("git", ["rev-parse", "HEAD"]).trim();
+  assert.ok(head === env.GITHUB_WORKFLOW_SHA || head === env.SOURCE_SHA, "Unexpected checkout.");
+
   const ciAttempt = await verifyCi(env);
   if (publishing) {
     await verifyEnvironment();
   }
-  return { version: await releaseVersion(), ciAttempt };
+  return { version: await releaseVersion(env.SOURCE_SHA), ciAttempt };
 }
 
 async function packageCli(directory: string) {
@@ -136,10 +164,18 @@ async function packageCli(directory: string) {
   return version;
 }
 
-async function verifyAssets(directory: string) {
-  const version = await releaseVersion();
+async function verifyAssets(directory: string, version: string, checksumDigest?: string) {
   const names = platforms.map(([os, arch]) => assetName(version, os, arch));
-  const expected = (await readFile(join(directory, "SHA256SUMS"), "utf8")).trimEnd().split("\n");
+  const sums = await readFile(join(directory, "SHA256SUMS"));
+  if (checksumDigest !== undefined) {
+    assert.match(checksumDigest, /^[0-9a-f]{64}$/u);
+    assert.equal(
+      createHash("sha256").update(sums).digest("hex"),
+      checksumDigest,
+      "SHA256SUMS differs from the prepared artifact.",
+    );
+  }
+  const expected = sums.toString("utf8").trimEnd().split("\n");
   assert.equal(expected.length, names.length, "Release checksums must cover four binaries.");
   for (const [index, name] of names.entries()) {
     const bytes = await readFile(join(directory, name));
@@ -147,7 +183,7 @@ async function verifyAssets(directory: string) {
     const digest = createHash("sha256").update(bytes).digest("hex");
     assert.equal(expected[index], `${digest}  ${name}`, `${name} differs from SHA256SUMS.`);
   }
-  return { version, names };
+  return [...names, "SHA256SUMS"];
 }
 
 async function findRelease(version: string, retryMissing = false) {
@@ -176,13 +212,161 @@ async function findRelease(version: string, retryMissing = false) {
   return null;
 }
 
+function verifyTag(tag: unknown, sha: string | undefined) {
+  assertRecord(tag);
+  assertRecord(tag.object);
+  assert.equal(tag.object.type, "commit", "Release tag must be a lightweight commit tag.");
+  assert.equal(tag.object.sha, sha, "Release tag points to another source.");
+}
+
+export function missingReleaseAssets(
+  release: { assets: { name: string }[] },
+  names: string[],
+  complete: boolean,
+) {
+  const actual = release.assets.map((asset) => asset.name).sort();
+  assert.equal(new Set(actual).size, actual.length, "Duplicate release asset names.");
+  for (const name of actual) {
+    assert.ok(names.includes(name), `Unexpected release asset ${name}.`);
+  }
+  const missing = names.filter((name) => !actual.includes(name));
+  if (complete) {
+    assert.deepEqual(missing, [], "Release is missing CLI assets.");
+  }
+  return missing;
+}
+
+export async function verifyDownload(
+  url: string,
+  file: string,
+  headers: Record<string, string> = {},
+) {
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(60_000) });
+  assert.equal(response.status, 200, `Release asset download failed for ${url}.`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.ok(bytes.equals(await readFile(file)), `Download differs from prepared bytes: ${url}`);
+}
+
+async function verifyRemoteBytes(
+  version: string,
+  assets: { id: number; name: string }[],
+  directory: string,
+  draft: boolean,
+) {
+  for (const { id, name } of assets) {
+    if (draft) {
+      // Drafts have no public download URL. Request the asset by its GitHub ID.
+      assert.ok(process.env.GH_TOKEN);
+      await verifyDownload(
+        `https://api.github.com/repos/${repository}/releases/assets/${id}`,
+        join(directory, name),
+        { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: "application/octet-stream" },
+      );
+    } else {
+      await verifyDownload(
+        `https://github.com/${repository}/releases/download/${version}/${name}`,
+        join(directory, name),
+      );
+    }
+  }
+}
+
+async function inspectDestination(env: NodeJS.ProcessEnv, version: string, directory?: string) {
+  const tagPath = `repos/${repository}/git/ref/tags/${version}`;
+  const tag = await github(tagPath, { allowNotFound: true });
+  if (tag) {
+    verifyTag(tag, env.SOURCE_SHA);
+  }
+  const names = directory
+    ? await verifyAssets(directory, version, env.CLI_SHA256SUMS_DIGEST)
+    : [...platforms.map(([os, arch]) => assetName(version, os, arch)), "SHA256SUMS"];
+  const release = await findRelease(version);
+  if (release) {
+    assert.ok(tag, "Existing release has no matching Git tag.");
+    assert.equal(release.tag_name, version);
+    assert.equal(typeof release.draft, "boolean");
+    missingReleaseAssets(release, names, !release.draft);
+    if (!release.draft) {
+      assert.equal(
+        env.GITHUB_WORKFLOW_REF,
+        releaseWorkflow,
+        "Published standalone releases cannot be replaced.",
+      );
+    }
+    if (directory) {
+      await verifyRemoteBytes(version, release.assets, directory, release.draft === true);
+    }
+  }
+  return { tagPath, tag, release, names };
+}
+
+async function reportInterruptedPublication(env: NodeJS.ProcessEnv) {
+  assert.match(env.SOURCE_SHA ?? "", sourcePattern);
+  assert.ok(env.GITHUB_STEP_SUMMARY);
+  const version = await releaseVersion(env.SOURCE_SHA);
+  const lines = [
+    `### OCC CLI publication interrupted for ${version}`,
+    "",
+    `Source commit: ${env.SOURCE_SHA}.`,
+    "",
+  ];
+  const [tag, release] = await Promise.allSettled([
+    github(`repos/${repository}/git/ref/tags/${version}`, { allowNotFound: true }),
+    findRelease(version),
+  ]);
+  if (tag.status === "rejected") {
+    lines.push("Git tag lookup failed.");
+  } else if (!tag.value) {
+    lines.push("Git tag is missing.");
+  } else {
+    assertRecord(tag.value);
+    assertRecord(tag.value.object);
+    const target = tag.value.object.sha;
+    assert.ok(typeof target === "string" && sourcePattern.test(target));
+    lines.push(`Git tag points to ${target}.`);
+  }
+  if (release.status === "rejected") {
+    lines.push("Release lookup failed. Asset state is unknown.");
+  } else if (!release.value) {
+    lines.push("GitHub has no release for this tag.");
+  } else {
+    const observed = release.value;
+    assert.equal(typeof observed.draft, "boolean");
+    lines.push(observed.draft ? "GitHub has a draft release." : "GitHub has a published release.");
+    lines.push("", "| Expected asset | GitHub state |", "| --- | --- |");
+    const names = [...platforms.map(([os, arch]) => assetName(version, os, arch)), "SHA256SUMS"];
+    for (const name of names) {
+      const asset = observed.assets.find((item) => item.name === name);
+      let state = "Missing";
+      if (asset?.state === "uploaded") {
+        state = observed.draft
+          ? "Uploaded to draft"
+          : `[Published](https://github.com/${repository}/releases/download/${version}/${name})`;
+      } else if (asset) {
+        state = "Incomplete upload";
+      }
+      lines.push(`| ${name} | ${state} |`);
+    }
+    const unexpected = observed.assets.filter((asset) => !names.includes(asset.name));
+    if (unexpected.length > 0) {
+      lines.push("", `GitHub also lists ${unexpected.length} unexpected assets.`);
+    }
+  }
+  lines.push(
+    "",
+    "Recovery compares remote bytes with the original prepared artifacts before it resumes publication.",
+    "",
+  );
+  await writeFile(env.GITHUB_STEP_SUMMARY, lines.join("\n"), { flag: "a" });
+}
+
 async function publish(directory: string, env: NodeJS.ProcessEnv) {
   const { version } = await validate(env, true);
-  const assets = await verifyAssets(directory);
-  assert.equal(assets.version, version);
-  const tagPath = `repos/${repository}/git/ref/tags/${version}`;
-  let tag: unknown = await github(tagPath, { allowNotFound: true });
-  if (!tag) {
+  assert.ok(env.CLI_SHA256SUMS_DIGEST, "Missing digest from CLI preparation.");
+  const destination = await inspectDestination(env, version, directory);
+  const { tagPath, names } = destination;
+  let release = destination.release;
+  if (!destination.tag) {
     command("gh", [
       "api",
       "-X",
@@ -193,14 +377,8 @@ async function publish(directory: string, env: NodeJS.ProcessEnv) {
       "-f",
       `sha=${env.SOURCE_SHA}`,
     ]);
-    tag = await github(tagPath, { retryNotFound: true });
+    verifyTag(await github(tagPath, { retryNotFound: true }), env.SOURCE_SHA);
   }
-  assertRecord(tag);
-  assertRecord(tag.object);
-  assert.equal(tag.object.type, "commit", "Release tag must be a lightweight commit tag.");
-  assert.equal(tag.object.sha, env.SOURCE_SHA, "Release tag points to another source.");
-
-  let release = await findRelease(version);
   if (!release) {
     command("gh", [
       "release",
@@ -216,67 +394,45 @@ async function publish(directory: string, env: NodeJS.ProcessEnv) {
       `OCC CLI binaries for OCE ${version}, built from ${env.SOURCE_SHA}. These manage an existing OCC installation; local development commands still require a source checkout.`,
     ]);
     release = await findRelease(version, true);
+    assert.ok(release, `Draft release ${version} was not found after creation.`);
+    assert.equal(release.draft, true, "A different publication created the release.");
   }
-  assert.ok(release, `Draft release ${version} was not found after creation.`);
+
   const releasePath = `repos/${repository}/releases/${release.id}`;
-  assert.equal(release.tag_name, version);
-  assert.equal(release.draft, true, "Published releases cannot be replaced by a retry.");
-  const expectedNames = new Set([...assets.names, "SHA256SUMS"]);
-  for (const asset of release.assets) {
-    assert.ok(expectedNames.has(asset.name), `Draft release has unexpected asset ${asset.name}.`);
-  }
-  const temporary = await mkdtemp(join(tmpdir(), "oce-cli-release-"));
-  try {
-    for (const name of [...assets.names, "SHA256SUMS"]) {
-      const existing = release.assets.find((asset) => asset.name === name);
-      if (!existing) {
-        command("gh", ["release", "upload", version, join(directory, name), "--repo", repository]);
-      }
-      command("gh", [
-        "release",
-        "download",
-        version,
-        "--repo",
-        repository,
-        "--pattern",
-        name,
-        "--dir",
-        temporary,
-      ]);
-      assert.deepEqual(
-        await readFile(join(temporary, name)),
-        await readFile(join(directory, name)),
-        `Existing release asset ${name} differs from the verified build.`,
-      );
+  // Recovery after release publication validates every public byte before alias movement.
+  if (release.draft) {
+    for (const name of missingReleaseAssets(release, names, false)) {
+      command("gh", ["release", "upload", version, join(directory, name), "--repo", repository]);
     }
-    const refreshedRelease: unknown = await github(releasePath, { retryNotFound: true });
-    assertRelease(refreshedRelease);
-    release = refreshedRelease;
-    assert.deepEqual(
-      release.assets.map((asset) => asset.name).sort(),
-      [...assets.names, "SHA256SUMS"].sort(),
-      "Draft release has unexpected assets.",
-    );
-    const currentTag: unknown = await github(tagPath);
-    assertRecord(currentTag);
-    assertRecord(currentTag.object);
-    assert.equal(currentTag.object.sha, env.SOURCE_SHA);
+    const draft = await github(releasePath);
+    assertRelease(draft);
+    assert.equal(draft.tag_name, version);
+    assert.equal(draft.draft, true);
+    missingReleaseAssets(draft, names, true);
+    await verifyRemoteBytes(version, draft.assets, directory, true);
+    verifyTag(await github(tagPath), env.SOURCE_SHA);
     await validate(env, true);
     command("gh", ["release", "edit", version, "--repo", repository, "--draft=false"]);
-    const published: unknown = await github(releasePath);
+    const published = await github(releasePath);
     assertRelease(published);
+    assert.equal(published.tag_name, version);
     assert.equal(published.draft, false, "CLI release remains a draft.");
-    assert.deepEqual(
-      published.assets.map((asset) => asset.name).sort(),
-      [...assets.names, "SHA256SUMS"].sort(),
-      "Published release asset inventory changed.",
+    missingReleaseAssets(published, names, true);
+    if (env.GITHUB_WORKFLOW_REF === releaseWorkflow) {
+      await verifyRemoteBytes(version, published.assets, directory, false);
+    }
+  }
+  verifyTag(await github(tagPath), env.SOURCE_SHA);
+  if (env.GITHUB_STEP_SUMMARY) {
+    const links = names.map(
+      (name) =>
+        `- [${name}](https://github.com/${repository}/releases/download/${version}/${name})`,
     );
-    const publishedTag: unknown = await github(tagPath);
-    assertRecord(publishedTag);
-    assertRecord(publishedTag.object);
-    assert.equal(publishedTag.object.sha, env.SOURCE_SHA);
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
+    await writeFile(
+      env.GITHUB_STEP_SUMMARY,
+      `Verified release assets for ${env.SOURCE_SHA}.\n\n${links.join("\n")}\n`,
+      { flag: "a" },
+    );
   }
 }
 
@@ -292,21 +448,42 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         );
         break;
       }
+      case "preflight": {
+        const { version } = await validate(process.env);
+        await inspectDestination(process.env, version, process.argv[3]);
+        if (process.env.GITHUB_OUTPUT) {
+          await writeFile(process.env.GITHUB_OUTPUT, `version=${version.slice(1)}\n`, {
+            flag: "a",
+          });
+        }
+        break;
+      }
       case "package":
         assert.ok(process.argv[3], "Package output directory is required.");
         await packageCli(process.argv[3]);
-        await verifyAssets(process.argv[3]);
+        await verifyAssets(
+          process.argv[3],
+          await releaseVersion(),
+          process.env.CLI_SHA256SUMS_DIGEST,
+        );
         break;
       case "verify":
         assert.ok(process.argv[3], "Package directory is required.");
-        await verifyAssets(process.argv[3]);
+        await verifyAssets(
+          process.argv[3],
+          await releaseVersion(),
+          process.env.CLI_SHA256SUMS_DIGEST,
+        );
+        break;
+      case "report":
+        await reportInterruptedPublication(process.env);
         break;
       case "publish":
         assert.ok(process.argv[3], "Package directory is required.");
         await publish(process.argv[3], process.env);
         break;
       default:
-        throw new Error("Expected validate, package, verify, or publish.");
+        throw new Error("Expected validate, preflight, package, verify, publish, or report.");
     }
   } catch (error) {
     console.error(error);

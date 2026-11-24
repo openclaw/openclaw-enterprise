@@ -3,6 +3,9 @@ import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+
+import { releaseWorkflow } from "./container-release/admission.ts";
+import { verifyProducer as verifyReleasePreparation } from "./release-oce.ts";
 import {
   github,
   githubPages,
@@ -38,15 +41,20 @@ function optionalProperty<K extends PropertyKey>(value: unknown, key: K): unknow
   return (value as { [P in K]: unknown } | null | undefined)?.[key];
 }
 
-export function validatePublicationRun(run: unknown, workflow: unknown, env: NodeJS.ProcessEnv) {
+export function validatePublicationRun(
+  run: unknown,
+  workflow: unknown,
+  env: NodeJS.ProcessEnv,
+  expectedPath: typeof publishWorkflow | typeof releaseWorkflow = publishWorkflow,
+) {
   assert.match(env.PUBLICATION_RUN_ID ?? "", /^[1-9][0-9]*$/);
   assert.match(env.PUBLICATION_ATTEMPT ?? "", /^[1-9][0-9]*$/);
   assert.equal(String(property(run, "id")), env.PUBLICATION_RUN_ID);
   assert.equal(String(property(run, "run_attempt")), env.PUBLICATION_ATTEMPT);
-  assert.equal(property(workflow, "path"), publishWorkflow);
+  assert.equal(property(workflow, "path"), expectedPath);
   assert.equal(property(workflow, "state"), "active");
   assert.equal(property(run, "workflow_id"), property(workflow, "id"));
-  assert.equal(property(run, "path"), publishWorkflow);
+  assert.equal(property(run, "path"), expectedPath);
   assert.equal(optionalProperty(property(run, "repository"), "full_name"), repository);
   assert.equal(optionalProperty(property(run, "head_repository"), "full_name"), repository);
   assert.equal(property(run, "head_branch"), "main");
@@ -120,15 +128,32 @@ async function verifyProducer(env: NodeJS.ProcessEnv) {
   );
   await verifyEnvironment();
   assert.match(env.PUBLICATION_RUN_ID ?? "", /^[1-9][0-9]*$/);
-  const run: unknown = await github(`repos/${repository}/actions/runs/${env.PUBLICATION_RUN_ID}`);
+  const runPath = `repos/${repository}/actions/runs/${env.PUBLICATION_RUN_ID}`;
+  const run = await github(runPath);
+  const unified = property(run, "path") === releaseWorkflow;
   const workflow: unknown = await github(
-    `repos/${repository}/actions/workflows/container-publish.yml`,
+    `repos/${repository}/actions/workflows/${unified ? "release-oce.yml" : "container-publish.yml"}`,
   );
-  validatePublicationRun(run, workflow, env);
-  const artifacts: unknown[] = await githubPages(
-    `repos/${repository}/actions/runs/${env.PUBLICATION_RUN_ID}/artifacts`,
-    "artifacts",
-  );
+  const headSha = property(run, "head_sha");
+  assert.ok(typeof headSha === "string" && /^[a-f0-9]{40}$/.test(headSha));
+  if (unified) {
+    assert.equal(env.PUBLICATION_ATTEMPT, "1");
+    validatePublicationRun(run, workflow, { ...env, SOURCE_SHA: headSha }, releaseWorkflow);
+    // Recovery may use a newer main workflow than the commit in the binary and images.
+    if (headSha !== env.SOURCE_SHA) {
+      const history = await github(`repos/${repository}/compare/${env.SOURCE_SHA}...${headSha}`);
+      assert.equal(property(history, "status"), "ahead", "Source must precede the recovery run.");
+    }
+    const jobs = await githubPages(`${runPath}/attempts/${env.PUBLICATION_ATTEMPT}/jobs`, "jobs");
+    const aliases = jobs.filter((job) => property(job, "name") === "Publish / Aliases / aliases");
+    assert.equal(aliases.length, 1, "Require the final Release OCE alias publication job.");
+    assert.equal(property(aliases[0], "head_sha"), headSha);
+    assert.equal(property(aliases[0], "status"), "completed");
+    assert.equal(property(aliases[0], "conclusion"), "success");
+  } else {
+    validatePublicationRun(run, workflow, env);
+  }
+  const artifacts = await githubPages(`${runPath}/artifacts`, "artifacts");
   const matches = artifacts.filter(
     (artifact) =>
       property(artifact, "name") ===
@@ -141,8 +166,10 @@ async function verifyProducer(env: NodeJS.ProcessEnv) {
     String(optionalProperty(property(artifact, "workflow_run"), "id")),
     env.PUBLICATION_RUN_ID,
   );
-  assert.equal(optionalProperty(property(artifact, "workflow_run"), "head_sha"), env.SOURCE_SHA);
-  return String(property(artifact, "id"));
+  assert.equal(optionalProperty(property(artifact, "workflow_run"), "head_sha"), headSha);
+  const artifactId = String(property(artifact, "id"));
+  assert.match(artifactId, /^[1-9][0-9]*$/);
+  return { artifactId, headSha, unified };
 }
 
 async function hub(
@@ -190,13 +217,24 @@ async function verifyHub(
 }
 
 async function promote(path: string | undefined, env: NodeJS.ProcessEnv) {
-  assert.equal(
-    await verifyProducer(env),
-    env.ARTIFACT_ID,
-    "Publication artifact identity changed.",
-  );
+  const producer = await verifyProducer(env);
+  assert.equal(producer.artifactId, env.ARTIFACT_ID, "Publication artifact identity changed.");
   const receipt: unknown = JSON.parse(await readFile(path as string, "utf8"));
-  validateReceipt(receipt, env);
+  let preparation = env;
+  if (producer.unified) {
+    assert.ok(Array.isArray(receipt) && receipt.length === 2);
+    const runId = property(receipt[0], "runId");
+    assert.ok(typeof runId === "string" && /^[1-9][0-9]*$/.test(runId));
+    if (runId === env.PUBLICATION_RUN_ID) {
+      assert.equal(producer.headSha, env.SOURCE_SHA);
+    } else {
+      // The final receipt is emitted by the trusted recovery workflow. Check
+      // that both images still identify its original preparation on main.
+      preparation = { ...env, PUBLICATION_RUN_ID: runId, PUBLICATION_ATTEMPT: "1" };
+      await verifyReleasePreparation({ ...env, RECOVERY_RUN_ID: runId });
+    }
+  }
+  validateReceipt(receipt, preparation);
   const ci = { ...env, CI_RUN_ID: receipt[0].ciRunId, CI_ATTEMPT: receipt[0].ciAttempt };
   await verifyCi(ci);
   const targets = receipt.map((image) => ({
@@ -219,7 +257,7 @@ async function promote(path: string | undefined, env: NodeJS.ProcessEnv) {
     skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
     skopeoLogin("docker.io", authfile, env.DOCKERHUB_USERNAME, env.DOCKERHUB_TOKEN);
     for (const image of targets) {
-      assert.equal(await verifyProducer(env), env.ARTIFACT_ID);
+      assert.equal((await verifyProducer(env)).artifactId, env.ARTIFACT_ID);
       await verifyCi(ci);
       await verifyGhcr(image.destination, image.digest, image.tag);
       assert.equal(
@@ -260,7 +298,7 @@ async function main() {
   if (command === "validate") {
     await appendFile(
       process.env.GITHUB_OUTPUT as string,
-      `artifact_id=${await verifyProducer(process.env)}\n`,
+      `artifact_id=${(await verifyProducer(process.env)).artifactId}\n`,
     );
   } else if (command === "promote") {
     await promote(path, process.env);

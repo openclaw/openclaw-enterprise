@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { chartPackage, chartPushParent, pushChart } from "./chart-package.ts";
 import {
@@ -12,7 +12,8 @@ import {
   github,
   githubPages,
   inspectDigest,
-  isReleaseVersion,
+  publishWorkflow,
+  repository,
   remoteTagDigest,
   skopeo,
   skopeoLogin,
@@ -23,7 +24,10 @@ import {
   verifyMainSource,
 } from "./container-release.ts";
 
-const root = fileURLToPath(new URL("../../", import.meta.url));
+import { verifyPreparedReleaseChart, readChartVersion } from "./prepare-release-chart.ts";
+
+export { stageReleaseChart } from "./prepare-release-chart.ts";
+
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const shaPattern = /^[a-f0-9]{40}$/;
 const integerPattern = /^[1-9][0-9]*$/;
@@ -97,49 +101,6 @@ export function validateImageReceipt(receipt: unknown, expected: ExpectedPublica
   return sorted;
 }
 
-export async function stageReleaseChart(
-  directory: string,
-  { sourceSha, version, images }: { sourceSha: string; version: string; images: ImageReceipt[] },
-) {
-  assert.match(sourceSha, shaPattern);
-  assert.ok(isReleaseVersion(version), "Expected an OCE release version.");
-  const packageJson: unknown = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-  assert.ok(record(packageJson));
-  assert.equal(packageJson.version, version, "OCE release version must match root package.json.");
-  const destination = join(directory, "chart");
-  await cp(join(root, "deploy/helm/openclaw-enterprise"), destination, { recursive: true });
-  const metadataPath = join(destination, "Chart.yaml");
-  const metadata = await readFile(metadataPath, "utf8");
-  assert.equal(metadata.match(/^version: (.+)$/mu)?.[1], version);
-  assert.equal(metadata.match(/^appVersion: "(.+)"$/mu)?.[1], version);
-  assert.ok(!/^annotations:/mu.test(metadata), "Release annotations must be staged once.");
-  const controller = images.find(({ image }) => image === "controller");
-  const runtime = images.find(({ image }) => image === "runtime");
-  assert.ok(controller && runtime, "Both verified images are required.");
-  for (const selected of [controller, runtime]) {
-    assert.match(selected.digest, digestPattern);
-    assert.match(selected.destination, /^ghcr\.io\/openclaw\/[a-z0-9/_-]+$/u);
-  }
-  const controllerReference = `${controller.destination}@${controller.digest}`;
-  const runtimeReference = `${runtime.destination}@${runtime.digest}`;
-  await writeFile(
-    metadataPath,
-    `${metadata.trimEnd()}\nannotations:\n  openclaw.dev/source-revision: "${sourceSha}"\n  openclaw.dev/controller-image: "${controllerReference}"\n  openclaw.dev/runtime-image: "${runtimeReference}"\n`,
-  );
-  const valuesPath = join(destination, "values.yaml");
-  const values = await readFile(valuesPath, "utf8");
-  assert.match(
-    values,
-    /^[ ]{2}controller: ""$/mu,
-    "Expected the source controller image placeholder.",
-  );
-  await writeFile(
-    valuesPath,
-    values.replace(/^[ ]{2}controller: ""$/mu, `  controller: "${controllerReference}"`),
-  );
-  return destination;
-}
-
 // Helm 3 stamps tar headers when it packages a chart, so retries must compare
 // every packaged file rather than the compressed archive's incidental bytes.
 export async function chartArchiveContent(archive: string) {
@@ -210,7 +171,7 @@ export async function chartArchiveContent(archive: string) {
   return [...files].sort(([left], [right]) => left.localeCompare(right));
 }
 
-async function verifyReleaseContext(env: NodeJS.ProcessEnv, packagePath: string) {
+async function verifyReleaseContext(env: NodeJS.ProcessEnv) {
   assert.equal(env.PUBLISH, "true");
   assert.equal(env.SOURCE_SHA, env.GITHUB_WORKFLOW_SHA);
   assert.equal(
@@ -220,8 +181,6 @@ async function verifyReleaseContext(env: NodeJS.ProcessEnv, packagePath: string)
   await verifyMainSource(env);
   await verifyCi(env);
   await verifyEnvironment();
-  const packageMetadata: unknown = await github(packagePath);
-  validatePackage(packageMetadata, chartPackage, { allowMissingRepository: true });
 }
 
 function helmCommand(
@@ -251,9 +210,27 @@ function hasVersion(entry: unknown, version: string) {
   return tags.includes(version);
 }
 
-async function publish(directory: string, env: NodeJS.ProcessEnv) {
+export async function publishChart(
+  directory: string,
+  env: NodeJS.ProcessEnv,
+  {
+    archive,
+    runId,
+    attempt,
+    verify,
+  }: {
+    archive: string;
+    runId: string | undefined;
+    attempt: string | undefined;
+    verify: () => Promise<void>;
+  },
+) {
   const packagePath = `orgs/openclaw/packages/container/${encodeURIComponent(ghcrPackageName(chartPackage))}`;
-  await verifyReleaseContext(env, packagePath);
+  async function verifyPublication() {
+    await verify();
+    validatePackage(await github(packagePath), chartPackage, { allowMissingRepository: true });
+  }
+  await verifyPublication();
   for (const key of ["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "CI_RUN_ID", "CI_ATTEMPT"]) {
     assert.match(env[key] ?? "", integerPattern);
   }
@@ -263,33 +240,25 @@ async function publish(directory: string, env: NodeJS.ProcessEnv) {
   assert.ok(typeof env.SOURCE_SHA === "string");
   const images = validateImageReceipt(imagePublication, {
     sourceSha: env.SOURCE_SHA,
-    runId: env.GITHUB_RUN_ID,
-    attempt: env.GITHUB_RUN_ATTEMPT,
+    runId,
+    attempt,
     ciRunId: env.CI_RUN_ID,
     ciAttempt: env.CI_ATTEMPT,
     controllerImage: env.GHCR_CONTROLLER_IMAGE,
     runtimeImage: env.GHCR_RUNTIME_IMAGE,
   });
-  const packageJson: unknown = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-  assert.ok(record(packageJson));
-  const version = packageJson.version;
-  assert.ok(typeof version === "string");
-  assert.ok(isReleaseVersion(version), "Expected an OCE release version.");
+  const { version } = await verifyPreparedReleaseChart(
+    archive,
+    env,
+    { runId, attempt },
+    `${images[0].destination}@${images[0].digest}`,
+    `${images[1].destination}@${images[1].digest}`,
+  );
   const temporary = await mkdtemp(join(tmpdir(), "enterprise-chart-release-"));
   const authfile = join(temporary, "auth.json");
   try {
-    const staged = await stageReleaseChart(temporary, {
-      sourceSha: env.SOURCE_SHA,
-      version,
-      images,
-    });
-    helmCommand(["package", staged, "--destination", temporary]);
-    const archive = join(temporary, `openclaw-enterprise-${version}.tgz`);
     const expectedBytes = await readFile(archive);
     const expectedContent = await chartArchiveContent(archive);
-    const metadata = helmCommand(["show", "chart", archive]);
-    assert.match(metadata, new RegExp(`^version: ${version.replaceAll(".", "\\.")}$`, "mu"));
-    assert.match(metadata, new RegExp(`^appVersion: ${version.replaceAll(".", "\\.")}$`, "mu"));
     skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
     assert.ok(typeof env.GITHUB_ACTOR === "string");
     assert.ok(typeof env.GH_TOKEN === "string");
@@ -323,12 +292,22 @@ async function publish(directory: string, env: NodeJS.ProcessEnv) {
       );
       imageTags.push({ ...image, exists: Boolean(actual) });
     }
+    const exactArchive =
+      env.GITHUB_WORKFLOW_REF !== `${repository}/${publishWorkflow}@refs/heads/main`;
     if (existingChartDigest) {
       const pulled = join(temporary, "existing");
       await mkdir(pulled);
       helmCommand(["pull", `oci://${chartPackage}`, "--version", version, "--destination", pulled]);
+      const existingArchive = join(pulled, `openclaw-enterprise-${version}.tgz`);
+      if (exactArchive) {
+        assert.deepEqual(
+          await readFile(existingArchive),
+          expectedBytes,
+          "Existing chart version has different archive bytes.",
+        );
+      }
       assert.deepEqual(
-        await chartArchiveContent(join(pulled, `openclaw-enterprise-${version}.tgz`)),
+        await chartArchiveContent(existingArchive),
         expectedContent,
         "Existing chart version has different packaged content.",
       );
@@ -337,7 +316,7 @@ async function publish(directory: string, env: NodeJS.ProcessEnv) {
       if (image.exists) {
         continue;
       }
-      await verifyReleaseContext(env, packagePath);
+      await verifyPublication();
       const listed = await verifyGhcr(image.destination, image.digest, version);
       assert.equal(
         remoteTagDigest(image.destination, version, authfile, listed),
@@ -369,7 +348,7 @@ async function publish(directory: string, env: NodeJS.ProcessEnv) {
     }
     let pushedChartDigest: string | undefined;
     if (!existingChartDigest) {
-      await verifyReleaseContext(env, packagePath);
+      await verifyPublication();
       const refreshed: unknown[] = await githubPages(`${packagePath}/versions`, undefined);
       assert.ok(
         refreshed.every((entry) => !hasVersion(entry, version)),
@@ -391,14 +370,14 @@ async function publish(directory: string, env: NodeJS.ProcessEnv) {
       expectedContent,
       "Published chart content differs from the staged archive.",
     );
-    if (!existingChartDigest) {
+    if (exactArchive || !existingChartDigest) {
       assert.deepEqual(
         await readFile(pulledArchive),
         expectedBytes,
         "Newly published chart bytes differ from the staged archive.",
       );
     }
-    await verifyReleaseContext(env, packagePath);
+    await verifyPublication();
     const chartDigest = inspectDigest(`docker://${chartPackage}:${version}`, authfile);
     assert.match(chartDigest, digestPattern);
     if (pushedChartDigest) {
@@ -437,7 +416,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (command !== "publish" || !directory) {
     throw new Error("Expected publish <prepared-directory>.");
   }
-  publish(directory, process.env).catch((error: unknown) => {
+  const version = await readChartVersion();
+  const archive = join(directory, `openclaw-enterprise-${version}.tgz`);
+  publishChart(directory, process.env, {
+    archive,
+    runId: process.env.GITHUB_RUN_ID,
+    attempt: process.env.GITHUB_RUN_ATTEMPT,
+    verify: () => verifyReleaseContext(process.env),
+  }).catch((error: unknown) => {
     console.error(record(error) ? error.message : undefined);
     process.exitCode = 1;
   });

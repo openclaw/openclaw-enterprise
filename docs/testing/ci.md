@@ -44,6 +44,8 @@ workflow triggers and failure consequences.
   [First Agent Smoke](ci/first-agent-smoke.md) uses a simulated model provider.
   Its failure blocks publication when selected, but does not block merge.
   Container preparation also requires [native image checks](ci/required-checks.md#scenarios).
+  [Release OCE](../release/README.md) additionally requires approval and a successful
+  Full Integration Aggregate for all selected release lanes in the same run.
 
 ### When does ordinary CI run integration tests?
 
@@ -60,8 +62,8 @@ and [lane coverage](ci/required-checks.md#scenarios).
 
 ### When do separate integration workflows run?
 
-Ordinary CI in `full` mode does not start Full Integration. The following
-workflows do not block merge or publication.
+Ordinary CI in `full` mode does not start Full Integration. These separate
+workflows have their own triggers.
 
 - [Full Integration](ci/full-integration.md#trigger) includes live model and Slack tests.
   A schedule checks `main` every 15 minutes.
