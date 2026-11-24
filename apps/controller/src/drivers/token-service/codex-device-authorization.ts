@@ -246,6 +246,9 @@ export async function refreshCodexOAuthGrant(
   if (!response.ok) {
     const error = typeof token?.error === "string" ? token.error : asRecord(token?.error)?.code;
     const code = typeof error === "string" ? error.toLowerCase() : undefined;
+    if (code === "invalid_client" || code === "unauthorized_client") {
+      throw new BrowserAuthorizationError("client_refused", "fix_configuration");
+    }
     if (
       response.status === 401 ||
       code === "invalid_grant" ||
@@ -255,9 +258,6 @@ export async function refreshCodexOAuthGrant(
       code === "refresh_token_invalidated"
     ) {
       throw new BrowserAuthorizationError("grant_refused", "retry");
-    }
-    if (code === "invalid_client" || code === "unauthorized_client") {
-      throw new BrowserAuthorizationError("client_refused", "fix_configuration");
     }
     throw new BrowserAuthorizationError("exchange_refused", "fix_configuration");
   }

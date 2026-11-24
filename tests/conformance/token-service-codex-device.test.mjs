@@ -222,6 +222,15 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     received.push({ contentType: request.headers["content-type"], body });
     response.setHeader("content-type", "application/json");
     const index = responseIndex++;
+    if (index === 8) {
+      response.statusCode = 401;
+      response.end(JSON.stringify({ error: "invalid_client" }));
+      return;
+    }
+    if (index === 9) {
+      response.end(JSON.stringify({ access_token: renewedAccess }));
+      return;
+    }
     if (index === 5) {
       response.end(JSON.stringify({ refresh_token: scopedRefresh, scope: "openid" }));
       return;
@@ -421,6 +430,23 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     narrowed.credential === renewedAccess,
     "only the replacement access token is delivered",
   );
+
+  // A 401 client-authentication error does not consume the grant. Keep it in custody so
+  // a later attempt can recover without asking the user to authorize again.
+  const clientRefresh = randomUUID();
+  const clientSource = await registerSource("Codex refused client fixture", clientRefresh);
+  const clientInstance = {
+    ...sourceInstance,
+    sourceRef: { ...sourceInstance.sourceRef, id: clientSource.id },
+  };
+  const clientOperation = await owner.forceRefresh(clientInstance, signal);
+  const clientFailure = await owner.getRefreshStatus(clientOperation, signal);
+  assert.equal(clientFailure.state, "failed");
+  assert.equal(clientFailure.failureCode, "client_refused");
+  assert.equal(clientFailure.recoveryAction, "fix_configuration");
+  const clientRetry = await owner.forceRefresh(clientInstance, signal);
+  assert.equal((await owner.getRefreshStatus(clientRetry, signal)).state, "ready");
+  assert.equal(received[9].body.refresh_token, clientRefresh);
 });
 
 function jwt(payload) {
