@@ -9,6 +9,7 @@ import {
 } from "./namespace-lifecycle.ts";
 import { createNamespaceOperations, type NamespaceOperations } from "./namespace-operations.ts";
 import { createConnectionAdministration } from "./connection-administration.ts";
+import { credentialSourceRef } from "./credential-source-metadata.ts";
 import {
   CONNECTION_OPERATION_TIMEOUT_MS,
   createSavedConnections,
@@ -617,6 +618,20 @@ function createCredentialServices({
     requireTokenServiceOwner: (instanceId) => {
       managedCredentialSources.ownedTokenServiceDriver(instanceId);
     },
+    // The policy read compares delivered versions with this one; the value itself is dropped here.
+    currentSourceVersion: async (source) =>
+      (
+        await managedCredentialSources
+          .ownedTokenServiceDriver(source.tokenServiceInstanceId)
+          .resolveCredential(
+            {
+              sourceRef: credentialSourceRef(source),
+              tokenServiceInstanceId: source.tokenServiceInstanceId,
+            },
+            // As long as the Worker's own read of it at each loan.
+            AbortSignal.timeout(5_000),
+          )
+      ).version,
     offersProtectedType: (type) =>
       egressAdmission.protectedSourceTypes().some((offer) => offer.type.type === type),
     sourceDrivers: credentialSourceDrivers,
@@ -810,6 +825,9 @@ export function createControllerComposition(
     qualifyRepositoryEdit: (...args) => repositoryPolicy.qualifyRepositoryEdit(...args),
     admitRepositoryCredentialSource: (...args) =>
       agentCredentialAccess.admitRepositoryCredentialSource(...args),
+    repositoryCredentialSelection: (agent) => repositoryPolicy.repositoryCredentialSelection(agent),
+    readRepositoryCredentialSource: (...args) =>
+      agentCredentialAccess.readRepositoryCredentialSource(...args),
     repositoryCeiling: (namespaceId) =>
       repositoryPolicy.namespaceRepositoryNetworkPolicyCeiling(namespaceId),
     installationId: admittedInstallation.id,

@@ -978,6 +978,42 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
   }
 
+  /**
+   * The credential the Agent's saved bindings resolve to, as save and deploy resolve them, for the
+   * policy read. Undefined without bindings or when they do not resolve: the read keeps the saved
+   * grants visible and reports no credential.
+   */
+  function repositoryCredentialSelection(
+    agent: Readonly<Agent>,
+  ):
+    | {
+        readonly credentialSource?: string;
+        readonly selectedGrants?: RepositoryNetworkPolicyCeiling;
+      }
+    | undefined {
+    try {
+      const resolution = resolveRepositoryBindings(
+        agent.namespaceId,
+        agent.repositoryBindings,
+        "saved",
+        installationRepositoryAdmission,
+      )?.resolution;
+      return (
+        resolution && {
+          ...(resolution.credentialSource !== undefined && {
+            credentialSource: resolution.credentialSource,
+          }),
+          ...(resolution.selectedRepositoryNetworkGrants !== undefined && {
+            selectedGrants: resolution.selectedRepositoryNetworkGrants,
+          }),
+        }
+      );
+    } catch {
+      // Driver refusals can contain protected configuration and binding details.
+      return undefined;
+    }
+  }
+
   /** Fails closed: an owner that cannot answer keeps the Source in place. */
   function repositoryRegistryNamesSource(namespaceId: string, sourceId: string): boolean {
     const admission = installationRepositoryAdmission;
@@ -997,6 +1033,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   return {
     namespaceRepositoryNetworkPolicyCeiling,
     qualifyRepositoryEdit,
+    repositoryCredentialSelection,
     repositoryRegistryNamesSource,
     repositoryNetworkPolicyCeiling: dependencies.repositoryNetworkPolicyCeiling,
     repositoryGrantAuthority: readGrantAuthority,

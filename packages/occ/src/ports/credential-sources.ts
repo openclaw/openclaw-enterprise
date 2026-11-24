@@ -17,6 +17,19 @@ export interface RepositorySourceCopy {
   readonly revisionId: string;
 }
 
+/**
+ * What the copy record (0093) holds about the Source writes of one revision's copy. The Worker
+ * records `confirmedSourceVersion` when OpenShell accepts its conditional Provider write of that
+ * version; the Sandbox's own application of it is not recorded.
+ */
+export interface RepositorySourceDelivery {
+  readonly revisionId: string;
+  readonly confirmedSourceVersion?: string;
+  readonly confirmedAt?: string;
+  /** The Worker recorded a Provider write of the Source whose outcome is unknown. */
+  readonly unreconciledWrite?: true;
+}
+
 export type StoredCredentialWithdrawal = CredentialWithdrawal;
 
 export interface CredentialSourceReadRepository {
@@ -40,6 +53,15 @@ export interface CredentialSourceReadRepository {
     credentialSourceId: string,
   ): Promise<Readonly<CredentialSource> | undefined>;
   listCredentialSources(namespaceId: string): Promise<readonly Readonly<CredentialSource>[]>;
+  /**
+   * The copies of the Source that one Agent's revisions hold and that the Worker has not
+   * confirmed retired, oldest first. Never a Provider name or a value.
+   */
+  findRepositorySourceDeliveries(
+    namespaceId: string,
+    credentialSourceId: string,
+    agentId: string,
+  ): Promise<readonly Readonly<RepositorySourceDelivery>[]>;
   findCredentialWithdrawal(
     namespaceId: string,
     revisionId: string,

@@ -3503,6 +3503,28 @@ export class PostgresPlatformState implements PlatformStateStore {
             ...(unreconciled === true ? { unreconciledWrite: true as const } : {}),
           });
         }),
+      findRepositorySourceDeliveries: async (namespaceId, credentialSourceId, agentId) =>
+        (
+          await client.query(
+            `SELECT revision_id,confirmed_source_version,confirmed_at,
+               unknown_write_version IS NOT NULL AS unreconciled_write
+             FROM occ.repository_source_copies
+             WHERE namespace_id=$1 AND credential_source_id=$2 AND agent_id=$3
+               AND retired_at IS NULL
+             ORDER BY recorded_at,revision_id`,
+            [namespaceId, credentialSourceId, agentId],
+          )
+        ).rows.map((value) => {
+          const row = value as PostgresRow;
+          const confirmed = optionalText(row, "confirmed_source_version");
+          return Object.freeze({
+            revisionId: text(row, "revision_id"),
+            ...(confirmed === undefined
+              ? {}
+              : { confirmedSourceVersion: confirmed, confirmedAt: timestamp(row, "confirmed_at") }),
+            ...(row.unreconciled_write === true ? { unreconciledWrite: true as const } : {}),
+          });
+        }),
       deleteCredentialSource: async (namespaceId, credentialSourceId) => {
         if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
           return false;

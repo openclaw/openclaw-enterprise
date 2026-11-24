@@ -2239,6 +2239,26 @@ function repositories(
     },
   };
 
+  const unretiredSourceCopies = (namespaceId: string, credentialSourceId: string) =>
+    Array.from(snapshot.repositorySourceCopies.values()).filter((copy) => {
+      if (copy.namespaceId !== namespaceId || copy.credentialSourceId !== credentialSourceId) {
+        return false;
+      }
+      const agent = snapshot.agents.get(agentKey(namespaceId, copy.agentId));
+      const pending = snapshot.operations.some(
+        (operation) =>
+          operation.kind === "agent_revision" &&
+          operation.namespaceId === namespaceId &&
+          operation.resourceId === copy.revisionId,
+      );
+      return (
+        pending ||
+        (agent !== undefined &&
+          agent.activeRevisionId === copy.revisionId &&
+          agent.desiredRuntimeState !== "stopped")
+      );
+    });
+
   const findCredentialSource: CredentialSourceReadRepository["findCredentialSource"] = async (
     namespaceId,
     credentialSourceId,
@@ -2402,6 +2422,11 @@ function repositories(
       return saved;
     },
     findCredentialSource,
+    // No Worker writes here, so no copy records an accepted Provider write.
+    findRepositorySourceDeliveries: async (namespaceId, credentialSourceId, agentId) =>
+      unretiredSourceCopies(namespaceId, credentialSourceId)
+        .filter((copy) => copy.agentId === agentId)
+        .map(({ revisionId }) => Object.freeze({ revisionId })),
     findCredentialWithdrawal,
     listCredentialWithdrawals: async (namespaceId, revisionId) =>
       Object.freeze(
@@ -2679,24 +2704,7 @@ function repositories(
     // never executes here and ends only with its Agent's deletion, so in practice a copy retires
     // when its Agent is deleted, as revision cleanup retires it on PostgreSQL.
     findUnretiredRepositorySourceCopies: async (namespaceId, credentialSourceId) =>
-      Array.from(snapshot.repositorySourceCopies.values()).filter((copy) => {
-        if (copy.namespaceId !== namespaceId || copy.credentialSourceId !== credentialSourceId) {
-          return false;
-        }
-        const agent = snapshot.agents.get(agentKey(namespaceId, copy.agentId));
-        const pending = snapshot.operations.some(
-          (operation) =>
-            operation.kind === "agent_revision" &&
-            operation.namespaceId === namespaceId &&
-            operation.resourceId === copy.revisionId,
-        );
-        return (
-          pending ||
-          (agent !== undefined &&
-            agent.activeRevisionId === copy.revisionId &&
-            agent.desiredRuntimeState !== "stopped")
-        );
-      }),
+      unretiredSourceCopies(namespaceId, credentialSourceId),
     deleteCredentialSource: async (namespaceId, credentialSourceId) => {
       if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
         return false;

@@ -51,6 +51,7 @@ import {
   type SandboxNetworkGrant,
   type RepositoryNetworkPolicyCeiling,
   type SandboxPolicy,
+  type SandboxPolicyViewWire,
   type SandboxPolicyRecommendations,
   type SandboxPolicySnapshot,
 } from "@openclaw-enterprise/contracts";
@@ -91,6 +92,22 @@ interface SandboxPolicyDependencies {
     sourceId: string,
     grants: readonly RepositoryNetworkGrant[] | undefined,
   ) => Promise<unknown>;
+  /** The credential the Agent's saved bindings resolve to; undefined when they do not resolve. */
+  readonly repositoryCredentialSelection: (agent: Readonly<Agent>) =>
+    | {
+        readonly credentialSource?: string;
+        readonly selectedGrants?: RepositoryNetworkPolicyCeiling;
+      }
+    | undefined;
+  /** The registry-selected Source as the caller may read it; completes outside the read. */
+  readonly readRepositoryCredentialSource: (
+    state: PlatformReadView,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sourceId: string,
+    grants: readonly RepositoryNetworkGrant[] | undefined,
+    limits: readonly (RepositoryNetworkPolicyCeiling | undefined)[],
+  ) => Promise<() => Promise<NonNullable<SandboxPolicyViewWire["repositoryCredential"]>>>;
   readonly repositoryCeiling: (namespaceId: string) => RepositoryNetworkPolicyCeiling;
   readonly installationId: string;
   readonly ceiling: readonly SandboxNetworkGrant[];
@@ -359,7 +376,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
   ) {
     requireNetworkPolicyFacet(facet);
     await authorizePolicyRead(principalId, namespaceId, agentId);
-    return read(async (state) => {
+    const { repositoryCredential, ...view } = await read(async (state) => {
       await exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespaceId, agentId);
       const policy = await state.sandboxPolicies.find(namespaceId, agentId);
@@ -424,8 +441,49 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
               defaultsRevisionId: revision.id,
               deployedPolicyVersion: revision.sandboxPolicy.version,
             }),
+        repositoryCredential: await repositoryCredentialView(
+          state,
+          principalId,
+          agent,
+          policy,
+          repositoryNetworkPolicyCeiling,
+        ),
       };
     });
+    return repositoryCredential === undefined
+      ? view
+      : { ...view, repositoryCredential: await repositoryCredential() };
+  }
+
+  /**
+   * Which credential the Agent's repository bindings resolve to. The saved grants, the policy
+   * version and the Installation ceiling never depend on it, so a caller who cannot read the
+   * Source still sees and can clear them.
+   */
+  async function repositoryCredentialView(
+    state: PlatformReadView,
+    principalId: string,
+    agent: Readonly<Agent>,
+    policy: Readonly<SandboxPolicy>,
+    installationCeiling: RepositoryNetworkPolicyCeiling,
+  ): Promise<
+    (() => Promise<NonNullable<SandboxPolicyViewWire["repositoryCredential"]>>) | undefined
+  > {
+    const selection = dependencies.repositoryCredentialSelection(agent);
+    if (selection === undefined) {
+      return undefined;
+    }
+    if (selection.credentialSource === undefined) {
+      return async () => ({ kind: "github_app" });
+    }
+    return dependencies.readRepositoryCredentialSource(
+      state,
+      principalId,
+      agent,
+      selection.credentialSource,
+      policy.repositoryNetworkPolicy,
+      [installationCeiling, selection.selectedGrants],
+    );
   }
 
   // TODO: Replace this temporary admission switch with the platform Guardrails primitive.

@@ -1,7 +1,11 @@
 import type { CredentialSourceDrivers } from "./credential-source-drivers.ts";
 import { validatePluginCredentialSources } from "./agent-plugin-validation.ts";
 import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
-import { assertSourceRepositoryGrants } from "./repository-network-policy.ts";
+import {
+  assertSourceRepositoryGrants,
+  effectiveRepositoryGrants,
+} from "./repository-network-policy.ts";
+import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import {
   GITHUB_SOURCE_PRESET_ID,
   readSourceRepositoryCeiling,
@@ -24,6 +28,7 @@ import {
   type RevisionHarnessDescriptor,
   type SandboxDriver,
   type SecretBindings,
+  type SandboxPolicyViewWire,
   type SecretReference,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -57,8 +62,18 @@ interface AgentCredentialAccessDependencies {
     "assertCredentialSourceOwnerSelected" | "credentialSourceOwner" | "credentialSourceType"
   >;
   readonly requireTokenServiceOwner: (instanceId?: string) => void;
+  /** The Source's current custody version. Only the version leaves the TokenService read. */
+  readonly currentSourceVersion: (
+    source: Readonly<CredentialSource> & { readonly tokenServiceInstanceId: string },
+  ) => Promise<string | undefined>;
   readonly offersProtectedType: (type: string) => boolean;
 }
+
+type RepositoryCredentialView = NonNullable<SandboxPolicyViewWire["repositoryCredential"]>;
+type RepositorySourceDeliveryView = Extract<
+  RepositoryCredentialView,
+  { readonly deliveries: unknown }
+>["deliveries"][number];
 
 export function parseAgentCredentialSources(
   value: unknown,
@@ -131,6 +146,7 @@ export function createAgentCredentialAccess({
   timestamp,
   sourceDrivers,
   requireTokenServiceOwner,
+  currentSourceVersion,
   offersProtectedType,
 }: AgentCredentialAccessDependencies) {
   function authorizeSourceOperate(principalId: string, namespaceId: string, sourceId: string) {
@@ -328,6 +344,93 @@ export function createAgentCredentialAccess({
     return { tokenServiceInstanceId };
   }
 
+  /**
+   * The policy read's view of the Source the registry selects for the Agent's Git credential.
+   * Its ID, name, state, ceiling, the effective access and the delivery state need exact
+   * `credential_source:read` on the Source, the decision the Source API's own read takes; without
+   * it the caller learns only that a Source is selected. The returned step reads the Source's
+   * current version outside the caller's transaction.
+   */
+  async function readRepositoryCredentialSource(
+    state: PlatformReadView,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sourceId: string,
+    grants: readonly RepositoryNetworkGrant[] | undefined,
+    limits: readonly (RepositoryNetworkPolicyCeiling | undefined)[],
+  ): Promise<() => Promise<RepositoryCredentialView>> {
+    const ref = { kind: "credential_source", namespaceId: agent.namespaceId, id: sourceId } as const;
+    let readable = false;
+    try {
+      readable = (await authority.authorizationDecision(principalId, "read", ref)).decision.allowed;
+    } catch {
+      // An authorization outage hides the Source; the saved grants stay readable.
+    }
+    if (!readable) {
+      return async () => ({ kind: "credential_source", readable: false });
+    }
+    const source = await state.credentialSources.findCredentialSource(agent.namespaceId, sourceId);
+    let ceiling: RepositoryNetworkPolicyCeiling | undefined;
+    if (
+      isManagedTokenServiceSource(source) &&
+      source.namespaceId === agent.namespaceId &&
+      source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === GITHUB_SOURCE_PRESET_ID
+    ) {
+      try {
+        requireTokenServiceOwner(source.tokenServiceInstanceId);
+        ceiling = readSourceRepositoryCeiling(source.config[SOURCE_REPOSITORIES_CONFIG_KEY] ?? "");
+      } catch {
+        ceiling = undefined;
+      }
+    }
+    const copies = await state.credentialSources.findRepositorySourceDeliveries(
+      agent.namespaceId,
+      sourceId,
+      agent.id,
+    );
+    return async () => {
+      let version: string | undefined;
+      if (
+        ceiling !== undefined &&
+        isManagedTokenServiceSource(source) &&
+        source.state === "ready" &&
+        copies.some(({ confirmedSourceVersion }) => confirmedSourceVersion !== undefined)
+      ) {
+        try {
+          version = await currentSourceVersion(source);
+        } catch {
+          // Without the current version no revision counts as updated: all stay pending.
+        }
+      }
+      const deliveries = copies.map(
+        ({ revisionId, confirmedSourceVersion, confirmedAt, unreconciledWrite }) =>
+          (unreconciledWrite
+            ? { revisionId, state: "unreconciled" }
+            : version !== undefined && confirmedSourceVersion === version
+              ? { revisionId, state: "provider_updated", providerUpdatedAt: confirmedAt }
+              : { revisionId, state: "pending" }) as RepositorySourceDeliveryView,
+      );
+      if (source === undefined || ceiling === undefined) {
+        return {
+          kind: "credential_source",
+          id: sourceId,
+          ...(source === undefined ? {} : { name: source.name }),
+          state: "unavailable",
+          deliveries,
+        };
+      }
+      return {
+        kind: "credential_source",
+        id: sourceId,
+        name: source.name,
+        state: source.state,
+        ceiling: [...ceiling],
+        effectiveRepositoryNetworkPolicy: effectiveRepositoryGrants(grants, [...limits, ceiling]),
+        deliveries,
+      };
+    };
+  }
+
   /** Returns the AccessBindings it created; existing exact grants are kept. */
   async function ensureAgentOperateGrants(
     state: PlatformUnitOfWork,
@@ -480,6 +583,7 @@ export function createAgentCredentialAccess({
     authorizeAgentCredentialSources,
     admitCredentialSources,
     admitRepositoryCredentialSource,
+    readRepositoryCredentialSource,
     ensureAgentOperateGrants,
     grantDeployedAgentSources,
   };

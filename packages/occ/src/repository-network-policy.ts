@@ -367,6 +367,23 @@ function selectedRepositoryGrantAllows(
   );
 }
 
+/**
+ * The saved grants as far as every limit allows them: write only where every limit allows write,
+ * read where every limit allows at least read. A grant that a limit omits is dropped.
+ */
+export function effectiveRepositoryGrants(
+  grants: readonly RepositoryNetworkGrant[] | undefined,
+  limits: readonly (RepositoryNetworkPolicyCeiling | undefined)[],
+): RepositoryNetworkGrant[] {
+  return (grants ?? []).flatMap(({ repository, access }) => {
+    const levels = access === "write" ? (["write", "read"] as const) : (["read"] as const);
+    const allowed = levels
+      .map((level) => ({ repository, access: level }))
+      .find((grant) => limits.every((limit) => selectedRepositoryGrantAllows(limit, grant)));
+    return allowed === undefined ? [] : [allowed];
+  });
+}
+
 function assertRepositoryGrantsWithin(
   grants: readonly RepositoryNetworkGrant[] | undefined,
   limit: RepositoryNetworkPolicyCeiling | undefined,
