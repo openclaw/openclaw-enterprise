@@ -2000,7 +2000,8 @@ export async function renderAgentDetail(
   }
   const revealTimer = setTimeout(showDetail, FIRST_ACTIVITY_WAIT_MS);
   function revealSelectedTab() {
-    const strip = tabs.getBoundingClientRect();
+    // Resize can change which edges fade. Refresh them before reading their scroll padding.
+    fadeTabEdges();
     // A tab that has focus (moved there with the arrows) stays in view over the selected one.
     const shown = tabs.contains(document.activeElement)
       ? document.activeElement
@@ -2008,12 +2009,24 @@ export async function renderAgentDetail(
     if (!shown) {
       return;
     }
+    const scrollportLeft = tabs.getBoundingClientRect().left + tabs.clientLeft;
+    const scrollportRight = scrollportLeft + tabs.clientWidth;
+    const style = getComputedStyle(tabs);
+    const left = tabs.hasAttribute("data-more-before")
+      ? scrollportLeft + (Number.parseFloat(style.scrollPaddingLeft) || 0)
+      : scrollportLeft;
+    const right = tabs.hasAttribute("data-more-after")
+      ? scrollportRight - (Number.parseFloat(style.scrollPaddingRight) || 0)
+      : scrollportRight;
     const bounds = shown.getBoundingClientRect();
-    if (bounds.left < strip.left) {
-      tabs.scrollLeft += Math.floor(bounds.left - strip.left);
-    } else if (bounds.right > strip.right) {
-      tabs.scrollLeft += Math.ceil(bounds.right - strip.right);
+    if (bounds.left < left) {
+      tabs.scrollLeft += Math.floor(bounds.left - left);
+    } else if (bounds.right > right) {
+      tabs.scrollLeft += Math.ceil(bounds.right - right);
+    } else {
+      return;
     }
+    fadeTabEdges();
   }
   const tabResize = new ResizeObserver(() => {
     if (!context.isCurrent() || !tabs.isConnected) {
@@ -2021,7 +2034,6 @@ export async function renderAgentDetail(
       return;
     }
     revealSelectedTab();
-    fadeTabEdges();
   });
   tabResize.observe(tabs);
   // Detached views stop observing; Back's retained view re-arms the strip.
@@ -5047,7 +5059,6 @@ export async function renderAgentDetail(
       tabControls.get(tab)?.focus({ preventScroll: true });
     }
     revealSelectedTab();
-    fadeTabEdges();
     refreshDeployControls();
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
