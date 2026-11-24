@@ -49,8 +49,9 @@ OpenShell cannot restrict placeholder injection to HTTPS, so a matching plaintex
 
 ### Codex account model requests
 
-The built-in Codex account Source permits only the selected Codex executable and
-`chatgpt.com:443` for these requests:
+Without a matching Agent grant, OCC adds the exact requests below when the
+Installation ceiling allows one stock Codex executable. The built-in Codex
+account Source permits only that executable and `chatgpt.com:443`:
 
 - `POST /backend-api/codex/responses`
 - `GET /backend-api/wham/accounts/check`

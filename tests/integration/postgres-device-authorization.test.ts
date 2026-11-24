@@ -628,21 +628,8 @@ test(
           [namespaceId, agent.id, agent.servicePrincipalId, sourceId],
         )
       ).rows[0];
-    // A refused deployment must not leave either an admitted revision or an Agent-SP grant.
-    const refused = await app.inject("POST", `${agentPath}/deploy`, {});
-    assert.equal(refused.statusCode, 409, refused.body);
-    assert.match(refused.json().error.message, /exact, unambiguous network grant/i);
+    // A single ceiling-qualified stock executable supplies the preset routes without a manual rule.
     assert.deepEqual(await admissionEffects(), { revisions: 0, source_grants: 0 });
-
-    const editing = await app.inject("PATCH", `${agentPath}/sandbox-policy/networking/editing`, {
-      enabled: true,
-    });
-    assert.equal(editing.statusCode, 200, editing.body);
-    const policy = await app.inject("PUT", `${agentPath}/sandbox-policy/networking`, {
-      expectedVersion: 1,
-      additions: [grant],
-    });
-    assert.equal(policy.statusCode, 200, policy.body);
     const deployed = await app.inject("POST", `${agentPath}/deploy`, {});
     assert.equal(deployed.statusCode, 202, deployed.body);
     assert.deepEqual(await admissionEffects(), { revisions: 1, source_grants: 1 });
@@ -660,6 +647,11 @@ test(
       view.revisions.findRevision(namespaceId, agent.id, deployed.json().data.id),
     );
     assert.ok(revision?.credentialDeployment);
+    assert.deepEqual(revision.sandboxPolicy?.additions ?? [], []);
+    assert.deepEqual(
+      revision.credentialDeployment.networkAccessPolicy.allowed,
+      revision.credentialDeployment.injectionPolicies[0]?.allowedRequests,
+    );
     assert.deepEqual(
       revision.credentialDeployment.bindings.map(({ bindingRef, sourceRef, consumer }) => ({
         bindingRef,

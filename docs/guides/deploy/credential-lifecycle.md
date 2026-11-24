@@ -138,10 +138,11 @@ to that issuer, then retry. The refresh Worker also needs issuer connectivity.
 1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
    verification link, enter the displayed code, and complete sign-in.
 2. Search and select plugins using the resulting credential source, then create
-   the Agent. Allow the selected Codex binary and `chatgpt.com:443` within the
-   Installation network ceiling before deployment. With OCC-managed IAM,
-   admission grants the Agent exact Source `operate` access. Deployment becomes
-   ready only after a successful native model probe.
+   the Agent. When the Installation network ceiling allows one stock Codex binary
+   to reach `chatgpt.com:443`, OCC adds the [preset requests](../../reference/credential-sources.md#codex-account-model-requests)
+   at deployment without a manual Agent rule. With OCC-managed IAM, admission
+   grants the Agent exact Source `operate` access. Deployment becomes ready only
+   after a successful native model probe.
 3. For later plugin edits, use the saved Source. Authorized hosted Apps discovery
    resolves a usable access token through TokenService. Another device login is
    needed only when replacing or recovering the connection.
