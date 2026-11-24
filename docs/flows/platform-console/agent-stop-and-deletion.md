@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-20
-last_updated_session: authoring-run/428a2ef4-6974-4fd7-bad2-6f7f6099e5bd
+updated: 2026-11-24
+last_updated_session: authoring-run/e8a6ff72-e8b4-4dbd-8885-b0ca85474a91
 ---
 
 # Console Agent stop and deletion
@@ -63,6 +63,8 @@ graph TD
 <span id="stop-agent"></span>
 
 ### 7. Request a stop and read back the Agent
+
+Stop and Delete confirmations show the selected Agent name and ID.
 
 A negative [permission answer](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions)
 hides the Stop or Delete row, and the card when neither remains. If the dialog is open, it disables
@@ -219,6 +221,7 @@ controller persistence or Compute shutdown.
 
 ## Changelog
 
+- 2026-11-24 06:26: Identify the selected Agent in Stop and Delete confirmations. (authoring-run/e8a6ff72-e8b4-4dbd-8885-b0ca85474a91 - 4d4681144427368743596e0379b28dbadfef8c58)
 - 2026-11-20 17:34: Distinguish a denied deletion retry from status readback in the accompanying change. (authoring-run/428a2ef4-6974-4fd7-bad2-6f7f6099e5bd - acbfc35811e8929485813bbd315f5d12f71a4028)
 
 - 2026-11-19 14:00: Trace optional guarded CLI stop admission in the accompanying uncommitted change. (authoring-run/74f10e49-0bf9-4d4c-b682-4c4317ad0408 - 4bfefb4bf60b43dfb2e6fcc010be60270474e726)

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-11-24
-last_updated_session: authoring-run/c18adb53-c759-42e0-a930-ff768e9075d0
+last_updated_session: authoring-run/261aa429-df62-4285-b574-5417ff787bdc
 ---
 
 # Console Agent editing and runtime requests
@@ -131,8 +131,10 @@ refusals in order, or Kubernetes-only `agents/validate` refusals.
 
 Saves preserve scroll and admitted snapshots. Refusals keep edits.
 Unsaved edits block deployment. Pending saves block tab and version changes.
-On blocked Back/Forward, `apps/controller/src/console/navigation.mts:traverse`
-restores the address without reloading for missing or equal markers or impossible steps.
+`apps/controller/src/console/shell.mts:createShell` guards Account → Settings against
+pending or dirty repository edits.
+Blocked Back/Forward calls `apps/controller/src/console/navigation.mts:traverse`, which
+restores the address without reload for missing or equal markers or impossible steps.
 Overflowed markers are untracked.
 Write refusals list required grants without guessing which failed. Preflight refusals name
 read access, Workspace saves Agent `operate`. Without Agent `update`, Configuration `read` or
@@ -143,15 +145,14 @@ Channels can replace bindings if all denied Secrets have Slack token names.
 Read-only drafts say so and omit the checklist without `deploy`.
 
 `agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
-`agents/plugins.mts:savePlugins` rereads the Agent before PATCH. If the Agent,
-Namespace, Configuration, selections, or approvers differ from the editor's
-baseline, it sends no write. This read does not lock the Agent. The editor clears
-the draft only when the response confirms that identity and the submitted settings.
-The page then rebuilds from that response, which also carries a Stop or
-deployment made since the page loaded.
-**Reload plugin selections** discards the local draft and reads the Agent without
-repeating the PATCH. A successful read rebuilds the editor from saved settings.
-If the read fails, the Console opens the draft page again. The Plugin Driver
+`agents/plugins.mts:savePlugins` rereads the Agent before PATCH without locking it.
+If Agent, Namespace, Configuration, selections, or approvers differ from the editor
+baseline, it sends no write. The editor clears the draft only when the response
+confirms identity and submitted settings. The page rebuilds from that response,
+including any Stop or deployment since page load.
+**Reload plugin selections** discards the draft and rereads the Agent without
+repeating PATCH. Success rebuilds the editor from saved settings. Failure reopens
+the draft page. The Plugin Driver
 validates the selections before deployment [snapshots the saved settings](../agent-plugins.md).
 
 **Repositories** uses `createRepositoryFields` with exact-Agent discovery and
@@ -354,6 +355,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 06:58: Guard Settings during pending saves. (authoring-run/261aa429-df62-4285-b574-5417ff787bdc - 4d4681144427368743596e0379b28dbadfef8c58)
 
 - 2026-11-24 04:34: Correct deployment and access checks. (authoring-run/c18adb53-c759-42e0-a930-ff768e9075d0 - 8975a292b01b6ddbf7c01be8b3f70878085a772d)
 - 2026-11-22 21:08: Conflict focus. (authoring-run/303eb0c9-04da-4bab-9fac-cc0dca754630 - 2b01b92963bfeb8bfa0f29fe583f9523d48a78a3)

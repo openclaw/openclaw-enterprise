@@ -2339,7 +2339,7 @@ async function activate(foreground: BrowserWindow, background: BrowserWindow) {
   ]);
 }
 
-test("Agents list restores search after a hidden recheck unless focus moved", async (t) => {
+test("Agents list restores search after a recheck unless focus moved", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Returning to search");
   await fixture.createAgent(namespace.id, "Fleet Report", nativeValues("fleet-report"));
   const { credentials } = await fixture.createNamespaceMember("reader", namespace.id, AGENT_READ);
@@ -2385,8 +2385,7 @@ test("Agents list restores search after a hidden recheck unless focus moved", as
     };
   };
 
-  for (const moveFocus of [false, true]) {
-    const before = reads().length;
+  const selectSearchSuffix = async () => {
     // Replace the previous pass's edit before selecting the suffix again.
     await search.press("ControlOrMeta+A");
     await page.keyboard.insertText("Fleet Rep");
@@ -2398,6 +2397,11 @@ test("Agents list restores search after a hidden recheck unless focus moved", as
       await page.keyboard.press("Shift+ArrowLeft");
     }
     assert.deepEqual(await state(), selection);
+  };
+
+  for (const moveFocus of [false, true]) {
+    const before = reads().length;
+    await selectSearchSuffix();
 
     await activate(other, listWindow);
     const finishFirst = await returnToList();
@@ -2440,6 +2444,51 @@ test("Agents list restores search after a hidden recheck unless focus moved", as
     assert.equal(page.url(), fixture.origin + path);
     assert.equal(reads().length - before, 2);
     assert.deepEqual(nonAuthWriteRequests(requests), []);
+  }
+
+  for (const rebuild of [false, true]) {
+    await t.test(`foreground recheck ${rebuild ? "rebuilds" : "retains"} the list`, async () => {
+      const before = reads().length;
+      await selectSearchSuffix();
+      await tagView(page);
+      if (rebuild) {
+        await fixture.createAgent(namespace.id, "Fleet Report 02", nativeValues("fleet-report-02"));
+      }
+      await activate(other, listWindow);
+      const finish = await returnToList();
+      const namespaceSelector = page.getByRole("combobox", { name: "Namespace", exact: true });
+      const bodyHasFocus = () => page.evaluate(() => document.activeElement === document.body);
+      try {
+        for (let press = 0; press < 35 && !(await hasFocus(namespaceSelector)); press++) {
+          await page.keyboard.press("Tab");
+        }
+        assert.equal(await hasFocus(namespaceSelector), true, "Tab reaches the Namespace selector");
+        assert.equal(await namespaceSelector.inputValue(), namespace.id);
+        // The non-interactive scope line leaves focus on the body after the reader moved away.
+        await page.locator("main .page-header .page-title .scope").click();
+        assert.equal(await bodyHasFocus(), true);
+      } finally {
+        await finish();
+      }
+
+      await view.waitFor();
+      await waitForIdleFetches(page);
+      assert.equal(await viewTag(page), rebuild ? null : "kept");
+      const bodyFocusedBeforeTyping = await bodyHasFocus();
+      await page.keyboard.press("r");
+      assert.deepEqual(
+        { bodyFocusedBeforeTyping, query: await search.inputValue() },
+        { bodyFocusedBeforeTyping: true, query: selection.value },
+        "the completed read leaves focus on the body and typing leaves the filter intact",
+      );
+      await view.getByRole("link", { name: "Fleet Report", exact: true }).waitFor();
+      if (rebuild) {
+        await view.getByRole("link", { name: "Fleet Report 02", exact: true }).waitFor();
+      }
+      assert.equal(page.url(), fixture.origin + path);
+      assert.equal(reads().length - before, 1);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+    });
   }
 });
 

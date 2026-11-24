@@ -179,6 +179,7 @@ export function createAgentDetailScenarios({
     description:
       "The saved Agent has a selected repository and no deployment or repository policy.",
     steps: [
+      "Before Deploy new version, read the conditional warning about deploying without a repository policy and the need for a new Agent to add Per-repository access later.",
       "Choose Set repository permissions above Deploy new version. In Repositories, choose Manage permissions.",
       "Choose Enable policy editing, then Add access. Contributor is selected and Advanced is closed.",
       "Expand Advanced, set Issues to Read-only, and save. Reopen the policy and check that Pull requests still uses the role.",
@@ -3942,12 +3943,23 @@ export function createAgentDetailRepositoryScenarios(
       repositories: [{ repositoryRef: "application" }],
     },
     repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
-    rules: [{ suffix: "/repository-options", delayMs: 3000 }],
+    rules: [
+      { suffix: "/repository-options", delayMs: 3000 },
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        skip: 1,
+        once: true,
+        delayMs: 10_000,
+      },
+    ],
     description:
-      "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty.",
+      "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty. The first save waits ten seconds for the Agent read.",
     steps: [
       "During discovery, inspect Access awaiting verification. After discovery, inspect Choose approved access; Save stays disabled and Channels stays enabled.",
-      "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. Save the explicit change and confirm the saved message.",
+      "Under Access for example/application, clear Use Agent default and choose Contributor. Check that the repository reads Repository collaborator · Custom, then select Save repository access.",
+      "While the save is pending, choose Account → Settings. Check that Repositories stays open, the edit remains selected, and the page asks you to wait for the save.",
+      "After Repository access saved appears, choose Account → Settings again. Confirm Signed-in account opens, then go back and check that the custom Repository collaborator access is still saved.",
     ],
   } satisfies AgentDetailScenario;
   const repositoryCollaboratorReadOnly = {
