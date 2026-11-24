@@ -68,7 +68,7 @@ jobs:
           VERSION: ${{ steps.destination.outputs.version }}
           CI_ATTEMPT: ${{ steps.source.outputs.ci_attempt }}
         run: |
-          printf 'Version %s, commit `%s`, alias `%s`, publish=%s. CI run %s, attempt %s.\n' \
+          printf 'Version %s, commit %s, alias %s, publish=%s. CI run %s, attempt %s.\n' \
             "$VERSION" "$SOURCE_SHA" "${IMAGE_TAG:-latest}" "$PUBLISH" "$CI_RUN_ID" "$CI_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"
 
   approve:
