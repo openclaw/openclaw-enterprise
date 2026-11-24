@@ -1063,8 +1063,8 @@ function forgetRetainedView(taken: ReturnType<typeof peekRetainedView>) {
   }
 }
 
-// Names a recheck that outlasts stillCheckingDelayMs, so a held page is not mistaken
-// for a stuck one (finding 1442). Mounted Agent checks stay visible beside scrolled drafts.
+// Names a pending recheck so a held page is not mistaken for a stuck one (finding 1442).
+// Mounted Agent checks stay visible beside scrolled drafts.
 function showStillChecking({ mountedAgent = false } = {}) {
   const container = mountedAgent ? app : app.querySelector(".content .page-actions");
   if (!container) {
@@ -3292,6 +3292,12 @@ async function revalidateMountedAgent(current: Route) {
   const mountedTitle = heading.textContent;
   let admittedAgentName: string | undefined;
   let scrollBeforeConceal: number | undefined;
+  let clearStillChecking: (() => void) | undefined;
+  const showPendingStatus = () => {
+    if (isCurrent()) {
+      clearStillChecking ??= showStillChecking({ mountedAgent: true });
+    }
+  };
   const concealDetails = () => {
     if (!isCurrent()) {
       return;
@@ -3316,19 +3322,17 @@ async function revalidateMountedAgent(current: Route) {
   let retryNotBefore = 0;
   const detailFailure = (error: unknown): never => {
     concealDetails();
-    const { retryAfterSeconds } = requestFailure(error);
+    const { status, retryAfterSeconds } = requestFailure(error);
+    if (status !== 401 && !isAccessRefusal(status)) {
+      showPendingStatus();
+    }
     if (retryAfterSeconds !== undefined) {
       retryNotBefore = Math.max(retryNotBefore, performance.now() + retryAfterSeconds * 1000);
     }
     throw error;
   };
   let checked = false;
-  let clearStillChecking: (() => void) | undefined;
-  const stillChecking = setTimeout(() => {
-    if (isCurrent()) {
-      clearStillChecking = showStillChecking({ mountedAgent: true });
-    }
-  }, stillCheckingDelayMs);
+  const stillChecking = setTimeout(showPendingStatus, stillCheckingDelayMs);
   try {
     const resolvedSession = await readSession();
     if (!isCurrent()) {

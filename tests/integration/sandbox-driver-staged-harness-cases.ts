@@ -9,6 +9,7 @@ import { supportsOpenShellCredentialDeployment } from "../../apps/controller/src
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
+import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { openShellCredentialProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
 import {
   NATIVE_WORKER_ENTRYPOINT,
@@ -136,6 +137,189 @@ export async function verifyStagedModelPolicyObservation(): Promise<void> {
   });
   assert.deepEqual(loaded, retained, "new model-only policy keeps the same canonical shape");
   assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
+}
+
+export async function stagedManagedMcpPolicy(): Promise<Record<string, unknown>> {
+  const gateway = workspaceGatewayClient();
+  const driver = openShellDriver(gateway, openShellWorkspaceHarnessConfiguration());
+  const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
+  fixture.requirements.credentialAttachments = [];
+  const modelGrant = {
+    id: "model",
+    binary: "/usr/local/bin/node",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const { binary, host, ports } = modelGrant;
+  const modelRequest = {
+    binary,
+    host,
+    ports,
+    requestPolicy: { type: "http" as const, method: "POST", path: "/v1/responses" },
+  };
+  const model: DeploymentCredentialBinding = {
+    bindingRef: "model",
+    sourceRef: {
+      kind: "credential_source",
+      namespaceId: fixture.revision.namespaceId,
+      id: "cs_model",
+    },
+    consumer: { kind: "model", providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+  };
+  const install = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
+  assert.ok(install);
+  const slot = install.slotId;
+  const slackSource = { ...model.sourceRef, id: "cs_slack" };
+  const selection = {
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: install.releaseSha256,
+      credentials: { [slot]: slackSource.id },
+      toolNames: ["slack_search_messages"],
+    },
+  };
+  const description = await new OCCPluginDriver().describeDeployment({
+    plugin: { catalog: "driver", pluginId: install.id },
+    selection,
+    connections: { [slot]: { default: slackSource } },
+  });
+  const account = description.credentials[slot]?.default;
+  assert.ok(account);
+  // Feed the qualifier the session and invocation requirements from the selected Plugin release.
+  const requests = description.networkRequirements
+    .filter(({ id }) => account.networkRequirementIds.includes(id))
+    .map(({ match }) => match);
+  const slack: DeploymentCredentialBinding = {
+    bindingRef: JSON.stringify(["plugin", install.id, slot, "default"]),
+    sourceRef: account.sourceRef,
+    consumer: {
+      kind: "plugin",
+      pluginId: install.id,
+      requirement: slot,
+      connection: "default",
+    },
+    projection: account.projection,
+  };
+  const credentialDeployment: NonNullable<AgentRevision["credentialDeployment"]> = {
+    driver: {
+      id: driver.id,
+      implementation: driver.implementation,
+      configurationId: "a".repeat(64),
+    },
+    proxyDriverId: driver.id,
+    networkAccessPolicy: { allowed: [{ binary, host, ports }, ...requests] },
+    bindings: [model, slack],
+    injectionPolicies: [
+      { bindingRef: model.bindingRef, allowedRequests: [modelRequest] },
+      { bindingRef: slack.bindingRef, allowedRequests: requests },
+    ],
+  };
+  const revision: AgentRevision = {
+    ...completeSandboxRevision(fixture.revision, {
+      method: "credential_source",
+      sourceId: model.sourceRef.id,
+      sourceType: "static",
+      tokenServiceInstanceId: "tokens",
+    }),
+    credentialSources: [model, slack].map(({ sourceRef }) => ({
+      sourceId: sourceRef.id,
+      sourceType: "static",
+      tokenServiceInstanceId: "tokens",
+    })),
+    plugins: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      plugins: { [install.id]: selection },
+    },
+    sandboxPolicy: driver.admitNetworkPolicy([modelGrant], 1),
+    executionAdmission: { version: 8, mode: "standalone" },
+    credentialDeployment,
+  };
+  const proxy = new OpenShellCredentialProxyDriver({
+    id: driver.id,
+    implementation: driver.implementation,
+    tokenServiceImplementation: "occ/token-service",
+    backend: backendFor(gateway),
+    sandbox: driver,
+  });
+  assert.equal(
+    supportsOpenShellCredentialDeployment({ sandbox: driver, proxy, policy: credentialDeployment }),
+    true,
+  );
+
+  // Matching network and injection rules cannot move a managed credential off its reviewed endpoint.
+  const movedRequests = requests.map((request) => ({ ...request, host: "mcp.example.test" }));
+  const movedPolicy = {
+    ...credentialDeployment,
+    networkAccessPolicy: { allowed: [{ binary, host, ports }, ...movedRequests] },
+    injectionPolicies: [
+      credentialDeployment.injectionPolicies[0]!,
+      { bindingRef: slack.bindingRef, allowedRequests: movedRequests },
+    ],
+  };
+  assert.equal(
+    supportsOpenShellCredentialDeployment({ sandbox: driver, proxy, policy: movedPolicy }),
+    false,
+  );
+
+  const context = { ...fixture.context, revision, requirements: fixture.requirements };
+  gateway.createSandbox = async (request) => {
+    const sandbox = storedSandbox(request, {
+      id: "sandbox-fixture",
+      resourceVersion: "1",
+      serviceUrls: {},
+    });
+    gateway.sandboxes.set(sandbox.name, sandbox);
+    return sandbox;
+  };
+  await driver.ensureNamespace(context);
+  const target = await driver.provisionStagedHarness(context);
+  const sandbox = [...gateway.sandboxes.values()].find(({ id }) => id === target.sandboxId);
+  assert.ok(sandbox);
+  // The controlled Gateway represents attachments made by the Proxy before policy apply.
+  const modelProvider = openShellCredentialProviderName(model);
+  const slackProvider = openShellCredentialProviderName(slack);
+  gateway.sandboxes.set(sandbox.name, {
+    ...sandbox,
+    spec: { ...sandbox.spec!, providers: [modelProvider, slackProvider] },
+    resourceVersion: "2",
+  });
+  gateway.updatePolicy = async ({ policy, expectedResourceVersion }) => {
+    const current = gateway.sandboxes.get(sandbox.name)!;
+    assert.equal(expectedResourceVersion, current.resourceVersion);
+    gateway.sandboxes.set(sandbox.name, { ...current, spec: { ...current.spec!, policy } });
+  };
+  const snapshot = revision.sandboxPolicy!;
+  await driver.applyNetworkPolicy(context, {
+    snapshot,
+    expectedProviderVersion: "2",
+    operationId: revision.id,
+  });
+  assert.equal((await driver.observeNetworkPolicy(context, snapshot)).matches, true);
+  const loaded = gateway.sandboxes.get(sandbox.name)!.spec!.policy as {
+    network_policies: Record<string, { endpoints: Record<string, unknown>[] }>;
+  };
+  const endpoint = Object.values(loaded.network_policies)
+    .flatMap(({ endpoints }) => endpoints)
+    .find(({ host }) => host === install.endpoint.host);
+  // The native policy permits the session methods and exactly the selected tool.
+  assert.deepEqual(endpoint, {
+    host: "mcp.slack.com",
+    ports: [443],
+    path: "/mcp",
+    protocol: "mcp",
+    mcp: { strict_tool_names: true, versions: ["2025-03-26", "2025-06-18", "2025-11-25"] },
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    rules: [
+      { allow: { method: "ping" } },
+      { allow: { method: "initialize" } },
+      { allow: { method: "notifications/initialized" } },
+      { allow: { method: "tools/list" } },
+      { allow: { method: "tools/call", params: { name: { glob: "slack_search_messages" } } } },
+    ],
+    credential_binding: { provider: slackProvider },
+  });
+  return loaded;
 }
 
 export async function verifyStagedHarnessActivation(t: TestContext): Promise<void> {
