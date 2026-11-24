@@ -25,7 +25,6 @@ drivers:
     id: openshell-sandbox
     configuration:
       gateway:
-        workspaceMode: operator
         operatorNamespaceLabels:
           openshell.ai/openclaw-workspace: "true"
         operatorWorkspaceResources: []

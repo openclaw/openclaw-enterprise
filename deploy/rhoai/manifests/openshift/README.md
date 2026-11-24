@@ -37,7 +37,7 @@ oc kustomize deploy/rhoai/manifests/openshift/overlays/test/operators
 | `database`          | PostgreSQL cluster                                                                        | Wait for the PostgreSQL Operator and CRD.                                        |
 | `admission`         | Control-plane Namespace, fixed-UID SCC, and exact grants                                  | Review the SCC and its exact ServiceAccount grants.                              |
 | `openshell`         | OpenShell Namespace, RuntimeClass, workspace role, ingress and controller egress policies | Apply admission first; verify node labels and OpenShell pins.                    |
-| `control-plane`     | Bootstrap PVC, PostgreSQL/API egress, Console Route                                       | Run `prepare-inputs`; prepare `console-route.yaml` with this cluster's hostname. |
+| `control-plane`     | PostgreSQL/API egress, Console Route                                                      | Run `prepare-inputs`; prepare `console-route.yaml` with this cluster's hostname. |
 | `routing`           | Envoy Namespace, exact controller SCC grants, GatewayClass                                | Verify Gateway API compatibility and select the Helm chart version.              |
 | `control-ui`        | Protected OAuth-proxy configuration                                                       | Complete the Control UI hostname and credential inputs.                          |
 | `control-ui-access` | Exact Gateway Service read role and user binding                                          | Render the grant for an existing OpenShift username.                             |
@@ -322,12 +322,7 @@ List pending requests with `openclaw devices list` in the same container. The
 pinned runtime ships the CLI at `/app/node_modules/.bin/openclaw`. Approve one
 device for each browser.
 
-## Temporary bootstrap grants
-
-The bootstrap volume-preparation SCC and RoleBinding are outside these
-persistent stages. Apply them immediately before
-`prepare-bootstrap-volume` and remove them after successful preparation. The
-[deployment guide](../../README.md) covers the bootstrap PVC sequence.
+## Optional OpenShell Git resources
 
 The optional `openshell-git/` resources prepare OpenShift service-CA objects for
 protected Git access. Their Helm fragments and supervisor egress rule need
