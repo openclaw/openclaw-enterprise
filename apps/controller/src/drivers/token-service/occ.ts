@@ -634,14 +634,13 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     source: TokenServiceSourceInstance,
     version: string,
     signal: AbortSignal,
-    credentialUpdated = true,
   ): Promise<void> {
     const proxy = this.credentialProxy;
     if (!proxy) {
       return;
     }
     if (!proxy.notifyCredentialUpdated) {
-      throw new CredentialDeliveryFailedError(credentialUpdated);
+      throw new CredentialDeliveryFailedError();
     }
     try {
       await proxy.notifyCredentialUpdated(
@@ -650,7 +649,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         signal,
       );
     } catch {
-      throw new CredentialDeliveryFailedError(credentialUpdated);
+      throw new CredentialDeliveryFailedError();
     }
   }
 
@@ -773,8 +772,14 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     const ref = this.ownedRef(source);
     const current = this.renewingGitSources.get(ref.id);
     if (current) {
+      const minted = await current.catch((error: unknown) => {
+        // Joining the attempt does not attribute its committed mutation to this caller.
+        throw error instanceof CredentialDeliveryFailedError
+          ? new CredentialDeliveryFailedError(false)
+          : error;
+      });
       // A forced request can share a mint, but a maintenance check or redelivery does not mint.
-      if (!(await current) && mode === "forced") {
+      if (!minted && mode === "forced") {
         await this.renewGitHubAppSource(source, signal, mode);
       }
       return;
@@ -839,7 +844,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       return minted;
     }
     // Keep the pending version in custody so another API pass can retry a failed push.
-    await this.notifyCredentialUpdated(source, version, signal, minted);
+    await this.notifyCredentialUpdated(source, version, signal);
     await this.state.transact(async ({ namespaces, credentialSources }) => {
       const namespace = await namespaces.lockNamespace(ref.namespaceId);
       const current = this.ownedSource(

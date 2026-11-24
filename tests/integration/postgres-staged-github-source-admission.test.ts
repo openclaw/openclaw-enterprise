@@ -280,13 +280,13 @@ test(
         assert.equal(provider.resourceVersion, expectedVersion);
         assert.ok(request.credentials.GITHUB_TOKEN);
         observedCredentials.push(request.credentials.GITHUB_TOKEN);
+        const holdDelivery = holdNextDelivery;
+        holdNextDelivery = undefined;
+        await holdDelivery?.();
         if (failNextDelivery) {
           failNextDelivery = false;
           throw new Error("Controlled OpenShell outage before the Provider update.");
         }
-        const holdDelivery = holdNextDelivery;
-        holdNextDelivery = undefined;
-        await holdDelivery?.();
         assert.equal(gateway.providers.get(request.name)?.resourceVersion, expectedVersion);
         const updated = {
           ...provider,
@@ -1409,43 +1409,44 @@ test(
     );
 
     // Pause scheduled delivery after the mint commits, then overlap the real public request.
-    const releaseDelivery = Promise.withResolvers<void>();
-    holdNextDelivery = () => releaseDelivery.promise;
-    const reachedManualRenewal = Promise.withResolvers<void>();
-    const prototype = OCCTokenServiceDriver.prototype as unknown as {
-      renewGitHubAppSource(
-        source: Parameters<OCCTokenServiceDriver["forceRefresh"]>[0],
-        signal: AbortSignal,
-        mode: "due" | "forced",
-      ): Promise<void>;
-    };
-    // Observe the real owner call after it sees the in-flight attempt. The original method runs.
-    const renew = prototype.renewGitHubAppSource;
-    const observe = t.mock.method(
-      prototype,
-      "renewGitHubAppSource",
-      function (this: OCCTokenServiceDriver, ...args: Parameters<typeof renew>) {
-        const [source, , mode] = args;
-        const result = renew.apply(this, args);
-        if (source.sourceRef.id === gitSource.id && mode === "forced") {
-          reachedManualRenewal.resolve();
-        }
-        return result;
-      },
-    );
-    const manual = await (async () => {
+    async function rotateDuringMaintenance() {
+      const expectedDelivery = deliveryAttempts + 1;
+      const releaseDelivery = Promise.withResolvers<void>();
+      holdNextDelivery = () => releaseDelivery.promise;
+      const reachedManualRenewal = Promise.withResolvers<void>();
+      const prototype = OCCTokenServiceDriver.prototype as unknown as {
+        renewGitHubAppSource(
+          source: Parameters<OCCTokenServiceDriver["forceRefresh"]>[0],
+          signal: AbortSignal,
+          mode: "due" | "forced",
+        ): Promise<void>;
+      };
+      // Observe the joining caller at the owner without replacing its work.
+      const renew = prototype.renewGitHubAppSource;
+      const observe = t.mock.method(
+        prototype,
+        "renewGitHubAppSource",
+        function (this: OCCTokenServiceDriver, ...args: Parameters<typeof renew>) {
+          const [source, , mode] = args;
+          const result = renew.apply(this, args);
+          if (source.sourceRef.id === gitSource.id && mode === "forced") {
+            reachedManualRenewal.resolve();
+          }
+          return result;
+        },
+      );
       try {
         await store.update(
           sourceStorage,
           JSON.stringify({
-            ...pending,
+            ...(await readReceipt()),
             deliveryPending: undefined,
             expiresAt: new Date(Date.now() + 30_000).toISOString(),
           }),
         );
         await waitFor(
           "the scheduled Git Provider update",
-          () => deliveryAttempts === 3 || undefined,
+          () => deliveryAttempts === expectedDelivery || undefined,
         );
         const response = inject("POST", renewalPath, undefined, resumedAPI);
         await Promise.race([
@@ -1460,7 +1461,9 @@ test(
         releaseDelivery.resolve();
         observe.mock.restore();
       }
-    })();
+    }
+
+    const manual = await rotateDuringMaintenance();
     assert.equal(manual.statusCode, 200, manual.body);
     assert.equal(manual.json().data.id, gitSource.id);
     assert.equal(manual.json().data.type, "github-app-installation");
@@ -1478,22 +1481,41 @@ test(
     assert.ok(observedCredentials.at(-1) === manuallyRenewed.credential);
     assert.ok((await store.withValue(signerStorage, async (value) => value)) === signerBefore);
 
-    // A lost Provider update is a delivery failure after a committed renewal.
+    async function rotationAudit(requestId: unknown) {
+      assert.equal(typeof requestId, "string");
+      return (
+        await pool.query(
+          `SELECT outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason
+           FROM occ.audit_events WHERE resource_id=$1 AND action='openclaw.credential_sources.rotate'
+             AND details->'__occAuditMetadata'->>'requestId'=$2
+           ORDER BY outcome DESC`,
+          [gitSource.id, requestId],
+        )
+      ).rows;
+    }
+
+    // A direct mint commits before delivery fails, so its requester owns the mutation audit.
     failNextDelivery = true;
     const interrupted = await inject("POST", renewalPath, undefined, resumedAPI);
-    await resumedAPI.close();
     assert.equal(interrupted.statusCode, 503, interrupted.body);
-    const interruptedAudit = await pool.query(
-      `SELECT outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason
-       FROM occ.audit_events WHERE resource_id=$1 AND action='openclaw.credential_sources.rotate'
-         AND details->'__occAuditMetadata'->>'requestId'=$2
-       ORDER BY outcome DESC`,
-      [gitSource.id, interrupted.headers["x-request-id"]],
-    );
-    assert.deepEqual(interruptedAudit.rows, [
+    assert.deepEqual(await rotationAudit(interrupted.headers["x-request-id"]), [
       { outcome: "success", reason: null },
       { outcome: "failure", reason: "CREDENTIAL_DELIVERY_FAILED" },
     ]);
+
+    // A caller joining a failed scheduled delivery receives no audit credit for its mint.
+    const mintsBeforeSharedFailure = github.issuesOfTokens.length;
+    const attemptsBeforeSharedFailure = deliveryAttempts;
+    failNextDelivery = true;
+    const joinedFailure = await rotateDuringMaintenance();
+    await resumedAPI.close();
+    assert.equal(joinedFailure.statusCode, 503, joinedFailure.body);
+    assert.deepEqual(await rotationAudit(joinedFailure.headers["x-request-id"]), [
+      { outcome: "failure", reason: "CREDENTIAL_DELIVERY_FAILED" },
+    ]);
+    assert.equal(github.issuesOfTokens.length, mintsBeforeSharedFailure + 1);
+    assert.equal(deliveryAttempts, attemptsBeforeSharedFailure + 1);
+    assert.equal((await readReceipt()).deliveryPending, true);
 
     // Source-backed authorization still uses finite installation credentials. Cross the issuer
     // receipt's expiry after the Worker has shut down so only custody resolution sees this clock.
