@@ -16,7 +16,6 @@ import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
 import type { AgentRecheck, ConsolePageContext } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
-import { renderAgentSandboxPolicy } from "./sandbox-policy.mjs";
 import {
   storedConfigurationProblem,
   type StoredConfigurationRule,
@@ -82,7 +81,11 @@ import {
   VERSION_UNAVAILABLE,
 } from "./access-reasons.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
-import { readableRepositoryGrants } from "./sandbox-policy.mjs";
+import {
+  readableRepositoryGrants,
+  renderAgentSandboxPolicy,
+  repositoryRestrictionText,
+} from "./sandbox-policy.mjs";
 import {
   githubAccessLabel,
   repositoryProfile,
@@ -4309,7 +4312,12 @@ export async function renderAgentDetail(
             ? "GitHub access saved at creation"
             : "Saved GitHub access";
         const grants = repositoryReview.grants
-          .map(({ repository, access }) => `${repository} (${githubAccessLabel(access)})`)
+          .map((grant) => {
+            const { repository, access } = grant;
+            const level = githubAccessLabel(access);
+            const restrictions = repositoryRestrictionText(grant);
+            return `${repository} (${level}${restrictions ? ` · ${restrictions}` : ""})`;
+          })
           .join(", ");
         setText(confirmation, `${label}: ${grants || "No repositories allowed"}`);
       } else {
@@ -4737,7 +4745,7 @@ export async function renderAgentDetail(
       "section",
       { className: "card agent-draft-actions" },
       draftActionsHeading,
-      hasRepositoryPermissions(values)
+      !reviewRepositories && hasRepositoryPermissions(values)
         ? element(
             "p",
             { className: "hint" },

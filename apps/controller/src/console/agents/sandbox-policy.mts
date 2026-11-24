@@ -158,7 +158,7 @@ function changeRepositoryApiAction(
   return deny.length ? { deny } : undefined;
 }
 
-function repositoryRestrictionText({ access, apiActions }: RepositoryNetworkGrant) {
+export function repositoryRestrictionText({ access, apiActions }: RepositoryNetworkGrant) {
   if (!apiActions) {
     return "";
   }

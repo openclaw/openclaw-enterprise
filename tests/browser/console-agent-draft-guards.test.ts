@@ -1113,6 +1113,7 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
           permissions: {
             contents: repository === limited.repository ? "read" : "write",
             metadata: "read",
+            ...(native && { issues: "write", pull_requests: "write" }),
           },
         },
       ],
@@ -1496,6 +1497,26 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   assert.equal(await deploy.isDisabled(), true);
   await review.click();
   await waitForEnabled(deploy);
+  // Customize one action in Repositories before admitting the reviewed first revision.
+  await page.getByRole("link", { name: "Open draft repositories" }).click();
+  await page.getByRole("button", { name: "Manage permissions", exact: true }).click();
+  const permissions = page.getByRole("dialog", { name: "Repository permissions" });
+  await permissions.getByRole("button", { name: "Enable policy editing" }).click();
+  const row = permissions.getByRole("group", { name: tooling.repository, exact: true });
+  await row.getByText("Advanced · Customize access").click();
+  await row.getByRole("checkbox", { name: "Create issues" }).uncheck();
+  assert.equal(await row.getByRole("checkbox", { name: "Open pull requests" }).isChecked(), true);
+  await permissions.getByRole("button", { name: "Save repository policy" }).click();
+  await permissions.waitFor({ state: "hidden" });
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await review.waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  await review.click();
+  await waitForEnabled(deploy);
+  assert.match(
+    await page.locator(".agent-draft-actions").innerText(),
+    /example\/tooling \(Contributor · Issue creation off\)/,
+  );
   const deployed = responseTo(page, "POST", fixture.origin + path + "/deploy");
   await deploy.click();
   const receipt = await deployed;
@@ -1505,7 +1526,10 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
     record(receipt.request().postDataJSON()).expectedRepositoryPolicyVersion,
     revision?.sandboxPolicy?.version,
   );
-  assert.deepEqual(revision?.sandboxPolicy?.repositoryNetworkPolicy?.grants, grants);
+  assert.deepEqual(revision?.sandboxPolicy?.repositoryNetworkPolicy?.grants, [
+    app,
+    { ...tooling, apiActions: { deny: ["issues:create"] } },
+  ]);
 
   // Create authority alone permits profile discovery, never policy limit disclosure.
   const noRead = restrict(fixture.policy, "read", "sandbox_policy", { namespaceId });
