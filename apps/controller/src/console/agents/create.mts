@@ -4060,10 +4060,12 @@ function renderAgentForm(
       return;
     }
     const repositoryBindings = repositories.bindings();
-    const repositoryNetworkPolicy = repositories
-      .scopedGrants()
-      ?.map(([, grant]) => grant)
-      .sort((a, b) => (a.repository < b.repository ? -1 : 1));
+    const repositoryNetworkPolicy = repositories.scoped()
+      ? repositories
+          .scopedGrants()
+          ?.map(([, grant]) => grant)
+          .sort((a, b) => (a.repository < b.repository ? -1 : 1))
+      : undefined;
     const body = {
       name: name.value.trim(),
       executionMode: mode.value,

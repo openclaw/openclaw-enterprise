@@ -166,18 +166,23 @@ for defaults and operator ceiling inputs.
 
 ## Set GitHub access before the first deployment
 
-In **Create Agent → Repository access**, choose **Per-repository access**.
-OCE recommends this mode when an Installation administrator can read policies
-and the Namespace offers eligible GitHub repositories. If you first deploy with
-**Access profiles**, you need a new Agent to use Per-repository access.
+In **Create Agent → Repository access**, check the repositories the Agent needs.
+For administrators who can read policies, a new empty picker defaults to
+**Per-repository access** when eligible GitHub repositories are available.
+Presets retain their selections. With no boxes checked, **Create Agent** saves
+no repository policy and can deploy immediately. To save an explicit deny-all
+list, use the policy editor on an undeployed draft. Once an Agent has deployed
+without a list, including with **Access profiles**, you need a new Agent to
+use per-repository access.
 
-Select repositories by owner/name. Each selection starts at **Contributor** if
+Check each owner/name. Each selection starts at **Contributor** if
 the Installation and Namespace allow writes. Otherwise, it starts at **Read-only**.
 Read-only allows clone and fetch. Contributor adds push. Creating pull requests
 or issues also requires deployment support, GitHub permissions and applicable
 API rules. Choose Read-only wherever the Agent does not need write access.
 
-Choose **Save Agent draft**. The Agent and its grants are saved together, with
+With one or more repositories selected, choose **Save Agent draft**. The Agent
+and its grants are saved together, with
 policy editing off. This requires Installation and Agent administration, permission
 to manage, read and update policy, and a supported Dedicated runtime and model
 Credential Source. If saving is refused, the Configuration and model credentials

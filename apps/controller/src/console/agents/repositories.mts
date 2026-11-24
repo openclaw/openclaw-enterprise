@@ -289,13 +289,16 @@ export function createRepositoryFields(
   const mode = element(
     "select",
     { id: "repository-mode", "aria-describedby": "repository-mode-help" },
-    element("option", { value: "", disabled: true }, "Choose access mode"),
     element("option", { value: "scoped" }, "Per-repository access"),
     element("option", { value: "profiles" }, "Access profiles"),
   );
   const scoped = () => mode.value === "scoped";
+  const hasPolicy = () => scoped() && state.selected.size > 0;
+  // Only a new, blank picker can default to policy. Never reinterpret a Preset,
+  // a restored selection or a creator's explicit choice on catalog refresh.
+  let chooseDefault = !initial.agentId && !intent && !state.selected.size && !initial.scopedGrants;
   const grants = new Map(initial.scopedGrants);
-  mode.value = initial.scopedGrants ? "scoped" : "";
+  mode.value = initial.scopedGrants ? "scoped" : "profiles";
   const scopeHint = element("p", { className: "hint", id: "repository-mode-help" });
   const modeField = element(
     "div",
@@ -371,7 +374,6 @@ export function createRepositoryFields(
       grants.set(ref, limit);
     }
   }
-  const needsMode = () => !modeField.hidden && mode.value === "";
   const effective = (ref: string) =>
     scoped()
       ? "github-repository"
@@ -559,14 +561,14 @@ export function createRepositoryFields(
         !state.options.some(githubLimit));
     mode.disabled = state.disabled;
     scopeHint.textContent = scoped()
-      ? "Read-only allows clone and fetch. Contributors can also push. Opening PRs and creating issues require support in the deployed policy and permission from GitHub."
-      : "We recommend Per-repository access for GitHub. After deploying with access profiles, you need a new Agent to switch.";
+      ? "Contributors can push. Opening PRs and creating issues depend on GitHub permissions and the deployed policy."
+      : "After deploying with access profiles, you need a new Agent to switch to Per-repository access.";
     const help = section.querySelector<HTMLElement>(".repository-access-details");
     if (help) {
-      help.hidden = scoped() || needsMode();
+      help.hidden = scoped();
     }
-    access.hidden = scoped() || needsMode() || (!state.options.length && !state.selected.size);
-    if (scoped() || needsMode()) {
+    access.hidden = scoped() || (!state.options.length && !state.selected.size);
+    if (scoped()) {
       access.replaceChildren();
       return;
     }
@@ -870,7 +872,7 @@ export function createRepositoryFields(
         element("h3", {}, `Selected repositories (${state.selected.size})`),
         element(
           "span",
-          { className: "hint", hidden: scoped() || needsMode() },
+          { className: "hint", hidden: scoped() },
           `${state.selected.size - custom} inherited · ${custom} custom`,
         ),
       ),
@@ -903,18 +905,6 @@ export function createRepositoryFields(
           disabled: state.disabled,
         },
       );
-      if (needsMode()) {
-        card.append(
-          element(
-            "div",
-            { className: "repository-grant" },
-            grantIdentity(label, entry?.description),
-            remove,
-          ),
-        );
-        cards.append(card);
-        return;
-      }
       if (scoped()) {
         const limit = githubLimit(entry);
         const available = limit && grant?.repository === limit.repository;
@@ -1178,14 +1168,8 @@ export function createRepositoryFields(
       section.focus();
       return false;
     }
-    if (state.selected.size === 0 && !required && !scoped()) {
+    if (state.selected.size === 0 && !required) {
       return true;
-    }
-    if (needsMode()) {
-      validation.textContent = "Choose an access mode before continuing.";
-      validation.hidden = false;
-      mode.focus();
-      return false;
     }
     if (!state.selected.size || [...state.selected.keys()].some(invalid)) {
       validation.textContent = scoped()
@@ -1208,7 +1192,7 @@ export function createRepositoryFields(
     }));
   }
   function accessIntent(): RepositoryAccess {
-    if (scoped()) {
+    if (hasPolicy()) {
       return { defaultProfile: "git-read", repositories: bindings() };
     }
     return {
@@ -1275,6 +1259,10 @@ export function createRepositoryFields(
         const allowedProfiles = option.allowedProfiles.filter((id) => id !== "github-installation");
         return allowedProfiles.length ? [{ ...option, allowedProfiles }] : [];
       });
+      if (chooseDefault && context.installationAdmin !== false && state.options.some(githubLimit)) {
+        mode.value = "scoped";
+      }
+      chooseDefault = false;
       state.discovery = "ready";
       choices.setAttribute("aria-busy", "false");
       loadedAfterReset = clearSelections;
@@ -1362,7 +1350,7 @@ export function createRepositoryFields(
       status.textContent = `No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories.${next}`;
     } else {
       status.textContent = scoped()
-        ? "Only selected GitHub repositories receive grants."
+        ? "Select a repository to grant Contributor access, or Read-only if writes are disabled."
         : loadedAfterReset
           ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
           : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
@@ -1416,7 +1404,9 @@ export function createRepositoryFields(
 
   return {
     section,
-    scoped,
+    scoped: hasPolicy,
+    // An empty list retains the picker mode when a draft is rebuilt. Submission
+    // requires a selection, since an explicit empty API policy would deny all.
     scopedGrants: () =>
       scoped() ? [...grants].filter(([ref]) => state.selected.has(ref)) : undefined,
     bindings,

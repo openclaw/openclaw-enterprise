@@ -1718,12 +1718,11 @@ export const createAgentProvisioningScenarios = {
     })),
     actions: [
       ...repositoryForm,
-      { selector: "#repository-mode", value: "scoped" },
       { selector: 'input[data-repository-ref="application"]', click: true },
       { selector: 'input[data-repository-ref="tooling"]', click: true },
     ],
     description:
-      "With Per-repository access, application allows only Read-only. Tooling starts at Contributor. Only application has a description. Change tooling to Read-only, press its × button and undo the removal to check that the narrower choice stays selected. Saving and deployment require a supporting Installation.",
+      "Check a repository to select it. Application allows only Read-only. Tooling starts at Contributor. Only application has a description. Change tooling to Read-only, press its × button and undo the removal to check that the narrower choice stays selected. Saving and deployment require a supporting Installation.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",

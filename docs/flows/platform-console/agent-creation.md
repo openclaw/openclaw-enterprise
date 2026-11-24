@@ -145,10 +145,9 @@ Source-free deployment follows the [protected admission flow](../credential-sour
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
 [Per-repository access](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
-uses the delegated Installation and Namespace limits from the authorized
-catalog. Only selected repositories receive grants. The API saves the draft
-and grants atomically. Console confirms them before granting
-credentials. Deployment checks the reviewed version under the Namespace lock
+defaults selected repositories to their delegated limits. With a selection,
+the API saves the draft and grants atomically. Console confirms them before
+granting credentials. Deployment checks the reviewed version under the Namespace lock
 and refuses stale grants with HTTP 409.
 
 Otherwise supported Dedicated runtimes submit inline Configuration, optional repository
