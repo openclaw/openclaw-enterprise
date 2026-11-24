@@ -115,22 +115,18 @@ edits and live apply. Protected dedicated Codex admits the Sandbox-approved
 version and empty additions before credential provisioning. That snapshot
 cannot be applied live. Unreadable scoped revisions report `protectedExecution: null`.
 
-Both protected Codex compilers validate the revision artifact map.
-`openshell-codex-artifacts.ts` excludes ambient defaults. The Sandbox checks
-workspace enrollment against the validated Agent-owned setup binding and returns
-the immutable policy in `SandboxResourceRef.proxyWiring`. The proxy checks the
-map, auxiliary rule and loaded policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
-requires permissions and Namespace opt-in. Admission passes saved or deployed
-`repositoryCredentials`. Binding, deploy and provisioning refuse additions or
-defaults targeting `github.com`, its subdomains or IP addresses. Deploy and
-binding-preserving updates check SandboxPolicy `read` before naming saved additions.
+Both protected Codex compilers validate revision artifacts. `openshell-codex-artifacts.ts`
+excludes ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
+immutable `SandboxResourceRef.proxyWiring`. Proxy checks the map, auxiliary rule and loaded
+policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
+uses selected Namespace permissions and saved grants. Admission passes saved or deployed
+`repositoryCredentials`. Binding, deploy and provisioning refuse additions or defaults targeting
+`github.com`, subdomains or IPs. Deploy and binding-preserving updates require SandboxPolicy
+`read` before naming saved additions.
 
 [`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-binds repository rules to the credential-only Provider. OpenShell alone enforces
-Git, issue and PR reads and [PR creation](../reference/repository-credentials/access-levels.md#pull-request-creation).
-The Git middleware selects no admitted host, so no OCE service is in the request
-path. Request bodies are
-not inspected ([known limits](../reference/repository-credentials/access-levels.md#known-limits)).
+applies Namespace `apiLimits` to REST routes. Limits require native enforcement
+at issuance and renewal. [Bodies remain unchecked](../reference/repository-credentials/access-levels.md#known-limits).
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
 and version in the save transaction. The only facet is `networking`.
@@ -308,6 +304,15 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 22:01: Preserve saved ceiling admission with Namespace GitHub API permission limits. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - cedec867632ced6523f645f41952070eba585dad)
+- 2026-11-23 20:25: Describe Namespace API limits. (authoring-run/f51f99ed-c96c-4d33-b96b-5fcd4a39ca77 - 7d6fb6a344)
+
+- 2026-11-23 19:42: Document API filters. (authoring-run/f8694618-1db2-4df4-b082-e81f2eefa9d6 - d9b229e2ff)
+
+- 2026-11-23 18:58: Explain native REST grants. (authoring-run/d82da0c0-07c4-4cc1-af33-cad1ee4fd3a9 - fc2ffba308)
+
+- 2026-11-23 17:24: Document scoped issue creation. (authoring-run/2ee89ec8-d3b0-4cf3-8484-fe06b6075f69 - c97a1ab0938f8aac3880ad68bc5feaccd118820a)
 
 - 2026-11-23 19:11: Request Read Committed only on outer transactions that initialize or apply ceiling-dependent policy. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - b33e9efe691c008f8a7c9d5c48fde34e5e752aea)
 - 2026-11-23 18:40: Integrate the persisted ceiling with extracted Sandbox policy, provisioning and deployment owners. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - 03d64d7fee54fa6aa44c217732e19ca44d0a3991)

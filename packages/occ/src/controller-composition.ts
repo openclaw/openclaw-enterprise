@@ -879,6 +879,7 @@ export function createControllerComposition(
   const credentialProxyCapacity: CredentialProxyCapacity = capacity.capacity;
   const backendMap: ReadonlyMap<string, BackendDefinition> = backendDefinitionMap(backends);
   const repositoryPolicy = createRepositoryPolicyOperations({
+    installationId: admittedInstallation.id,
     configurationDriver: configurationOperations.selectedDriver,
     selectedProxyOwner: () => drivers.selectedProxyOwner(),
     credentialSourceOwner: credentialSourceDrivers.credentialSourceOwner,

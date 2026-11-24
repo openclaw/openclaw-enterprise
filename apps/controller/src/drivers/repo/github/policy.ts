@@ -118,6 +118,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         Object.freeze({
           repositoryRef: repository.repositoryRef,
           displayName: repository.repository,
+          ...(policy.nativeGit === "v1" ? { githubRepository: repository.repository } : {}),
           allowedProfiles: Object.freeze([...policy.profiles]),
         }),
       );
@@ -195,6 +196,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         ...(selected === undefined
           ? {}
           : {
+              requiresNetworkPolicy: selected.requiresNetworkPolicy,
               selectedRepositoryNetworkGrants: selectedRepositoryGitNetworkGrants(selected),
               ...(selected.nativeGit && { nativeGit: selected.nativeGit }),
             }),

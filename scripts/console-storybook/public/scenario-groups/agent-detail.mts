@@ -353,6 +353,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Resize through desktop, tablet, and phone widths. Prepare this version sits beside Versions on a desktop and above it below 1,100 px. Each step shows a check when done or an open ring, with its detail line under the step text; Deploy new version stays on the first screen at 1440x900.",
           "Focus the selected tab and press Left, Right, Home and End: focus moves between tabs without opening one. Enter opens the focused tab. Tab leaves the strip and Shift+Tab returns to the selected tab. At phone width the edge with more tabs past it fades.",
+          "At desktop width, focus the selected tab, then press End and Left to focus the tab before last. Narrow the window to 920 px, then 390 px. Confirm the label and focus ring stay clear of both faded edges and the selected panel stays open.",
         ],
         description:
           "An Agent without a version can edit saved settings and deploy its first immutable version.",
