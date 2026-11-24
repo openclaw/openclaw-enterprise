@@ -280,7 +280,7 @@ export const DeploySandboxPolicyReadDenied = story("deploySandboxPolicyReadDenie
 
 export const RepositoryPermissionsDraft = story("repositoryPermissionsDraft");
 export const RepositoryPermissions = story("repositoryPermissions");
-export const RepositoryPermissionsFixed = story("repositoryPermissionsFixed");
+export const RepositoryPermissionsLimited = story("repositoryPermissionsLimited");
 export const RepositoryPermissionsDenied = story("repositoryPermissionsDenied");
 export const RepositoryPermissionsLoading = story("repositoryPermissionsLoading");
 export const RepositoryEditor = story("repositoryEditor");

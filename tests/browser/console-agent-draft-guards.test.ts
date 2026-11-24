@@ -1128,7 +1128,7 @@ async function repositoryPolicyConsole(t: TestContext, native = false) {
         namespaceId,
         profiles: ["github-repository"],
         nativeGit: "v1",
-        ...(repository === nativeRepo.repository && { apiActions: { deny: ["issues:create"] } }),
+        ...(repository === nativeRepo.repository && { apiLimits: { issues: "read" } }),
         permissions: {
           contents: "write",
           metadata: "read",
@@ -1430,9 +1430,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   const base = `${path}/sandbox-policy/networking`;
   const fixed = {
     ...app,
-    apiActions: {
-      allow: ["issues:read", "issues:create", "pull_requests:read", "pull_requests:create"],
-    },
+    apiLimits: { default: "none", issues: "read" },
   };
   const widenedGrants = [fixed, tooling];
   const version = record(record(saved.data).policy).version;
@@ -1494,7 +1492,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   await review.click();
   await page
     .getByText(
-      "Saved GitHub access: example/application (Read-only · Fixed list · New actions stay off), example/tooling (Contributor)",
+      "Saved GitHub access: example/application (Read-only · Issues read-only · Pull requests blocked · Unlisted API resources blocked), example/tooling (Contributor)",
     )
     .waitFor();
   await waitForEnabled(deploy);
@@ -1522,15 +1520,19 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   assert.equal(await deploy.isDisabled(), true);
   await review.click();
   await waitForEnabled(deploy);
-  // Customize one action in Repositories before admitting the reviewed first revision.
+  // Limit one resource in Repositories before admitting the reviewed first revision.
   await page.getByRole("link", { name: "Edit repository permissions" }).click();
   const permissions = page.getByRole("dialog", { name: "Repository permissions" });
   await permissions.getByRole("button", { name: "Enable policy editing" }).click();
-  await permissions.getByText("Fixed list · New actions stay off", { exact: true }).waitFor();
+  await permissions
+    .getByText("Issues read-only · Pull requests blocked · Unlisted API resources blocked", {
+      exact: true,
+    })
+    .waitFor();
   const row = permissions.getByRole("group", { name: tooling.repository, exact: true });
-  await row.getByText("Advanced · Customize access").click();
-  await row.getByRole("checkbox", { name: "Create issues" }).uncheck();
-  assert.equal(await row.getByRole("checkbox", { name: "Open pull requests" }).isChecked(), true);
+  await row.getByText("Advanced").click();
+  await row.getByRole("combobox", { name: "Issues" }).selectOption("read");
+  await row.getByText("Read and open", { exact: true }).waitFor();
   await permissions.getByRole("button", { name: "Save repository policy" }).click();
   await permissions.waitFor({ state: "hidden" });
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
@@ -1540,7 +1542,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   await waitForEnabled(deploy);
   assert.match(
     await page.locator(".agent-draft-actions").innerText(),
-    /example\/tooling \(Contributor · Issue creation off\)/,
+    /example\/tooling \(Contributor · Issues read-only\)/,
   );
   const deployed = responseTo(page, "POST", fixture.origin + path + "/deploy");
   await deploy.click();
@@ -1553,7 +1555,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   );
   assert.deepEqual(revision?.sandboxPolicy?.repositoryNetworkPolicy?.grants, [
     fixed,
-    { ...tooling, apiActions: { deny: ["issues:create"] } },
+    { ...tooling, apiLimits: { issues: "read" } },
   ]);
 
   // Select the admitted revision as a Worker would. Saving a tighter policy
@@ -1946,7 +1948,7 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.match(JSON.stringify(refusedLegacy.body), /Create a new Agent/);
   assert.deepEqual((await legacy.read()).policy, legacyView.policy);
 
-  // The native Agent uses its own filtered grant, without changing the Namespace policy.
+  // The native Agent limits its own grant, without changing the Namespace policy.
   const custom = await createAgent("Contributor", [
     { repositoryRef: "native", profile: "github-repository" },
     { repositoryRef: "peer", profile: "github-repository" },
@@ -1966,41 +1968,48 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
   assert.equal(await withheld.isVisible(), false);
   const row = panel.getByRole("group", { name: nativeRepo.repository, exact: true });
   assert.equal(await row.getByRole("combobox").inputValue(), "write");
-  const issue = row.getByRole("checkbox", { name: "Create issues" });
-  const pull = row.getByRole("checkbox", { name: "Open pull requests" });
+  const role = row.getByRole("combobox", { name: nativeRepo.repository });
+  const issue = row.getByRole("combobox", { name: "Issues" });
+  const pull = row.getByRole("combobox", { name: "Pull requests" });
+  const advanced = row.getByText("Advanced");
   assert.equal(await issue.isVisible(), false);
-  await row.getByText("Advanced · Customize access").click();
-  assert.equal(await issue.isChecked(), true);
-  assert.equal(await pull.isChecked(), true);
-  // Preserve an opt-out even while the Namespace is blocking the same action.
-  await row.getByText("Blocked by current repository permissions.").waitFor();
-  assert.equal(
-    await issue.isEnabled(),
-    true,
-    "a Contributor can opt out before eligibility changes",
-  );
-  await issue.uncheck();
-  const restricted = [{ ...nativeRepo, apiActions: { deny: ["issues:create"] } }, peerRepo];
-  const result = put(custom.base);
-  await save.click();
-  const response = await result;
-  assert.equal(response.status(), 200, await response.text());
-  assert.deepEqual(record((await custom.read()).policy).repositoryNetworkPolicy, restricted);
+  await advanced.click();
+  // Save a durable limit while the Namespace already blocks issue creation.
+  await row.getByText("Read-only · Limited by current permissions").waitFor();
+  await issue.selectOption("read");
+  await row.getByText("Read and open", { exact: true }).waitFor();
+  const restricted = [{ ...nativeRepo, apiLimits: { issues: "read" } }, peerRepo];
+  const saveGrant = async () => {
+    const result = put(custom.base);
+    await save.click();
+    const response = await result;
+    assert.equal(response.status(), 200, await response.text());
+    return record((await custom.read()).policy).repositoryNetworkPolicy;
+  };
+  assert.deepEqual(await saveGrant(), restricted);
   await page.reload();
   await permissions.click();
-  await row.getByText("Issue creation off", { exact: true }).waitFor();
-  await row.getByText("Advanced · Customize access").click();
-  assert.equal(await issue.isChecked(), false);
-  assert.equal(await pull.isChecked(), true);
-  await issue.check();
-  await pull.uncheck();
-  const changed = put(custom.base);
-  await save.click();
-  assert.equal((await changed).status(), 200);
-  assert.deepEqual(record((await custom.read()).policy).repositoryNetworkPolicy, [
-    { ...nativeRepo, apiActions: { deny: ["pull_requests:create"] } },
+  await row.getByText("Issues read-only", { exact: true }).waitFor();
+  await advanced.click();
+  assert.equal(await issue.inputValue(), "read");
+  assert.equal(await pull.inputValue(), "");
+  // Changing the default blocks omitted resources. Explicit limits survive a role change.
+  await row.getByRole("checkbox", { name: /Block API access unless listed/ }).check();
+  await row.getByText("No access", { exact: true }).filter({ visible: true }).waitFor();
+  await pull.selectOption("write");
+  await role.selectOption("read");
+  await issue.selectOption("none");
+  assert.equal(await pull.inputValue(), "write");
+  await row.getByText("Read-only", { exact: true }).filter({ visible: true }).waitFor();
+  await role.selectOption("write");
+  assert.deepEqual(await saveGrant(), [
+    { ...nativeRepo, apiLimits: { default: "none", issues: "none", pull_requests: "write" } },
     peerRepo,
   ]);
+  await permissions.click();
+  await advanced.click();
+  await row.getByRole("button", { name: "Reset to role defaults" }).click();
+  assert.deepEqual(await saveGrant(), [nativeRepo, peerRepo]);
 });
 
 test("protected execution can withdraw saved repository grants using the current policy version", async (t) => {

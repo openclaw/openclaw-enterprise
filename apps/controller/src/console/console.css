@@ -5856,6 +5856,7 @@ html:has(#create-agent-form) {
   overflow-wrap: anywhere;
 }
 .sandbox-repository-grant > select {
+  width: 15rem;
   min-width: 0;
   max-width: 100%;
 }
@@ -5872,7 +5873,48 @@ html:has(#create-agent-form) {
   padding-top: 0;
   border-top: 0;
 }
+.repository-api-resource {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-block: var(--space-2);
+}
+.repository-api-resource select {
+  width: min(61%, 15rem);
+  flex-shrink: 0;
+}
+.sandbox-repository-grant label {
+  font-size: 1rem;
+  font-weight: var(--weight-medium);
+}
+.sandbox-repository-grant .repository-customize .hint {
+  font-weight: normal;
+  margin-block: var(--space-1);
+}
+.sandbox-repository-grant:has(details[open]) > .sandbox-repository-restrictions {
+  display: none;
+}
+@media (max-width: 600px) {
+  .sandbox-repository-grant > select {
+    width: 100%;
+  }
+}
+@media (max-width: 375px) {
+  .repository-api-resource {
+    display: grid;
+  }
+  .repository-api-resource select {
+    width: 100%;
+  }
+}
+.repository-api-resource label,
+.repository-api-resource .hint {
+  display: block;
+  margin: 0;
+}
 .sandbox-repository-grant .repository-option {
+  padding: var(--space-2);
   margin-top: var(--space-2);
 }
 .sandbox-repository-grant .repository-option .hint {

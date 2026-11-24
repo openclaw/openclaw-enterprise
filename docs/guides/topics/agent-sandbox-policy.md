@@ -8,8 +8,12 @@ Save the first repository policy before you deploy. An Agent previously deployed
 
 1. Enable policy editing if prompted. Choose **Add access** beside the repository you want.
 2. **Contributor** is the default where Write is permitted. The Agent can push code, open pull requests and create issues within its approved GitHub permissions. Choose **Read-only** to prevent direct writes.
-3. To keep push access but turn off **Create issues** or **Open pull requests**, expand **Advanced · Customize access**. You can turn off an action that is currently blocked. If it stays checked and later becomes eligible, the Agent gains access on redeployment. A fixed list excludes new actions until listed. These settings change this Agent only.
+3. For example, to keep push access and prevent direct issue creation, open **Advanced** and set **Issues** to **Read-only**. Leave **Pull requests** on **Use role**. A limit persists even when current permissions already block that operation.
 4. Choose **Save repository policy** and deploy the new version. Saving alone leaves the running version unchanged. Manage permissions compares the saved policy with the active version. When reducing access, verify retirement of the previous Sandbox.
+
+**No access** blocks direct requests for a resource. To block unlisted resources, including future ones,
+select **Block API access unless listed**. Choose which resources to allow. Git access stays the same.
+**Reset to role defaults** removes these limits for this Agent and repository.
 
 [Namespace limits and GitHub permissions](../../reference/repository-credentials/access-levels.md#native-git-delivery) apply to every Agent using the registration. If a bound repository has no grant, the Agent can't open PRs anywhere. Unbind an unused repository and redeploy.
 

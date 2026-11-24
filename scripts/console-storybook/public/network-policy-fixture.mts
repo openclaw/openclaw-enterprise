@@ -169,14 +169,8 @@ export function createNetworkPolicyFixture(
   let policyReads = 0;
   const repositoryEditor = scenario.policyState === "repositoryEditor";
   let simulateRepositoryConflict = scenario.policyState === "repositoryEditorConcurrent";
-  const fixedActions = scenario.policyState === "repositoryPermissionsFixed";
-  const permissions = scenario.policyState === "repositoryPermissions" || fixedActions;
-  const actions = [
-    "issues:read",
-    "issues:create",
-    "pull_requests:read",
-    "pull_requests:create",
-  ] as const;
+  const blockedByDefault = scenario.policyState === "repositoryPermissionsLimited";
+  const permissions = scenario.policyState === "repositoryPermissions" || blockedByDefault;
   const deployedPermissions = permissions && scenario.deployed === true;
   let policyEditing = permissions ? deployedPermissions : scenario.policyState !== "disabled";
   const canEditRepositoryGrants = repositoryEditor || simulateRepositoryConflict || permissions;
@@ -214,8 +208,11 @@ export function createNetworkPolicyFixture(
     additions: initialAdditions,
     ...(deployedPermissions
       ? {
-          repositoryNetworkPolicy: fixedActions
-            ? repositoryCeiling.map((grant) => ({ ...grant, apiActions: { allow: actions } }))
+          repositoryNetworkPolicy: blockedByDefault
+            ? repositoryCeiling.map((grant) => ({
+                ...grant,
+                apiLimits: { default: "none", issues: "write", pull_requests: "write" } as const,
+              }))
             : repositoryCeiling,
         }
       : {}),
@@ -407,13 +404,12 @@ export function createNetworkPolicyFixture(
               repositoryNetworkPolicyCeiling: repositoryCeiling,
               ...(permissions
                 ? {
-                    repositoryApiActionFilters: [
+                    repositoryApiMaxima: [
                       {
                         repository: "example/application",
                         access: "write",
-                        available: fixedActions
-                          ? actions.filter((action) => action !== "issues:create")
-                          : actions,
+                        issues: blockedByDefault ? "read" : "write",
+                        pull_requests: "write",
                       },
                     ],
                   }
@@ -544,7 +540,7 @@ export function createNetworkPolicyFixture(
             const approved = repositoryChoices.find((choice) =>
               isFixtureRepositoryGrant(grant, choice),
             );
-            // Preserve action filters from the Console for the next policy read.
+            // Preserve API limits from the Console for the next policy read.
             return approved && typeof grant === "object" ? { ...grant, ...approved } : undefined;
           })
         : undefined;

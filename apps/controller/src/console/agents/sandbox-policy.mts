@@ -3,8 +3,9 @@ import type {
   AgentRuntimeLogPageWire,
   DriverConfigurationDescriptor,
   JSONSchema,
-  RepositoryApiAction,
-  RepositoryApiActions,
+  RepositoryApiLevel,
+  RepositoryApiLimits,
+  RepositoryApiMaximum,
   RepositoryNetworkGrant,
   RuntimeLogRecord,
   SandboxNetworkGrant,
@@ -41,13 +42,13 @@ export function readableRepositoryGrants(value: unknown): value is RepositoryGra
   const repositories = new Set<string>();
   return value.every((grant: unknown) => {
     const fields = responseFields(grant);
-    const { repository, access, apiActions } = fields;
-    const hasFilter = Object.hasOwn(fields, "apiActions");
+    const { repository, access, apiLimits } = fields;
+    const hasLimits = Object.hasOwn(fields, "apiLimits");
     if (
-      Object.keys(fields).length !== (hasFilter ? 3 : 2) ||
+      Object.keys(fields).length !== (hasLimits ? 3 : 2) ||
       typeof repository !== "string" ||
       (access !== "read" && access !== "write") ||
-      (hasFilter && !readableRepositoryApiActions(apiActions))
+      (hasLimits && !readableRepositoryApiLimits(apiLimits))
     ) {
       return false;
     }
@@ -59,62 +60,33 @@ export function readableRepositoryGrants(value: unknown): value is RepositoryGra
   });
 }
 
-const REPOSITORY_CREATION_OPTIONS = [
-  ["pull_requests:create", "Open pull requests"],
-  ["issues:create", "Create issues"],
-] as const satisfies readonly (readonly [RepositoryApiAction, string])[];
-
-const REPOSITORY_API_ACTION_NAMES = {
-  "pull_requests:create": "Pull request creation",
-  "issues:create": "Issue creation",
-  "pull_requests:read": "Pull request reading",
-  "issues:read": "Issue reading",
-} satisfies Record<RepositoryApiAction, string>;
+const API_RESOURCES = [
+  { key: "issues", label: "Issues", write: "Read and create" },
+  { key: "pull_requests", label: "Pull requests", write: "Read and open" },
+] as const;
 
 function repositoryAccessLabel(access: RepositoryNetworkGrant["access"]) {
   return access === "write" ? "Contributor" : "Read-only";
 }
 
-function readableRepositoryApiActionNames(value: unknown): value is RepositoryApiAction[] {
+function isApiLevel(value: unknown): value is RepositoryApiLevel {
+  return value === "none" || value === "read" || value === "write";
+}
+
+function readableRepositoryApiLimits(value: unknown): value is RepositoryApiLimits {
+  const entries = Object.entries(responseFields(value));
   return (
-    Array.isArray(value) &&
-    new Set(value).size === value.length &&
-    value.every(
-      (item) => typeof item === "string" && Object.hasOwn(REPOSITORY_API_ACTION_NAMES, item),
+    entries.length > 0 &&
+    entries.every(([key, level]) =>
+      key === "default"
+        ? level === "none"
+        : API_RESOURCES.some((resource) => resource.key === key) && isApiLevel(level),
     )
   );
 }
 
-function readableRepositoryApiActions(value: unknown): value is RepositoryApiActions {
-  const fields = responseFields(value);
-  return (
-    Object.keys(fields).length === 1 &&
-    readableRepositoryApiActionNames(Object.hasOwn(fields, "allow") ? fields.allow : fields.deny)
-  );
-}
-
 function readableRepositoryCeiling(value: unknown): value is RepositoryGrants {
-  return (
-    readableRepositoryGrants(value) && value.every(({ apiActions }) => apiActions === undefined)
-  );
-}
-
-function sameApiActionNames(a: readonly RepositoryApiAction[], b: readonly RepositoryApiAction[]) {
-  return a.length === b.length && a.every((name) => b.includes(name));
-}
-
-function sameRepositoryApiActions(
-  expected: RepositoryApiActions | undefined,
-  actual: RepositoryApiActions | undefined,
-) {
-  if (expected && "allow" in expected) {
-    return (
-      actual !== undefined && "allow" in actual && sameApiActionNames(expected.allow, actual.allow)
-    );
-  }
-  return (
-    (!actual || "deny" in actual) && sameApiActionNames(expected?.deny ?? [], actual?.deny ?? [])
-  );
+  return readableRepositoryGrants(value) && value.every(({ apiLimits }) => apiLimits === undefined);
 }
 
 function sameRepositoryGrants(expected: RepositoryGrants | undefined, actual: unknown) {
@@ -125,54 +97,151 @@ function sameRepositoryGrants(expected: RepositoryGrants | undefined, actual: un
     return false;
   }
   const byRepository = new Map(actual.map((grant) => [grant.repository, grant]));
-  return expected.every(({ repository, access, apiActions }) => {
+  return expected.every(({ repository, access, apiLimits }) => {
     const grant = byRepository.get(repository);
-    return grant?.access === access && sameRepositoryApiActions(apiActions, grant.apiActions);
+    return grant?.access === access && sameValue(apiLimits, grant.apiLimits);
   });
 }
 
-function repositoryApiActionAllowed(
-  filter: RepositoryApiActions | undefined,
-  action: RepositoryApiAction,
-) {
-  return filter && "allow" in filter
-    ? filter.allow.includes(action)
-    : !filter?.deny.includes(action);
-}
-
-function changeRepositoryApiAction(
-  filter: RepositoryApiActions | undefined,
-  action: RepositoryApiAction,
-  allowed: boolean,
-): RepositoryApiActions | undefined {
-  if (filter && "allow" in filter) {
-    return {
-      allow: allowed
-        ? [...new Set([...filter.allow, action])]
-        : filter.allow.filter((name) => name !== action),
-    };
+function limitedLevel(...levels: RepositoryApiLevel[]): RepositoryApiLevel {
+  if (levels.includes("none")) {
+    return "none";
   }
-  const deny = allowed
-    ? (filter?.deny ?? []).filter((name) => name !== action)
-    : [...new Set([...(filter?.deny ?? []), action])];
-  return deny.length ? { deny } : undefined;
+  return levels.includes("read") ? "read" : "write";
 }
 
-export function repositoryRestrictionText({ access, apiActions }: RepositoryNetworkGrant) {
-  if (!apiActions) {
+export function repositoryRestrictionText({ apiLimits }: RepositoryNetworkGrant) {
+  if (!apiLimits) {
     return "";
   }
-  const limits = (Object.keys(REPOSITORY_API_ACTION_NAMES) as RepositoryApiAction[])
-    .filter(
-      (action) =>
-        (access === "write" || action.endsWith(":read")) &&
-        !repositoryApiActionAllowed(apiActions, action),
-    )
-    .map((action) => `${REPOSITORY_API_ACTION_NAMES[action]} off`);
-  if ("allow" in apiActions) {
-    limits.push("Fixed list · New actions stay off");
+  const limits: string[] = [];
+  for (const { key, label } of API_RESOURCES) {
+    const level = apiLimits[key] ?? apiLimits.default;
+    if (level) {
+      const limit = { none: "blocked", read: "read-only", write: "follow role" }[level];
+      limits.push(`${label} ${limit}`);
+    }
+  }
+  if (apiLimits.default) {
+    limits.push("Unlisted API resources blocked");
   }
   return limits.join(" · ");
+}
+
+function repositoryApiEditor(
+  maximum: RepositoryApiMaximum,
+  id: string,
+  onChange: (limits: RepositoryApiLimits | undefined) => void,
+) {
+  const block = element("input", { type: "checkbox" });
+  const fields = API_RESOURCES.map(({ key, label, write }) => {
+    const levels = { none: "No access", read: "Read-only", write };
+    const inherited = element("option", { value: "" });
+    const full = element("option", { value: "write" }, write);
+    const effective = element("span", { id: `${id}-${key}-effective`, className: "hint" });
+    const select = element(
+      "select",
+      { id: `${id}-${key}`, "aria-describedby": effective.id },
+      inherited,
+      element("option", { value: "read" }, levels.read),
+      element("option", { value: "none" }, levels.none),
+    );
+    const row = element(
+      "div",
+      { className: "repository-api-resource" },
+      element("div", {}, element("label", { for: select.id }, label), effective),
+      select,
+    );
+    function render({ access, apiLimits }: RepositoryNetworkGrant, missingGrant: boolean) {
+      const value = apiLimits?.[key];
+      inherited.textContent = block.checked ? "Blocked by default" : "Use role";
+      if (value === "write" || (block.checked && access === "write")) {
+        select.append(full);
+      } else {
+        full.remove();
+      }
+      select.value = value ?? "";
+      const requested = limitedLevel(access, value ?? apiLimits?.default ?? "write");
+      const level = limitedLevel(
+        requested,
+        maximum[key],
+        missingGrant && key === "pull_requests" ? "read" : "write",
+      );
+      effective.textContent =
+        level === requested ? levels[level] : `${levels[level]} · Limited by current permissions`;
+    }
+    return { key, select, row, render };
+  });
+  const reset = button("Reset to role defaults", () => {
+    onChange(undefined);
+    fields[0]?.select.focus();
+  });
+  const details = element(
+    "details",
+    { className: "repository-customize" },
+    element(
+      "summary",
+      {},
+      element("span", { className: "repository-chevron", "aria-hidden": "true" }),
+      "Advanced",
+    ),
+    element(
+      "p",
+      { className: "hint" },
+      "Access on the next deployment depends on the role and current repository permissions.",
+    ),
+    ...fields.map(({ row }) => row),
+    element(
+      "label",
+      { className: "repository-option" },
+      block,
+      element(
+        "span",
+        {},
+        "Block API access unless listed",
+        element(
+          "span",
+          { className: "hint" },
+          "Applies to existing and future API resources. Git access stays the same.",
+        ),
+      ),
+    ),
+    element(
+      "p",
+      { className: "hint" },
+      "Limits apply to direct requests. Issue reads can include pull requests. Opening a pull request can convert an issue.",
+    ),
+    reset,
+  );
+  details.addEventListener("change", () => {
+    const limits: {
+      default?: "none";
+      issues?: RepositoryApiLevel;
+      pull_requests?: RepositoryApiLevel;
+    } = {};
+    if (block.checked) {
+      limits.default = "none";
+    }
+    for (const { key, select } of fields) {
+      if (isApiLevel(select.value)) {
+        limits[key] = select.value;
+      }
+    }
+    onChange(Object.keys(limits).length ? limits : undefined);
+  });
+  return {
+    details,
+    render(grant: RepositoryNetworkGrant | undefined, missingGrant: boolean) {
+      details.hidden = !grant;
+      if (grant) {
+        block.checked = grant.apiLimits?.default === "none";
+        reset.hidden = !grant.apiLimits;
+        for (const field of fields) {
+          field.render(grant, missingGrant);
+        }
+      }
+    },
+  };
 }
 
 function repositoryPolicySummary({
@@ -1611,24 +1680,25 @@ export function renderAgentSandboxPolicy(
   function repositoryPolicyForm(loaded: SandboxPolicyViewWire, ceiling: RepositoryGrants) {
     const { policy } = loaded;
     const limits = new Map(ceiling.map(({ repository, access }) => [repository, access]));
-    const filterOptions = new Map<string, readonly RepositoryApiAction[]>();
-    if (Array.isArray(loaded.repositoryApiActionFilters)) {
-      for (const option of loaded.repositoryApiActionFilters) {
-        const { repository, access, available } = responseFields(option);
+    const maxima = new Map<string, RepositoryApiMaximum>();
+    if (Array.isArray(loaded.repositoryApiMaxima)) {
+      for (const option of loaded.repositoryApiMaxima) {
+        const { repository, access, issues, pull_requests } = responseFields(option);
         if (
           typeof repository === "string" &&
           limits.has(repository) &&
           (access === "read" || access === "write") &&
-          readableRepositoryApiActionNames(available)
+          isApiLevel(issues) &&
+          isApiLevel(pull_requests)
         ) {
           if (access === "read") {
             limits.set(repository, "read");
           }
-          filterOptions.set(repository, available);
+          maxima.set(repository, { repository, access, issues, pull_requests });
         }
       }
       for (const repository of limits.keys()) {
-        if (!filterOptions.has(repository)) {
+        if (!maxima.has(repository)) {
           limits.delete(repository);
         }
       }
@@ -1639,7 +1709,7 @@ export function renderAgentSandboxPolicy(
       (repositoryDraft?.grants ?? saved).map((grant) => [grant.repository, grant]),
     );
     const repositories = new Set([
-      // Native action options cover the Agent's selected repositories. Keep saved
+      // Native API maxima cover the Agent's selected repositories. Keep saved
       // and proposed entries visible even if their binding was removed.
       ...limits.keys(),
       ...saved.map(({ repository }) => repository),
@@ -1648,11 +1718,11 @@ export function renderAgentSandboxPolicy(
     const fields = [...repositories].map((repository, index) => {
       const limit = limits.get(repository);
       const selected = proposed.get(repository);
-      // Preserve an existing filter when the access level changes. Read-only itself bars creation.
+      // Preserve existing limits when the access level changes. Read-only itself bars creation.
       const previous = selected ?? savedByRepository.get(repository);
-      let apiActions = previous?.apiActions;
+      let apiLimits = previous?.apiLimits;
       let lastAccess = previous?.access;
-      const available = filterOptions.get(repository);
+      const available = maxima.get(repository);
       const labelId = `sandbox-repository-name-${index}`;
       const name = element(
         "span",
@@ -1714,57 +1784,16 @@ export function renderAgentSandboxPolicy(
       const unavailable = element(
         "p",
         { className: "hint sandbox-repository-restrictions" },
-        "Saving this repository’s action restrictions is unavailable. Remove this grant to save changes to the list.",
+        "Saving this repository’s API limits is unavailable. Remove this grant to save changes to the list.",
       );
-      const details =
-        limit === "write" && available
-          ? element(
-              "details",
-              { className: "repository-customize" },
-              element(
-                "summary",
-                {},
-                element("span", { className: "repository-chevron", "aria-hidden": "true" }),
-                "Advanced · Customize access",
-              ),
-              ...REPOSITORY_CREATION_OPTIONS.map(([action, label], actionIndex) => {
-                const permitted = available.includes(action);
-                const id = `${labelId}-action-${actionIndex}`;
-                const checkbox = element("input", {
-                  type: "checkbox",
-                  "aria-labelledby": id,
-                  checked: repositoryApiActionAllowed(apiActions, action),
-                });
-                const reason = permitted
-                  ? null
-                  : element(
-                      "span",
-                      { className: "hint", id: `${id}-reason` },
-                      "Blocked by current repository permissions.",
-                    );
-                if (reason) {
-                  checkbox.setAttribute("aria-describedby", reason.id);
-                }
-                checkbox.addEventListener("change", () => {
-                  if (formIsCurrent() && choice.value === "write") {
-                    apiActions = changeRepositoryApiAction(apiActions, action, checkbox.checked);
-                    updateDraft();
-                  }
-                });
-                return element(
-                  "label",
-                  { className: "repository-option" },
-                  checkbox,
-                  element("span", {}, element("span", { id }, label), reason),
-                );
-              }),
-              element(
-                "p",
-                { className: "hint" },
-                "These choices control direct requests. If a checked action becomes eligible, the Agent can use it on redeployment. Issue reads can include pull requests. Opening a pull request can convert an issue.",
-              ),
-            )
-          : null;
+      const editor = available
+        ? repositoryApiEditor(available, labelId, (next) => {
+            if (formIsCurrent() && choice.value) {
+              apiLimits = next;
+              updateDraft();
+            }
+          })
+        : undefined;
       const row = element(
         "div",
         { className: "sandbox-repository-grant", role: "group", "aria-labelledby": labelId },
@@ -1773,25 +1802,23 @@ export function renderAgentSandboxPolicy(
         choice,
         restrictions,
         unavailable,
-        details,
+        editor?.details ?? null,
       );
       function selectedGrant(): RepositoryNetworkGrant | undefined {
         const access = choice.value;
         if (access === "read" || access === "write") {
-          return { repository, access, ...(apiActions ? { apiActions } : {}) };
+          return { repository, access, ...(apiLimits ? { apiLimits } : {}) };
         }
         return undefined;
       }
-      function renderGrant() {
+      function renderGrant(incomplete: boolean) {
         const grant = selectedGrant();
         choice.hidden = grant === undefined;
         ungranted.hidden = !choice.hidden;
         restrictions.textContent = grant ? repositoryRestrictionText(grant) : "";
         restrictions.hidden = !restrictions.textContent;
-        unavailable.hidden = !grant?.apiActions || available !== undefined;
-        if (details) {
-          details.hidden = grant?.access !== "write";
-        }
+        unavailable.hidden = !grant?.apiLimits || available !== undefined;
+        editor?.render(grant, incomplete);
       }
       return { row, selectedGrant, renderGrant };
     });
@@ -1813,7 +1840,7 @@ export function renderAgentSandboxPolicy(
     const form = element(
       "form",
       { className: "sandbox-repository-form" },
-      filterOptions.size
+      maxima.size
         ? element(
             "p",
             { className: "hint" },
@@ -1822,7 +1849,7 @@ export function renderAgentSandboxPolicy(
         : null,
       ...fields.map(({ row }) => row),
       missingGrant,
-      filterOptions.size
+      maxima.size
         ? null
         : element(
             "p",
@@ -1848,28 +1875,26 @@ export function renderAgentSandboxPolicy(
     function canSave(grants: RepositoryGrants) {
       return (
         grants.length > 0 &&
-        grants.every(({ repository, access, apiActions }) => {
+        grants.every(({ repository, access, apiLimits }) => {
           const limit = limits.get(repository);
-          return (
-            (limit === "write" || limit === access) &&
-            (!apiActions || filterOptions.has(repository))
-          );
+          return (limit === "write" || limit === access) && (!apiLimits || maxima.has(repository));
         })
       );
     }
     function updateActions() {
-      for (const { renderGrant } of fields) {
-        renderGrant();
-      }
       const grants = repositoryDraft?.grants ?? saved;
-      const eligible = grants.filter(({ repository }) => filterOptions.has(repository));
+      const eligible = grants.filter(({ repository }) => maxima.has(repository));
+      const incomplete = eligible.length < (agent.repositoryBindings?.length ?? maxima.size);
+      for (const { renderGrant } of fields) {
+        renderGrant(incomplete);
+      }
       missingGrant.hidden =
-        eligible.length >= (agent.repositoryBindings?.length ?? filterOptions.size) ||
+        !incomplete ||
         !eligible.some(
-          ({ repository, apiActions, access }) =>
+          ({ repository, apiLimits, access }) =>
             access === "write" &&
-            repositoryApiActionAllowed(apiActions, "pull_requests:create") &&
-            filterOptions.get(repository)?.includes("pull_requests:create"),
+            (apiLimits?.pull_requests ?? apiLimits?.default ?? "write") === "write" &&
+            maxima.get(repository)?.pull_requests === "write",
         );
       save.disabled = repositoryDraft === undefined || !canSave(repositoryDraft.grants);
       discard.hidden = repositoryDraft === undefined;

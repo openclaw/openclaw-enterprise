@@ -87,7 +87,7 @@ type AgentDetailScenario = {
   harnessId?: "openclaw";
   credentialSources?: AgentCredentialSourceBinding[];
   configurationChangedElsewhere?: { values: OpenClawConfigurationDocument };
-  policyState?: "repositoryPermissions" | "repositoryPermissionsFixed";
+  policyState?: "repositoryPermissions" | "repositoryPermissionsLimited";
   repositoryBindings?: RepositoryBindingSelection[];
   repositoryAccess?: RepositoryAccess;
   repositoryOptions?: RepositoryOption[];
@@ -180,8 +180,8 @@ export function createAgentDetailScenarios({
       "The saved Agent has a selected repository and no deployment or repository policy.",
     steps: [
       "Choose Set repository permissions above Deploy new version. In Repositories, choose Manage permissions.",
-      "Choose Enable policy editing, then Add access. Contributor is selected and Advanced · Customize access is closed.",
-      "Expand Advanced · Customize access, clear Create issues, and save. Reopen the policy and check that Open pull requests is still selected.",
+      "Choose Enable policy editing, then Add access. Contributor is selected and Advanced is closed.",
+      "Expand Advanced, set Issues to Read-only, and save. Reopen the policy and check that Pull requests still uses the role.",
     ],
     gap: "The policy and deployment records are simulated. This preview cannot confirm runtime access.",
   } satisfies AgentDetailScenario;
@@ -193,8 +193,8 @@ export function createAgentDetailScenarios({
     deployed: true,
     description: "The deployed Agent has a saved Contributor policy for example/application.",
     steps: [
-      "Choose Edit repository permissions. Check that the saved policy matches the active version. Expand Advanced · Customize access and clear Open pull requests.",
-      "Save the policy. Confirm the new policy is pending. Reopen Manage permissions and check that Create issues is still selected.",
+      "Choose Edit repository permissions. Check that the saved policy matches the active version. Expand Advanced and set Pull requests to No access.",
+      "Save the policy. Confirm the new policy is pending. Reopen Manage permissions and check that Issues still uses the role.",
       "Change Contributor to Read-only and save. Reopen Manage permissions to check your choice.",
     ],
   } satisfies AgentDetailScenario;
@@ -1742,16 +1742,16 @@ export function createAgentDetailScenarios({
       },
       repositoryPermissionsDraft,
       repositoryPermissions,
-      repositoryPermissionsFixed: {
+      repositoryPermissionsLimited: {
         ...repositoryPermissions,
-        name: "Fixed API actions with a blocked permission",
-        policyState: "repositoryPermissionsFixed",
+        name: "Block unlisted API resources",
+        policyState: "repositoryPermissionsLimited",
         description:
-          "The saved list includes all four actions. Namespace permissions currently block issue creation.",
+          "The saved limits allow both listed resources. Namespace permissions currently block issue creation.",
         steps: [
-          "Choose Edit repository permissions. Check that new actions stay off.",
-          "Open Advanced. Create issues is selected but blocked by current repository permissions.",
-          "Clear Create issues and save. Verify issue creation stays off and the pending policy still uses a fixed list.",
+          "Choose Edit repository permissions. Check that unlisted API resources are blocked.",
+          "Open Advanced. Issues allows Read and create, but current permissions limit it to Read-only.",
+          "Set Issues to Read-only and save. Reopen the pending policy. Select Reset to role defaults to remove all API limits.",
         ],
       },
       repositoryPermissionsDenied: {
