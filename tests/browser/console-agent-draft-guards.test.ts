@@ -2989,7 +2989,10 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       fixture,
       `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
     );
-    await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+    // The Channel fixture selects v1 for service but still reports its deployment as queued.
+    const readyMessage =
+      mutation === "channel Secrets" ? "v1 was queued at the last check." : "Ready to deploy.";
+    await page.getByText(readyMessage, { exact: true }).waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
     await waitForEnabled(deploy);
     if (mutation === "authentication") {
@@ -3126,7 +3129,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     await page
       .getByRole("button", { name: "Reload draft", exact: true })
       .waitFor({ state: "hidden" });
-    await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+    await page.getByText(readyMessage, { exact: true }).waitFor();
     await page.waitForFunction(() =>
       [...globalThis.document.querySelectorAll("button")].some(
         (button) =>
@@ -3180,7 +3183,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       );
       await page.getByRole("button", { name: "Refresh", exact: true }).click();
       assert.equal((await freshConfiguration).status(), 200);
-      await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+      await page.getByText(readyMessage, { exact: true }).waitFor();
       assert.equal(pathRequests(requests, "PATCH", configurationPath).length, writesBeforeCheck);
       const previousConfigurationWrites = pathRequests(requests, "PATCH", configurationPath).length;
       await page.route(`${fixture.origin}${configurationPath}`, (route) =>
