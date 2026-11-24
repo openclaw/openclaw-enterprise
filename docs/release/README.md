@@ -11,8 +11,8 @@
 Other tasks:
 
 - [Configure release access and registries](configuration.md)
-- [Qualify a release for staging](staging-qualification.md): check startup,
-  prepare a controller pair, or rehearse installed sign-in on a disposable runner.
+- [Check published images before an upgrade](staging-qualification.md): check
+  startup or rehearse controller sign-in on a disposable runner.
 - [Promote images to private Docker Hub repositories](container-promotion.md#promote)
 - [Recover a partial image publication](containers.md#recover-a-partial-publication)
 

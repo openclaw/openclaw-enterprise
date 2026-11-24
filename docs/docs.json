@@ -1259,7 +1259,7 @@
                   },
                   {
                     "page": "release/staging-qualification",
-                    "label": "Staging Qualification"
+                    "label": "Release Checks"
                   },
                   {
                     "page": "release/container-promotion",
