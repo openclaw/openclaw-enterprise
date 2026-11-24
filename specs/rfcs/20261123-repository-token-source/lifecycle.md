@@ -40,7 +40,7 @@ For routine rotation, the operator sends a new `secret` to `PATCH /namespaces/{n
 | Replacement committed  | TokenService stored the value under a new random version. `PATCH` returns `200`. A Sandbox can still use the old token.                                                                                                           |
 | `pending`              | The [native Git runtime](../../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts) checks every 10 seconds and updates the existing Provider. The Worker is waiting for the target Sandbox to apply the change. |
 | `confirmed`            | The Worker read the target supervisor's report through OpenShell. Credentials are installed, the Provider resource version and environment revision match, and the bound policy is active and verified.                           |
-| `unreconciled`         | The Worker cannot tell how a write ended. Stop or redeploy the named Agent to retire the copy.                                                                                                                                    |
+| `unreconciled`         | The Worker cannot tell how a write ended. Stop or redeploy the affected Agent to retire the copy.                                                                                                                                 |
 
 For a routine rotation, read the policy and wait for `confirmed` on every running revision using the Source before revoking the old token at GitHub. For a compromised token, revoke it at GitHub immediately, even if that interrupts other users of the token.
 
@@ -75,7 +75,7 @@ TokenService takes an exclusive lock on the Source catalog row for replacement. 
 
 Immediately before sending a write, the Worker confirms it still holds the lock on its database session. The existing runtime write fence applies. The Provider must still have the resource version the Worker read. If the Source version or Provider changed, the lock was lost or the Source is no longer `ready`, the Worker must not send the write.
 
-A timeout cannot cancel a write already in flight. The Worker clears the record only when it proves the outcome. Until then, a new value or `DELETE` returns `409` naming the Agent and revision. Metadata edits can proceed. A change to the repository list still requires an unbound Source. The Worker sends no further credential to that revision, even after restart. It does not overwrite a write whose outcome it cannot establish. Stop or redeploy releases the block once the Worker confirms the Provider is gone. A late write retains its original expiration.
+A timeout cannot cancel a write already in flight. The Worker clears the record only when it proves the outcome. Until then, replacing the token or deleting the Source returns `409` with a count and a reason. The response names an affected Agent and revision only if the caller can read that Agent. Metadata edits can proceed. A change to the repository list still requires an unbound Source. The Worker sends no further credential to that revision, even after restart. It does not overwrite a write whose outcome it cannot establish. Stop or redeploy releases the block once the Worker confirms the Provider is gone. A late write retains its original expiration.
 
 ## Revocation, stale Sources and Stop
 

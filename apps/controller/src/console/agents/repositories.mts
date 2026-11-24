@@ -31,6 +31,9 @@ type RepositoryContext = Pick<NamespacePageContext, "request" | "isCurrent" | "o
   installationAdmin?: boolean | null;
 };
 
+export const FIRST_REPOSITORY_DEPLOYMENT_WARNING =
+  "If you deploy without a repository policy, per-repository access requires a new Agent.";
+
 // An Installation without repository access (no Repo Driver selected, or draft-only discovery).
 const REPOSITORY_ACCESS_NOT_CONFIGURED =
   "This Installation has no repository access, so this Agent cannot use repositories.";
@@ -1405,6 +1408,12 @@ export function createRepositoryFields(
   return {
     section,
     scoped: hasPolicy,
+    hasUncheckedScopedAccess: () =>
+      scoped() &&
+      state.selected.size === 0 &&
+      state.discovery === "ready" &&
+      context.installationAdmin !== false &&
+      state.options.some(githubLimit),
     // An empty list retains the picker mode when a draft is rebuilt. Submission
     // requires a selection, since an explicit empty API policy would deny all.
     scopedGrants: () =>

@@ -82,7 +82,7 @@ OCE [checks the grants](lifecycle.md#save-and-deploy) before saving or deploying
 
 ### IAM
 
-Reuse Namespace `credential_source:create`, `credential_source:update` and `credential_source:delete`. Save and deploy additionally require `credential_source:operate` for caller and Agent principal. Policy readers need `credential_source:read` on the exact Source for details. Clearing and Stop need no Source permission.
+Creation requires `credential_source:create` on the Namespace collection. Replacement and deletion require `credential_source:update` and `credential_source:delete`, respectively, on that Source. Save and deploy additionally require `credential_source:operate` for caller and Agent principal. Policy readers need `credential_source:read` on the exact Source for details. Clearing and Stop need no Source permission.
 
 ### Database entities
 
