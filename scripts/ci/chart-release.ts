@@ -217,11 +217,13 @@ export async function publishChart(
     archive,
     runId,
     attempt,
+    releaseVersion,
     verify,
   }: {
     archive: string;
     runId: string | undefined;
     attempt: string | undefined;
+    releaseVersion?: string;
     verify: () => Promise<void>;
   },
 ) {
@@ -253,6 +255,7 @@ export async function publishChart(
     { runId, attempt },
     `${images[0].destination}@${images[0].digest}`,
     `${images[1].destination}@${images[1].digest}`,
+    releaseVersion,
   );
   const temporary = await mkdtemp(join(tmpdir(), "enterprise-chart-release-"));
   const authfile = join(temporary, "auth.json");

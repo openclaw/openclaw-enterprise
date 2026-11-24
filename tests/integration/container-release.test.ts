@@ -126,6 +126,47 @@ test("chart release binds one exact image publication to the OCE version", () =>
   );
 });
 
+test("chart recovery reads the approved version from Git after main advances", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-chart-version-");
+  const chartPath = "deploy/helm/openclaw-enterprise/Chart.yaml";
+  await mkdir(join(directory, "deploy/helm/openclaw-enterprise"), { recursive: true });
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", directory, ...args], { encoding: "utf8" }).trim();
+  git("init", "--quiet", "--template=");
+  async function commitVersion(version: string, appVersion: string) {
+    await writeFile(join(directory, "package.json"), JSON.stringify({ version }));
+    await writeFile(
+      join(directory, chartPath),
+      `version: ${version}\nappVersion: "${appVersion}"\n`,
+    );
+    git("add", "package.json", chartPath);
+    git(
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "commit",
+      "--quiet",
+      "-m",
+      "Set chart version",
+    );
+    return git("rev-parse", "HEAD");
+  }
+  const source = await commitVersion("1.2.3", "1.2.3");
+  const head = await commitVersion("2.0.0", "2.0.1");
+  setEnvironment(t, { GIT_DIR: join(directory, ".git") });
+  // The newer checkout cannot qualify its own mismatched chart. The original
+  // release data remains valid without checking out its code.
+  assert.equal(await readChartVersion(source), "1.2.3");
+  await assert.rejects(readChartVersion(head), /Chart appVersion must match/);
+  await assert.rejects(readChartVersion("HEAD"), /full commit SHA/);
+  assert.equal(git("rev-parse", "HEAD"), head);
+});
+
 test("staged release chart records both verified digests and defaults to the controller digest", async (t) => {
   const helm = process.env.OCC_HELM_BIN ?? "helm";
   try {

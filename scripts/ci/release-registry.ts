@@ -160,7 +160,13 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
   assert.equal(env.GITHUB_RUN_ATTEMPT, "1", "Start a fresh release or recovery dispatch.");
   const sourceSha = env.SOURCE_SHA;
   match(sourceSha, /^[a-f0-9]{40}$/);
-  assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(), sourceSha);
+  const workflowSha = env.GITHUB_WORKFLOW_SHA;
+  match(workflowSha, /^[a-f0-9]{40}$/);
+  assert.equal(
+    execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    workflowSha,
+  );
+  execFileSync("git", ["merge-base", "--is-ancestor", sourceSha, workflowSha]);
   for (const key of ["PRODUCER_RUN_ID", "CI_RUN_ID", "CI_ATTEMPT"]) {
     match(env[key], integerPattern);
   }
@@ -200,7 +206,7 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
     nodeBaseImage: env.NODE_BASE_IMAGE,
   };
   const prepared = await json(join(directory, "chart/chart-preparation.json"));
-  const version = await readChartVersion();
+  const version = await readChartVersion(sourceSha);
   const archive = join(directory, "chart", `openclaw-enterprise-${version}.tgz`);
   const targets = images.map((image) => {
     const destination = env[`GHCR_${image.toUpperCase()}_IMAGE`];
@@ -222,6 +228,7 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
     producer,
     `${controller.destination}@${controller.digest}`,
     `${runtime.destination}@${runtime.digest}`,
+    version,
   );
   const alias = publicationAlias(env.IMAGE_TAG);
   const temporary = await mkdtemp(join(tmpdir(), "oce-release-registry-"));
@@ -285,6 +292,7 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
         archive,
         runId: producer.runId,
         attempt: producer.attempt,
+        releaseVersion: version,
         verify,
       });
       return;

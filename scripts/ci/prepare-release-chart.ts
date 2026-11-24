@@ -21,14 +21,26 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 
 type PreparedChartImage = { image: Image; destination: string; digest: string };
 
-export async function readChartVersion() {
-  const pkg: unknown = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+export async function readChartVersion(sourceSha?: string) {
+  if (sourceSha !== undefined) {
+    assert.match(sourceSha, shaPattern, "Chart source must be a full commit SHA.");
+  }
+  async function contents(path: string) {
+    if (sourceSha === undefined) {
+      return readFile(join(root, path), "utf8");
+    }
+    return execFileSync("git", ["show", "--no-textconv", `${sourceSha}:${path}`], {
+      cwd: root,
+      encoding: "utf8",
+    });
+  }
+  const pkg: unknown = JSON.parse(await contents("package.json"));
   const version = field(pkg, "version");
   assert.ok(
     typeof version === "string" && isReleaseVersion(version),
     "Expected an OCE release version.",
   );
-  const chart = await readFile(join(root, "deploy/helm/openclaw-enterprise/Chart.yaml"), "utf8");
+  const chart = await contents("deploy/helm/openclaw-enterprise/Chart.yaml");
   assert.equal(
     chart.match(/^version: (.+)$/mu)?.[1],
     version,
@@ -119,8 +131,9 @@ export async function verifyPreparedReleaseChart(
   producer: { runId: string | undefined; attempt: string | undefined },
   controller: string,
   runtime: string,
+  releaseVersion?: string,
 ) {
-  const version = await readChartVersion();
+  const version = releaseVersion ?? (await readChartVersion());
   const chartSha256 = await fileDigest(archive);
   const expected = chartPreparationReceipt(
     env,
