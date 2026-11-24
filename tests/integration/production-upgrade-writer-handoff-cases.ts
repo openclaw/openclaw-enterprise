@@ -763,6 +763,63 @@ exec "$real_python" "$@"
     assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "migration"]);
   });
 
+  test("preparation refuses active extra workloads that would block writer shutdown", async (t) => {
+    function writer(
+      component: string,
+      { kind = "Deployment", replicas = 1, namespace = "system", release = "oce" } = {},
+    ) {
+      return {
+        kind,
+        metadata: { namespace, name: "extra" },
+        spec: {
+          replicas,
+          template: {
+            metadata: {
+              labels: {
+                "app.kubernetes.io/name": "openclaw-enterprise",
+                "app.kubernetes.io/instance": release,
+                "app.kubernetes.io/component": component,
+              },
+            },
+          },
+        },
+      };
+    }
+    for (const workload of [writer("api"), writer("worker", { kind: "StatefulSet" })]) {
+      const f = await fixture(t);
+      await writeFile(
+        join(f.directory, "state.json"),
+        JSON.stringify({
+          ...(await f.state()),
+          workloadInventory: [workload],
+        }),
+      );
+      await assert.rejects(f.run(), /additional active (api|worker) Deployment or StatefulSet/);
+      const state = await f.state();
+      assert.deepEqual([state.api, state.worker], [1, 1]);
+      assert.deepEqual(await f.events(), []);
+      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+    }
+    const f = await fixture(t);
+    const own = writer("api");
+    own.metadata.name = "openclaw-enterprise-api";
+    await writeFile(
+      join(f.directory, "state.json"),
+      JSON.stringify({
+        ...(await f.state()),
+        workloadInventory: [
+          own,
+          writer("worker", { replicas: 0 }),
+          writer("api", { namespace: "elsewhere" }),
+          writer("api", { release: "other" }),
+          writer("collector"),
+        ],
+      }),
+    );
+    await f.run();
+    assert.ok((await f.events()).includes("migration"));
+  });
+
   test("quiescence validates both writers before stopping either and resumes after correction", async (t) => {
     const f = await fixture(t);
     // A preexisting worker configuration must not cause an avoidable API outage.
@@ -1614,10 +1671,14 @@ exec "$real_python" "$@"
       );
       assert.equal(existsSync(join(f.evidence, ".upgrade-lock")), false);
       const lines = failure.stderr.trimEnd().split("\n");
-      assert.deepEqual(lines.slice(-3, -1), [
+      assert.deepEqual(lines.slice(-4, -2), [
         "upgrade-production-images: OpenClaw Doctor failed (exit 1) in Agent agt_a's gateway.",
         "upgrade-production-images: Agent agt_a's gateway container did not restart after it became Ready.",
       ]);
+      assert.match(
+        lines.at(-2) ?? "",
+        /^Upgrade: Starting OpenClaw Doctor checks for Agent 2 of 2\./u,
+      );
       const lastLine = lines.at(-1);
       assert.ok(lastLine);
       assert.match(

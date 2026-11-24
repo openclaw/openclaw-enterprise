@@ -84,16 +84,14 @@ graph TD
 
 `internal/occcli/installation_upgrade.go:installationUpgradeCommand` calls
 `scripts/upgrade-production:main`. `report_status` compares local evidence.
-Plan validates profile, images and checkout HEAD. `profile_input` binds the
-profile and receipt to one directory. `published_image_pair` checks GHCR
-packages, digests, source, tags and run attempts. Operators authenticate the
-receipt. Resume and migration apply recover journal-bound digests. The adapter previews the target and CA. Apply and resume recheck approval
-and bound inputs before dispatch.
+Plan checks profile, images and HEAD. `profile_input` requires colocated profile and receipt.
+`published_image_pair` checks GHCR packages, digests, source, tags and attempts.
+Operators authenticate receipts. Resume and migration apply recover journaled
+digests. Preview shows target and CA. Apply and resume recheck approval and inputs.
 
-Both entrypoints refuse active kubectl preferences. Exec plugins require an
-approved environment that already disables preferences. Private snapshots
-refuse built-in `auth-provider` entries. Profiled recovery rechecks the target,
-CA and parameters under lock.
+Both entrypoints refuse active kubectl preferences. Approved exec plugin environments
+must already disable preferences. Private snapshots reject built-in `auth-provider`.
+Profiled recovery rechecks target, CA and parameters under lock.
 
 Before `scripts/upgrade-production-images:prepare_upgrade`, the helper refuses
 other Helm stores, [endpoint and TLS overrides](../guides/deploy/production-upgrade.md),
@@ -111,13 +109,13 @@ Projections allow Slack directory proxy, curated Codex PluginDriver selection
 and one registration wrapper. Baseline excludes absent `agentNativeAdmin.sharedCookieDomain`. Immutable
 switches require string keys.
 
-`read_restart_inventory` requires a complete, authorized inventory with no
-nonterminal deployments. Running revisions require saved Harness objects and an accepted
+Preparation rejects extra active Deployments or StatefulSets matching the drain selector.
+
+`read_restart_inventory` requires complete authorized inventory without nonterminal deployments. Running revisions require saved Harness objects and an accepted
 [restart assessment](../reference/repository-credentials/worker-replacement.md).
-Standalone preflight records original-worker requirements. Unknown assessments
-block rehearsal. Runtime upgrades record replacements and check draft images,
-sizes, baseline versions and Namespace readiness. Stopped or deleting Agents
-are excluded. Pending repository cleanup is allowed.
+Standalone preflight records original-worker requirements. Unknown assessments block rehearsal.
+Runtime upgrades record replacements and check draft images, sizes, baseline versions
+and Namespace readiness. Exclude stopped or deleting Agents. Allow pending repository cleanup.
 
 `deploymentInventorySnapshot` reads work in one State snapshot and refuses
 missing or mismatched work. Credential withdrawal is separate.
@@ -370,6 +368,8 @@ requires no Agents or Secrets.
 ## Changelog
 
 - 2026-11-24 19:54: Clarify writer previews. (authoring-run/46f01900-6b22-479c-9e19-3ea5a6e7eaaa - 071f8b1ec12648ce2d755e86323cb958a3c005f5)
+
+- 2026-11-24 11:03: Detect extra writers. (authoring-run/65f2170e-577d-4f04-84c2-0403229d45f7 - acd247bba5b03788840efc5f0d1dda7b7fe0c63d)
 
 - 2026-11-24 03:54: Preserve writer stop evidence. (authoring-run/1c3ad59b-d58f-4d86-bdd9-767c3a9547d4 - 7f069277c2659c8f2fc5f46b702e6062a852c3b0)
 
