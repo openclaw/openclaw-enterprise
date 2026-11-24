@@ -1515,12 +1515,40 @@ export class RepositorySourceCopiesUnretiredError extends ResourceStateConflictE
   }
 }
 
+/**
+ * A repository token Source keeps its value while a native Git Provider write of it has an
+ * unknown outcome: the response was lost, so the write may still take effect. The Worker
+ * recorded the write before it sent it and settles it only once it reads the Provider back
+ * retired. Replacement and deletion are refused meanwhile, so a late write can neither reorder
+ * against a new value nor outlive the Source.
+ */
+export class RepositorySourceWriteUnreconciledError extends ResourceStateConflictError {
+  readonly copies: readonly Readonly<UnretiredRepositorySourceCopy>[];
+  /** `named` is a copy whose Agent the caller may read; never a Provider name or a value. */
+  constructor(
+    copies: readonly Readonly<UnretiredRepositorySourceCopy>[],
+    named?: Readonly<UnretiredRepositorySourceCopy>,
+  ) {
+    const count = copies.length;
+    const one = count === 1;
+    super(
+      named
+        ? `${count} Provider ${one ? "write is" : "writes are"} unreconciled (unreconciled_repository_source_write): ${named.agentId}/${named.revisionId}${one ? "" : ` +${count - 1}`}. Stop or redeploy ${one ? "its Agent" : "their Agents"}; the Worker then confirms the Provider retired.`
+        : `${count} native Git Provider ${one ? "write" : "writes"} of this credential source ${one ? "has" : "have"} an unknown outcome (unreconciled_repository_source_write). Stop or redeploy each Agent that uses it; the Worker then confirms its Provider retired.`,
+    );
+    this.copies = copies;
+    this.name = "RepositorySourceWriteUnreconciledError";
+  }
+}
+
 /** An unretired repository Source copy as Source deletion reports it; never a Provider name. */
 export interface UnretiredRepositorySourceCopy {
   readonly agentId: string;
   readonly revisionId: string;
   /** Why the Worker's last attempt kept it: `provider_present` or `gateway_unavailable`. */
   readonly retirementBlocked?: string;
+  /** A Provider write of the Source for this copy has an unknown outcome. */
+  readonly unreconciledWrite?: true;
 }
 
 /**

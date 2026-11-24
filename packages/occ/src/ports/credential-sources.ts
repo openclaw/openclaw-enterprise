@@ -124,7 +124,15 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
   findUnretiredRepositorySourceCopies(
     namespaceId: string,
     credentialSourceId: string,
-  ): Promise<readonly Readonly<RepositorySourceCopy & { readonly retirementBlocked?: string }>[]>;
+  ): Promise<
+    readonly Readonly<
+      RepositorySourceCopy & {
+        readonly retirementBlocked?: string;
+        /** The Worker recorded a Provider write of the Source whose outcome is unknown. */
+        readonly unreconciledWrite?: true;
+      }
+    >[]
+  >;
   /** Records a pending withdrawal, or returns the existing one for the same revision and source. */
   requestCredentialWithdrawal(
     withdrawal: CredentialWithdrawal,

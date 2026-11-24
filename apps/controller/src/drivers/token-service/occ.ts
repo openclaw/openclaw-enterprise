@@ -21,6 +21,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   ResourceStateConflictError,
+  RepositorySourceWriteUnreconciledError,
   CredentialDeliveryFailedError,
   ScopeViolationError,
   TokenServiceSourceInputError,
@@ -237,6 +238,16 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       }
       if (update.secret) {
         checkRepositoryTokenMaterial(found, update.secret);
+        // Read under the Source row this transaction holds exclusively. The Worker records a
+        // Provider write of the value before it sends it, and settles a confirmed one, while it
+        // holds the same row shared; so a write recorded after this read cannot exist, and an
+        // ordinary write in flight is settled before this transaction gets the row.
+        const unreconciled = (
+          await credentialSources.findUnretiredRepositorySourceCopies(ref.namespaceId, ref.id)
+        ).filter(({ unreconciledWrite }) => unreconciledWrite);
+        if (unreconciled.length > 0) {
+          throw new RepositorySourceWriteUnreconciledError(unreconciled);
+        }
         const stored = encodeCredential(update.secret);
         await withComputeAbortSignal(signal, () =>
           this.store.update(this.storageRef(ref), stored.stored),

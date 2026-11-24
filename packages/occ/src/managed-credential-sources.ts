@@ -45,6 +45,7 @@ import {
   DriverSelectionError,
   NamespaceNotReadyError,
   RepositorySourceCopiesUnretiredError,
+  RepositorySourceWriteUnreconciledError,
   ResourceStateConflictError,
   RetryLaterError,
   ScopeViolationError,
@@ -533,7 +534,9 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       } catch {
         // Preserve the original failure when audit storage is unavailable.
       }
-      throw error;
+      throw error instanceof RepositorySourceWriteUnreconciledError
+        ? await namedUnretiredCopies(principalId, ref.namespaceId, error)
+        : error;
     }
   }
 
@@ -542,17 +545,19 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
    * transaction ended so no authorization call waits under its row locks. A copy whose Agent the
    * caller cannot read (or an IAM outage) is only counted.
    */
-  async function namedUnretiredCopies(
-    principalId: string,
-    namespaceId: string,
-    error: RepositorySourceCopiesUnretiredError,
-  ): Promise<RepositorySourceCopiesUnretiredError> {
+  async function namedUnretiredCopies<
+    E extends RepositorySourceCopiesUnretiredError | RepositorySourceWriteUnreconciledError,
+  >(principalId: string, namespaceId: string, error: E): Promise<E> {
     for (const copy of error.copies.slice(0, 3)) {
       const readable = await dependencies.authority
         .canRead(principalId, { kind: "agent", id: copy.agentId, namespaceId })
         .catch(() => false);
       if (readable) {
-        return new RepositorySourceCopiesUnretiredError(error.copies, copy);
+        return (
+          error instanceof RepositorySourceWriteUnreconciledError
+            ? new RepositorySourceWriteUnreconciledError(error.copies, copy)
+            : new RepositorySourceCopiesUnretiredError(error.copies, copy)
+        ) as E;
       }
     }
     return error;
@@ -629,6 +634,12 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           locked.id,
           found.id,
         );
+        // A Provider write the Worker recorded before sending and could not confirm may still
+        // take effect, so it is named first; the Worker records only while it holds this row.
+        const unreconciled = unretired.filter(({ unreconciledWrite }) => unreconciledWrite);
+        if (unreconciled.length > 0) {
+          throw new RepositorySourceWriteUnreconciledError(unreconciled);
+        }
         if (unretired.length > 0) {
           throw new RepositorySourceCopiesUnretiredError(unretired);
         }
@@ -672,7 +683,8 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         };
       })
       .catch(async (error: unknown) => {
-        throw error instanceof RepositorySourceCopiesUnretiredError
+        throw error instanceof RepositorySourceCopiesUnretiredError ||
+          error instanceof RepositorySourceWriteUnreconciledError
           ? await namedUnretiredCopies(principalId, namespaceId, error)
           : error;
       });

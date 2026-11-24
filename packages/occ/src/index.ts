@@ -164,6 +164,7 @@ export {
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   RepositorySourceCopiesUnretiredError,
+  RepositorySourceWriteUnreconciledError,
   CredentialWithdrawalNotFoundError,
   CredentialWithdrawalRefusedError,
   GatewayPasswordValueError,
