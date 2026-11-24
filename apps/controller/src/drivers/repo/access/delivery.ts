@@ -26,9 +26,10 @@ export function repositoryGitRestOperations(
     return {
       repository,
       readIssues: rest?.readIssues === true,
-      createIssues: write && rest?.createIssues === true,
+      createIssues: write && rest?.readIssues === true && rest.createIssues === true,
       readPullRequests: rest?.readPullRequests === true,
-      createPullRequests: write && rest?.createPullRequests === true,
+      createPullRequests:
+        write && rest?.readPullRequests === true && rest.createPullRequests === true,
     };
   });
 }

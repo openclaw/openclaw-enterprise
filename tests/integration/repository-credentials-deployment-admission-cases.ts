@@ -1376,7 +1376,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     }
   });
 
-  test("A repository API action filter requires a saved network policy before deployment", async (t) => {
+  test("A repository API limit requires a saved network policy before deployment", async (t) => {
     selectFixtureRelease(t);
     const { f, writeGrant, fixtureCompute, createSelectedAgent } = await scopedFixture(t, {
       nativeGit: "v1",
@@ -1392,7 +1392,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
                   namespaces: repo.namespaces.map((policy) => ({
                     ...policy,
                     permissions: { ...policy.permissions, issues: "write", pull_requests: "write" },
-                    apiActions: { deny: ["issues:create"] as const },
+                    apiLimits: { default: "none" as const },
                   })),
                 }
               : repo,
