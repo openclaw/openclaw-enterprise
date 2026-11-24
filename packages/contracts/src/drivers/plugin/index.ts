@@ -37,8 +37,9 @@ export interface PluginDriver extends Driver {
   readonly describeDeployment?: PluginDeploymentContract["describeDeployment"];
   /**
    * Matches only source metadata authorized by OCC. Template versions are keyed by Source ID;
-   * OCC verifies pinned OAuth consent, including issuer, client and MCP resource, before passing
-   * the current destination ceiling. The Driver never receives credential values.
+   * OCC checks the original consent issuer and MCP resource before passing the current approved
+   * destination ceiling. Source enrollment owns OAuth client validation. The Driver receives no
+   * credential values.
    */
   readonly credentials?: {
     choices(
