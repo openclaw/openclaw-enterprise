@@ -8,226 +8,131 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Check published controller and runtime images with trusted startup tests before
-considering a staging installation. The default mode checks container startup on
-amd64. An optional mode stages a controller pair for a sign-in rehearsal.
-Set `rehearse_signin` explicitly to install a prepared pair on a fresh, disposable runner. No mode promotes a release. See the [release guides](README.md)
-for publication and recovery procedures.
+Choose the evidence you need from **Staging Release Qualification**:
+
+| Mode                         | Inputs beyond the candidate publication    | Success evidence                                       | Limit                                                          |
+| ---------------------------- | ------------------------------------------ | ------------------------------------------------------ | -------------------------------------------------------------- |
+| Startup                      | None                                       | `staging-qualification.json`                           | Controller/runtime startup on Linux amd64; no install.         |
+| Controller pair              | Complete previous publication tuple        | `staging-pair-images.json`, `staging-signin-plan.json` | Input preparation only; previous runtime stays fixed.          |
+| Disposable sign-in rehearsal | Previous tuple and `rehearse_signin: true` | `staging-signin-qualification.json`                    | Sequential installed controller replacement in disposable k3d. |
+
+[Run the workflow](#execution) with the candidate source SHA, publication run ID,
+and exact attempt. No mode promotes a release or proves staging or production
+readiness. If a run fails, inspect its retained evidence and correct the cause
+before a new dispatch.
 
 <a id="when-it-runs"></a>
 
 ## Trigger
 
-Manual dispatch from protected `main` in `openclaw/openclaw-enterprise`. Runs for
-the same configured installation share a concurrency group. The workflow is not
-a PR merge gate.
-
-## Scenarios
-
-The runner checks the published controller and runtime images using the
-`images-packaging` and `images-runtime-startup` files. It also validates the
-publication evidence and image identity before executing those startup checks.
-
-### Source and credential constraints
-
-The [workflow command](../../scripts/ci/staging-qualification.ts) checks the
-trusted checkout against the workflow SHA, protected same-repository `main`,
-local workflow ancestry in `main`, and release ancestry in the workflow commit.
-It requires the exact successful Enterprise Containers run and attempt, a
-successful image publication job for that source, and one unexpired publication
-artifact. Dispatch IDs must be positive safe decimal integers. Source IDs must
-be full lowercase Git SHAs.
-
-The named artifact download retains an archive. Before reading it, the command
-repeats producer checks and compares its size and SHA-256 with GitHub metadata.
-The archive directory must contain exactly one regular file, at most 1 MiB.
-The command passes the verified archive bytes to Python 3's standard ZIP decoder
-on the runner. It reads only `publication.json`, at most 64 KiB, without
-extracting files or passing a GitHub token. The receipt must match a successful
-same-repository `main` push returned by the CI workflow's source-SHA query.
-Only service-derived run IDs and attempts select the exact CI run and job checks.
-The script does not write Actions outputs.
-
-Only the workflow commit is checked out. In the default startup job, setup, dependencies, preparation,
-tests, manifests, and cleanup come from that checkout. Historical Git objects
-supply only the ordinary `deploy/runtime/Dockerfile` blob, at most 64 KiB, as
-inert data. The current 0.164.0 profile requires the current recipe. The reviewed
-0.163.0-alpha.2 profile requires source
-`54bfa7fc1b99e362450beb5f9211e164991fa7b4` and its pinned recipe hash.
-Other recipes, including the October 9 0.160.0 profile, fail before pulls.
-The receipt, recipe, and trusted packaging manifest must agree on the Node base.
-
-After checking GitHub metadata, the command removes GitHub tokens before image
-operations. Git and ZIP decoder subprocesses never receive those tokens. A private
-Docker config supplies GHCR authentication only for digest pulls on the
-runner's local Docker socket. The command removes that config before inspection
-or startup. A failed pull reports the reference and access guidance without
-printing subprocess output.
-
-The command verifies each pulled digest, Linux amd64 platform, and source label,
-then passes the exact local image IDs to trusted tests. It rechecks source labels
-before smoke preparation. The selected profile's Codex version controls the real
-seccomp probe and explicit runtime-suite expectations; normal CI retains 0.164.0
-assertions. The runner records the workflow SHA as its test source, while the
-pull receipt records the historical image source separately. No historical host
-code is built or executed. Historical images receive only the existing isolated
-fixture mounts, not the runner workspace, Docker socket, or Actions credentials.
+Dispatch from protected `main` in `openclaw/openclaw-enterprise`. Runs for the
+same configured Installation share a concurrency group; later dispatches do not
+cancel active runs. This is not a PR merge gate.
 
 <a id="run-it"></a>
 
 ## Execution
 
-Run [Staging Release Qualification](../../.github/workflows/staging-qualification.yml)
-with the trusted `main` workflow. Supply `installation`, the full `source_sha`,
-`publication_run_id`, and its exact `publication_attempt`. The publication must be
-a successful manual Enterprise Containers run for that source on `main`.
-The [Enterprise Containers publisher](containers.md#source-visibility)
-issues receipts only for public GitHub Container Registry (GHCR) packages.
-Private and internal packages are ineligible even if the package names match or
-the qualification token has read access.
-Active qualification runs are not cancelled by a later dispatch.
+1. Configure the main-only `staging-qualification` environment with
+   `STAGING_INSTALLATION`, `GHCR_CONTROLLER_IMAGE`, and `GHCR_RUNTIME_IMAGE`.
+   The Installation ID is 1–63 lowercase letters, digits, or hyphens, starting
+   with a letter. Image names are explicit `ghcr.io/openclaw/...` repositories
+   without tags or digests.
+2. Dispatch [Staging Release Qualification](../../.github/workflows/staging-qualification.yml)
+   on `main` with `installation` (equal to the configured ID), full lowercase
+   `source_sha`, `publication_run_id`, and `publication_attempt`.
+   Use a successful ordinary Enterprise Containers publication on `main` with
+   its unexpired receipt, successful image job, and exact successful source CI.
+   Private/internal packages and preparation-only artifacts are ineligible.
+3. Select a mode from the table. Require its success evidence and successful
+   cleanup. An early failure does not produce a qualification receipt.
 
-Configure the `staging-qualification` environment with `STAGING_INSTALLATION`,
-`GHCR_CONTROLLER_IMAGE`, and `GHCR_RUNTIME_IMAGE`.
-The installation input must equal the configured ID. Use an ID of 1–63 lowercase
-letters, digits, or hyphens, starting with a letter. GHCR values are explicit
-`ghcr.io/openclaw/` repositories without tags or digests. Restrict this environment
-to `main`. The qualification job authenticates the two image pulls with its
-workflow token, which has `packages: read`. The job uses a disposable runner-local
-k3d fixture and needs no staging cluster configuration or provider credentials.
+## Scenarios
 
-For local command coverage, run:
+Startup runs trusted `images-packaging` and `images-runtime-startup` checks
+against the pulled controller and runtime. Missing, failed, or skipped cases
+fail qualification.
 
-```sh
-node --test tests/integration/staging-qualification.test.ts
-node scripts/ci/run-tests.ts audit
-```
+### Source and credential constraints
 
-The command test uses local Git history and independent GitHub and Docker
-transport fixtures. It checks digest handoff, credential isolation, hostile
-Actions output paths, archive tampering, rejection before pulls, and a real
-preparer failure before any suite. Hosted token permissions, registry pulls,
-container startup, and live installations need separate proof.
+The trusted workflow validates source ancestry, producer run/attempt, CI,
+artifact metadata and hash, publication receipt, image digests, platform, source
+labels, and approved Node base before startup. Only workflow source executes on
+the host; historical source supplies inert recipe data. Supported runtime recipes
+are the current Codex 0.164.0 profile and reviewed 0.163.0-alpha.2 source
+`54bfa7fc1b99e362450beb5f9211e164991fa7b4` with its pinned recipe hash.
+Other recipes fail before pulls. The receipt, recipe, and trusted packaging
+manifest must agree on the Node base. Dispatch IDs must be positive safe decimal
+integers. The artifact archive must contain exactly one regular file of at most
+1 MiB; the decoder reads only `publication.json`, limited to 64 KiB. It does
+not extract files or receive GitHub tokens.
+
+The runner records the workflow SHA as the test source and the historical image
+source separately in the pull receipt. It verifies each pulled Linux amd64 digest
+and source label, then passes the exact local image IDs to trusted startup tests.
+
+The job uses `packages: read` for digest pulls, removes GitHub tokens before
+image operations, and removes its private Docker config before inspection.
+Historical images receive isolated fixture mounts, not the runner workspace,
+Docker socket, or Actions credentials. No staging cluster or provider credentials
+are needed.
 
 ## Prepare a controller pair
 
-Supply all three optional inputs: `previous_source_sha`,
-`previous_publication_run_id`, and `previous_publication_attempt`. The existing
-source and publication inputs identify the candidate. A partial previous tuple
-fails validation. With all three omitted and `rehearse_signin` off, the original startup job runs.
+Add all three inputs: `previous_source_sha`,
+`previous_publication_run_id`, and `previous_publication_attempt`. A partial
+tuple fails. The candidate and previous publications must be distinct, ordered
+`main` commits with successful exact CI and retained receipts. Pair seals must
+include platform manifest and config digests. The job pulls two controllers and
+the previous runtime, checks their identities, and refuses a Docker store without
+platform descriptors.
 
-The pair job validates two ordered main publications and their underlying CI
-runs and verifies each downloaded receipt before using its registry references.
-Before pulling images, it checks the controller build inputs and migration tree
-of each release against the reviewed sign-in profile. The commits must differ.
-Changes outside those inputs are allowed.
+The pair must match a reviewed controller reader profile and migration tree.
+The current v3 profile is
+`7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb`; both releases must match its
+production-input projection. A changed projection requires a new review.
+The qualification workflow's runtime recipe, Node base, chart, and harness must
+also remain compatible. Publish the preparatory release before protocol
+activation: Enterprise Containers cannot later publish an unselected historical
+commit. Choose a dedicated image alias unless updating `latest` is intended.
+Run while both 30-day receipts remain available.
 
-If the inputs or migration tree differ from the profile, review the changes and
-test expectations before approving a matching profile. For a compatible pair,
-the job pulls three Linux/amd64 images. It uses both controllers and keeps the
-**previous runtime** fixed. Each selected image needs a publication seal
-with its platform manifest and config digests. An older seal without these
-fields can still be used for the original single-release check. A source tag,
-a local image, or a preparation-only artifact cannot substitute for a
-publication receipt.
-
-Using the local Docker image store, the job checks the root, platform manifest,
-config, and revision in the exported config against the publication. It rejects
-a store without platform descriptors. The existing staging environment and
-read-only package permissions apply. No model or cluster credentials are needed.
-
-After preparation succeeds, the job uploads `staging-pair-images.json` and
-`staging-signin-plan.json`. These files remain available if a later installed
-rehearsal fails. The planner repeats the source comparison and binds the observed
-images to the intended sign-in test: the source inputs must match a reviewed
-controller reader profile and both releases must share its migration tree. The current profile is the v3
-reader and catalog at `7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb`.
-Both releases must match its production-input projection. A change to those
-inputs requires a new review of the reader behavior and test expectations.
-This admits only releases with that exact projection, not every v3 controller.
-The publisher takes its source from the then-current `main` workflow commit.
-Publish two distinct, ordered main revisions with the same intended production-input
-projection, each using its own successful exact-source CI. Then review the immutable
-pair and bind the matching profile before installed qualification. The profile update
-may land after both publications; it creates no images or publication receipts.
-A controller change between publications requires a newly reviewed compatible pair.
-
-A later qualification workflow can use published ancestors even if its own controller
-inputs have changed. For the current Codex 0.164.0 profile, its runtime Dockerfile must
-still match the published recipe byte for byte, and its CI Node base pin must match
-that recipe. Its chart and test harness must also remain compatible with the pair.
-
-These artifacts establish **input preparation only**. Preparing a pair does not start
-the controllers, exercise a callback or rollback, measure availability, or
-write the single-release startup qualification receipt. Publish and retain the
-preparatory release before merging a protocol activation when both generations
-must be tested: a later dispatch of Enterprise Containers cannot select an
-unpublished historical main revision. For a rehearsal publication, set
-`publish: true` and choose a dedicated `image_tag` unless you intend to update
-`latest` for both images. Run pair preparation while both publication receipts
-are available; the publisher retains them for 30 days.
+The two pair artifacts survive a later rehearsal failure. They prove preparation,
+not startup, callback behavior, rollback, or availability.
 
 ## Rehearse installed sign-in
 
-With both publication tuples supplied, select `rehearse_signin` to run the installed
-case after preparation on the same Linux/amd64 runner. Leaving it off keeps the
-preparation-only path. The job creates one k3d server with its own database and
-synthetic HTTPS identity provider. The cluster is separate from the configured
-staging installation; no application, model or operator-cluster credentials are needed.
+With the pair inputs, set `rehearse_signin: true`. The job installs the pair on
+a disposable Linux/amd64 k3d runner with a local database and synthetic HTTPS
+identity provider. Both controller digests and the unchanged runtime digest must
+be reachable from the node. The job also checks the exact PostgreSQL and Node
+support images and builds its fixture CLI from the trusted workflow checkout.
+The two controllers share a populated database and one issuer. It needs no
+application, model, or operator-cluster credentials.
+For the reviewed v3 pair, it checks forward and return replacement, one-use
+collection, replay refusal, and expiry with positive lifetime at issuance.
+It does not establish the historical v2-to-v3 transition.
 
-Both controllers and the unchanged runtime must be reachable by their verified
-public digest from the node. The job also checks the exact PostgreSQL and Node
-support images. It builds the fixture CLI from the trusted workflow checkout.
-For the reviewed v3 pair, the job copies that checkout's chart and sets the
-worker probes to the command present in both historical images. The initial
-installation and the OIDC configuration upgrade use the same copy. The two
-image generations share a populated database and one issuer across replacements.
-
-For two compatible v3 releases, the case checks forward and return replacement
-with live, one-use collection and replay refusal. The job refuses unreviewed
-production inputs, a different migration catalog, and inconclusive expiry windows.
-Every receipt must be observed with positive remaining lifetime at issuance;
-an already-expired control cannot establish a later expiry rejection.
-Historical v2-to-v3 qualification remains unavailable: the old reader references
-are incompatible with the current runtime profile. This v3-to-v3 rehearsal does
-not establish that historical transition.
-
-Only a passing selected case, complete transition evidence, a normally exited
-runner with no surviving descendants, and confirmed cluster cleanup produce
-`staging-signin-qualification.json`. Missing or ambiguous ownership evidence
-blocks automatic cleanup. No raw identity-provider material, cluster config,
-or session data is uploaded. This verifies sequential controller replacement;
-it does not measure normal-ingress availability or qualify overlapping writers.
+A passing case, complete transition evidence, normal runner exit without surviving
+descendants, and confirmed cluster cleanup are required for the success receipt.
+Ambiguous ownership blocks automatic cleanup. No raw identity-provider material,
+cluster config, or session data is uploaded. The case does not measure ingress
+availability or qualify overlapping writers.
 
 ## Results and limits
 
-The single-release job selects the controller and runtime startup files from
-`images-packaging` and `images-runtime-startup`. Missing, failed, or skipped cases
-fail the lane. Preparation, tests, and cleanup must succeed before the command
-writes `staging-qualification.json`. The always-run upload explicitly retains
-`staging-pulled-images.json`, `staging-images-packaging.json`,
-`staging-images-runtime-startup.json`, and `staging-qualification.json` when
-produced. An early preparation failure retains the pull receipt without a
-success receipt or invented suite results.
-
-The single-release job provides **container startup qualification on amd64**,
-not an installation or rollout. The installed private Git test lane builds a
-separate repository-service image and a runtime with a test CA through
-[first-agent-smoke](../../scripts/ci/first-agent-smoke.ts); the two-image
-publication receipt cannot supply that installation unchanged. Full Integration
-and QA Advisory retain their existing installation and provider requirements.
-
-For an installed sign-in rehearsal, use `staging-signin-qualification.json` as
-the success receipt. If the selected case reports failure, the runner writes a
-private `case-result.json` with the case counts and the supervisor records its
-exit and descendant status. The case failure leaves qualification blocked.
-
-This workflow does not promote to production or prove staging readiness,
-installed Agent workflows, or arm64 behavior.
+Startup retains `staging-pulled-images.json`,
+`staging-images-packaging.json`, `staging-images-runtime-startup.json`, and
+`staging-qualification.json` when produced. Preparation, tests, and cleanup
+must all succeed before the success receipt is written. An early preparation
+failure can retain only the pull receipt; it cannot invent suite results. Rehearsal failures retain private `case-result.json` and supervisor
+status without qualification. Neither path proves installed Agent workflows,
+arm64 behavior, production readiness, or a rollout. See [CI](../testing/ci.md)
+for separate installation and provider coverage.
 
 ## Files
 
-- [Workflow](../../.github/workflows/staging-qualification.yml): trusted source, inputs, and artifact retention.
-- [Qualification command](../../scripts/ci/staging-qualification.ts): publication validation, image selection, and startup checks.
-- [Command tests](../../tests/integration/staging-qualification.test.ts): local Git and transport fixtures.
-- [Packaging manifest](../../scripts/ci/test-suites/images-packaging.json) and [startup manifest](../../scripts/ci/test-suites/images-runtime-startup.json): runtime test inventories.
+- [Workflow](../../.github/workflows/staging-qualification.yml)
+- [Qualification command](../../scripts/ci/staging-qualification.ts)
+- [Packaging](../../scripts/ci/test-suites/images-packaging.json) and
+  [startup](../../scripts/ci/test-suites/images-runtime-startup.json) manifests

@@ -887,6 +887,7 @@
             "hidden": [
               "guides/quickstart",
               "guides/deploy/production-installation-preparation",
+              "guides/deploy/production-upgrade-console",
               "guides/deploy/service-keys",
               "guides/deploy/oidc-upgrade",
               "guides/deploy/local-operations",

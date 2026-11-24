@@ -2,66 +2,86 @@
 
 ## Overview
 
-Set up GitHub Actions, registry destinations, and native builders before
-publishing containers, Helm charts, or OCC CLI binaries.
+Configure access once before you publish images, a Helm chart, or the OCC CLI.
+Repository writers can dispatch the release workflows. Protect `main`, require
+`CI Required`, and review workflow changes. Each publication needs the entire
+successful push CI run for its exact source commit, including First Agent Smoke.
+There is no second-person approval or approval-comment requirement.
+
+Create a separate `container-publish` environment with no required reviewers or
+wait timer, administrator bypass disabled, and exactly one deployment rule:
+branch `main`. The validator checks the name, bypass, and branch policy.
+Do not reuse integration environments.
 
 Set repository variables under **Settings → Secrets and variables → Actions**.
-Set environment variables and secrets under **Settings → Environments → container-publish**.
+Set publication environment variables and secrets under
+**Settings → Environments → container-publish**.
 
 ## Build settings
 
-| Repository variable         | Required/default                                                                | Purpose                                                                                                                                                                                        |
-| --------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CONTAINER_NODE_BASE_IMAGE` | Required for publication and native checks invoked by `CI`; no approved default | Full Node 24 `image@sha256:...` matching `scripts/ci/test-suites/images-packaging.json` and `deploy/runtime/Dockerfile`. Use repository or organization scope: preparation has no environment. |
-| `CONTAINER_AMD64_RUNNER`    | Optional; `blacksmith-16vcpu-ubuntu-2404`                                       | Native AMD64 image checks.                                                                                                                                                                     |
-| `CONTAINER_ARM64_RUNNER`    | Optional; `blacksmith-8vcpu-ubuntu-2404-arm`                                    | Native ARM64 image checks.                                                                                                                                                                     |
+| Repository variable         | Requirement                                                                                                                                                                                                                                                                        |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CONTAINER_NODE_BASE_IMAGE` | Required for Enterprise Containers preparation/publication and CI native checks. Full Node 24 `image@sha256:...` matching the packaging manifest and runtime Dockerfile; no approved default. Repository or organization scope is required because preparation has no environment. |
+| `CONTAINER_AMD64_RUNNER`    | Optional; defaults to `blacksmith-16vcpu-ubuntu-2404`.                                                                                                                                                                                                                             |
+| `CONTAINER_ARM64_RUNNER`    | Optional; defaults to `blacksmith-8vcpu-ubuntu-2404-arm`.                                                                                                                                                                                                                          |
 
-A standalone native image check uses the selected source's checked-in CI base.
-
-Runner overrides must select provisioned Linux runners with the matching
-architecture, at least four CPUs, 12 GiB RAM, and enough disk for the build.
-The override takes precedence for both images.
-
-Runtime smoke uses fresh native runners with the same runner overrides, after
-verifying the retained OCI build. Both construction and smoke must succeed; an
-intermediate build artifact is not a qualified release image.
-
-The [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) builds
-controller/runtime caches without provider secrets. GitHub supplies its cache
-credentials; it does not publish container images.
+Runner overrides must select native Linux runners of the correct architecture
+with at least four CPUs, 12 GiB RAM, and sufficient disk. Runtime smoke uses a
+fresh native runner with the same override. A standalone native check uses the
+selected source's checked-in CI base. The [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml)
+does not publish images.
 
 ## Publication configuration
 
-Protect `main`, require `CI Required` for merge, and review workflow changes.
-The standalone image and CLI workflows require successful push CI for the
-release commit. **Release OCE** qualifies the selected commit through Full
-Integration and requires the dispatcher's approval through
-[`integration-main-approval`](../testing/ci/configuration.md#environments).
-Keep provider credentials in the integration environments.
+| Setting                                                 | Scope and use                                                                                                                                                          |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GHCR_CONTROLLER_IMAGE`, `GHCR_RUNTIME_IMAGE`           | Environment variables; distinct full `ghcr.io/openclaw/...` image names without tags or digests. Required for bootstrap, publication, recovery, and chart publication. |
+| `DOCKERHUB_CONTROLLER_IMAGE`, `DOCKERHUB_RUNTIME_IMAGE` | Environment variables; distinct, pre-existing private `docker.io/<namespace>/<repository>` destinations. Repository creation needs separate authorization.             |
+| `DOCKERHUB_USERNAME`                                    | Environment secret; account identifier, or organization name for an organization access token.                                                                         |
+| `DOCKERHUB_TOKEN`                                       | Environment secret; scoped PAT or organization access token with read/write access only to authorized destinations.                                                    |
 
-Create a separate `container-publish` environment: no required reviewers or wait
-timer, administrator bypass disabled, and exactly one deployment rule, branch
-`main`. The validator enforces the name, bypass, and branch policy, not reviewer
-or timer settings. Do not reuse integration environments.
+GHCR publication uses the short-lived workflow token with `packages: write`;
+no personal access token is needed. Promotion uses `packages: read` and exposes
+Docker Hub credentials only to transfer. No-push preparation has no environment
+or registry credentials, but its uploaded images are available to repository
+readers.
 
-| Environment setting                                               | Required for                                             | Value                                                                                                                                             |
-| ----------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Variables `GHCR_CONTROLLER_IMAGE`, `GHCR_RUNTIME_IMAGE`           | Bootstrap, image publication/recovery, chart publication | Distinct full `ghcr.io/openclaw/...` names without tags or digests.                                                                               |
-| Variables `DOCKERHUB_CONTROLLER_IMAGE`, `DOCKERHUB_RUNTIME_IMAGE` | Docker Hub promotion                                     | Distinct pre-existing private `docker.io/<namespace>/<repository>` names without tags or digests. Creation needs separate operator authorization. |
-| Secret `DOCKERHUB_USERNAME`                                       | Promotion                                                | Account identifier; organization name for an organization access token.                                                                           |
-| Secret `DOCKERHUB_TOKEN`                                          | Promotion                                                | Scoped PAT or organization access token with read/write access only to authorized destinations.                                                   |
+Real publication and recovery require the public Enterprise repository and
+public GHCR image packages. Chart publication also requires public
+`ghcr.io/openclaw/charts/openclaw-enterprise`. Before changing visibility,
+inventory retained versions and grants: making a package public exposes every
+retained version and cannot be reversed. Use separate destinations if needed.
+Do not grant this public repository Actions access to private packages containing
+material that must remain private.
 
-GHCR uses the workflow's short-lived token with `packages: write`; no PAT is
-required. Promotion uses `packages: read` and exposes Docker Hub credentials
-only to transfer. Preparation has no environment or registry credentials.
+## Confirm package linkage
 
-Publication/recovery require the public Enterprise repository and pre-existing
-public image packages; chart publication also needs public
-`ghcr.io/openclaw/charts/openclaw-enterprise`. Confirm repository linkage and
-**Manage Actions access** using the [package checks](containers.md#confirm-package-linkage).
-Before making packages public, inventory retained versions and grants: every
-layer/chart must be intended for public release. Visibility exposes all retained
-versions and cannot revert to private; use separate destinations if needed.
-[Marker bootstrap](containers.md#bootstrap-ghcr-packages) creates
-private placeholders, not visibility changes or grants. Missing configuration,
-conflicting identity, inaccessible metadata, or incorrect visibility stops publication.
+For each destination, open **Package settings**. Confirm that the connected
+repository is `openclaw/openclaw-enterprise`, visibility is **Public**, and
+**Manage Actions access** grants that repository the required access. Source
+labels alone do not prove linkage.
+
+GitHub can omit the package's repository metadata. The publisher checks identity
+and public visibility and rejects explicit conflicting linkage. If metadata is
+omitted, the operator's package-setting check remains necessary.
+
+## Bootstrap GHCR packages
+
+Confirm that the organization permits package creation under the configured
+names. After the reviewed [bootstrap workflow](../../.github/workflows/container-bootstrap.yml)
+is on `main` and its exact push CI succeeds, dispatch **Bootstrap Enterprise
+Container Packages** on `main` with `ci_run_id`.
+
+The workflow creates private scratch image markers and a nondeployable chart
+marker. It leaves matching existing packages unchanged and rejects conflicting
+metadata. Its summary records the package coordinates and verified marker digests.
+The unique `bootstrap-<run-id>-<attempt>` tags and chart marker are not
+deployable. An authenticated metadata 404 permits only the harmless marker push;
+it does not prove the package is absent. Other metadata errors stop bootstrap.
+Bootstrap does not make packages public or grant access. Inspect any partial
+result, correct the cause, then dispatch again; valid packages remain unchanged.
+Finish the linkage and visibility checks before publication. See the
+[bootstrap flow](../flows/container-package-bootstrap.md) for validation details.
+
+Public GHCR pulls need no workstation login. Private marker packages and private
+mirrors require separate pull credentials.

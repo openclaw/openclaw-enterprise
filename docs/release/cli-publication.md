@@ -1,46 +1,33 @@
 # Publish the OCC CLI
 
-To release the CLI with matching images and a Helm chart, use [Release OCE](README.md).
+Publish four standalone `occ` binaries and `SHA256SUMS` as a GitHub Release.
+Complete [release configuration](configuration.md) once.
 
-The standalone [Release OCC CLI workflow](../../.github/workflows/cli-release.yml) publishes four
-standalone `occ` binaries and `SHA256SUMS` as a GitHub Release. It does not
-install OpenClaw Enterprise or make `occ dev up` usable outside a source checkout.
+## Publish
 
-Advance the SemVer version in root `package.json` and keep the Helm chart's
-`version` and `appVersion` equal to it. Merge the version and release code to
-`main`, then wait for that exact main-push CI run to pass, including
-`CI Required`. Configure the main-only `container-publish` environment from
-[operator setup](containers.md#operator-setup) before dispatch. This workflow checks version equality
-but does not prove that GHCR publication succeeded.
+1. Set root `package.json` to a strict `X.Y.Z` version and set the chart's
+   `version` and `appVersion` to the same value. Merge the version and release
+   code to `main`. Wait for its entire exact push CI run to succeed.
+2. Dispatch [Release OCC CLI](../../.github/workflows/cli-release.yml) on
+   `main` with the full `source_sha` and successful `ci_run_id`. The source
+   must match the selected workflow commit. For a complete OCE release, use the
+   same source for images and chart; this workflow does not verify GHCR publication.
+   The build cross-compiles with pinned Go 1.27.3, checks each binary’s source
+   and platform metadata, runs the runner-platform binary, and retains the exact
+   binaries and checksums before publication.
+3. Check the published `vX.Y.Z` tag points to that SHA. Verify the release has
+   the four Darwin/Linux amd64/arm64 binaries and `SHA256SUMS`, then check a
+   downloaded binary's `occ --version`.
 
-Dispatch **Release OCC CLI** on `main` with the full `source_sha` of the selected
-`main` commit and its successful `ci_run_id`. The workflow requires the source
-commit SHA to match the selected workflow commit and checks CI identity. It
-cross-compiles `darwin` and `linux` binaries for `amd64` and `arm64` with pinned
-Go 1.27.3, then checks each binary's source commit SHA and platform metadata.
-It also runs the binary for the runner's platform to check its release version
-and help output. It uploads those exact bytes and checksums as a run
-artifact before the protected publication job starts. A failed-job rerun uses
-the artifact name from the successful build job, even when the run attempt
-number changes.
+If publication stops, inspect the tag and draft release before retrying. A retry
+can complete a matching draft without replacing assets, including a failed-job
+rerun using the successful build artifact. A conflicting tag, changed or
+unexpected asset, or already published release stops the workflow. The publisher downloads
+every asset and compares it with the verified build before publishing the draft. Do not delete
+or move a tag to evade a conflict. Limit release writes to trusted administrators;
+workflow concurrency does not exclude independent writers. See the
+[CLI publication flow](../flows/cli-publication.md) for build and verification details.
 
-Publication creates a lightweight `v<version>` tag at the source SHA and a draft
-GitHub Release. It uploads missing assets, downloads every asset to compare it
-with the verified build, then publishes the draft. A retry can finish a matching
-draft without replacing assets. The publisher finds drafts through the
-authenticated release list, since the tag lookup covers published releases.
-A tag pointing elsewhere, a changed asset, an
-unexpected asset, or an already published release stops the workflow. Inspect
-the draft and tag before retrying a partial publication; do not delete or move
-a tag to evade a conflict. The same source, Go toolchain, and binary inputs must
-produce identical bytes on retry; the packaging integration test builds them
-twice and compares their checksums. Only trusted release administrators may
-change the tag or draft during publication; the concurrency group serializes
-participating workflows, not independent GitHub writers. A concurrent tag or
-asset change between verification and publication could invalidate the result.
-
-After publication, check the release page, the tag's source SHA, the five
-assets, and a downloaded binary's `occ --version`. The binaries are useful for
-an existing OCC endpoint with a service-key file. Follow [CLI setup](../guides/cli.md)
-for download and authentication. A private repository requires GitHub
-authentication to download its release assets.
+Use [CLI setup](../guides/cli.md) for download and authentication. A private
+repository requires GitHub authentication for release assets. The binaries do
+not install OCE or make `occ dev up` work outside a source checkout.

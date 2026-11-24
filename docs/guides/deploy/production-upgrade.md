@@ -380,7 +380,7 @@ repeating checks.
 To check continuity, reopen the test conversation, find its marker, and get a
 fresh reply.
 
-After promotion, [verify the served Console](../../release/container-promotion.md#verify-the-served-console).
+After traffic selection, [verify the served Console](production-upgrade-console.md).
 
 ## Recover from a partial failure
 
