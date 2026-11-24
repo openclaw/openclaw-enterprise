@@ -167,9 +167,9 @@ async function verifyProducer(env: NodeJS.ProcessEnv) {
     env.PUBLICATION_RUN_ID,
   );
   assert.equal(optionalProperty(property(artifact, "workflow_run"), "head_sha"), headSha);
-  const artifactId = String(property(artifact, "id"));
-  assert.match(artifactId, /^[1-9][0-9]*$/);
-  return { artifactId, headSha, unified };
+  const id = property(artifact, "id");
+  assert.ok(typeof id === "number" && Number.isSafeInteger(id) && id > 0, "Invalid artifact ID.");
+  return { artifactId: String(Number(id)), headSha, unified };
 }
 
 async function hub(
