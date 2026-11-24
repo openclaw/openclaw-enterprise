@@ -81,7 +81,7 @@ type CreateAgentScenario = {
   provisioningCancelledByStop?: true;
   provisioningNamesDeploymentWait?: true;
   readOnlyPermissionSummary?: true;
-  repositoryDescriptionsPending?: true;
+  repositoryDescriptionsPending?: boolean;
   repositoryNotConfigured?: true;
   sandboxDriverUnavailable?: true;
   secretCreateNotPermitted?: true;
