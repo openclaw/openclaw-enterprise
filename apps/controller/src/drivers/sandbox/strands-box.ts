@@ -9,16 +9,23 @@ import { request as httpsRequest } from "node:https";
 import { checkServerIdentity } from "node:tls";
 import { isDeepStrictEqual } from "node:util";
 import { createKubernetesClientConfiguration } from "../kubernetes/client.ts";
-import { networkPolicyToSdk } from "../kubernetes/network-policy.ts";
+import { networkPolicySpecToJson, networkPolicyToSdk } from "../kubernetes/network-policy.ts";
 import type { KubernetesAuthentication } from "../kubernetes/authentication.ts";
 import { requireWorkspaceSetupConfiguration } from "../compute/workspace-setup-runtime.ts";
 import { withComputeAbortSignal } from "../compute/operation-context.ts";
 import {
+  strandsBoxEndpointEgress,
   strandsBoxResources,
   strandsBoxService,
+  strandsBoxStaticNetworkPolicy,
   STRANDS_STATUS_PORT,
 } from "./strands-box-resources.ts";
-import { KubernetesObjectApi, PatchStrategy, type KubernetesObject } from "@kubernetes/client-node";
+import {
+  KubernetesObjectApi,
+  PatchStrategy,
+  type KubernetesObject,
+  type V1NetworkPolicySpec,
+} from "@kubernetes/client-node";
 import { isIP } from "node:net";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
@@ -484,19 +491,37 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     const hash = sha256Hex(
       JSON.stringify([4, context.requirements, this.options, this.dns, this.routing]),
     );
+    const labels = this.labels(context);
+    const networkPolicy = strandsBoxStaticNetworkPolicy(
+      context,
+      this.options,
+      labels,
+      this.dns,
+      this.routing,
+    );
+    const metadata = { namespace: ref.namespaceName, name: ref.resourceName };
     // A completed preparation is immutable, including its exact input identity.
     // Do not re-read an enrollment Secret that Compute may already have retired.
-    const existing = await read(context, {
-      apiVersion: "apps/v1",
-      kind: "Deployment",
-      metadata: { namespace: ref.namespaceName, name: ref.resourceName },
-    });
+    const existing = await read(context, { apiVersion: "apps/v1", kind: "Deployment", metadata });
     if (existing) {
-      owned(existing, context.namespace.id, this.id);
-      if (existing.metadata?.annotations?.[HASH] !== hash || existing.metadata.deletionTimestamp) {
-        throw new Error("Strands Box revision Pod is not adoptable.");
+      this.requireAdoptable(context, existing, hash);
+      const policy = await read(context, {
+        apiVersion: "networking.k8s.io/v1",
+        kind: "NetworkPolicy",
+        metadata,
+      });
+      if (!policy) {
+        throw new Error("Strands Box revision NetworkPolicy is missing.");
       }
-      await this.refreshEndpointPolicy(context, ref, hash);
+      this.requireAdoptable(context, policy, hash);
+      const current = this.checkEndpointPolicy(policy, networkPolicy);
+      const endpointEgress = (await this.endpointAddresses(context.signal)).map(
+        strandsBoxEndpointEgress,
+      );
+      await this.refreshEndpointPolicy(context, ref, current, [
+        ...networkPolicy.egress,
+        ...endpointEgress,
+      ]);
       await this.ensureDiagnosticService(context, ref, hash);
       return ref;
     }
@@ -507,44 +532,51 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     }
     const transportHash = await this.transportVerifier(context);
     const gateway = await this.gatewayRoute(context);
-    const cidrs = await this.endpointAddresses(context.signal);
+    const endpointEgress = (await this.endpointAddresses(context.signal)).map(
+      strandsBoxEndpointEgress,
+    );
     const resources = strandsBoxResources(
       context,
       this.options,
       ref.resourceName,
-      this.labels(context),
+      labels,
       hash,
       transportHash,
-      this.dns,
       gateway,
-      cidrs,
+      networkPolicy,
+      endpointEgress,
     );
-    // Preflight all names before creating any object. An ownership collision
-    // must not partially overwrite an unrelated workload's configuration.
+    // Preflight all names before creating any object. Revalidate the object actually
+    // found when creating or adopting each name because another writer may have arrived.
     for (const resource of resources) {
       const current = await read(context, resource);
       if (current) {
-        owned(current, context.namespace.id, this.id);
-        if (current.metadata?.annotations?.[HASH] !== hash) {
-          throw new Error("Strands Box immutable inputs differ.");
+        this.requireAdoptable(context, current, hash);
+        if (resource.kind === "NetworkPolicy") {
+          this.checkEndpointPolicy(current, networkPolicy);
         }
       }
     }
     for (const resource of resources) {
-      if (await read(context, resource)) {
-        continue;
+      let current = await read(context, resource);
+      if (!current) {
+        try {
+          await api(context).create(networkPolicyToSdk(resource));
+          continue;
+        } catch (error) {
+          current = await read(context, resource);
+          if (!current) {
+            throw error;
+          }
+        }
       }
-      try {
-        await api(context).create(networkPolicyToSdk(resource));
-      } catch (error) {
-        const current = await read(context, resource);
-        if (!current) {
-          throw error;
-        }
-        owned(current, context.namespace.id, this.id);
-        if (current.metadata?.annotations?.[HASH] !== hash) {
-          throw error;
-        }
+      this.requireAdoptable(context, current, hash);
+      if (resource.kind === "NetworkPolicy") {
+        const policy = this.checkEndpointPolicy(current, networkPolicy);
+        await this.refreshEndpointPolicy(context, ref, policy, [
+          ...networkPolicy.egress,
+          ...endpointEgress,
+        ]);
       }
     }
     return ref;
@@ -572,79 +604,69 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     return [...addresses.values()].sort((a, b) => a.cidr.localeCompare(b.cidr) || a.port - b.port);
   }
 
-  private async refreshEndpointPolicy(
+  private requireAdoptable(
     context: SandboxHarnessContext,
-    ref: SandboxResourceRef,
+    resource: KubernetesObject,
     hash: string,
-  ): Promise<void> {
-    const policy = await read(context, {
-      apiVersion: "networking.k8s.io/v1",
-      kind: "NetworkPolicy",
-      metadata: { namespace: ref.namespaceName, name: ref.resourceName },
-    });
-    if (!policy) {
-      throw new Error("Strands Box revision NetworkPolicy is missing.");
-    }
-    owned(policy, context.namespace.id, this.id);
-    const metadata = policy.metadata!;
-    // SDK models carry prototypes and absent fields; compare their JSON wire shape.
-    const spec = asRecord(JSON.parse(JSON.stringify(asRecord(policy)?.spec)));
+  ): void {
+    owned(resource, context.namespace.id, this.id);
+    const metadata = resource.metadata!;
     if (
+      metadata.labels?.[AGENT] !== context.revision.agentId ||
+      metadata.labels[REVISION] !== context.revision.id ||
       metadata.annotations?.[HASH] !== hash ||
-      !metadata.uid ||
-      !metadata.resourceVersion ||
-      metadata.deletionTimestamp ||
-      !Array.isArray(spec?.egress) ||
-      !isDeepStrictEqual(spec.podSelector, { matchLabels: this.labels(context) }) ||
-      !isDeepStrictEqual(spec.policyTypes, ["Ingress", "Egress"])
+      metadata.deletionTimestamp
     ) {
+      throw new Error("Strands Box revision resource is not adoptable.");
+    }
+  }
+
+  private checkEndpointPolicy(
+    policy: KubernetesObject,
+    desired: ReturnType<typeof strandsBoxStaticNetworkPolicy>,
+  ) {
+    const { uid, resourceVersion } = policy.metadata!;
+    const spec = asRecord(networkPolicySpecToJson(asRecord(policy)?.spec as V1NetworkPolicySpec));
+    if (!uid || !resourceVersion || !Array.isArray(spec?.egress)) {
       throw new Error("Strands Box revision NetworkPolicy is not adoptable.");
     }
-    const retained = [];
+    const staticEgress = [];
     for (const rule of spec.egress) {
-      const entry = asRecord(rule);
-      const peers = Array.isArray(entry?.to) ? entry.to : [];
-      if (!peers.some((peer) => asRecord(peer)?.ipBlock !== undefined)) {
-        retained.push(rule);
+      const to = asRecord(rule)?.to;
+      if (!Array.isArray(to) || !to.some((peer) => asRecord(peer)?.ipBlock !== undefined)) {
+        staticEgress.push(rule);
         continue;
       }
-      // Only the adapter's exact host/port rules can be refreshed. Never carry
-      // a widened range or mixed peer onto a newly resolved destination.
-      const block = asRecord(asRecord(peers[0])?.ipBlock);
-      const parts = typeof block?.cidr === "string" ? block.cidr.split("/") : [];
-      const family = isIP(parts[0] ?? "");
-      const ports = Array.isArray(entry?.ports) ? entry.ports : [];
-      const port = asRecord(ports[0]);
+      const cidr = asRecord(asRecord(to[0])?.ipBlock)?.cidr;
+      const [address, prefix, ...extra] = typeof cidr === "string" ? cidr.split("/") : [];
+      const family = isIP(address ?? "");
+      const ports = asRecord(rule)?.ports;
+      const port = Array.isArray(ports) ? asRecord(ports[0])?.port : undefined;
       if (
-        !entry ||
-        Object.keys(entry).length !== 2 ||
-        peers.length !== 1 ||
-        Object.keys(asRecord(peers[0]) ?? {}).length !== 1 ||
-        !block ||
-        Object.keys(block).length !== 1 ||
+        typeof cidr !== "string" ||
         !family ||
-        parts.length !== 2 ||
-        parts[1] !== (family === 4 ? "32" : "128") ||
-        ports.length !== 1 ||
-        !port ||
-        Object.keys(port).length !== 2 ||
-        port.protocol !== "TCP" ||
-        !this.options.policy.network.endpoints.some((endpoint) =>
-          endpoint.ports.includes(port.port as number),
-        )
+        extra.length !== 0 ||
+        prefix !== (family === 4 ? "32" : "128") ||
+        typeof port !== "number" ||
+        !this.options.policy.network.endpoints.some((endpoint) => endpoint.ports.includes(port)) ||
+        !isDeepStrictEqual(rule, strandsBoxEndpointEgress({ cidr, port }))
       ) {
         throw new Error("Strands Box endpoint rule differs from an exact approved destination.");
       }
     }
-    const addresses = await this.endpointAddresses(context.signal);
-    const egress = [
-      ...retained,
-      ...addresses.map(({ cidr, port }) => ({
-        to: [{ ipBlock: { cidr } }],
-        ports: [{ protocol: "TCP", port }],
-      })),
-    ];
-    if (isDeepStrictEqual(spec.egress, egress)) {
+    if (!isDeepStrictEqual({ ...spec, egress: staticEgress }, desired)) {
+      throw new Error("Strands Box revision NetworkPolicy differs from the rendered policy.");
+    }
+    return { uid, resourceVersion, egress: spec.egress };
+  }
+
+  private async refreshEndpointPolicy(
+    context: SandboxHarnessContext,
+    ref: SandboxResourceRef,
+    current: { uid: string; resourceVersion: string; egress: unknown[] },
+    egress: readonly unknown[],
+  ): Promise<void> {
+    if (isDeepStrictEqual(current.egress, egress)) {
       return;
     }
     const patch = {
@@ -653,8 +675,8 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       metadata: {
         name: ref.resourceName,
         namespace: ref.namespaceName,
-        uid: metadata.uid,
-        resourceVersion: metadata.resourceVersion,
+        uid: current.uid,
+        resourceVersion: current.resourceVersion,
       },
       spec: { egress },
     };
@@ -699,9 +721,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
 
   private async gatewayRoute(
     context: SandboxHarnessContext,
-  ): Promise<
-    { host: string; port: number; egress: Readonly<Record<string, unknown>> } | undefined
-  > {
+  ): Promise<{ host: string; port: number } | undefined> {
     const reference = context.requirements.environment.find(
       (entry) => entry.name === "OPENCLAW_NODE_SETUP_CODE",
     );
@@ -732,29 +752,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     ) {
       throw new Error("Strands Box workspace enrollment must use the installation Gateway route.");
     }
-    return {
-      host: endpoint.hostname,
-      port,
-      egress: {
-        to: [
-          {
-            namespaceSelector: {
-              matchLabels: { "kubernetes.io/metadata.name": routing.envoyNamespace },
-            },
-            podSelector: {
-              matchLabels: {
-                "app.kubernetes.io/component": "proxy",
-                "app.kubernetes.io/managed-by": "envoy-gateway",
-                "app.kubernetes.io/name": "envoy",
-                "gateway.envoyproxy.io/owning-gateway-namespace": routing.gatewayNamespace,
-                "gateway.envoyproxy.io/owning-gateway-name": routing.gatewayName,
-              },
-            },
-          },
-        ],
-        ports: [{ protocol: "TCP", port: routing.envoyHttpsTargetPort ?? 10443 }],
-      },
-    };
+    return { host: endpoint.hostname, port };
   }
 
   // An existing revision may predate the diagnostic Service. Its immutable setup
@@ -777,10 +775,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         }
       }
     }
-    owned(current, context.namespace.id, this.id);
-    if (current.metadata?.annotations?.[HASH] !== hash || current.metadata.deletionTimestamp) {
-      throw new Error("Strands Box diagnostic Service is not adoptable.");
-    }
+    this.requireAdoptable(context, current, hash);
   }
 
   private async harnessServiceAddress(
