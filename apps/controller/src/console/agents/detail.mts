@@ -1826,6 +1826,13 @@ export async function renderAgentDetail(
     control.focus({ preventScroll: true });
     control.scrollIntoView({ block: "nearest", inline: "nearest" });
   });
+  // A click outside the strip can leave the return stop clipped without a Tab keydown.
+  tabs.addEventListener("focusin", (event) => {
+    const control = tabControls.get(selectedTab);
+    if (event.target === control && control.matches(":focus-visible")) {
+      revealSelectedTab(control);
+    }
+  });
   // Tabbing back in lands on the selected tab, wherever the arrows left focus. Checked once focus
   // has moved: a window losing focus leaves it on the tab, so the arrowed-to stop stays.
   tabs.addEventListener("focusout", () => {

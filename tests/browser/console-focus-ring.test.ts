@@ -382,15 +382,18 @@ test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clea
 
   // A partly visible tab can stay clipped when Chrome focuses it again. Reproduce that position
   // with native keys, leaving Configuration selected while focus roves to the right.
-  await page.keyboard.press("Home");
-  for (let step = 1; step < count; step += 1) {
-    await page.keyboard.press("ArrowRight");
-    if ((await tabAtEdge(true)).partlyClipped) {
-      break;
+  const clipConfiguration = async () => {
+    await page.keyboard.press("Home");
+    for (let step = 1; step < count; step += 1) {
+      await page.keyboard.press("ArrowRight");
+      if ((await tabAtEdge(true)).partlyClipped) {
+        return;
+      }
     }
-  }
-  assert.ok((await tabAtEdge(true)).partlyClipped, "Configuration is partly clipped while roving");
+    assert.fail("Expected Configuration to be partly clipped while roving");
+  };
 
+  await clipConfiguration();
   await page.keyboard.press("Tab");
   assert.equal(await panel.locator(":focus").count(), 1, "Tab moves to the selected panel");
   await assertConfigurationSelected();
@@ -407,6 +410,21 @@ test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clea
     "the selected tab clears the fades both after Tab and on Shift+Tab return",
   );
   await assertVisibleRings(page, "Agent tab re-entry at 390", [returnedRing]);
+
+  // Clicking the gap above the strip leaves it without a Tab keydown.
+  await clipConfiguration();
+  const strip = await page.getByRole("tablist").boundingBox();
+  assert.ok(strip);
+  await page.mouse.click(Math.ceil(strip.x) + 2, Math.floor(strip.y) - 1);
+  assert.ok(
+    await page.evaluate(() => globalThis.document.activeElement === globalThis.document.body),
+  );
+  const entry = (await tabStops(page, ({ tag }) => tag === "tab")).at(-1);
+  assert.ok(entry);
+  assert.equal(entry.name, "Configuration");
+  await assertConfigurationSelected();
+  assert.ok((await tabAtEdge()).under <= 0, "Tab returns clear of the fades after a click outside");
+  await assertVisibleRings(page, "Agent tab after a click outside at 390", [entry]);
 
   // Draft Deployment has no panel stop. Tab can leave the document, so check the strip
   // on exit without relying on where the browser sends focus next.
