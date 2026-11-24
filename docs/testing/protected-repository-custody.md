@@ -8,7 +8,7 @@ last_verified: "2026-11-04"
 
 ## Check useful Git work and conversation continuity
 
-From the repository root, use Node.js 24 or newer, Git, OpenSSL, matching installed
+From the repository root, use a Node.js version supported by [the workspace](../../package.json), Git, OpenSSL, matching installed
 workspace dependencies, and an owned disposable PostgreSQL fixture. Follow the
 [prepared PostgreSQL setup](./postgresql.md#revision-worker-tests). Inside its
 cleanup-trapped subshell, replace the `run-tests` command with these commands.

@@ -13,7 +13,7 @@ import {
   isTransientFetchError,
 } from "../../scripts/ci/routing.ts";
 import { listen } from "../helpers/listen.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const image =
   "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc";

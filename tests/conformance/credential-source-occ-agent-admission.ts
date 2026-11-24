@@ -12,7 +12,7 @@ import {
   DependencyUnavailableError,
   ResourceConflictError,
 } from "../../packages/occ/src/index.ts";
-import { CREDENTIAL_SOURCE_DRIVER_CHANGED } from "../helpers/refusal-text.mjs";
+import { CREDENTIAL_SOURCE_DRIVER_CHANGED } from "../helpers/refusal-credential-admission.ts";
 import { administrator, editor, fixture, zeroGrant } from "./credential-source-occ-fixture.ts";
 
 export function registerAgentAdmissionCases(): void {
@@ -710,7 +710,7 @@ export function registerAgentAdmissionCases(): void {
     );
   });
 
-  test("update and delete without a Credential Gateway are a 409 after the grant, whether or not the source exists", async () => {
+  test("Source mutations without a Gateway preserve owner errors and report missing DELETE after authorization", async () => {
     const { controller, makeReady, namespace } = await fixture({ withoutGateway: true });
     await makeReady();
     const stored = await controller.transact((unit) =>
@@ -741,16 +741,25 @@ export function registerAgentAdmissionCases(): void {
         }),
         notConfigured,
       );
-      await assert.rejects(
-        controller.deleteCredentialSource(administrator, namespace.id, id),
-        notConfigured,
-      );
       // A caller without the grant is denied first.
       await assert.rejects(
         controller.deleteCredentialSource(zeroGrant, namespace.id, id),
         AuthorizationDeniedError,
       );
     }
+    await assert.rejects(
+      controller.deleteCredentialSource(administrator, namespace.id, stored.id),
+      notConfigured,
+    );
+    await assert.rejects(
+      controller.deleteCredentialSource(administrator, namespace.id, missing),
+      (error) => {
+        const failed = requestFailure(error);
+        assert.equal(failed.status, 404);
+        assert.equal(failed.code, "NOT_FOUND");
+        return true;
+      },
+    );
     const [after] = await controller.listCredentialSources(administrator, namespace.id);
     assert.equal(after?.state, "ready");
   });

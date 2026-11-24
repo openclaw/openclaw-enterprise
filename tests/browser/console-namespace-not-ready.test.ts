@@ -15,7 +15,8 @@ import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { CONSOLE_NAMESPACE_NOT_READY, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { CONSOLE_NAMESPACE_NOT_READY } from "../helpers/refusal-text.mjs";
+import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
 import { runPollTick, startedFetches, trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   AGENT_READ,

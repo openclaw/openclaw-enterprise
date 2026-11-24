@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { routedGatewayConfiguration } from "./kubernetes-routed-options.ts";
 
+export { routedGatewayConfiguration };
 export { gatewayRouting, options, routedOptions } from "./kubernetes-routed-options.ts";
 
 export { selectorMatches } from "./kubernetes-rendered-resources.ts";
@@ -98,18 +100,7 @@ export function routedRevision(driver, overrides = {}) {
         consoleStyle: "json",
       },
       diagnostics: { otel: { logs: false } },
-      gateway: {
-        trustedProxies: ["10.42.0.0/16"],
-        allowRealIpFallback: true,
-        auth: {
-          mode: "trusted-proxy",
-          trustedProxy: {
-            userHeader: "x-occ-identity",
-            allowUsers: ["occ-workspace-files"],
-          },
-          identityScopes: { "occ-workspace-files": ["operator.admin"] },
-        },
-      },
+      gateway: routedGatewayConfiguration(),
     },
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     harnessAuth: apiKeyAuth,

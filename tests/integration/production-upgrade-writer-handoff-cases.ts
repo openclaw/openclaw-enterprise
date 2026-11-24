@@ -317,12 +317,16 @@ exec "$real_python" "$@"
     }
   });
 
-  test("a separate database deployment pauses after quiescence and before Helm even on resume", async (t) => {
+  test("an aliased separate database deployment pauses before Helm and preserves the handoff on resume", async (t) => {
     let databaseId = "ins_test";
     const f = await fixture(t, {
       controllerOnly: true,
       candidates: true,
-      chart: { installation: (installation) => installation },
+      valuesExtension: "yaml",
+      chart: {
+        values: (values) => ({ migrationMode: "separate", ...values }),
+        installation: (installation) => installation,
+      },
       databaseAnswer: () => ({ rows: [{ id: databaseId }] }),
       migrationSecrets: true,
     });
@@ -331,13 +335,12 @@ exec "$real_python" "$@"
       join(f.directory, "candidate-installation.json"),
       await readFile(join(f.directory, "installation.json")),
     );
-    const path = join(f.directory, "candidate-values.json");
-    const values = asRecord(JSON.parse(await readFile(path, "utf8")));
-    assert.ok(values, "expected staged chart values");
-    const database = asRecord(values.database);
-    assert.ok(database, "expected staged database settings");
-    values.database = { ...database, upgradeMigration: "separate" };
-    await writeFile(path, JSON.stringify(values));
+    // Operators can reuse a YAML scalar with an alias in their candidate values.
+    await execute("yq", [
+      "-i",
+      '.migrationMode anchor = "separate" | .database.upgradeMigration alias = "separate"',
+      join(f.directory, "candidate-values.yaml"),
+    ]);
     const { stdout } = await execute(
       realHelm,
       [
@@ -347,7 +350,7 @@ exec "$real_python" "$@"
         "--namespace",
         "system",
         "--values",
-        join(f.directory, "values.json"),
+        join(f.directory, "values.yaml"),
       ],
       { cwd: repository },
     );
@@ -363,6 +366,11 @@ exec "$real_python" "$@"
       }),
     );
     await runWithInjectedFault(f, "fail-scale-worker");
+    const check: unknown = JSON.parse(await f.readEvidence("preflight-migration-job.json"));
+    const pod = field(field(field(check, "spec"), "template"), "spec");
+    const containers = list(field(pod, "containers"), "preflight migration Job containers");
+    const args = list(field(containers[0], "args"), "preflight migration arguments");
+    assert.deepEqual(args.slice(-2), ["--check-for-installation", "ins_test"]);
     const resume = ["--resume", "--migration-history-checked"];
     await assert.rejects(f.run(...resume), (error: unknown) => {
       const failure = readUpgradeFailure(error);
@@ -384,6 +392,17 @@ exec "$real_python" "$@"
       /Keep both writers fenced\. Preserve the evidence and reconcile the external migration and database migration history\./;
     const unconfirmedStop = /worker Deployment .* is at zero replicas without a confirmed stop/;
     const migrationJournal = f.evidence + ".migration-state.json";
+    const settingsPaths = [
+      join(f.directory, "values.yaml"),
+      join(f.directory, "installation.json"),
+    ];
+    const settings = () =>
+      Promise.all(
+        settingsPaths.map(async (path) => ({
+          bytes: await readFile(path),
+          inode: (await stat(path)).ino,
+        })),
+      );
     const assertManagedApplyRefused = async () => {
       assert.equal(existsSync(migrationJournal), false);
       const beforeApplyCreations = list(
@@ -460,8 +479,57 @@ exec "$real_python" "$@"
       assertManagedApplyRefused,
     );
 
-    // A replacement with the same labels and replica count does not own this handoff.
     const stateFile = join(f.directory, "state.json");
+    // A concurrent edit after the earlier Deployment reads leaves both writers
+    // stopped and the Worker receipt valid. The API generation still fences Helm.
+    const originalSettings = await settings();
+    const originalMigrationCheck = await f.readEvidence("preflight-migration.log");
+    await f.failNext("edit-stopped-api-after-drain");
+    const apiDrift = await expectUpgradeFailure(
+      f.run(...resume),
+      "API generation drift after drain must block the first Helm submission",
+    );
+    assert.equal(apiDrift.code, 1);
+    assert.match(
+      apiDrift.stderr,
+      /the api Deployment changed during the separate database deployment/u,
+    );
+
+    const heldAfterDrift = await f.state();
+    const originalIdentities = record(
+      stopped.deploymentIdentities,
+      "stopped Deployment identities",
+    );
+    const apiBefore = record(originalIdentities.api, "stopped API Deployment identity");
+    const finalApi: unknown = JSON.parse(await f.readEvidence("quiescence-api-deployment.json"));
+    const finalApiMetadata = field(finalApi, "metadata");
+    assert.deepEqual(
+      [
+        field(finalApiMetadata, "uid"),
+        field(finalApiMetadata, "generation"),
+        field(field(finalApi, "spec"), "replicas"),
+      ],
+      [apiBefore.uid, Number(apiBefore.generation) + 1, 0],
+    );
+    const finalPods: unknown = JSON.parse(await f.readEvidence("quiescence-pods.json"));
+    assert.deepEqual(field(finalPods, "items"), []);
+    assert.deepEqual([heldAfterDrift.api, heldAfterDrift.worker], [0, 0]);
+    assert.deepEqual(
+      field(heldAfterDrift.deploymentIdentities, "worker"),
+      originalIdentities.worker,
+    );
+    assert.equal(heldAfterDrift.helmSubmissions ?? 0, 0);
+    assert.equal(heldAfterDrift.version, stopped.version);
+    assert.deepEqual(heldAfterDrift.secret, stopped.secret);
+    assert.deepEqual(await settings(), originalSettings);
+    assert.deepEqual(await f.events(), stoppedEvents);
+    assert.deepEqual(await readFile(receipt), originalReceipt);
+    assert.deepEqual(await readFile(handoff), originalHandoff);
+    assert.equal(await f.readEvidence("preflight-migration.log"), originalMigrationCheck);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+    assert.equal(existsSync(migrationJournal), false);
+
+    // Exercise replacement separately from the simulated API generation change.
     await writeFile(
       stateFile,
       JSON.stringify({
@@ -507,17 +575,6 @@ exec "$real_python" "$@"
     assert.deepEqual(await f.events(), stoppedEvents);
 
     const savedHandoff = join(f.directory, "saved-handoff.json");
-    const settingsPaths = [
-      join(f.directory, "values.json"),
-      join(f.directory, "installation.json"),
-    ];
-    const settings = () =>
-      Promise.all(
-        settingsPaths.map(async (path) => ({
-          bytes: await readFile(path),
-          inode: (await stat(path)).ino,
-        })),
-      );
     const attempts = () => readdir(join(f.evidence, "helm-attempts")).then((names) => names.sort());
     const preflights = () =>
       readdir(f.evidence).then((names) =>

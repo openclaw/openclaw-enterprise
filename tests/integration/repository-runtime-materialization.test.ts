@@ -26,7 +26,7 @@ import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.ts";
 import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.ts";
 import { setEnvironment } from "../helpers/environment.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const deadlineWallMs = Date.now() + 86400000;
 const client = { ...repositoryClientData(), pushRefAllowlist: ["refs/heads/agent/*"] };

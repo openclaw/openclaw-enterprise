@@ -190,6 +190,9 @@ export async function checkRunnerSelectorIsolation(t: TestContext) {
       OCC_TEST_LEAKED_SELECTOR: undefined,
       OCC_PROBE_REQUIRED_SELECTOR: "required",
       OCC_PROBE_LEAKED_SELECTOR: undefined,
+      OCC_MIGRATION_HISTORY_DATABASE_URL: undefined,
+      OCC_MIGRATION_HISTORY_CONTAINER: undefined,
+      OCC_MIGRATION_HISTORY_DATABASE_PREFIX: undefined,
       KEEP: undefined,
       OCC_RUNTIME_KEEP: undefined,
     },
@@ -224,6 +227,9 @@ export async function checkRunnerSelectorIsolation(t: TestContext) {
     {
       OCC_TEST_FILE_SELECTOR: undefined,
       OCC_TEST_OPTIONAL_SELECTOR: "selected",
+      OCC_MIGRATION_HISTORY_DATABASE_URL: undefined,
+      OCC_MIGRATION_HISTORY_CONTAINER: undefined,
+      OCC_MIGRATION_HISTORY_DATABASE_PREFIX: undefined,
     },
   );
 
@@ -241,6 +247,9 @@ export async function checkRunnerSelectorIsolation(t: TestContext) {
       OCC_TEST_LANE_SELECTOR: "inherited",
       OCC_PROBE_LEAKED_SELECTOR: "1",
       OCC_PROBE_REQUIRED_SELECTOR: "required",
+      OCC_MIGRATION_HISTORY_DATABASE_URL: "inert-migration-url",
+      OCC_MIGRATION_HISTORY_CONTAINER: "inert-migration-container",
+      OCC_MIGRATION_HISTORY_DATABASE_PREFIX: "inert-migration-prefix",
     },
   );
 

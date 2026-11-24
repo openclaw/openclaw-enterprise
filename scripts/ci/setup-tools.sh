@@ -252,7 +252,7 @@ PYTHON
   # The downloader verifies a private copy of the PATH candidate before reuse.
   download_file \
     "https://dl.k8s.io/release/v${version}/bin/${operating_system}/${arch}/kubectl" \
-    "${binary}" "${checksum}" "" "${existing}" 0755
+    "${binary}" "${checksum}" "${CI_PINNED_TOOL_CACHE:-}" "${existing}" 0755
   run_system_tool "${binary}" version --client=true
 }
 
@@ -347,6 +347,10 @@ install_browser_dependencies() {
     # Installing a second Chromium and its dependencies does not prepare that binary.
     if [[ -z "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
       pnpm exec playwright install --with-deps --only-shell chromium
+    fi
+    if [[ -n "${OPENCLAW_CI_NATIVE_BROWSER_EVIDENCE_DIR:-}" ]]; then
+      # Host Chrome does not install Playwright's pinned video encoder.
+      pnpm exec playwright install ffmpeg
     fi
     if [[ -n "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
       if [[ ! -x "${OCC_TEST_BROWSER_EXECUTABLE}" ]]; then

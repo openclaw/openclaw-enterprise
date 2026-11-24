@@ -248,10 +248,10 @@ export function nativeAdminComputeDriver(endpoint: string) {
     getGatewayEndpoint() {
       return endpoint;
     },
-    getGatewayChatEndpoint() {
+    async getGatewayBrowserRequest() {
       const url = new URL(endpoint);
-      url.pathname = `/native-chat${url.pathname}`;
-      return url.href;
+      url.pathname = `/native-browser${url.pathname}`;
+      return { endpoint: url.href, subject: "test:native-actor", headers: {} };
     },
   });
 }

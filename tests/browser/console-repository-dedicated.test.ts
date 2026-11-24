@@ -13,7 +13,7 @@ import type {
   PresetWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
+import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.ts";
 import {
   login,
   newPage,

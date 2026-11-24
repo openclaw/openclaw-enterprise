@@ -431,7 +431,7 @@ test("GHCR publication accepts omitted repository metadata without approval and 
   await verifyGhcr(image, digest, `sha-${sourceSha}`);
 });
 
-test("container release requires exact successful CI identity and its aggregate job", () => {
+function successfulCi() {
   // Shapes follow the Actions workflow, workflow-run, and attempt-jobs REST responses.
   const workflow = { id: 123, path: ".github/workflows/ci.yml", state: "active" };
   const run = {
@@ -453,6 +453,11 @@ test("container release requires exact successful CI identity and its aggregate 
     conclusion: "success",
     status: "completed",
   };
+  return { workflow, run, required };
+}
+
+test("container release requires exact successful CI identity and its aggregate job", () => {
+  const { workflow, run, required } = successfulCi();
   const jobs = [required];
   type RunPatch = Omit<Partial<typeof run>, "repository" | "head_repository"> & {
     repository?: Pick<typeof repo, "full_name">;
@@ -512,6 +517,95 @@ test("container release requires exact successful CI identity and its aggregate 
     assert.throws(() => validateCi(run, workflow, invalidJobs, sourceSha, "456", "2"), guard);
   }
 });
+
+const { workflow: sourceWorkflow, run: sourceRun, required: aggregate } = successfulCi();
+const sourceJob = { ...aggregate, run_id: sourceRun.id, run_attempt: sourceRun.run_attempt };
+const mainRef = { ref: "refs/heads/main", object: { sha: sourceSha } };
+const runsPath = `actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${sourceSha}&per_page=100`;
+const jobsPath = "actions/runs/456/attempts/2/jobs?per_page=100";
+
+for (const scenario of [
+  { name: "prints the stable SHA and CI run" },
+  {
+    name: "refuses a moved main tip after CI lookup",
+    tip: { ...mainRef, object: { sha: "b".repeat(40) } },
+    error: /Enterprise main does not match/,
+  },
+  {
+    name: "refuses a rerun started during lookup",
+    currentRun: { ...sourceRun, run_attempt: 3, status: "in_progress", conclusion: null },
+    error: /CI run or attempt changed/,
+  },
+  {
+    name: "refuses a successful run with a skipped CI Required job",
+    job: { ...sourceJob, conclusion: "skipped" },
+    error: /CI does not qualify this commit/,
+  },
+  {
+    name: "refuses a job from another attempt",
+    job: { ...sourceJob, run_attempt: 1 },
+    error: /CI jobs do not match the completed source and attempt/,
+    discardAfterJobs: true,
+  },
+]) {
+  test(`container source ${scenario.name}`, async (t) => {
+    const directory = await temporaryDirectory(t, "oce-container-source-");
+    const calls = join(directory, "calls");
+    const replies: [string, unknown][] = [
+      ["git/ref/heads/main", mainRef],
+      ["actions/workflows/ci.yml", sourceWorkflow],
+      [runsPath, { total_count: 1, workflow_runs: [sourceRun] }],
+      [jobsPath, { total_count: 1, jobs: [scenario.job ?? sourceJob] }],
+    ];
+    // The API stand-in changes its observations between the two reads. The
+    // real CLI must refuse to emit release inputs if either identity changed.
+    if (!scenario.discardAfterJobs) {
+      replies.push([
+        runsPath,
+        { total_count: 1, workflow_runs: [scenario.currentRun ?? sourceRun] },
+      ]);
+    }
+    if (!scenario.error || scenario.tip) {
+      replies.push(["git/ref/heads/main", scenario.tip ?? mainRef]);
+    }
+    const cases = replies.map(
+      ([path, response], index) =>
+        `${index}) expected='repos/${repository}/${path}'; response='${JSON.stringify(response)}' ;;`,
+    );
+    await writeCommand(
+      directory,
+      "gh",
+      [
+        "count=0",
+        'if [ -f "$CALLS" ]; then read -r count < "$CALLS"; fi',
+        'case "$count" in',
+        ...cases,
+        "*) exit 1 ;;",
+        "esac",
+        '[ "$#" -eq 6 ] && [ "$*" = "api --hostname github.com --method GET $expected" ] || exit 1',
+        'printf "%s\\n" "$((count + 1))" > "$CALLS"',
+        'printf "%s\\n" "$response"',
+      ].join("\n"),
+    );
+    const entry = fileURLToPath(new URL("../../scripts/ci/container-source.ts", import.meta.url));
+    const result = spawnSync(process.execPath, [entry, sourceSha], {
+      encoding: "utf8",
+      env: { PATH: directory, CALLS: calls },
+    });
+    assert.equal(await readFile(calls, "utf8"), `${replies.length}\n`);
+    assert.ifError(result.error);
+    if (scenario.error) {
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, scenario.error);
+      assert.equal(result.stderr.trimEnd().split("\n").length, 1);
+    } else {
+      assert.equal(result.status, 0);
+      assert.equal(result.stderr, "");
+      assert.deepEqual(JSON.parse(result.stdout), { source_sha: sourceSha, ci_run_id: "456" });
+    }
+  });
+}
 
 test("container publication requires main-only environments and public matching packages", () => {
   const environment: {

@@ -14,13 +14,15 @@ They do not prove backend authorization, persistence, or infrastructure cleanup.
    read them, so the dialog counts them without IDs. Open Agents or Secrets in
    the same Namespace. Expand the Configuration commands. Closing the dialog
    does not delete resources.
-4. In **Delete permission denied**, the icon looks disabled, with a visible
-   reason: only an Installation administrator can delete a Namespace. Press Tab
-   to focus the icon; its description reads the reason, its focus ring is not
-   faded, and Enter opens nothing. In **Delete blocked by a Restriction**, an
-   Installation administrator's reason names the Restriction instead.
-   **Delete permission changed** shows a refusal after an advisory permission
-   answer. **Delete request pending** holds dismissal until the write settles.
+4. In **Delete permission denied**, the icon looks disabled and explains that
+   Namespace delete is required. A known nonadministrator is asked to have an
+   Installation administrator check access. Press Tab to focus the icon. Its
+   description reads the reason, its focus ring is not faded, and Enter opens
+   nothing. In **Delete blocked by a Restriction**, the simulated administrator
+   is advised to check access and whether an IAM Restriction applies. The
+   permission answer does not identify the cause. **Delete permission changed**
+   shows a refusal after an advisory permission answer. **Delete request pending**
+   holds dismissal until the write settles.
 5. **Delete outcome unknown** requires **Refresh status** before another
    deletion request. **Delete Retry** keeps status and deliberate
    retry controls on an already deleting Namespace.

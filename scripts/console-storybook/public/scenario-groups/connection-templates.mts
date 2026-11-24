@@ -1,6 +1,7 @@
 import { click } from "../create-agent-form-data.mts";
 import type { StoryAction } from "../../story-action.mts";
 
+const editGoogle = { selector: '[aria-label="Edit Google OAuth"]', click: true } as const;
 const openTemplate = [click("Create connection template")];
 const discoverMcp = [
   ...openTemplate,
@@ -11,15 +12,37 @@ const discoverMcp = [
 export const connectionTemplateScenarios = {
   credentialsTemplateCatalog: {
     group: "Pages/Credentials",
-    name: "OAuth connection templates",
+    name: "Connection templates",
     steps: [
-      "Compare availability, assigned OAuth client, and current version for Google OAuth and Support MCP. Open Edit on either row and check the selected template.",
+      "Compare the authentication method, availability, details, and version for Google OAuth, Support MCP, and the static Bearer Reporting API template.",
+      "Open Edit on Reporting API to inspect its HTTP method, host, port, and exact path or subtree. Static templates do not have OAuth clients.",
       "Switch the Namespace in the header. Installation-wide templates remain available in every Namespace.",
     ],
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
     description:
-      "An Installation-wide Google template and a Namespace MCP template with an assigned OAuth client.",
+      "A mixed catalog shows static Bearer and OAuth templates through the same resource workflow.",
+  },
+  credentialsStaticTemplateCreate: {
+    group: "Pages/Credentials",
+    name: "Create static Bearer template",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    actions: [
+      click("Create connection template"),
+      { selector: "#connection-template-authentication", value: "static_bearer" },
+    ],
+    description:
+      "Configure each HTTP method, host, port, and exact path or subtree without registering an OAuth client.",
+  },
+  credentialsStaticTemplateEdit: {
+    group: "Pages/Credentials",
+    name: "Edit static Bearer template",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    actions: [{ selector: 'button[aria-label="Edit Reporting API"]', click: true }],
+    description:
+      "Review the current destination. Saving destination changes creates a new immutable version; renaming preserves the current version.",
   },
   credentialsOAuthClientCatalog: {
     group: "Pages/Credentials",
@@ -29,7 +52,7 @@ export const connectionTemplateScenarios = {
     description: "Public and confidential OAuth clients with different issuers and availability.",
     steps: [
       "Compare each client’s issuer, availability, and token endpoint authentication method. Open a delete confirmation and check the name and availability, then cancel.",
-      "Choose Register OAuth client and select the connection template that defines its issuer.",
+      "Choose Register OAuth client. Confirm Reporting API is not offered; select an OAuth template that defines its issuer.",
     ],
   },
   credentialsDeleteTemplate: {
@@ -107,9 +130,22 @@ export const connectionTemplateScenarios = {
     name: "Edit Google OAuth",
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
-    actions: [click("Edit Google OAuth")],
+    actions: [editGoogle],
     description:
       "Edit the Installation-wide Google template. Expand API destinations to change its HTTPS routes. This preview includes sample Gmail, Calendar and Drive routes.",
+  },
+  credentialsUnconfirmedTemplate: {
+    group: "Pages/Credentials",
+    name: "Unconfirmed template save",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "unconfirmed-save",
+    actions: [editGoogle, click("Save new version")],
+    description:
+      "The catalog saved version 2 of Google OAuth, but the save response omitted the version.",
+    steps: [
+      "Check that the editor explains how to recover, Save new version is disabled and Close has focus.",
+      "Press Enter on Close. Check that the refreshed catalog lists Google OAuth once at version 2.",
+    ],
   },
   credentialsManualTemplate: {
     group: "Pages/Credentials",
@@ -169,7 +205,7 @@ export const connectionTemplateScenarios = {
       | "/console/credentials/oauth-clients";
     actions?: StoryAction[];
     emptyNamespaces?: true;
-    oauthCatalog?: "ready" | "error";
+    oauthCatalog?: "ready" | "error" | "unconfirmed-save";
     readOnlyPermissionSummary?: true;
     description: string;
     steps?: readonly string[];

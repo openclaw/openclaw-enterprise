@@ -32,7 +32,6 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
-  CODEX_MODEL_ONLY,
   codexRuntimeOffProvider,
   DEDICATED_STORAGE_ROUTING_REQUIRED,
   dedicatedOpenClawSandboxRefusal,
@@ -41,8 +40,11 @@ import {
   PROVISIONING_NOT_COMPLETED,
   runtimeIdRequired,
   runtimePoliciesConflict,
-  selectablePrimaryRuntimeRequired,
 } from "../helpers/refusal-text.mjs";
+import {
+  CODEX_MODEL_ONLY,
+  selectablePrimaryRuntimeRequired,
+} from "../helpers/refusal-configuration-runtime.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { waitFor } from "../helpers/wait-for.ts";

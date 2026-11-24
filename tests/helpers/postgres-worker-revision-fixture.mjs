@@ -33,6 +33,7 @@ import { freezeAgentRevision } from "../../packages/contracts/src/index.ts";
  * @typedef {{
  *   harness?: RevisionHarnessDescriptor,
  *   sandboxDriverId?: string,
+ *   sandboxPolicy?: AgentRevision["sandboxPolicy"],
  *   protectedRepositoryDriver?: { require(capability: "sandbox"): { id: string } },
  *   repositoryCredentials?: RepositoryRevisionState,
  *   actorId?: string,
@@ -602,6 +603,7 @@ export function createWorkerRevisionFixtures(
       {
         harness,
         sandboxDriverId,
+        sandboxPolicy,
         protectedRepositoryDriver,
         repositoryCredentials,
         actorId = actor.id,
@@ -672,6 +674,7 @@ export function createWorkerRevisionFixtures(
         harness: { ...approvedHarness, overrides: {}, configuration: {} },
         compute: { ...admittedCompute },
         ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
+        ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
         ...(plugins === undefined ? {} : { plugins }),
         harnessAuth,
         ...(credentialSources.length === 0 ? {} : { credentialSources }),
@@ -682,10 +685,10 @@ export function createWorkerRevisionFixtures(
       let proxyAdmission;
       if (protectedRepositoryDriver) {
         const sandbox = protectedRepositoryDriver.require("sandbox");
+        const { agentCredentialAccess, egressAdmission } = controller.composition.credentials;
         await state.transact(async (unit) => {
-          const [auth] = await controller.admitHarnessAuth(unit, actorId, owner);
-          assert.deepEqual(auth, harnessAuth);
-          const sources = await controller.admitCredentialSources(
+          // Validate the stored binding and source before seeding the historical revision.
+          const sources = await agentCredentialAccess.admitCredentialSources(
             unit,
             actorId,
             owner,
@@ -697,7 +700,7 @@ export function createWorkerRevisionFixtures(
           assert.deepEqual(sources, credentialSources);
           const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
           const plan = (chosen) =>
-            controller.admitProxyPlan(
+            egressAdmission.admitProxyPlan(
               unit,
               owner,
               candidate.id,
@@ -708,12 +711,12 @@ export function createWorkerRevisionFixtures(
               candidate.harness.configuration,
             );
           await assert.rejects(
-            plan({ ...auth, sourceId: "unselected" }),
+            plan({ ...harnessAuth, sourceId: "unselected" }),
             /created or adopted under the Proxy/,
           );
-          proxyAdmission = await plan(auth);
+          proxyAdmission = await plan(harnessAuth);
           const egressPlan = proxyAdmission.plan;
-          assert.deepEqual(egressPlan.harnessCredentialSource, auth);
+          assert.deepEqual(egressPlan.harnessCredentialSource, harnessAuth);
           assert.deepEqual(
             egressPlan.routes,
             [],

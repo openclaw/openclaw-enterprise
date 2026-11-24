@@ -4,6 +4,9 @@ import test from "node:test";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
   AgentReadResponse,
+  type AgentWire,
+  type AuditEvent,
+  type NamespaceWire,
   AgentRevisionListResponse,
   AgentRevisionResponse,
   ErrorResponse,
@@ -20,6 +23,7 @@ import {
   createProvisioningCapableComputeDriver,
   createReadyNamespace,
   injectedRequest,
+  identifier,
   type createInjectedControllerFixture,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
@@ -33,9 +37,12 @@ type ConfigureController = (
   options?: ControllerOptions,
 ) => Promise<{ fixture: Fixture; request: FixtureRequest }>;
 
+const stringifyEvidence: (value: readonly AuditEvent[] | ErrorResponse) => string = JSON.stringify;
+
 function assertDependencyUnavailable(response: Awaited<ReturnType<FixtureRequest>>) {
-  const { error } = checkedInjectedBody(response, 503, ErrorResponse);
-  assert.equal(error.code, "DEPENDENCY_UNAVAILABLE");
+  const body = checkedInjectedBody(response, 503, ErrorResponse);
+  assert.equal(body.error.code, "DEPENDENCY_UNAVAILABLE");
+  return body;
 }
 
 export function registerBootstrapAuthorizationEvidenceCase(createFixture: () => Promise<Fixture>) {
@@ -246,4 +253,170 @@ export function registerDeploymentAuthorizationEvidenceCase(
       assert.equal(auditSink.events.length, failureAuditCount);
     }
   });
+}
+
+function assertMemoryAuditFixture(
+  fixture: Fixture,
+): asserts fixture is Fixture & { auditSink: InMemoryAuditSink } {
+  assert(fixture.auditSink instanceof InMemoryAuditSink);
+}
+
+export async function prepareAuditMutations(configureController: ConfigureController) {
+  const controller = await configureController();
+  const { fixture, request } = controller;
+  assertMemoryAuditFixture(fixture);
+  const { auditSink, principal, installationId } = fixture;
+  const originalIAMDriverId = fixture.iamDriver.id;
+  await bootstrapInstallation(controller, "Audited installation");
+  const namespace = await createNamespace(controller, "audited-namespace");
+  const agent = await createAgent(controller, namespace.id, "audited-agent");
+  // Beginning deletion is an audited mutation in its own right: it is the
+  // record that attributes the teardown to the principal who requested it,
+  // and it must exist before any resource is destroyed.
+  const deletion = await request("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(checkedInjectedBody(deletion, 202, AgentReadResponse).data.status, "deleting");
+  const expectedAuditEvents = auditSink.events.length;
+  assert.equal((await request("GET", "/installation", { identity: false })).status, 401);
+  assert.equal(auditSink.events.length, expectedAuditEvents);
+
+  async function verifyDeniedRequests(targetNamespace: NamespaceWire, targetAgent: AgentWire) {
+    const denialApp = fixture.createApp();
+    const unauthorized = await injectedRequest(denialApp, "POST", "/namespaces", {
+      body: { name: "never-log-this-request-body" },
+    });
+    assert.equal(unauthorized.status, 403);
+    const deletionDenied = await injectedRequest(
+      denialApp,
+      "DELETE",
+      `/namespaces/${targetNamespace.id}/agents/${targetAgent.id}`,
+    );
+    assert.equal(deletionDenied.status, 403);
+  }
+
+  function verifyAttributableAudit(
+    driverId: string,
+    targetNamespace: NamespaceWire,
+    targetAgent: AgentWire,
+    mutationEvents: readonly AuditEvent[],
+  ) {
+    assert.deepEqual(
+      mutationEvents.map((event) => [event.kind, event.resource.kind]),
+      [
+        ["bootstrap", "installation"],
+        ["mutation", "namespace"],
+        ["mutation", "configuration"],
+        ["mutation", "agent"],
+        ["mutation", "agent"],
+      ],
+    );
+    for (const event of mutationEvents) {
+      assert.equal(event.outcome, "success");
+      assert.equal(event.installationId, installationId);
+      assert.equal(event.actorId, principal.id);
+      assert.equal(event.actor?.principalId, principal.id);
+      assert.equal(event.actor?.issuer, principal.issuer);
+      assert.equal(event.actor?.subject, principal.subject);
+      assert(event.requestId);
+      assert.match(event.requestId, identifier("req"));
+      assert.equal(typeof event.admissionDecisionId, "string");
+      assert.equal(event.source, "occ");
+      assert.equal(event.iamDriverId, driverId);
+    }
+    const expected = (
+      action: AuthorizationRequest["action"],
+      resource: AuthorizationRequest["resource"],
+    ) => ({ principalId: principal.id, action, resource });
+    const scoped = (kind: "configuration" | "agent", id: string) => ({
+      kind,
+      id,
+      namespaceId: targetNamespace.id,
+    });
+    assert.deepEqual(
+      mutationEvents.map((event) => event.authorization),
+      [
+        expected("administer", { kind: "installation", id: installationId }),
+        expected("create", { kind: "namespace", id: installationId }),
+        expected("create", scoped("configuration", targetNamespace.id)),
+        expected("create", scoped("agent", targetNamespace.id)),
+        expected("delete", scoped("agent", targetAgent.id)),
+      ],
+    );
+    // Both refusals are audited, so a denied destructive request leaves evidence
+    // naming the principal who attempted it.
+    const denials = auditSink.events.filter((event) => event.kind === "authorization_denial");
+    assert.equal(denials.length, 2);
+    for (const denial of denials) {
+      assert.equal(denial.outcome, "denied");
+      assert.equal(denial.actor?.principalId, principal.id);
+      assert.equal(denial.installationId, installationId);
+      assert.equal(denial.reasonCode, "AUTHORIZATION_DENIED");
+    }
+    assert.deepEqual(
+      denials.map((denial) => [denial.authorization?.action, denial.authorization?.resource.kind]),
+      [
+        ["create", "namespace"],
+        ["delete", "agent"],
+      ],
+    );
+    assert.equal(denials[1]?.authorization?.resource.id, targetAgent.id);
+    const recorded = stringifyEvidence(auditSink.events);
+    assert.equal(recorded.includes(fixture.session.cookie), false);
+    assert.equal(recorded.includes("never-log-this-request-body"), false);
+  }
+  return {
+    fixture,
+    originalIAMDriverId,
+    namespace,
+    agent,
+    verifyDeniedRequests,
+    verifyAttributableAudit,
+  };
+}
+
+export async function verifyBootstrapRecovery(
+  fixture: Fixture,
+  failedBootstrap: Awaited<ReturnType<typeof injectedRequest>>,
+) {
+  assertMemoryAuditFixture(fixture);
+  assertDependencyUnavailable(failedBootstrap);
+  assert.deepEqual(fixture.auditSink.events, []);
+  assert.equal((await injectedRequest(fixture.app, "GET", "/installation")).status, 404);
+  const recoveredBootstrap = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
+    body: { name: "recovered installation" },
+  });
+  assert.equal(recoveredBootstrap.status, 201);
+}
+
+export async function verifyDependencyFailure(fixture: Fixture, dependency: "audit" | "iam") {
+  if (dependency === "audit") {
+    const bootstrapResult = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
+      body: { name: "Failure-injection installation" },
+    });
+    assert.equal(bootstrapResult.status, 201);
+  }
+  const audit = dependency === "audit";
+  const name = audit ? "must-never-become-visible" : "must-never-be-authorized";
+  const prefix = `sk-${dependency}-provider`;
+  const originalAppend = fixture.auditSink.append;
+  const originalAuthorize = fixture.iamDriver.authorize;
+  const fail = async () => {
+    throw new Error(`${prefix}-credential-123456789`);
+  };
+  if (audit) {
+    fixture.auditSink.append = fail;
+  } else {
+    fixture.iamDriver.authorize = fail;
+  }
+  let response: Awaited<ReturnType<typeof injectedRequest>>;
+  try {
+    response = await injectedRequest(fixture.app, "POST", "/namespaces", { body: { name } });
+  } finally {
+    if (audit) {
+      fixture.auditSink.append = originalAppend;
+    } else {
+      fixture.iamDriver.authorize = originalAuthorize;
+    }
+  }
+  const body = assertDependencyUnavailable(response);
+  assert.equal(stringifyEvidence(body).includes(prefix), false);
 }

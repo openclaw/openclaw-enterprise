@@ -5,7 +5,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { createServer } from "node:tls";
-import test from "node:test";
+import test, { after } from "node:test";
 import { promisify } from "node:util";
 import { Check } from "typebox/value";
 import { AgentId, NamespaceId } from "../../packages/contracts/src/index.ts";
@@ -17,6 +17,7 @@ import { canonicalizeDumpRows } from "../helpers/postgres-dump.ts";
 import {
   installObservabilityControlPlane,
   observabilitySelection,
+  waitForObservabilityNamespaces,
 } from "../helpers/production-observability-k3d.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -58,6 +59,9 @@ function deployment(value: unknown) {
     spec: { replicas: number(spec.replicas) },
   };
 }
+
+// The test's Namespaces, including the two OCC created, must be gone before the file passes.
+after(waitForObservabilityNamespaces);
 
 test(
   "separate migration Helm upgrades keep writers stopped until the database passes verification",
@@ -586,6 +590,7 @@ test(
     const runUpgrade = (operation: string[], attestations: string[] = []) =>
       runCommand(occ, upgradeArguments(operation, attestations, true), {
         ...upgradeExecution,
+        env: { ...cliEnvironment, TZ: "UTC+11" },
         timeout: 360_000,
         allowFailure: true,
       });
@@ -596,9 +601,39 @@ test(
         "the native process must identify the stopped-writer handoff",
       );
     };
+    const assertProgressTimestamp = (
+      stderr: string,
+      phase: string,
+      startedAt: number,
+      finishedAt: number,
+    ) => {
+      const prefix = `Upgrade: ${phase}`;
+      const lines = stderr.split("\n").filter((line) => line.startsWith(prefix));
+      assert.equal(lines.length, 1, `expected one progress line for "${phase}"`);
+      const timestamp = lines[0]
+        ?.slice(prefix.length)
+        .match(/^ \[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]$/u)?.[1];
+      assert.ok(timestamp, `expected a UTC timestamp for "${phase}"`);
+      const emittedAt = Date.parse(timestamp);
+      // Phase timestamps have whole-second precision.
+      assert.ok(
+        emittedAt >= Math.floor(startedAt / 1_000) * 1_000 && emittedAt <= finishedAt,
+        `expected "${phase}" to be timestamped during this invocation`,
+      );
+      t.diagnostic(`${prefix} [${timestamp}]`);
+    };
+
     // The real CLI stops the writers and records their identity before submitting Helm.
+    const pauseStartedAt = Date.now();
     const paused = await runUpgrade(["apply", "--evidence-dir", upgradeRun]);
+    const pauseFinishedAt = Date.now();
     assertMigrationPause(paused);
+    assertProgressTimestamp(
+      paused.stderr,
+      "Checking and stopping OCC writers.",
+      pauseStartedAt,
+      pauseFinishedAt,
+    );
     assert.match(
       await readFile(join(upgradeRun, "preflight-migration.log"), "utf8"),
       /"event":"migration.checked-for-installation","history":"completed"/,
@@ -716,8 +751,16 @@ test(
     assertMigrationPause(await runUpgrade(resume));
     await assertWriterFence();
 
+    const resumeStartedAt = Date.now();
     const resumed = await runUpgrade(resume, ["--migration-history-checked"]);
+    const resumeFinishedAt = Date.now();
     assert.equal(resumed.code, 0, "verified history must allow the original CLI run to finish");
+    assertProgressTimestamp(
+      resumed.stderr,
+      "Verifying upgrade completion.",
+      resumeStartedAt,
+      resumeFinishedAt,
+    );
     assert.equal(await helmRevision(), revision + 1);
     const submittedHook = record(await f.get("job", hookName));
     assert.equal(

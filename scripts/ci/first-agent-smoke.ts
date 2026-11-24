@@ -20,6 +20,7 @@ import { appendFile, readFile, realpath, statfs } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { proveControlledChannelProxy } from "./first-agent-smoke/channel-proxy.ts";
 import { buildImages, writeReleaseSelection } from "./first-agent-smoke/images.ts";
 import { createStepRecorder, log, workDirectory } from "./first-agent-smoke/process.ts";
 import {
@@ -43,6 +44,7 @@ import {
   enablePublicReader,
   proveRetirement,
   publicReadTurn,
+  type RetirementNotices,
 } from "./first-agent-smoke/reader.ts";
 
 export {
@@ -77,6 +79,7 @@ export { clusterEventLines } from "./first-agent-smoke/reader.ts";
 
 const { step, smokeStep, initialAdmissions, timings, writeTimingReport } = createStepRecorder();
 const proofResults: string[] = [];
+const retirementNotices: RetirementNotices = { completed: 0, rows: [] };
 
 async function smoke() {
   if (!process.env.OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY) {
@@ -130,7 +133,7 @@ async function smoke() {
         modelDirectory,
         process.env.OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE ||
           process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
-        { credentialDigests },
+        { credentialDigests, slackStandIn: true },
       ),
     );
     const [embedded, codex, control] = await initialAdmissions({
@@ -142,7 +145,7 @@ async function smoke() {
     await smokeStep("codex-chat", () => chatTurn(stack, codex.agent, codex.revisionId));
     await smokeStep("public-read", () => publicReadTurn(stack, codex, reader));
     const retiredRevision = await smokeStep("reader-retirement", () =>
-      proveRetirement(stack, codex, control, reader, proofResults),
+      proveRetirement(stack, codex, control, reader, proofResults, retirementNotices),
     );
     await smokeStep("agent-logs", async () => {
       await readLogs(stack, embedded.agent, "gateway");
@@ -162,6 +165,10 @@ async function smoke() {
         chatTurn(stack, embedded.agent, embeddedRevision),
         chatTurn(stack, codex.agent, codexRevision),
       ]),
+    );
+    assert.ok(modelDirectory, "First Agent smoke has no controlled provider directory");
+    await smokeStep("controlled-channel-proxy", () =>
+      proveControlledChannelProxy(stack, [codex, control], modelDirectory),
     );
   } catch (error) {
     await diagnostics(diagnosticStack);
@@ -192,6 +199,20 @@ async function summarize() {
   }
 }
 
+async function writeRetirementNoticeOutput() {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath) {
+    return;
+  }
+  const phase = timings.find(({ phase }) => phase === "reader-retirement");
+  try {
+    const output = { status: phase?.status ?? "unreached", ...retirementNotices };
+    await appendFile(outputPath, `retirement-notices=${JSON.stringify(output)}\n`);
+  } catch {
+    // The job's notice check is advisory.
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const command = process.argv[2];
   try {
@@ -216,8 +237,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         await summarize();
       }
     } finally {
-      if (command === "run" && process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_TEMP) {
-        await writeTimingReport(process.env.RUNNER_TEMP);
+      if (command === "run" && process.env.GITHUB_ACTIONS === "true") {
+        if (process.env.RUNNER_TEMP) {
+          await writeTimingReport(process.env.RUNNER_TEMP);
+        }
+        await writeRetirementNoticeOutput();
       }
     }
   }

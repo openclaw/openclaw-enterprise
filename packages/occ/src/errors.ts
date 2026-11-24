@@ -173,6 +173,7 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
       | "POLICY_MIDDLEWARE_VALIDATION"
       | "PVC_ADMISSION_LABELS"
       | "CLASS_ADMISSION_LABELS"
+      | "CALLER_DRIVER_CONFIG_DISABLED"
       | "RESOURCE_METADATA_FORBIDDEN"
       | "UNKNOWN";
   };
@@ -186,6 +187,28 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
     if (requestDiagnostic !== undefined) {
       this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
     }
+  }
+}
+
+/** Credential custody committed, but the selected Proxy did not acknowledge delivery. */
+export class CredentialDeliveryFailedError extends DependencyUnavailableError {
+  constructor() {
+    super("The credential source was updated, but credential delivery failed.");
+    this.name = "CredentialDeliveryFailedError";
+  }
+}
+
+/** The caller cannot determine whether the storage transaction committed. */
+export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
+  constructor() {
+    super("The PostgreSQL transaction commit outcome is unknown.");
+    this.name = "PostgresCommitOutcomeUnknownError";
+  }
+}
+
+export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super("The Agent audit disclosure record is unavailable.");
   }
 }
 
@@ -222,6 +245,15 @@ export class PersistedStateInvalidError extends DependencyUnavailableError {}
  * the fix for its own path. HTTP returns that message; every other 503 keeps the generic text.
  */
 export abstract class SecretDriverOwnershipError extends DependencyUnavailableError {}
+
+export class NetworkProxySecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own the Network proxy credential Secret. Select a Secret stored through the current driver.",
+    );
+    this.name = "NetworkProxySecretDriverError";
+  }
+}
 
 /**
  * A Configuration Secret binding the selected Secret Driver cannot serve. Only a Configuration
@@ -412,6 +444,11 @@ export class RecoveryPasswordPolicyError extends ScopeViolationError {
   }
 }
 
+/** A submitted source field failed validation by the selected TokenService. */
+export class TokenServiceSourceInputError extends ScopeViolationError {}
+
+/** This registration was refused before the TokenService attempted any material write. */
+
 /** A device login's private binding does not match the admitted request scope. */
 export class DeviceAuthorizationScopeMismatchError extends ScopeViolationError {
   constructor() {
@@ -439,6 +476,28 @@ export class ConfigurationHarnessError extends ScopeViolationError {
   constructor(message: string) {
     super(message);
     this.name = "ConfigurationHarnessError";
+  }
+}
+
+/** Proxy validation discloses only fixed rules, never submitted values or Secret state. */
+export class NetworkProxyValidationError extends ScopeViolationError {
+  constructor(reason: "selection" | "credential") {
+    super(
+      reason === "selection"
+        ? "Invalid Network proxy selection. Use an HTTP or HTTPS endpoint without credentials and an exact Secret reference."
+        : "The Network proxy credential Secret must contain a valid Basic authorization value.",
+    );
+    this.name = "NetworkProxyValidationError";
+  }
+}
+
+/** A fixed operational recovery message; supplier errors can contain sensitive values. */
+export class NetworkProxyEnforcementUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super(
+      "Gateway channel proxy enforcement is unavailable. Retry; if the problem continues, ask an Installation administrator to check the Envoy fleet, trust bundle, and DNS.",
+    );
+    this.name = "NetworkProxyEnforcementUnavailableError";
   }
 }
 
@@ -677,6 +736,22 @@ export class ResourceStateConflictError extends ResourceConflictError {
   }
 }
 
+/** The Channel preview can relay these fixed deployment recovery instructions. */
+export class RepositoryPolicyDeploymentConflict extends ResourceStateConflictError {
+  constructor(reason: "unscoped_history" | "incompatible_compute") {
+    if (reason === "unscoped_history") {
+      super(
+        "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
+      );
+    } else {
+      super(
+        "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
+        [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+      );
+    }
+  }
+}
+
 /**
  * A Sandbox Driver refuses a network policy rule it names, such as a grant beside its
  * repository route. OCC returns the message; the policy worker fails the application at once.
@@ -690,6 +765,8 @@ export class SandboxNetworkPolicyConflictError extends ResourceStateConflictErro
 
 const PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES = {
   save: "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+  saveRepository:
+    "Protected execution applies to this Agent. The Credential Proxy governs its egress. To withdraw an existing repository list, send empty arrays for additions and repositoryNetworkPolicy.",
   apply:
     "This Agent's active revision runs under protected execution: the Credential Proxy routes alone govern its egress, so live network policy application is refused.",
   deploy:
@@ -1124,6 +1201,7 @@ export class KubernetesSecretWriteForbiddenError extends DependencyUnavailableEr
 
 /** A step of dedicated activation that completes by itself once a workload catches up. */
 export type ActivationPendingCode =
+  | "CREDENTIAL_ACTIVATION_PENDING"
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_NODE_BINDING_PENDING"
   | "REPOSITORY_GIT_MATERIAL_PENDING"
@@ -1194,6 +1272,17 @@ export class ComputePreparationFailedError extends Error {
   }
 }
 
+/** The selected Credential Proxy confirmed this deployment cannot become ready. */
+export class CredentialDeploymentFailedError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super("The Credential Proxy refused the staged deployment.");
+    this.name = "CredentialDeploymentFailedError";
+    this.code = code;
+  }
+}
+
 /**
  * A workload cannot activate under its current configuration or managed policy.
  * Preparation and activation can both discover the refusal. The worker fails
@@ -1236,6 +1325,8 @@ export class SandboxRevisionUnsupportedError extends Error {
   readonly code:
     | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
     | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_RECREATION_REQUIRED"
+    | "SANDBOX_WORKLOAD_IMMUTABLE"
     | "SANDBOX_POD_LABELS_NOT_PERMITTED"
     | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
@@ -1271,6 +1362,19 @@ export class SandboxWorkspaceSetupRefusedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SandboxWorkspaceSetupRefusedError";
+  }
+}
+
+/**
+ * A Sandbox Driver's temporary workspace preparation could not create its Pod because a
+ * Namespace ResourceQuota has no Pods left. Compute keeps the revision pending with its
+ * `NAMESPACE_POD_QUOTA_EXCEEDED` reason, as for its own refused Pods, until a Pod is free or
+ * the convergence deadline passes.
+ */
+export class SandboxPodQuotaExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxPodQuotaExceededError";
   }
 }
 

@@ -17,10 +17,10 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
    lists each container's state and recent warning Events. Last termination
    shows the current exit for a terminated container, otherwise its prior exit.
    A failed refresh keeps the cards and says when they were last observed.
-3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
-   **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
-   for dedicated execution) or **Sandbox (policy decisions)** (see
-   [Sandbox source](#sandbox-source)), then a **Pod / container** stream.
+3. In **Source**, choose **Gateway**, **Agent (Harness)** for dedicated execution,
+   or **Sandbox (policy decisions)** (see [Sandbox source](#sandbox-source)).
+   If **Gateway** or **Agent (Harness)** lists multiple streams, choose
+   **Pod / container**.
    A successful init container does not establish that the main process succeeded.
    While no Harness Pod is ready, the Gateway logs failed connections to it
    (`ECONNREFUSED`); the console then points you to the **Agent (Harness)**
@@ -28,22 +28,22 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
    activity when the Harness Pod does not exist yet.
 4. Select **Follow** to poll for new lines every 2 seconds. Following pauses while
    the browser tab is hidden or you scroll up, and stops after a permission denial.
-5. Select **Previous instance** after a restart to read the exited container's
-   output. Following is off for it. Before a restart, the option is
-   unavailable and a note says why.
+5. For a restarted **Gateway** or **Agent (Harness)** container, select
+   **Previous instance** for prior output. **Follow** is unavailable.
 
 ### Filter the loaded output
 
 The server returns **info** and above (and lines of unknown level) unless you
 select **Include debug**, which starts a new view. The level chips and the
 case-insensitive **Filter** box (message, kind, subsystem and field values)
-narrow only the rows already loaded (up to 5000). For older output, use
-**Download** or CLI `--since`. Gap and withheld rows always stay
-visible.
+narrow the loaded rows (up to 5000). Gap and withheld rows stay visible.
 
 ### Download
 
-**Download** requests the last 1000 lines. Only **Include debug** affects the export.
+**Download** requests the latest 1,000 lines and can omit
+[older visible rows](#gaps-limits-and-retention).
+Download uses the selected stream and instance. **Include debug** applies.
+The level chips and **Filter** box do not.
 Container filenames use `<agent>-<revision>-<source>-<pod>.log`; **Previous
 instance** adds `-previous` before `.log`.
 
@@ -181,7 +181,8 @@ Container lines carry `contentClass: "operational"` and sandbox lines
 
 ## Gaps, limits and retention
 
-A page never silently skips output; it labels each gap:
+OCC labels gaps it detects. OpenShell can drop lines without reporting them,
+and **Follow** can miss late arrivals.
 
 | Row                 | Meaning                                                            |
 | ------------------- | ------------------------------------------------------------------ |
@@ -201,11 +202,11 @@ replica allows each principal 2 requests per second per Agent with a burst of
 after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
 so callers without the grants always get `403`.
 
-Kubernetes keeps only each container's current and previous instance, nothing
-from deleted Pods; for
-older output, use your [observability backend](../observability.md). While a
-container crash-loops, the previous instance can briefly read as empty.
-Initial `PodInitializing` or `ContainerCreating` can also read as empty; following resumes when the container starts.
+For existing Pods, this view offers current and previous container logs.
+If configured, your [observability backend](../observability.md) may retain
+operational events. It may omit visible rows. A crash-looping container's previous
+instance can briefly read as empty. `PodInitializing` or `ContainerCreating` can also read
+as empty. Following resumes when the container starts.
 
 ## Sandbox source
 

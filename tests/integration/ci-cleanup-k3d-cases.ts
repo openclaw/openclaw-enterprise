@@ -12,6 +12,17 @@ import {
   writeState,
 } from "./ci-cleanup-fixture.ts";
 
+function k3dRemovalScript(clusterName: string, deletedMarker: string): string {
+  return [
+    'if [ "$2" = "list" ]; then',
+    `  if [ -e ${JSON.stringify(deletedMarker)} ]; then printf '[]\\n'; else printf '[{"name":"%s"}]\\n' ${JSON.stringify(clusterName)}; fi`,
+    'elif [ "$2" = "delete" ]; then',
+    `  touch ${JSON.stringify(deletedMarker)}`,
+    "fi",
+    "",
+  ].join("\n");
+}
+
 export function registerK3dRemovalCases() {
   test("cleanup removes an owned k3d cluster resource through the CLI", async (t) => {
     const root = await fixture(t);
@@ -28,19 +39,9 @@ export function registerK3dRemovalCases() {
     // needs no root container: cleanup must not try to start one with --pull=never.
     await mkdir(join(clusterDirectory, "storage"));
     const deletedMarker = join(root, "deleted");
-    await writeCommand(
-      join(root, "bin"),
-      "k3d",
-      [
-        'if [ "$2" = "list" ]; then',
-        `  if [ -e ${JSON.stringify(deletedMarker)} ]; then printf '[]\\n'; else printf '[{"name":"%s"}]\\n' ${JSON.stringify(clusterName)}; fi`,
-        'elif [ "$2" = "delete" ]; then',
-        `  touch ${JSON.stringify(deletedMarker)}`,
-        "fi",
-        "",
-      ].join("\n"),
-      { log: k3dLog },
-    );
+    await writeCommand(join(root, "bin"), "k3d", k3dRemovalScript(clusterName, deletedMarker), {
+      log: k3dLog,
+    });
     await writeCommand(join(root, "bin"), "docker", "exit 0\n", { log: dockerLog });
 
     const statePath = join(root, "state.json");
@@ -106,19 +107,9 @@ export function registerK3dRemovalCases() {
     t.after(() => chmod(volume, 0o700).catch(() => {}));
     const deletedMarker = join(root, "deleted");
     const k3dLog = join(root, "k3d.log");
-    await writeCommand(
-      join(root, "bin"),
-      "k3d",
-      [
-        'if [ "$2" = "list" ]; then',
-        `  if [ -e ${JSON.stringify(deletedMarker)} ]; then printf '[]\\n'; else printf '[{"name":"%s"}]\\n' ${JSON.stringify(clusterName)}; fi`,
-        'elif [ "$2" = "delete" ]; then',
-        `  touch ${JSON.stringify(deletedMarker)}`,
-        "fi",
-        "",
-      ].join("\n"),
-      { log: k3dLog },
-    );
+    await writeCommand(join(root, "bin"), "k3d", k3dRemovalScript(clusterName, deletedMarker), {
+      log: k3dLog,
+    });
     // The container runs as root: here, restore write permission and empty the mount. It must
     // start only after the cluster, whose nodes could still write volumes, is gone.
     const dockerLog = join(root, "docker.log");

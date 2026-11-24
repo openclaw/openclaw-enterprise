@@ -1,5 +1,7 @@
 # Credential Proxy architecture
 
+These diagrams follow the existing protected Git path. For the broader proposed model and plugin credential flow and its implementation status, see [credential sources](../reference/credential-sources.md).
+
 A user asks an Agent, “Implement a feature and push a branch.” OpenClaw Enterprise (OCE) runs the Agent in a sandbox. The Agent runs ordinary Git commands. OCE keeps the GitHub App signing key and the installation token outside that sandbox.
 
 ## From the user to GitHub
@@ -22,7 +24,7 @@ For selected repositories, the grant names repositories on one GitHub App instal
 
 ![The worker signs an App JWT, exchanges it at GitHub for an installation token, and commits the validated token. The adapter installs the token and verifies the loaded generation.](../assets/credential-proxy/current-git-setup.png)
 
-One OpenShell Backend supplies both `SandboxDriver` and `CredentialProxyDriver`. The worker binds its `ProtectedRepositoryGitAuthority` through `bindRepositoryGit`. See the [Driver contract](../reference/drivers/credential-proxy.md).
+One OpenShell Backend supplies both `SandboxDriver` and `LegacyEgressProxyDriver`. The worker binds its `ProtectedRepositoryGitAuthority` through `bindRepositoryGit`. See the [Driver contract](../reference/drivers/credential-proxy.md).
 
 The worker signs an App JWT and sends it to GitHub in a `POST /app/installations/{installation_id}/access_tokens` request. GitHub returns an installation token. The worker validates its scope and expiry before committing it to the store. The transport adapter reads that committed token through the Repository Git authority. Preparation and refresh run separately from Git requests. On the selected-repository path, OCE checks the held launcher's request against an authenticated middleware denial before issuing credentials. Credential installation and signed release precede Agent startup. See [OpenShell enrollment](../guides/repository-credentials/openshell-enrollment.md) and [token renewal](../guides/repository-credentials/openshell-git-renewal.md).
 

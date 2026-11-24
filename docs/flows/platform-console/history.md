@@ -8,6 +8,22 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-11-05 11:26: Move Debug mode from URL state to a saved browser preference in Settings. (authoring-run/4f118861-18d8-403b-a287-90ac81564c99 - 0351eb77180fbeea7c70114af7c8937a521b90b4)
+- 2026-11-05 19:21: Record automatic Git SHA detection for local controller builds. (authoring-run/b294b13a-1a99-4f9a-8377-d76d11bfe62f - 0351eb77180fbeea7c70114af7c8937a521b90b4)
+- 2026-11-05 22:43: Unconfirmed status. (authoring-run/104e0ca4-86db-492b-af14-750b4ea079f1 - 346f0db69fb93eb462822c7f5a7f600081f10847)
+- 2026-11-05 20:13: Close stale confirmations. (namespace-cleanup-confirmation)
+- 2026-11-03 15:16: Preserve page position during navigation. (authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6 - 44c2f77b611207eef71a69f82ab692c26dbea2bc)
+- 2026-10-30 14:30: Keep Deploy's last Secret operate answer while a recheck rereads it. (bughunt-1030g - a382326dde)
+- 2026-10-30 11:02: Name denied Secrets. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
+- 2026-10-30 09:32: Name authorized bound Secrets in the Configuration save permission hint. (b03beb3e-57d1-47cf-829f-e31955a47d3c - 755ff77baa3377441be0938302030386fa985c75)
+- 2026-10-29 22:18: Cancel the unfinished row reads of Agents a search hides. (authoring-run/6f6ebb4a-7c4c-4bd7-a11c-8381c411c816 - 225ce0ebaf1dd14c01c5c50ccf8ac420e13c72a4)
+- 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
+- 2026-10-29 12:06: Clarify denials. (authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05 - 4d68e053e69a1)
+- 2026-10-29 11:42: Keep contextual request recovery and scope binding scrubbing to its preflight. (authoring-run/221d2fc5-7549-4054-a3ab-6b078a1755ae - aa74d9bc28d8c)
+- 2026-10-29 10:44: Redact outcomes. (authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61 - 134c539bdc6b712618bcb2a60788a4e5ba7810b0)
+- 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
+- 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
+
 - 2026-10-30 16:00: A rebuilt Agents list keeps the refocused row control and its note in view. (fix-dogfood-r60)
 - 2026-10-30 12:30: A permission answer read before a Stop or Delete refusal no longer lifts it; a rebuilt Agents list moves focus from a gone or disabled row control to the row's name or the heading. (fix-4183-followups)
 - 2026-10-30 12:00: Refocus rereads the Agent page's permission answer and keeps focus on a rebuilt Agents list row. (fix-dogfood-r59)

@@ -9,7 +9,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import {
   openShellEgressConfiguration,
-  OpenShellCredentialProxyDriver,
+  OpenShellLegacyEgressProxyDriver,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { openShellProtectedCodexArtifacts } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { openShellGitRuntimeFixture } from "../helpers/openshell-git-runtime.ts";
@@ -313,7 +313,7 @@ test("paired observation rejects changed, missing or extra artifact rules before
     repositoryMiddlewareName: "oce-prepared-git",
     authorityScope: "execution" as const,
   };
-  const proxy = new OpenShellCredentialProxyDriver(options, {
+  const proxy = new OpenShellLegacyEgressProxyDriver(options, {
     id: driver.id,
     backend,
     sandbox: driver,

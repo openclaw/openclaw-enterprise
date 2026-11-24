@@ -18,7 +18,8 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import type { Route } from "playwright";
+import type { Page, Route } from "playwright";
+import { Check } from "typebox/value";
 
 import type {
   CreateAgentBody,
@@ -26,7 +27,14 @@ import type {
   CreateSecretBody,
   ProvisionAgentBody,
 } from "../../packages/contracts/src/api/common.ts";
+import { JsonValue } from "../../packages/contracts/src/api/common.ts";
+import {
+  AgentRevisionListResponse,
+  AgentRevisionReadResponse,
+} from "../../packages/contracts/src/api/resources.ts";
 import type {
+  AgentRevisionSummaryWire,
+  AgentRevisionWire,
   AgentWire,
   AgentDeploymentStatusWire,
   AgentProvisioningResponse,
@@ -86,17 +94,19 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.ts";
 import {
-  ADMINISTRATOR_ACCESS_DENIED,
-  AGENT_CREATE_DENIED,
+  AGENT_CREATE_ACCESS_CHECK,
   AGENT_SAVE_DENIED,
-  createDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
-  AGENT_CREATE_PERMISSIONS_UNREAD,
   CHANNELS_NEED_DEDICATED,
   REPOSITORY_ACCESS_NOT_CONFIGURED,
-  REPOSITORY_CHOICES_CREATE_DENIED,
 } from "../helpers/refusal-text.mjs";
+import {
+  ADMINISTRATOR_ACCESS_DENIED,
+  createDenied,
+  AGENT_CREATE_PERMISSIONS_UNREAD,
+  REPOSITORY_CHOICES_CREATE_DENIED,
+} from "../helpers/refusal-access.ts";
 import { restrict } from "../helpers/iam-grants.ts";
 
 const defaultCodexPreset = JSON.parse(
@@ -1305,6 +1315,74 @@ test("Agent repository recovery with empty current policy requires an explicit n
   );
 });
 
+async function routeProvisionedRevision(
+  page: Page,
+  agent: AgentWire,
+  revisionId: string,
+  configuration: AgentRevisionWire["configuration"],
+  configurationGeneration: number,
+  deployment: Pick<AgentDeploymentStatusWire, "status" | "progress" | "error">,
+) {
+  const path = `**/namespaces/${agent.namespaceId}/agents/${agent.id}`;
+  const metadata = {
+    id: revisionId,
+    namespaceId: agent.namespaceId,
+    agentId: agent.id,
+    revision: 1,
+    backendId: agent.backendId,
+    configurationId: agent.configurationId,
+    configurationGeneration,
+    createdAt: agent.createdAt,
+    harness: {
+      id: "codex",
+      version: "test",
+      mode: agent.executionMode,
+      overrides: {},
+      configuration: {},
+    },
+  };
+  const meta = { requestId: `req_${randomUUID()}` };
+  await page.route(`${path}/deployments/${revisionId}`, (route) => {
+    const data = {
+      deploymentId: revisionId,
+      namespaceId: agent.namespaceId,
+      agentId: agent.id,
+      ...deployment,
+      cleanup: null,
+      warnings: [],
+    } satisfies AgentDeploymentStatusWire;
+    return route.fulfill({ json: { data, meta } });
+  });
+  await page.route(`${path}/revisions`, (route) => {
+    const summary = {
+      ...metadata,
+      deploymentStatus: deployment.status,
+      deploymentErrorCode: deployment.error?.code ?? null,
+    } satisfies AgentRevisionSummaryWire;
+    const json = { data: [summary], meta: { ...meta, nextCursor: null } };
+    assert.ok(Check(AgentRevisionListResponse, json), "Expected a revision list response");
+    return route.fulfill({ json });
+  });
+  await page.route(`${path}/revisions/${revisionId}`, (route) => {
+    // The Secret is saved through the real API before provisioning hands off to this version.
+    assert.ok(agent.harnessAuth);
+    const data = {
+      ...metadata,
+      configurationKind: "agent",
+      configuration,
+      gatewayManagedMode: agent.gatewayManagedMode,
+      harnessAuth: agent.harnessAuth,
+      compute: { id: "kubernetes-test", implementation: "kubernetes" },
+    } satisfies AgentRevisionWire;
+    const json = { data, meta };
+    assert.ok(
+      Check({ SafeJsonValue: JsonValue }, AgentRevisionReadResponse, json),
+      "Expected a revision detail response",
+    );
+    return route.fulfill({ json });
+  });
+}
+
 test("Dedicated Agent creation opens deployment details after provisioning with masked new Secrets", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1316,7 +1394,6 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   const revisionId = "rev_00000000-0000-4000-8000-00000000feed";
   let allowProvisioningSuccess = false;
   let provisioningReads = 0;
-  let deploymentStatus: AgentDeploymentStatusWire["status"] = "queued";
   let provisionBody: ProvisionAgentBody | undefined;
   const savedSecrets = new Map<string, SecretWire>();
   await routeInstallationProvisioning(page, fixture);
@@ -1337,7 +1414,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     }),
   );
 
-  const agent = {
+  const agent: AgentWire = {
     id: agentId,
     namespaceId: namespace.id,
     name: "Provisioned Agent",
@@ -1345,29 +1422,11 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     desiredRuntimeState: "running",
     configurationId: "cfg_00000000-0000-4000-8000-00000000feed",
     executionMode: "dedicated",
-    harnessAuth: {
-      method: "api_key",
-      source: null as SecretWire["ref"] | null,
-    },
+    backendId: null,
+    gatewayManagedMode: true,
+    harnessAuth: null,
     servicePrincipalId: "identity_provisioned_agent",
     createdAt: new Date().toISOString(),
-    activeRevisionId: null,
-  };
-  const revision = {
-    id: revisionId,
-    namespaceId: namespace.id,
-    agentId,
-    revision: 1,
-    backendId: null,
-    configurationId: agent.configurationId,
-    configurationKind: "agent",
-    configurationGeneration: 2,
-    createdAt: agent.createdAt,
-    configuration: values,
-    harnessAuth: agent.harnessAuth,
-    harness: { id: "codex", version: "test", mode: "dedicated" },
-    compute: { id: "kubernetes-test", implementation: "kubernetes" },
-    servicePrincipalId: agent.servicePrincipalId,
   };
   const workspacePreset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: {
@@ -1406,7 +1465,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     const saved: SecretWire = (await response.json()).data;
     savedSecrets.set(body.name, saved);
     if (!body.name.endsWith("Slack app token") && !body.name.endsWith("Slack bot token")) {
-      agent.harnessAuth.source = saved.ref;
+      agent.harnessAuth = { method: "api_key", source: saved.ref };
     }
     await route.fulfill({ response });
   });
@@ -1454,38 +1513,12 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
       } satisfies AgentProvisioningStatusResponse["data"]),
     );
   });
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
-    async (route) => {
-      await route.fulfill(
-        json({
-          deploymentId: revisionId,
-          namespaceId: namespace.id,
-          agentId,
-          status: deploymentStatus,
-          cleanup: null,
-          progress:
-            deploymentStatus === "queued"
-              ? { lastAttempt: null, nextAttemptAt: revision.createdAt }
-              : null,
-          warnings: [],
-          error:
-            deploymentStatus === "failed"
-              ? { code: "DEPENDENCY_UNAVAILABLE", message: "Deployment reconciliation failed." }
-              : null,
-        } satisfies AgentDeploymentStatusWire),
-      );
-    },
-  );
-  await page.route(`**/namespaces/${namespace.id}/agents/${agentId}/revisions`, async (route) => {
-    await route.fulfill(json([revision]));
-  });
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agentId}/revisions/${revisionId}`,
-    async (route) => {
-      await route.fulfill(json(revision));
-    },
-  );
+  const deployment: Pick<AgentDeploymentStatusWire, "status" | "progress" | "error"> = {
+    status: "queued",
+    progress: { lastAttempt: null, nextAttemptAt: agent.createdAt },
+    error: null,
+  };
+  await routeProvisionedRevision(page, agent, revisionId, values, 2, deployment);
   await page.route(
     `**/namespaces/${namespace.id}/agents/${agentId}/native-admin`,
     async (route) => {
@@ -1589,7 +1622,12 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   // Creation must hand off to the detail page while deployment is still queued.
   const deploymentPanel = await expectDeploymentOutcome(page, "Queued");
   assert.equal(await page.getByRole("heading", { name: "Create Agent", exact: true }).count(), 0);
-  deploymentStatus = "failed";
+  deployment.status = "failed";
+  deployment.progress = null;
+  deployment.error = {
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: "Deployment reconciliation failed.",
+  };
   await deploymentPanel.getByRole("button", { name: "Refresh deployment", exact: true }).click();
   await openFailureDetails(page);
   await expectDeploymentOutcome(page, "Failed", { folded: false });
@@ -1941,7 +1979,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   const createdAt = new Date().toISOString();
   const bodies: ProvisionAgentBody[] = [];
   const savedSecrets = new Map<string, SecretWire>();
-  const agent = {
+  const agent: AgentWire = {
     id: agentId,
     namespaceId: namespace.id,
     name: "Retried Agent",
@@ -1949,29 +1987,12 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     desiredRuntimeState: "running",
     configurationId: "cfg_00000000-0000-4000-8000-00000000babe",
     executionMode: "dedicated",
-    harnessAuth: {
-      method: "codex_pat",
-      source: null as SecretWire["ref"] | null,
-    },
+    backendId: null,
+    gatewayManagedMode: true,
+    harnessAuth: null,
     servicePrincipalId: "identity_retried_agent",
     createdAt,
     activeRevisionId: revisionId,
-  };
-  const revision = {
-    id: revisionId,
-    namespaceId: namespace.id,
-    agentId,
-    revision: 1,
-    backendId: null,
-    configurationId: agent.configurationId,
-    configurationKind: "agent",
-    configurationGeneration: 1,
-    createdAt,
-    configuration: values,
-    harnessAuth: agent.harnessAuth,
-    harness: { id: "codex", version: "test", mode: "dedicated" },
-    compute: { id: "kubernetes-test", implementation: "kubernetes" },
-    servicePrincipalId: agent.servicePrincipalId,
   };
   const json = (data: unknown, status = 200) => ({
     status,
@@ -1993,7 +2014,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     const saved: SecretWire = (await response.json()).data;
     savedSecrets.set(body.name, saved);
     if (!body.name.endsWith("Slack app token") && !body.name.endsWith("Slack bot token")) {
-      agent.harnessAuth.source = saved.ref;
+      agent.harnessAuth = { method: "codex_pat", source: saved.ref };
     }
     await route.fulfill({ response });
   });
@@ -2035,23 +2056,6 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
       ),
     );
   });
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
-    async (route) => {
-      await route.fulfill(
-        json({
-          deploymentId: revisionId,
-          namespaceId: namespace.id,
-          agentId,
-          status: "succeeded",
-          cleanup: null,
-          progress: null,
-          warnings: [],
-          error: null,
-        } satisfies AgentDeploymentStatusWire),
-      );
-    },
-  );
   await page.route(`**/namespaces/${namespace.id}/agents/${agentId}`, async (route, request) => {
     if (request.method() === "GET") {
       await route.fulfill(json(agent));
@@ -2059,15 +2063,11 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     }
     await route.fallback();
   });
-  await page.route(`**/namespaces/${namespace.id}/agents/${agentId}/revisions`, async (route) => {
-    await route.fulfill(json([revision]));
+  await routeProvisionedRevision(page, agent, revisionId, values, 1, {
+    status: "succeeded",
+    progress: null,
+    error: null,
   });
-  await page.route(
-    `**/namespaces/${namespace.id}/agents/${agentId}/revisions/${revisionId}`,
-    async (route) => {
-      await route.fulfill(json(revision));
-    },
-  );
   await page.route(
     `**/namespaces/${namespace.id}/agents/${agentId}/native-admin`,
     async (route) => {
@@ -2225,7 +2225,8 @@ test("Agent creation explains a denied capability check instead of offering a re
   // A known denial replaces the form with the refusal a fresh load shows (finding 2908).
   permissions = { agents: { create: false } };
   await page.getByRole("button", { name: "Retry permission check" }).click();
-  await expectCreateRefused(page, AGENT_CREATE_DENIED);
+  // This permission fixture omits Installation administration, so the guidance is neutral.
+  await expectCreateRefused(page, AGENT_CREATE_ACCESS_CHECK);
 
   // A transient failure still offers the retry.
   status = 503;

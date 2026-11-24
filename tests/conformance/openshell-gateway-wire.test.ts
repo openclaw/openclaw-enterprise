@@ -1,4 +1,4 @@
-import { registerManagedWorkloadCases } from "./openshell-gateway-wire-managed-cases.mjs";
+import { registerManagedWorkloadCases } from "./openshell-gateway-wire-managed-cases.ts";
 import { registerPolicyCases } from "./openshell-gateway-wire-policy-cases.ts";
 import { registerExecCases } from "./openshell-gateway-wire-exec-cases.ts";
 import { registerConnectCases } from "./openshell-gateway-wire-connect-cases.ts";

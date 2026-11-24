@@ -19,7 +19,7 @@ import {
   credentialSourceFieldRequired,
   PROTECTED_SOURCE_ROTATE_REFUSED,
   PROTECTED_SOURCE_UPDATE_REFUSED,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-credential-admission.ts";
 
 type CaptureChanges = {
   target?: Partial<Capture["request"]["target"]>;
