@@ -82,12 +82,19 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   );
 });
 
-async function oauthCustody() {
+/** @param {import("@openclaw-enterprise/contracts").OAuthConnectionGrant} grant
+ * @param {AbortSignal} signal
+ */
+async function oauthCustody(grant, signal) {
   const driver = createTestSecretDriver();
   const service = new OAuthGrantStore(driver, refreshPinnedOAuthGrant);
   const worker = new OAuthGrantStore(driver, refreshPinnedOAuthGrant);
-  const custody = await service.reserve({ namespaceId: "ns_test", sourceId: "source" });
-  return { driver, custody, service, worker };
+  const { custody, schedule } = await service.create(
+    { namespaceId: "ns_test", sourceId: "source" },
+    grant,
+    signal,
+  );
+  return { driver, custody, schedule, service, worker };
 }
 
 test("the Token Service keeps the first access token in custody and serializes rotation", async (t) => {
@@ -151,7 +158,6 @@ test("the Token Service keeps the first access token in custody and serializes r
     tokenUrl: issuer + "/token",
     redirectUri: "https://oce.example.test/callback",
   };
-  const { driver, custody, service, worker } = await oauthCustody();
   const grant = await exchangeAuthorizationCode(
     request,
     "test-verifier",
@@ -159,7 +165,7 @@ test("the Token Service keeps the first access token in custody and serializes r
     clientSecret,
     t.signal,
   );
-  await service.storeInitialGrant(custody, { ...request, ...grant }, t.signal);
+  const { driver, custody, schedule, service, worker } = await oauthCustody(grant, t.signal);
   const resolveClient = async () => ({
     registration: request,
     readSecret: async () => rotatedClientSecret,
@@ -169,6 +175,11 @@ test("the Token Service keeps the first access token in custody and serializes r
   assert.equal(Object.hasOwn(JSON.parse(stored), "clientSecret"), false);
   const accepted = (await worker.observe(custody, t.signal, 0)).token;
   assert.equal(accepted.accessToken, first);
+  assert.deepEqual(schedule, {
+    version: accepted.version,
+    nextRefreshAt: accepted.nextRefreshAt,
+    grantedScopes: accepted.grantedScopes,
+  });
   assert.deepEqual(Object.keys(accepted).sort(), [
     "accessToken",
     "expiresAt",
@@ -285,10 +296,9 @@ test("disconnect fences an in-flight OAuth refresh response", async (t) => {
     server.close();
   });
   const issuer = "http://127.0.0.1:" + server.address().port;
-  const { driver, custody, service, worker } = await oauthCustody();
   const grant = connectionGrant(issuer);
+  const { driver, custody, service, worker } = await oauthCustody(grant, t.signal);
   const resolveClient = async () => ({ registration: grant });
-  await service.storeInitialGrant(custody, grant, t.signal);
   assert.equal((await worker.observe(custody, t.signal)).status.state, "ready");
   const refreshing = worker.renew(
     custody,

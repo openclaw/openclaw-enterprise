@@ -1242,7 +1242,12 @@ function upgradedCanonicalData(data) {
   return {
     ...data,
     agents: data.agents.map(({ value }) => {
-      const current = { ...value, predecessor_replacement: value.predecessor_replacement ?? null };
+      const current = {
+        ...value,
+        predecessor_replacement: value.predecessor_replacement ?? null,
+        network_proxy_url: value.network_proxy_url ?? null,
+        network_proxy_secret_id: value.network_proxy_secret_id ?? null,
+      };
       delete current.restart_generation;
       delete current.restart_domain;
       return { value: current };
@@ -1250,6 +1255,9 @@ function upgradedCanonicalData(data) {
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
         ...value,
+        network_proxy_url: value.network_proxy_url ?? null,
+        network_proxy_secret_id: value.network_proxy_secret_id ?? null,
+        network_proxy_admission: value.network_proxy_admission ?? null,
         first_deployment_digest: null,
         admitted_spec: Object.hasOwn(value.admitted_spec, "execution_admission")
           ? value.admitted_spec
@@ -1489,7 +1497,9 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [90, "preTokenServiceCredentialSources"],
+      [90, "preAgentNetworkProxy"],
+      [91, "preAgentNetworkProxyAdmission"],
+      [92, "preTokenServiceCredentialSources"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1951,7 +1961,9 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [90, "preTokenServiceCredentialSources"],
+      [90, "preAgentNetworkProxy"],
+      [91, "preAgentNetworkProxyAdmission"],
+      [92, "preTokenServiceCredentialSources"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2327,7 +2339,8 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "oauth_source_cutover", { prefix: 90 });
+    const prefix = 92;
+    const db = await historyDatabase(context, fixture, "oauth_source_cutover", { prefix });
     const installationId = `ins_${randomUUID()}`;
     const namespaceId = `ns_${randomUUID()}`;
     const clientId = `ccr_${randomUUID()}`;
@@ -2395,7 +2408,7 @@ test(
       ).rows;
     const before = await historySnapshot(db);
     const sourceBefore = await sourceData();
-    assert.equal(before.receipts.length, 90);
+    assert.equal(before.receipts.length, prefix);
     assert.equal(sourceBefore.length, 1);
     // The exact PostgreSQL cause distinguishes the explicit preflight from a later failing CHECK.
     assert.deepEqual(
@@ -2609,7 +2622,9 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [90, "preTokenServiceCredentialSources"],
+      [90, "preAgentNetworkProxy"],
+      [91, "preAgentNetworkProxyAdmission"],
+      [92, "preTokenServiceCredentialSources"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2742,7 +2757,9 @@ test(
     for (const [prefix, history] of [
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [90, "preTokenServiceCredentialSources"],
+      [90, "preAgentNetworkProxy"],
+      [91, "preAgentNetworkProxyAdmission"],
+      [92, "preTokenServiceCredentialSources"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2908,7 +2925,9 @@ test(
       [87, "preStandaloneCredentialDeployment"],
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [90, "preTokenServiceCredentialSources"],
+      [90, "preAgentNetworkProxy"],
+      [91, "preAgentNetworkProxyAdmission"],
+      [92, "preTokenServiceCredentialSources"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2932,10 +2951,13 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
+        // Prefix 86 reaches 0087's admission-column ALTER TABLE without a later GRANT.
         const rollbackTag =
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [91, "ALTER TABLE"],
+                [90, "ALTER TABLE"],
                 [89, "CREATE FUNCTION"],
                 [88, "CREATE TRIGGER"],
                 [87, "ALTER TABLE"],

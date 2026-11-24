@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: "2026-11-23"
-last_updated_session: "authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a"
+updated: "2026-11-24"
+last_updated_session: "authoring-run/92d52f30-0721-45fb-aa04-3c474de214cf"
 ---
 
 # How OCC saves a connection template
@@ -69,7 +69,11 @@ Rotation replaces the confidential client's secret at the same private reference
 
 ### 3. Authorize the account in the browser
 
-`packages/occ/src/oauth-consent.ts:startNamespaceConnection` and `packages/occ/src/browser-authorization.ts:startBrowserAuthorization`
+`packages/occ/src/oauth-consent.ts:listUsableConnectionTemplates`, `packages/occ/src/oauth-consent.ts:startNamespaceConnection`, and `packages/occ/src/browser-authorization.ts:startBrowserAuthorization`
+
+Before listing available templates, OCC checks `credential_source:create` and confirms that the requested Namespace exists. If the Namespace is absent, OCC returns `404` to an authorized caller.
+
+Before starting browser consent and again before exchanging the code, OCC checks that the IAM Driver can grant the creator read and operate access to the new Source.
 
 OCC verifies the person's Namespace permission and selected TokenService, then pins the selected Template version in an `oauth_connection` row in `occ.authentication_states`. The immutable version identifies the client. The row contains the state hash, browser session, principal, requested scopes, and Proof Key for Code Exchange (PKCE) verifier. No Source exists yet. The provider receives the state and the challenge derived from the verifier. OCC includes the OAuth resource for MCP consent and omits the scope parameter when the person requests provider defaults. The worker removes expired attempts. Device login uses the same store with a different kind and lifecycle.
 
@@ -79,7 +83,7 @@ OCC verifies the person's Namespace permission and selected TokenService, then p
 
 On callback, OCC consumes the matching attempt once, checks the person's session and authority, and selects the active TokenService before exchanging the code. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. OCC sends the code and verifier to the pinned token endpoint, includes the MCP resource when applicable, and reads the current client secret if the registration requires one. If the exchange times out, the person starts a new attempt.
 
-After exchange, OCC calls the selected TokenService's typed Source registration operation with the OAuth grant, Template ID, original consent version, selected client, and requested and granted scopes. TokenService allocates the Source ID, creates the ready OAuth Source, and stores the access token and refresh grant privately. OCC then grants the creator access and records the completion audit against the Source and the authorized Namespace create operation. When the provider omits scopes after a provider-default request, the Source records an empty granted-scope list.
+After exchange, OCC sends the grant and consent details to the selected TokenService. TokenService allocates the Source ID and writes the access token and refresh grant to private storage. It then saves the ready OAuth Source, its custody reference, and its renewal schedule in one transaction. OCC grants the creator access and records completion against the Source and the authorized Namespace create operation. When the provider omits scopes after a provider-default request, the Source records an empty granted-scope list.
 
 ### 5. Renew the grant
 
@@ -108,6 +112,8 @@ For built-in Codex consent, `apps/controller/src/drivers/token-service/codex-dev
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 08:50: Check the Namespace and IAM grant support, and write the initial OAuth grant directly. (authoring-run/92d52f30-0721-45fb-aa04-3c474de214cf - 0829d4c18d640e890dd3b17e6cf9a3156a1c217b)
 
 - 2026-11-23 13:30: Replace provisional and saved connections with consent state followed by TokenService-owned OAuth Source registration. (authoring-run/447bea0a-5c7e-477e-9924-ad4cdb7ab35a - d00c725c9c752dee95ffb33bd0395fa5d49e6929)
 

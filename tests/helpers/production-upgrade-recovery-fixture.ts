@@ -483,6 +483,17 @@ export function createRecoveryFixture(tools: RecoveryTools) {
         const { command, args } = request;
         commands.push(command);
         if (channelTransition && command === "occ" && args.includes("agent")) {
+          if (args.includes("revision") && args.includes("--check-retain-harness-overrides")) {
+            request.io.stdout(
+              JSON.stringify({
+                namespaceId: "ns_test",
+                agentId: "agt_test",
+                id: "rev_old",
+                canRetainHarnessOverrides: true,
+              }),
+            );
+            return request.io.exit(0);
+          }
           if (args.includes("stop")) {
             // End the accepted control at the real helper's guarded Stop submission.
             stopRequests.push(args);

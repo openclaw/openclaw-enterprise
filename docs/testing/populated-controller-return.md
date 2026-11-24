@@ -195,9 +195,10 @@ records when the helper observed the action finish, including an exact slot
 boundary. The last in-flight request and the final read can finish later.
 The final file write and time after the last response are outside coverage.
 
-These observations do not add an outage-free pass requirement. They measure the
-fixture's HTTPS route, not exact downtime, public ingress, Slack, or model
-continuity. Availability between requests remains unobserved.
+Timed phases show elapsed milliseconds. `OBSERVED` summarizes action duration,
+request counts, the longest successful-response gap and unprobed slots.
+These samples cover the fixture’s HTTPS route only. A passing rehearsal
+allows failed requests. Gaps cannot establish exact downtime.
 
 Inspect retained fixture resources after a failure. Set
 `OCC_TEST_PRODUCTION_TUI_KEEP=1` to retain fixture resources after a success.

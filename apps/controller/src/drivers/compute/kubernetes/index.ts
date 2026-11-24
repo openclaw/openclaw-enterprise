@@ -134,6 +134,8 @@ import type {
   ErrorDetail,
   AgentDeploymentDiagnostics,
   AgentRevision,
+  AgentNetworkProxy,
+  HarnessExecutionMode,
   SandboxHarnessObservation,
   AgentRuntimeContainerStatus,
   AgentRuntimeDescribeOptions,
@@ -1192,32 +1194,6 @@ interface NativeRuntimeSnapshot {
   readonly configuration: string;
 }
 
-/** Match the admitted model binding to the exact model selection rendered by this Harness. */
-function stagedModelCredentialBinding(revision: Readonly<AgentRevision>) {
-  const deployment = revision.credentialDeployment;
-  const auth = revision.harnessAuth;
-  const binding = deployment?.bindings[0];
-  const selected = harnessModelAuthentication(revision.configuration);
-  if (
-    !deployment ||
-    deployment.bindings.length !== 1 ||
-    auth.method !== "credential_source" ||
-    !auth.tokenServiceInstanceId ||
-    binding?.consumer.kind !== "model" ||
-    binding.consumer.providerId !== selected.providerId ||
-    binding.sourceRef.kind !== "credential_source" ||
-    binding.sourceRef.namespaceId !== revision.namespaceId ||
-    binding.sourceRef.id !== auth.sourceId ||
-    binding.projection.environment !== selected.environmentName ||
-    binding.projection.presentation !== "bearer"
-  ) {
-    throw new DependencyUnavailableError(
-      "The staged model binding does not match the configured Harness model operation.",
-    );
-  }
-  return binding;
-}
-
 /** One rendering step; neither credential values nor backend lookups belong here. */
 function prepareHarnessAuth(
   revision: Readonly<AgentRevision>,
@@ -1248,7 +1224,23 @@ function prepareHarnessAuth(
     harness.mode === "dedicated" &&
     (harness.id === "codex" || harness.id === "openclaw")
   ) {
-    stagedModelCredentialBinding(revision);
+    const selected = harnessModelAuthentication(configuration);
+    if (
+      !revision.credentialDeployment?.bindings.some(
+        ({ consumer, sourceRef, projection }) =>
+          consumer.kind === "model" &&
+          consumer.providerId === selected.providerId &&
+          sourceRef.kind === "credential_source" &&
+          sourceRef.namespaceId === revision.namespaceId &&
+          sourceRef.id === resolvedAuth.sourceId &&
+          projection.environment === selected.environmentName &&
+          projection.presentation === "bearer",
+      )
+    ) {
+      throw new DependencyUnavailableError(
+        "The staged model binding does not match the configured Harness model operation.",
+      );
+    }
     // This is the concrete launcher's presentation mode, derived from the admitted binding.
     const loginMode = "api_key";
     if (harness.id === "codex") {
@@ -6875,6 +6867,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         this.options.runtime === undefined ||
         revision.egressPlan !== undefined ||
         revision.credentialDeployment === undefined ||
+        revision.credentialDeployment.bindings.length === 0 ||
         proxy?.capability !== "credential_proxy_delivery" ||
         revision.credentialDeployment.proxyDriverId !== proxy.id ||
         proxy.deployProxy === undefined ||
@@ -6890,6 +6883,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ) {
         throw new DependencyUnavailableError(
           "The admitted staged credential composition is unavailable.",
+        );
+      }
+      const auth = revision.harnessAuth;
+      // OpenShell cannot project a separate model Secret. Staged launch also
+      // omits legacy Credential Gateway attachments.
+      if (
+        this.sandboxDriver.implementation === "openshell" &&
+        (auth?.method !== "credential_source" || auth.tokenServiceInstanceId === undefined)
+      ) {
+        throw new DependencyUnavailableError(
+          "OpenShell cannot deliver the selected Harness authentication with staged credentials.",
         );
       }
       return;
@@ -7053,7 +7057,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.validateExecutionAdmission(revision, "stored");
     if (revision.executionAdmission.mode === "standalone") {
-      stagedModelCredentialBinding(revision);
       if (
         revision.harness.mode !== "dedicated" ||
         revision.sandboxDriverId !== this.sandboxDriver?.id ||
@@ -7429,8 +7432,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const sandboxDriver = this.sandboxDriverForRevision(revision);
     const providerOwnsHarnessEndpoint = sandboxDriver?.harnessEndpoint !== undefined;
+    const stagedPluginIds = new Set(
+      revision.credentialDeployment?.bindings.flatMap(({ consumer }) =>
+        consumer.kind === "plugin" ? [consumer.pluginId] : [],
+      ),
+    );
+    const legacyPluginSelections =
+      stagedPluginIds.size === 0
+        ? revision.plugins?.plugins
+        : Object.fromEntries(
+            Object.entries(revision.plugins?.plugins ?? {}).filter(
+              ([pluginId]) => !stagedPluginIds.has(pluginId),
+            ),
+          );
     requireManagedCredentialRuntime(
-      revision.plugins?.plugins,
+      legacyPluginSelections,
       sandboxDriver?.implementation,
       this.credentialGatewayDriver?.implementation,
     );
@@ -7872,7 +7888,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name),
         );
         await this.prepareRevisionStage("gateway_channel_network_policy", () =>
-          this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace),
+          this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace, context),
         );
         await this.prepareRevisionStage("gateway_workspace_node_binding", () =>
           this.deliverWorkspaceNodeBinding(
@@ -9023,7 +9039,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             gatewayOwnership,
             namespace,
           );
-          await this.reconcileChannelNetworkPolicy(revision, channels, namespace);
+          await this.reconcileChannelNetworkPolicy(revision, channels, namespace, context);
           const images = this.workloadImages(revision, "gateway");
           const environment = launch.environment;
           const configuration = this.gatewayConfiguration(admittedRevision);
@@ -9277,7 +9293,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       secretEnvironment,
     );
-    await this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace);
+    await this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace, context);
     await this.harnessForRevision(revision).workspace.ensure({ revision, namespace });
     await this.reconcile(
       this.gatewayPrivateStateClaim(revision.agentId, gatewayOwnership, gatewayNamespace),
@@ -9630,7 +9646,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!credentialSourceMatchesSnapshot(source, snapshot)) {
         throw new OwnershipFailure("The staged Source does not match its admitted owner.");
       }
-      return this.withdrawStagedCredentialSource(revision, source, signal, options);
+      return this.withdrawStagedCredentialSource(revision, source, signal);
     }
     const owner =
       source.ownerCapability === "credential_gateway"
@@ -9714,15 +9730,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
-    options: CredentialPolicyWithdrawalOptions,
   ): Promise<CredentialAttachmentStatus> {
     const deployment = revision.credentialDeployment;
-    const binding = deployment?.bindings.find((entry) => entry.sourceRef.id === source.id);
+    const bindingRefs = deployment?.bindings
+      .filter(
+        ({ sourceRef }) =>
+          sourceRef.kind === "credential_source" &&
+          sourceRef.namespaceId === source.namespaceId &&
+          sourceRef.id === source.id,
+      )
+      .map(({ bindingRef }) => bindingRef);
     const proxy = this.credentialDeploymentProxyDriver;
     if (
       !deployment ||
-      !binding ||
-      binding.sourceRef.namespaceId !== revision.namespaceId ||
+      !bindingRefs?.length ||
+      source.namespaceId !== revision.namespaceId ||
       proxy?.id !== deployment.proxyDriverId
     ) {
       throw new OwnershipFailure("The staged credential binding or Proxy is unavailable.");
@@ -9752,7 +9774,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           revisionId: revision.id,
           sandboxId,
         },
-        ...(options.recheck === true ? {} : { bindingRefs: [binding.bindingRef] }),
+        bindingRefs,
       },
     );
     return { sourceId: source.id, state: "revoked" };
@@ -16258,6 +16280,18 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
+  async admitGatewayChannelProxy(
+    selection: Readonly<AgentNetworkProxy>,
+    context: { readonly executionMode: HarnessExecutionMode; readonly channelsEnabled: boolean },
+  ): Promise<string> {
+    if (!this.channelEgress || !this.options.runtime || this.options.executionCluster) {
+      throw new ConfigurationHarnessError(
+        "The selected Compute topology does not support Gateway channel proxy routing. Select a supported topology.",
+      );
+    }
+    return this.channelEgress.admitProxy(selection, context);
+  }
+
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
     this.validateGatewayManagedMode(revision);
     let runtime: string | undefined;
@@ -17069,6 +17103,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     routing: PreparedChannelRouting | undefined,
     namespace: KubernetesNamespaceAddress,
+    context?: ComputeRevisionContext,
   ): Promise<void> {
     if (routing === undefined) {
       return;
@@ -17076,7 +17111,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (!this.channelEgress) {
       throw new ConfigurationFailure("Managed channel egress is unavailable.");
     }
-    await this.channelEgress.prepare(revision, namespace.name, routing);
+    await this.channelEgress.prepare(revision, namespace.name, routing, context);
   }
 
   /** Only preparation passes `preparation`, while a Gateway of another revision

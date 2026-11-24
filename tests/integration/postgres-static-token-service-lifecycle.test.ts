@@ -8,11 +8,7 @@ import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-ser
 import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
-import type {
-  AuditEvent,
-  CredentialSourceReference,
-  SourceProviderPresetId,
-} from "../../packages/contracts/src/index.ts";
+import type { AuditEvent, CredentialSourceReference } from "../../packages/contracts/src/index.ts";
 import {
   AuditAppendUnavailableError,
   AuthorizationDeniedError,
@@ -376,10 +372,11 @@ test(
     const sourceConfig = async () =>
       (await pool.query("SELECT config FROM occ.credential_sources WHERE id=$1", [sourceId]))
         .rows[0].config;
-    await assert.rejects(
-      updateSource(principal.id, { providerPreset: "unknown" as SourceProviderPresetId }),
-      ScopeViolationError,
-    );
+    await assert.rejects(updateSource(principal.id, { providerPreset: "unknown" }), (error) => {
+      assert.ok(error instanceof CredentialSourceConfigError);
+      assert.equal(error.field, "provider_preset");
+      return true;
+    });
     const replacementsBeforePreset = core.calls.replaceNamespacedSecret;
     const readsBeforePreset = core.reads;
     // Metadata and its attributable audit must commit together; custody is untouched.

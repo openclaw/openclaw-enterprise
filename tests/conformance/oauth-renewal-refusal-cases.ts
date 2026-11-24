@@ -16,9 +16,12 @@ import type { createTestSecretDriver } from "../helpers/secret-driver.ts";
 type TestSecretDriver = ReturnType<typeof createTestSecretDriver>;
 
 interface RenewalRefusalFixtures {
-  oauthCustody(): Promise<{
+  oauthCustody(
+    grant: OAuthConnectionGrant,
+    signal: AbortSignal,
+  ): Promise<{
     driver: TestSecretDriver;
-    custody: Awaited<ReturnType<OAuthGrantStore["reserve"]>>;
+    custody: Awaited<ReturnType<OAuthGrantStore["create"]>>["custody"];
     service: OAuthGrantStore;
     worker: OAuthGrantStore;
   }>;
@@ -49,12 +52,11 @@ export function registerOAuthRenewalRefusalCases({
     });
     const port = await listen(t, server);
     const grant = connectionGrant("http://127.0.0.1:" + port);
-    const { driver, custody, service, worker } = await oauthCustody();
+    const { driver, custody, service, worker } = await oauthCustody(grant, t.signal);
     const resolveClient = async (): Promise<OAuthConnectionClient> => ({
       registration: grant,
       readSecret: async () => assert.fail("public clients have no secret"),
     });
-    await service.storeInitialGrant(custody, grant, t.signal);
     const accepted = (await service.observe(custody, t.signal, 0)).token;
     assert.ok(accepted);
     t.mock.timers.setTime(Date.parse(accepted.nextRefreshAt));
@@ -119,8 +121,7 @@ export function registerOAuthRenewalRefusalCases({
       ...connectionGrant("http://127.0.0.1:" + port),
       tokenEndpointAuthMethod: "client_secret_post",
     };
-    const { custody, driver, service, worker } = await oauthCustody();
-    await service.storeInitialGrant(custody, grant, t.signal);
+    const { custody, driver, service, worker } = await oauthCustody(grant, t.signal);
     const accepted = (await service.observe(custody, t.signal, 0)).token;
     assert.ok(accepted);
     const { version } = accepted;

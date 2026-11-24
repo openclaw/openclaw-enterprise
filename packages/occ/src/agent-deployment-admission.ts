@@ -53,6 +53,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { validExecutionMode } from "./agent-provisioning.ts";
+import { admitNetworkProxy, authorizeNetworkProxySecret } from "./agent-network-proxy.ts";
 import {
   authorizeFirstDeploymentReceipt,
   type AuthorizedAgentDeployment,
@@ -200,6 +201,10 @@ export interface DeploymentAdmissionDependencies {
     "grantDeployedAgentSources" | "admitCredentialSources"
   >;
   readonly secretDriver: () => SecretDriver;
+  readonly ownedSecretDriver: (
+    id: string,
+    failure: () => import("./errors.ts").SecretDriverOwnershipError,
+  ) => SecretDriver;
   readonly validateComputeConfiguration: (values: Readonly<OpenClawConfigurationDocument>) => void;
   readonly timestamp: () => string;
   readonly nextIdentifier: (kind: ResourceKind) => string;
@@ -215,7 +220,7 @@ export interface DeploymentAdmissionDependencies {
         readonly harness: RevisionHarnessDescriptor;
       }) => ModelCredentialPreset | undefined)
     | undefined;
-  readonly supportsModelCredentialDeployment:
+  readonly supportsCredentialDeployment:
     | ((input: {
         readonly sandbox: SandboxDriver;
         readonly proxy: CredentialProxyDriver;
@@ -268,7 +273,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         "The selected model has no matching approved source preset and explicit inference route.",
       );
     }
-    if (sandbox === undefined || dependencies.supportsModelCredentialDeployment === undefined) {
+    if (sandbox === undefined || dependencies.supportsCredentialDeployment === undefined) {
       throw new ResourceStateConflictError(
         "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
       );
@@ -335,7 +340,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           dependencies.sandboxNetworkPolicyCeiling,
         ) &&
         sandboxNetworkGrantsWithinCeiling([request], deployment.networkAccessPolicy.allowed) &&
-        dependencies.supportsModelCredentialDeployment?.({ sandbox, proxy, policy: deployment }) ===
+        dependencies.supportsCredentialDeployment?.({ sandbox, proxy, policy: deployment }) ===
           true;
     } catch {
       supported = false;
@@ -396,14 +401,25 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     metadataBindings: Configuration["secretBindings"],
   ) {
     const secretBindings = storedSecretBindings(metadataBindings);
-    const sources = await dependencies.configuration.authorizeBindings(
+    const bound = await dependencies.configuration.authorizeBindings(
       state,
       principalId,
       agent.namespaceId,
       secretBindings,
     );
-    const secretDriver =
-      Object.keys(secretBindings).length === 0 ? undefined : dependencies.secretDriver();
+    const proxySecret = await authorizeNetworkProxySecret(
+      state,
+      dependencies.authority,
+      dependencies.ownedSecretDriver,
+      principalId,
+      agent.namespaceId,
+      agent.networkProxy,
+    );
+    const sources = [...bound];
+    if (proxySecret && !sources.some((secret) => secret.id === proxySecret.id)) {
+      sources.push(proxySecret);
+    }
+    const secretDriver = sources.length === 0 ? undefined : dependencies.secretDriver();
     for (const secret of sources) {
       await dependencies.authority.authorizeAgentPrincipal(principalId, agent, "operate", {
         kind: "secret",
@@ -1023,6 +1039,12 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         protectedSandbox?.driver ?? sandbox,
         () => dependencies.repositoryPolicy.repositoryGrantAuthority(namespace.id),
       );
+      const gatewayProxyAdmission = await admitNetworkProxy(
+        compute,
+        lockedAgent.networkProxy,
+        lockedAgent.executionMode,
+        configuration.values,
+      );
       const revisionDraft: AgentRevision = {
         id: revisionId,
         ...execution,
@@ -1039,8 +1061,17 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           withAgentIdentityName(admittedConfiguration, lockedAgent.name),
         ),
         gatewayManagedMode: lockedAgent.gatewayManagedMode,
+        ...(lockedAgent.networkProxy === undefined
+          ? {}
+          : { networkProxy: lockedAgent.networkProxy }),
         harness: revisionHarness,
-        compute: { id: compute.id, implementation: compute.implementation },
+        compute: {
+          id: compute.id,
+          implementation: compute.implementation,
+          ...(gatewayProxyAdmission === undefined
+            ? {}
+            : { networkProxyAdmission: gatewayProxyAdmission }),
+        },
         ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
         ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
         ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id, secretBindings }),

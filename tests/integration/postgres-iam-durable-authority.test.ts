@@ -418,6 +418,7 @@ test(
     const f = await createFixture(t);
     const originalFetch = globalThis.fetch;
     let exchanges = 0;
+    let refreshes = 0;
     t.mock.method(
       globalThis,
       "fetch",
@@ -428,6 +429,11 @@ test(
         }
         assert.equal(request.method, "POST");
         const body = new URLSearchParams(await request.text());
+        if (body.get("grant_type") === "refresh_token") {
+          assert.ok(body.get("refresh_token")?.startsWith("fixture-refresh-"));
+          refreshes++;
+          return Response.json({ error: "invalid_grant" }, { status: 400 });
+        }
         assert.equal(body.get("grant_type"), "authorization_code");
         assert.ok(body.get("code")?.startsWith("fixture-"));
         assert.ok(body.get("code_verifier"));
@@ -476,6 +482,7 @@ test(
       assert.ok(state);
       assert.equal(Object.hasOwn(started, "credentialSourceId"), false);
       return {
+        connectionTemplateId: template.id,
         complete: () =>
           f.request(
             "GET",
@@ -530,6 +537,41 @@ test(
       assert.equal(exchanges, before, "a denied callback does not redeem the provider code");
       await connectionEffects(namespaceId, 0);
     });
+
+    await t.test(
+      "OAuth refuses consent when the selected IAM cannot grant Source ownership",
+      async () => {
+        await f.reset();
+        const namespaceId = await f.namespace();
+        const attempt = await connection(namespaceId);
+        // Authorization still reads real Native IAM policy; only its optional binding writer is absent.
+        const unsupportedIAM = new NativeIAMDriver(f.state, { id: "durable-iam-without-binding" });
+        Object.defineProperty(unsupportedIAM, "createNamespaceAccessBinding", { value: undefined });
+        f.controller.registerDriver(unsupportedIAM);
+        f.controller.selectDriver("iam", unsupportedIAM.id);
+        try {
+          const before = exchanges;
+          const start = await f.request("POST", `/namespaces/${namespaceId}/connections`, {
+            connectionTemplateId: attempt.connectionTemplateId,
+          });
+          assert.equal(start.statusCode, 503, start.body);
+          const states = await f.pool.query<{ count: number }>(
+            "SELECT count(*)::integer AS count FROM occ.authentication_states WHERE namespace_id=$1 AND kind='oauth_connection'",
+            [namespaceId],
+          );
+          assert.equal(states.rows[0]?.count, 1, "only the earlier authorized attempt exists");
+
+          // A separate callback must recheck the selected IAM before redeeming the one-use code.
+          const callback = await attempt.complete();
+          assert.equal(callback.statusCode, 303);
+          assert.match(String(callback.headers.location), /connection=failed/);
+          assert.equal(exchanges, before, "an unsupported owner grant cannot redeem the code");
+          await connectionEffects(namespaceId, 0);
+        } finally {
+          f.controller.selectDriver("iam", f.iam.id);
+        }
+      },
+    );
 
     await t.test(
       "OAuth Source owner can disconnect with its read/operate binding and no delete grant",
@@ -602,6 +644,43 @@ test(
         ]);
       },
     );
+
+    await t.test("OAuth Source refuses PATCH and audits a failed issuer refresh", async () => {
+      await f.reset();
+      const namespaceId = await f.namespace();
+      const attempt = await connection(namespaceId);
+      const connected = await attempt.complete();
+      assert.equal(connected.statusCode, 303);
+      assert.match(String(connected.headers.location), /connection=connected/);
+      const sourceId = await connectionEffects(namespaceId, 1);
+      assert.ok(sourceId);
+      const sourcePath = `/namespaces/${namespaceId}/credential-sources/${sourceId}`;
+
+      // OAuth material can change only through provider exchange, even for an administrator.
+      const before = refreshes;
+      const rejected = await f.inject("PATCH", sourcePath, { secret: { opaque: randomUUID() } });
+      assert.equal(rejected.statusCode, 409, rejected.body);
+      assert.equal(rejected.json().error.message, "Only a static Source can be updated.");
+      assert.equal(refreshes, before);
+      const failed = await f.inject("POST", `${sourcePath}/rotate`);
+      assert.equal(failed.statusCode, 503, failed.body);
+      assert.equal(refreshes, before + 1);
+
+      const audit = await f.pool.query(
+        `SELECT actor_id, outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason_code
+         FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2
+           AND action='openclaw.credential_sources.rotate'
+           AND details->'__occAuditMetadata'->>'requestId'=$3`,
+        [namespaceId, sourceId, failed.headers["x-request-id"]],
+      );
+      assert.deepEqual(audit.rows, [
+        {
+          actor_id: f.principal.id,
+          outcome: "failure",
+          reason_code: "CREDENTIAL_REFRESH_ROTATION_FAILED",
+        },
+      ]);
+    });
 
     function repositoryCompute() {
       const resources = {

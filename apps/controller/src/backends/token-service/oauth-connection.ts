@@ -42,8 +42,6 @@ interface OAuthIssuerClient extends OAuthConnectionClient {
   readonly refreshGrant?: OAuthGrantRefresh;
 }
 
-const PENDING_OAUTH_CONNECTION = "pending";
-
 type ClientRetry = "client_refused" | "client_unavailable";
 
 type ApprovedGrant = Pick<
@@ -70,12 +68,9 @@ interface FailedRefresh {
 // alone cannot distinguish an abandoned owner from a healthy one still committing a rotated grant.
 const RENEWAL_BUDGET_MS = 5 * 60_000;
 
-type StoredConnection = OAuthMaterial | FailedRefresh | undefined;
+type StoredConnection = OAuthMaterial | FailedRefresh;
 
 function material(value: string): StoredConnection {
-  if (value === PENDING_OAUTH_CONNECTION) {
-    return undefined;
-  }
   let data: Record<string, unknown> | undefined;
   try {
     data = asRecord(JSON.parse(value));
@@ -138,9 +133,6 @@ function ready(
 }
 
 function status(current: StoredConnection): OAuthConnectionStatus {
-  if (!current) {
-    return { state: "pending" };
-  }
   if (current.phase === "failed") {
     const failureCode = current.failureCode;
     const recoveryAction = ["grant_refused", "refresh_outcome_unknown"].includes(failureCode)
@@ -203,13 +195,9 @@ export class OAuthGrantStore {
     this.secrets = secrets;
   }
 
-  private driver(custody: OAuthConnectionCustody, signal: AbortSignal) {
+  private driver(driverId: string, signal: AbortSignal) {
     signal.throwIfAborted();
-    if (
-      custody.secret.driverId !== this.secrets.id ||
-      !this.secrets.withValue ||
-      !this.secrets.compareAndSwap
-    ) {
+    if (driverId !== this.secrets.id || !this.secrets.withValue || !this.secrets.compareAndSwap) {
       throw new Error(
         "OAuth token custody requires its original Secret Driver with atomic updates.",
       );
@@ -217,58 +205,53 @@ export class OAuthGrantStore {
     return this.secrets;
   }
 
-  async reserve(ref: OAuthAccountRef): Promise<OAuthConnectionCustody> {
+  async create(ref: OAuthAccountRef, grant: ApprovedGrant, signal: AbortSignal) {
+    const driver = this.driver(this.secrets.id, signal);
+    const initial = ready(grant);
     const identity = {
       id: `sec_${randomUUID()}`,
       namespaceId: ref.namespaceId,
       name: "OAuth connection custody",
     };
-    const backendRef = await this.secrets.create(identity, PENDING_OAUTH_CONNECTION);
+    const backendRef = await driver.create(identity, JSON.stringify(initial));
     return {
-      sourceId: ref.sourceId,
-      secret: {
-        ...identity,
-        backendRef,
-        driverId: this.secrets.id,
-        createdAt: new Date().toISOString(),
+      custody: {
+        sourceId: ref.sourceId,
+        secret: {
+          ...identity,
+          backendRef,
+          driverId: driver.id,
+          createdAt: new Date().toISOString(),
+        },
+      },
+      schedule: {
+        version: initial.version,
+        nextRefreshAt: initial.renewAt,
+        grantedScopes: initial.grantedScopes,
       },
     };
   }
 
-  async storeInitialGrant(
-    custody: OAuthConnectionCustody,
-    grant: ApprovedGrant,
-    signal: AbortSignal,
-  ): Promise<void> {
-    const driver = this.driver(custody, signal);
-    if (
-      !(await driver.compareAndSwap!(
-        custody.secret,
-        PENDING_OAUTH_CONNECTION,
-        JSON.stringify(ready(grant)),
-      ))
-    ) {
-      throw new Error("The pending OAuth custody changed before the grant was committed.");
-    }
-  }
-
   observe(custody: OAuthConnectionCustody, signal: AbortSignal, minimumValidityMs?: number) {
-    return this.driver(custody, signal).withValue!(custody.secret, async (value) => {
-      signal.throwIfAborted();
-      const stored = material(value);
-      return {
-        status: status(stored),
-        token:
-          minimumValidityMs === undefined ? undefined : eligibleToken(stored, minimumValidityMs),
-        phase: stored?.phase,
-        version: stored && stored.phase !== "failed" ? stored.version : undefined,
-        renewAt: stored && stored.phase !== "failed" ? Date.parse(stored.renewAt) : undefined,
-        renewalDeadline:
-          stored?.phase === "renewing" || stored?.phase === "renewing_unavailable"
-            ? Date.parse(stored.renewalDeadline)
-            : undefined,
-      };
-    });
+    return this.driver(custody.secret.driverId, signal).withValue!(
+      custody.secret,
+      async (value) => {
+        signal.throwIfAborted();
+        const stored = material(value);
+        return {
+          status: status(stored),
+          token:
+            minimumValidityMs === undefined ? undefined : eligibleToken(stored, minimumValidityMs),
+          phase: stored.phase,
+          version: stored.phase !== "failed" ? stored.version : undefined,
+          renewAt: stored.phase !== "failed" ? Date.parse(stored.renewAt) : undefined,
+          renewalDeadline:
+            stored.phase === "renewing" || stored.phase === "renewing_unavailable"
+              ? Date.parse(stored.renewalDeadline)
+              : undefined,
+        };
+      },
+    );
   }
 
   async renew(
@@ -277,11 +260,11 @@ export class OAuthGrantStore {
     resolveClient: () => Promise<OAuthIssuerClient>,
     scheduledVersion?: string,
   ): Promise<OAuthConnectionStatus> {
-    const driver = this.driver(custody, signal);
+    const driver = this.driver(custody.secret.driverId, signal);
     const previous = await driver.withValue!(custody.secret, async (value) => value);
     const current = material(previous);
     const observed = status(current);
-    if (!current || current.phase === "failed") {
+    if (current.phase === "failed") {
       return observed;
     }
     if (current.phase === "renewing" || current.phase === "renewing_unavailable") {
@@ -405,7 +388,7 @@ export class OAuthGrantStore {
   }
 
   async delete(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<void> {
-    await this.driver(custody, signal).delete(custody.secret);
+    await this.driver(custody.secret.driverId, signal).delete(custody.secret);
   }
 }
 
@@ -415,7 +398,6 @@ function eligibleToken(
 ): OAuthConnectionAccessToken | undefined {
   const now = Date.now();
   if (
-    !stored ||
     (stored.phase !== "ready" && stored.phase !== "renewing") ||
     Date.parse(stored.expiresAt) <= now + minimumValidityMs ||
     (stored.phase === "renewing" && Date.parse(stored.renewalDeadline) <= now)
@@ -505,14 +487,9 @@ export class OAuthAccountTokens {
       sourceId: source.id,
     };
     await this.resolveClient(ref, source);
-    const custody = await this.grants.reserve(ref);
+    const { custody, schedule } = await this.grants.create(ref, grant, signal);
     try {
-      await this.grants.storeInitialGrant(custody, grant, signal);
-      const status = (await this.grants.observe(custody, signal)).status;
-      if (!status.schedule) {
-        throw new ResourceStateConflictError("No eligible OAuth access token was prepared.");
-      }
-      const schedule = status.schedule;
+      signal.throwIfAborted();
       return await this.state.transact(async (unit) => {
         const namespace = await unit.namespaces.lockNamespace(source.namespaceId);
         if (namespace?.status !== "ready") {
