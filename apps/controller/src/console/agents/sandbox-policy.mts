@@ -202,7 +202,7 @@ function repositoryApiEditor(
         element(
           "span",
           { className: "hint" },
-          "Unspecified and future resources are blocked. Git is unchanged.",
+          "Select to block unspecified and future resources. Git is unchanged.",
         ),
       ),
     ),
