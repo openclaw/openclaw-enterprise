@@ -51,6 +51,7 @@ type Labels = Record<string, string>;
 type InstallationOptions = {
   modelTurns?: boolean;
   nativeRepository?: boolean;
+  metricsProbes?: boolean;
   initialAgentImageTag?: string;
 };
 
@@ -134,7 +135,12 @@ export async function waitForObservabilityNamespaces() {
 // all use the installed production implementations, with a credential-free runtime fixture.
 export async function installObservabilityControlPlane(
   t: TestContext,
-  { modelTurns = false, nativeRepository = false, initialAgentImageTag }: InstallationOptions = {},
+  {
+    modelTurns = false,
+    nativeRepository = false,
+    metricsProbes = true,
+    initialAgentImageTag,
+  }: InstallationOptions = {},
 ) {
   const modelInputs = modelTurns ? readModelTurnInputs() : undefined;
   const selectionInput = explicitK3dSelection();
@@ -231,7 +237,7 @@ export async function installObservabilityControlPlane(
     waitIntervalMs: 1_000,
   });
   const { waitFor } = kubernetes;
-  const namespaces = [system, monitoring, foreign];
+  const namespaces = metricsProbes ? [system, monitoring, foreign] : [system];
   const metadata = (name: string, namespace = system, labels: Labels = {}) => ({
     name,
     namespace,
@@ -432,15 +438,20 @@ export async function installObservabilityControlPlane(
   }
   // Independent probe Pods can become ready together; settle all creation before
   // a failure triggers namespace cleanup.
-  const probes = await Promise.allSettled([
+  const probeCreations = [
     probePod("operator", system, {
       app: "operator",
       "app.kubernetes.io/name": "approved-gateway-client",
     }),
-    probePod("scraper", monitoring, { app: "scraper" }),
-    probePod("wrong-pod", monitoring, { app: "wrong" }),
-    probePod("wrong-namespace", foreign, { app: "scraper" }),
-  ]);
+  ];
+  if (metricsProbes) {
+    probeCreations.push(
+      probePod("scraper", monitoring, { app: "scraper" }),
+      probePod("wrong-pod", monitoring, { app: "wrong" }),
+      probePod("wrong-namespace", foreign, { app: "scraper" }),
+    );
+  }
+  const probes = await Promise.allSettled(probeCreations);
   for (const result of probes) {
     if (result.status === "rejected") {
       const reason: unknown = result.reason;
