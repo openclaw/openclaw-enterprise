@@ -201,7 +201,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
             selectedRepositoryNetworkGrants: selectedGrants,
             ...(selected.nativeGit && {
               nativeGit: selected.nativeGit,
-              repositoryApiActionFilters: repositoryGitRestOperations(
+              repositoryApiMaxima: repositoryGitRestOperations(
                 selectedGrants,
                 selected.scopedRest,
               ),

@@ -222,7 +222,7 @@ export interface DeploymentAdmissionDependencies {
         readonly harness: RevisionHarnessDescriptor;
       }) => ModelCredentialPreset | undefined)
     | undefined;
-  readonly supportsModelCredentialDeployment:
+  readonly supportsCredentialDeployment:
     | ((input: {
         readonly sandbox: SandboxDriver;
         readonly proxy: CredentialProxyDriver;
@@ -273,7 +273,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         "The selected model has no matching approved source preset and explicit inference route.",
       );
     }
-    if (sandbox === undefined || dependencies.supportsModelCredentialDeployment === undefined) {
+    if (sandbox === undefined || dependencies.supportsCredentialDeployment === undefined) {
       throw new ResourceStateConflictError(
         "The selected Sandbox and Credential Proxy have no qualified staged credential enforcement.",
       );
@@ -340,7 +340,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           dependencies.sandboxNetworkPolicyCeiling,
         ) &&
         sandboxNetworkGrantsWithinCeiling([request], deployment.networkAccessPolicy.allowed) &&
-        dependencies.supportsModelCredentialDeployment?.({ sandbox, proxy, policy: deployment }) ===
+        dependencies.supportsCredentialDeployment?.({ sandbox, proxy, policy: deployment }) ===
           true;
     } catch {
       supported = false;
@@ -992,7 +992,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       const egressPlan = proxyAdmission?.plan;
       if (
         (admittedRepository?.requiresNetworkPolicy ||
-          policy?.repositoryNetworkPolicy?.some((grant) => grant.apiActions)) &&
+          policy?.repositoryNetworkPolicy?.some((grant) => grant.apiLimits)) &&
         (!policy?.repositoryNetworkPolicy ||
           egressPlan?.repositoryGitAuthorization !== "network-policy")
       ) {

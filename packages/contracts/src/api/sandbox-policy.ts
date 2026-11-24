@@ -8,7 +8,7 @@ import {
   SandboxPolicyVersion,
   RepositoryNetworkGrantSchema as RepositoryNetworkLimitSchema,
 } from "./common.ts";
-import { maxRepositoryNetworkGrants, repositoryApiActions } from "../repository-network-policy.ts";
+import { maxRepositoryNetworkGrants } from "../repository-network-policy.ts";
 import { SandboxNetworkGrantSchema, SandboxNetworkGrantsSchema } from "../sandbox-policy.ts";
 
 export const SandboxPolicyParams = Type.Object(
@@ -28,25 +28,19 @@ export const SandboxPolicyRevisionParams = Type.Object(
   { additionalProperties: false },
 );
 
-const RepositoryActionList = Type.Array(
-  Type.Union(repositoryApiActions.map((action) => Type.Literal(action))),
-  { maxItems: repositoryApiActions.length, uniqueItems: true },
-);
+const RepositoryApiLevelSchema = Type.Union([Type.Literal("none"), Type.Literal("read"), Type.Literal("write")]);
 const RepositoryNetworkGrantSchema = Type.Object(
   {
     ...RepositoryNetworkLimitSchema.properties,
-    apiActions: Type.Optional(
-      Type.Union(
-        [
-          Type.Object({ allow: RepositoryActionList }, { additionalProperties: false }),
-          Type.Object({ deny: RepositoryActionList }, { additionalProperties: false }),
-        ],
-        {
-          description:
-            "Narrow the native API actions on this Agent's repository. Empty allow removes all optional actions. Empty deny is saved as omission. Redeploy to apply.",
-        },
-      ),
-    ),
+    apiLimits: Type.Optional(Type.Object({
+      default: Type.Optional(Type.Literal("none")),
+      issues: Type.Optional(RepositoryApiLevelSchema),
+      pull_requests: Type.Optional(RepositoryApiLevelSchema),
+    }, {
+      additionalProperties: false,
+      minProperties: 1,
+      description: "Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply.",
+    })),
   },
   { additionalProperties: false },
 );
@@ -113,19 +107,20 @@ export const SandboxPolicyViewResponse = Type.Object(
             "Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently.",
           maxItems: maxRepositoryNetworkGrants,
         }),
-        repositoryApiActionFilters: Type.Optional(
+        repositoryApiMaxima: Type.Optional(
           Type.Array(
             Type.Object(
               {
                 ...RepositoryNetworkLimitSchema.properties,
-                available: RepositoryActionList,
+                issues: RepositoryApiLevelSchema,
+                pull_requests: RepositoryApiLevelSchema,
               },
               { additionalProperties: false },
             ),
             {
               maxItems: maxRepositoryNetworkGrants,
               description:
-                "Selected repositories eligible for action filters and the maximum access and actions permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy.",
+                "Selected repositories eligible for API limits and the maximum Git and API levels permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy.",
             },
           ),
         ),

@@ -28,8 +28,9 @@ func TestRefusalHintTableCoversEveryCommand(t *testing.T) {
 				// Local commands: they send no OCC request.
 				continue
 			}
-			if child.CommandPath() == "occ installation doctor" || child.CommandPath() == "occ installation plan" || child.CommandPath() == "occ installation install" || child.CommandPath() == "occ installation upgrade" {
-				continue // Uses Kubernetes or Helm directly.
+			switch child.CommandPath() {
+			case "occ installation doctor", "occ installation plan", "occ installation install", "occ installation migrate-values", "occ installation upgrade":
+				continue // Local commands or direct Kubernetes and Helm clients.
 			}
 			if child.HasSubCommands() {
 				walk(child)

@@ -1499,7 +1499,7 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preAgentRepositoryApiActions"],
+      [92, "preAgentRepositoryApiLimits"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1957,7 +1957,7 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preAgentRepositoryApiActions"],
+      [92, "preAgentRepositoryApiLimits"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2522,7 +2522,7 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preAgentRepositoryApiActions"],
+      [92, "preAgentRepositoryApiLimits"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2655,7 +2655,7 @@ test(
     for (const [prefix, history] of [
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
-      [92, "preAgentRepositoryApiActions"],
+      [92, "preAgentRepositoryApiLimits"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2823,7 +2823,7 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preAgentRepositoryApiActions"],
+      [92, "preAgentRepositoryApiLimits"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2891,7 +2891,7 @@ test(
         } else if (prefix === 92) {
           // Fail replacement of the policy validator after the action check and grants exist.
           failAt =
-            "IF to_regprocedure('occ.repository_api_actions_are_valid(jsonb)') IS NULL THEN RETURN; END IF;";
+            "IF to_regprocedure('occ.repository_api_limits_are_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 89) {
           // Abort 0090 after replacing the execution check, while installing the session guard.
           failAt =

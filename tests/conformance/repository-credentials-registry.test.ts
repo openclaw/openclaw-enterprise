@@ -115,7 +115,7 @@ test("Git network grants require the canonical repository and exact Namespace co
   assert.equal(permits("namespace-a", "read", "Example/Application"), false);
 });
 
-test("native API filters are strict, canonical and bound to credential authority", () => {
+test("native API limits are strict, canonical and bound to credential authority", () => {
   const input = registryInput();
   const bind = (options: Record<string, unknown>) => {
     input.repositories[0].namespaces[0] = {
@@ -131,49 +131,40 @@ test("native API filters are strict, canonical and bound to credential authority
     }).grant.grantId;
   };
   const enabled = bind({});
-  const filtered = (apiActions: unknown) => bind({ apiActions });
-  assert.equal(enabled, filtered({ deny: [] }));
-  assert.notEqual(enabled, filtered({ deny: ["issues:create"] }));
-  assert.notEqual(enabled, filtered({ allow: [] }));
+  const limited = (apiLimits: unknown) => bind({ apiLimits });
+  assert.notEqual(enabled, limited({ issues: "read" }));
+  assert.notEqual(enabled, limited({ issues: "write" }));
+  assert.notEqual(enabled, limited({ default: "none" }));
   const gitOnly = { permissions: { metadata: "read", contents: "write" } };
-  assert.notEqual(bind(gitOnly), bind({ ...gitOnly, apiActions: { allow: [] } }));
-  for (const key of ["allow", "deny"]) {
-    assert.equal(
-      filtered({ [key]: ["issues:read", "pull_requests:create"] }),
-      filtered({ [key]: ["pull_requests:create", "issues:read"] }),
-    );
-    for (const actions of [
-      null,
-      "issues:create",
-      {},
-      [null],
-      [true],
-      ["*"],
-      ["issues:*"],
-      ["issues:edit"],
-      ["POST /issues"],
-      ["issues:create", "issues:create"],
-    ]) {
-      assert.throws(() => filtered({ [key]: actions }), /invalid-repository-registry/);
-    }
-  }
+  assert.notEqual(bind(gitOnly), bind({ ...gitOnly, apiLimits: { default: "none" } }));
+  assert.equal(
+    limited({ default: "none", issues: "read", pull_requests: "write" }),
+    limited({ pull_requests: "write", issues: "read", default: "none" }),
+  );
   for (const malformed of [
     null,
     [],
     {},
-    { allow: [], deny: [] },
-    { allow: [], extra: true },
-    { unknown: [] },
+    { default: "read" },
+    { default: "write" },
+    { default: null },
+    { issues: "create" },
+    { issues: null },
+    { pull_requests: true },
+    { pull_requests: ["read"] },
+    { issues: "none", pulls: "read" },
+    { allow: ["issues:read"] },
+    { deny: [] },
   ]) {
-    assert.throws(() => filtered(malformed), /invalid-repository-registry/);
+    assert.throws(() => limited(malformed), /invalid-repository-registry/);
   }
   for (const invalid of [
-    { deny: ["issues:create"] },
+    { apiActions: { deny: [] } },
     { scopedRest: "v1" },
     { scopedRest: "v2" },
     { scopedRest: true },
     { createIssues: false },
-    { nativeGit: undefined, apiActions: { deny: ["issues:create"] } },
+    { nativeGit: undefined, apiLimits: { issues: "read" } },
   ]) {
     assert.throws(() => bind(invalid), /invalid-repository-registry/);
   }

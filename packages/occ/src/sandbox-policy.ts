@@ -387,8 +387,8 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
           : undefined;
       const repositoryNetworkPolicyCeiling = dependencies.repositoryCeiling(namespaceId);
       const supported = edit?.supports(repositoryNetworkPolicyCeiling) === true;
-      const repositoryApiActionFilters = supported
-        ? edit.actionFilters(repositoryNetworkPolicyCeiling)
+      const repositoryApiMaxima = supported
+        ? edit.apiMaxima(repositoryNetworkPolicyCeiling)
         : undefined;
       return {
         policy,
@@ -406,7 +406,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
         repositoryNetworkPolicyCeiling,
-        ...(repositoryApiActionFilters && { repositoryApiActionFilters }),
+        ...(repositoryApiMaxima && { repositoryApiMaxima }),
         repositoryNetworkPolicySaveSupported: canWithdraw || supported,
         defaults,
         // A fresh deploy carries the saved version into its Sandbox; no application is

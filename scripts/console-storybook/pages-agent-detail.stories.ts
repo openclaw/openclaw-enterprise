@@ -218,6 +218,10 @@ export const AgentReadInterrupted = {
   ...story("agentReadInterrupted", { openInNewTab: true }),
   name: "Retry a direct Agent link",
 };
+export const AgentReadUnavailableOnRefocus = {
+  ...story("agentReadUnavailableOnRefocus", { openInNewTab: true }),
+  name: "Retry an Agent read on tab return",
+};
 export const ConfigurationError = {
   ...story("configurationError"),
   name: "Configuration unavailable",

@@ -49,7 +49,6 @@ import {
   type EgressInstallation,
   type Namespace,
   type ProxyPlan,
-  type RepositoryApiActions,
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -95,10 +94,14 @@ function resolverPort(runtime: Runtime): {
 const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
 const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
 
+type ApiLimits = NonNullable<
+  (typeof registry.repositories)[number]["namespaces"][number]["apiLimits"]
+>;
+
 // example/outside is bound without a saved grant unless `outside` says otherwise.
 type ScopedRest = {
-  filters?: Record<string, { allow: string[] } | { deny: string[] }>;
-  agentFilters?: Record<string, RepositoryApiActions>;
+  limits?: Record<string, ApiLimits>;
+  agentLimits?: Record<string, ApiLimits>;
   permissions: Record<string, string>;
   outside?: "read" | "unbound";
 };
@@ -144,8 +147,8 @@ async function selectedV5(
                 contents: "write",
                 ...rest?.permissions,
               },
-              ...(rest?.filters?.[repo.repository] && {
-                apiActions: rest.filters[repo.repository],
+              ...(rest?.limits?.[repo.repository] && {
+                apiLimits: rest.limits[repo.repository],
               }),
             },
           ],
@@ -238,8 +241,8 @@ async function selectedV5(
     ...(rest?.outside === "read" ? [{ repository: "example/outside", access: "read" }] : []),
   ] as const;
   const grants = ceiling.map((grant) => {
-    const apiActions = rest?.agentFilters?.[grant.repository];
-    return apiActions ? { ...grant, apiActions } : grant;
+    const apiLimits = rest?.agentLimits?.[grant.repository];
+    return apiLimits ? { ...grant, apiLimits } : grant;
   });
   if (selectedRegistry) {
     f.owner.readOpenShellMaterial = async (_revisionId, _signal, _route, scope) => {
@@ -3606,7 +3609,7 @@ test("a second Worker withdrawing Git during signing prevents the launcher POST"
   assert.equal(posts, 0);
 });
 
-test("native scoped REST intersects the selected permissions, operation denials and frozen Git ACL", async (t) => {
+test("native scoped REST intersects the selected permissions, API limits and frozen Git ACL", async (t) => {
   const apiRules = async (rest?: ScopedRest, hasAdmittedRoute = false) => {
     const held = await heldGit(t, true, undefined, rest);
     // Any admitted API route, reads or creation, leaves the host to the stock policy alone.
@@ -3701,7 +3704,7 @@ test("native scoped REST intersects the selected permissions, operation denials 
   const createIssue = { method: "POST", path: "/repos/example/delivery/issues" };
   // Outside is bound but ungranted, so #7135 withholds PR creation. Only B has Write.
   const bound = await apiRules(
-    { permissions, filters: { "example/outside": { allow: [] } } },
+    { permissions, limits: { "example/outside": { default: "none" } } },
     true,
   );
   assert.deepEqual(
@@ -3718,7 +3721,7 @@ test("native scoped REST intersects the selected permissions, operation denials 
       {
         permissions,
         outside: "unbound",
-        filters: { "example/delivery": { deny: ["issues:create"] } },
+        limits: { "example/delivery": { issues: "read" } },
       },
       true,
     ),
@@ -3729,33 +3732,46 @@ test("native scoped REST intersects the selected permissions, operation denials 
     both.filter(({ method }) => method !== "GET"),
     [...create, createIssue],
   );
-  // A's empty API allowlist does not veto B's PR creation. B's Agent allowlist
-  // cannot re-enable issue creation denied by its Namespace or enable reads implicitly.
-  const filtered: ScopedRest = {
+  // Denying all API routes on A keeps B's eligible PR routes. B cannot exceed
+  // its Namespace's Issues Read or bypass the ungranted-head safeguard.
+  const limited: ScopedRest = {
     permissions,
-    filters: { "example/delivery": { deny: ["issues:create"] } },
-    agentFilters: {
-      "example/application": { allow: [] },
-      "example/delivery": { allow: ["issues:create", "pull_requests:create"] },
+    limits: { "example/delivery": { issues: "read" } },
+    agentLimits: {
+      "example/application": { default: "none" },
+      "example/delivery": { issues: "write" },
     },
   };
-  assert.deepEqual(await apiRules({ ...filtered, outside: "unbound" }, true), create);
-  assert.deepEqual(await apiRules(filtered), [], "an ungranted head still withholds PR creation");
-  const only = (allow: string[]) => ({
-    "example/application": { allow },
-    "example/delivery": { allow },
+  const deliveryRules = mixed.filter(({path}) => path?.startsWith("/repos/example/delivery/"));
+  assert.deepEqual(await apiRules({ ...limited, outside: "unbound" }, true), deliveryRules);
+  assert.deepEqual(await apiRules(limited, true), deliveryRules.filter(({method}) => method === "GET"));
+  const limitBoth = (limits: ApiLimits) => ({
+    "example/application": limits,
+    "example/delivery": limits,
   });
   assert.deepEqual(
-    await apiRules({ permissions, filters: only(["pull_requests:read"]) }, true),
+    await apiRules(
+      { permissions, outside: "unbound", limits: limitBoth({ issues: "none" }) },
+      true,
+    ),
+    pulls,
+  );
+  assert.deepEqual(
+    await apiRules(
+      {
+        permissions,
+        outside: "unbound",
+        limits: limitBoth({ default: "none", pull_requests: "read" }),
+      },
+      true,
+    ),
     pullReads,
   );
-  assert.deepEqual(await apiRules({ permissions, filters: only([]) }), []);
-  const creates = only(["pull_requests:create", "issues:create"]);
-  assert.deepEqual(await apiRules({ permissions, filters: creates, outside: "unbound" }, true), [
-    ...create,
-    createIssue,
-  ]);
-  assert.deepEqual(await apiRules({ permissions: { issues: "read" }, filters: creates }), []);
+  assert.deepEqual(await apiRules({ permissions, limits: limitBoth({ default: "none" }) }), []);
+  // Explicit Write includes reads, but cannot raise a saved Read grant or the token permissions.
+  const limits = limitBoth({ default: "none", issues: "write", pull_requests: "write" });
+  assert.deepEqual(await apiRules({ permissions, limits, outside: "unbound" }, true), both);
+  assert.deepEqual(await apiRules({ permissions: { issues: "read" }, limits }, true), issues);
 });
 
 test("a persisted v9 Git-only binding cannot inherit issue network access", async () => {
@@ -4613,15 +4629,12 @@ test("native Git refuses obsolete or standalone admissions before Provider work"
   noCredentials();
 });
 
-test("API filters require native delivery at first issuance and renewal even without REST permissions", async (t) => {
-  for (const filter of [{ allow: [] }, { deny: ["issues:create"] }]) {
-    const rest = { permissions: {}, filters: { "example/delivery": filter } };
+test("API limits require native delivery at first issuance and renewal even without REST permissions", async (t) => {
+  for (const limit of [{ default: "none" }, { issues: "write" }] as const) {
+    const rest = { permissions: {}, limits: { "example/delivery": limit } };
     // No saved policy selects online authorization. Refuse before even reserving a Provider.
     const online = await selectedV5(t, false, undefined, rest);
-    await assert.rejects(
-      online.prepare(),
-      /API action restrictions require a native repository network policy/,
-    );
+    await assert.rejects(online.prepare(), /API limits require a native repository network policy/);
     assert.equal(online.store.rows.size, 0);
     online.noCredentials();
 
@@ -4650,12 +4663,12 @@ test("API filters require native delivery at first issuance and renewal even wit
 test("Agent API restrictions block issuance and renewal if a forbidden route is loaded", async (t) => {
   const held = await heldGit(t, true, undefined, {
     permissions: { issues: "write" },
-    agentFilters: {
-      "example/application": { allow: ["issues:create"] },
-      "example/delivery": { deny: ["issues:create"] },
+    agentLimits: {
+      "example/application": { default: "none" },
+      "example/delivery": { issues: "read" },
     },
   });
-  // A's Read grant cannot create issues. B remains writable over Git but cannot POST.
+  // A has no API access. B remains writable over Git but cannot POST.
   const endpoints = held.loadedGitRule.endpoints.filter(({ host }) => host === "api.github.com");
   assert.equal(endpoints.length, 1);
   const [endpoint] = endpoints;
@@ -4686,24 +4699,19 @@ test("Agent API restrictions block issuance and renewal if a forbidden route is 
   }
 });
 
-test("omitted and empty deny filters preserve online delivery without a saved native policy", async (t) => {
-  for (const filters of [undefined, { "example/delivery": { deny: [] } }]) {
-    const held = await heldGit(t, false, undefined, {
-      permissions: {},
-      ...(filters && { filters }),
-    });
-    await held.reconcile();
-    assert.equal(held.activity.updates, 1);
-    held.f.owner.material = {
-      ...held.f.owner.material,
-      materialVersion: randomUUID(),
-      preparationAttemptId: randomUUID(),
-      value: "controlled-renewed-token",
-    };
-    await held.reconcile();
-    assert.equal(held.activity.updates, 2);
-    assert.equal(held.activity.probes, 1);
-  }
+test("omitted API limits preserve online delivery without a saved native policy", async (t) => {
+  const held = await heldGit(t, false, undefined, { permissions: {} });
+  await held.reconcile();
+  assert.equal(held.activity.updates, 1);
+  held.f.owner.material = {
+    ...held.f.owner.material,
+    materialVersion: randomUUID(),
+    preparationAttemptId: randomUUID(),
+    value: "controlled-renewed-token",
+  };
+  await held.reconcile();
+  assert.equal(held.activity.updates, 2);
+  assert.equal(held.activity.probes, 1);
 });
 
 test("native Git registration refuses an online authorization plan before Provider work", async (t) => {
