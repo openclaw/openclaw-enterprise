@@ -133,12 +133,14 @@ Driver; admitted Agents must use a supported
 
 ### OpenShell gateway
 
-The OpenShell Backend holds the connection to one OpenShell gateway deployment.
-These paths are the files Helm `backend.openshell.clientSecretName` projects
-(`ca.crt`, `tls.crt`, `tls.key` under `/etc/openclaw/openshell`). The chart
-mounts no bearer token file or separate `operatorTls` pair, so chart installs
-cannot retrieve Codex OAuth access tokens; other packaging must mount those files
-itself.
+The Backend connects to one OpenShell gateway. With
+`backend.openshell.clientSecretName`, Helm sets `OCC_CHART_OPENSHELL_CLIENT_DIRECTORY`.
+For mTLS, use the exact mounted paths `/etc/openclaw/openshell/tls.crt` and
+`/etc/openclaw/openshell/tls.key` or mount both files elsewhere.
+Use `/etc/openclaw/openshell/ca.crt` or an external `rootCertificatePath`.
+Without the chart marker, startup skips these path checks. The chart cannot
+retrieve Codex OAuth access tokens because it mounts neither a bearer token
+file nor a separate `operatorTls` pair.
 
 ```yaml
 backend:
