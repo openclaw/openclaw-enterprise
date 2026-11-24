@@ -178,9 +178,10 @@ when the hint is absent. `none` removes only the added plugin review step.
 
 For an explicit reviewer, startup checks app and link reviewer values against
 `configRequirements/read` and `allowedApprovalsReviewers`. Automatic review needs
-current native approval policy `on-request` or `granular`. Agent admission requires
-configured `appServer.approvalPolicy` to be `on-request` or `on-failure`; Compute
-maps `on-failure` to native `on-request`. Human review fails when managed
+current native approval policy `on-request` or `granular`. For automatic review,
+Agent admission requires configured `appServer.approvalPolicy` to be `on-request`
+or `on-failure`; Compute maps `on-failure` to native `on-request`. Human review
+fails when managed
 `requiredOnModels` includes the current model, or model selection cannot be
 verified against a nonempty requirement. Omitted reviewers do not trigger those
 explicit-choice checks. See [reviewer constraints](../agent-plugins.md#reviewer)
