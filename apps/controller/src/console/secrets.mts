@@ -619,6 +619,8 @@ export function renderSecrets(
     const { value, reveal, multiline } = secretValueControl("secret-value", {
       "aria-describedby": valueNoticeId,
     });
+    // Native focus can reveal the caret while clipping the lower part of a multiline field.
+    const scrollValueIntoView = () => value.scrollIntoView({ block: "nearest", inline: "nearest" });
     if (value instanceof HTMLTextAreaElement) {
       value.addEventListener("keyup", (event) => {
         if (
@@ -629,8 +631,7 @@ export function renderSecrets(
           !event.metaKey &&
           document.activeElement === value
         ) {
-          // Native Tab can leave the textarea clipped when its caret is already visible.
-          value.scrollIntoView({ block: "nearest", inline: "nearest" });
+          scrollValueIntoView();
         }
       });
     }
@@ -670,6 +671,9 @@ export function renderSecrets(
     current.body.append(form);
     current.actions.append(submit);
     (replacing ? value : name).focus();
+    if (replacing && value instanceof HTMLTextAreaElement) {
+      scrollValueIntoView();
+    }
     let canSubmit = true;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();

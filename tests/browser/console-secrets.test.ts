@@ -826,13 +826,20 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   );
   assert.deepEqual(await consoleStorage(page), { local: {}, session: {} });
 
+  // In a short desktop window, Replace focuses Value before any Tab event.
+  await page.setViewportSize({ width: 761, height: 300 });
   await page.getByRole("button", { name: "Shared model", exact: true }).click();
   await dialog(page, "Shared model")
     .getByRole("button", { name: "Replace value", exact: true })
-    .click();
+    .press("Enter");
   const replacement = dialog(page, "Replace Secret value");
   const replacementValue = replacement.getByLabel("Value", { exact: true });
   assert.equal(await replacementValue.inputValue(), "");
+  await replacement.evaluate(async (node) => {
+    await Promise.all(node.getAnimations().map((animation) => animation.finished));
+  });
+  await expectSecretFocusInView(replacementValue, "Replace Value on opening");
+  await page.setViewportSize({ width: 640, height: 360 });
   await page.keyboard.press("Tab");
   await expectSecretFocusInView(
     replacement.getByRole("button", { name: "Close" }),
