@@ -186,18 +186,14 @@ permissions committed before it acquires the lock. It releases the lock before
 waiting for the provider and checks deployment admission again before saving the
 revision.
 
-To opt in, save an explicit repository list before first deployment. Later revisions
-can update it. For TokenService Git, a Dedicated Agent whose earlier revisions
-used only a standalone TokenService model credential can also opt in. Save the
-repository list, complete Stop, then deploy the new revision. The Worker rechecks
-revision history before preparing a queued scoped revision.
+Save a repository list before first deployment to opt in. A Dedicated Agent with
+only standalone TokenService model revisions can opt in later. Save the list,
+complete Stop, then deploy. The Worker rechecks revision history before preparation.
 
-Earlier revisions with unscoped Git cause scoped deployment to return 409 even
-after Stop. A delayed Gateway write can outlive both the Worker claim and Stop.
-The unscoped Agent can keep deploying without a list. For scoped access, create a
-draft Agent and save its list before deploying. Keep the original
-Agent and its storage for existing chats and files. Reusing a name or
-[conversation label](agent-http-chat.md#conversations-and-execution)
+With earlier unscoped Git, scoped deployment returns 409 even after Stop. A
+delayed Gateway write can outlive Stop. Create a draft for scoped access and
+save its list before deploying. Keep the original Agent and its storage for
+existing chats and files. Reusing a [conversation label](agent-http-chat.md#conversations-and-execution)
 does not transfer history.
 
 After refusing a scoped replacement before its first provider call, the Worker
