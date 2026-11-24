@@ -9832,24 +9832,22 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return owned ? owned.access.retireExpired(owned.context) : ("retire-runtime" as const);
   }
 
-  async stopRevision(revision: AgentRevision): Promise<void> {
+  private async prepareWorkloadStop(revision: AgentRevision, verb: "stop" | "retire") {
     this.validateHarnessStorage(revision);
     this.lifecycleStarted = true;
     if (
       revision.compute.id !== this.id ||
       revision.compute.implementation !== this.implementation
     ) {
-      throw new Error("Refusing to stop an AgentRevision pinned to another Compute Driver.");
+      throw new Error(`Refusing to ${verb} an AgentRevision pinned to another Compute Driver.`);
     }
     required(revision.agentId, "Agent ID");
     required(revision.id, "AgentRevision ID");
     required(revision.servicePrincipalId, "Agent ServicePrincipal ID");
-    if (enabledChannelEntries(revision.configuration).length > 0) {
-      if (!this.channelEgress) {
-        throw new ConfigurationFailure(
-          "Restore the managed channel egress configuration before retiring channel bindings.",
-        );
-      }
+    if (enabledChannelEntries(revision.configuration).length > 0 && !this.channelEgress) {
+      throw new ConfigurationFailure(
+        "Restore the managed channel egress configuration before retiring channel bindings.",
+      );
     }
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
@@ -9860,26 +9858,35 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
     }
     const existingNamespace = await this.getNamespace(namespace);
-    if (existingNamespace === undefined) {
-      await this.lifecycle.beforeWorkloadStop(revision);
+    if (existingNamespace !== undefined) {
+      this.verifyNamespaceOwnership(
+        existingNamespace,
+        { namespaceId: revision.namespaceId },
+        external,
+      );
+      if (
+        revision.harness.mode !== "dedicated" &&
+        this.sandboxDriverForRevision(revision) !== undefined
+      ) {
+        throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
+      }
+    }
+    await this.lifecycle.beforeWorkloadStop(revision);
+    return { namespace, gatewayNamespace, namespaceExists: existingNamespace !== undefined };
+  }
+
+  async stopRevision(revision: AgentRevision): Promise<void> {
+    const { namespace, gatewayNamespace, namespaceExists } = await this.prepareWorkloadStop(
+      revision,
+      "stop",
+    );
+    if (!namespaceExists) {
       await this.removeStoppedGateway(revision, namespace);
       if (enabledChannelEntries(revision.configuration).length > 0) {
         await this.channelEgress?.retire(revision);
       }
       return;
     }
-    this.verifyNamespaceOwnership(
-      existingNamespace,
-      { namespaceId: revision.namespaceId },
-      external,
-    );
-    if (
-      revision.harness.mode !== "dedicated" &&
-      this.sandboxDriverForRevision(revision) !== undefined
-    ) {
-      throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
-    }
-    await this.lifecycle.beforeWorkloadStop(revision);
     // Stop removes the serving path first so no new traffic reaches a runtime while
     // its exact Harness is being shut down.
     if (isYieldingComputeStop()) {
@@ -9909,53 +9916,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   async retireRevision(revision: AgentRevision): Promise<void> {
-    this.validateHarnessStorage(revision);
-    this.lifecycleStarted = true;
-    if (
-      revision.compute.id !== this.id ||
-      revision.compute.implementation !== this.implementation
-    ) {
-      throw new Error("Refusing to retire an AgentRevision pinned to another Compute Driver.");
-    }
-    required(revision.agentId, "Agent ID");
-    required(revision.id, "AgentRevision ID");
-    required(revision.servicePrincipalId, "Agent ServicePrincipal ID");
-    if (enabledChannelEntries(revision.configuration).length > 0) {
-      if (!this.channelEgress) {
-        throw new ConfigurationFailure(
-          "Restore the managed channel egress configuration before retiring channel bindings.",
-        );
-      }
-    }
-    const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
-    const gatewayNamespace = this.gatewayNamespace(revision, namespace);
-    if (gatewayNamespace !== namespace) {
-      const gatewayTarget = await this.getNamespace(gatewayNamespace);
-      if (gatewayTarget !== undefined) {
-        this.verifyGatewayNamespace(gatewayTarget, { namespaceId: revision.namespaceId });
-      }
-    }
-    const existingNamespace = await this.getNamespace(namespace);
-    if (existingNamespace === undefined) {
-      await this.lifecycle.beforeWorkloadStop(revision);
+    const { namespace, namespaceExists } = await this.prepareWorkloadStop(revision, "retire");
+    if (!namespaceExists) {
       await this.removeRetiredGateway(revision, namespace);
       if (enabledChannelEntries(revision.configuration).length > 0) {
         await this.channelEgress?.retire(revision);
       }
       return;
     }
-    this.verifyNamespaceOwnership(
-      existingNamespace,
-      { namespaceId: revision.namespaceId },
-      external,
-    );
-    if (
-      revision.harness.mode !== "dedicated" &&
-      this.sandboxDriverForRevision(revision) !== undefined
-    ) {
-      throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
-    }
-    await this.lifecycle.beforeWorkloadStop(revision);
     await this.shutdownRevisionRuntime(revision, namespace);
     await this.retireLegacyWorkspaceNode(revision, namespace);
     await this.removeRetiredGateway(revision, namespace);

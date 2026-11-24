@@ -284,6 +284,7 @@ import {
   checkOtherHarnessStopsDoNotWait,
   checkProviderStopTermination,
   checkRefusedCandidateStopOrder,
+  checkRevisionStopNamespaceOwnership,
   checkServingHarnessStopsAtOnce,
   checkStartingHarnessStopBound,
   checkStartingHarnessStopWaitsForServing,
@@ -6441,6 +6442,11 @@ for (const cutover of ["already deployed", "during Deployment deletion", "during
   test(`stopping a predecessor preserves its replacement ${cutover}`, () =>
     checkStopPreservesReplacement(cutover));
 }
+
+test(
+  "stop and retirement check both namespaces before cleaning up a separate Gateway",
+  checkRevisionStopNamespaceOwnership,
+);
 
 test(
   "stopping a containment-only Kubernetes revision removes its workload before Sandbox cleanup",
