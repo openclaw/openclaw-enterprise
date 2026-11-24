@@ -15,6 +15,12 @@ before recording, and use disposable data you can share. The video contains the
 actual page, including visible input values. Label a Storybook scenario as simulated;
 use the real controller when the claim depends on permissions, persistence, or recovery.
 
+When recording a resize, the video keeps its opening width and height. If only
+width matters, start narrow and scale both dimensions together, for example from
+920 × 900 to 1150 × 1125 and back, to avoid gray bands. If exact width and height
+or orientation matter, keep them and accept padding or use separate recordings.
+Never crop or edit the proof.
+
 Call [`recordWalkthrough`](../../../scripts/console/record-walkthrough.ts) from a local
 TypeScript evidence script. Give it a new path in an existing directory outside the
 checkout. Describe each action and the visible result that proves it worked. The
