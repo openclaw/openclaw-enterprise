@@ -601,11 +601,7 @@ let consoleLoads = 0;
 
 type RepositoryReview = { version: number; grants: readonly RepositoryNetworkGrant[] };
 
-export function repositoryReviewFrom(
-  value: unknown,
-  namespaceId: string,
-  agentId: string,
-): RepositoryReview | undefined {
+function repositoryPolicyFrom(value: unknown, namespaceId: string, agentId: string) {
   const policy = responseFields(responseFields(value).policy);
   const { version, repositoryNetworkPolicy } = policy;
   if (
@@ -613,10 +609,20 @@ export function repositoryReviewFrom(
     policy.agentId === agentId &&
     typeof version === "number" &&
     Number.isSafeInteger(version) &&
-    version >= 1 &&
-    readableRepositoryGrants(repositoryNetworkPolicy)
+    version >= 1
   ) {
     return { version, grants: repositoryNetworkPolicy };
+  }
+}
+
+export function repositoryReviewFrom(
+  value: unknown,
+  namespaceId: string,
+  agentId: string,
+): RepositoryReview | undefined {
+  const policy = repositoryPolicyFrom(value, namespaceId, agentId);
+  if (policy && readableRepositoryGrants(policy.grants)) {
+    return { version: policy.version, grants: policy.grants };
   }
 }
 
@@ -1066,9 +1072,10 @@ export async function renderAgentDetail(
   }
   // Keep the review requirement through draft tab changes and reloads. Never put
   // grants in the URL. A reload must read them again with current permissions.
-  const reviewRepositories = url.searchParams.has("reviewRepositories");
+  const reviewRequested = url.searchParams.has("reviewRepositories");
+  let reviewRepositories = reviewRequested;
   const target = (revision = selected, tab = selectedTab) =>
-    `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}${reviewRepositories && revision === "draft" ? "&reviewRepositories=1" : ""}`;
+    `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}${reviewRequested && revision === "draft" ? "&reviewRepositories=1" : ""}`;
   const linkedKey = (revision = selected, tab = selectedTab) =>
     JSON.stringify([namespaceId, target(revision, tab)]);
   // A link to one of this Agent's version tabs that brings the tab into view once it opens.
@@ -3487,6 +3494,44 @@ export async function renderAgentDetail(
     const executionMode = agent.executionMode;
     let deployPending = false;
     let deployReloadMessage = "";
+    // A normal Agent link has no creation receipt. The same GitHub credential
+    // profile supports legacy access and saved grants, including deny-all.
+    const firstGitHubDraft =
+      revisionResult.status === "fulfilled" &&
+      revisionResult.value.revisions.length === 0 &&
+      agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
+    async function hasRepositoryPolicy() {
+      const permissions = await latestPermissionsRead;
+      // OCC requires policy read for scoped deployments. Legacy deployers can
+      // deploy without it and should not be sent a forbidden policy read.
+      if (permissions?.deploy === false || permissions?.sandboxPolicyRead === false) {
+        return false;
+      }
+      const view = await request(`${path}/sandbox-policy/networking`, { expectedStatus: 200 });
+      const policy = repositoryPolicyFrom(view, namespaceId, agent.id);
+      if (!policy) {
+        throw new Error("Could not check saved GitHub access.");
+      }
+      return policy.grants !== undefined;
+    }
+    if (firstGitHubDraft && !reviewRepositories) {
+      try {
+        const scoped = await hasRepositoryPolicy();
+        if (generation === detailsGeneration) {
+          reviewRepositories = scoped;
+        }
+      } catch (cause) {
+        if (requestFailure(cause).status === 401) {
+          context.onExpired();
+          return;
+        }
+        deployReloadMessage =
+          "Could not check saved GitHub access. Reload this draft before deploying.";
+      }
+      if (!context.isCurrent() || generation !== detailsGeneration || deleting) {
+        return;
+      }
+    }
     let deployFeedbackIsSecretRefusal = false;
     // A refusal only Kubernetes Compute gives, with its step (checkComputeEntryKeys).
     let computeEntryKeyRefusal: { readonly message: string; readonly step: string } | null = null;
@@ -4106,6 +4151,8 @@ export async function renderAgentDetail(
             : deployReason;
         } else if (reviewRepositories && callerPermissions?.sandboxPolicyRead !== true) {
           deployMessage = "Reading the saved GitHub access requires SandboxPolicy read.";
+        } else if (reviewRepositories && !repositoryReview) {
+          deployMessage = "Review saved GitHub access before deploying.";
         } else if (deployReloadMessage) {
           deployMessage = deployReloadMessage;
         } else if (authenticationSaveState === "saving") {
@@ -4489,6 +4536,12 @@ export async function renderAgentDetail(
         let submitted = false;
         try {
           const harnessOverrides = requestedHarnessOverrides();
+          // The Policy tab or another editor can save a first list without
+          // changing the Agent's bindings. Reopen that draft for review.
+          if (firstGitHubDraft && !reviewRepositories && (await hasRepositoryPolicy())) {
+            deployReloadMessage = "Repository access changed. Reload this draft before deploying.";
+            return;
+          }
           const freshAgent = await readAgent();
           if (!context.isCurrent()) {
             return;
@@ -7269,7 +7322,7 @@ export async function renderAgentDetail(
       !context.isCurrent() ||
       deleting ||
       next.pathname !== url.pathname ||
-      next.searchParams.has("reviewRepositories") !== reviewRepositories ||
+      next.searchParams.has("reviewRepositories") !== reviewRequested ||
       next.searchParams.get("namespace") !== namespaceId
     ) {
       return false;

@@ -1406,6 +1406,17 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   assert.deepEqual(await revisions(), []);
   assert.equal(pathRequests(requests, "POST", agents).length, 2);
   assert.equal(pathRequests(requests, "POST", `${agents}/provision`).length, 0);
+  // An ordinary Agent link has no creation receipt or review query parameter.
+  // It must still show the saved grants and pin this first deployment to them.
+  await page.goto(`${fixture.origin}/console/agents/${agent.id}?namespace=${namespaceId}`);
+  const review = page.getByRole("button", { name: "Review saved GitHub access" });
+  await review.waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  await review.click();
+  await page
+    .getByText("Saved GitHub access: example/application (Read-only), example/tooling (Read-only)")
+    .waitFor();
+  await waitForEnabled(deploy);
   // A second editor widens only the policy after the Console's final Agent reread.
   // The bindings and the editing setting seen by the first editor stay identical.
   const base = `${path}/sandbox-policy/networking`;
@@ -1446,7 +1457,6 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   assert.equal(await deploy.isDisabled(), true);
   assert.equal(await page.getByText(/GraphQL can permit/).count(), 0);
   // Reloading this draft keeps the precondition and requires a new review.
-  const review = page.getByRole("button", { name: "Review saved GitHub access" });
   await review.waitFor();
   await page.reload();
   await review.waitFor();
