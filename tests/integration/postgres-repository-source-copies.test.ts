@@ -909,60 +909,6 @@ test(
 );
 
 test(
-  "under a repeatable-read connection default, Source replacement and deletion see a Provider write recorded while they wait on the Source row",
-  requiresPostgres,
-  async (t) => {
-    const f = await managedSource(t, "repository-source-write-fence-rr", true);
-    const isolation = await f.pool.query("SHOW default_transaction_isolation");
-    assert.equal(isolation.rows[0]?.default_transaction_isolation, "repeatable read");
-    const ref = { namespaceId: f.namespaceId, sourceId: f.source.id };
-    const revisionId = `rev-${randomUUID()}`;
-    await f.state.transact((unit) =>
-      unit.credentialSources.recordRepositorySourceCopy(f.copy(revisionId)),
-    );
-    const fenced = {
-      name: "RepositorySourceWriteUnreconciledError",
-      message: `1 Provider write is unreconciled (unreconciled_repository_source_write): agent-${revisionId}/${revisionId}. Stop or redeploy its Agent; the Worker then confirms the Provider retired.`,
-    };
-    const worker = f.custody();
-
-    // The TokenService step of PATCH starts its transaction, then waits on the Source row the
-    // Worker holds. The Worker records its write during that wait, and the answer is lost. The
-    // replacement must read the record committed during its wait, not a snapshot from before it.
-    const writing = await worker.lock(ref);
-    assert.ok(writing?.source);
-    const { version } = await worker.resolve(ref, writing.source);
-    const replacing = f.owner.updateSource(
-      {
-        sourceRef: { kind: "credential_source", namespaceId: f.namespaceId, id: f.source.id },
-        tokenServiceInstanceId: f.instanceId,
-      },
-      { secret: { token: fineGrained() } },
-      AbortSignal.timeout(30_000),
-    );
-    replacing.catch(() => {});
-    assert.equal(await settlesWithin(replacing, 750), false, "the replacement waits on the row");
-    const write = writing.write(revisionId, version);
-    assert.equal(await write.dispatching(), true);
-    await writing.hold.release();
-    await assert.rejects(replacing, { name: fenced.name });
-    // Proven unapplied, the record clears, so the deletion below meets only its own record.
-    await write.settled("unapplied");
-
-    // The same for DELETE: it reads the record committed while it waited, so it names the
-    // unreconciled write rather than only the unretired copy.
-    const again = await worker.lock(ref);
-    assert.ok(again?.source);
-    const deleting = f.retire();
-    deleting.catch(() => {});
-    assert.equal(await settlesWithin(deleting, 750), false, "the deletion waits on the row");
-    assert.equal(await again.write(revisionId, version).dispatching(), true);
-    await again.hold.release();
-    await assert.rejects(deleting, fenced);
-  },
-);
-
-test(
   "the policy read's delivery state comes from the copy record alone: pending until the Sandbox activates the committed version",
   requiresPostgres,
   async (t) => {
@@ -1090,5 +1036,59 @@ test(
     assert.ok("deliveries" in retired);
     assert.deepEqual(retired.deliveries, []);
     await f.retire();
+  },
+);
+
+test(
+  "under a repeatable-read connection default, Source replacement and deletion see a Provider write recorded while they wait on the Source row",
+  requiresPostgres,
+  async (t) => {
+    const f = await managedSource(t, "repository-source-write-fence-rr", true);
+    const isolation = await f.pool.query("SHOW default_transaction_isolation");
+    assert.equal(isolation.rows[0]?.default_transaction_isolation, "repeatable read");
+    const ref = { namespaceId: f.namespaceId, sourceId: f.source.id };
+    const revisionId = `rev-${randomUUID()}`;
+    await f.state.transact((unit) =>
+      unit.credentialSources.recordRepositorySourceCopy(f.copy(revisionId)),
+    );
+    const fenced = {
+      name: "RepositorySourceWriteUnreconciledError",
+      message: `1 Provider write is unreconciled (unreconciled_repository_source_write): agent-${revisionId}/${revisionId}. Stop or redeploy its Agent; the Worker then confirms the Provider retired.`,
+    };
+    const worker = f.custody();
+
+    // The TokenService step of PATCH starts its transaction, then waits on the Source row the
+    // Worker holds. The Worker records its write during that wait, and the answer is lost. The
+    // replacement must read the record committed during its wait, not a snapshot from before it.
+    const writing = await worker.lock(ref);
+    assert.ok(writing?.source);
+    const { version } = await worker.resolve(ref, writing.source);
+    const replacing = f.owner.updateSource(
+      {
+        sourceRef: { kind: "credential_source", namespaceId: f.namespaceId, id: f.source.id },
+        tokenServiceInstanceId: f.instanceId,
+      },
+      { secret: { token: fineGrained() } },
+      AbortSignal.timeout(30_000),
+    );
+    replacing.catch(() => {});
+    assert.equal(await settlesWithin(replacing, 750), false, "the replacement waits on the row");
+    const write = writing.write(revisionId, version);
+    assert.equal(await write.dispatching(), true);
+    await writing.hold.release();
+    await assert.rejects(replacing, { name: fenced.name });
+    // Proven unapplied, the record clears, so the deletion below meets only its own record.
+    await write.settled("unapplied");
+
+    // The same for DELETE: it reads the record committed while it waited, so it names the
+    // unreconciled write rather than only the unretired copy.
+    const again = await worker.lock(ref);
+    assert.ok(again?.source);
+    const deleting = f.retire();
+    deleting.catch(() => {});
+    assert.equal(await settlesWithin(deleting, 750), false, "the deletion waits on the row");
+    assert.equal(await again.write(revisionId, version).dispatching(), true);
+    await again.hold.release();
+    await assert.rejects(deleting, fenced);
   },
 );
