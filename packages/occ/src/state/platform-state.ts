@@ -656,7 +656,10 @@ interface PlatformSnapshot {
   readonly authenticationStates: Map<string, AuthenticationState>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
-  /** Keyed by revision. This adapter has no Worker, so a recorded copy is never retired here. */
+  /**
+   * Keyed by revision. This adapter has no Worker and no Gateway, so no Provider can hold a copy:
+   * a copy counts as retired once the PostgreSQL Worker's idle rule holds for its revision.
+   */
   readonly repositorySourceCopies: Map<string, Readonly<RepositorySourceCopy>>;
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
   readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
@@ -2671,11 +2674,29 @@ function repositories(
       }
       snapshot.repositorySourceCopies.set(copy.revisionId, Object.freeze({ ...copy }));
     },
+    // The Worker's idle rule (openshell-git-route-store.ts idleSourceCopies): no work recorded
+    // for the revision, and its Agent is gone, stopped or runs another revision. Recorded work
+    // never executes here and ends only with its Agent's deletion, so in practice a copy retires
+    // when its Agent is deleted, as revision cleanup retires it on PostgreSQL.
     findUnretiredRepositorySourceCopies: async (namespaceId, credentialSourceId) =>
-      Array.from(snapshot.repositorySourceCopies.values()).filter(
-        (copy) =>
-          copy.namespaceId === namespaceId && copy.credentialSourceId === credentialSourceId,
-      ),
+      Array.from(snapshot.repositorySourceCopies.values()).filter((copy) => {
+        if (copy.namespaceId !== namespaceId || copy.credentialSourceId !== credentialSourceId) {
+          return false;
+        }
+        const agent = snapshot.agents.get(agentKey(namespaceId, copy.agentId));
+        const pending = snapshot.operations.some(
+          (operation) =>
+            operation.kind === "agent_revision" &&
+            operation.namespaceId === namespaceId &&
+            operation.resourceId === copy.revisionId,
+        );
+        return (
+          pending ||
+          (agent !== undefined &&
+            agent.activeRevisionId === copy.revisionId &&
+            agent.desiredRuntimeState !== "stopped")
+        );
+      }),
     deleteCredentialSource: async (namespaceId, credentialSourceId) => {
       if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
         return false;
