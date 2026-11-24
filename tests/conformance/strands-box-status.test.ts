@@ -314,6 +314,7 @@ test("Compute observes only the Strands execution identity pinned by endpoint di
   const replacementUid = "00000000-0000-4000-8000-000000000002";
   const originalPem = podCertificate(originalUid, hostname, statusHostname);
   const replacementPem = podCertificate(replacementUid, hostname, statusHostname);
+  const running = { name: "agent", restartCount: 0, state: { running: {} } };
   const pod = (uid: string, certificate: string) => ({
     apiVersion: "v1",
     kind: "Pod",
@@ -327,7 +328,7 @@ test("Compute observes only the Strands execution identity pinned by endpoint di
     status: {
       phase: "Running",
       conditions: [{ type: "Ready", status: "True" }],
-      containerStatuses: [{ name: "agent", restartCount: 0, state: { running: {} } }],
+      containerStatuses: [running],
       initContainerStatuses: [
         {
           name: "initialize-listener",
@@ -424,41 +425,80 @@ test("Compute observes only the Strands execution identity pinned by endpoint di
         workspaceMounts: [],
       },
     });
-  for (const phase of ["Failed", "Succeeded"]) {
-    await t.test(
-      `initializer success on a ${phase} Pod cannot reserve its certificate`,
-      async () => {
-        receipt = undefined;
-        receipts.length = 0;
-        pods = [
-          {
-            ...original,
-            status: {
-              phase,
-              conditions: [{ type: "Ready", status: "False" }],
-              initContainerStatuses: original.status.initContainerStatuses,
-            },
-          },
-        ];
-        await assert.rejects(endpoint(), { name: "DependencyUnavailableError" });
-        assert.deepEqual(receipts, []);
-      },
-    );
+  const terminated = { ...running, state: { terminated: { exitCode: 1 } } };
+  const restarted = { ...running, restartCount: 1 };
+  const waiting = { ...running, state: { waiting: { reason: "ContainerCreating" } } };
+  const cannotPin = [
+    ["Failed Pod", { phase: "Failed" }],
+    ["Succeeded Pod", { phase: "Succeeded" }],
+    ["terminated supervisor in Running phase", { containerStatuses: [terminated] }],
+    ["restarted supervisor in Running phase", { containerStatuses: [restarted] }],
+  ] as const;
+  for (const [name, status] of cannotPin) {
+    await t.test(`initializer success with ${name} cannot reserve its certificate`, async () => {
+      receipt = undefined;
+      receipts.length = 0;
+      pods = [{ ...original, status: { ...original.status, ...status } }];
+      await assert.rejects(endpoint(), { name: "DependencyUnavailableError" });
+      assert.deepEqual(receipts, []);
+    });
   }
-  await t.test("the original Ready Pod owns the listener pin and is running", async () => {
-    receipt = undefined;
-    receipts.length = 0;
-    pods = [original];
-    const unpinned = await observe();
-    const bound = await endpoint();
-    assert.equal(bound.url, `wss://${hostname}:18790`);
-    assert.equal(bound.tlsPeerCertificate, new X509Certificate(originalPem).toString());
-    assert.equal(receipts[0]?.immutable, true);
-    assert.equal(receipts[0]?.data?.podUid, originalUid);
-    assert.equal(receipts[0]?.data?.deploymentUid, deploymentOwner.uid);
-    assert.deepEqual(await observe(), { state: "running" });
-    assert.deepEqual(unpinned, { state: "starting" });
-  });
+  await t.test(
+    "endpoint discovery accepts an owned Pod waiting for its first supervisor",
+    async () => {
+      receipt = undefined;
+      receipts.length = 0;
+      pods = [
+        {
+          ...original,
+          status: { ...original.status, phase: "Pending", containerStatuses: [waiting] },
+        },
+      ];
+      const bound = await endpoint();
+      assert.equal(bound.tlsPeerCertificate, new X509Certificate(originalPem).toString());
+      assert.equal(receipts[0]?.data?.podUid, originalUid);
+    },
+  );
+  await t.test(
+    "endpoint discovery pins before readiness and Compute runs only when ready",
+    async () => {
+      receipt = undefined;
+      receipts.length = 0;
+      const startup = { ...original.status, phase: "Pending", conditions: [] };
+      pods = [{ ...original, status: { ...startup, containerStatuses: undefined } }];
+      assert.deepEqual(await observe(), { state: "starting" });
+      const bound = await endpoint();
+      assert.equal(bound.url, `wss://${hostname}:18790`);
+      assert.equal(bound.tlsPeerCertificate, new X509Certificate(originalPem).toString());
+      assert.equal(receipts[0]?.immutable, true);
+      assert.equal(receipts[0]?.data?.podUid, originalUid);
+      assert.equal(receipts[0]?.data?.deploymentUid, deploymentOwner.uid);
+      assert.deepEqual(await observe(), { state: "starting" });
+      pods = [{ ...original, status: { ...startup, containerStatuses: [waiting] } }];
+      assert.deepEqual(await observe(), { state: "starting" });
+      pods = [original];
+      assert.deepEqual(await observe(), { state: "running" });
+    },
+  );
+  const cannotRun = [
+    ["missing supervisor", { containerStatuses: undefined }],
+    ["waiting supervisor", { containerStatuses: [waiting] }],
+    [
+      "conflicting supervisor states",
+      { containerStatuses: [{ ...running, state: { ...running.state, ...waiting.state } }] },
+    ],
+    ["duplicate supervisor statuses", { containerStatuses: [running, running] }],
+    [
+      "duplicate Ready conditions",
+      { conditions: [...original.status.conditions, { type: "Ready", status: "False" }] },
+    ],
+  ] as const;
+  for (const [name, status] of cannotRun) {
+    await t.test(`Compute reports unknown with ${name}`, async () => {
+      pods = [{ ...original, status: { ...original.status, ...status } }];
+      assert.deepEqual(await observe(), { state: "unknown" });
+    });
+  }
   await t.test("an unavailable read cannot establish loss", async () => {
     receiptReadsForbidden = true;
     assert.deepEqual(await observe(), { state: "unknown" });
@@ -471,26 +511,28 @@ test("Compute observes only the Strands execution identity pinned by endpoint di
     assert.deepEqual(await observe(), { state: "unknown" });
     podListContinuation = undefined;
   });
-  await t.test("a failed supervisor is gone even while the Pod phase is Running", async () => {
-    pods = [
-      {
-        ...original,
-        status: {
-          ...original.status,
-          conditions: [{ type: "Ready", status: "False" }],
-          containerStatuses: [
-            {
-              name: "agent",
-              restartCount: 1,
-              // Kubernetes keeps Running for a container in its restart backoff.
-              state: { waiting: { reason: "CrashLoopBackOff" } },
-            },
-          ],
+  for (const [phase, supervisor] of [
+    ["Pending", terminated],
+    [
+      "Running",
+      { ...waiting, restartCount: 1, state: { waiting: { reason: "CrashLoopBackOff" } } },
+    ],
+  ] as const) {
+    await t.test(`a failed supervisor is gone even while the Pod phase is ${phase}`, async () => {
+      pods = [
+        {
+          ...original,
+          status: {
+            ...original.status,
+            phase,
+            conditions: [{ type: "Ready", status: "False" }],
+            containerStatuses: [supervisor],
+          },
         },
-      },
-    ];
-    assert.deepEqual(await observe(), { state: "lost", code: "HARNESS_EXITED" });
-  });
+      ];
+      assert.deepEqual(await observe(), { state: "lost", code: "HARNESS_EXITED" });
+    });
+  }
   await t.test("a Ready replacement cannot cause running or overwrite the stored pin", async () => {
     pods = [original, replacement];
     assert.deepEqual(await observe(), { state: "unknown" });

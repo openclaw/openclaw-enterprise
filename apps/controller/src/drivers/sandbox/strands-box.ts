@@ -193,26 +193,58 @@ function listenerState(statuses: unknown = []): Record<string, unknown> | undefi
   return state;
 }
 
-function supervisorExited(status: Record<string, unknown> | undefined): boolean {
-  const statuses = status?.containerStatuses ?? [];
+function normalContainerWait(waiting: unknown): boolean {
+  const state = asRecord(waiting);
+  return (
+    !!state &&
+    (state.reason === undefined ||
+      state.reason === "ContainerCreating" ||
+      state.reason === "PodInitializing")
+  );
+}
+
+function supervisorState(statuses: unknown = []): "starting" | "running" | "exited" {
   if (!Array.isArray(statuses)) {
     throw new DependencyUnavailableError("Invalid Strands container statuses.");
   }
-  const supervisors = statuses.map(asRecord).filter((entry) => entry?.name === "agent");
+  const containers = statuses.map(asRecord);
+  if (containers.some((entry) => typeof entry?.name !== "string" || !entry.name)) {
+    throw new DependencyUnavailableError("Invalid Strands container statuses.");
+  }
+  const supervisors = containers.filter((entry) => entry?.name === "agent");
   if (supervisors.length > 1) {
     throw new DependencyUnavailableError("Ambiguous Strands supervisor status.");
   }
   const supervisor = supervisors[0];
-  const restarts = supervisor?.restartCount;
-  const exited = (state: unknown) =>
-    Number.isSafeInteger(asRecord(asRecord(state)?.terminated)?.exitCode);
+  if (!supervisor) {
+    return "starting";
+  }
+  const { restartCount, state = {}, lastState = {} } = supervisor;
+  const current = asRecord(state);
+  const previous = asRecord(lastState);
+  const exited = (state: Record<string, unknown> | undefined) =>
+    state &&
+    Object.keys(state).length === 1 &&
+    Number.isSafeInteger(asRecord(state.terminated)?.exitCode);
   // A supervisor consumes its Pod-local TLS key when it starts. Kubelet can
   // restart the container on this Pod, but that process cannot serve this pin.
-  return (
-    (typeof restarts === "number" && Number.isSafeInteger(restarts) && restarts > 0) ||
-    exited(supervisor?.state) ||
-    exited(supervisor?.lastState)
-  );
+  if (
+    (typeof restartCount === "number" && Number.isSafeInteger(restartCount) && restartCount > 0) ||
+    exited(current) ||
+    exited(previous)
+  ) {
+    return "exited";
+  }
+  if (restartCount === 0 && current && previous && Object.keys(previous).length === 0) {
+    const stateCount = Object.keys(current).length;
+    if (stateCount === 1 && asRecord(current.running)) {
+      return "running";
+    }
+    if (stateCount === 0 || (stateCount === 1 && normalContainerWait(current.waiting))) {
+      return "starting";
+    }
+  }
+  throw new DependencyUnavailableError("Invalid Strands supervisor status.");
 }
 
 function listenerReceipt(ref: SandboxResourceRef): KubernetesObject {
@@ -509,20 +541,24 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       if (status?.phase === "Succeeded") {
         return { state: "lost", code: "HARNESS_EXITED" };
       }
+      const supervisor = supervisorState(status?.containerStatuses);
+      if (supervisor === "exited") {
+        return { state: "lost", code: "HARNESS_EXITED" };
+      }
       if (status?.phase === "Pending") {
         return { state: "starting" };
       }
-      if (status?.phase !== "Running") {
+      if (status?.phase !== "Running" || pods.length !== 1 || !Array.isArray(status.conditions)) {
         return { state: "unknown" };
       }
-      if (supervisorExited(status)) {
-        return { state: "lost", code: "HARNESS_EXITED" };
-      }
-      if (pods.length !== 1 || !Array.isArray(status.conditions)) {
+      const ready = status.conditions.filter((entry) => asRecord(entry)?.type === "Ready");
+      if (ready.length > 1) {
         return { state: "unknown" };
       }
-      const ready = status.conditions.find((entry) => asRecord(entry)?.type === "Ready");
-      return asRecord(ready)?.status === "True" ? { state: "running" } : { state: "starting" };
+      if (asRecord(ready[0])?.status !== "True") {
+        return { state: "starting" };
+      }
+      return supervisor === "running" ? { state: "running" } : { state: "unknown" };
     } catch {
       signal.throwIfAborted();
       return { state: "unknown" };
@@ -1026,16 +1062,13 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     const terminated = asRecord(state?.terminated);
     if (terminated?.exitCode !== 0) {
       // Only normal startup observations justify retrying without a certificate.
-      const waiting = asRecord(state?.waiting);
-      const starting =
-        waiting &&
-        (waiting.reason === undefined ||
-          waiting.reason === "ContainerCreating" ||
-          waiting.reason === "PodInitializing");
-      if (!state || starting || asRecord(state.running)) {
+      if (!state || normalContainerWait(state.waiting) || asRecord(state.running)) {
         throw pending("Awaiting Strands listener certificate.");
       }
       throw new DependencyUnavailableError("Awaiting Strands listener certificate.");
+    }
+    if (supervisorState(status?.containerStatuses) === "exited") {
+      throw new DependencyUnavailableError("The Strands supervisor has exited.");
     }
     const cert = listenerLeaf(terminated.message, pod.metadata.uid, ref);
     // Concurrent workers may observe different Pods. A single create wins.
