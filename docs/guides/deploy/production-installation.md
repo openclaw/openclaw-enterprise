@@ -235,93 +235,10 @@ directory. Sign in with `bootstrap.adminEmail` and its `initial-admin-password`.
 Its `bootstrap-client-key.json` contains only `data.key`, not issuance metadata
 or an Installation ID. For existing-Secret mode, set `OCC_BOOTSTRAP_KEY_FILE` to
 your [prepared CLI file](../../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key).
-In the original Installation shell, set `OCC_URL` to the trusted production
-HTTPS endpoint for this cluster. For generated inputs, use the original
-receipt and state directories. The checks below match the release and
-namespace used above. For a custom install, substitute your reviewed target values.
-A nonempty `OCC_BOOTSTRAP_KEY_FILE` skips receipt lookup. Use it only for a
-prepared file you have verified belongs to this Installation.
-
-Keep `OCC_SERVICE_KEY_DIRECTORY` and `OCC_SERVICE_KEY_FILE` set until
-you finish an existing session. Don't run the copy example again.
-If `OCC_SERVICE_KEY_FILE` already selects a supplied file for this Installation,
-keep it selected and skip the copy and its cleanup. Authenticate directly.
-Stop on failure.
-
-```bash
-[[ ${OCC_URL:-} == https://?* && -n ${OCC_SERVICE_KEY_FILE:-} ]] &&
-  OCC_URL="$OCC_URL" OCC_SERVICE_KEY_FILE="$OCC_SERVICE_KEY_FILE" occ installation get &&
-  export OCC_URL OCC_SERVICE_KEY_FILE &&
-  printf '%s\n' 'Supplied file authenticated.'
-```
-
-Otherwise, prepare a session copy. For generated inputs, choose the
-kubeconfig and context independently of the receipt. Verify that both the
-Kubernetes connection and `OCC_URL` belong to your intended Installation.
-Keep the protected inputs unchanged through authentication. The read-only
-[installation plan](production-handoff.md#resume-an-installation-in-progress)
-checks the cluster against the receipt. If it fails, follow the handoff
-before continuing. A complete Job alone cannot confirm Helm or API readiness.
-
-```bash
-umask 077
-prepare_occ_service_key() {
-  local source="${OCC_BOOTSTRAP_KEY_FILE:-}" inputs state directory file
-  if [[ -n ${OCC_SERVICE_KEY_FILE:-} || -n ${OCC_SERVICE_KEY_DIRECTORY:-} ]]; then
-    printf '%s\n' 'A key file or directory is already selected. Preserve it.' >&2
-    return 1
-  fi
-  if [[ ${OCC_URL:-} != https://?* ]]; then
-    printf '%s\n' 'Set OCC_URL to the trusted production HTTPS endpoint.' >&2
-    return 1
-  fi
-  if [[ -z "$source" ]]; then
-    state="${XDG_STATE_HOME:-${HOME:+$HOME/.local/state}}"
-    if [[ -z ${OCC_INPUT_DIRECTORY:-} ||
-          ${INSTALL_RECEIPT_DIRECTORY:-} != "$OCC_INPUT_DIRECTORY/install-receipt" ||
-          $state != /* ]]; then
-      printf '%s\n' 'Restore the original input, receipt and state directory settings.' >&2
-      return 1
-    fi
-    state="$(cd -L -- "$state" && pwd -L)" || return 1
-    if ! inputs="$(jq -ers --arg root "${state%/}" \
-      --slurpfile intent "$INSTALL_RECEIPT_DIRECTORY/intent.json" '
-        select(length == 1 and ($intent | length) == 1)
-        | $intent[0] as $i
-        | select(($i | keys) == ["attempt", "chartSha256", "clusterSha256",
-            "createdAt", "namespace", "operation", "release", "valuesSha256", "version"])
-        | select($i.version == 1 and $i.operation == "helm-install")
-        | select($i.release == "oce" and $i.namespace == "openclaw-system")
-        | select($i.attempt | test("^[0-9a-f]{64}$") and length == 64)
-        | .[0].inputDirectory
-        | select(. == ($root + "/occ/installation-credentials/" + $i.attempt))
-      ' "$INSTALL_RECEIPT_DIRECTORY/bootstrap-secret.json" 2>/dev/null)"; then
-      printf '%s\n' 'Receipt and generated key source must match the original install.' >&2
-      return 1
-    fi
-    occ installation plan --kubeconfig "${KUBECONFIG_FILE:-}" --context "${CONTEXT:-}" \
-      --kube-namespace openclaw-system --release oce \
-      --receipt "$INSTALL_RECEIPT_DIRECTORY" || return 1
-    source="$inputs/bootstrap-client-key.json"
-  fi
-  if [[ ! -f "$source" || ! -r "$source" ]]; then
-    printf '%s\n' 'Check the retained source file.' >&2
-    return 1
-  fi
-  directory="$(mktemp -d /tmp/occ-service-key.XXXXXXXX)" || return 1
-  file="$directory/occ-service-key.json"
-  if ! install -m 600 -- "$source" "$file" ||
-     ! OCC_URL="$OCC_URL" OCC_SERVICE_KEY_FILE="$file" occ installation get; then
-    if ! rm -f -- "$file" || ! rmdir -- "$directory"; then
-      printf 'Check the session copy in %s before retrying.\n' "$directory" >&2
-    fi
-    return 1
-  fi
-  export OCC_URL OCC_BOOTSTRAP_KEY_FILE="$source"
-  export OCC_SERVICE_KEY_DIRECTORY="$directory" OCC_SERVICE_KEY_FILE="$file"
-}
-prepare_occ_service_key && printf '%s\n' 'Session copy authenticated.'
-```
+In the original Installation shell, [authenticate with the OCC CLI](../cli.md#authenticate-after-a-production-install).
+The procedure keeps a supplied file selected or prepares a temporary session
+copy. For generated inputs, it checks the original receipt, installation
+attempt and cluster before using the key.
 
 Stop on failure. Troubleshoot authentication without reinstalling. After a
 successful authenticated response, use its server-owned
