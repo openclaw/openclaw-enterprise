@@ -1508,6 +1508,7 @@ test(
       [98, "preCredentialClientsAndGitHubSource"],
       [99, "preCodexPatSourceAdoption"],
       [100, "preAgentRepositoryClientIntent"],
+      [101, "preSourceBackedRepositoryAuthorization"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1874,39 +1875,6 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const subtests = [];
-    for (const schemas of [false, true]) {
-      const subtest = context.test(
-        `fresh ${schemas ? "owner-only schemas" : "absent schemas"}`,
-        async (child) => {
-          const db = await historyDatabase(child, fixture, "fresh", { schemas });
-          const before = await historySnapshot(db);
-          assert.deepEqual(await runHistoryMigration(db, "development", "--check"), {
-            ok: true,
-            history: "empty",
-          });
-          assert.deepEqual(await historySnapshot(db), before);
-          // Two real processes (both scripts) race for the migration lock once; the
-          // owner-only case races in-process connections.
-          const migrate = schemas ? runHistoryMigration : runHistoryCommand;
-          const results = await Promise.all([migrate(db), migrate(db, "production")]);
-          assert.deepEqual(
-            results.map((result) => result.ok),
-            [true, true],
-          );
-          assert.deepEqual(results.map((result) => result.history).sort(), ["completed", "empty"]);
-          await assertCompletedHistory(db);
-          const after = await historySnapshot(db);
-          assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "completed" });
-          assert.deepEqual(await runHistoryMigration(db, "production"), {
-            ok: true,
-            history: "completed",
-          });
-          assert.deepEqual(await historySnapshot(db), after);
-        },
-      );
-      subtests.push(subtest);
-    }
     // Gaps: 26, 60 and 61 have no named history; 27 is covered by the rollback case.
     const histories = await coveringNewestPrefix("populated canonical", 62, [
       [24, "prePresetsMain"],
@@ -1982,7 +1950,41 @@ test(
       [98, "preCredentialClientsAndGitHubSource"],
       [99, "preCodexPatSourceAdoption"],
       [100, "preAgentRepositoryClientIntent"],
+      [101, "preSourceBackedRepositoryAuthorization"],
     ]);
+    const subtests = [];
+    for (const schemas of [false, true]) {
+      const subtest = context.test(
+        `fresh ${schemas ? "owner-only schemas" : "absent schemas"}`,
+        async (child) => {
+          const db = await historyDatabase(child, fixture, "fresh", { schemas });
+          const before = await historySnapshot(db);
+          assert.deepEqual(await runHistoryMigration(db, "development", "--check"), {
+            ok: true,
+            history: "empty",
+          });
+          assert.deepEqual(await historySnapshot(db), before);
+          // Two real processes (both scripts) race for the migration lock once; the
+          // owner-only case races in-process connections.
+          const migrate = schemas ? runHistoryMigration : runHistoryCommand;
+          const results = await Promise.all([migrate(db), migrate(db, "production")]);
+          assert.deepEqual(
+            results.map((result) => result.ok),
+            [true, true],
+          );
+          assert.deepEqual(results.map((result) => result.history).sort(), ["completed", "empty"]);
+          await assertCompletedHistory(db);
+          const after = await historySnapshot(db);
+          assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "completed" });
+          assert.deepEqual(await runHistoryMigration(db, "production"), {
+            ok: true,
+            history: "completed",
+          });
+          assert.deepEqual(await historySnapshot(db), after);
+        },
+      );
+      subtests.push(subtest);
+    }
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2754,6 +2756,7 @@ test(
       [98, "preCredentialClientsAndGitHubSource"],
       [99, "preCodexPatSourceAdoption"],
       [100, "preAgentRepositoryClientIntent"],
+      [101, "preSourceBackedRepositoryAuthorization"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2897,6 +2900,7 @@ test(
       [98, "preCredentialClientsAndGitHubSource"],
       [99, "preCodexPatSourceAdoption"],
       [100, "preAgentRepositoryClientIntent"],
+      [101, "preSourceBackedRepositoryAuthorization"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3073,6 +3077,7 @@ test(
       [98, "preCredentialClientsAndGitHubSource"],
       [99, "preCodexPatSourceAdoption"],
       [100, "preAgentRepositoryClientIntent"],
+      [101, "preSourceBackedRepositoryAuthorization"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3101,6 +3106,8 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                // Abort 0102 after it replaces the validator, before it adds the constraint.
+                [101, "ALTER TABLE"],
                 [100, "CREATE FUNCTION"],
                 [99, "CREATE TRIGGER"],
                 [98, "CREATE FUNCTION"],
