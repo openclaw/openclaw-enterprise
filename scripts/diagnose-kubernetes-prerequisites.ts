@@ -418,13 +418,8 @@ function validateConfig(value: unknown): DiagnosticPlan {
   };
 }
 
-const kubectlEnv = {
-  ...process.env,
-  KUBECTL_KUBERC: "false",
-  KUBERC: "off",
-  AWS_PAGER: "",
-  AWS_CLI_AUTO_PROMPT: "off",
-};
+const commandEnv = { ...process.env, AWS_PAGER: "", AWS_CLI_AUTO_PROMPT: "off" };
+const kubectlEnv = { ...commandEnv, KUBECTL_KUBERC: "false", KUBERC: "off" };
 const outputLimit = 2 * 1024 * 1024;
 
 // A credential plugin can inherit its parent's pipes. Bound both the wait and the
@@ -444,7 +439,8 @@ async function commandOutput(
   const child = spawn(command, args, {
     detached: grouped,
     stdio: ["ignore", "pipe", "pipe"],
-    env: kubectlEnv,
+    // Direct AWS calls must preserve the caller’s credential plugin policy.
+    env: command === "kubectl" ? kubectlEnv : commandEnv,
   });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
@@ -1126,6 +1122,7 @@ function isCompleteList(
     value.kind === kind &&
     isObject(value.metadata) &&
     (value.metadata.continue === undefined || value.metadata.continue === "") &&
+    (value.metadata.remainingItemCount === undefined || value.metadata.remainingItemCount === 0) &&
     Array.isArray(value.items)
   );
 }
