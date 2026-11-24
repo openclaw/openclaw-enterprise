@@ -34,7 +34,10 @@ import {
   type OpenShellProviderResponse,
   type OpenShellSandboxProviderStatus,
 } from "../sandbox/openshell-gateway-client.ts";
-import { OpenShellGatewayUnavailableError, statusCode } from "../sandbox/openshell-gateway-errors.ts";
+import {
+  OpenShellGatewayUnavailableError,
+  statusCode,
+} from "../sandbox/openshell-gateway-errors.ts";
 
 /**
  * Whether the Gateway answered a conditional UpdateProvider in a way that proves it was not

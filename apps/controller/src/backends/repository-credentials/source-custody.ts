@@ -222,7 +222,9 @@ export function createRepositorySourceCustody(options: {
                 if (rows.length !== 1) {
                   return false;
                 }
-                made = (rows[0] as { unknown_write_version: string | null }).unknown_write_version === null;
+                made =
+                  (rows[0] as { unknown_write_version: string | null }).unknown_write_version ===
+                  null;
                 if (made) {
                   await c.query(
                     `UPDATE occ.repository_source_copies

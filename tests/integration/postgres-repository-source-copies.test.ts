@@ -14,7 +14,6 @@ import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-s
 import type { AuditEvent, CredentialSourceReference } from "../../packages/contracts/src/index.ts";
 import {
   RepositorySourceCopiesUnretiredError,
-  RepositorySourceWriteUnreconciledError,
   ResourceConflictError,
   PostgresPlatformState,
   ScopeViolationError,
@@ -786,7 +785,10 @@ test(
     await assert.rejects(f.update({ secret: { token: fineGrained() } }), fenced);
     await assert.rejects(f.retire(), fenced);
     // Metadata and the ceiling change no Provider value: not refused.
-    await f.update({ providerPreset: "github", repositoryCeiling: "fixture/a:write,fixture/b:read" });
+    await f.update({
+      providerPreset: "github",
+      repositoryCeiling: "fixture/a:write,fixture/b:read",
+    });
 
     // A Worker whose hold ended records nothing, so it sends nothing.
     assert.equal(await lent.write(live, version).dispatching(), false);
