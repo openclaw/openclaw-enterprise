@@ -1212,6 +1212,8 @@ if [ "$1" = "--region" ]; then
   printf '%s\n' '${JSON.stringify({ ...plugin, apiVersion: "client.authentication.k8s.io/v1beta1" })}'
   exit 0
 fi
+# A direct AWS credential process must inherit the caller's kubectl preferences.
+[ "$KUBERC" = "$TEST_EXPECTED_KUBERC" ] || exit 10
 case "$1" in
 ${cases.join("\n")}
 *) exit 1;;
@@ -1222,6 +1224,8 @@ esac
         const environment = {
           PATH: `${directory}:${process.env.PATH}`,
           TEST_AWS_CALLS: awsCalls,
+          KUBERC: join(directory, "operator-preferences"),
+          TEST_EXPECTED_KUBERC: join(directory, "operator-preferences"),
         };
         const tunnel = { ...endpoint.verified, "tls-server-name": dnsName };
         await writeFile(
@@ -1594,6 +1598,7 @@ esac
           assert.equal(await status(empty), "passed");
           assert.equal(await status({ ...empty, kind: "ServiceList" }), "unknown");
           assert.equal(await status({ ...empty, metadata: { continue: "next-page" } }), "unknown");
+          assert.equal(await status({ ...empty, metadata: { remainingItemCount: 1 } }), "unknown");
           const other = {
             metadata: { namespace: "other", name: "storage" },
             spec: { hard: { "requests.storage": "1Gi" } },
