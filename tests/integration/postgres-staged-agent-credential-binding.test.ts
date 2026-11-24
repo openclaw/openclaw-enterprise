@@ -18,6 +18,7 @@ import {
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -479,7 +480,12 @@ test(
       instanceId,
       state,
       { notifyCredentialUpdated: notify },
-      new OAuthAccountTokens(state, driver, controller.resolveConnectionClient.bind(controller)),
+      new OAuthAccountTokens(
+        state,
+        driver,
+        controller.resolveConnectionClient.bind(controller),
+        refreshCodexOAuthGrant,
+      ),
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", owner.id);
