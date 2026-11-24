@@ -170,7 +170,6 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   const rotatedRefresh = randomUUID();
   const rotatedAgain = randomUUID();
   const scopedRefresh = randomUUID();
-  const scopedAgain = randomUUID();
   const initialExpiry = Math.floor(Date.now() / 1000) + 3600;
   const renewedExpiry = initialExpiry + 3600;
   const renewedAccess = jwt({
@@ -207,8 +206,6 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     tokenServiceInstanceId: instanceId,
   };
   const received = [];
-  const retryReceived = Promise.withResolvers();
-  const releaseRetry = Promise.withResolvers();
   let responseIndex = 0;
   const privateIssuerMessage = "provider diagnostic must remain private";
   const server = await startProviderServer(t, async (request, response) => {
@@ -222,27 +219,17 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     received.push({ contentType: request.headers["content-type"], body });
     response.setHeader("content-type", "application/json");
     const index = responseIndex++;
-    if (index === 8) {
+    if (index === 6) {
       response.statusCode = 401;
       response.end(JSON.stringify({ error: "invalid_client" }));
       return;
     }
-    if (index === 9) {
+    if (index === 7) {
       response.end(JSON.stringify({ access_token: renewedAccess }));
       return;
     }
     if (index === 5) {
       response.end(JSON.stringify({ refresh_token: scopedRefresh, scope: "openid" }));
-      return;
-    }
-    if (index === 6) {
-      response.end(JSON.stringify({ refresh_token: scopedAgain }));
-      return;
-    }
-    if (index === 7) {
-      retryReceived.resolve();
-      await releaseRetry.promise;
-      response.end(JSON.stringify({ access_token: renewedAccess, scope: "openid" }));
       return;
     }
     if (index === 4) {
@@ -379,9 +366,9 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     name: "ResourceStateConflictError",
   });
 
-  // Narrowing scopes without a replacement access token cannot keep serving
-  // the older broader bearer or replay the newly rotated grant implicitly.
-  const scopedSource = await registerSource("Codex narrowed scopes fixture", randomUUID(), [
+  // Codex's partial refresh response does not carry scope authority. Refuse a changed scope
+  // without a replacement access token instead of publishing an unsupported narrowing.
+  const scopedSource = await registerSource("Codex malformed scope fixture", randomUUID(), [
     "openid",
     "profile",
   ]);
@@ -390,46 +377,16 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
     sourceRef: { ...sourceInstance.sourceRef, id: scopedSource.id },
   };
   const scopedOperation = await owner.forceRefresh(scopedInstance, signal);
-  assert.equal((await owner.getRefreshStatus(scopedOperation, signal)).state, "pending");
-  const requestsAfterPartial = received.length;
+  const scopedFailure = await owner.getRefreshStatus(scopedOperation, signal);
+  assert.equal(scopedFailure.state, "failed");
+  assert.equal(scopedFailure.failureCode, "grant_scope_mismatch");
+  const unchanged = await f.state.read(({ credentialSources }) =>
+    credentialSources.findCredentialSource(f.namespace.id, scopedSource.id),
+  );
+  assert.deepEqual(unchanged.consent.grantedScopes, ["openid", "profile"]);
   await assert.rejects(owner.resolveCredential(scopedInstance, signal), {
     name: "ResourceStateConflictError",
   });
-  assert.equal(
-    received.length,
-    requestsAfterPartial,
-    "resolution does not immediately replay a pending grant",
-  );
-  const stillPending = await owner.forceRefresh(scopedInstance, signal);
-  assert.equal((await owner.getRefreshStatus(stillPending, signal)).state, "pending");
-  assert.ok(
-    received[6].body.refresh_token === scopedRefresh,
-    "the partial retry uses the rotated grant",
-  );
-  await assert.rejects(owner.resolveCredential(scopedInstance, signal), {
-    name: "ResourceStateConflictError",
-  });
-
-  const retrying = owner.forceRefresh(scopedInstance, signal);
-  await retryReceived.promise;
-  try {
-    await assert.rejects(owner.resolveCredential(scopedInstance, signal), {
-      name: "ResourceStateConflictError",
-    });
-  } finally {
-    releaseRetry.resolve();
-  }
-  const retried = await retrying;
-  assert.equal((await owner.getRefreshStatus(retried, signal)).state, "ready");
-  assert.ok(
-    received[7].body.refresh_token === scopedAgain,
-    "fresh-access recovery consumes the newest rotated grant from custody",
-  );
-  const narrowed = await owner.resolveCredential(scopedInstance, signal);
-  assert.ok(
-    narrowed.credential === renewedAccess,
-    "only the replacement access token is delivered",
-  );
 
   // A 401 client-authentication error does not consume the grant. Keep it in custody so
   // a later attempt can recover without asking the user to authorize again.
@@ -446,7 +403,7 @@ test("the selected TokenService refreshes the fixed Codex grant using the provid
   assert.equal(clientFailure.recoveryAction, "fix_configuration");
   const clientRetry = await owner.forceRefresh(clientInstance, signal);
   assert.equal((await owner.getRefreshStatus(clientRetry, signal)).state, "ready");
-  assert.equal(received[9].body.refresh_token, clientRefresh);
+  assert.equal(received[7].body.refresh_token, clientRefresh);
 });
 
 function jwt(payload) {

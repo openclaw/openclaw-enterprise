@@ -270,6 +270,12 @@ export async function refreshCodexOAuthGrant(
     if (refreshToken === undefined && !isNonEmptyString(token?.id_token)) {
       throw new BrowserAuthorizationError("invalid_access_token", "fix_configuration");
     }
+    if (
+      grantedScopes.length !== grant.grantedScopes.length ||
+      !grantedScopes.every((scope) => grant.grantedScopes.includes(scope))
+    ) {
+      throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
+    }
     return { refreshToken: refreshToken ?? grant.refreshToken, grantedScopes };
   }
   let access;
