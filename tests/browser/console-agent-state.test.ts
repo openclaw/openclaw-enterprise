@@ -115,6 +115,16 @@ function requiredText(value: string | null): string {
   return value;
 }
 
+async function expectConfirmationAgentId(dialog: Locator, agentId: string) {
+  const label = `Agent ID: ${agentId}`;
+  await dialog.getByText(label, { exact: true }).waitFor();
+  assert.equal(
+    (await accessibleDescription(dialog)).split(label).length - 1,
+    1,
+    `expected one "${label}" in the dialog description`,
+  );
+}
+
 function lookupSecretId(body: unknown): string {
   assert.ok(typeof body === "object" && body !== null && "secretId" in body);
   assert.ok(typeof body.secretId === "string");
@@ -775,6 +785,7 @@ test("Agent detail returns to the Agents list once background deletion finishes"
 
   await page.getByRole("button", { name: "Delete Agent" }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Finish Candidate?" });
+  await expectConfirmationAgentId(dialog, agent.id);
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
   // The background cleanup finishes; no reader action follows.
@@ -3419,6 +3430,8 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   await waitForEnabled(stop);
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  await dialog.getByText("Agent: Pending history", { exact: true }).waitFor();
+  await expectConfirmationAgentId(dialog, pending.id);
   await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
@@ -4074,6 +4087,8 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   // Cancelling the confirmation sends nothing and returns focus to the row's icon.
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop Running Agent?" });
+  await expectConfirmationAgentId(dialog, running.id);
+  assert.equal(await dialog.getByText(draft.id, { exact: true }).count(), 0);
   await dialog
     .getByText(/Configuration, versions, Credentials, and workspace data are retained/)
     .waitFor();
@@ -4139,6 +4154,8 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   // Deletion names the kept Configuration and model Secret, then queues cleanup.
   await remove.click();
   dialog = page.getByRole("dialog", { name: "Delete Running Agent?" });
+  await expectConfirmationAgentId(dialog, running.id);
+  assert.equal(await dialog.getByText(draft.id, { exact: true }).count(), 0);
   await dialog
     .getByText("The Configuration and model credential Secret stay in this Namespace.")
     .waitFor();
@@ -4414,6 +4431,7 @@ test("Agents list row actions explain missing access and still report a refused 
   await dialog.waitFor();
   advice.release();
   await dialog.getByText(AGENT_STOP_DENIED).waitFor();
+  await expectConfirmationAgentId(dialog, agent.id);
   const confirm = dialog.getByRole("button", { name: "Stop Agent" });
   assert.equal(await confirm.isDisabled(), true);
   const cancel = dialog.getByRole("button", { name: "Cancel" });

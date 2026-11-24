@@ -17,7 +17,7 @@ type FixtureRoute = {
 type CountedOperation =
   "open" | "adopt" | "writing" | "cancelWriting" | "record" | "owns" | "block" | "withdraw";
 
-/** A repository Source copy row as migration 0094 keeps it; `idle` stands for the work and Agent
+/** A repository Source copy row as migration 0095 keeps it; `idle` stands for the work and Agent
  * state the PostgreSQL query reads (tests/integration/postgres-repository-source-copies.test.ts). */
 export type FixtureSourceCopy = Omit<OpenShellGitIdleSourceCopy, "retired"> & {
   provider?: string;

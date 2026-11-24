@@ -16,6 +16,7 @@ import {
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OpenShellTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { credentialSourceDeliveryBinding } from "../../apps/controller/src/composition/installation-config.ts";
@@ -311,6 +312,7 @@ async function fixture(
     driver,
     tokenServiceOwner,
     tokenServiceInstanceId,
+    platformState,
     client,
     providers,
     profiles,
@@ -1023,6 +1025,67 @@ test("a github Source refuses values the native Git Provider cannot install, bef
     );
     assert.deepEqual(await custodyOf(f, created.data.id), before, label);
   }
+});
+
+test("the OpenShell custody preview never holds or inherits a github Source", async (t) => {
+  const f = await fixture(t, { tokenService: true });
+  // Select the preview's TokenService over a Gateway that records and refuses every call.
+  const gatewayCalls = [];
+  const gatewayClient = new Proxy(
+    {},
+    {
+      get(_, name) {
+        return name === "then"
+          ? undefined
+          : () => {
+              gatewayCalls.push(String(name));
+              throw new Error("No Gateway call is expected.");
+            };
+      },
+    },
+  );
+  const backend = createOpenShellBackend(
+    {
+      id: "openshell-custody",
+      type: "openshell",
+      configuration: { endpoint: "http://127.0.0.1:1" },
+      drivers: { token_service: "openshell-token-service" },
+    },
+    { gatewayClient },
+  );
+  const activatePreview = () =>
+    f.controller.activateTokenServiceInstance(
+      "openshell-token-service",
+      `openshell:${backend.id}:${randomUUID()}`,
+    );
+
+  // An OCC-held github Source keeps its TokenService: the Installation cannot switch under it,
+  // so no Source lent to native Git is ever read through, or moved into, the preview.
+  const held = await f.request("POST", f.path, { body: githubSourceBody(FINE_GRAINED) });
+  assert.equal(held.status, 201, JSON.stringify(held.body));
+  await assert.rejects(activatePreview(), /The TokenService instance still has registrations/);
+  assert.equal(f.controller.currentTokenServiceInstanceId(), f.tokenServiceInstanceId);
+  const removed = await f.request("DELETE", `${f.path}/${held.data.id}`);
+  assert.equal(removed.status, 204, JSON.stringify(removed.body));
+
+  const preview = new OpenShellTokenServiceDriver({
+    id: "openshell-token-service",
+    tokenServiceInstanceId: await activatePreview(),
+    backend,
+    state: f.platformState,
+    resolveNamespace: async (namespace) => namespace,
+  });
+  f.controller.registerDriver(preview);
+  f.controller.selectDriver("token_service", preview.id);
+
+  // Enrollment through the preview is refused before custody: no Provider, no model credential.
+  const refused = await f.request("POST", f.path, { body: githubSourceBody(FINE_GRAINED) });
+  assert.equal(refused.status, 400, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "INVALID_REQUEST");
+  assert.match(refused.body.error.message, /OpenShell TokenService preview holds only openai/);
+  assert.equal(JSON.stringify(refused.body).includes(FINE_GRAINED), false);
+  assert.deepEqual(gatewayCalls, []);
+  assert.deepEqual((await f.request("GET", f.path)).data, []);
 });
 
 test("a Source's Git purpose never changes, bound or unbound", async (t) => {

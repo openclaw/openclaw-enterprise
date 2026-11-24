@@ -179,6 +179,7 @@ export function createAgentDetailScenarios({
     description:
       "The saved Agent has a selected repository and no deployment or repository policy.",
     steps: [
+      "Before Deploy new version, read the conditional warning about deploying without a repository policy and the need for a new Agent to add Per-repository access later.",
       "Choose Set repository permissions above Deploy new version. In Repositories, choose Manage permissions.",
       "Choose Enable policy editing, then Add access. Contributor is selected and Advanced is closed.",
       "Expand Advanced, set Issues to Read-only, and save. Reopen the policy and check that Pull requests still uses the role.",
