@@ -634,7 +634,7 @@ export function validStandaloneCredentialDeployment(
         revision.plugins?.plugins[binding.consumer.pluginId]?.enabled !== true ||
         pluginConsumers.has(key) ||
         !injection ||
-        injection.allowedRequests.some(({ requestPolicy }) => requestPolicy?.type !== "http")
+        injection.allowedRequests.some(({ requestPolicy }) => requestPolicy === undefined)
       ) {
         return false;
       }

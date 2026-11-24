@@ -2047,24 +2047,24 @@ test(
       false,
       "an injection bindingRef must be a JSON string",
     );
-    const mcp = structuredClone(mixedSpec);
-    const rpc = { type: "mcp", method: "tools/call", path: "/gmail/v1/users/me", toolName: "read" };
-    mcp.credential_deployment.networkAccessPolicy.allowed.at(-1).requestPolicy = rpc;
-    mcp.credential_deployment.injectionPolicies[1].allowedRequests[0].requestPolicy = rpc;
-    // Both request lists pass the preexisting shape validator; the Plugin-specific guard
-    // must refuse this otherwise well-formed MCP policy.
-    const mcpShape = await pool.query(
+    const missingSelector = structuredClone(mixedSpec);
+    const { networkAccessPolicy, injectionPolicies } = missingSelector.credential_deployment;
+    delete networkAccessPolicy.allowed.at(-1).requestPolicy;
+    delete injectionPolicies[1].allowedRequests[0].requestPolicy;
+    // The network grant covers the whole destination, but injecting a Plugin credential
+    // still requires a request selector.
+    const requestShape = await pool.query(
       "SELECT occ.deployment_request_matches_have_valid_shape($1::jsonb) AS network, occ.deployment_request_matches_have_valid_shape($2::jsonb) AS injection",
       [
-        JSON.stringify(mcp.credential_deployment.networkAccessPolicy.allowed),
-        JSON.stringify(mcp.credential_deployment.injectionPolicies[1].allowedRequests),
+        JSON.stringify(networkAccessPolicy.allowed),
+        JSON.stringify(injectionPolicies[1].allowedRequests),
       ],
     );
-    assert.deepEqual(mcpShape.rows[0], { network: true, injection: true });
+    assert.deepEqual(requestShape.rows[0], { network: true, injection: true });
     assert.equal(
-      await structurallyValid(mcp),
+      await structurallyValid(missingSelector),
       false,
-      "MCP cannot express the required transport conjunction",
+      "a Plugin credential injection requires a request selector",
     );
     const duplicate = structuredClone(mixedSpec);
     duplicate.credential_deployment.bindings.push({

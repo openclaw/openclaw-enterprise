@@ -159,7 +159,7 @@ BEGIN
       OR jsonb_array_length(injection->'allowedRequests') = 0 THEN RETURN false; END IF;
     FOR requested IN SELECT value FROM jsonb_array_elements(injection->'allowedRequests') LOOP
       IF binding #>> '{consumer,kind}' = 'plugin'
-        AND requested #>> '{requestPolicy,type}' IS DISTINCT FROM 'http' THEN RETURN false; END IF;
+        AND NOT (requested ? 'requestPolicy') THEN RETURN false; END IF;
       FOR requested_port IN SELECT value FROM jsonb_array_elements(requested->'ports') LOOP
         SELECT COALESCE(
           range_agg(int4range((allowed_port.value->>'from')::integer,

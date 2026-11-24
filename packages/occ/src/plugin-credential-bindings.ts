@@ -1,5 +1,7 @@
 import {
   intersectCredentialRequests,
+  pathCovered,
+  validRequestPath,
   type ConnectionTemplateVersion,
   type StoredCredentialSource,
   type CredentialSourceReference,
@@ -116,24 +118,54 @@ export function pluginCredentialRequests(
       "The Plugin Driver returned duplicate network requirement IDs.",
     );
   }
-  const reviewed = account.networkRequirementIds.map((id) => {
+  if (!template) {
+    throw new ResourceStateConflictError("The Plugin Source has no approved Connection Template.");
+  }
+  const http: DeploymentRequestMatch[] = [];
+  const mcp: DeploymentRequestMatch[] = [];
+  for (const id of account.networkRequirementIds) {
     const rule = rules.get(id);
     if (!rule || rule.purpose !== "invocation" || !account.toolIds.includes(rule.toolId)) {
       throw new ResourceStateConflictError(
         "The Plugin connection names an unavailable invocation requirement.",
       );
     }
-    if (rule.match.requestPolicy?.type !== "http") {
+    const { requestPolicy, host, ports } = rule.match;
+    if (requestPolicy?.type === "http") {
+      http.push(rule.match);
+      continue;
+    }
+    const port = ports[0]?.from;
+    if (
+      requestPolicy?.type !== "mcp" ||
+      !validRequestPath(requestPolicy.path, false) ||
+      ports.length !== 1 ||
+      port !== ports[0]?.to
+    ) {
       throw new ResourceStateConflictError(
-        "Plugin credential delivery requires a reviewed HTTP method and path.",
+        "Plugin credential delivery requires a reviewed HTTP request or an exact MCP endpoint.",
       );
     }
-    return rule.match;
-  });
-  if (!template) {
-    throw new ResourceStateConflictError("The Plugin Source has no approved Connection Template.");
+    // The Template authorizes the transport endpoint. The Plugin supplies the RPC method and tool.
+    const { path } = requestPolicy;
+    const approved = template.destinations.some(
+      (destination) =>
+        destination.host === host &&
+        destination.port === port &&
+        ("method" in destination
+          ? template.mode === "static_bearer" &&
+            destination.method === "POST" &&
+            pathCovered(path, destination.path)
+          : template.mode === "mcp_discovery" && destination.path === path),
+    );
+    if (!approved) {
+      throw new ResourceStateConflictError(
+        "The Connection Template does not approve the reviewed MCP endpoint.",
+      );
+    }
+    mcp.push(rule.match);
   }
-  const allowed = intersectCredentialRequests(reviewed, template.destinations);
+  const allowed = [...intersectCredentialRequests(http, template.destinations), ...mcp];
   if (allowed.length === 0) {
     throw new ResourceStateConflictError(
       "The Connection Template permits none of the Plugin connection's reviewed requests.",
