@@ -88,10 +88,10 @@ packages, digests, source, tags and run attempts. Operators authenticate the
 receipt. Resume and migration apply recover journal-bound digests. The adapter previews the target and CA. Apply and resume recheck approval
 and bound inputs before dispatch.
 
-Both entrypoints refuse active kubectl preferences. The native helper snapshots
-kubeconfig, disables command defaults and refuses selected exec credentials.
-Approved snapshots also refuse selected `auth-provider` entries. Profiled recovery
-checks target, CA and parameters under lock.
+Both entrypoints refuse active kubectl preferences. Exec plugins require an
+approved environment that already disables preferences. Private snapshots
+refuse built-in `auth-provider` entries. Profiled recovery rechecks the target,
+CA and parameters under lock.
 
 Before `scripts/upgrade-production-images:prepare_upgrade`, the helper refuses
 other Helm stores, [endpoint and TLS overrides](../guides/deploy/production-upgrade.md),
