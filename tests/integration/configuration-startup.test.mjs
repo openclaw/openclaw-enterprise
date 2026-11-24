@@ -133,6 +133,32 @@ test("TokenService registration selection does not require a Sandbox or Credenti
   assert.equal(loaded.installation.drivers.credential_proxy, undefined);
 });
 
+// The Worker reads Source custody with the OCC TokenService; no other one can be selected.
+test("TokenService selection accepts only the OCC implementation", async (t) => {
+  for (const selection of [
+    { id: "external", configuration: {} },
+    { id: "occ", configuration: {}, package: "@example/token-service" },
+  ]) {
+    const configuration = installation();
+    configuration.drivers.token_service = selection;
+    const path = await fixture(t, configuration);
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      /drivers\.token_service/,
+    );
+  }
+  const configuration = installation();
+  configuration.drivers.token_service = { id: "occ", configuration: {} };
+  const loaded = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+  });
+  assert.equal(loaded.installation.drivers.token_service.implementation, "occ/token-service");
+});
+
 test("Credential Proxy startup preserves the selection and refuses retired keys", async (t) => {
   const configuration = credentialProxyInstallation();
   const path = await fixture(t, configuration);

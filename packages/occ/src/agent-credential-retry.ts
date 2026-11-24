@@ -1,5 +1,6 @@
 import {
   credentialSourceMatchesSnapshot,
+  isRepositoryTokenSource,
   revisionCredentialSourceSnapshot,
   type AuditEvent,
   type CredentialProxyDriver,
@@ -129,6 +130,8 @@ export function createAgentCredentialRetry(dependencies: RetryDependencies) {
         if (
           !isManagedTokenServiceSource(source) ||
           source.state !== "ready" ||
+          // Stored purpose, not only the update guard: a repository token is never model material.
+          isRepositoryTokenSource(source) ||
           !credentialSourceMatchesSnapshot(source, revisionCredentialSourceSnapshot(revision, id))
         ) {
           throw new ResourceStateConflictError(

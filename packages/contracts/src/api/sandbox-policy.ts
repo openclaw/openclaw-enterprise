@@ -100,6 +100,87 @@ export const SandboxPolicyResponse = Type.Object(
   { data: SandboxPolicySchema, meta: Meta },
   { additionalProperties: false },
 );
+const RepositorySourceDeliverySchema = Type.Object(
+  {
+    revisionId: RevisionId,
+    state: Type.Union(
+      [Type.Literal("pending"), Type.Literal("confirmed"), Type.Literal("unreconciled")],
+      {
+        description:
+          "confirmed: this revision's Sandbox activated the Provider credential written for the committed version (committedSourceVersion equals confirmedSourceVersion), or, when no replacement committed since the copy was recorded, activated its first value. pending: no such activation is recorded, so the Sandbox can still hold an earlier value. unreconciled: a Provider write's outcome is unknown; replacing or deleting the Source answers 409 until the Agent is stopped or redeployed.",
+      },
+    ),
+    committedSourceVersion: Type.Optional(
+      Type.String({
+        description:
+          "The version the last replacement committed while this copy existed. Absent when none did.",
+      }),
+    ),
+    committedAt: Type.Optional(Type.String({ description: "When that replacement committed." })),
+    confirmedSourceVersion: Type.Optional(
+      Type.String({
+        description: "The last version this revision's Sandbox was seen to activate.",
+      }),
+    ),
+    confirmedAt: Type.Optional(Type.String({ description: "When that activation was observed." })),
+  },
+  { additionalProperties: false },
+);
+const RepositoryCredentialViewSchema = Type.Union(
+  [
+    Type.Object({ kind: Type.Literal("github_app") }, { additionalProperties: false }),
+    Type.Object(
+      { kind: Type.Literal("credential_source"), readable: Type.Literal(false) },
+      {
+        additionalProperties: false,
+        description:
+          "The caller lacks credential_source read on the selected Source, or the authorization check could not be made. The saved grants stay visible and can be cleared.",
+      },
+    ),
+    Type.Object(
+      {
+        kind: Type.Literal("credential_source"),
+        id: Type.String(),
+        name: Type.Optional(Type.String()),
+        state: Type.Union(
+          [
+            Type.Literal("registering"),
+            Type.Literal("ready"),
+            Type.Literal("deleting"),
+            Type.Literal("unavailable"),
+          ],
+          {
+            description:
+              "unavailable: the Source is missing, or is not a github Source of this Namespace and its TokenService. Save and deploy refuse it.",
+          },
+        ),
+        ceiling: Type.Optional(
+          Type.Array(RepositoryNetworkGrantSchema, {
+            description: "The Source ceiling. Absent when state is unavailable.",
+            maxItems: maxRepositoryNetworkGrants,
+          }),
+        ),
+        effectiveRepositoryNetworkPolicy: Type.Optional(
+          Type.Array(RepositoryNetworkGrantSchema, {
+            description:
+              "The saved grants narrowed to the Namespace ceiling, the registry's selected access and the Source ceiling. Absent when state is unavailable.",
+            maxItems: maxRepositoryNetworkGrants,
+          }),
+        ),
+        deliveries: Type.Array(RepositorySourceDeliverySchema, {
+          description:
+            "One entry per revision of this Agent whose copy of the Source the Worker has not confirmed retired, oldest first.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+  ],
+  {
+    description:
+      "The credential the Agent's repository bindings resolve to. Absent when the Agent has no repository bindings or they do not resolve. Never contains the token.",
+  },
+);
+
 export const SandboxPolicyViewResponse = Type.Object(
   {
     data: Type.Object(
@@ -161,6 +242,7 @@ export const SandboxPolicyViewResponse = Type.Object(
               "Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list.",
           }),
         ),
+        repositoryCredential: Type.Optional(RepositoryCredentialViewSchema),
       },
       { additionalProperties: false },
     ),

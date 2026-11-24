@@ -1,8 +1,15 @@
+import { isDeepStrictEqual } from "node:util";
 import { driverOperation } from "./driver-operation.ts";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
+  canonicalSourceRepositoryCeiling,
+  GITHUB_SOURCE_PRESET_ID,
+  isGitHubFineGrainedToken,
+  isRepositoryTokenSource,
   isSourceProviderPresetId,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+  SOURCE_REPOSITORIES_CONFIG_KEY,
+  SourceRepositoryCeilingError,
   type AuditEvent,
   type CredentialGatewayDriver,
   type CredentialSource,
@@ -37,6 +44,8 @@ import {
   DependencyUnavailableError,
   DriverSelectionError,
   NamespaceNotReadyError,
+  RepositorySourceCopiesUnretiredError,
+  RepositorySourceWriteUnreconciledError,
   ResourceStateConflictError,
   RetryLaterError,
   ScopeViolationError,
@@ -50,10 +59,15 @@ import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { TokenServiceInstance } from "./ports/token-service.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
 
+/** A github Source must keep its preset and a nonempty repository ceiling. */
 export type UpdateManagedCredentialSourceInput =
-  | (SourceUpdate & { readonly providerPreset?: SourceProviderPresetId | null })
+  | (SourceUpdate & {
+      readonly providerPreset?: SourceProviderPresetId | null;
+      readonly repositoryCeiling?: string | null;
+    })
   | {
       readonly providerPreset: SourceProviderPresetId | null;
+      readonly repositoryCeiling?: string | null;
       readonly secret?: never;
       readonly lifecycleConfig?: never;
     };
@@ -64,10 +78,75 @@ export type UpdateManagedCredentialSourceInput =
  * gateway copy does not prove that no late create is still in flight, so the record is kept.
  */
 const CREDENTIAL_GATEWAY_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
+/** Sees rows committed during a lock wait, whatever the connection default isolation. */
+const READ_COMMITTED = { readCommitted: true } as const;
 
 function assertManagedSourceLifecycleSettings(settings: Readonly<Record<string, string>>): void {
-  if (Object.hasOwn(settings, SOURCE_PROVIDER_PRESET_CONFIG_KEY)) {
+  if (
+    Object.hasOwn(settings, SOURCE_PROVIDER_PRESET_CONFIG_KEY) ||
+    Object.hasOwn(settings, SOURCE_REPOSITORIES_CONFIG_KEY)
+  ) {
     throw new ScopeViolationError("Provider preset approval is not a lifecycle setting.");
+  }
+}
+
+/** A `github` Source's repository ceiling in stored form; anything else may not carry one. */
+function sourceRepositoryCeilingConfig(
+  preset: string | undefined,
+  ceiling: string | undefined,
+): Readonly<Record<string, string>> {
+  if (preset !== GITHUB_SOURCE_PRESET_ID) {
+    if (ceiling !== undefined) {
+      throw new CredentialSourceConfigError(
+        SOURCE_REPOSITORIES_CONFIG_KEY,
+        "Only a github credential source has a repository ceiling.",
+      );
+    }
+    return {};
+  }
+  if (ceiling === undefined) {
+    throw new CredentialSourceConfigError(
+      SOURCE_REPOSITORIES_CONFIG_KEY,
+      "A github credential source requires a repository ceiling.",
+    );
+  }
+  try {
+    return { [SOURCE_REPOSITORIES_CONFIG_KEY]: canonicalSourceRepositoryCeiling(ceiling) };
+  } catch (error) {
+    if (error instanceof SourceRepositoryCeilingError) {
+      throw new CredentialSourceConfigError(SOURCE_REPOSITORIES_CONFIG_KEY, error.message);
+    }
+    throw error;
+  }
+}
+
+function validGitHubSourceConfig(config: Readonly<Record<string, string>>): boolean {
+  const repositories = config[SOURCE_REPOSITORIES_CONFIG_KEY];
+  if (
+    config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== GITHUB_SOURCE_PRESET_ID ||
+    typeof repositories !== "string" ||
+    Object.keys(config).length !== 2
+  ) {
+    return false;
+  }
+  try {
+    return canonicalSourceRepositoryCeiling(repositories) === repositories;
+  } catch {
+    return false;
+  }
+}
+
+/** Refused before custody; the message names the accepted class and never the value. */
+function assertGitHubSourceMaterial(secret: Readonly<Record<string, string>>): void {
+  for (const value of Object.values(secret)) {
+    // GitHub tokens are printable ASCII; a pasted newline or space would fail only at use.
+    if (!isGitHubFineGrainedToken(value) || !/^[\x21-\x7e]+$/.test(value)) {
+      throw new CredentialSourceConfigError(
+        "secret",
+        "A github credential source accepts only a fine-grained personal access token.",
+        "secret",
+      );
+    }
   }
 }
 
@@ -80,6 +159,7 @@ function assertSourceProviderPreset(value: unknown): asserts value is SourceProv
 function managedSourceConfig(
   source: Readonly<CredentialSource>,
   input: UpdateManagedCredentialSourceInput,
+  ceiling: Readonly<Record<string, string>> | undefined,
 ): Readonly<Record<string, string>> {
   const config = { ...source.config };
   if (input.providerPreset === null) {
@@ -87,12 +167,12 @@ function managedSourceConfig(
   } else if (input.providerPreset !== undefined) {
     config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] = input.providerPreset;
   }
-  return config;
+  return ceiling === undefined ? config : { ...config, ...ceiling };
 }
 
 interface ManagedCredentialSourceDependencies {
   readonly transactions: Pick<ControllerTransactions, "transact" | "requireIndependentMutation">;
-  readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
+  readonly authority: Pick<ControllerAuthority, "authorize" | "canRead" | "holdAuthority">;
   readonly sourceDrivers: Pick<
     CredentialSourceDrivers,
     | "credentialNamespace"
@@ -102,6 +182,8 @@ interface ManagedCredentialSourceDependencies {
   >;
   readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly selectedTokenServiceDriver: () => TokenServiceDriver;
+  /** Whether the loaded repository registry selects the Source for a Namespace registration. */
+  readonly repositoryRegistryNamesSource: (namespaceId: string, sourceId: string) => boolean;
   readonly retireDelivery: (
     namespace: Readonly<Namespace>,
     source: CredentialSourceReference,
@@ -170,6 +252,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
     namespaceId: string,
     input: Omit<SourceRegistrationInput, "namespaceId" | "config"> & {
       readonly providerPreset?: string;
+      readonly repositoryCeiling?: string;
     },
     audit: (resource: CredentialSourceReference, phase?: "registration_started") => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata>> {
@@ -194,17 +277,21 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "Choose an approved credential source provider preset.",
         );
       }
+      const ceiling = sourceRepositoryCeilingConfig(input.providerPreset, input.repositoryCeiling);
+      if (input.providerPreset === GITHUB_SOURCE_PRESET_ID) {
+        assertGitHubSourceMaterial(input.secret);
+      }
       const owner = ownedTokenServiceDriver();
       await state.audit.append(audit(collection, "registration_started"));
-      return owner;
+      return { owner, ceiling };
     });
     const config =
       input.providerPreset === undefined
         ? {}
-        : { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: input.providerPreset };
+        : { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: input.providerPreset, ...owner.ceiling };
     const created = await driverOperation(
       () =>
-        owner.createSource(
+        owner.owner.createSource(
           {
             namespaceId,
             name: input.name,
@@ -224,7 +311,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       created.type !== input.lifecycleConfig.type ||
       created.name !== input.name ||
       Object.keys(created.secrets).length !== 0 ||
-      JSON.stringify(created.config) !== JSON.stringify(config)
+      !isDeepStrictEqual(created.config, config, { skipPrototype: true })
     ) {
       throw new ResourceStateConflictError(
         "The TokenService returned an invalid credential source.",
@@ -234,12 +321,17 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       const ref = credentialSourceRef(created);
       await dependencies.iamPolicy.bindCreator(state, principalId, ref);
       const completed = audit(ref);
+      const repositories = owner.ceiling[SOURCE_REPOSITORIES_CONFIG_KEY];
       await state.audit.append(
         input.providerPreset === undefined
           ? completed
           : {
               ...completed,
-              details: { ...completed.details, providerPreset: input.providerPreset },
+              details: {
+                ...completed.details,
+                providerPreset: input.providerPreset,
+                ...(repositories === undefined ? {} : { repositories }),
+              },
             },
       );
       return credentialSourceMetadata(created);
@@ -261,6 +353,7 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       id: ref.credentialSourceId,
     };
     const changesCredential = input.secret !== undefined || input.lifecycleConfig !== undefined;
+    let ceiling: Readonly<Record<string, string>> | undefined;
     const authorize = async (state: PlatformUnitOfWork) => {
       await dependencies.authority.authorize(principalId, "update", resource);
       await dependencies.authority.holdAuthority(state);
@@ -293,30 +386,80 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "This credential source cannot be updated through the selected TokenService.",
         );
       }
+      const currentPreset = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
       const presetChanges =
-        input.providerPreset !== undefined &&
-        (input.providerPreset ?? undefined) !== source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+        input.providerPreset !== undefined && (input.providerPreset ?? undefined) !== currentPreset;
+      // A preset change cannot carry material, so the github class check would never see the value.
+      if (
+        presetChanges &&
+        (currentPreset === GITHUB_SOURCE_PRESET_ID ||
+          input.providerPreset === GITHUB_SOURCE_PRESET_ID)
+      ) {
+        throw new ResourceStateConflictError(
+          "The github preset is chosen at registration. Register a new credential source instead.",
+        );
+      }
+      ceiling =
+        input.repositoryCeiling === undefined
+          ? undefined
+          : sourceRepositoryCeilingConfig(currentPreset, input.repositoryCeiling ?? undefined);
+      const ceilingChanges =
+        ceiling !== undefined &&
+        ceiling[SOURCE_REPOSITORIES_CONFIG_KEY] !== source.config[SOURCE_REPOSITORIES_CONFIG_KEY];
+      if (ceilingChanges && changesCredential) {
+        throw new ResourceStateConflictError(
+          "Change the repository ceiling separately from credential material.",
+        );
+      }
+      // Bound covers the loaded repository registry: it freezes no grant, so check it apart.
+      const bound = async () =>
+        dependencies.repositoryRegistryNamesSource(ref.namespaceId, source.id) ||
+        (await state.credentialSources.hasReferences(ref.namespaceId, source.id));
+      if (ceilingChanges && (await bound())) {
+        throw new ResourceStateConflictError(
+          "Repository ceiling changes require an unbound source.",
+        );
+      }
+      if (currentPreset === GITHUB_SOURCE_PRESET_ID && input.secret !== undefined) {
+        assertGitHubSourceMaterial(input.secret);
+      }
       if (presetChanges && changesCredential) {
         throw new ResourceStateConflictError(
           "Change the provider preset separately from credential material or lifecycle settings.",
         );
       }
-      if (
-        presetChanges &&
-        (await state.credentialSources.hasReferences(ref.namespaceId, source.id))
-      ) {
+      if (presetChanges && (await bound())) {
         throw new ResourceStateConflictError("Provider preset changes require an unbound source.");
       }
       return source;
     };
-    const completedAudit = () => {
+    const completedAudit = (
+      source: Readonly<CredentialSource>,
+      updated?: Readonly<CredentialSource>,
+    ) => {
       const completed = audit(resource);
+      if (source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === GITHUB_SOURCE_PRESET_ID) {
+        const previousRepositories = source.config[SOURCE_REPOSITORIES_CONFIG_KEY];
+        // Replacement releases the lock. Only the owner receipt confirms the committed ceiling.
+        const repositories = updated?.config[SOURCE_REPOSITORIES_CONFIG_KEY];
+        if (updated && !validGitHubSourceConfig(updated.config)) {
+          throw new ResourceStateConflictError("The updated credential source is invalid.");
+        }
+        return {
+          ...completed,
+          details: {
+            ...completed.details,
+            providerPreset: GITHUB_SOURCE_PRESET_ID,
+            ...(updated ? { repositories } : { repositoriesAtAdmission: previousRepositories }),
+            ...(!changesCredential && repositories !== previousRepositories
+              ? { previousRepositories }
+              : {}),
+          },
+        };
+      }
       return input.providerPreset === undefined
         ? completed
-        : {
-            ...completed,
-            details: { ...completed.details, providerPreset: input.providerPreset },
-          };
+        : { ...completed, details: { ...completed.details, providerPreset: input.providerPreset } };
     };
     if (!changesCredential) {
       return dependencies.transactions.transact(async (state) => {
@@ -324,12 +467,12 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
         const updated = await state.credentialSources.updateCredentialSourceConfig(
           ref.namespaceId,
           source.id,
-          managedSourceConfig(source, input),
+          managedSourceConfig(source, input, ceiling),
         );
         if (!updated) {
           throw new ResourceStateConflictError("The credential source changed during update.");
         }
-        await state.audit.append(completedAudit());
+        await state.audit.append(completedAudit(source, updated));
         return credentialSourceMetadata(updated);
       });
     }
@@ -372,13 +515,15 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           "The TokenService returned an invalid credential source.",
         );
       }
-      await dependencies.transactions.transact((state) => state.audit.append(completedAudit()));
+      await dependencies.transactions.transact((state) =>
+        state.audit.append(completedAudit(source, updated)),
+      );
       return credentialSourceMetadata(updated);
     } catch (error) {
       try {
         await dependencies.transactions.transact(async (state) => {
           if (error instanceof CredentialDeliveryFailedError) {
-            await state.audit.append(completedAudit());
+            await state.audit.append(completedAudit(source));
           }
           await state.audit.append(
             failureAudit(
@@ -391,8 +536,33 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       } catch {
         // Preserve the original failure when audit storage is unavailable.
       }
-      throw error;
+      throw error instanceof RepositorySourceWriteUnreconciledError
+        ? await namedUnretiredCopies(principalId, ref.namespaceId, error)
+        : error;
     }
+  }
+
+  /**
+   * The refusal names the first unretired copy whose Agent the caller may read, read after the
+   * transaction ended so no authorization call waits under its row locks. A copy whose Agent the
+   * caller cannot read (or an IAM outage) is only counted.
+   */
+  async function namedUnretiredCopies<
+    E extends RepositorySourceCopiesUnretiredError | RepositorySourceWriteUnreconciledError,
+  >(principalId: string, namespaceId: string, error: E): Promise<E> {
+    for (const copy of error.copies.slice(0, 3)) {
+      const readable = await dependencies.authority
+        .canRead(principalId, { kind: "agent", id: copy.agentId, namespaceId })
+        .catch(() => false);
+      if (readable) {
+        return (
+          error instanceof RepositorySourceWriteUnreconciledError
+            ? new RepositorySourceWriteUnreconciledError(error.copies, copy)
+            : new RepositorySourceCopiesUnretiredError(error.copies, copy)
+        ) as E;
+      }
+    }
+    return error;
   }
 
   /**
@@ -413,8 +583,8 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
       "Credential source registration and deletion",
     );
     namespaceIdentity(namespaceId);
-    const { namespace, source, gateway } = await dependencies.transactions.transact(
-      async (state) => {
+    const { namespace, source, gateway } = await dependencies.transactions
+      .transact(async (state) => {
         const locked =
           connection === pendingConnection
             ? await lockNamespace(state, namespaceId)
@@ -455,6 +625,28 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
             );
           }
         }
+        if (dependencies.repositoryRegistryNamesSource(locked.id, found.id)) {
+          throw new ResourceStateConflictError(
+            "The repository registry selects this credential source for a Namespace registration. Remove it from the registry and restart the controller and Worker, then delete it.",
+          );
+        }
+        // Read under the Namespace and Source row locks this transaction already holds: a deploy
+        // records its copy under the same Source lock, and the Worker only retires copies. The
+        // transaction reads committed whatever the connection default, so a copy or a Provider
+        // write committed while it waited on the Source row is seen.
+        const unretired = await state.credentialSources.findUnretiredRepositorySourceCopies(
+          locked.id,
+          found.id,
+        );
+        // A Provider write the Worker recorded before sending and could not confirm may still
+        // take effect, so it is named first; the Worker records only while it holds this row.
+        const unreconciled = unretired.filter(({ unreconciledWrite }) => unreconciledWrite);
+        if (unreconciled.length > 0) {
+          throw new RepositorySourceWriteUnreconciledError(unreconciled);
+        }
+        if (unretired.length > 0) {
+          throw new RepositorySourceCopiesUnretiredError(unretired);
+        }
         const blocking = await state.credentialSources.findBlockingReference(locked.id, found.id);
         if (blocking === "reference") {
           throw new ResourceStateConflictError(
@@ -493,23 +685,31 @@ export function createManagedCredentialSources<ConsentToken extends symbol>(
           source: deleting,
           gateway: owner?.kind === "gateway" ? owner.driver : undefined,
         };
-      },
-    );
+      }, READ_COMMITTED)
+      .catch(async (error: unknown) => {
+        throw error instanceof RepositorySourceCopiesUnretiredError ||
+          error instanceof RepositorySourceWriteUnreconciledError
+          ? await namedUnretiredCopies(principalId, namespaceId, error)
+          : error;
+      });
     if (isManagedTokenServiceSource(source)) {
       const owner = ownedTokenServiceDriver(source.tokenServiceInstanceId);
       const identity = {
         sourceRef: credentialSourceRef(source),
         tokenServiceInstanceId: source.tokenServiceInstanceId,
       };
-      try {
-        await dependencies.retireDelivery(
-          namespace,
-          identity.sourceRef,
-          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
-        );
-      } catch {
-        // Native errors can contain credential or Workspace details.
-        throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
+      // A repository token never has a model Provider copy, so retiring it waits on no Gateway.
+      if (!isRepositoryTokenSource(source)) {
+        try {
+          await dependencies.retireDelivery(
+            namespace,
+            identity.sourceRef,
+            AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
+          );
+        } catch {
+          // Native errors can contain credential or Workspace details.
+          throw new DependencyUnavailableError("Credential delivery retirement is unconfirmed.");
+        }
       }
       const removed = await driverOperation(
         () => owner.removeSource(identity, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),

@@ -3472,6 +3472,78 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         return found?.withdrawal_work === true ? "withdrawal_work" : undefined;
       },
+      recordRepositorySourceCopy: async (copy) => {
+        await client.query(
+          `INSERT INTO occ.repository_source_copies
+             (revision_id,namespace_id,credential_source_id,token_service_instance_id,agent_id)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [
+            copy.revisionId,
+            copy.namespaceId,
+            copy.credentialSourceId,
+            copy.tokenServiceInstanceId,
+            copy.agentId,
+          ],
+        );
+      },
+      stampRepositorySourceCopies: async (namespaceId, credentialSourceId, version) => {
+        await client.query(
+          `UPDATE occ.repository_source_copies
+           SET expected_source_version=$3,expected_at=clock_timestamp()
+           WHERE namespace_id=$1 AND credential_source_id=$2 AND retired_at IS NULL`,
+          [namespaceId, credentialSourceId, version],
+        );
+      },
+      findUnretiredRepositorySourceCopies: async (namespaceId, credentialSourceId) =>
+        (
+          await client.query(
+            `SELECT revision_id,namespace_id,credential_source_id,token_service_instance_id,agent_id,
+               retirement_blocked,unknown_write_version IS NOT NULL AS unreconciled_write
+             FROM occ.repository_source_copies
+             WHERE namespace_id=$1 AND credential_source_id=$2 AND retired_at IS NULL
+             ORDER BY recorded_at,revision_id`,
+            [namespaceId, credentialSourceId],
+          )
+        ).rows.map((row) => {
+          const copy = row as Record<string, string | null>;
+          const unreconciled = (row as { unreconciled_write?: unknown }).unreconciled_write;
+          return Object.freeze({
+            revisionId: copy.revision_id!,
+            namespaceId: copy.namespace_id!,
+            credentialSourceId: copy.credential_source_id!,
+            tokenServiceInstanceId: copy.token_service_instance_id!,
+            agentId: copy.agent_id!,
+            ...(copy.retirement_blocked ? { retirementBlocked: copy.retirement_blocked } : {}),
+            ...(unreconciled === true ? { unreconciledWrite: true as const } : {}),
+          });
+        }),
+      findRepositorySourceDeliveries: async (namespaceId, credentialSourceId, agentId) =>
+        (
+          await client.query(
+            `SELECT revision_id,expected_source_version,expected_at,
+               confirmed_source_version,confirmed_at,
+               unknown_write_version IS NOT NULL AS unreconciled_write
+             FROM occ.repository_source_copies
+             WHERE namespace_id=$1 AND credential_source_id=$2 AND agent_id=$3
+               AND retired_at IS NULL
+             ORDER BY recorded_at,revision_id`,
+            [namespaceId, credentialSourceId, agentId],
+          )
+        ).rows.map((value) => {
+          const row = value as PostgresRow;
+          const expected = optionalText(row, "expected_source_version");
+          const confirmed = optionalText(row, "confirmed_source_version");
+          return Object.freeze({
+            revisionId: text(row, "revision_id"),
+            ...(expected === undefined
+              ? {}
+              : { expectedSourceVersion: expected, expectedAt: timestamp(row, "expected_at") }),
+            ...(confirmed === undefined
+              ? {}
+              : { confirmedSourceVersion: confirmed, confirmedAt: timestamp(row, "confirmed_at") }),
+            ...(row.unreconciled_write === true ? { unreconciledWrite: true as const } : {}),
+          });
+        }),
       deleteCredentialSource: async (namespaceId, credentialSourceId) => {
         if ((await findCredentialSource(namespaceId, credentialSourceId)) === undefined) {
           return false;

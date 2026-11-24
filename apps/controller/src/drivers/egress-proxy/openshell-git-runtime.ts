@@ -30,6 +30,7 @@ import type { EgressAuthorityConfiguration } from "../../composition/egress-auth
 import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
 import { openShellGitOriginRefusal } from "../sandbox/openshell-git-network-policy.ts";
+import { writeHoldOf } from "../repo/access/material-hold.ts";
 import type {
   RepositoryGitDeliveryResolver,
   RepositoryGitDeliveryBinding,
@@ -48,10 +49,14 @@ import {
   type OpenShellGitRouteSnapshot,
   type OpenShellGitRouteStore,
   type OpenShellGitRouteWithdrawal,
+  type OpenShellGitSourceCopy,
+  type OpenShellGitSourceCopyRetained,
   PostgresOpenShellGitRouteStore,
 } from "./openshell-git-route-store.ts";
 import {
   deleteOpenShellPreparedGitProvider,
+  deleteRetiredGitProviders,
+  preparedGitProviderForRevision,
   OpenShellPreparedGitProvider,
   OpenShellPreparedGitProviderError,
   type OpenShellPreparedGitBinding,
@@ -247,6 +252,11 @@ interface Entry extends OpenShellGitObservationEntry {
         readonly at: number;
       }
     | undefined;
+  /**
+   * The lent Source version whose activation this route last observed, and whether the copy
+   * record holds it as confirmed. An unrecorded version is recorded again at its next activation.
+   */
+  sourceDelivery?: { readonly version: string; readonly recorded: boolean } | undefined;
   blocked?: OpenShellGitRouteBlockReason;
   /** Only this terminal record can be retried, never the uncertain preview operation. */
   previewClosure?:
@@ -298,6 +308,11 @@ interface EntryState {
 const OPENSHELL_GIT_DRAFT_PATH = `/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${REPOSITORY_CLIENT_BIN}`;
 const OBSERVE_TIMEOUT_MS = 5000;
 const REFRESH_INTERVAL_MS = 10_000;
+// The idle-copy retirement pass runs again this long after the last one ended. A pass is one
+// indexed read of the copy record and a Provider listing per idle unretired copy, so it is cheap;
+// a copy left unretired by a cleanup whose Gateway read failed clears within minutes, which is
+// what an operator waiting to delete its Source can wait for, without a Worker restart.
+const SOURCE_COPY_SWEEP_INTERVAL_MS = 300_000;
 // A failed read is observed again after 1 s, doubling to this cap. A replaced OpenShell
 // Gateway Pod answers again within about 30 s; the route is back on the next read after that.
 const OBSERVE_BACKOFF_CAP_MS = 10_000;
@@ -444,6 +459,11 @@ export class OpenShellGitRuntime {
   private readonly instance = randomUUID();
   private stopped = new AbortController();
   private running: Promise<void> = Promise.resolve();
+  private sweeping: Promise<void> = Promise.resolve();
+  /** Set at Worker start; the runtime tick starts the next idle-copy pass once it is due. */
+  private sweepClients: ((namespaceName: string) => OpenShellGatewayClient) | undefined;
+  private sweepInFlight = false;
+  private nextSweepAt = Number.POSITIVE_INFINITY;
   private timer?: ReturnType<typeof setTimeout>;
   private server?: ReturnType<typeof createOpenShellOnlineGitAuthority>;
   readonly configuration: OpenShellGitRuntimeConfiguration;
@@ -889,7 +909,12 @@ export class OpenShellGitRuntime {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
       nativePolicy: entry.preview.native
-        ? { binaries: openShellGitNetworkDefaults(scope.delivery).binaries, scopedRest }
+        ? {
+            binaries: openShellGitNetworkDefaults(scope.delivery).binaries,
+            scopedRest,
+            ...("credentialSource" in scope.delivery &&
+              scope.delivery.credentialSource !== undefined && { credential: "source" as const }),
+          }
         : undefined,
       readOnlyPaths: draft ? [dirname(REPOSITORY_CLIENT_BIN)] : [],
       environment: [
@@ -1584,6 +1609,203 @@ export class OpenShellGitRuntime {
         await deleteOpenShellPreparedGitProvider(client, workspace, provider, signal);
       }
     }
+    await this.retireSourceCopy(revision.id, client, workspace, signal);
+  }
+
+  /** The Provider name and Source version a write installed, for the copy deployment recorded. */
+  private async recordSourceCopyInstalled(
+    entry: Entry,
+    provider: string,
+    sourceVersion: string,
+  ): Promise<void> {
+    let recorded: boolean | undefined;
+    try {
+      recorded = await this.routes?.recordSourceCopyInstalled?.(
+        entry.revision.id,
+        provider,
+        sourceVersion,
+      );
+    } catch {
+      recorded = false;
+    }
+    if (recorded === false) {
+      // Deployment recorded the copy, so Source deletion already waits for it; only the
+      // Provider name and version are missing from the record.
+      this.emit?.({
+        event: "worker.error",
+        code: "OPENSHELL_GIT_SOURCE_COPY_UNRECORDED",
+        ...this.identity(entry),
+      });
+    }
+  }
+
+  /**
+   * The supervisor activated this Source version for the revision: the policy read shows its
+   * delivery confirmed. A failure leaves it pending there and never fails the route; it is
+   * logged once per version (`report`), not at each retry.
+   */
+  private async recordSourceCopyConfirmed(
+    entry: Entry,
+    sourceVersion: string,
+    report: boolean,
+  ): Promise<boolean> {
+    let recorded: boolean | undefined;
+    try {
+      recorded = await this.routes?.recordSourceCopyConfirmed?.(entry.revision.id, sourceVersion);
+    } catch {
+      recorded = false;
+    }
+    if (recorded === false && report) {
+      this.emit?.({
+        event: "worker.error",
+        code: "OPENSHELL_GIT_SOURCE_COPY_UNCONFIRMED",
+        ...this.identity(entry),
+      });
+    }
+    return recorded !== false;
+  }
+
+  /**
+   * Retires the revision's recorded repository Source copy: deletes every prepared Git Provider
+   * labelled for the revision and records the retirement only once a fresh listing of the
+   * Workspace finds none. OpenShell refuses to delete a Provider that a Sandbox still attaches,
+   * so a copy is retired only after its Sandbox is gone. A copy that cannot be read back stays
+   * unretired with the reason, and Source deletion keeps waiting for it. Never throws for the
+   * copy's sake: the caller's own cleanup outcome stays its own.
+   */
+  async retireSourceCopy(
+    revisionId: string,
+    client: Pick<
+      OpenShellGatewayClient,
+      | "getWorkspace"
+      | "listProviders"
+      | "deleteProvider"
+      | "getProviderProfile"
+      | "listProviderProfiles"
+      | "deleteProviderProfile"
+    >,
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<"retired" | OpenShellGitSourceCopyRetained | undefined> {
+    const routes = this.routes;
+    if (!routes?.sourceCopy || !routes.retireSourceCopy || !routes.retainSourceCopy) {
+      return undefined;
+    }
+    let copy: OpenShellGitSourceCopy | undefined;
+    try {
+      copy = await routes.sourceCopy(revisionId);
+    } catch {
+      return undefined; // the next cleanup pass or Worker start reads the record again
+    }
+    if (copy === undefined || copy.retired) {
+      return undefined;
+    }
+    try {
+      await deleteRetiredGitProviders(client, workspace, revisionId, signal);
+    } catch {
+      // A refusal (still attached) or an unanswered call: the read-back below decides.
+    }
+    let outcome: "retired" | OpenShellGitSourceCopyRetained;
+    // Evidence for a retirement that no listing could give: the Workspace itself is gone.
+    let absent = false;
+    try {
+      const providers = await client.listProviders(workspace, signal);
+      outcome = providers.some((provider) => preparedGitProviderForRevision(provider, revisionId))
+        ? "provider_present"
+        : "retired";
+    } catch {
+      // OpenShell resolves the Workspace before it lists, so a deleted Workspace fails every
+      // listing. It refuses to delete a Workspace that still has Providers, so a Workspace the
+      // Gateway confirms absent (NOT_FOUND) holds none. Any other answer proves nothing.
+      try {
+        absent = (await client.getWorkspace(workspace, signal)) === undefined;
+      } catch {
+        absent = false;
+      }
+      outcome = absent ? "retired" : "gateway_unavailable";
+    }
+    try {
+      if (outcome === "retired") {
+        await routes.retireSourceCopy(revisionId);
+      } else {
+        await routes.retainSourceCopy(revisionId, outcome);
+      }
+    } catch {
+      return undefined; // unrecorded: the copy stays unretired and is read back again later
+    }
+    this.emit?.({
+      event: "worker.openshell-git-copy",
+      status: outcome === "retired" ? "retired" : "retained",
+      ...(outcome !== "retired"
+        ? { reason: outcome }
+        : absent
+          ? { reason: "workspace_absent" }
+          : {}),
+      namespaceId: copy.namespaceId,
+      agentId: copy.agentId,
+      revisionId,
+      credentialSourceId: copy.credentialSourceId,
+    });
+    return outcome;
+  }
+
+  /**
+   * Worker start: the record, not the registry, names the copies to retire. Each idle copy (no
+   * pending work for its revision, which is not the running Agent's active revision) is read
+   * back and retired; a copy whose Sandbox still attaches its Provider stays recorded. The
+   * runtime tick runs the same pass again every few minutes, so a copy that a cleanup could not
+   * read back (or a revision whose cleanup never ran) retires without a restart.
+   */
+  retireSourceCopiesAtStart(
+    clientForNamespace: (namespaceName: string) => OpenShellGatewayClient,
+  ): void {
+    this.sweepClients = clientForNamespace;
+    this.sweepSourceCopies();
+  }
+
+  /** Starts the next idle-copy pass once it is due. One pass at a time; none after close. */
+  private sweepSourceCopiesWhenDue(): void {
+    if (performance.now() >= this.nextSweepAt) {
+      this.sweepSourceCopies();
+    }
+  }
+
+  private sweepSourceCopies(): void {
+    const clients = this.sweepClients;
+    if (!clients || this.sweepInFlight || this.stopped.signal.aborted) {
+      return;
+    }
+    this.sweepInFlight = true;
+    this.sweeping = this.retireIdleSourceCopies(clients, this.stopped.signal)
+      .catch((error: unknown) => {
+        if (!this.stopped.signal.aborted) {
+          this.emit?.({
+            event: "worker.error",
+            code: "OPENSHELL_GIT_SOURCE_COPY_SWEEP_FAILED",
+            cause: error instanceof Error ? error.name : "unknown",
+          });
+        }
+      })
+      .finally(() => {
+        this.sweepInFlight = false;
+        this.nextSweepAt = performance.now() + SOURCE_COPY_SWEEP_INTERVAL_MS;
+      });
+  }
+
+  async retireIdleSourceCopies(
+    clientForNamespace: (namespaceName: string) => OpenShellGatewayClient,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const copies = await this.routes?.idleSourceCopies?.();
+    for (const copy of copies ?? []) {
+      signal.throwIfAborted();
+      await this.retireSourceCopy(
+        copy.revisionId,
+        clientForNamespace(copy.namespaceName),
+        copy.namespaceName,
+        AbortSignal.any([signal, AbortSignal.timeout(this.observeTimeoutMs)]),
+      );
+    }
   }
 
   withdraw(revisionId: string): void {
@@ -2051,6 +2273,8 @@ export class OpenShellGitRuntime {
         return;
       }
       const material = await read(readMaterial, signal);
+      // This read only decides whether to rotate; the write below reads and holds again.
+      await writeHoldOf(material)?.release();
       if (!material || "absent" in material) {
         entry.absent = material?.absent;
         if (entry.material) {
@@ -2086,6 +2310,11 @@ export class OpenShellGitRuntime {
         ("scope" in material
           ? material.scope !== scopeName ||
             material.installationId !== entry.authorization.delivery.installationId ||
+            // A Source is lent only for the delivery that names it, never for the App's.
+            ("credentialSource" in material ? material.credentialSource : undefined) !==
+              ("credentialSource" in entry.authorization.delivery
+                ? entry.authorization.delivery.credentialSource
+                : undefined) ||
             (material.scope === "github-repository" &&
               (!("repositories" in entry.authorization.delivery) ||
                 !isDeepStrictEqual(
@@ -2151,44 +2380,59 @@ export class OpenShellGitRuntime {
                 return;
               }
               const current = await read(() => readMaterial(reservedInstall), signal);
-              if (
-                current &&
-                !("absent" in current) &&
-                isDeepStrictEqual(material, current) &&
-                isCurrent()
-              ) {
-                if (entry.authorization.repositoryNetworkPolicy !== undefined) {
-                  if (
-                    entry.preview.native &&
-                    !(await entry.client.readExclusivePreviewWorkspace?.(
-                      recipient.workspace,
-                      recipient.sandboxId,
-                      signal,
-                      recipient.provider,
-                    ))
-                  ) {
-                    return;
+              const hold = writeHoldOf(current);
+              const held = () => isCurrent() && (hold === undefined || hold.held());
+              // The Provider takes responsibility for the hold only when given material.
+              let lent = false;
+              try {
+                if (
+                  current &&
+                  !("absent" in current) &&
+                  (!("credentialSource" in current) || hold !== undefined) &&
+                  isDeepStrictEqual(material, current) &&
+                  held()
+                ) {
+                  if (entry.authorization.repositoryNetworkPolicy !== undefined) {
+                    if (
+                      entry.preview.native &&
+                      !(await entry.client.readExclusivePreviewWorkspace?.(
+                        recipient.workspace,
+                        recipient.sandboxId,
+                        signal,
+                        recipient.provider,
+                      ))
+                    ) {
+                      return;
+                    }
+                    // The material snapshot can arrive after a different worker withdraws it.
+                    await this.fenced(entry, signal);
+                    if (!held()) {
+                      return;
+                    }
                   }
-                  // The material snapshot can arrive after a different worker withdraws it.
-                  await this.fenced(entry, signal);
-                  if (!isCurrent()) {
-                    return;
-                  }
+                  lent = hold !== undefined;
+                  return {
+                    value: current.value,
+                    expiresAt: entry.preview.native
+                      ? new Date(
+                          Math.min(
+                            Date.parse(current.expiresAt),
+                            entry.revision.repositoryCredentials!.deadlineWallMs,
+                          ),
+                        ).toISOString()
+                      : current.expiresAt,
+                    ...(entry.authorization.repositoryNetworkPolicy !== undefined && {
+                      isCurrent: held,
+                    }),
+                    ...(hold && { hold }),
+                  };
                 }
-                return {
-                  value: current.value,
-                  expiresAt: entry.preview.native
-                    ? new Date(
-                        Math.min(
-                          Date.parse(current.expiresAt),
-                          entry.revision.repositoryCredentials!.deadlineWallMs,
-                        ),
-                      ).toISOString()
-                    : current.expiresAt,
-                  ...(entry.authorization.repositoryNetworkPolicy !== undefined && { isCurrent }),
-                };
+                entry.absent = current && "absent" in current ? current.absent : undefined;
+              } finally {
+                if (!lent) {
+                  await hold?.release();
+                }
               }
-              entry.absent = current && "absent" in current ? current.absent : undefined;
             },
             signal,
           );
@@ -2205,6 +2449,14 @@ export class OpenShellGitRuntime {
           }
           entry.binding = rotated;
           entry.preview.verifyInstallBy = performance.now() + 30_000;
+          const lent = material as { credentialSource?: string; credentialSourceVersion?: string };
+          if (lent.credentialSourceVersion !== undefined && lent.credentialSource !== undefined) {
+            await this.recordSourceCopyInstalled(
+              entry,
+              rotated.provider,
+              lent.credentialSourceVersion,
+            );
+          }
         } catch (error) {
           if (
             error instanceof OpenShellGitObservationError ||
@@ -2235,6 +2487,35 @@ export class OpenShellGitRuntime {
         ) {
           // The supervisor activated this material: its connection reset has happened by now.
           entry.materialInstalled = { materialVersion, preparationAttemptId, at: Date.now() };
+          const lent = entry.material as {
+            credentialSource?: string;
+            credentialSourceVersion?: string;
+          };
+          const version = lent.credentialSourceVersion;
+          const delivery = entry.sourceDelivery;
+          if (
+            lent.credentialSource !== undefined &&
+            version !== undefined &&
+            !(delivery?.version === version && delivery.recorded)
+          ) {
+            // Replacement was committed when the PATCH returned; this is the revision's delivery.
+            // A renewal of the same version is new material but not a new delivery: it only
+            // retries a record that failed, while the route still serves that version. Once the
+            // route serves another version, the earlier one is never recorded.
+            const first = delivery?.version !== version;
+            if (first) {
+              this.emit?.({
+                event: "worker.openshell-git-delivery-confirmed",
+                credentialSourceId: lent.credentialSource,
+                credentialSourceVersion: version,
+                ...this.identity(entry),
+              });
+            }
+            entry.sourceDelivery = {
+              version,
+              recorded: await this.recordSourceCopyConfirmed(entry, version, first),
+            };
+          }
         }
       } else {
         this.pending(entry, "unverified");
@@ -2417,6 +2698,11 @@ export class OpenShellGitRuntime {
           reason = "material_expired";
           break;
         }
+        if ("credentialSource" in material && material.credentialSource !== undefined) {
+          // A lent Source reaches Git only through the network policy's Provider.
+          reason = "no_binding";
+          break;
+        }
         return {
           sandboxId: identity.sandboxId,
 
@@ -2428,7 +2714,8 @@ export class OpenShellGitRuntime {
           grantId: material.grantId,
           ...("scope" in material
             ? {
-                installationId: material.installationId,
+                // Source material returned above: this route always has an App installation.
+                installationId: material.installationId!,
                 ...(material.scope === "github-repository"
                   ? { scope: material.scope, repositories: material.repositories }
                   : { scope: material.scope }),
@@ -2613,6 +2900,7 @@ export class OpenShellGitRuntime {
         }
       })().finally(() => {
         if (!this.stopped.signal.aborted) {
+          this.sweepSourceCopiesWhenDue();
           this.timer = setTimeout(tick, 1000);
         }
       });
@@ -2626,6 +2914,7 @@ export class OpenShellGitRuntime {
     clearTimeout(this.timer);
     this.server?.forceShutdown();
     await this.running;
+    await this.sweeping;
     this.owner = undefined;
     this.entries.clear();
     this.states.clear();

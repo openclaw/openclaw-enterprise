@@ -40,13 +40,21 @@ export interface ProtectedGitHubInstallationMaterial extends Omit<
   readonly installationId: string;
 }
 
-export interface ProtectedGitHubRepositoryMaterial extends Omit<
+export type ProtectedGitHubRepositoryMaterial = Omit<
   ProtectedGitHubInstallationMaterial,
-  "scope"
-> {
+  "scope" | "installationId"
+> & {
   readonly scope: "github-repository";
   readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
-}
+} & (
+    | { readonly installationId: string; readonly credentialSource?: never }
+    /** Lent from a TokenService Source: the Source ID and its custody version, never the value. */
+    | {
+        readonly installationId?: never;
+        readonly credentialSource: string;
+        readonly credentialSourceVersion: string;
+      }
+  );
 
 type Route = RepositoryGitInstallationFence;
 type Version = RepositoryGitMaterialVersion;

@@ -580,6 +580,21 @@ test("the Sandbox wire policy binds exact Git routes to an endpointless Provider
     );
     assert.equal(world.providerCreates.length, providerCreates);
   }
+  addedProfileField = undefined;
+
+  // A Source's Provider is endpointless too and carries the same placeholder credential.
+  const { installationId: _installationId, ...unbound } = scope;
+  const lent = await new OpenShellPreparedGitProvider(client, {
+    ...unbound,
+    executionId: "revision-source",
+    credentialSource: "cs_fixture_token",
+    nativeGit: "v1",
+  }).bootstrap(signal);
+  assert.match(lent.provider, /^oce-github-token-[a-f0-9]{32}$/);
+  const lentProfile = await client.getProviderProfile(scope.workspace, lent.profile, signal);
+  assert.deepEqual(lentProfile?.definition?.endpoints, []);
+  assert.deepEqual(lentProfile?.definition?.binaries ?? [], []);
+  assert.deepEqual(lentProfile?.definition?.credentials, profile.definition.credentials);
 });
 
 test("the Git rule compiler rejects nonconcrete grants and transport paths", () => {
@@ -619,6 +634,36 @@ test("the Git rule compiler rejects nonconcrete grants and transport paths", () 
       compileOpenShellBoundGitRule([{ ...read, access: "read" }], "ordinary-provider", binaries),
     /installation Git Provider/,
   );
+  // A caller that binds a Source names its Provider; any other name in that space is refused.
+  const source = "oce-github-token-0123456789abcdef0123456789abcdef";
+  assert.deepEqual(
+    compileOpenShellBoundGitRule(
+      [{ ...read, access: "read" }],
+      source,
+      binaries,
+      undefined,
+      "source",
+    ).endpoints.map(({ credential_binding }) => credential_binding),
+    [{ provider: source }],
+  );
+  for (const name of [
+    "oce-github-token-0123456789ABCDEF0123456789abcdef",
+    "oce-github-token-0123456789abcdef",
+    "oce-github-source-0123456789abcdef0123456789abcdef",
+    provider,
+  ]) {
+    assert.throws(
+      () =>
+        compileOpenShellBoundGitRule(
+          [{ ...read, access: "read" }],
+          name,
+          binaries,
+          undefined,
+          "source",
+        ),
+      /Expected a Source Git Provider/,
+    );
+  }
   for (const paths of [
     [],
     ["git"],
@@ -633,6 +678,29 @@ test("the Git rule compiler rejects nonconcrete grants and transport paths", () 
       /exact Git transport binary/,
     );
   }
+});
+
+test("an installation caller's Git rule refuses a Source Provider name, as before Sources", () => {
+  const binaries = ["/usr/lib/git-core/git-remote-https"];
+  const grants = [{ repository: "fixture/a", access: "read" }] as const;
+  const source = "oce-github-token-0123456789abcdef0123456789abcdef";
+  for (const credential of [undefined, "installation"] as const) {
+    assert.throws(
+      () => compileOpenShellBoundGitRule(grants, source, binaries, undefined, credential),
+      /Expected an installation Git Provider/,
+    );
+  }
+  assert.throws(
+    () =>
+      compileOpenShellBoundGitRule(
+        grants,
+        source,
+        binaries,
+        undefined,
+        "toString" as unknown as "source",
+      ),
+    /Expected an installation Git Provider/,
+  );
 });
 
 test("provider profile wire defaults preserve Git overlap enforcement", async (t) => {

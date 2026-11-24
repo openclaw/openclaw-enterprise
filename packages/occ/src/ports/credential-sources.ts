@@ -8,6 +8,31 @@ import type {
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 
+/** Identity of one installed copy of a repository token Source; never a value. */
+export interface RepositorySourceCopy {
+  readonly namespaceId: string;
+  readonly credentialSourceId: string;
+  readonly tokenServiceInstanceId: string;
+  readonly agentId: string;
+  readonly revisionId: string;
+}
+
+/**
+ * What the copy record holds about the delivery of a Source to one revision's copy. TokenService
+ * stamps `expectedSourceVersion` when a replacement commits while the copy is unretired (0096);
+ * the Worker records `confirmedSourceVersion` when the target Sandbox's supervisor activated the
+ * Provider credential it wrote for that version (0093).
+ */
+export interface RepositorySourceDelivery {
+  readonly revisionId: string;
+  readonly expectedSourceVersion?: string;
+  readonly expectedAt?: string;
+  readonly confirmedSourceVersion?: string;
+  readonly confirmedAt?: string;
+  /** The Worker recorded a Provider write of the Source whose outcome is unknown. */
+  readonly unreconciledWrite?: true;
+}
+
 export type StoredCredentialWithdrawal = CredentialWithdrawal;
 
 export interface CredentialSourceReadRepository {
@@ -31,6 +56,15 @@ export interface CredentialSourceReadRepository {
     credentialSourceId: string,
   ): Promise<Readonly<CredentialSource> | undefined>;
   listCredentialSources(namespaceId: string): Promise<readonly Readonly<CredentialSource>[]>;
+  /**
+   * The copies of the Source that one Agent's revisions hold and that the Worker has not
+   * confirmed retired, oldest first. Never a Provider name or a value.
+   */
+  findRepositorySourceDeliveries(
+    namespaceId: string,
+    credentialSourceId: string,
+    agentId: string,
+  ): Promise<readonly Readonly<RepositorySourceDelivery>[]>;
   findCredentialWithdrawal(
     namespaceId: string,
     revisionId: string,
@@ -103,6 +137,36 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
     namespaceId: string,
     credentialSourceId: string,
   ): Promise<CredentialSourceBlockingReference | undefined>;
+  /**
+   * Records the native Git Provider copy of a repository token Source that a deployment admits,
+   * before the deployment is queued. The Worker completes and retires it.
+   */
+  recordRepositorySourceCopy(copy: RepositorySourceCopy): Promise<void>;
+  /**
+   * Stamps every copy of the Source that the Worker has not confirmed retired with the version a
+   * replacement commits. Runs in the replacing transaction, under its lock on the Source row.
+   */
+  stampRepositorySourceCopies(
+    namespaceId: string,
+    credentialSourceId: string,
+    version: string,
+  ): Promise<void>;
+  /**
+   * The copies of the source that the Worker has not confirmed retired, oldest first, with the
+   * reason the Worker's last attempt kept each one when it recorded one.
+   */
+  findUnretiredRepositorySourceCopies(
+    namespaceId: string,
+    credentialSourceId: string,
+  ): Promise<
+    readonly Readonly<
+      RepositorySourceCopy & {
+        readonly retirementBlocked?: string;
+        /** The Worker recorded a Provider write of the Source whose outcome is unknown. */
+        readonly unreconciledWrite?: true;
+      }
+    >[]
+  >;
   /** Records a pending withdrawal, or returns the existing one for the same revision and source. */
   requestCredentialWithdrawal(
     withdrawal: CredentialWithdrawal,

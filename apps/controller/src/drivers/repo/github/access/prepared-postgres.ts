@@ -135,9 +135,30 @@ export class PreparedGitHubPostgres {
     return Buffer.concat([cipher.update(b.subarray(12, -16)), cipher.final()]);
   }
 
-  protected async transaction<T>(work: (c: PostgresClient) => Promise<T>): Promise<T> {
+  /**
+   * `limitIdle(ms)` makes PostgreSQL end the transaction once it has been idle that long, so the
+   * rows it holds are freed when the Worker is frozen or cut off. The session the server ended
+   * then fails the transaction, not the process.
+   */
+  protected async transaction<T>(
+    work: (c: PostgresClient, limitIdle: (ms: number) => Promise<void>) => Promise<T>,
+  ): Promise<T> {
     const c = await this.pool.connect();
     let discard = false;
+    // pg reports a session the server ended on the checked-out client, which has no listener.
+    const lost = () => {
+      discard = true;
+    };
+    let listening = false;
+    const limitIdle = async (ms: number) => {
+      if (!listening) {
+        listening = true;
+        c.on?.("error", lost);
+      }
+      await c.query("SELECT set_config('idle_in_transaction_session_timeout', $1, true)", [
+        `${ms}ms`,
+      ]);
+    };
     try {
       await c.query("BEGIN");
       await c.query("SET LOCAL statement_timeout = '4000ms'");
@@ -147,7 +168,7 @@ export class PreparedGitHubPostgres {
           JSON.stringify(this.owner.driver),
         ]);
       }
-      const result = await work(c);
+      const result = await work(c, limitIdle);
       try {
         await c.query("COMMIT");
       } catch (e) {
@@ -169,6 +190,9 @@ export class PreparedGitHubPostgres {
       // eslint-disable-next-line preserve-caught-error -- original errors may contain the secret-bearing row
       throw new Error("Prepared GitHub custody transaction did not complete (" + code + ").");
     } finally {
+      if (listening) {
+        c.removeListener?.("error", lost);
+      }
       c.release(discard);
     }
   }

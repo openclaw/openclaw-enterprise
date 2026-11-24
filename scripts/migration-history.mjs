@@ -159,6 +159,12 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 93 && completedCount > 93) {
     return "preTokenServiceSourceBackendRef";
   }
+  if (count === 94 && completedCount > 94) {
+    return "preRepositorySourceCopies";
+  }
+  if (count === 95 && completedCount > 95) {
+    return "preRepositorySourceCopyExpectations";
+  }
   if (count === completedCount) {
     return "completed";
   }

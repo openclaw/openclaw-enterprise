@@ -51,6 +51,7 @@ import {
   type SandboxNetworkGrant,
   type RepositoryNetworkPolicyCeiling,
   type SandboxPolicy,
+  type SandboxPolicyViewWire,
   type SandboxPolicyRecommendations,
   type SandboxPolicySnapshot,
 } from "@openclaw-enterprise/contracts";
@@ -78,8 +79,35 @@ interface SandboxPolicyDependencies {
     canRead: (target: ResourceRef) => Promise<boolean>,
     resolveHarness: HarnessResolver | undefined,
   ) => Promise<
-    ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> | undefined
+    | (ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> & {
+        readonly credentialSource?: string;
+      })
+    | undefined
   >;
+  /** Refuses a save whose registry-selected Source the caller or Agent may not use. */
+  readonly admitRepositoryCredentialSource: (
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sourceId: string,
+    grants: readonly RepositoryNetworkGrant[] | undefined,
+  ) => Promise<unknown>;
+  /** The credential the Agent's saved bindings resolve to; undefined when they do not resolve. */
+  readonly repositoryCredentialSelection: (agent: Readonly<Agent>) =>
+    | {
+        readonly credentialSource?: string;
+        readonly selectedGrants?: RepositoryNetworkPolicyCeiling;
+      }
+    | undefined;
+  /** The registry-selected Source as the caller may read it, from platform state only. */
+  readonly readRepositoryCredentialSource: (
+    state: PlatformReadView,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sourceId: string,
+    grants: readonly RepositoryNetworkGrant[] | undefined,
+    limits: readonly (RepositoryNetworkPolicyCeiling | undefined)[],
+  ) => Promise<NonNullable<SandboxPolicyViewWire["repositoryCredential"]>>;
   readonly repositoryCeiling: (namespaceId: string) => RepositoryNetworkPolicyCeiling;
   readonly installationId: string;
   readonly ceiling: readonly SandboxNetworkGrant[];
@@ -386,6 +414,13 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
             )
           : undefined;
       const repositoryNetworkPolicyCeiling = dependencies.repositoryCeiling(namespaceId);
+      const repositoryCredential = await repositoryCredentialView(
+        state,
+        principalId,
+        agent,
+        policy,
+        repositoryNetworkPolicyCeiling,
+      );
       const supported = edit?.supports(repositoryNetworkPolicyCeiling) === true;
       const repositoryApiMaxima = supported
         ? edit.apiMaxima(repositoryNetworkPolicyCeiling)
@@ -417,8 +452,38 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
               defaultsRevisionId: revision.id,
               deployedPolicyVersion: revision.sandboxPolicy.version,
             }),
+        ...(repositoryCredential === undefined ? {} : { repositoryCredential }),
       };
     });
+  }
+
+  /**
+   * Which credential the Agent's repository bindings resolve to. The saved grants, the policy
+   * version and the Installation ceiling never depend on it, so a caller who cannot read the
+   * Source still sees and can clear them.
+   */
+  async function repositoryCredentialView(
+    state: PlatformReadView,
+    principalId: string,
+    agent: Readonly<Agent>,
+    policy: Readonly<SandboxPolicy>,
+    installationCeiling: RepositoryNetworkPolicyCeiling,
+  ): Promise<NonNullable<SandboxPolicyViewWire["repositoryCredential"]> | undefined> {
+    const selection = dependencies.repositoryCredentialSelection(agent);
+    if (selection === undefined) {
+      return undefined;
+    }
+    if (selection.credentialSource === undefined) {
+      return { kind: "github_app" };
+    }
+    return dependencies.readRepositoryCredentialSource(
+      state,
+      principalId,
+      agent,
+      selection.credentialSource,
+      policy.repositoryNetworkPolicy,
+      [installationCeiling, selection.selectedGrants],
+    );
   }
 
   // TODO: Replace this temporary admission switch with the platform Guardrails primitive.
@@ -622,20 +687,31 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       if (edit) {
         assertScopedRepositoryHistory(await state.revisions.listRevisions(namespaceId, agentId));
       }
-      const admittedEdit =
+      const qualifiedEdit =
         repositoryOnly && !withdrawal && networkPolicyUnavailable() === undefined
-          ? (
-              await dependencies.qualifyRepositoryEdit(
-                state,
-                agent,
-                expectedVersion + 1,
-                async (ref) =>
-                  (await authorizationDecision(principalId, "read", ref, iam, decide)).decision
-                    .allowed,
-                resolveHarness,
-              )
-            )?.admit(repositoryNetworkPolicy)
+          ? await dependencies.qualifyRepositoryEdit(
+              state,
+              agent,
+              expectedVersion + 1,
+              async (ref) =>
+                (await authorizationDecision(principalId, "read", ref, iam, decide)).decision
+                  .allowed,
+              resolveHarness,
+            )
           : undefined;
+      // Withdrawal needs no Source. Every other save checks the Source the registry selects.
+      if (qualifiedEdit?.credentialSource !== undefined) {
+        await dependencies.admitRepositoryCredentialSource(
+          state,
+          principalId,
+          agent,
+          qualifiedEdit.credentialSource,
+          repositoryNetworkPolicy,
+        );
+      }
+      const admittedEdit = repositoryOnly
+        ? qualifiedEdit?.admit(repositoryNetworkPolicy)
+        : undefined;
       if (!admittedEdit && (edit || additions.length > 0)) {
         if (await protectedExecutionApplies(state, agent, active)) {
           throw new ProtectedExecutionNetworkPolicyError(
