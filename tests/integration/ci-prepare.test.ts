@@ -1805,7 +1805,7 @@ assert.equal(sibling.cleanup, null);
           kind: "compose-postgres",
           owner: "openclaw-ci-local-existing-state",
           name: "openclaw_ci_pg_existing_state_abcdef123456",
-          composeFile: join(repositoryRoot, "compose.postgres.ci.yaml"),
+          composeFile: join(repositoryRoot, "compose.postgres.yaml"),
           port: 51234,
         },
       ],

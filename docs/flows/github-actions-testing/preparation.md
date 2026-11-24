@@ -1,14 +1,14 @@
 ---
 created: 2026-09-09
-updated: "2026-11-24 23:11"
-last_updated_session: "authoring-run/3c27fba5-d312-4b0d-948e-be25902e06db"
+updated: "2026-11-24 23:36"
+last_updated_session: "authoring-run/2e4d0492-b360-4c65-9f72-ebb69a66d7c6"
 ---
 
 # CI resource preparation
 
 ## Overview
 
-CI prepares lane and file resources before tests run.
+CI prepares lane and file resources before the runner starts selected tests.
 
 ## Entry Points
 
@@ -37,9 +37,9 @@ Frozen installation fetches missing packages.
 First Agent Smoke and `run-ci-lane` restore yq, k3d and kubectl outside `PATH`.
 `scripts/ci/setup-tools.sh` selects platform checksums;
 `scripts/ci/download-pinned.sh` verifies bytes in private staging before atomic
-0755 publication. Missing or corrupt entries trigger pinned downloads; cache outages do not fail
-setup. PostgreSQL, image, and Kubernetes profiles share caches keyed by platform
-and installer. Direct callers can reuse verified bytes.
+0755 publication. Missing or corrupt entries trigger pinned downloads; cache
+outages do not fail setup. PostgreSQL, image and Kubernetes profiles share
+platform- and installer-keyed caches. Direct callers can reuse verified bytes.
 
 For packaging and shared-runtime artifact consumers using `run-ci-lane`,
 `scripts/ci/setup-registry-transport.sh:verify_skopeo` reuses working `PATH` tools;
@@ -59,19 +59,14 @@ neither the error nor the retries; a stalled one costs up to one attempt
 timeout. `ensureK3dCluster` pulls the K3s node image this way before
 `k3d cluster create`.
 
-PR advisory OpenShell uses Ubuntu 24.04 for Landlock. Its manifest forwards
-`OCC_TEST_BROWSER_EXECUTABLE` to select packaged Google Chrome; otherwise
-Playwright uses its default headless shell. Before image builds,
-`scripts/ci/setup-tools.sh:install_browser_dependencies` checks the sandboxed
-headless renderer and logs its version. A failed check stops setup. The browser
-inherits only `PATH` and gets private `HOME` and `TMPDIR`. Ubuntu’s AppArmor
-profile permits its user namespaces.
+The PR advisory OpenShell job uses Ubuntu 24.04 for Landlock and selects packaged Google Chrome through `OCC_TEST_BROWSER_EXECUTABLE`. The OpenShell manifest lists this optional input so test children receive it. Before image builds, `scripts/ci/setup-tools.sh:install_browser_dependencies` checks a headless sandboxed renderer and logs its version; errors fail setup. The browser inherits only `PATH`, with private `HOME` and `TMPDIR`. Ubuntu’s existing AppArmor profile permits its user namespaces. Without an override, Playwright uses its default headless shell.
 
-`scripts/ci/prepare-inputs.ts` rejects malformed preparation policy at load time.
-`runPreparationCli` dispatches lane and file requests from `prepare.ts`.
-Preparation validates OpenShell credentials and optional Gateway/Agent image pairs
-before locking or creating state. CLI assignments require valid names and no CR/LF;
-the CLI excludes `NODE_OPTIONS`.
+`scripts/ci/prepare-inputs.ts` rejects malformed manifest preparation objects
+and policy flags at load time. `runPreparationCli` dispatches lane and file
+requests from `prepare.ts`. Lane and file preparation validate selected
+OpenShell credentials and optional Gateway/Agent image pairs before locking or
+creating state. The CLI validates environment names and rejects CR/LF values
+before appending any assignment. It excludes `NODE_OPTIONS`.
 
 `scripts/ci/image-build-cache.ts:imageBuildArgs` restores read-only caches, including
 `k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`;
@@ -86,30 +81,33 @@ OpenShell admission for the same source SHA. Queued writers can run out of
 commit order. `imageCacheObservation` counts distinct steps and cache imports;
 import lines alone cannot establish cache hits. Loads may reuse probes.
 
-Images, First Agent Smoke, Docker Model Runtime, Gateway Routing, and Production
-TUI fetch artifacts by repository/run/artifact ID with `actions: read`. Docker
-Model Runtime requires the producer's artifact ID on success; failure or skip
-uses standalone builds. Local import cancels three minutes before the deadline,
-as for Gateway Routing and default Production TUI. Runs await the producer before
-controller preparation or import unless a focused run supplies the Gateway/Agent
-pair. `integration-main` snapshots that pair. Incomplete mode, pair, or artifact
-ID, or artifacts combined with Gateway inputs or TUI upgrade candidates, fail
-before allocation.
+Images, First Agent Smoke, Docker Model Runtime, Gateway Routing and
+Production TUI fetch artifacts by repository/run/artifact ID with `actions: read`.
+
+Docker Model Runtime requires an artifact ID on producer success. Failure or
+skip selects standalone builds. Local import cancels three minutes before the
+lane deadline. Gateway Routing and default
+Production TUI share that deadline. Full and focused runs wait for the producer
+before controller preparation and runtime import. `integration-main` snapshots
+the Gateway/Agent pair; consumers reject incomplete mode, pair or artifact ID
+before setup. Focused explicit pairs skip the producer. Artifacts cannot accompany
+Gateway inputs or TUI upgrade candidates; conflicts fail before allocation.
 
 `loadRuntimeArtifact` verifies archive, source/run/attempt, platform, OCI
 index/manifest/config digests and loaded image. Docker image IDs can equal config digests. `buildRuntimeImages` records ownership before import, rejects
 alternate sources and import fallback, and sets aliases. Startup skips Buildx;
 packaging/source builds retain it. Envoy and seccomp stay separate.
 
-`prepareRuntimeArtifactLayout` verifies compressed and uncompressed layer digests.
-Buildx uses the verified platform manifest digest for First Agent Smoke trust.
+First Agent Smoke's `prepareRuntimeArtifactLayout` verifies compressed and
+uncompressed layer digests; Buildx builds its trust layer from the verified
+platform manifest digest.
 
-`scripts/ci/prepare-command.ts:execFile` drains both streams. The cleanup
-supervisor holds the cluster creation process group for signal forwarding.
+`scripts/ci/prepare-command.ts:execFile` drains both output streams. Cluster
+creation uses the cleanup supervisor to hold the process group for signal forwarding.
 
-The CLI journals image ownership under private `RUNNER_TEMP` before tagging or
-import. Tests use the limited application role and freshly migrated databases.
-Agent revision tests copy migrated templates (`prepareFile({ template })`).
+The CLI journals image ownership in private `RUNNER_TEMP` state before tagging
+or import. Database tests use the limited application role and freshly migrated
+databases. Agent revision tests copy migrated templates (`prepareFile({ template })`).
 Failure and Kubernetes database names satisfy admission guards.
 
 Ordinary k3d lanes require loopback and digest-pinned K3s 1.35. OpenShell has a
@@ -136,24 +134,22 @@ reads bounded metadata; results and diagnostics retain only their preparation's 
 Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
-`scripts/ci/prepare-postgres.ts:ensurePostgresServer` journals bootstrap directory
-and SQL copy ownership, refuses existing paths, and retires failed directory
-records. `OPENCLAW_CI_POSTGRES_INIT_SQL` selects the staged SQL copy.
+`scripts/ci/prepare-postgres.ts:ensurePostgresServer` journals bootstrap ownership,
+refuses existing paths, and retires failed directory records.
+`OPENCLAW_CI_POSTGRES_INIT_SQL` selects the staged `migrations/init-local.sql`.
 
-`compose.postgres.ci.yaml` ignores the developer port. For engine-assigned
-loopback ports, preparation sets `OPENCLAW_CI_POSTGRES_PORT` to `0` for Docker or
-empty for Podman. Missing, non-loopback, or `55432` bindings leave pending `0`
-and block database preparation. Mixed fixture lanes start PostgreSQL before k3d.
-Model lanes attach PostgreSQL to k3d before discovery because Docker can reassign
-the port. They keep the attachment and clean up PostgreSQL before k3d.
+`compose.postgres.ci.yaml` ignores the developer port. `OPENCLAW_CI_POSTGRES_PORT`
+requests automatic loopback publication: `0` for Docker, empty for Podman.
+Missing, non-loopback, or `55432` bindings leave pending `0` and block database setup.
+Mixed lanes start PostgreSQL before k3d. Model lanes attach PostgreSQL before
+port discovery to avoid reassignment; cleanup removes PostgreSQL before k3d.
 
-`scripts/ci/cleanup.ts:cleanupComposePostgres` checks journal ownership. It uses
-the discovered port or automatic port syntax for pending projects. A confirmed empty directory can be removed without SQL;
-confirmed SQL is removed after Compose teardown. Unconfirmed ownership, unexpected
-contents, and teardown failures retain state. Subnet exhaustion preserves the
-original error and prints [owned cleanup](../../testing/postgresql.md#subnet-pool-exhaustion).
+`scripts/ci/cleanup.ts:cleanupComposePostgres` uses the journaled port (automatic if
+pending), including for retained journals. Directory ownership alone permits
+empty-directory removal; owned SQL follows Compose teardown. Unconfirmed ownership,
+unexpected contents, or teardown failure retain state. See [subnet exhaustion](../../testing/postgresql.md#subnet-pool-exhaustion).
 
-The runner passes the browser path to Keycloak OIDC and the Keycloak host port to QA Matrix. Gateway Routing gets both.
+The runner forwards the browser path to Keycloak OIDC and host port to QA Matrix.
 
 `scripts/ci/prepare.ts:readState` rejects malformed lane, selected-file, env, and defaults fields; owners validate resources.
 `prepareLane` atomically publishes without replacement; `prepareFile` registers fresh children. Cleanup verifies files, identity, lane, and path. Worker death remains recoverable; mismatches, symlinks, and failures preserve journals and parent references.
@@ -277,7 +273,8 @@ The OpenShell test owns management port-forwards throughout the test. Teardown s
 
 ## Debugging and Verification
 
-CLI errors go to stderr; success lists exports. See [lane verification](../../testing/ci/run-lanes.md).
+Preparation errors go to stderr; successful CLI output lists exported names.
+See [lane verification](../../testing/ci/run-lanes.md).
 
 ## Related docs
 
@@ -287,7 +284,7 @@ CLI errors go to stderr; success lists exports. See [lane verification](../../te
 
 ## Changelog
 
-- 2026-11-24 23:11: Separate CI PostgreSQL port settings and pass Keycloak fixture inputs. (authoring-run/3c27fba5-d312-4b0d-948e-be25902e06db - a012271e4e3b5d6688fcfb49c2803e4c7faf4390)
+- 2026-11-24 23:36: Document CI ports and Keycloak inputs. (authoring-run/2e4d0492-b360-4c65-9f72-ebb69a66d7c6 - 479aefcd311f5f2e7c53691e6f1a19c6d370e424)
 
 - 2026-11-19 23:19: Stop queued logging pulls after failure. (authoring-run/b428bcb4-c4a3-4e68-b09d-cb10d3b8fc60 - d271eef41c4169a072750dca326fd4a00d19da00)
 

@@ -109,7 +109,6 @@ for (const [name, response, podmanIds] of [
       `case "$1:$6" in
   version:) exit 0 ;;
   compose:up|compose:down)
-    case "$3" in */compose.postgres.ci.yaml) ;; *) exit 98 ;; esac
     [ "$OCC_POSTGRES_PORT" = 55449 ] || exit 98
     [ "\${OPENCLAW_CI_POSTGRES_PORT+x}" = x ] || exit 98
     if [ "$TEST_PODMAN_IDS_SET" = 1 ]; then
