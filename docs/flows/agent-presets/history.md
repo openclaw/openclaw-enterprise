@@ -8,6 +8,10 @@ This record preserves the dated changes to the Agent Presets flow. See the [pare
 
 ## Changelog
 
+- 2026-10-10 04:52: Preserve multiline strings and exact restored defaults in the Preset chooser. (authoring-run/0f2600bb-f524-4114-9ba6-7ff3cbee3d29 - 64dff25990334c8cf1e9372d5452c38cdcadfa61)
+
+- 2026-10-10 02:23: Admit contract-sized Preset writes at the HTTP boundary; template limits and mutation checks remain unchanged. (authoring-run/6f54c753-eb8a-4e11-b078-b178ba613240 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
+
 - 2026-10-09 19:46: Authorize Preset writes before reading the body. (authoring-run/5b89726f-4b6c-43e9-8cfb-ad77c9f3a320 - deeb84b5e)
 
 - 2026-10-06 22:22: Locate Preset file loading in its adjacent composition module; initialization remains unchanged. (authoring-run/a45c48cd-bde3-41b1-8e3d-57bf774df237 - 17e10b6d34cc2c805b3910fddfef191d3dd1b3f8)

@@ -5,7 +5,15 @@ export const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-
 
 export const click = (text: string): { click: string } => ({ click: text });
 
-export const form: StoryAction[] = [click("Start with default Preset")];
+// A form filled from the default Preset: choose it in Preset on Basics, then Use Preset.
+export const form: StoryAction[] = [
+  { selector: "#agent-preset", value: "pre_default_codex" },
+  click("Use Preset"),
+];
+
+export const tab = (
+  id: "basics" | "configuration" | "plugins" | "channels" | "repositories" | "workspace",
+): StoryAction => ({ selector: `#create-tab-${id}`, click: true });
 
 export const createModelSecret = (value: string): StoryAction[] => [
   { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },

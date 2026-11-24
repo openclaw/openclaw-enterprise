@@ -811,9 +811,9 @@ function clearFixedErrors() {
 
 /**
  * Checks `controls` as the browser would on submit, without its bubble: each one that fails
- * shows the console's error under it (opening a collapsed section around it), and focus moves to
- * the first. Errors an earlier check showed clear once their control passes. Returns whether
- * every control passed. Use with `novalidate` on the form.
+ * shows the console's error under it (opening a collapsed section or hidden tab around it), and
+ * focus moves to the first. Errors an earlier check showed clear once their control passes.
+ * Returns whether every control passed. Use with `novalidate` on the form.
  */
 export function validateFields(controls: Iterable<Element | null | undefined>) {
   if (!clearsOnEdit) {
@@ -839,8 +839,18 @@ export function validateFields(controls: Iterable<Element | null | undefined>) {
       setFieldError(control, "");
     }
   }
+  revealField(first);
   first?.focus();
   return !first;
+}
+
+/**
+ * Asks a container that hides `node` to show it, before `node` takes focus: the Create Agent
+ * tabs select the tab that holds it.
+ */
+export const REVEAL_FIELD = "console:reveal-field";
+export function revealField(node: Element | null | undefined) {
+  node?.dispatchEvent(new CustomEvent(REVEAL_FIELD, { bubbles: true }));
 }
 
 // Form.elements can include fieldsets and other elements that do not participate in validation.

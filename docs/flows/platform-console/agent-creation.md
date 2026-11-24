@@ -105,7 +105,7 @@ credential and shows the new method's fields without changing the model or JSON.
 
 Before merging a model selection, `canMergeModelCatalog` checks the provider list
 that the selection would update. If the list is malformed, the form keeps the
-draft JSON as typed, opens **Advanced settings**, and focuses **Configuration JSON**.
+draft JSON as typed, selects the **Configuration** tab, and focuses **Configuration JSON**.
 The warning names the affected `models.providers.<provider>.models` field. The
 edit sends no write request. [Correct the list and retry](../../reference/console/create-and-deploy.md#create-an-agent)
 to apply the model.
@@ -170,8 +170,8 @@ names what an administrator changes, because the form can change neither the bin
 
 Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
 (`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
-`agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
-settings to it. A new Secret gets no `operate` grant, so where the `operate` answer above denies
+`agents/workspace.mts:workspaceFileProblem`, which names the file;
+`createAgentTabs` selects its tab (`dom.mts:revealField`). A new Secret gets no `operate` grant, so where the `operate` answer above denies
 any readable Secret, the Preset's **Create new Secret** choice is disabled and a typed model key
 is refused before any write. It then checks the Agent name, draft values with their staged channel
 `secretBindings`, plugins and the planned `harnessAuth`
@@ -274,6 +274,9 @@ Switching methods hides that feedback without changing the lookup or saved choic
 - 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)
 - 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+
+- 2026-11-20 14:31: Trace Create Agent tabs. (authoring-run/2a00b231-82dc-480a-a3af-9dd8215aefe0 - 5bf2ae7fd703197701f311098d734a10ed4ab593)
+
 - 2026-11-18 10:15: Preserve authored `plugins.allow`, `plugins.deny` and an explicitly disabled native Codex entry across Harness switches, including unfinished JSON recovery. (authoring-run/658e4f7a-f9c1-4bea-8723-f9dfe9053b2f - 27aa612d2bafd819c734942d59125084a6c658eb)
 
 - 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)

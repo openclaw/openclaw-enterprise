@@ -1,4 +1,4 @@
-import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
+import { openAdvancedSettings, openCreateTab } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -142,9 +142,9 @@ async function filledCreateForm(
   const requests = apiRequests(page, fixture.origin);
   const writes = () => writeRequests(requests).map(({ method, path }) => `${method} ${path}`);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption({ label: text(preset.name) });
+  await page.getByLabel("Preset", { exact: true }).selectOption({ label: text(preset.name) });
   await page.getByLabel("Name", { exact: true }).fill(name.toLowerCase().replaceAll(" ", "-"));
-  await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-4.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-model-key");
   await page.getByRole("button", { name: "Use Preset" }).click();
   await openAdvancedSettings(page);
@@ -152,6 +152,7 @@ async function filledCreateForm(
   const parsed = record(JSON.parse(await configuration.inputValue()));
   const values = { ...parsed, agents: { ...record(parsed.agents), ...entries } };
   await configuration.fill(JSON.stringify(values, null, 2));
+  await openCreateTab(page, "plugins");
   await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
   const pluginJson = page.getByLabel("Plugin selections JSON");
   await pluginJson.fill(selected);
@@ -312,6 +313,7 @@ test("Create Agent refuses a plugin pair before saving anything and keeps the fo
   // initial workspace files need too.
   delete values.agents.ownership;
   values.agents.entries = { main: {} };
+  await openAdvancedSettings(page);
   await configuration.fill(JSON.stringify(values, null, 2));
   const created = page.waitForResponse(isAgentPost);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -356,6 +358,7 @@ test("Create Agent refuses a Dedicated Agent the Installation cannot place befor
   await assertNothingSaved(form);
   // Nothing is saved, so the form can still follow that advice.
   assert.equal(await configuration.isDisabled(), false);
+  await openCreateTab(page, "basics");
   assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), false);
 });
 
@@ -385,6 +388,7 @@ test("Create Agent refuses a roster that initial workspace files cannot reach be
   assert.equal(await configuration.isDisabled(), false);
   delete values.agents.ownership;
   values.agents.entries = { main: {} };
+  await openAdvancedSettings(page);
   await configuration.fill(JSON.stringify(values, null, 2));
   const created = page.waitForResponse(isAgentPost);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -441,12 +445,13 @@ test("Create Agent adds no plugin guidance to a refusal that names no selected p
   const namespace = entity(await fixture.createNamespace("Plain refusal create", { ready: true }));
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption({ label: "Standard OpenClaw" });
+  await page.getByLabel("Preset", { exact: true }).selectOption({ label: "Standard OpenClaw" });
   await page.getByLabel("Name", { exact: true }).fill("plain-refusal");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
+  await page.locator(".create-preset").getByLabel("Model", { exact: true }).fill("gpt-4.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-model-key");
   await page.getByRole("button", { name: "Use Preset" }).click();
   await openAdvancedSettings(page);
+  await openCreateTab(page, "plugins");
   await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
   await page.getByLabel("Plugin selections JSON").fill(selections);
   const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;

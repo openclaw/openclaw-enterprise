@@ -1,4 +1,9 @@
-import { focusedDescription, focusedText, LIVE_BUTTON } from "./console-agents-ui-test-support.ts";
+import {
+  focusedDescription,
+  focusedText,
+  LIVE_BUTTON,
+  openCreateTab,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import {
@@ -1307,7 +1312,8 @@ async function openRepositoryCreate(t: TestContext) {
   const requests = apiRequests(page, fixture.origin);
   const agents = `/namespaces/${namespaceId}/agents`;
   await login(page, fixture, `/console/agents/new?namespace=${namespaceId}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  // The tabbed form opens at once with No Preset.
+  await page.locator("#create-agent-form").waitFor();
   await page.getByLabel("Agent name", { exact: true }).fill("Scoped assistant");
   await selectSecret(page, "API key Secret", secret);
   const model = page.getByLabel("Model ID", { exact: true });
@@ -1316,6 +1322,7 @@ async function openRepositoryCreate(t: TestContext) {
   }
   await model.fill("gpt-5.1");
   await model.press("Tab");
+  await openCreateTab(page, "repositories");
   const mode = page.getByLabel("Repository access mode");
   await mode.waitFor();
   return { ...setup, page, requests, agents, mode };
@@ -1376,6 +1383,7 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   // Change a real form dependency so Console rebuilds instead of reusing the DOM.
   await fixture.createSecret(namespaceId, "additional-model", "synthetic-additional-model");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await openCreateTab(page, "repositories");
   await mode.waitFor();
   assert.equal(await originalMode!.evaluate((node) => node.isConnected), false);
   assert.equal(

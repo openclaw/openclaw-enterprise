@@ -8,7 +8,7 @@ AgentRevision.
 ## Set files when creating an Agent
 
 1. Open **Agents** in the intended Namespace and start creating an Agent.
-2. Open **Advanced settings**. In **Workspace files**, review the prefilled
+2. Select the **Workspace files** tab. Review the prefilled
    OpenClaw defaults and edit the files you want to customize. Leaving the text
    unchanged submits that default; clearing a field submits an empty file. Each
    field accepts up to 16 KiB of UTF-8 text. The browser uses LF newlines.

@@ -347,7 +347,7 @@ test("a phone shows a short-named Agent's header in four rows, ending by 240 px"
   assert.ok(layout.selector.right - layout.selector.left >= content - 1);
 });
 
-test("Create Agent leads with ← Agents and puts the Namespace under its title", async (t) => {
+test("Create Agent leads with ← Agents and keeps its state and actions in the bar under its title", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Header create");
   const { page } = await newPage(t, fixture, {
     browser,
@@ -355,44 +355,88 @@ test("Create Agent leads with ← Agents and puts the Namespace under its title"
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent", level: 1 }).waitFor();
-  await page.getByRole("button", { name: "Start without Preset", exact: true }).waitFor();
+  await page.locator("#create-agent-form").waitFor();
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  // The header keeps ← Agents, Refresh and the Namespace selector. The bar under the title
+  // holds the form's state and actions, and does not name the Namespace again.
   const layout = await headerLayout(page);
-  t.diagnostic(JSON.stringify(layout));
   assert.deepEqual(
     Object.fromEntries(layout.controls.map((control) => [control.name, control.region])),
     { "← Agents": "header", Refresh: "actions", Namespace: "meta" },
   );
-  assert.equal(await page.getByRole("link", { name: "← Agents", exact: true }).count(), 1);
-  // The intro card's heading sits a step under the page title, not at its size (finding 2097).
-  const sizes = await page.evaluate(() => {
-    const size = (selector: string) => {
-      const element = globalThis.document.querySelector(selector);
-      if (!element) {
-        throw new Error(`Missing ${selector}`);
-      }
-      return globalThis.getComputedStyle(element).fontSize;
-    };
-    return { title: size(".page-header h1"), card: size(".launch-intro h2") };
+  const bar = page.locator(".create-agent-bar");
+  await bar.getByText("Not created yet.", { exact: true }).waitFor();
+  assert.equal(await bar.getByText("Header create").count(), 0);
+  assert.deepEqual(
+    await bar
+      .getByRole("button")
+      .evaluateAll((nodes) =>
+        nodes
+          .filter((node) => !(node as HTMLElement).hidden)
+          .map((node) => node.textContent?.trim()),
+      ),
+    ["Cancel", "Start over", "Create Agent"],
+  );
+  // One tab per section, Basics first; its first field chooses the Preset, No Preset first.
+  assert.deepEqual(await page.getByRole("tab").allTextContents(), [
+    "Basics",
+    "Configuration",
+    "Plugins",
+    "Channels",
+    "Repositories",
+    "Workspace files",
+  ]);
+  assert.equal(
+    await page.getByRole("tab", { name: "Basics", exact: true }).getAttribute("aria-selected"),
+    "true",
+  );
+  const preset = page.getByLabel("Preset", { exact: true });
+  assert.equal(await preset.locator("option").first().textContent(), "No Preset");
+  // Each tab shows its own section alone. Left, Right, Home and End select the tab they reach.
+  const shown = () =>
+    page
+      .locator("#create-agent-sections [role=tabpanel]:visible")
+      .evaluateAll((nodes) => nodes.map((node) => node.id));
+  const focused = () => page.evaluate(() => globalThis.document.activeElement?.id);
+  assert.deepEqual(await shown(), ["create-panel-basics"]);
+  await page.getByRole("tab", { name: "Basics", exact: true }).focus();
+  for (const [key, id] of [
+    ["ArrowRight", "configuration"],
+    ["End", "workspace"],
+    ["ArrowRight", "basics"],
+    ["ArrowLeft", "workspace"],
+    ["Home", "basics"],
+  ] as const) {
+    await page.keyboard.press(key);
+    assert.deepEqual(await shown(), [`create-panel-${id}`], key);
+    assert.equal(await focused(), `create-tab-${id}`, key);
+  }
+  // The Channels editor is outside the form, whose card does not show empty beside it.
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page.getByRole("button", { name: "Configure Slack", exact: true }).waitFor();
+  assert.equal(await page.locator("#create-agent-form").isVisible(), false);
+  // Create Agent selects the tab that holds the first field to correct, and focuses the field.
+  await page.locator('#create-agent-form .repository-options[aria-busy="false"]').waitFor({
+    state: "attached",
   });
-  assert.deepEqual(sizes, { title: "24px", card: "18px" });
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByText("Agent name is required.", { exact: true }).waitFor();
+  assert.deepEqual(await shown(), ["create-panel-basics"]);
+  assert.equal(await focused(), "agent-name");
   // The intro promises nothing the Installation may not offer: repository access needs
   // repository settings (finding 2404).
-  assert.equal(
-    await page.locator(".launch-intro > p.muted").textContent(),
-    "Choose a model and give your Agent a place to work.",
+  assert.match(
+    (await page.locator(".content .muted").first().textContent()) ?? "",
+    /^Choose a model/,
   );
-  // Both start cards use the card padding at every width; the intro kept 24px on a phone while
-  // the Preset card narrowed to 16px (finding 2404).
-  for (const width of [1440, 390]) {
-    await page.setViewportSize({ width, height: 900 });
-    const paddings = await page.evaluate(() =>
-      [".launch-intro", ".launch-preset"].map(
-        (selector) =>
-          globalThis.getComputedStyle(globalThis.document.querySelector(selector)!).padding,
-      ),
-    );
-    assert.equal(paddings[0], paddings[1], `${width}: ${paddings.join(" vs ")}`);
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.screenshot({
+        path: `${process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR}/create-agent-${width}.png`,
+        fullPage: true,
+      });
+    }
   }
   await page.setViewportSize({ width: 1440, height: 900 });
 

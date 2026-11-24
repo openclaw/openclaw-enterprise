@@ -81,12 +81,12 @@ follows `:focus-visible`. No part of any ring may be cut off.
    and a refused list row icon, whose row note names the grant (**Pages /
    Agents / Stop from the list denied**, finding 2955). So are the header's
    Namespace selector with no readable Namespace (**Pages / Agents / No
-   readable Namespaces**, finding 2936) and **Start with default
-   Preset** without a default Preset (**Pages / Create Agent / No Presets**,
-   finding 2937), whose hint says why. With other Presets (**Pages / Create
-   Agent / Other Presets, no default**), the chooser's status says only
-   "Choose a Preset." and describes Use Preset; the hint is not repeated
-   (finding 2946). A list row refused for a reason other than grants shows the
+   readable Namespaces**, finding 2936). Without a default Preset (**Pages /
+   Create Agent / No Presets**, finding 2937), the form opens with **No
+   Preset** and the status under **Preset** says why. With other Presets
+   (**Pages / Create Agent / Other Presets, no default**), **Preset** lists
+   them, and **Use Preset** shows only once one is chosen (finding 2946). A
+   list row refused for a reason other than grants shows the
    API's text in its alert, its note names no grant but reads "Not deleted:
    see above", and its icons stay reachable, described by the alert, until
    Refresh (**Pages / Agents / Delete from the list refused for another

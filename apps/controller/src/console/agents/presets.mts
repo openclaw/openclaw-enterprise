@@ -8,15 +8,12 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { sameValue } from "../carry.mjs";
-import type { createDraftStore } from "../drafts.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import {
   element,
   button,
   field as formField,
-  focusSaveOutcome,
   setFieldError,
-  setUnavailable,
   statusBlock,
   validateFields,
 } from "../dom.mjs";
@@ -40,7 +37,6 @@ import {
 
 type PresetContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
-  drafts: ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
   // The readable Secrets the caller may not operate; undefined when the answer is unknown.
   secretsOperateDenied?: SecretsOperateDenied | undefined;
   // The Namespace permission answer's secrets.create: undefined when it is unknown.
@@ -84,6 +80,16 @@ function saveField(field: VariableField | SecretField): SavedField {
   return "mode" in field
     ? { type, mode: field.mode.value, secret: field.secretSelect.value }
     : { type };
+}
+
+// How Create Agent opens the chooser. `applied` is the Preset the form was filled from, and
+// `appliedName` its name, shown before the list arrives. `pending` is a selection a restored
+// draft kept, not yet applied. `clear` asks to empty the form when No Preset is chosen.
+export interface PresetLaunch {
+  applied?: PresetDraft | undefined;
+  appliedName?: string | undefined;
+  pending?: PresetDraft | undefined;
+  clear?: () => boolean;
 }
 
 export interface PresetDraft {
@@ -311,25 +317,38 @@ export function createPresetFields(
       settingVariables: PresetSettingVariables;
     },
     draft: Pick<PresetDraft, "touched">,
-  ) => void,
+  ) => boolean,
   returning?: PresetReturn,
+  launch: PresetLaunch = {},
 ) {
-  // This scoped draft is written only by the capture below, unless Create Agent sent the reader
-  // back to change the variables it refused.
-  let retained = returning?.draft ?? (context.drafts.get("preset") as PresetDraft | undefined);
+  // The chooser shows the Preset the form around it was filled from, or the selection a draft
+  // kept. Create Agent sent the reader back to change the variables it refused when `returning`
+  // is set.
+  let retained = returning?.draft ?? launch.pending ?? launch.applied;
+  const appliedId = launch.applied?.id ?? "";
   // Marked once, when the returned Preset's fields are built.
   let refused = returning;
+  // Disabled until the list arrives, and while the form holds saved resources: a new Preset
+  // would replace them, as Start over does.
+  let listed = false;
+  let locked = false;
+  const updateSelector = () => {
+    selector.disabled = locked || !listed;
+  };
+  // The Preset a filled form shows stays named while the list loads.
   const selector = element(
     "select",
     { id: "agent-preset", disabled: true },
-    element("option", { value: "" }, "Choose a Preset"),
+    element("option", { value: "" }, "No Preset"),
+    ...(launch.applied ? [element("option", { value: appliedId }, launch.appliedName ?? "")] : []),
   );
+  selector.value = appliedId;
   const status = element("p", { className: "hint", role: "status" }, "Loading Presets…");
   const feedback = statusBlock("danger", null, null);
   const inputs = element("div");
-  let defaultId: string | undefined;
-  // How the next selection change started: "shortcut" applies the default Preset at once.
-  let origin: "shortcut" | undefined;
+  // The status while no Preset is chosen or used: it names the default Preset (finding 2066),
+  // or says that the reader can use none.
+  let idle = "";
   // Whether the reader changed a variable. The form a Preset opens keeps it, so its Cancel asks
   // first; a reload or tab close warns either way (finding 1902).
   let touched = false;
@@ -338,40 +357,11 @@ export function createPresetFields(
   };
   inputs.addEventListener("input", markTouched);
   inputs.addEventListener("change", markTouched);
-  // Without default-codex, the hint under the shortcut already says it is not available, so the
-  // status line does not repeat it (finding 2946).
-  const chooseHint = () =>
-    defaultId ? "Choose a Preset or start with the default Preset." : "Choose a Preset.";
-  const startDefault = button(
-    "Start with default Preset",
-    () => {
-      selector.value = defaultId ?? "";
-      origin = "shortcut";
-      selector.dispatchEvent(new Event("change"));
-    },
-    { tone: "primary", disabled: true },
-  );
-  // The chooser named no Preset beside its default shortcut (finding 2066).
-  const defaultHint = element("p", {
-    className: "hint",
-    id: `${selector.id}-default-hint`,
-    hidden: true,
-  });
-  // Once a Preset is chosen, Use Preset is the next step, so it takes the filled style from the
-  // default shortcut; clearing the choice gives it back (finding 2066).
-  function emphasize(chosen: boolean) {
-    for (const [node, primary] of [
-      [startDefault, !chosen],
-      [applyButton, chosen],
-    ] as const) {
-      node.classList.toggle("button", primary);
-      node.classList.toggle("button--primary", primary);
-    }
-  }
   let selected: (Pick<Preset, "name"> & { template: PresetDraftTemplate }) | undefined;
   let fields: (VariableField | SecretField)[] = [];
   let loadVersion = 0;
-  context.drafts.track("preset", (): PresetDraft | undefined =>
+  // The chooser's selection and variables, kept with Create Agent's draft.
+  const capture = (): PresetDraft | undefined =>
     selector.value
       ? {
           id: selector.value,
@@ -380,9 +370,7 @@ export function createPresetFields(
             ? Object.fromEntries(fields.map((field) => [field.name, saveField(field)]))
             : retained?.fields,
         }
-      : retained,
-  );
-  context.drafts.unsavedWhen("preset", (draft) => responseFields(draft).touched === true);
+      : retained;
 
   function updatePasswordField(field: SecretField) {
     const existing = field.mode.value === EXISTING_SECRET;
@@ -565,7 +553,7 @@ export function createPresetFields(
       };
       // The form names the Preset it started from (UX plan A2, flows.md C8), and keeps where
       // each variable went, so a refused setting names the field that filled it (finding 3122).
-      apply(
+      const used = apply(
         applied,
         {
           modelSecret,
@@ -575,6 +563,10 @@ export function createPresetFields(
         },
         { touched },
       );
+      // The reader kept the form: the chooser keeps this choice and its variables.
+      if (!used) {
+        return;
+      }
       for (const field of fields) {
         if (field.definition.type === "password") {
           field.input.value = "";
@@ -585,30 +577,30 @@ export function createPresetFields(
       feedback.textContent = error instanceof Error ? error.message : message(error);
     }
   });
+  // Use Preset shows once a Preset the form does not use yet has loaded.
+  applyButton.hidden = true;
   const section = element(
     "fieldset",
-    {},
+    { className: "create-preset" },
     element("legend", {}, "Preset"),
-    formField({ label: "Preset template", control: selector }),
+    formField({ label: "Preset", control: selector }),
     status,
     inputs,
     applyButton,
     feedback,
   );
-  let applyUnavailable = true;
-  // An unavailable Use Preset is described by the line that says why (finding D793): the
-  // Preset's load failure, else the status line ("Choose a Preset or start with the default
-  // Preset."), and stays in the Tab order while it shows (finding 2878). Called wherever either
-  // line or the button changes.
-  const describeApply = () =>
-    setUnavailable(applyButton, applyUnavailable, feedback.textContent?.trim() ? feedback : status);
-  describeApply();
+  // Enter in a variable uses the Preset; it never submits the form around the chooser.
+  section.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
+      event.preventDefault();
+      if (!applyButton.hidden) {
+        applyButton.click();
+      }
+    }
+  });
   selector.addEventListener("change", async () => {
     const version = ++loadVersion;
     const selectedId = selector.value;
-    emphasize(Boolean(selectedId));
-    const applyDefault = origin === "shortcut";
-    origin = undefined;
     if (retained?.id !== selectedId) {
       retained = undefined;
     }
@@ -617,14 +609,20 @@ export function createPresetFields(
     fields = [];
     inputs.replaceChildren();
     feedback.textContent = "";
-    applyUnavailable = true;
+    status.textContent = selectedId || appliedId ? "" : idle;
+    applyButton.hidden = true;
+    // The form already holds the applied Preset's values: there is nothing to fill in or use.
+    if (selectedId === appliedId) {
+      return;
+    }
     if (!selectedId) {
-      status.textContent = chooseHint();
-      describeApply();
+      // No Preset empties the form the applied Preset filled, unless the reader keeps it.
+      if (!launch.clear?.()) {
+        selector.value = appliedId;
+      }
       return;
     }
     status.textContent = "Loading Preset…";
-    describeApply();
     try {
       const value = await context.request(
         `${namespacePath(context.namespaceId)}/presets/${encodeURIComponent(selectedId)}`,
@@ -769,8 +767,7 @@ export function createPresetFields(
       });
       status.textContent =
         "Fill in the variables, then use this Preset to create an editable draft.";
-      applyUnavailable = false;
-      describeApply();
+      applyButton.hidden = false;
       // Create Agent refused the setting these variables filled: its refusal shows under each,
       // and focus moves to the first to change (finding 3122). Focus scrolls only the field into
       // view, so at phone width the refusal under it can start below the fold: it scrolls in too.
@@ -787,9 +784,6 @@ export function createPresetFields(
         first.focus();
         document.getElementById(`${first.id}-error`)?.scrollIntoView({ block: "nearest" });
       }
-      if (applyDefault && fields.length === 0) {
-        applyButton.click();
-      }
       void loadSecrets(
         version,
         fields.filter((field): field is SecretField => "mode" in field),
@@ -801,22 +795,14 @@ export function createPresetFields(
       if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
+        status.textContent = "";
         feedback.textContent = `This Preset could not be loaded. ${describeFailure(error)}`;
-        describeApply();
-        // Use Preset stays disabled, so the filled style goes back to the shortcut.
-        emphasize(false);
         // Create Agent sent the reader back here and removed the button they pressed. With no
-        // field to mark, focus goes to the chooser heading, not the document (findings 1446,
-        // 3122).
+        // field to mark, focus goes to the chooser, not the document (findings 1446, 3122).
         if (refused) {
           refused = undefined;
-          const chooser = section.closest(".launch-preset");
-          focusSaveOutcome(chooser ?? section, [], chooser?.querySelector("h2"));
+          selector.focus();
         }
-      }
-    } finally {
-      if (version === loadVersion) {
-        selector.disabled = false;
       }
     }
   });
@@ -836,38 +822,31 @@ export function createPresetFields(
         }
         return { id, name };
       });
-      selector.append(
+      selector.replaceChildren(
+        element("option", { value: "" }, "No Preset"),
         ...presets
           .sort((left, right) =>
             left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
           )
           .map((preset) => element("option", { value: preset.id }, preset.name)),
       );
-      selector.disabled = false;
-      defaultId = presets.find((preset) => preset.name === "default-codex")?.id;
-      // The hint beside the shortcut names the default Preset, or says that it is not
-      // available, and then describes the unavailable shortcut, which stays in the Tab order
-      // (finding 2937).
-      defaultHint.textContent = defaultId
+      listed = true;
+      updateSelector();
+      idle = presets.some((preset) => preset.name === "default-codex")
         ? "The default Preset is default-codex."
-        : "default-codex is not available to you in this Namespace.";
-      defaultHint.hidden = false;
-      setUnavailable(startDefault, !defaultId, defaultHint);
-      if (defaultId) {
-        startDefault.setAttribute("aria-describedby", defaultHint.id);
-      }
-      if (retained && presets.some((preset) => preset.id === retained?.id)) {
-        selector.value = retained.id;
+        : presets.length
+          ? ""
+          : `No Presets available to you in this Namespace. ${askAdministratorTo(
+              "install default-codex or another Preset, or to give you Preset read on one",
+            )}`;
+      status.textContent = appliedId ? "" : idle;
+      // An applied Preset the list no longer holds leaves No Preset selected.
+      selector.value = appliedId;
+      if (retained?.id !== appliedId && presets.some((preset) => preset.id === retained?.id)) {
+        // A selection the form does not use yet shows its variables again.
+        selector.value = retained?.id ?? "";
         selector.dispatchEvent(new Event("change"));
       }
-      if (presets.length === 0) {
-        status.textContent = `No Presets available to you in this Namespace. ${askAdministratorTo(
-          "install default-codex or another Preset, or to give you Preset read on one",
-        )}`;
-      } else {
-        status.textContent = chooseHint();
-      }
-      describeApply();
     })
     .catch((error) => {
       if (!context.isCurrent() || !section.isConnected) {
@@ -877,10 +856,15 @@ export function createPresetFields(
         context.onExpired();
       } else {
         status.textContent = `Presets unavailable. ${message(error, false, namespaceListNeed("Presets"))}`;
-        describeApply();
-        // The chooser stays unavailable, so its status says why the shortcut is too.
-        setUnavailable(startDefault, true, status);
       }
     });
-  return { section, startDefault, defaultHint };
+  return {
+    section,
+    capture,
+    // While the form holds saved resources, the chooser cannot replace it.
+    setLocked(value: boolean) {
+      locked = value;
+      updateSelector();
+    },
+  };
 }

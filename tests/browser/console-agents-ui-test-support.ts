@@ -21,6 +21,8 @@ export async function openCreateSecretDialog(
 export async function createModelCredentialSecret(page: Page, secretValue: string) {
   // Preset quick-start reads the installed template before rendering its credential fields.
   await page.locator("#create-agent-form").waitFor();
+  // The model credential is on the Basics tab.
+  await openCreateTab(page, "basics");
   const picker = page.locator("#provider-credential-secret");
   if ((await picker.count()) === 0 || !(await picker.isVisible())) {
     const legacyCredential = page.getByLabel("API key", { exact: true });
@@ -100,10 +102,30 @@ export async function createAgentThroughForm(
   ).data;
 }
 
+// Create Agent keeps each section in a tab. Selects one, unless it already shows.
+export type CreateAgentTab =
+  "basics" | "configuration" | "plugins" | "channels" | "repositories" | "workspace";
+
+export async function openCreateTab(page: Page, id: CreateAgentTab) {
+  const tab = page.locator(`#create-tab-${id}`);
+  if ((await tab.getAttribute("aria-selected")) !== "true") {
+    await tab.click();
+  }
+}
+
+// Fills a new Create Agent form from the installed default Preset, as a reader does: choose it
+// in Preset on Basics, then select Use Preset.
+export async function useDefaultPreset(page: Page) {
+  await page.getByLabel("Preset", { exact: true }).selectOption({ label: "default-codex" });
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  await page.getByText("From Preset · default-codex", { exact: true }).waitFor();
+}
+
+// Shows the Configuration JSON on Create Agent, which keeps it on the Configuration tab. An
+// Agent page's editor needs no such step.
 export async function openAdvancedSettings(page: Page) {
-  const summary = page.locator(".launch-advanced:not([open]) > summary");
-  if (await summary.count()) {
-    await summary.click();
+  if (await page.locator("#create-tab-configuration").count()) {
+    await openCreateTab(page, "configuration");
   }
 }
 
@@ -129,7 +151,7 @@ export async function expectCreateAccess(
       tone,
       label: "Your access",
       body: [body],
-      next: "create-agent-form",
+      next: "create-agent-sections",
     },
   );
   assert.equal(await page.getByText(body, { exact: true }).count(), 1);
@@ -185,12 +207,12 @@ export async function waitForCreateFormReads(page: Page) {
 // A failed provisioning job's reason is the form's one error line; the status line under it
 // does not repeat that provisioning failed (finding 2423).
 export async function waitForProvisioningFailure(page: Page) {
-  await page.locator("#create-agent-form ~ p[role=alert]").filter({ hasText: /\S/ }).waitFor();
+  await page.locator("#create-agent-sections ~ p[role=alert]").filter({ hasText: /\S/ }).waitFor();
   assert.equal(await page.getByText("Provisioning failed.", { exact: true }).count(), 0);
   // The error line is as wide as the form above it, not the page.
   const { form, error } = await page.evaluate(() => {
     const form = globalThis.document.querySelector("#create-agent-form");
-    const error = globalThis.document.querySelector("#create-agent-form ~ p[role=alert]");
+    const error = globalThis.document.querySelector("#create-agent-sections ~ p[role=alert]");
     if (form === null || error === null) {
       throw new Error("Expected the Create Agent form and provisioning error");
     }

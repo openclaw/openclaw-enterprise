@@ -2,6 +2,8 @@ import {
   enterManualModel,
   openAdvancedSettings,
   waitForLiveControls,
+  openCreateTab,
+  useDefaultPreset,
 } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -203,7 +205,7 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
-  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await useDefaultPreset(page);
   await enterManualModel(page, "unused-json-feedback-key", "gpt-4.1");
   await page.getByLabel("Agent name").fill("JSON feedback Agent");
   await openAdvancedSettings(page);
@@ -213,13 +215,16 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   const model = page.getByLabel("Model ID", { exact: true });
 
   // Establish normal Tab focus on this form before comparing syntax and shape failures.
+  await openCreateTab(page, "basics");
   await model.fill("gpt-5.4");
   await model.press("Tab");
   await nextFrames(page);
   const normalFocus = await page.evaluateHandle(() => document.activeElement);
   assert.notEqual(await focusedId(page), "configuration-json");
   for (const draft of ["{ invalid", "[]"]) {
+    await openCreateTab(page, "configuration");
     await json.fill(draft);
+    await openCreateTab(page, "basics");
     await model.fill("gpt-4.1");
     await model.press("Tab");
     await nextFrames(page);
@@ -239,7 +244,9 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   // Valid JSON syntax can still contain a number that serialization would replace with null.
   const overflow = template.replace(/^\s*\{/, '{"metadata":{"thresholds":[1,-1e400,3]},');
   assert.notEqual(overflow, template);
+  await openCreateTab(page, "configuration");
   await json.fill(overflow);
+  await openCreateTab(page, "basics");
   await model.fill("gpt-4.1");
   await model.press("Tab");
   await jsonError
@@ -250,11 +257,14 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.equal(await focusedId(page), "configuration-json");
   assert.equal(await json.inputValue(), overflow);
   for (const name of ["Choose a model from the list", "Enter model ID manually"]) {
+    // The JSON message selected the Configuration tab; the model buttons are on Basics.
+    await openCreateTab(page, "basics");
     await page.getByRole("button", { name, exact: true }).click();
     assert.equal(await focusedId(page), "configuration-json");
     assert.equal(await json.inputValue(), overflow);
   }
   await json.fill(overflow.replace("-1e400", "-1.5e2"));
+  await openCreateTab(page, "basics");
   await model.fill("gpt-5.4");
   await model.press("Tab");
   await nextFrames(page);
@@ -262,11 +272,14 @@ test("Create Agent: number-range model edits preserve drafts; syntax, shape, res
   assert.partialDeepStrictEqual(corrected, { metadata: { thresholds: [1, -150, 3] } });
   assert.equal(await jsonError.isHidden(), true);
   assert.equal(await normalFocus.evaluate((node) => node === document.activeElement), true);
+  await openCreateTab(page, "configuration");
   await json.fill(template);
+  await openCreateTab(page, "basics");
   await model.fill("gpt-4.1");
   await model.press("Tab");
 
   // A stray closing brace after the object is located (finding 1939).
+  await openCreateTab(page, "configuration");
   await json.fill(`${template}}`);
   await page.getByRole("button", { name: "Create Agent" }).click();
   const lines = template.split("\n");
