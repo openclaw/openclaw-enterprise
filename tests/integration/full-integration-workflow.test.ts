@@ -596,12 +596,7 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   for (const selected of [...Object.values(dispatcher.jobs), ...Object.values(workflow.jobs)]) {
     for (const step of selected.steps ?? []) {
       if (typeof step.uses === "string" && step.uses.startsWith("actions/checkout@")) {
-        assert.ok(
-          [
-            "${{ github.sha }}",
-            "${{ needs.preflight.outputs.tested_sha || 'missing-test-source' }}",
-          ].includes(text(record(step.with).ref)),
-        );
+        assert.equal(record(step.with).ref, "${{ github.sha }}");
         assert.equal(record(step.with)["persist-credentials"], false);
       }
     }

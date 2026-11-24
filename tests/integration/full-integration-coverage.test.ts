@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -556,8 +556,9 @@ test("full coverage receipts require real case evidence and retain approved same
 
 test("release qualification runs and aggregates the selected ancestor after main advances", async (t) => {
   const directory = await temporaryDirectory(t, "release-test-source-");
+  const artifactDirectory = await temporaryDirectory(t, "release-qualification-artifacts-");
   const env: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH,
+    PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
     GITHUB_WORKFLOW_REF:
       "openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main",
     GITHUB_REF: "refs/heads/main",
@@ -566,8 +567,8 @@ test("release qualification runs and aggregates the selected ancestor after main
     GITHUB_RUN_ATTEMPT: "1",
     GITHUB_RUN_ID: "456",
     GITHUB_WORKFLOW: "Release OCE",
-    OCC_CI_SUITE_VIEW: "default",
-    RUNNER_TEMP: directory,
+    OCC_CI_SUITE_VIEW: "full-integration",
+    RUNNER_TEMP: artifactDirectory,
     GITHUB_ENV: join(directory, "environment"),
     GITHUB_OUTPUT: join(directory, "output"),
   };
@@ -596,18 +597,37 @@ test("release qualification runs and aggregates the selected ancestor after main
   const suite = join(directory, "scripts/ci");
   await mkdir(join(directory, "tests/integration"), { recursive: true });
   await mkdir(suite, { recursive: true });
+  const fixtureSuite = loadTestSuites(
+    fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
+    "full-integration",
+  );
+  const installerPaths = files(readSuiteLane(fixtureSuite, "openshell-installers")).map(
+    ({ path }) => path,
+  );
   await writeFile(
     join(suite, "test-suites.json"),
     JSON.stringify({
       version: 1,
-      lanes: { sample: { files: [{ path: file, expectedTests: ["source test"] }] } },
-      groups: { full: ["sample"] },
+      lanes: {
+        openshell: {
+          files: [file, ...installerPaths].map((path) => ({
+            path,
+            expectedTests: ["source test"],
+          })),
+        },
+      },
+      groups: { full: ["openshell"] },
     }),
   );
-  await writeFile(
-    join(directory, file),
-    'import test from "node:test"; test("source test", () => {});',
-  );
+  for (const path of [file, ...installerPaths]) {
+    await writeFile(
+      join(directory, path),
+      'import test from "node:test"; test("source test", () => {});',
+    );
+  }
+  const runner = fileURLToPath(new URL("../../scripts/ci/run-tests.ts", import.meta.url));
+  // A historical commit supplies data to the aggregator. Executing its runner must fail.
+  await writeFile(join(suite, "run-tests.ts"), 'throw Error("executed the source runner");');
   git("add", ".");
   git("commit", "-qm", "Selected source");
   const selected = git("rev-parse", "HEAD");
@@ -615,6 +635,10 @@ test("release qualification runs and aggregates the selected ancestor after main
     join(directory, file),
     'import test from "node:test"; test("source test", () => { throw Error("main tip ran"); });',
   );
+  await rm(join(suite, "run-tests.ts"));
+  await symlink(runner, join(suite, "run-tests.ts"));
+  // The dispatch manifest must also fail if it substitutes for the selected one.
+  await writeFile(join(suite, "test-suites.json"), "{}");
   git("commit", "-qam", "Later dispatch");
   const dispatch = git("rev-parse", "HEAD");
   env.GITHUB_SHA = dispatch;
@@ -635,41 +659,41 @@ test("release qualification runs and aggregates the selected ancestor after main
   bash(bind, { TEST_SOURCE: selected, DISPATCH_SOURCE: selected });
   assert.equal(git("rev-parse", "HEAD"), selected);
   const shellEnv = (await readFile(env.GITHUB_ENV!, "utf8")).trim().slice("BASH_ENV=".length);
-  const runner = fileURLToPath(new URL("../../scripts/ci/run-tests.ts", import.meta.url));
   const cleanup = fileURLToPath(new URL("../../scripts/ci/cleanup.ts", import.meta.url));
   // Execute the test that passes only in the ancestor, record its cleanup, then verify
   // the receipt with dispatch-owned code and the selected source's manifest.
-  bash(
-    '"$NODE" "$RUNNER" run sample --root . --state state/sample.json --results results/sample.json',
-    {
-      BASH_ENV: shellEnv,
-      RUNNER: runner,
+  for (const lane of ["openshell-policy", "openshell-installers"]) {
+    const paths = {
       NODE: process.execPath,
-    },
+      RUNNER: runner,
+      CLEANUP: cleanup,
+      LANE: lane,
+      BASH_ENV: shellEnv,
+    };
+    bash(
+      '"$NODE" "$RUNNER" run "$LANE" --root . --state "state/$LANE.json" --results "$RUNNER_TEMP/results/$LANE.json"',
+      paths,
+    );
+    bash(
+      '"$NODE" "$CLEANUP" --state "state/$LANE.json" --results "$RUNNER_TEMP/results/$LANE.json"',
+      paths,
+    );
+  }
+  await writeFile(
+    join(artifactDirectory, "needs.json"),
+    JSON.stringify({
+      openshell: { result: "success", lanes: ["openshell-policy", "openshell-installers"] },
+    }),
   );
-  bash('"$NODE" "$CLEANUP" --state state/sample.json --results results/sample.json', {
-    BASH_ENV: shellEnv,
-    CLEANUP: cleanup,
-    NODE: process.execPath,
-  });
-  const receipt = jsonRecord(await readFile(join(directory, "results/sample.json"), "utf8"));
-  assert.equal(receipt.sourceSha, selected);
-  const needs = join(directory, "needs.json");
-  await writeFile(needs, JSON.stringify({ sample: { result: "success" } }));
-  const aggregate = [
-    "aggregate",
-    "full",
-    "--root",
-    directory,
-    "--needs",
-    needs,
-    "--results-dir",
-    join(directory, "results"),
-  ];
-  const summary = jsonRecord(
-    exec(process.execPath, [runner, ...aggregate], 0, { GITHUB_SHA: selected }),
+  git("checkout", "--detach", dispatch);
+  const aggregate = text(
+    present(workflow.jobs["full-aggregate"]?.steps?.find((step) => step.id === "aggregate-full"))
+      .run,
   );
+  bash(aggregate, { TEST_SOURCE: dispatch }, 1);
+  const summary = jsonRecord(bash(aggregate, { TEST_SOURCE: selected }));
   assert.equal(summary.sourceSha, selected);
+  assert.equal(summary.fullCoverageExercised, true);
   assert.equal(summary.status, "passed");
-  exec(process.execPath, [runner, ...aggregate], 1, { GITHUB_SHA: dispatch });
+  assert.equal(git("rev-parse", "HEAD"), dispatch);
 });

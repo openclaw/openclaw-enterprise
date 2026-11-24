@@ -892,13 +892,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Check out the approved source manifest
-        if: inputs.source_sha != ''
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.preflight.outputs.tested_sha || 'missing-test-source' }}
-          path: tested-source
+          fetch-depth: ${{ inputs.source_sha != '' && '0' || '1' }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
@@ -974,10 +968,20 @@ jobs:
         if: needs.preflight.outputs.run_all == 'true'
         env:
           TEST_SOURCE: ${{ needs.preflight.outputs.tested_sha }}
-          TEST_ROOT: ${{ inputs.source_sha != '' && 'tested-source' || '.' }}
+          DISPATCH_SOURCE: ${{ github.event.inputs.source_sha }}
         run: |
-          [[ "$TEST_SOURCE" == "$(git -C "$TEST_ROOT" rev-parse HEAD)" ]] || exit 1
-          GITHUB_SHA="$TEST_SOURCE" node scripts/ci/run-tests.ts aggregate full --root "$TEST_ROOT" \
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || exit 1
+          test_root=.
+          if [[ "$GITHUB_WORKFLOW_REF" == 'openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main' ]]; then
+            [[ "$GITHUB_REF_PROTECTED" == true && "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_RUN_ATTEMPT" == 1 ]] || exit 1
+            [[ "$TEST_SOURCE" =~ ^[0-9a-f]{40}$ && "$TEST_SOURCE" == "$DISPATCH_SOURCE" && "$GITHUB_WORKFLOW_SHA" == "$GITHUB_SHA" ]] || exit 1
+            git merge-base --is-ancestor "$TEST_SOURCE" "$GITHUB_SHA"
+            test_root=$(mktemp -d "$RUNNER_TEMP/full-suite-source.XXXXXXXX")
+            git worktree add --quiet --detach "$test_root" "$TEST_SOURCE"
+            trap 'git worktree remove "$test_root"' EXIT
+          fi
+          [[ "$(git -C "$test_root" rev-parse HEAD)" == "$TEST_SOURCE" ]] || exit 1
+          GITHUB_SHA="$TEST_SOURCE" node scripts/ci/run-tests.ts aggregate full --root "$test_root" \
             --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json" \
             --full-coverage-marker "$RUNNER_TEMP/full-integration-exercised"
       - name: Upload full coverage marker
