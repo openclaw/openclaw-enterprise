@@ -1,6 +1,6 @@
 ---
-status: Proposed
-implementation_status: Not implemented
+status: Accepted
+implementation_status: Partially implemented
 author: freeqaz-openai
 ---
 
@@ -21,7 +21,7 @@ An Agent should push fixes and open pull requests (PRs) in `acme/web` while leav
 
 ## Motivation
 
-The [shipped GitHub App policy](20261119-repository-network-policy.md) requires a separate REST setting and cannot create issues. An Admin should be able to choose one role per repository, review exceptions and edit them later from the Agent.
+The [original native GitHub App policy](20261119-repository-network-policy.md) required a separate REST setting and could not create issues. An Admin should be able to choose one role per repository, review exceptions and edit them later from the Agent.
 
 <a id="scope"></a>
 
@@ -124,7 +124,11 @@ No new endpoints. Permit GitHub’s existing `POST /repos/{owner}/{repo}/issues`
 
 ### IAM
 
-No new permissions. Catalog hints require Installation administration and Namespace-wide Agent and policy read. Enabling edits requires Installation and Agent administration. Saving and deploying scoped grants require policy read/update and Agent `manage_policy`, in addition to normal create or deploy authority.
+No new permissions. Catalog hints require Installation administration and Namespace-wide Agent and policy read. Enabling edits requires Installation and Agent administration.
+
+The Console requires `read` on the Agent and SandboxPolicy to show the editor. [Policy PUT](../../docs/reference/sandbox-policies.md#repository-network-policy) requires Agent `manage_policy` and SandboxPolicy `update`. The first or any nonempty list requires Configuration and Harness credential source read access. An empty list, including withdrawal, requires SandboxPolicy `read`.
+
+Creation with grants enables editing, reads the policy and saves it under the same checks. Scoped deployment requires Agent `manage_policy` and SandboxPolicy `read` and `update`. Normal create and deploy permissions still apply.
 
 ### Database entities
 
@@ -155,4 +159,4 @@ Use the [installed workflow and evidence by criterion](../plans/20261123-reposit
 
 Remove retired settings before upgrade. Existing Write grants can gain issue or PR creation on redeployment. Set restrictions first. A running Sandbox keeps its loaded rules and can lose renewal after a change. The operator must Stop and verify Sandbox retirement to withdraw access immediately.
 
-The [plan](../plans/20261123-repository-issue-creation.md) records earlier controlled checks. Repeat them with `apiLimits`. Live parent-link effects and the deployed Console workflow remain unverified.
+The [plan](../plans/20261123-repository-issue-creation.md) records acceptance and the implementation on `main` at `713ecb6ef`. That build includes the role picker and Namespace limits. Per-Agent limits and Advanced editing are separate follow-ups. Live parent-link effects and the deployed Console workflow remain unverified.

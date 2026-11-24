@@ -8,13 +8,13 @@ rfc: ../rfcs/20261123-repository-issue-creation.md
 - **Delivery status:** In progress. Wider rollout is on hold.
 - **Owner:** Repository access maintainers
 - **Authority:** [Issue creation with repository Write access](../rfcs/20261123-repository-issue-creation.md)
-- **Source baseline:** [OCE main](https://github.com/openclaw/openclaw-enterprise/commit/09c89c243)
+- **Source reviewed:** [`713ecb6ef` on main](https://github.com/openclaw/openclaw-enterprise/commit/713ecb6effe69c9e254676e22aec6b00d1514794)
 
 ## Implementation
 
-1. Review [GitHub App delivery #6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) in parallel with the RFC. Merge the RFC first. Remove `scopedRest`, `apiActions`, `createIssues` and bare `deny` from registrations. Recheck [permissions](../../docs/reference/repository-credentials/access-levels.md), set `apiLimits` and coordinate redeployment before upgrading. Ship the [Namespace guide #7165](https://github.com/openclaw/openclaw-enterprise/pull/7165) with the new configuration.
-2. [Create Agent #7178](https://github.com/openclaw/openclaw-enterprise/pull/7178) landed independently at [`d4149427`](https://github.com/openclaw/openclaw-enterprise/commit/d41494271000c79831532a2ee77ed74ddf1bac0a). Keep the catalog and creation schemas limited to repository and access. If draft creation fails, check for a saved Configuration or model credential before retrying.
-3. After #6864, add [per-Agent grants #7179](https://github.com/openclaw/openclaw-enterprise/pull/7179). Review the SQL validator and immutable revision checks before upgrading. Integrate [Console editing #7180](https://github.com/openclaw/openclaw-enterprise/pull/7180) with both #7178 and #7179. Exercise the complete journey before wider rollout.
+1. [Create Agent #7178](https://github.com/openclaw/openclaw-enterprise/commit/d41494271000c79831532a2ee77ed74ddf1bac0a) added the role picker and first-deployment version check. Initial grants contain only repository and access. If draft creation fails, check for a saved Configuration or model credential before retrying.
+2. Maintainers accepted [RFC #6861](https://github.com/openclaw/openclaw-enterprise/commit/1b28f82683b307b7234723b7832bf90afd84918d). [GitHub App delivery #6864](https://github.com/openclaw/openclaw-enterprise/commit/713ecb6effe69c9e254676e22aec6b00d1514794) added issue creation and Namespace limits. Before upgrading, remove retired settings, [review permissions and limits](../../docs/reference/repository-credentials/access-levels.md#cut-over-existing-registrations) and plan redeployment.
+3. Follow-ups cover the [Namespace preview #7165](https://github.com/openclaw/openclaw-enterprise/pull/7165), [saved Agent limits #7179](https://github.com/openclaw/openclaw-enterprise/pull/7179) and [Console editing #7180](https://github.com/openclaw/openclaw-enterprise/pull/7180). Check saved limits in PostgreSQL and the immutable revision. Verify the deployed workflow before wider rollout.
 
 ## Verification
 
@@ -33,6 +33,8 @@ Repeat these checks on builds with `apiLimits`. Use a controlled origin to count
 
 ## Delivery record
 
+The merges above establish source delivery. Installed checks with `apiLimits`, the upgrade sequence and live GitHub verification remain open.
+
 [#6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) reported 239 focused tests and 18 installed checks across three runs at `0a01f129` and `aeb2a54e`. They used the earlier action lists, a simulated issuer and a controlled GitHub origin. Results covered mixed grants, peer repositories, downgrade, renewal, Git-only access, deployment refusal and the read-only token case (parts of AC-1–AC-3 and AC-5–AC-7).
 
 The controlled origin linked both parents in AC-4. Live effects remain unknown. [#7178](https://github.com/openclaw/openclaw-enterprise/pull/7178) exercised installed Git access. These results do not verify `apiLimits` or the complete AC-8 workflow.
@@ -43,3 +45,4 @@ The controlled origin linked both parents in AC-4. Live effects remain unknown. 
 
 - 2026-11-23 16:08 PST — Linked the delivery dependencies and separated controlled results from live verification at `09c89c243`.
 - 2026-11-23 18:23 PST — Replaced action lists with resource limits and revised verification from `271212578`.
+- 2026-11-23 18:49 PST — Recorded acceptance and the implementation on main at `713ecb6ef`.
