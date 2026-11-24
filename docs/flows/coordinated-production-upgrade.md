@@ -82,17 +82,17 @@ graph TD
 
 ### 1. Prepare the candidate
 
-`installationUpgradeCommand` runs `scripts/upgrade-production:main`. Status
-compares local markers. Plan validates profile, images and checkout HEAD.
+`installationUpgradeCommand` runs `scripts/upgrade-production:main`. Plan checks profile, images and HEAD.
 `profile_input` opens profile and receipt through one directory descriptor.
 `published_image_pair` checks package, digest, source, tag, run and attempt.
 Operators authenticate the receipt. `original_image_pair` reads journal-bound
 digests for resume and migration apply. Apply and resume recheck approval,
 bound inputs and HTTPS trust.
 
-Both entrypoints refuse active kubectl preferences. Snapshots disable command
-defaults and refuse selected exec or `auth-provider` credentials. Profiled
-recovery rechecks the target, CA and parameters under lock.
+Both entrypoints refuse active kubectl preferences. Exec plugins require an
+approved environment that already disables preferences. Private snapshots
+refuse built-in `auth-provider` entries. Profiled recovery rechecks the target,
+CA and parameters under lock.
 
 Before `prepare_upgrade`, refuse alternate Helm stores,
 [endpoint and TLS overrides](../guides/deploy/production-upgrade.md),
@@ -130,14 +130,14 @@ reads and records revision and Driver roles.
 
 Repository credentials require immutable images and common node architecture.
 `upgrade-image-identity.py:read_platform` verifies OCI hashes (2 MiB per blob,
-32 MiB total). The repository probe runs before preparation and resume. Its
-negative control requires an absent socket and confirmed clean broker exit.
+32 MiB total). The probe runs before preparation and resume. Its negative
+control requires an absent socket and confirmed nonzero broker exit
+without OOM or daemon error.
 
-For immutable switches, `prepare_upgrade` validates both Secrets, unrelated
-data and candidate YAML. Evidence binds both snapshots. Stage a successor
-using `--candidate-values` when immutable data changes. Prepared attempts keep
-their recorded Secret. Denied mutable Secret update reviews block. Inconclusive
-reviews warn.
+For immutable switches, `prepare_upgrade` checks Secrets, unrelated data
+and candidate YAML. Evidence binds snapshots. Stage a successor with
+`--candidate-values` for immutable data changes. Prepared attempts keep their
+Secret. Denied mutable Secret update reviews block. Inconclusive reviews warn.
 
 `preflight_startup` previews Certificates before Jobs. The 45-second request
 covers the webhook's 30-second limit and response time. Admission refusal

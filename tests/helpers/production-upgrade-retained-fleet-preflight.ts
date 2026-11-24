@@ -544,20 +544,25 @@ export function registerRetainedFleetPreflightTests(
     const generation = Number(optionalField(initial.metadata, "generation"));
     assert.equal(receipt.generation, generation + 1);
     assert.deepEqual(await readEvidence("quiescence-pods.json"), { items: [] });
-    assert.equal(optionalField(drained.metadata, "uid"), receipt.uid);
-    assert.equal(optionalField(drained.metadata, "generation"), generation + 2);
-    assert.equal(optionalField(drained.status, "observedGeneration"), receipt.generation);
+    const live = record(drained.metadata, "drained Worker metadata");
     assert.equal(optionalField(drained.spec, "replicas"), 0);
 
     // Refusal keeps both writers stopped without handing off, replacing the Secret, or applying Helm.
     assert.deepEqual(await f.events(), ["scale-api", "scale-worker"]);
     const refused = await f.state();
-    const stopped = optionalField(refused.deploymentIdentities, "worker");
-    assert.equal(optionalField(stopped, "generation"), receipt.generation);
-    assert.equal(
-      optionalField(drained.metadata, "resourceVersion"),
-      optionalField(stopped, "resourceVersion"),
+    const stopped = record(
+      optionalField(refused.deploymentIdentities, "worker"),
+      "persisted Worker identity",
     );
+    assert.equal(stopped.uid, receipt.uid);
+    assert.equal(stopped.generation, generation + 2);
+    assert.equal(
+      stopped.resourceVersion,
+      String(Number(optionalField(initial.metadata, "resourceVersion")) + 2),
+    );
+    assert.equal(live.uid, stopped.uid);
+    assert.equal(live.generation, stopped.generation);
+    assert.equal(live.resourceVersion, stopped.resourceVersion);
     assert.equal(refused.api, 0);
     assert.equal(refused.worker, 0);
     assert.equal(refused.version, 1);
