@@ -13,25 +13,23 @@ author: freeqaz-openai
 
 ## Summary
 
-Extend RFC-0023 so an administrator can deploy a saved Agent with an external Sandbox and Credential Proxy. Require the pair to prove it can enforce the saved policy and deliver credentials outside the workload. The [Strands proposal](https://github.com/openclaw/openclaw-enterprise/pull/6505) owns Box-specific launch and policy translation. Ship sandbox support independently, then protected OpenAI Responses, then finite GitHub grants.
+Let an administrator deploy a saved Agent through a compatible external Sandbox and Credential Proxy pair. Under RFC-0023, the pair must prove it can enforce the saved policy and keep reusable credentials outside every Agent process. The [Strands proposal](https://github.com/openclaw/openclaw-enterprise/pull/6505) owns Box-specific implementation.
 
 ## Motivation
 
-The [current credential path](../../docs/reference/credential-sources.md#implementation-status) supports first deployment of an explicit OpenAI Responses model through the paired OpenShell Sandbox and Proxy. Credential updates commit through TokenService and notify the Proxy. Runtime qualification and same-Harness rotation remain open.
-
-| Gap exposed by a second provider                                                                                                                                                    | Change in the owning layer                                                                     |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| The [external loader](../../apps/controller/src/composition/driver-packages.ts) requires a legacy proxy even for staged delivery.                                                   | Select the paired delivery capability with OCC TokenService. Keep one lifecycle owner.         |
-| [Admission](../../apps/controller/src/composition/openshell-credential-admission.ts) recognizes OpenShell classes. Model rules require an executable.                               | Check policy support on the selected pair. Require explicit whole-Agent grants for Box.        |
-| [Kubernetes Compute](../../apps/controller/src/drivers/compute/kubernetes/index.ts) knows provider-specific workspace and startup details.                                          | Move those details to Sandbox. Keep enrollment, placement verification and release in Compute. |
-| [Refresh](../../apps/controller/src/composition/token-service.ts) and [retirement](../../apps/controller/src/composition/installation-config.ts) require OpenShell-specific wiring. | Bind both operations to the recorded pair and verified placement.                              |
-| Staged model admission (v8) and native repository admission (v9) cannot serve the same revision.                                                                                    | Version the combined staged policy and retain both readers.                                    |
+| Current dependency                                                                                                                                                       | What a second provider needs                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| [Package loading](../../apps/controller/src/composition/driver-packages.ts) requires legacy serving.                                                                     | Select delivery independently and close one owner.           |
+| [Admission](../../apps/controller/src/composition/openshell-credential-admission.ts) recognizes OpenShell.                                                               | Check the exact policy and subject on the selected pair.     |
+| [Compute](../../apps/controller/src/drivers/compute/kubernetes/index.ts) assumes a provider's workspace and launch model.                                                | Obtain trusted inspection and startup evidence from Sandbox. |
+| [Refresh](../../apps/controller/src/composition/token-service.ts) and [retirement](../../apps/controller/src/composition/installation-config.ts) check concrete classes. | Verify placement and the recorded owner.                     |
+| Staged model (v8) and native Git (v9) exclude each other.                                                                                                                | Reuse RFC-0023’s proposed combined admission.                |
 
 ## Proposal
 
-Retain one installed package and configuration owner for both views. Require `credential_proxy` only when legacy serving is selected. A delivery-only package supplies `sandbox` and `credential_proxy_delivery`. Registration alone cannot authorize deployment. Before queueing deployment, the control plane (OCC) asks the pair to compile the full network and injection policies. Refuse missing capabilities, ambiguous grants or unenforceable routing, subject or presentation rules. A provider name grants no exemption.
+One registration owns the paired `sandbox` and `credential_proxy_delivery` views. Require `credential_proxy` only for profiles that use legacy serving. Sandbox-only deployments need no delivery view. Before queueing deployment, OpenClaw Control Plane (OCC) authorizes both policies and asks the pair to compile the full network and injection rules. Refuse ambiguous or unenforceable rules.
 
-Follow [staged startup](0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md). Compute provisions an idle target through Sandbox. Worker authorizes the deploying actor and Agent and supplies a Source-scoped resolver. Proxy requires fresh, authenticated proof of the target incarnation before using the resolver, installs or attaches the credential and confirms the version on every serving copy. Sandbox reports the applied network policy.
+For staged model delivery, follow [RFC-0023 startup](0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md#amendment-start-a-fresh-harness-at-activation). Compute provisions an idle target through Sandbox. Worker rechecks the deployer’s and Agent’s Source authority and supplies a resolver limited to the admitted Source, its immutable TokenService instance and that configuration call. Proxy authenticates the live target incarnation before resolving material or attaching an owned provider. Attaching an existing provider managed by the same implementation requires ownership and policy proof without material transfer.
 
 ```mermaid
 ---
@@ -63,51 +61,57 @@ flowchart LR
   class W,C gate
 ```
 
-The dashed arrows show proposed activation prerequisites. After both checks, Compute prepares fresh launch inputs with placeholders. Worker rechecks authority before Compute alone authorizes Sandbox to start the Harness on that execution and policy. Stale or unknown results hold startup. Reconcile lost acknowledgments before retrying.
+The dashed arrows show prerequisites for model-only startup. Sandbox confirms the applied network policy and Proxy confirms delivery. Compute prepares fresh launch inputs with placeholders. Worker rechecks authority before Compute alone releases the same target. Compute verifies authenticated Harness and workspace readiness before publishing routes. Stale or unknown results hold startup. Reconcile lost acknowledgments before retrying.
 
-Sandbox prevents bypass. The trusted Proxy authenticates the execution independently of its placeholder and checks the operation and required presentation on each request. Injection adds no network access. For whole-Agent Responses access, any process can use the granted operation, including provider-side tools the key permits. Only the trusted sender adds the key to the provider’s HTTPS request. Keep reusable secrets out of every Agent process, inference input, transcript, tool result and log.
+Keep every reusable credential unreadable to Agent processes and out of inference inputs, transcripts, tool results and logs. Never send GitHub credentials to the model provider. Sandbox blocks direct bypass. New pairs must enforce the full policy. OpenShell’s documented temporary exceptions remain specific to that implementation.
 
-On refresh, [TokenService](0023-egress-proxy-credential-lifecycle/credential-source-ownership.md) commits the version and notifies Proxy. Replace the concrete class check with verified placement. Compute resolves the Source’s Namespace. An absent delivery resource needs no credential and creates nothing. Proxy verifies each target there before resolution and acknowledges delivery only after readback. A failed notification leaves the committed version intact and delivery unconfirmed. On retirement, confirm removal of the exact owner’s copies before completing cleanup. An unavailable or changed owner cannot attest removal.
+- **Hosted OpenAI Responses.** OCC may explicitly authorize whole-Agent access to `POST https://api.openai.com/v1/responses`, separately for network and injection. Any Agent process can use the allowed operation, including provider-side tools the key permits. The trusted Proxy authenticates the execution independently of its placeholder, enforces the HTTPS destination, method, path and required presentation, and adds the key only to the provider request.
+- **Codex OAuth.** Preserve [RFC-0023's exact executable profile](0023-egress-proxy-credential-lifecycle/codex-device-login.md#renewal-and-delivery). Refuse this profile unless the pair can enforce the exact executable and request rules.
+- **Native Git with a staged model.** The [current reader](../../packages/contracts/src/drivers/credential-proxy/index.ts) excludes this combination. Follow [RFC-0023’s proposed admission](0023-egress-proxy-credential-lifecycle/codex-device-login.md#combine-repository-execution-with-staged-model-delivery). One registration supplies Sandbox, native Git proxy and staged delivery. After model delivery, Compute verifies the Git route and original held launcher. Worker commits the active Agent revision under its queue claim before the issuer installs Git material. Worker rechecks the deployer’s and Agent’s model Source authority. Compute releases that same launcher only after the issuer fence and both readiness checks pass. Preserve the existing Repository issuer, expiry and withdrawal rules.
+- **Later shared-token Git.** Follow [RFC-0023's finite grant policy](0023-egress-proxy-credential-lifecycle/github-app-template-policy.md). OCC applies repository ceilings. TokenService issues and renews the shared token. Proxy enforces each Agent’s saved repository, operation, ref and expiry grants. Network rules alone cannot restrict refs. Acknowledge withdrawal only after verifying reduced grants and blocking stale installs. PR creation remains disabled until head and base authorization is qualified. Preserve native Git, prepared-ref and PR-capable modes until equivalent guarantees are proved.
 
-For finite GitHub access, follow [RFC-0023's shared-token policy](0023-egress-proxy-credential-lifecycle/github-app-template-policy.md). OCC applies repository ceilings and saves each Agent's effective repository, operation, ref, and expiry grants. TokenService owns issuance and renewal of the shared installation token. Proxy enforces the grants and expiry locally. Saving an ACL changes desired state. An acknowledged withdrawal blocks new requests, including requests on existing connections, and fences stale installs while peers retain their grants and the shared token remains valid. Shared-token PR creation stays disabled until head and base checks prevent use of an ungranted fork.
+## Source lifecycle
+
+Reuse [RFC-0023's instance and update contract](0023-egress-proxy-credential-lifecycle/token-service-instance-and-updates.md). TokenService commits replacement or renewal before notifying Proxy with the Source identity and optional opaque material version, without material or an Agent revision. Compute verifies Namespace placement. Proxy verifies the existing delivery resource and recorded owner before resolving versioned material. Update an existing resource even when it has no serving copies. Confirm every serving copy before acknowledgment. Confirmed absence succeeds without resolution or creation. Refuse unknown placement or ownership. Report delivery failure separately and retain committed material.
+
+Reuse the [Agent push and Source withdrawal APIs](../../docs/reference/credential-sources.md). OCC records denial before queueing withdrawal. Worker rechecks the requester's authority. Confirm reduced effective policy and exact binding removal, or independently confirm target absence. Withdrawal remains `pending` until confirmed. Stop removes the Agent’s deployment. Preserve peer bindings, retire the last owned copy, and block Source deletion until references and retained delivery copies clear. Only TokenService removes authoritative material. Retry delivery only for eligible, authorized bindings. Replacing a pair or TokenService instance neither transfers ownership nor proves removal.
+
+Dedicated Harness delivery, Console discovery and Gateway startup remain distinct consumers. Gateway startup credentials require a restart after rotation. Keep Credential Gateway and Refresh until device login, discovery and cleanup callers migrate.
 
 ## Interface changes
 
 ### APIs
 
-[Model admission](../../packages/occ/src/agent-deployment-admission.ts) copies a required executable path into the injection rule. Extend saved grants with an explicit whole-Agent subject for pairs unable to identify executables. OCC must authorize and save that scope separately for network access and credential use. Preserve existing executable rules. Refuse mixed or unsupported subjects before provisioning.
+Add an explicit whole-Agent subject to saved grants while retaining executable rules.
 
 ### IAM
 
-No changes. Retain separate network, credential, Source and repository permissions.
+No changes. Authorize network, credential use, Source access and Repository access separately.
 
 ### Database entities
 
-Version saved policies and execution admission for new subjects. Bind delivery records to the pair, target incarnation, policy and credential versions, and cleanup owner. Specify a separate staged version and durable withdrawal generation for combined model and Git grants. Retain old readers, Gateway, Refresh and native Git cleanup until their consumers drain.
+Version saved policies and admission. Preserve existing readers. Record the selected pair, target incarnation, immutable Source owner, policy snapshot, private material version and cleanup owner. Keep material versions distinct from remote resource versions and withdrawal generations.
 
 ### Driver contracts
 
-Expose policy compilation and verified placement through the paired Drivers. [Sandbox](../../packages/contracts/src/drivers/sandbox/index.ts) supplies workspace inspection and staged startup. [Proxy](../../packages/contracts/src/drivers/credential-proxy/index.ts) verifies recipients, reports serving copies and removes delivery from the recorded target. Compute retains enrollment and activation.
+Sandbox owns workspace inspection. Add policy compilation, verified Source placement and retirement. Reuse Proxy `deployProxy`, `configureDeployment`, `getDeploymentStatus`, `removeDeployment` and `notifyCredentialUpdated`, and Sandbox `provisionStagedHarness`, `prepareStagedHarness` and `activateStagedHarness`. Update support is mandatory for a push-capable pair. Compute retains enrollment and activation.
 
 ## Simplifications
 
-Keeping only the bundled pair excludes external implementations. Reuse staged methods and remove shared provider checks. Sandbox-only deployments need no delivery capability.
+[PR #7211](https://github.com/openclaw/openclaw-enterprise/pull/7211) removes the unconditional legacy requirement and the generic factory’s redundant Sandbox path. Delivery-only registrations leave `proxyDriver` unset. Protected admission still checks for OpenShell.
+
+Restricting admission to OpenShell would avoid new adapter checks but exclude other providers. Legacy revision inputs, source control, cleanup and native Git still use the selected legacy view. Once those callers migrate and recorded deployments and cleanup obligations drain, remove the legacy contract and field. [RFC-0023](0023-egress-proxy-credential-lifecycle/worker-credential-configuration.md#amendment-select-native-delivery-independently) then moves `CredentialProxyDriver` from `credential_proxy_delivery` to `credential_proxy`.
 
 ## Acceptance Criteria
 
-- **AC-1** Deploy a saved Agent with an external Sandbox alone. On the installed network, reach the admitted destination. Deny an ungranted destination and direct bypass.
-- **AC-2** Cold-start a saved Agent without restarting Worker. Obtain a fresh hosted Responses reply. Refuse executable rules on an Agent-wide pair before provisioning. Block stale policy or material, replacement targets, plaintext, wrong paths and invalid required placeholders. Check PostgreSQL integration, installed ARM Helm, provider requests and workload scans.
-- **AC-3** Update a running Agent’s Source through the API. Confirm every copy before reporting delivery. Delay an older update and lose an acknowledgment. Verify a late write cannot restore the old version. Retry retirement after an uncertain acknowledgment and confirm unrelated copies survive.
-- **AC-4** Give two Agents different grants on one finite installation token. Test read and push discovery, repository, ref, expiry and renewal. Withdraw one grant while the token remains valid. Deny a fresh push, verify the remote branch is unchanged and confirm peer access and same-session model chat.
+- **AC-1** Deploy a saved Agent with an external Sandbox alone. Reach an admitted destination. Deny an ungranted destination and direct bypass.
+- **AC-2** Cold-start a saved Agent without restarting Worker and obtain a hosted Responses reply. Refuse unsupported executable rules before provisioning. Block stale delivery, replacement targets, plaintext, wrong paths and invalid presentation. Exercise PostgreSQL admission and an ARM Helm installation. Inspect provider requests and scan the workload for credentials.
+- **AC-3** Exercise two projections of one Source, an existing resource with zero consumers, concurrent first use, scheduled renewal without an API request, authorized manual retry, overlapping updates and lost acknowledgments. Confirm all serving copies retain the newest version. Restart with the recorded owner unavailable. Keep retirement pending and preserve peer copies.
+- **AC-4** Give two Agents different finite grants on one valid installation token. Verify read and push discovery, repository and ref restrictions, expiry and renewal. While the token remains valid after verified grant withdrawal, deny a fresh push even on an existing connection, confirm the remote branch is unchanged, and preserve peer access and same-session model chat. Saving an ACL alone cannot confirm enforcement.
+- **AC-5** Follow RFC-0023’s combined deployment checks. Revoke model authority after commit and confirm the launcher stays held. With valid authority, verify Git and a model reply on the same Agent.
 
-## Delivery
+## Delivery and verification
 
-Start with two shared fixes. [Load delivery-only packages](https://github.com/openclaw/openclaw-enterprise/pull/7211) without selecting legacy egress. Close a loaded registration if [API startup](../../apps/controller/src/api-startup.ts) fails before the application takes ownership. Preserve the original error even if cleanup fails.
+[PR #7213](https://github.com/openclaw/openclaw-enterprise/pull/7213) closes a loaded registration if API startup fails before ownership transfers, preserving the original error.
 
-Three independent Strands repairs apply to sandbox-only deployments.
-
-1. [Recheck resource ownership](https://github.com/openclaw/openclaw-enterprise/pull/7208) before adoption. Refuse widened ingress or egress during DNS refresh.
-2. [Report only the pinned Pod as running](https://github.com/openclaw/openclaw-enterprise/pull/7206). Refuse terminal Pods at first pin. Keep uncertain observations unknown.
-3. [Reclaim stalled TLS and readiness sockets](https://github.com/openclaw/openclaw-enterprise/pull/7204) while preserving established sessions.
-
-Qualify sandbox isolation on a supported Box receiver build. Follow with protected Responses and Source lifecycle, then finite Git. Installed acceptance remains open.
+For sandbox-only installations, [#7208](https://github.com/openclaw/openclaw-enterprise/pull/7208) checks ownership and refuses widened network policy. [#7206](https://github.com/openclaw/openclaw-enterprise/pull/7206) reports the pinned Pod's actual state. [#7204](https://github.com/openclaw/openclaw-enterprise/pull/7204) reclaims stalled TLS and readiness sockets. Qualify sandbox isolation before protected Responses and Source lifecycle. Qualify finite Git separately. Installed acceptance remains open.
