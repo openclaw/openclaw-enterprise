@@ -1,20 +1,25 @@
-// @ts-check
-
 import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { asRecord } from "../../packages/utils/src/objects.ts";
+import type { OpenSslRunner } from "./certificates.ts";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.ts";
 
 // Shared by the launcher case and FirstAgentSmoke; callers own resources,
 // subprocess policy, image selection, and cleanup.
-/**
- * @param {{directory: string, caName: string, run: (command: string, args: string[]) => Promise<unknown>, slackStandIn?: boolean}} options
- */
-export async function createModelProviderFiles({ directory, caName, run, slackStandIn = false }) {
+export async function createModelProviderFiles({
+  directory,
+  caName,
+  run,
+  slackStandIn = false,
+}: {
+  directory: string;
+  caName: string;
+  run: OpenSslRunner;
+  slackStandIn?: boolean;
+}): Promise<void> {
   await mkdir(directory, { recursive: true });
-  /** @param {string} name */
-  const file = (name) => join(directory, name);
+  const file = (name: string) => join(directory, name);
   await createModelProbeCertificates({ directory, caName, run, slackStandIn });
   await copyFile(
     new URL("../fixtures/runtime-model-probe-endpoint.mjs", import.meta.url),
@@ -26,8 +31,13 @@ export async function createModelProviderFiles({ directory, caName, run, slackSt
   }
 }
 
-/** @param {{context: string, caPath: string}} options */
-export async function writeModelProviderTrust({ context, caPath }) {
+export async function writeModelProviderTrust({
+  context,
+  caPath,
+}: {
+  context: string;
+  caPath: string;
+}): Promise<void> {
   await mkdir(context, { recursive: true });
   await copyFile(caPath, join(context, "smoke-ca.crt"));
   await writeFile(
@@ -46,17 +56,22 @@ export async function writeModelProviderTrust({ context, caPath }) {
   );
 }
 
-/**
- * @param {{
- *   kubectl: (args: string[], options?: {input?: string, timeout?: number}) => Promise<{stdout: string}>,
- *   waitFor: (description: string, operation: () => Promise<{done: boolean, state: unknown}>,
- *     timeout: number) => Promise<unknown>,
- *   modelAddress: string,
- *   platformNamespace: string,
- *   serverFile: string,
- *   additionalHosts?: readonly string[],
- * }} options
- */
+interface ModelProviderDnsOptions {
+  kubectl: (
+    args: string[],
+    options?: { input?: string; timeout?: number },
+  ) => Promise<{ stdout: string }>;
+  waitFor: (
+    description: string,
+    operation: () => Promise<{ done: boolean; state: unknown }>,
+    timeout: number,
+  ) => Promise<unknown>;
+  modelAddress: string;
+  platformNamespace: string;
+  serverFile: string;
+  additionalHosts?: readonly string[];
+}
+
 export async function configureModelProviderDNS({
   kubectl,
   waitFor,
@@ -64,7 +79,7 @@ export async function configureModelProviderDNS({
   platformNamespace,
   serverFile,
   additionalHosts = [],
-}) {
+}: ModelProviderDnsOptions): Promise<void> {
   // k3s CoreDNS imports *.server files from the optional coredns-custom ConfigMap.
   const configMap = {
     apiVersion: "v1",
@@ -104,9 +119,8 @@ Promise.all([address("api.openai.com"), address("openclaw-enterprise-api")]).the
       if (!Array.isArray(items)) {
         throw new Error("CoreDNS response has no Pod list");
       }
-      /** @type {readonly unknown[]} */
-      const pods = items;
-      const metadata = (/** @type {unknown} */ pod) => {
+      const pods: readonly unknown[] = items;
+      const metadata = (pod: unknown) => {
         const value = asRecord(asRecord(pod)?.metadata);
         if (value === undefined) {
           throw new Error("CoreDNS Pod has no metadata");
@@ -117,8 +131,7 @@ Promise.all([address("api.openai.com"), address("openclaw-enterprise-api")]).the
         return { done: false, state: pods.map((pod) => metadata(pod).name) };
       }
       try {
-        /** @type {unknown} */
-        const result = JSON.parse(
+        const result: unknown = JSON.parse(
           (
             await kubectl(
               [

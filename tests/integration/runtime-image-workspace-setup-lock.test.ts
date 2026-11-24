@@ -10,7 +10,7 @@ import type { AgentRevision, ComputeRevisionContext } from "../../packages/contr
 import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
-} from "../helpers/harness-configuration.mjs";
+} from "../helpers/harness-configuration.ts";
 import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
 import { docker, runDocker } from "../helpers/runtime-image-docker.ts";
 import { image, imageTestOptions, runtimeImageModel } from "../helpers/runtime-image-startup.ts";

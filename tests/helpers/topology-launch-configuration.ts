@@ -6,7 +6,7 @@ import type {
   SecretBindings,
   SecretReference,
 } from "../../packages/contracts/src/index.ts";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.ts";
 
 type NativeTopologyOptions = {
   controlUi?: OpenClawConfigurationDocument;

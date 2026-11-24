@@ -18,7 +18,7 @@ import {
 } from "./bootstrap-installation.mjs";
 import { createFixtureResponse } from "./console-fixture-response.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.ts";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import { databaseUrl } from "./postgres-database.mjs";
 import { createRuntimeLogComputeDriver } from "./runtime-logs.mjs";

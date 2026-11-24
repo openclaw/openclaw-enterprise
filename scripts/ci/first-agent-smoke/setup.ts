@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { configureModelProviderDNS } from "../../../tests/helpers/runtime-model-provider.mjs";
+import { configureModelProviderDNS } from "../../../tests/helpers/runtime-model-provider.ts";
 import {
   minute,
   modelAddress,

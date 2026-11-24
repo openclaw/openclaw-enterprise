@@ -86,7 +86,7 @@ import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.ts";
 import { memberRole } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { restrict } from "../helpers/iam-grants.ts";
 import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";

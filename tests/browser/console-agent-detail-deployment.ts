@@ -17,7 +17,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   AGENT_READ,
   deploymentStatusResponse,

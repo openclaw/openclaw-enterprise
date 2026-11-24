@@ -14,7 +14,7 @@ import {
 } from "../../packages/contracts/src/api/resources.ts";
 import type { AuthorizationRequest } from "../../packages/contracts/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { bindRole, grantRole } from "../helpers/iam-grants.ts";
 import {
   callerDenied,

@@ -19,7 +19,7 @@ import {
   type PluginRevisionState,
 } from "../../packages/contracts/src/index.ts";
 import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 import { waitForResult } from "../helpers/wait-for.ts";
 

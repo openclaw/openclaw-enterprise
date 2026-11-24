@@ -31,7 +31,7 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 import { availablePort } from "../helpers/available-port.ts";
 import { selectComposeSubnet } from "../helpers/compose-network.ts";
 import { browserEnvironment } from "../helpers/compose.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { createOtelLogObservation, OTEL_RESOURCE } from "../helpers/logging-otel-observation.ts";
 import { assertDockerRuntimeOtelSettings } from "../helpers/logging-otel-runtime-settings.ts";
 import {

@@ -9,7 +9,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { ErrorResponse, Meta } from "../../packages/contracts/src/api/common.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { denialsDuring } from "../helpers/console-audit-denials.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { restrict } from "../helpers/iam-grants.ts";
 import {
   GENERIC_DENIAL,

@@ -63,8 +63,8 @@ import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts"
 import { spawnSync } from "node:child_process";
 import { reservedPortArgs, reservePort } from "../helpers/available-port.ts";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
-import { fileCompileCache } from "../helpers/compile-cache.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration as installation,

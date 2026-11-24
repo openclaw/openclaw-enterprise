@@ -88,7 +88,7 @@
     "tests/conformance/native-admin-websocket-relay.test.ts",
     "tests/integration/qa-fixture-credentials-diagnostics.test.ts",
     "tests/integration/qa-fixture-results.test.ts",
-    "tests/integration/qa-fixture-inputs.test.mjs",
+    "tests/integration/qa-fixture-inputs.test.ts",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
     "tests/integration/qa-failure-diagnostics.test.ts",
@@ -237,7 +237,7 @@
       "path": "tests/integration/qa-fixture-results.test.ts"
     },
     {
-      "path": "tests/integration/qa-fixture-inputs.test.mjs"
+      "path": "tests/integration/qa-fixture-inputs.test.ts"
     },
     {
       "path": "tests/integration/compose-network.test.ts"

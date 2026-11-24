@@ -43,7 +43,7 @@ import {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { backendFixtures, createConsoleAppFixture } from "./console-app.mjs";
 import { consoleFixtureClient } from "./console-fixture-client.ts";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.ts";
 import { staticEgressFixture } from "./static-egress.mjs";
 
 const staticEgressResources = Type.Object({

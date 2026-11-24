@@ -12,7 +12,7 @@ import {
   skipperOperationDiagnostic,
 } from "../../scripts/ci/skipper-release.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.ts";
 import {
   assertConnectedResponse,
   assertSecretReference,

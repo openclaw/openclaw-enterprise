@@ -6,7 +6,7 @@ import {
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.ts";
 
 const tenant = {

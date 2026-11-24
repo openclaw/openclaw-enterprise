@@ -9,7 +9,7 @@ import {
   admitLoggingConfiguration,
   type OpenClawConfigurationValue,
 } from "../../packages/contracts/src/index.ts";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.ts";
 import { commandOutput, failureTail, runDocker } from "./runtime-image-docker.ts";
 import {
   listGatewayPlugins,

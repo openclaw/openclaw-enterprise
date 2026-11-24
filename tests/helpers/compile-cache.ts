@@ -12,7 +12,7 @@ export const compileCacheEnvironment = Object.freeze(
 // For a file that starts many Node children with an allowlisted environment: the lane's
 // cache in CI, otherwise a directory the calling file owns until its tests end, so every
 // child after the first reuses compiled code there too. Call it once, at module level.
-export async function fileCompileCache(prefix) {
+export async function fileCompileCache(prefix: string): Promise<string> {
   if (process.env.NODE_COMPILE_CACHE) {
     return process.env.NODE_COMPILE_CACHE;
   }

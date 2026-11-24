@@ -36,7 +36,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { asRecord, type WorkspaceNodeSetupEnvelope } from "../../packages/utils/src/index.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
 import {
   completeSandboxRevision,

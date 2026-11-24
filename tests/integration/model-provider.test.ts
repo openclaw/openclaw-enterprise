@@ -4,7 +4,7 @@ import { exerciseHarnessOverrides } from "../helpers/harness-overrides.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 
 // Real HTTP, IAM, OCC and Compute admission. The Console fixture simulates Namespace and

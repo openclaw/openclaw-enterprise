@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { deferred } from "../helpers/deferred.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 

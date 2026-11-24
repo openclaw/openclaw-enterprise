@@ -20,7 +20,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
 } from "../../packages/occ/src/index.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   ACCEPTED_DEVICE_AUTO_APPROVE,
   INVALID_ALLOW_USERS,

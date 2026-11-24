@@ -6,7 +6,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { apiKeyAuth } from "../helpers/kubernetes-routed-scenarios.mjs";
 import type { DedicatedDeployFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
 import { renderedRecord } from "./kubernetes-workspace-node-delivery-cases.ts";

@@ -12,7 +12,7 @@ import type {
 } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {

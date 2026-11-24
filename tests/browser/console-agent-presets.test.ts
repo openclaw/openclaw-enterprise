@@ -90,7 +90,7 @@ import {
   PLUGIN_CREDENTIALS_REJECTED,
   KUBERNETES_ALLOW_USERS_REFUSAL,
 } from "../helpers/refusal-text.mjs";
-import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
+import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.ts";
 import { restrict } from "../helpers/iam-grants.ts";
 import { within } from "../helpers/wait-for.ts";
 

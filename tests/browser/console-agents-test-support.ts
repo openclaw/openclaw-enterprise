@@ -15,7 +15,7 @@ import defaultCodexPreset from "../../deploy/presets/default-codex.json" with { 
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
-import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
+import { withNativeAdminGateway } from "../helpers/harness-configuration.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { isRecord, nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
 

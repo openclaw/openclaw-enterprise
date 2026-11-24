@@ -49,7 +49,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.t
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { grantRole as grantIAMRole, restrict } from "../helpers/iam-grants.ts";
 import { agentPrincipalDenied } from "../helpers/refusal-text.mjs";
 

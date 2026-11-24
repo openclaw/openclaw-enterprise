@@ -16,7 +16,7 @@ import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composit
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/repository-approval.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 
 interface NamespaceInput {
   namespaceId: string;

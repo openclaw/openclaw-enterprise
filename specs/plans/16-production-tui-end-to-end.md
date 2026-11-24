@@ -48,7 +48,7 @@ and model Secrets, then sends a bodyless deploy request and waits for
 `data.activeRevisionId` to equal the admitted revision. API envelopes are `{data,meta}`.
 Poll with a deadline; stop on HTTP failure or failed/deleting Namespace state.
 
-Use [createHarnessConfiguration](../../tests/helpers/harness-configuration.mjs) for
+Use [createHarnessConfiguration](../../tests/helpers/harness-configuration.ts) for
 native `openai/<model>` / runtime `openclaw`. Set `agents.defaults.skipBootstrap`
 to `true` for the connectivity demo so first-run identity setup does not replace
 the requested test reply. Keep `${OPENCLAW_GATEWAY_TOKEN}`

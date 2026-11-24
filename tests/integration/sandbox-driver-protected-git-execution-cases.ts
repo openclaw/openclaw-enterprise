@@ -28,7 +28,7 @@ import type {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import type { GitWorkspaceInput } from "../fixtures/openshell-git-workspace.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
 import { image, imageTestOptions } from "../helpers/runtime-image-startup.ts";

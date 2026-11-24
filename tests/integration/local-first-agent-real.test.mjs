@@ -12,7 +12,7 @@ import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/firs
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   failNativeProvisioningDeadline,
   nativeProvisioningPath,

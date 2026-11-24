@@ -28,7 +28,7 @@ import {
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { assertApiError } from "../helpers/api-error.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {

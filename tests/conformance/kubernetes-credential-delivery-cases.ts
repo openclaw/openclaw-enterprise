@@ -27,7 +27,7 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   createHarnessConfiguration,
   withNativeAdminGateway,
-} from "../helpers/harness-configuration.mjs";
+} from "../helpers/harness-configuration.ts";
 import { EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 import {
   admitRevisionHarness,

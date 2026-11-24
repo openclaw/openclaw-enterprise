@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { Check } from "typebox/value";
 import { SecretReference } from "../../packages/contracts/src/api/common.ts";
 import { isArray, isRecord, record } from "./egress-observation-values.ts";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.ts";
 
 export {
   takeConnectedControllerBinding,

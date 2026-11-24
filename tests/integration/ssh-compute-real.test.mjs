@@ -12,7 +12,7 @@ import {
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/index.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 
 const requiredNames = [
   "OCC_TEST_SSH_ADDRESS",

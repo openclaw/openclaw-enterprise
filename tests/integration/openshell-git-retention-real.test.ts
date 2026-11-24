@@ -13,7 +13,7 @@ import type {
   OpenShellSandboxCreateRequest,
   OpenShellStoredProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
 import {

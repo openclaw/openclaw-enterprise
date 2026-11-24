@@ -3,7 +3,7 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { composeCleanupCase, composeDevelopmentCase } from "./docker-compute-compose-cases.ts";
 import {
   containerCount,

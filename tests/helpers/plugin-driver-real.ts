@@ -47,7 +47,7 @@ import type {
 import type { PostgresQueryClient } from "../../packages/occ/src/state/postgres-work-queue.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.ts";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import {
   createEnvoyWorkspaceGatewayPlan,

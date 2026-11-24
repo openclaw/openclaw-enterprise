@@ -6,6 +6,7 @@ import { chmod, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "n
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { asRecord } from "../../packages/utils/src/objects.ts";
 import {
   protectedText,
   protectedModelApiKey,
@@ -40,8 +41,8 @@ import { registerQaHttpChatStreamCases } from "./qa-http-chat-stream-cases.ts";
 
 test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   const { createQaAgent } = await import("../helpers/qa-installation.mjs");
-  function fixture(namespaceId, presetNamespaceId = namespaceId) {
-    const calls = [];
+  function fixture(namespaceId: string, presetNamespaceId = namespaceId) {
+    const calls: { method: string; path: string }[] = [];
     const stopped = new Error("stop after Preset lookup");
     return {
       calls,
@@ -51,7 +52,7 @@ test("QA Agent reads the selected Preset in its Namespace", async (t) => {
         defaultNamespace: { id: "ns-default" },
         namespace: { id: namespaceId },
         presets: [{ id: "pre-codex", namespaceId: presetNamespaceId, name: "Standard Codex" }],
-        async api(method, path) {
+        async api(method: string, path: string) {
           calls.push({ method, path });
           throw stopped;
         },
@@ -104,6 +105,7 @@ test("API-key QA injection stays in the consumer and its errors are redacted", a
   const env = { OCC_TEST_QA_MODEL_API_KEY: secret };
   assert.equal(await protectedModelApiKey(env), secret);
   const failure = redactQaError(new Error("provider rejected " + secret));
+  assert.ok(failure instanceof Error);
   assert.equal(failure.message, "provider rejected [REDACTED]");
   await assert.rejects(
     protectedModelApiKey({ OCC_TEST_QA_MODEL_API_KEY: "  " }),
@@ -204,14 +206,22 @@ test(
     assert.ok(!diagnostic.includes(secret));
     const snapshot = await readFile(output, "utf8");
     assert.ok(!snapshot.includes(secret));
-    const report = JSON.parse(snapshot);
+    const report = asRecord(JSON.parse(snapshot));
+    assert.ok(report, "expected a QA report object");
     assert.equal(report.scope, "full");
     assert.equal(report.concurrency, 4);
     assert.deepEqual(report.selection, selection);
-    assert.equal(report.outcomes.length, 20);
-    assert.equal(new Set(report.outcomes.map((row) => row.scenario)).size, 20);
+    assert.ok(Array.isArray(report.outcomes), "expected QA outcomes");
+    const outcomes = report.outcomes.map((value: unknown) => {
+      const row = asRecord(value);
+      assert.ok(row, "expected a QA outcome object");
+      return row;
+    });
+    assert.equal(outcomes.length, 20);
+    assert.equal(new Set(outcomes.map((row) => row.scenario)).size, 20);
     for (let i = 0; i < 20; i += 1) {
-      const row = report.outcomes.find((value) => value.stage === `stage-${i}`);
+      const row = outcomes.find((value) => value.stage === `stage-${i}`);
+      assert.ok(row, `expected outcome for stage-${i}`);
       assert.equal(row.cell, "compose/Codex");
       assert.equal(row.scenario, `scenario-${i}`);
       let expectedOutcome = "passed";
@@ -221,19 +231,23 @@ test(
         expectedOutcome = "failed";
       }
       assert.equal(row.outcome, expectedOutcome);
+      assert.ok(typeof row.startedAt === "string");
       assert.ok(Number.isFinite(Date.parse(row.startedAt)));
+      assert.ok(typeof row.durationMs === "number");
       assert.ok(Number.isInteger(row.durationMs) && row.durationMs >= 0);
     }
-    assert.match(report.outcomes.find((row) => row.stage === "stage-2").reason, /blocked by/);
+    const blocked = outcomes.find((row) => row.stage === "stage-2");
+    assert.ok(blocked && typeof blocked.reason === "string");
+    assert.match(blocked.reason, /blocked by/);
     assert.equal(
-      report.outcomes.find((row) => row.stage === "stage-7").reason,
+      outcomes.find((row) => row.stage === "stage-7")?.reason,
       "expected assertion failure for [REDACTED]",
     );
     assert.equal(
-      report.outcomes.find((row) => row.stage === "stage-11").reason,
+      outcomes.find((row) => row.stage === "stage-11")?.reason,
       "The operation was aborted due to timeout",
     );
-    assert.equal(report.outcomes.find((row) => row.stage === "stage-13").reason, "undefined");
+    assert.equal(outcomes.find((row) => row.stage === "stage-13")?.reason, "undefined");
     assert.equal((await stat(output)).mode & 0o777, 0o600);
     assert.deepEqual(await readdir(evidenceDirectory), ["matrix.json"]);
 
@@ -246,7 +260,7 @@ test(
     assert.equal(result.status, 0, result.stderr);
     const markdown = await readFile(summary, "utf8");
     assert.match(markdown, /Scope: full/);
-    const expectedRows = report.outcomes.map(
+    const expectedRows = outcomes.map(
       ({ cell, scenario, stage, outcome }) => `| ${cell} | ${scenario} | ${stage} | ${outcome} |`,
     );
     assert.deepEqual(
@@ -271,7 +285,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
       { cell: "kubernetes/Codex", scenarios: ["console-secrets"] },
     ],
   );
-  assert.deepEqual(selected.cells[1].unselected, [
+  assert.deepEqual(selected.cells[1]?.unselected, [
     "http-chat",
     "codex-search-config",
     "agent-audit",
@@ -279,7 +293,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     "git-push-denied",
     "slack",
   ]);
-  assert.deepEqual(selected.cells[0].notApplicable, [
+  assert.deepEqual(selected.cells[0]?.notApplicable, [
     "codex-search-config",
     "agent-audit",
     "git-write",
@@ -297,7 +311,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     /not applicable/,
   );
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, ["http-chat", "model-ui", "console-secrets"]);
+  assert.deepEqual(openclaw.cells[0]?.scenarios, ["http-chat", "model-ui", "console-secrets"]);
   assert.equal(openclaw.repository, false);
   assert.ok(!openclaw.requiredEnv.some((name) => /REPOSITORY|GITHUB_OBSERVER/.test(name)));
   assert.throws(
@@ -529,9 +543,13 @@ test("approval review evidence tells a reviewer error from a deny judgement", as
 
 test("a failed reviewed read names the review outcome before the evidence", async () => {
   const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
-  for (const [reviews, errored, reason] of [
-    [[failedClosed], true, `reviewer-error: ${failedClosed.rationale}`],
-    [[judgedDeny], false, "judged-deny (risk: high, authorization: low)"],
+  for (const { reviews, errored, reason } of [
+    { reviews: [failedClosed], errored: true, reason: `reviewer-error: ${failedClosed.rationale}` },
+    {
+      reviews: [judgedDeny],
+      errored: false,
+      reason: "judged-deny (risk: high, authorization: low)",
+    },
   ]) {
     await runQaFailedReviewedReadCase(createNativePluginAssertions, reviews, errored, reason);
   }

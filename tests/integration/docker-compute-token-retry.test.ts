@@ -17,7 +17,7 @@ import {
   type OpenClawConfigurationDocument,
 } from "../../packages/contracts/src/index.ts";
 import { setEnvironment } from "../helpers/environment.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import {
   assertGatewayCanReachAgent,
   assertVolumeRemoved,

@@ -18,7 +18,7 @@ import {
   type ControllerOptions,
 } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 export const accessToken = "at-plugin-discovery-private-fixture";

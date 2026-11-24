@@ -21,7 +21,7 @@ import type { InMemoryPlatformState, OpenClawController } from "../../packages/o
 import { assertApiError } from "../helpers/api-error.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { CODEX_PLACEMENT_REFUSAL, EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";

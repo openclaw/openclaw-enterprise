@@ -5,7 +5,7 @@ import { waitFor, within } from "./wait-for.ts";
 import { Pool } from "pg";
 import { buffer } from "node:stream/consumers";
 import { setTimeout as delay } from "node:timers/promises";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { createHarnessConfiguration } from "./harness-configuration.ts";
 import {
   signComputeExecutionRelease,
   harnessEgressEnrollment,

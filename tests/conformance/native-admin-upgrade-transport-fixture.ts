@@ -16,7 +16,7 @@ import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-
 import type { AuditEventCreationInput } from "../../packages/audit/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { selfSigned } from "../helpers/certificates.ts";
-import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
+import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.ts";
 import type {
   Selection,
   UpgradeAuditTransport,

@@ -24,7 +24,7 @@ import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
 } from "../helpers/development.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.ts";
 import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
 import {
   createBackendWorkerDrivers,
