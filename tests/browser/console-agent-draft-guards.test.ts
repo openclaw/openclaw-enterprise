@@ -1414,8 +1414,11 @@ test("Create Agent requests ordinary provisioning when eligible GitHub repositor
   }
 });
 
-test("a Namespace member enrolls a Gateway model credential before saving a deployable draft", async (t) => {
-  const { fixture, namespaceId, secret } = await repositoryPolicyConsole(t, true);
+async function verifyMemberDraftWithDefaultSecret(t: TestContext, withProfile: boolean) {
+  const { fixture, controller, namespaceId, secret, tooling } = await repositoryPolicyConsole(
+    t,
+    true,
+  );
   const member = await fixture.createNamespaceMember("gateway-member", namespaceId, [
     ...MEMBER_WRITE,
     ["create", "credential_source"],
@@ -1453,6 +1456,10 @@ test("a Namespace member enrolls a Gateway model credential before saving a depl
   );
 
   await page.getByLabel("Agent name", { exact: true }).fill("Member model Agent");
+  if (withProfile) {
+    await repositoryCheckbox(page, tooling.repository).check();
+  }
+  assert.equal(await page.getByLabel("Credential storage").inputValue(), "secret");
   await selectSecret(page, "API key Secret", secret);
   const model = page.getByLabel("Model ID", { exact: true });
   if (!(await model.isVisible())) {
@@ -1468,7 +1475,8 @@ test("a Namespace member enrolls a Gateway model credential before saving a depl
   assert.equal((await preflight).status(), 204);
   const draft = await created;
   assert.equal(draft.status(), 201, await draft.text());
-  const agent = agentFields(record(await draft.json()).data);
+  const saved = record(record(await draft.json()).data);
+  const agent = agentFields(saved);
   await page.waitForURL(/\/console\/agents\/[^/?]+\?revision=draft/);
 
   // A bare Secret would fail the earlier Gateway admission check. The fixture's
@@ -1492,6 +1500,9 @@ test("a Namespace member enrolls a Gateway model credential before saving a depl
   assert.equal(source.ownerCapability, "credential_gateway");
   assert.deepEqual(source.secrets, { api_key: secret.ref });
   assert.deepEqual(agent.harnessAuth, { method: "credential_source", sourceId });
+  assert.deepEqual(saved.credentialSources, [{ sourceId }]);
+  const bindings = withProfile ? [{ repositoryRef: "tooling", profile: "github-repository" }] : [];
+  assert.deepEqual(record(saved.repositoryAccess).repositories, bindings);
   assert.equal(
     record(record(await checkpoint.json()).error).message,
     agentPrincipalDenied(
@@ -1526,7 +1537,30 @@ test("a Namespace member enrolls a Gateway model credential before saving a depl
   assert.equal(grant.status, 201, JSON.stringify(grant.body));
   const admitted = await deployDraft();
   assert.equal(admitted.status(), 202, await admitted.text());
-});
+  const revisionId = resource(record(await admitted.json()).data).id;
+  const revision = await controller.transact((unit) =>
+    unit.revisions.findRevision(namespaceId, agent.id, revisionId),
+  );
+  assert.ok(revision);
+  assert.equal(revision.harnessAuth.method, "credential_source");
+  assert.equal(revision.harnessAuth.sourceId, sourceId);
+  assert.equal(
+    revision.harnessAuth.credentialGatewayId,
+    controller.selectedDriver("credential_gateway").id,
+  );
+  if (withProfile) {
+    assert.deepEqual(revision.egressPlan?.harnessCredentialSource, revision.harnessAuth);
+    assert.equal(revision.repositoryCredentials?.bindings[0]?.repositoryRef, "tooling");
+  } else {
+    assert.equal(revision.repositoryCredentials, undefined);
+  }
+}
+
+test("a Namespace member uses default Secret storage to deploy without Git", (t) =>
+  verifyMemberDraftWithDefaultSecret(t, false));
+
+test("a Namespace member uses default Secret storage to deploy with a Git access profile", (t) =>
+  verifyMemberDraftWithDefaultSecret(t, true));
 
 test("Create Agent saves GitHub grants before the first deployment and rolls back a refused draft", async (t) => {
   const { fixture, controller, namespaceId, app, tooling, grants, page, requests, agents, mode } =

@@ -1,8 +1,9 @@
 # Inspect model configuration and save a Credential Source
 
-Open **Pages/Create Agent → Codex with model Credential Source**. The story fills a
-dummy OpenAI API key in a masked field and leaves **Credential storage** set to
-**Credential Source**. Select **Create Agent**. Confirm that the request log shows
+New Agent forms default to **Namespace Secret** under **Credential storage**.
+Open **Pages/Create Agent → Codex with model Credential Source**. The story explicitly
+selects **Credential Source** and fills a dummy OpenAI API key in a masked field.
+Select **Create Agent**. Confirm that the request log shows
 `POST …/credential-sources` before the Agent draft save, with no `POST …/secrets`.
 The draft uses the returned Credential Source ID. The response does not contain
 the entered key. Deploying this draft is a separate action.
@@ -13,8 +14,8 @@ Also inspect these changed states:
 - **Credential Source outcome unknown** shows a simulated TokenService outage and clears the entered key.
 - **Credential Source creation pending** shows the submitting state while the request waits.
 
-For guided provisioning with the existing Secret path, select **Namespace Secret**
-under **Credential storage** and choose a Secret. **Pages/Settings → Shared model
+For guided provisioning with the existing Secret path, keep **Namespace Secret**
+selected and choose a Secret. **Pages/Settings → Shared model
 provider** remains a read-only view of Installation startup configuration; Source
 creation does not change that configuration.
 
