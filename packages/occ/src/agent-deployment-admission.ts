@@ -168,7 +168,7 @@ export interface DeploymentAdmissionDependencies {
   >;
   readonly harnessAuth: Pick<
     ReturnType<typeof createHarnessAuthOperations>,
-    "assertCredentialGatewayDelivery" | "admitHarnessAuth" | "requireCredentialSourceDrivers"
+    "admitHarnessAuth" | "requireCredentialSourceDrivers" | "requireModelSource"
   >;
   readonly repositoryPolicy: Pick<
     ReturnType<typeof createRepositoryPolicyOperations>,
@@ -988,7 +988,6 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         throw new ScopeViolationError("The persisted Agent Harness execution mode is invalid.");
       }
       requireSandboxExecutionMode(sandbox, lockedAgent.executionMode);
-      dependencies.harnessAuth.assertCredentialGatewayDelivery(lockedAgent.harnessAuth);
       const { metadata, configuration, configurationDriver } = await admitConfiguration(
         state,
         principalId,
@@ -1065,7 +1064,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         storedSecretBindings(metadata.secretBindings),
         selectedPlugins,
       );
-      const [harnessAuth, credentialSourceType] = await dependencies.harnessAuth.admitHarnessAuth(
+      const harnessAuth = await dependencies.harnessAuth.admitHarnessAuth(
         state,
         principalId,
         lockedAgent,
@@ -1093,6 +1092,12 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
             modelPreset,
           ) ?? {},
       });
+      dependencies.harnessAuth.requireModelSource(
+        compute,
+        revisionHarness,
+        harnessAuth,
+        configuration.values,
+      );
       const stagedModel = prepareModelCredentialDeployment(
         modelSource,
         presetId,
@@ -1182,7 +1187,6 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         harnessAuth,
         admittedConfiguration,
         configuration.secretBindings,
-        credentialSourceType,
       );
       // Every preparation attempt would refuse such a gateway setting and the deployment would
       // fail as an unavailable dependency, so refuse it here with the 409 provisioning answers.
@@ -1234,37 +1238,35 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       );
       let repositoryGrants = policy?.repositoryNetworkPolicy;
       let stagedRepositorySource: Readonly<GitHubAppInstallationCredentialSource> | undefined;
-      if (
-        repositorySources.length > 0 ||
-        (stagedCredential && lockedAgent.repositoryBindings?.length)
-      ) {
-        const selected = repositorySources[0];
-        const source =
-          selected &&
-          (await state.credentialSources.lockCredentialSource(namespace.id, selected.sourceId));
+      if (repository) {
+        const source = await state.credentialSources.lockCredentialSource(
+          namespace.id,
+          repository.sourceId,
+        );
         if (
           repositorySources.length !== 1 ||
+          repositorySources[0]?.sourceId !== repository.sourceId ||
           !stagedModel ||
-          !source ||
           !isManagedTokenServiceSource(source) ||
           source.type !== "github-app-installation" ||
           source.state !== "ready" ||
-          source.tokenServiceInstanceId !== stagedModel.source.tokenServiceInstanceId ||
-          (repository === undefined && !repositoryGrants?.length)
+          source.tokenServiceInstanceId !== stagedModel.source.tokenServiceInstanceId
         ) {
           throw new ResourceStateConflictError(
-            "Staged Repository delivery requires one ready GitHub App Source and a saved Repository network policy.",
+            "GitHub repository access requires a ready Source owned by the Agent's TokenService.",
+          );
+        }
+        repositoryGrants = repository.resolveGrants(source);
+        if (!repositoryGrants?.length) {
+          throw new ResourceStateConflictError(
+            "The approved GitHub installation does not cover the saved repository access. Review the selected App and repositories.",
           );
         }
         stagedRepositorySource = source;
-        if (repository) {
-          repositoryGrants = repository.resolveGrants(source);
-          if (!repositoryGrants?.length) {
-            throw new ResourceStateConflictError(
-              "The approved GitHub installation does not cover the saved repository access. Review the selected App and repositories.",
-            );
-          }
-        }
+      } else if (repositorySources.length > 0) {
+        throw new ResourceStateConflictError(
+          "Configure GitHub access on the Agent to deploy with a GitHub App Source.",
+        );
       }
       const admitRepository = () =>
         dependencies.repositoryPolicy.admitRepositoryCredentials(
@@ -1373,7 +1375,6 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           admittedConfiguration,
           sandbox?.id,
           repositoryCredentials,
-          harnessAuth,
           revisionHarness.configuration,
           policy?.repositoryNetworkPolicy === undefined ? undefined : admittedRepository?.nativeGit,
         );

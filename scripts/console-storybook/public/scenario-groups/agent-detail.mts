@@ -8,7 +8,6 @@ import type {
   PluginApprovers,
   PluginDesiredState,
   RepositoryAccess,
-  RepositoryBindingSelection,
   RepositoryOption,
   RuntimeFailureCause,
   SecretDetailResponse,
@@ -88,9 +87,7 @@ type AgentDetailScenario = {
   harnessId?: "openclaw";
   credentialSources?: AgentCredentialSourceBinding[];
   configurationChangedElsewhere?: { values: OpenClawConfigurationDocument };
-  policyState?:
-    "repositoryPermissions" | "repositoryPermissionsLimited" | "stagedRepositoryPermissions";
-  repositoryBindings?: RepositoryBindingSelection[];
+  policyState?: "repositoryPermissions" | "repositoryPermissionsLimited";
   repositoryAccess?: RepositoryAccess;
   repositoryOptions?: RepositoryOption[];
   repositoryNotConfigured?: true;
@@ -170,7 +167,6 @@ export function createAgentDetailScenarios({
       defaultProfile: "git-full",
       repositories: [{ repositoryRef: "application", profile: "github-repository" }],
     },
-    repositoryBindings: [{ repositoryRef: "application", profile: "github-repository" }],
     repositoryOptions: [
       {
         repositoryRef: "application",
@@ -374,6 +370,20 @@ export function createAgentDetailScenarios({
         steps: [
           "Tab to Save plugin selections and Discard changes. Each takes focus, looks unavailable and is described by No plugin changes to save.; Enter or Space does nothing. Edit the JSON: both become live.",
         ],
+      },
+      pluginsApiKeySource: {
+        group: "Pages/Agent detail",
+        name: "Hosted Apps unavailable with an API key Source",
+        path: `${draft}&tab=plugins`,
+        deployed: true,
+        auth: "api-source",
+        pluginCapabilities,
+        actions: [click("Configure plugins")],
+        description: "Codex shows why the saved model API key cannot load hosted Apps.",
+        steps: [
+          "Read the API key explanation in Plugins. Open Configure plugins and verify that Load plugins is unavailable.",
+        ],
+        gap: "This simulated Console state does not contact the hosted Apps catalog.",
       },
     } satisfies Record<string, AgentDetailScenario>,
 
@@ -1890,26 +1900,18 @@ export function createAgentDetailScenarios({
         group: "Pages/Agent detail",
         name: "Repository access in new version",
         path: draft,
-        repositoryBindings: [
-          { repositoryRef: "application", profile: "git-write" },
-          { repositoryRef: "handbook", profile: "git-read" },
-        ],
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [
+            { repositoryRef: "application", profile: "git-write" },
+            { repositoryRef: "handbook", profile: "git-read" },
+          ],
+        },
         description:
           "The new version draft names Contributor and Read-only access and shows write limits.",
       },
       repositoryPermissionsDraft,
       repositoryPermissions,
-      stagedRepositoryDenyAll: {
-        ...repositoryPermissions,
-        name: "Withdraw Git grants and keep model rules",
-        path: `${draft}&tab=repositories`,
-        policyState: "stagedRepositoryPermissions",
-        description: "The saved TokenService Git policy includes a Codex model network rule.",
-        steps: [
-          "Choose Manage permissions, then Withdraw saved repository grants.",
-          "Save deny-all policy. In Policy denials, verify that the saved model rule for chatgpt.com remains.",
-        ],
-      },
       repositoryPermissionsLimited: {
         ...repositoryPermissions,
         name: "Block unlisted API resources",
@@ -1953,10 +1955,6 @@ export function createAgentDetailScenarios({
             { repositoryRef: "handbook", profile: "git-read" },
           ],
         },
-        repositoryBindings: [
-          { repositoryRef: "application", profile: "git-full" },
-          { repositoryRef: "handbook", profile: "git-read" },
-        ],
         description:
           "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; earlier Agent revisions retain their prior access.",
         steps: [
@@ -1973,7 +1971,6 @@ export function createAgentDetailScenarios({
           defaultProfile: "git-full",
           repositories: [{ repositoryRef: "application" }],
         },
-        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
         // Without repository settings, discovery answers 200 with no options and meta.notConfigured.
         repositoryOptions: [],
         repositoryNotConfigured: true,
@@ -2003,7 +2000,6 @@ export function createAgentDetailScenarios({
           defaultProfile: "git-full",
           repositories: [{ repositoryRef: "application" }],
         },
-        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
         rules: [
           {
             path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/repository-options",
@@ -2022,7 +2018,6 @@ export function createAgentDetailScenarios({
           defaultProfile: "git-full",
           repositories: [{ repositoryRef: "application" }],
         },
-        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
         readOnlyPermissionSummary: true,
         description:
           "The permission answer denies Agent update, so the saved repository access shows as a read-only summary with no editor, and the note names the grant to ask for. The page does not read the repository choices, which need Agent update.",
@@ -2036,7 +2031,6 @@ export function createAgentDetailScenarios({
           defaultProfile: "git-full",
           repositories: [{ repositoryRef: "application" }],
         },
-        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
         rules: [
           {
             suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
@@ -2058,7 +2052,10 @@ export function createAgentDetailScenarios({
         name: "Repository access in current version",
         path: revision,
         deployed: true,
-        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: "application", profile: "git-full" }],
+        },
         description:
           "The admitted snapshot names Contributor access and retains the write-limit notice. This fixture does not establish provider authorization or runtime execution.",
       },
@@ -4091,7 +4088,6 @@ export function createAgentDetailRepositoryScenarios(
     name: "Select repository collaborator from an empty set",
     repositoryOptions: collaboratorRepositoryOptions,
     repositoryAccess: { defaultProfile: "git-full", repositories: [] },
-    repositoryBindings: [],
     description:
       "An empty selection offers the approved collaborator repository. API-only access is not a Git repository choice; the existing Contributor default stays unchanged.",
     steps: [
@@ -4108,7 +4104,6 @@ export function createAgentDetailRepositoryScenarios(
       defaultProfile: "git-full",
       repositories: [{ repositoryRef: "application" }],
     },
-    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
     rules: [
       { suffix: "/repository-options", delayMs: 3000 },
       {

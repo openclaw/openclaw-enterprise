@@ -42,8 +42,7 @@ test(
     let readsBeforeAdmission: number | undefined;
     const repository = { id: 7311, full_name: "fixture/credential-free" };
     const { f, pool, proxy, receipt, assertLostDispatch } = await commitLossScenario(t, {
-      // Gateway and Proxy IDs are in distinct capability namespaces and may legally coincide.
-      proxyDriverId: "openshell-credentials",
+      protectedSourceOnly: true,
       preparedGitHub: new Proxy(
         {},
         {
@@ -55,8 +54,6 @@ test(
       ),
       async admitSource({ app, agent, namespace, origin, countSecretReads }) {
         readsBeforeAdmission = countSecretReads();
-        // Recreate a Source admitted by the former Proxy enrollment owner. The current public
-        // Source API cannot create this type; the rest of this case proves historical serving.
         const source = await app.controller.createCredentialSource(app.principal.id, {
           namespaceId: namespace.id,
           name: "identity-only",
@@ -85,10 +82,10 @@ test(
         {
           sourceId: f.source.id,
           sourceType: f.source.type,
-          credentialProxyId: f.controller.selectedDriver("credential_gateway").id,
+          credentialProxyId: f.controller.selectedDriver("credential_proxy").id,
         },
       ],
-      "a new protected source names the Proxy even when the Gateway has the same ID",
+      "a protected Source names its selected Proxy",
     );
     const capture = (changed?: CaptureChanges) => captureMetadata(f, changed);
     const resolve = async (captured: Capture) => {

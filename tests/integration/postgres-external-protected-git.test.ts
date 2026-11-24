@@ -819,7 +819,6 @@ function externalGitJourney(
             id: apiDrivers.computeDriver.id,
             implementation: apiDrivers.computeDriver.implementation,
             protectedDriver: apiOwner,
-            credentialGatewayDriver: modelGateway,
             // As production composition selects it; this test never enrolls a node.
             nodeEnrollment: createGatewayNodeEnrollment(async () => "unused"),
           },
@@ -1168,7 +1167,10 @@ function externalGitJourney(
         name: "Foreign policy",
         executionMode: "dedicated",
         harnessAuth: { method: "runtime" },
-        repositoryBindings: [{ repositoryRef, profile: "github-installation" }],
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef, profile: "github-installation" }],
+        },
       });
       assert.equal(denied.statusCode, 400, denied.body);
       assert.equal(denied.json().error.code, "INVALID_REQUEST");
@@ -1191,12 +1193,15 @@ function externalGitJourney(
         ? { method: "credential_source", sourceId: modelSourceId }
         : { method: "runtime" },
       ...(conversation && { credentialSources: [{ sourceId: modelSourceId }] }),
-      repositoryBindings: [
-        {
-          repositoryRef,
-          profile: broad ? "github-installation" : "git-write",
-        },
-      ],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [
+          {
+            repositoryRef,
+            profile: broad ? "github-installation" : "git-write",
+          },
+        ],
+      },
     } satisfies Parameters<typeof controller.createAgent>[1];
     const createdAgent = authenticated
       ? await (async () => {
@@ -2899,7 +2904,7 @@ function externalGitJourney(
         withdrawalStarted = true;
         await controller.updateAgent(
           who,
-          { ...key, repositoryBindings: [] },
+          { ...key, repositoryAccess: { defaultProfile: "git-write", repositories: [] } },
           resolveApprovedHarness,
         );
         assert.equal(await new f.PostgresWorkQueue(pool).repositoryExpiryState(ref), "removal");
@@ -3134,7 +3139,7 @@ function externalGitJourney(
         assert.ok(attempts.every((attempt) => attempt.deadlineWallMs > Date.now()));
         await controller.updateAgent(
           who,
-          { ...key, repositoryBindings: [] },
+          { ...key, repositoryAccess: { defaultProfile: "git-write", repositories: [] } },
           resolveApprovedHarness,
         );
         const queue = new f.PostgresWorkQueue(pool);

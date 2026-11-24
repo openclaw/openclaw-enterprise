@@ -849,7 +849,6 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof RepositoryBindingSelectionError) {
-    // Either repositoryBindings or repositoryAccess can carry the selections, so no detail.
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof SecretBindingValidationError) {

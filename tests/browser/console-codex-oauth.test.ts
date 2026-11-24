@@ -4,10 +4,6 @@ import test, { type TestContext } from "node:test";
 import type { APIResponse, Page, Route } from "playwright";
 import type { Agent, HarnessAuthBinding, Namespace } from "@openclaw-enterprise/contracts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import type { OpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import {
   controlDeviceIssuer,
@@ -371,76 +367,6 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.deepEqual(edited.harnessAuth, originalAuth);
   assert.deepEqual(edited.plugins, {});
 
-  // A separate ready source already belongs to this Agent for another purpose.
-  // Only the external service is simulated; the replacement must preserve its real API binding.
-  const providers = new Map<
-    string,
-    Awaited<ReturnType<OpenShellGatewayClient["createProvider"]>>
-  >();
-  const backend = createOpenShellBackend(
-    {
-      id: "openshell-browser",
-      type: "openshell",
-      configuration: { endpoint: "http://127.0.0.1:9" },
-      drivers: {
-        sandbox: "sandbox-openshell-local",
-        credential_gateway: "credential-gateway-openshell",
-      },
-    },
-    {
-      gatewayClient: completeOpenShellGatewayClient({
-        async getProvider(workspace, name) {
-          return providers.get(`${workspace}/${name}`);
-        },
-        async getProviderProfile() {
-          return undefined;
-        },
-        async importProviderProfile() {},
-        async createProvider(request) {
-          const provider = {
-            id: crypto.randomUUID(),
-            workspace: request.workspace,
-            name: request.name,
-            type: request.type,
-            labels: request.labels,
-            config: request.config ?? {},
-            resourceVersion: "1",
-          };
-          providers.set(`${request.workspace}/${request.name}`, provider);
-          return provider;
-        },
-      }),
-    },
-  );
-  t.after(() => backend.client.close());
-  const gateway = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/usr/local/bin/openclaw"] },
-    { backend },
-  );
-  fixture.controller.registerDriver(gateway);
-  fixture.controller.selectDriver("credential_gateway", gateway.id);
-  const input = await fixture.createSecret(
-    namespace.id,
-    "Other model input",
-    "synthetic-other-model-key",
-  );
-  const otherSource = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/credential-sources`,
-    {
-      body: { name: "Other credential source", type: "openai", secrets: { api_key: input.ref } },
-    },
-  );
-  assert.equal(otherSource.status, 201, JSON.stringify(otherSource.body));
-  const otherSourceId = jsonString(jsonObject(otherSource.data).id);
-  const withOtherSource = await fixture.request("PATCH", agentPath, {
-    body: {
-      configurationId: edited.configurationId,
-      credentialSources: [{ sourceId: originalAuth.sourceId }, { sourceId: otherSourceId }],
-    },
-  });
-  assert.equal(withOtherSource.status, 200, JSON.stringify(withOtherSource.body));
-
   // Reconnection is a separate, explicit authentication save with a newly completed login.
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "credential_source");
@@ -466,10 +392,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const replaced = sourceAuth(replacedAgent.harnessAuth);
   assert.equal(replaced.method, "credential_source");
   assert.notEqual(replaced.sourceId, originalAuth.sourceId);
-  assert.deepEqual(replacedAgent.credentialSources, [
-    { sourceId: otherSourceId },
-    { sourceId: replaced.sourceId },
-  ]);
+  assert.deepEqual(replacedAgent.credentialSources, [{ sourceId: replaced.sourceId }]);
   // Replacing the Agent selection leaves the previously authorized Source available.
   const oldSource = await fixture.request(
     "GET",

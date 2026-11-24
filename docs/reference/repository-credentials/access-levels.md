@@ -7,7 +7,7 @@ repository; Namespace policy determines which levels are available.
 
 The registry's `namespaces[].profiles` lists the access modes that Agents in that
 OCE Namespace may select for the repository. An Agent's
-`repositoryBindings[].profile` selects one allowed mode. OCE rejects a binding
+`repositoryAccess.repositories[].profile` selects one allowed mode. OCE rejects a binding
 whose profile is not allowed by the Namespace policy.
 
 | Profile             | Permission selection                                                          |
@@ -303,17 +303,12 @@ Agent create, provision, and update requests can use `repositoryAccess`:
 ```
 
 An omitted entry profile inherits `defaultProfile`. An explicit profile remains
-custom even when equal to the default. Responses retain this intent alongside
-resolved `repositoryBindings`; saved versions contain concrete profiles.
-Changing desired access affects future deployments only. An empty repositories
-array removes attachments while retaining the default.
+custom even when equal to the default. The Agent response returns the saved
+`repositoryAccess`, and deployment resolves those selections against Namespace
+policy before freezing the grants in the Agent revision.
 
-`repositoryAccess` and `repositoryBindings` are mutually exclusive request fields.
-For direct `repositoryBindings`, omitting `profile` selects `github-repository`
-when that is the registry policy's sole profile; otherwise it selects `git-write`.
-Agents without saved intent open with their existing profiles marked custom.
-Omitting both fields during update preserves existing settings; updating direct
-bindings clears inheritance intent. Profiles remain subject to Namespace policy.
+Omitting `repositoryAccess` preserves the saved selections. An empty
+`repositories` array removes the selections while retaining the default profile.
 
 ## API and branch boundaries
 

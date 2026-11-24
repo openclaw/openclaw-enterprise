@@ -9,7 +9,7 @@ authenticated client. The bundled ChatGPT client manages upstream service
 accounts. Its nullable Agent `backendId` association neither grants permissions
 nor changes model or Harness selection. The GitHub Backend owns repository
 credential configuration for the built-in GitHub policy and uses the separate
-Agent `repositoryBindings` selection. The OpenShell Backend owns the gateway
+Agent `repositoryAccess` selection. The OpenShell Backend owns the gateway
 connection shared by the OpenShell Sandbox and Credential Gateway Drivers.
 Backends have no OCC resource or write API. Installation administrators can
 discover nonsecret configured IDs and types through `GET /backends`.

@@ -27,7 +27,6 @@ import {
 import { ConfigurationFailure, OwnershipFailure } from "./failures.ts";
 import {
   createHarnessRuntime,
-  verifySandboxResourceRef,
   type HarnessNamespace as KubernetesNamespaceAddress,
   KubernetesHarnessRuntime,
   ManagedOpenShellHarnessRuntime,
@@ -36,7 +35,6 @@ import {
   WORKLOAD_TERMINATION_TIMEOUT_MS,
 } from "./harness/runtime.ts";
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
-import type { OpenShellCredentialAttachments } from "../../sandbox/openshell-credential-attachments.ts";
 import { OpenShellSandboxConfigurationFailure } from "../../sandbox/openshell-sandbox-errors.ts";
 import { networkPolicySpecToJson, resolverEgress } from "../../kubernetes/network-policy.ts";
 import { podQuotaFull, podQuotaRefusal } from "../../kubernetes/pod-quota.ts";
@@ -166,12 +164,10 @@ import type {
   SelectedDriverRegistration,
   ConfigurationValidationOptions,
   CredentialAttachmentStatus,
-  CredentialGatewayDriver,
   ProtectedRepositoryNetworkPolicySaveContext,
   CredentialDeploymentContext,
   CredentialProxyDriver,
   StoredCredentialSource as CredentialSource,
-  CredentialSourceAttachment,
   CredentialSourceType,
   WorkspaceSetup,
   Driver,
@@ -1290,32 +1286,6 @@ function prepareHarnessAuth(
       }
     }
     return { loginMode, environment };
-  } else if (
-    resolvedAuth.method === "credential_source" &&
-    resolvedAuth.credentialGatewayId !== undefined &&
-    harness.mode === "dedicated" &&
-    (harness.id === "codex" || harness.id === "openclaw")
-  ) {
-    // Protected egress supplies material only to the supervisor. A nonsecret marker lets
-    // ordinary model clients construct their request; the authority replaces its header.
-    if (resolvedAuth.source.egress !== undefined) {
-      environment.push({
-        name: harnessModelAuthentication(configuration).environmentName,
-        value: "oce-protected-egress",
-      });
-    }
-    // The paired Sandbox supplies the credential environment; no Secret is projected here.
-    if (harness.id === "codex") {
-      environment.push({ name: "CODEX_LOGIN_MODE", value: resolvedAuth.loginMode });
-      if (resolvedAuth.loginMode === "codex_pat") {
-        environment.push({ name: "OCE_CODEX_CREDENTIAL_SOURCE", value: "1" });
-      }
-    }
-    return {
-      loginMode: resolvedAuth.loginMode,
-      environment,
-      credentialSource: resolvedAuth.source,
-    };
   } else if (
     resolvedAuth.method === "codex_pat" &&
     harness.mode === "dedicated" &&
@@ -3753,8 +3723,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly preparedRepositoryIngress: boolean;
   private readonly preparedTokens: PreparedTokenReadinessService | undefined;
-  private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
-  private readonly openShellAttachments: OpenShellCredentialAttachments | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
   private readonly credentialDeliveryRegistration: SelectedDriverRegistration | undefined;
 
@@ -4371,14 +4339,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly preparedRepositoryIngress?: true;
       readonly preparedTokens?: TokenService;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
-      readonly credentialGatewayDriver?: CredentialGatewayDriver;
       readonly credentialDeliveryRegistration?: SelectedDriverRegistration;
-      /** Internal composition data for the exact built-in same-Backend pair. */
-      readonly openShellAttachments?: {
-        readonly sandboxDriver: SandboxDriver;
-        readonly credentialGatewayDriver: CredentialGatewayDriver;
-        readonly attachments: OpenShellCredentialAttachments;
-      };
       readonly protectedDriver?: InstalledDriver;
       readonly nodeEnrollment?: GatewayNodeEnrollment;
       readonly readNodeCa?: () => Promise<string | undefined>;
@@ -4392,10 +4353,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     // Keep the Driver-owned configuration isolated from its constructor caller.
     this.options = structuredClone(options);
-    if (hasInspectedWorkspaceImages(this.options.images)) {
-      this.supportsProtectedRepositoryNetworkPolicyPlacement = this.admitsNativeGitPlacement;
-      this.admitsProtectedRepositoryNetworkPolicySave = this.admitsNativeGitPlacement;
-    }
     this.channelDrivers = Object.freeze(
       (selection.channelDrivers ?? []).map(({ provider, driver }) =>
         Object.freeze({ provider, driver }),
@@ -4517,23 +4474,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.preparedRepositoryIngress = selection.preparedRepositoryIngress === true;
-    if (selection.credentialGatewayDriver !== undefined && this.sandboxDriver === undefined) {
-      throw new ConfigurationFailure(
-        "The Credential Gateway Driver requires a paired Sandbox Driver.",
-      );
-    }
-    this.credentialGatewayDriver = selection.credentialGatewayDriver;
-    const openShellAttachments = selection.openShellAttachments;
-    if (
-      openShellAttachments !== undefined &&
-      (openShellAttachments.sandboxDriver !== this.sandboxDriver ||
-        openShellAttachments.credentialGatewayDriver !== this.credentialGatewayDriver)
-    ) {
-      throw new ConfigurationFailure(
-        "OpenShell attachments require the exact composed Sandbox and Credential Gateway.",
-      );
-    }
-    this.openShellAttachments = openShellAttachments?.attachments;
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;
     const lifecycleDrivers = selection.lifecycleDrivers ?? [];
@@ -5005,7 +4945,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
     secretBindings?: SecretBindings | null,
-    credentialSourceType?: CredentialSourceType,
+    _credentialSourceType?: CredentialSourceType,
   ): void {
     if (
       harness.mode === "dedicated" &&
@@ -5019,14 +4959,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (this.selectedHarness instanceof ManagedOpenShellHarnessRuntime) {
       this.selectedHarness.validateHarness(harness);
     }
-    this.validateAdmittedHarnessAuth(
-      "admission",
-      harness,
-      auth,
-      configuration,
-      secretBindings,
-      credentialSourceType,
-    );
+    this.validateAdmittedHarnessAuth("admission", harness, auth, configuration, secretBindings);
     // The Agent's execution mode decides placement, so Agent save (null bindings) refuses it too
     // (finding 2376).
     this.requireDedicatedRuntimePlacement(harness);
@@ -5082,7 +5015,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
     secretBindings?: SecretBindings | null,
-    credentialSourceType?: CredentialSourceType,
     revision?: AgentRevision,
   ): void {
     // Agent save passes null bindings and checks only what depends on the Agent. What the
@@ -5145,42 +5077,25 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (auth.method === "credential_source") {
-      if (auth.tokenServiceInstanceId !== undefined) {
-        const proxy = this.credentialDeploymentProxyDriver;
-        if (
-          !dedicated ||
-          this.sandboxDriver?.provisionHarness === undefined ||
-          this.sandboxDriver?.provisionStagedHarness === undefined ||
-          this.sandboxDriver.prepareStagedHarness === undefined ||
-          this.sandboxDriver.activateStagedHarness === undefined ||
-          this.sandboxDriver.observeNetworkPolicy === undefined ||
-          this.sandboxDriver.harnessStatus === undefined ||
-          proxy?.capability !== "credential_proxy_delivery" ||
-          proxy.deployProxy === undefined ||
-          proxy.configureDeployment === undefined ||
-          proxy.getDeploymentStatus === undefined ||
-          proxy.removeDeployment === undefined
-        ) {
-          throw new ConfigurationFailure(
-            "TokenService Harness authentication requires the staged Sandbox and Credential Proxy operations.",
-          );
-        }
-      } else {
-        // The paired Sandbox injects the credential, so this path never projects a model Secret.
-        if (
-          this.sandboxDriver === undefined ||
-          this.credentialGatewayDriver === undefined ||
-          auth.credentialGatewayId !== this.credentialGatewayDriver.id ||
-          credentialSourceType?.type !== auth.sourceType ||
-          credentialSourceType.harnessAuth?.loginMode !== auth.loginMode ||
-          credentialSourceType.harnessAuth.modelProvider !== "openai" ||
-          (auth.loginMode !== "api_key" &&
-            !(codex && (auth.loginMode === "codex_pat" || auth.loginMode === "chatgptAuthTokens")))
-        ) {
-          throw new ConfigurationFailure(
-            "Credential-source Harness authentication requires paired Drivers and a matching supported OpenAI login mode.",
-          );
-        }
+      const proxy = this.credentialDeploymentProxyDriver;
+      if (
+        auth.tokenServiceInstanceId === undefined ||
+        !dedicated ||
+        this.sandboxDriver?.provisionHarness === undefined ||
+        this.sandboxDriver?.provisionStagedHarness === undefined ||
+        this.sandboxDriver.prepareStagedHarness === undefined ||
+        this.sandboxDriver.activateStagedHarness === undefined ||
+        this.sandboxDriver.observeNetworkPolicy === undefined ||
+        this.sandboxDriver.harnessStatus === undefined ||
+        proxy?.capability !== "credential_proxy_delivery" ||
+        proxy.deployProxy === undefined ||
+        proxy.configureDeployment === undefined ||
+        proxy.getDeploymentStatus === undefined ||
+        proxy.removeDeployment === undefined
+      ) {
+        throw new ConfigurationFailure(
+          "TokenService Harness authentication requires the staged Sandbox and Credential Proxy operations.",
+        );
       }
     }
     // Configuration save keeps a draft that selects no model yet, and no topology here runs
@@ -6982,19 +6897,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return;
     }
     const plan = revision.egressPlan;
-    const auth = revision.harnessAuth;
-    const binding = revision.credentialSources?.[0];
-    const ordinaryModelOnly =
-      this.protectedExecution?.owner.allowsOrdinaryCredentialGateway() &&
-      revision.repositoryCredentials === undefined &&
-      auth?.method === "credential_source" &&
-      auth.credentialGatewayId === this.credentialGatewayDriver?.id &&
-      revision.credentialSources?.length === 1 &&
-      binding?.credentialProxyId === undefined &&
-      binding?.credentialGatewayId === auth.credentialGatewayId &&
-      binding?.sourceId === auth.sourceId &&
-      binding?.sourceType === auth.sourceType;
-    if (plan === undefined && (this.proxyDriver === undefined || ordinaryModelOnly)) {
+    if (plan === undefined && this.proxyDriver === undefined) {
       return;
     }
     if (
@@ -7044,35 +6947,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
   }
 
-  readonly supportsProtectedRepositoryNetworkPolicyPlacement?: NonNullable<
-    ComputeDriver["supportsProtectedRepositoryNetworkPolicyPlacement"]
-  >;
-
-  readonly admitsProtectedRepositoryNetworkPolicySave?: NonNullable<
-    ComputeDriver["admitsProtectedRepositoryNetworkPolicySave"]
-  >;
-
-  private admitsNativeGitPlacement(context: ProtectedRepositoryNetworkPolicySaveContext): boolean {
-    const { placement, harness, harnessCredentialSource: source } = context;
-    if (
-      !placement ||
-      harness.id !== "codex" ||
-      harness.mode !== "dedicated" ||
-      source.type !== "openai" ||
-      source.ownerCapability !== "credential_gateway" ||
-      source.driverId !== this.credentialGatewayDriver?.id ||
-      this.protectedExecution?.sandbox.id !== context.sandboxDriverId ||
-      !isDeepStrictEqual(context.protectedDriver, this.protectedExecution.owner.ref) ||
-      !context.repositoryBindings.length ||
-      !context.repositoryBindings.every(({ profile }) => profile === "github-repository") ||
-      context.nativeGit !== "v1"
-    ) {
-      return false;
-    }
-    this.requireDedicatedRuntimePlacement(harness);
-    return this.supportsInspectedWorkspace(placement);
-  }
-
   validateProtectedRepositoryNetworkPolicy(revision: Readonly<AgentRevision>): void {
     this.repositoryPolicyRuntime(revision, "admit");
   }
@@ -7091,8 +6965,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       plan?.execution.namespaceId !== revision.namespaceId ||
       plan.execution.agentId !== revision.agentId ||
       plan.execution.servicePrincipalId !== revision.servicePrincipalId ||
-      plan.harnessCredentialSource === undefined ||
-      plan.harnessCredentialSource.credentialGatewayId !== this.credentialGatewayDriver?.id
+      plan.harnessCredentialSource !== undefined
     ) {
       throw new ConfigurationFailure("Compute requires its paired protected repository Sandbox.");
     }
@@ -7169,9 +7042,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       execution.namespaceId !== revision.namespaceId ||
       execution.servicePrincipalId !== revision.servicePrincipalId ||
       plan.routes.some((route) => !isDeepStrictEqual(route.binding.execution, execution)) ||
-      (plan.harnessCredentialSource &&
-        (!isDeepStrictEqual(plan.harnessCredentialSource, revision.harnessAuth) ||
-          plan.harnessCredentialSource.credentialGatewayId !== this.credentialGatewayDriver?.id)) ||
+      plan.harnessCredentialSource !== undefined ||
       (!harnessEgressEnrollment(plan).inference
         ? revision.harnessAuth.method !== "runtime"
         : revision.harnessAuth.method !== "credential_source")
@@ -7522,12 +7393,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         consumer.kind === "plugin" ? [consumer.pluginId] : [],
       ),
     );
-    requireManagedCredentialRuntime(
-      revision.plugins?.plugins,
-      sandboxDriver?.implementation,
-      this.credentialGatewayDriver?.implementation,
-      stagedPluginIds,
-    );
+    requireManagedCredentialRuntime(revision.plugins?.plugins, stagedPluginIds);
     requireNativeWorkerSandbox(revision.harness, sandboxDriver);
     if (sandboxDriver !== undefined && embedded) {
       throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
@@ -7540,7 +7406,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         revision.harnessAuth,
         admittedRevision.configuration,
         revision.secretBindings,
-        await this.admittedCredentialSourceType(revision),
         revision,
       ),
     );
@@ -8171,47 +8036,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
         );
-        const boundSources = [
-          ...(harnessAuth.credentialSource === undefined ? [] : [harnessAuth.credentialSource]),
-          ...credentialSources,
-        ];
-        const directAttachments = this.staticOpenAiAttachmentsForRevision(revision, boundSources);
-        const sources =
-          staged === undefined
-            ? boundSources.filter(
-                (
-                  source,
-                ): source is Readonly<
-                  import("@openclaw-enterprise/contracts").LegacyCredentialSource
-                > => source.ownerCapability !== "token_service" && source.egress === undefined,
-              )
-            : [];
-        const credentialContext =
-          sources.length === 0
-            ? undefined
-            : {
-                namespace: sandboxContext.namespace,
-                revision,
-                sources,
-                signal: sandboxContext.signal,
-              };
-        const attachments =
-          credentialContext === undefined
-            ? []
-            : await (directAttachments ?? this.requireCredentialGateway()).attachForRevision(
-                credentialContext,
-              );
-        const sourceIds = new Set(credentialContext?.sources.map(({ id }) => id));
-        const attachedSourceIds = new Set(attachments.map(({ sourceId }) => sourceId));
-        if (
-          attachments.length !== sourceIds.size ||
-          attachedSourceIds.size !== attachments.length ||
-          attachments.some(({ sourceId }) => !sourceIds.has(sourceId))
-        ) {
-          throw new ConfigurationFailure(
-            "The Credential Gateway must attach each bound source exactly once.",
-          );
-        }
         const currentEgressInstallation = revision.egressPlan?.policyReductionVersion
           ? await context!.currentEgressInstallation!()
           : undefined;
@@ -8267,7 +8091,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 codexLaunch,
               }),
           revision.agentId,
-          attachments,
           this.scratchAdmission(revision).binding,
         );
         const releaseNamespace =
@@ -8281,13 +8104,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ...(proxyWiring === undefined ? {} : { proxyWiring }),
           environment: [
             ...preparedRequirements.environment,
-            ...(staged === undefined
-              ? this.credentialSourceEnvironment(
-                  revision,
-                  attachments,
-                  harnessAuth.credentialSource,
-                )
-              : []),
             ...(proxyWiring === undefined
               ? []
               : [
@@ -8705,32 +8521,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           // The node enrolled this pass.
           await withdrawProviderExposure();
         }
-        if (credentialContext !== undefined) {
-          if (sandbox === undefined) {
-            throw new OwnershipFailure("Credential attachments require the prepared Sandbox.");
-          }
-          const statuses = await (
-            directAttachments ?? this.requireCredentialGateway()
-          ).attachmentStatus({
-            ...credentialContext,
-            sandbox,
-          });
-          if (
-            statuses.some((status) =>
-              ["failed", "withheld", "revoked", "absent"].includes(status.state),
-            )
-          ) {
-            throw new DependencyUnavailableError(
-              "The Sandbox did not apply a required credential attachment.",
-            );
-          }
-          if (
-            statuses.length !== attachments.length ||
-            statuses.some((status) => status.state !== "ready")
-          ) {
-            return incomplete();
-          }
-        }
         if (providerEndpoint !== undefined && sandboxDriver.harnessStatus !== undefined) {
           // A Ready provider Pod proves only its supervisor. Like the Kubernetes
           // readiness probe, require the Harness transport to answer, and fail on
@@ -9028,7 +8818,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision.harnessAuth,
       admittedRevision.configuration,
       revision.secretBindings,
-      await this.admittedCredentialSourceType(revision),
       revision,
     );
     const channels = this.enabledChannels(admittedRevision);
@@ -9326,7 +9115,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           codexLaunch,
         }),
         revision.agentId,
-        [],
         this.scratchAdmission(revision).binding,
       );
       if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
@@ -9733,17 +9521,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       return this.withdrawStagedCredentialSource(revision, source, signal);
     }
-    const owner =
-      source.ownerCapability === "credential_gateway"
-        ? this.credentialGatewayDriver
-        : this.proxyDriver;
-    if (source.driverId !== owner?.id || !credentialSourceMatchesSnapshot(source, snapshot)) {
-      throw new OwnershipFailure(
-        "The credential source does not match the revision's admitted owner.",
-      );
-    }
-    if (source.ownerCapability === "credential_proxy" && (!revision.egressPlan || !source.egress)) {
-      throw new OwnershipFailure("The protected source has no admitted egress owner.");
+    if (
+      source.ownerCapability !== "credential_proxy" ||
+      source.driverId !== this.proxyDriver?.id ||
+      !credentialSourceMatchesSnapshot(source, snapshot) ||
+      !revision.egressPlan ||
+      !source.egress
+    ) {
+      throw new OwnershipFailure("The protected source does not match its admitted Proxy.");
     }
     const sandboxDriver = this.sandboxDriverForRevision(revision);
     if (sandboxDriver?.harnessResource === undefined) {
@@ -9765,50 +9550,33 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     const sandboxNamespace = this.sandboxNamespaceForRevision(revision, namespace);
-    if (revision.egressPlan !== undefined && source.egress !== undefined) {
-      const egress = this.proxyDriver;
-      if (!egress || !this.protectedExecution!.owner.ownsProxyPlan(revision.egressPlan)) {
-        throw new DependencyUnavailableError("The protected egress cleanup owner is unavailable.");
-      }
-      const binding = revision.egressPlan.routes.find((route) =>
-        isDeepStrictEqual(route.binding.source, source.egress!.key),
-      )?.binding.binding;
-      if (!binding) {
-        throw new OwnershipFailure("The protected source has no admitted binding.");
-      }
-      const context = {
-        namespace: sandboxNamespace,
-        revision,
-        plan: revision.egressPlan,
-        signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-      };
-      const removed =
-        egress.policyReduction && options.reducePolicy
-          ? await options.reducePolicy(context)
-          : "retire-runtime";
-      if (removed === "retire-runtime") {
-        throw new CredentialWithdrawalRefusedError(
-          "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
-          "The selected Credential Proxy cannot verify a reduced policy on this execution.",
-        );
-      }
-      return { sourceId: source.id, state: removed === "withdrawn" ? "revoked" : "pending" };
+    const egress = this.proxyDriver;
+    if (!egress || !this.protectedExecution!.owner.ownsProxyPlan(revision.egressPlan)) {
+      throw new DependencyUnavailableError("The protected egress cleanup owner is unavailable.");
     }
-    const sandbox = sandboxDriver.harnessResource({ namespace: sandboxNamespace, revision });
-    verifySandboxResourceRef(sandbox, revision, namespace);
-    const directAttachments = this.staticOpenAiAttachmentsForRevision(revision, [source]);
-    const status = await (directAttachments ?? this.requireCredentialGateway()).withdraw({
+    const binding = revision.egressPlan.routes.find((route) =>
+      isDeepStrictEqual(route.binding.source, source.egress!.key),
+    )?.binding.binding;
+    if (!binding) {
+      throw new OwnershipFailure("The protected source has no admitted binding.");
+    }
+    const context = {
       namespace: sandboxNamespace,
       revision,
-      sandbox,
-      sourceId: source.id,
-      signal,
-      ...(options.recheck === true ? { recheck: true } : {}),
-    });
-    if (status.sourceId !== source.id) {
-      throw new OwnershipFailure("The Credential Gateway withdrew another credential source.");
+      plan: revision.egressPlan,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+    };
+    const removed =
+      egress.policyReduction && options.reducePolicy
+        ? await options.reducePolicy(context)
+        : "retire-runtime";
+    if (removed === "retire-runtime") {
+      throw new CredentialWithdrawalRefusedError(
+        "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
+        "The selected Credential Proxy cannot verify a reduced policy on this execution.",
+      );
     }
-    return status;
+    return { sourceId: source.id, state: removed === "withdrawn" ? "revoked" : "pending" };
   }
 
   private async withdrawStagedCredentialSource(
@@ -12802,193 +12570,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     };
   }
 
-  /** Dispatch revalidates against the paired gateway's current catalog, not admission's copy. */
-  private async admittedCredentialSourceType(
-    revision: AgentRevision,
-  ): Promise<CredentialSourceType | undefined> {
-    if (revision.harnessAuth.method !== "credential_source") {
-      return undefined;
-    }
-    if (revision.harnessAuth.tokenServiceInstanceId !== undefined) {
-      return undefined;
-    }
-    const gateway = this.requireCredentialGateway();
-    if (gateway.id !== revision.harnessAuth.credentialGatewayId) {
-      return undefined;
-    }
-    const sourceType = revision.harnessAuth.sourceType;
-    const catalog = await gateway.listSourceTypes({
-      signal: this.operationSignal(),
-    });
-    const type = catalog.find((entry) => entry.type === sourceType);
-    // The Git-only exception must still hold when an admitted revision is released.
-    // Gateway-only installations and protected plans retain their own lifecycle rules.
-    if (
-      this.protectedExecution?.owner.allowsOrdinaryCredentialGateway() &&
-      revision.executionAdmission.mode === "unprotected" &&
-      revision.egressPlan === undefined &&
-      revision.repositoryCredentials === undefined &&
-      type !== undefined &&
-      (type.rotation === "refresh" ||
-        type.deviceAuthorization !== undefined ||
-        type.harnessAuth?.loginMode === "chatgptAuthTokens")
-    ) {
-      throw new ConfigurationFailure(
-        "The selected Credential Proxy cannot preserve this credential source's lifecycle.",
-      );
-    }
-    return type;
-  }
-
-  /** Admission selects the route; a changed or missing live source cannot change that route. */
-  private staticOpenAiAttachmentsForRevision(
-    revision: Readonly<AgentRevision>,
-    sources: readonly Readonly<CredentialSource>[],
-  ): OpenShellCredentialAttachments | undefined {
-    const auth = revision.harnessAuth;
-    if (
-      this.openShellAttachments === undefined ||
-      revision.executionAdmission.mode !== "unprotected" ||
-      revision.egressPlan !== undefined ||
-      revision.harness.mode !== "dedicated" ||
-      (revision.harness.id !== "codex" && revision.harness.id !== "openclaw") ||
-      auth.method !== "credential_source" ||
-      auth.sourceType !== "openai" ||
-      auth.loginMode !== "api_key" ||
-      auth.credentialGatewayId !== this.credentialGatewayDriver?.id
-    ) {
-      return undefined;
-    }
-    // OCC lists the Harness credential too. Only its exact snapshot is redundant;
-    // additional, duplicate, or inconsistent admission stays on the public Gateway.
-    // An absent/empty list remains supported for revisions predating this source list.
-    const admitted = revision.credentialSources ?? [];
-    if (
-      admitted.length > 1 ||
-      admitted.some(
-        (snapshot) =>
-          snapshot.sourceId !== auth.sourceId ||
-          snapshot.sourceType !== auth.sourceType ||
-          snapshot.credentialGatewayId !== auth.credentialGatewayId ||
-          snapshot.credentialProxyId !== undefined,
-      )
-    ) {
-      return undefined;
-    }
-    // Selection is final: a source refusal must never retry through Gateway compatibility.
-    const source = sources[0];
-    if (
-      sources.length !== 1 ||
-      source === undefined ||
-      source.ownerCapability !== "credential_gateway" ||
-      source.namespaceId !== revision.namespaceId ||
-      source.egress !== undefined ||
-      !credentialSourceMatchesSnapshot(source, auth)
-    ) {
-      throw new OwnershipFailure(
-        "The direct OpenShell attachment requires the exact admitted Harness source and Namespace.",
-      );
-    }
-    return this.openShellAttachments;
-  }
-
-  private requireCredentialGateway(): CredentialGatewayDriver {
-    if (this.credentialGatewayDriver === undefined) {
-      throw new ConfigurationFailure(
-        "The admitted revision requires the Credential Gateway Driver.",
-      );
-    }
-    return this.credentialGatewayDriver;
-  }
-
-  /** Only the trusted Gateway attachment supplies external account metadata and placeholders. */
-  private credentialSourceEnvironment(
-    revision: AgentRevision,
-    attachments: readonly CredentialSourceAttachment[],
-    source?: Readonly<CredentialSource>,
-  ): readonly SandboxEnvironmentVariable[] {
-    if (revision.harnessAuth.method !== "credential_source") {
-      return [];
-    }
-    if (source?.ownerCapability !== "token_service" && source?.type === "openai") {
-      requireModelSourceDestination(
-        source.config,
-        savedModelProvider(revision.harness.configuration),
-      );
-    }
-    const sourceId = revision.harnessAuth.sourceId;
-    const attachment = attachments.find((entry) => entry.sourceId === sourceId);
-    // Protected sources belong to the Credential Proxy, never the legacy Gateway.
-    if (source?.ownerCapability !== "token_service" && source?.egress !== undefined) {
-      if (
-        source.id !== sourceId ||
-        revision.executionAdmission.mode !== "protected" ||
-        revision.harnessAuth.loginMode !== "api_key" ||
-        attachment !== undefined ||
-        !revision.egressPlan?.routes.some((route) =>
-          isDeepStrictEqual(route.binding.source, source.egress!.key),
-        )
-      ) {
-        throw new OwnershipFailure(
-          "Protected Harness authentication does not match its admitted source.",
-        );
-      }
-      return [];
-    }
-    if (attachment === undefined) {
-      throw new ConfigurationFailure(
-        "The Credential Gateway did not attach the Harness authentication source.",
-      );
-    }
-    const auth = attachment.externalChatgptAuth;
-    if (revision.harnessAuth.loginMode !== "chatgptAuthTokens") {
-      if (auth !== undefined) {
-        throw new ConfigurationFailure(
-          "External ChatGPT metadata does not match the admitted login mode.",
-        );
-      }
-      return [];
-    }
-    const record = asRecord(auth);
-    const text = (value: unknown): value is string =>
-      typeof value === "string" &&
-      value.trim().length > 0 &&
-      value.length <= 8192 &&
-      !/\p{Cc}/u.test(value);
-    if (
-      record === undefined ||
-      Object.keys(record).some(
-        (key) =>
-          ![
-            "accessTokenPlaceholder",
-            "accountId",
-            "planType",
-            "userId",
-            "accountUserId",
-            "email",
-            "isFedramp",
-          ].includes(key),
-      ) ||
-      !text(record.accessTokenPlaceholder) ||
-      !text(record.accountId) ||
-      !text(record.planType) ||
-      (record.userId !== undefined && !text(record.userId)) ||
-      (record.accountUserId !== undefined && !text(record.accountUserId)) ||
-      (record.email !== undefined && !text(record.email)) ||
-      (record.isFedramp !== undefined && typeof record.isFedramp !== "boolean")
-    ) {
-      throw new ConfigurationFailure(
-        "The Credential Gateway returned invalid external ChatGPT authentication.",
-      );
-    }
-    const { accessTokenPlaceholder, ...account } = record;
-    return [
-      // Preserve the exact placeholder: the egress provider owns its matching/replacement format.
-      { name: "CODEX_ACCESS_TOKEN", value: accessTokenPlaceholder },
-      { name: "OCE_CODEX_CHATGPT_ACCOUNT", value: JSON.stringify(account) },
-    ];
-  }
-
   private harnessLaunch(input: {
     readonly name: string;
     readonly ownership: Ownership;
@@ -13198,7 +12779,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private sandboxRequirements(
     launch: HarnessLaunchDescription,
     agentId: string,
-    attachments: readonly CredentialSourceAttachment[] = [],
     scratch?: KubernetesScratchVolume,
   ): HarnessWorkloadRequirements {
     if (launch.command.length === 0) {
@@ -13208,7 +12788,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return {
       ...launch,
       environment: launch.environment.filter(({ name }) => !fileEnvironment.has(name)),
-      credentialAttachments: attachments,
+      credentialAttachments: [],
       workspaceMounts: [
         ...this.selectedHarness.workspace.mounts(launch, agentId),
         ...(scratch === undefined

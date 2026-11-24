@@ -10,8 +10,7 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
   matchesConfiguredGitHubRepository,
-  resolveGitHubRepositoryBinding,
-  resolveSelectedRepositoryScope,
+  resolveGitHubRepositorySourceScope,
   type GitHubRepositoryRegistry,
 } from "../repo/github/access/registry.ts";
 import type { GitHubAppRepositorySelection } from "../repo/github/access/repository-grant.ts";
@@ -58,17 +57,10 @@ export function admitGitHubAppSourceScope(
   registry: GitHubRepositoryRegistry,
 ): GitHubAppRepositorySelection {
   try {
-    const bindings = repositoryRefs.map((repositoryRef) =>
-      resolveGitHubRepositoryBinding(registry, {
-        namespaceId,
-        repositoryRef,
-        profile: "github-repository",
-      }),
-    );
-    const { repositories, permissions } = resolveSelectedRepositoryScope(
+    const { repositories, permissions } = resolveGitHubRepositorySourceScope(
       registry,
       namespaceId,
-      bindings,
+      repositoryRefs,
     );
     return {
       appId: registry.appId,

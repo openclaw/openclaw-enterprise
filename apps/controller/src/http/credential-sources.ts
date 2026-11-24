@@ -119,7 +119,6 @@ export const credentialSourceHandlers = {
         .send({ data: clientCredentialSource(created), meta: { requestId: request.id } });
       return;
     }
-    // TODO: Remove the legacy Source routes' shapes after the Plugin and Git credential cutovers.
     if (body && !("secret" in body)) {
       const created = await controller.createCredentialSource(
         context.actorId,
@@ -197,29 +196,6 @@ export const credentialSourceHandlers = {
     const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
     const failureAudit = (reasonCode: string) =>
       mutationEvent(resource, undefined, undefined, { reasonCode });
-    if (!body || (!("secret" in body) && !("config" in body))) {
-      const updated = await controller.transact(async (unit) => {
-        const source = await controller.updateCredentialSource(
-          context.actorId,
-          {
-            namespaceId,
-            credentialSourceId,
-            ...(body?.adoption === undefined ? {} : { adoption: body.adoption as "live" }),
-            ...(body?.authorityScope === undefined
-              ? {}
-              : { authorityScope: body.authorityScope as "execution" }),
-            ...(body?.secrets === undefined
-              ? {}
-              : { secrets: body.secrets as Record<string, SecretReference> }),
-          },
-          failureAudit,
-        );
-        await unit.audit.append(mutationEvent(resource));
-        return source;
-      });
-      reply.send({ data: clientCredentialSource(updated), meta: { requestId: request.id } });
-      return;
-    }
     const config = body?.config as Record<string, string> | undefined;
     const secret = body?.secret as Record<string, string> | undefined;
     const { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset, ...settings } = config ?? {};
@@ -264,23 +240,6 @@ export const credentialSourceHandlers = {
     );
     const source = clientCredentialSource(rotated);
     reply.send({ data: source, meta: { requestId: request.id } });
-  },
-  async adoptCodexPatCredentialSource({
-    controller,
-    context,
-    request,
-    reply,
-    params,
-    namespaceId,
-    mutationEvent,
-  }) {
-    const credentialSourceId = params.credentialSourceId as string;
-    const adopted = await controller.adoptCodexPatCredentialSource(
-      context.actorId,
-      { namespaceId, credentialSourceId },
-      (resource, phase) => phaseAudit(mutationEvent(resource), phase),
-    );
-    reply.send({ data: clientCredentialSource(adopted), meta: { requestId: request.id } });
   },
   async pushAgentCredentials({
     controller,

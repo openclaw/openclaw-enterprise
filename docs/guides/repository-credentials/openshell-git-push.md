@@ -215,8 +215,8 @@ Read the current draft and save the binding with its existing `configurationId`.
 
 ```bash
 request GET "$base/agents/$agent" |
-  jq -e --arg ref "$ref" '.data | select((.repositoryBindings // [] | length)==0) |
-    {configurationId,repositoryBindings:[{repositoryRef:$ref,profile:"github-repository"}]}' > "$RUN_DIR/git-binding.json" &&
+  jq -e --arg ref "$ref" '.data | select((.repositoryAccess.repositories // [] | length)==0) |
+    {configurationId,repositoryAccess:{defaultProfile:"github-repository",repositories:[{repositoryRef:$ref}]}}' > "$RUN_DIR/git-binding.json" &&
   request PATCH "$base/agents/$agent" --data-binary @- < "$RUN_DIR/git-binding.json" > "$RUN_DIR/git-agent"
 ```
 

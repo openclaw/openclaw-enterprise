@@ -77,7 +77,6 @@
         "OpenShell service delivers codex initial workspace files privately after supervisor readiness",
         "OpenShell service delivers openclaw initial workspace files privately after supervisor readiness",
         "native initializer serializes retries and preserves later edits",
-        "configured protected OpenShell Git admits only the selected execution and network policy",
         "stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence",
         "OpenShell staged Codex launch carries a placeholder and trusted account context"
       ]
@@ -86,8 +85,7 @@
       "path": "tests/integration/sandbox-driver-workspace-admission.test.ts",
       "expectedTests": [
         "OpenShell pins an explicit main Agent workspace to the Sandbox data mount",
-        "OpenShell admits initial files only for its projected main workspace",
-        "OpenShell composes immutable commands from admitted Compute revisions"
+        "OpenShell admits initial files only for its projected main workspace"
       ]
     },
     {

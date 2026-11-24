@@ -804,7 +804,7 @@ for (const scenario of [
             namespaceId: f.namespace.id,
             agentId: owner.id,
             configurationId: owner.configurationId,
-            repositoryBindings: [],
+            repositoryAccess: { defaultProfile: "git-write", repositories: [] },
           });
           const successor = await f.revision(owner, 2);
           admittedSuccessorId = successor.id;

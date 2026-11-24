@@ -4,10 +4,8 @@ Select approved repositories, deploy an Agent, then use ordinary `git` and the `
 The worker Token Service owns GitHub App credentials. Choose an
 [access level](../reference/repository-credentials/access-levels.md) for the task.
 
-For a dedicated OpenShell Agent with managed GitHub App credentials, follow
-[Push a Git branch from an OpenShell Agent](repository-credentials/openshell-git-push.md).
-For an Installation with TokenService and native Credential Proxy, use
-[GitHub App access](#select-a-github-source-for-an-openshell-agent).
+For a dedicated OpenShell Agent, use [GitHub App access](#select-a-github-source-for-an-openshell-agent)
+with TokenService and native Credential Proxy.
 
 Keep the gateway private to approved clients, with enforced NetworkPolicies and
 HTTPS on port 443. A `.svc` hostname or ClusterIP alone does not establish isolation;
@@ -168,7 +166,7 @@ body = {
             "id": os.environ["HARNESS_SECRET_ID"],
         },
     },
-    "repositoryBindings": [{"repositoryRef": "application", "profile": "git-write"}],
+    "repositoryAccess": {"defaultProfile": "git-write", "repositories": [{"repositoryRef": "application"}]},
 }
 with open("agent.json", "w") as output:
     json.dump(body, output)

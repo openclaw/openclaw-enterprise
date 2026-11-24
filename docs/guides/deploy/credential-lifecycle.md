@@ -99,30 +99,21 @@ and explicitly deploy each intended consumer. Account deletion performs upstream
 cleanup and is blocked by Agent drafts, selected versions, and pending deployments;
 inactive history alone does not retain the source indefinitely.
 
-## Adopt a Gateway Codex PAT Source
+## Enroll a Codex PAT Source
 
-Use this API procedure only for an existing Gateway-owned `codex-pat` Source. It
-preserves the Source ID and IAM grants. Direct `codex_pat` Secret bindings and
-issued ServiceAccount bindings remain separate authentication paths.
+Use an Installation with OCC TokenService selected. In **Create Agent**, choose
+Dedicated Codex, **Service Accounts**, and **Credential Source**. Enter the
+Agent name and PAT, then choose **Save service account token**. The Console
+enrolls a Source before it loads hosted Apps. When you save the Agent, the
+Console binds that Source as its model credential.
 
-1. Confirm that the selected TokenService supports adoption. Obtain
-   `credential_source:update` and `credential_source:operate` on the exact
-   Source and `secret:operate` on its same-Namespace `access_token` Secret.
-2. Stop every Agent using the Source and wait for Stop and delivery cleanup to
-   complete. Edit each Agent draft to clear the Harness authentication selection
-   and remove the Source from `credentialSources`. Resolve any pending deployment
-   or withdrawal that still uses it.
-3. Send `POST /namespaces/:namespaceId/credential-sources/:credentialSourceId/adopt-codex-pat`
-   with no body. Do not copy the PAT into a request, log, or shell history. A
-   `409` means a reference or operation still prevents adoption; `503` means a
-   required dependency did not confirm completion.
-4. Check that the `200` response reports the same Source ID with `type: static`
-   and `config.provider_preset: codex-pat`. The original Secret remains in the
-   Namespace; remove it only after confirming that no other consumer needs it.
-
-The API adoption check is not proof that native PAT transport is acceptable or
-that a real Codex model turn works. Do not treat the adopted Source as qualified
-for deployment until that separate proof is complete. See the [Source reference](../../reference/credential-sources.md#adopt-a-gateway-codex-pat-source).
+For an existing Agent using a PAT Secret, use the Source API to register the
+PAT with `type: static`, `config.provider_preset: codex-pat`, and the
+write-only input `secret.opaque`. Use an authenticated client that keeps the
+credential out of logs and shell history. Update the Agent draft's
+`harnessAuth` to `{ "method": "credential_source", "sourceId": "<new-source-id>" }`
+and grant the Agent permission to use that Source. See [Credential Sources](../../reference/credential-sources.md#use-a-codex-pat-source).
+The original Namespace Secret remains available for its other bindings.
 
 ## Use a personal Codex login
 

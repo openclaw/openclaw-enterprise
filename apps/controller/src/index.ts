@@ -50,7 +50,6 @@ import {
   type ResourceRef,
   type SandboxDriver,
   type SecretDriver,
-  type SecretReference,
   type CredentialSourceReference,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -1949,9 +1948,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(body?.credentialSource === undefined
           ? {}
           : { credentialSource: body.credentialSource as CredentialSourceReference }),
-        ...(body?.secretRef === undefined
-          ? { accessToken: body?.accessToken as string }
-          : { secretRef: body.secretRef as SecretReference }),
       };
       const result =
         operation.operationId === "discoverAgentPlugins"

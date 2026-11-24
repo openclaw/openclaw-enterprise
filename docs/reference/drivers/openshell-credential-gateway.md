@@ -1,5 +1,7 @@
 # OpenShell Credential Gateway
 
+Retired Driver. Use [TokenService Sources](../credential-sources.md#register-a-source).
+
 The [Credential Gateway](credential-gateway.md) stores OCC [credential sources](../credential-sources.md)
 as OpenShell providers. The Harness uses placeholders; the trusted supervisor
 adds credentials to matching upstream requests.
@@ -9,8 +11,6 @@ Select it with the [OpenShell SandboxDriver](openshell-sandbox.md) on one `opens
 **OpenShell remains unsupported for production.** Workload identity, writable state,
 authentication, admission, and provider-file proof follow the
 [OpenShell qualification contract](openshell-sandbox.md#qualification-contract).
-
-[Follow a Codex request from placeholder to upstream header](#follow-a-codex-request-through-openshell).
 
 ## Configure the Driver
 

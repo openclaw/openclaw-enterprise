@@ -75,13 +75,13 @@ For example, register an OpenAI API key as a managed static Source with `POST /n
 
 The caller needs `credential_source:create` on a ready Namespace. The response contains the Source ID and metadata, never the credential. See [managed static sources](credential-sources/managed-static.md) for the complete API and first-deployment example. To create a Template-backed OAuth Source, start the separate [browser consent workflow](connection-templates.md#connect-an-account). TokenService creates that Source only after the provider returns a grant.
 
-Existing Gateway and protected Proxy registrations use the same POST with `type`, `config`, and named Secret references in `secrets`. OCC routes those operations through the existing Drivers. See [other credential delivery modes](credential-sources/other-delivery-modes.md#register-a-source).
+The cutover removes Credential Gateway Sources and clears their saved Agent assignments. Enroll replacement credentials through TokenService before deploying those Agents again. For protected metadata Sources, the selected Credential Proxy offers a separate [registration shape](credential-sources/other-delivery-modes.md#register-a-source).
 
 ## Read and list sources
 
 Exact GET requires `credential_source:read` and returns all nonsecret metadata for that Source, even when TokenService cannot report refresh status. List requires Namespace `read` and includes only Sources the caller may read. A Source's saved `ready` state does not establish whether a particular deployment can use it.
 
-Gateway and protected Proxy Sources retain their existing metadata and lifecycle operations. OCC uses their recorded owner for exact reads, updates, rotation, and deletion. See [legacy Source reads and status](credential-sources/other-delivery-modes.md#read-and-list-sources).
+OCC uses the recorded TokenService instance for Source status, replacement, refresh, and deletion. See [protected metadata Source status](credential-sources/other-delivery-modes.md#read-and-list-sources) for the separate Proxy-owned path.
 
 An associated Source reports `connectionTemplateId`. For Template-based OAuth, `OAuthCredentialSource.consent` records the original Template version, OAuth client, principal and scopes. A successful Codex device login creates a `builtin_codex` Source with trusted account metadata and the fixed issuer/client preset. It needs no Template. Both kinds expose only nonsecret metadata.
 
@@ -104,29 +104,16 @@ The caller needs the corresponding Agent permission and `credential_source:opera
 
 OCC qualifies the complete policy against the selected OpenShell Sandbox and Credential Proxy before it saves a revision or queues work. Eligible Google OAuth and Slack MCP selections can be admitted; this does not establish live Plugin delivery. The static HTTP policy limits credential injection by endpoint, method, and path. The provider enforces the credential’s permissions. See the [Proxy Driver reference](drivers/credential-proxy.md) for the accepted MCP limits.
 
-## Adopt a Gateway Codex PAT Source
+## Use a Codex PAT Source
 
-Send `POST /namespaces/:namespaceId/credential-sources/:credentialSourceId/adopt-codex-pat`
-without a request body. This operation applies only to a ready, unbound Gateway-owned
-`codex-pat` Source whose `access_token` references a Secret in the same Namespace.
-The caller needs `credential_source:update` and `credential_source:operate` on
-that exact Source, plus `secret:operate` on the referenced Secret. The selected
-TokenService must support adoption, and the selected Secret Driver must be able
-to read the input.
+Enroll a service account PAT as a static Source with `config.provider_preset: codex-pat`
+in OCC TokenService. Bind that Source under the Agent's Harness authentication.
+A caller who can operate the Source can use it for hosted Apps discovery. OCC
+resolves the PAT for the selected Plugin Driver, which checks account identity
+with the issuer. The Agent deployment receives only the Credential Proxy placeholder.
 
-OCC refuses adoption with `409` while a draft, active or pending deployment,
-unsettled dispatch, withdrawal, or cleanup still uses the Source. Inactive retained
-Agent revisions do not prevent adoption after confirmed Stop and retirement. On
-success, TokenService stores the PAT, retires the Gateway copy, and changes the
-same Source to `type: static` with `config.provider_preset: codex-pat`. The
-`200` response contains sanitized Source metadata. The Source ID, Namespace, and
-IAM grants remain; the original Namespace Secret is not deleted, but the Source
-no longer references it. A dependency failure returns `503` rather than claiming
-confirmed adoption.
-
-This operation does not adopt direct `codex_pat` Secret or issued ServiceAccount
-bindings. PAT transport enforcement and a live model turn through the new delivery
-path remain unqualified. See the [adoption procedure](../guides/deploy/credential-lifecycle.md#adopt-a-gateway-codex-pat-source).
+[Enroll a PAT for hosted Apps](../guides/deploy/credential-lifecycle.md#enroll-a-codex-pat-source)
+covers existing Agents with PAT Secrets. Live native PAT transport qualification remains separate.
 
 ## Update a source
 
@@ -148,7 +135,7 @@ Withdrawal removes an Agent's access without deleting the Source. See [withdrawa
 
 Use `DELETE /namespaces/:namespaceId/credential-sources/:credentialSourceId` to retire a Source. For TokenService-owned Sources, the selected Proxy retires delivery copies before TokenService removes custody. A Proxy failure returns `503` and retains the Source and custody for retry.
 
-Static deletion requires `credential_source:delete`. An OAuth owner can disconnect with exact Source read and operate permissions. Other callers need `credential_source:delete`. A blocking reference, including a saved Plugin selection, returns `409` before OCC changes the Source or records OAuth revocation. Clear the saved selection and, for a deployed binding, use the authorized Agent withdrawal and remove the remaining references. The OAuth worker can retry pending retirement after a Proxy failure. See [managed static deletion](credential-sources/managed-static.md#delete-a-source), [OAuth consent](connection-templates.md#connect-an-account), and [Gateway and protected Proxy deletion](credential-sources/other-delivery-modes.md#delete-a-source).
+Static deletion requires `credential_source:delete`. An OAuth owner can disconnect with exact Source read and operate permissions. Other callers need `credential_source:delete`. A blocking reference, including a saved Plugin selection, returns `409` before OCC changes the Source or records OAuth revocation. Clear the saved selection and, for a deployed binding, use the authorized Agent withdrawal and remove the remaining references. The OAuth worker can retry pending retirement after a Proxy failure. See [managed static deletion](credential-sources/managed-static.md#delete-a-source), [OAuth consent](connection-templates.md#connect-an-account), and [protected Proxy deletion](credential-sources/other-delivery-modes.md#delete-a-source).
 
 ## Errors
 

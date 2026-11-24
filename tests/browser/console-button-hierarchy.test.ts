@@ -396,7 +396,10 @@ test("Save repository access shows busy while its request runs", async (t) => {
     body: {
       name: "Repository busy",
       configurationId: configured.configurationId,
-      repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "application", profile: "git-read" }],
+      },
     } satisfies CreateAgentBody,
   });
   assert.equal(created.status, 201);
@@ -736,7 +739,6 @@ test("Deleting and unreadable configuration badges take their tones on the list 
       const {
         plugins: _plugins,
         pluginApprovers: _approvers,
-        repositoryBindings: _bindings,
         repositoryAccess: _access,
         harnessAuth: _auth,
         credentialSources: _sources,

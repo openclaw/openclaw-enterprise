@@ -17,6 +17,8 @@ import type { OpenShellProviderResponse } from "../../apps/controller/src/driver
 import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
 import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 import { loadedProxyInstallation } from "../helpers/loaded-proxy-installation.ts";
+import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import type { Locator, Page, Response, Route } from "playwright";
 import type { SandboxPolicyViewWire } from "../../packages/contracts/src/api/sandbox-policy.ts";
@@ -109,7 +111,6 @@ import {
 import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
-import { jsonLineDestination } from "../helpers/json-lines.ts";
 
 // Legacy resource fields enter the suite as unknown; the checks below narrow them.
 type NamespaceFixture = {
@@ -1105,6 +1106,7 @@ async function repositoryPolicyConsole(
   native = false,
   logger?: ReturnType<typeof createOccLogger>,
   appId = "123",
+  issuer?: ConstructorParameters<typeof OCCTokenServiceDriver>[7],
 ) {
   const namespaceId = `ns_${crypto.randomUUID()}`;
   const app = { repository: "example/application", access: "read" } as const;
@@ -1170,6 +1172,7 @@ async function repositoryPolicyConsole(
     profile: "repository",
     id: sandboxId,
     registry: fixtureRegistry,
+    tokenService: true,
     createOpenShellBackend: (definition) =>
       createOpenShellBackend(definition, {
         gatewayClient: completeOpenShellGatewayClient({
@@ -1207,8 +1210,8 @@ async function repositoryPolicyConsole(
   });
   const owner = installation.protectedDriver;
   const repositoryRegistry = installation.repositoryRegistry;
-  const { credentialGatewayDriver: credentialGateway, repositoryAdmission } = installation;
-  assert.ok(owner && credentialGateway && repositoryAdmission);
+  const { credentialDeliveryRegistration, repositoryAdmission } = installation;
+  assert.ok(owner && credentialDeliveryRegistration && repositoryAdmission);
   t.after(() => owner.close());
   const sandbox = owner.require("sandbox");
   // The controller checks repository permissions, computes admission and saves through HTTP.
@@ -1249,10 +1252,19 @@ async function repositoryPolicyConsole(
           input: Parameters<typeof prepareOpenShellRepositorySource>[1],
         ) => prepareOpenShellRepositorySource(repositoryRegistry, input),
       }),
+    ...installationControllerOptions(installation.installation, repositoryRegistry),
     repositoryNetworkPolicyCeiling: native
       ? [...grants, limited]
       : [...grants, nativeRepo, peerRepo],
     repositoryCredentials: true,
+    sandboxNetworkPolicyCeiling: [
+      {
+        id: "console-codex-model",
+        binary: OPEN_SHELL_CODEX_BINARIES[0],
+        host: "api.openai.com",
+        ports: [{ from: 443, to: 443 }],
+      },
+    ],
     agentProvisioning: native,
     ...(native
       ? {
@@ -1278,11 +1290,27 @@ async function repositoryPolicyConsole(
   assert.ok(state);
   const compute = controller.selectedDriver("compute");
   namespaceLifecycleBindings.push(sandboxNamespaceLifecycleBinding(compute, sandbox, owner));
-  controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+  controller.installDriver(owner, ["sandbox", "credential_proxy", "credential_proxy_delivery"]);
   controller.registerDriver(repositoryAdmission.policy);
   controller.selectDriver("repo", repositoryAdmission.policy.id);
-  controller.registerDriver(credentialGateway);
-  controller.selectDriver("credential_gateway", credentialGateway.id);
+  const store = controller.selectedDriver("secret").installationSecrets;
+  assert.ok(store);
+  const instance = await controller.activateTokenServiceInstance(
+    "console-model-owner",
+    crypto.randomUUID(),
+  );
+  const tokenService = new OCCTokenServiceDriver(
+    "console-model-owner",
+    controller.installation.id,
+    store,
+    instance,
+    state,
+    undefined,
+    undefined,
+    issuer,
+  );
+  controller.registerDriver(tokenService);
+  controller.selectDriver("token_service", tokenService.id);
   if (native) {
     Object.assign(compute, {
       validateRepositoryCredentialSupport() {},
@@ -1335,7 +1363,12 @@ async function repositoryPolicyConsole(
     "synthetic-console-model",
   );
   const enrolled = await fixture.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
-    body: { name: "Console model", type: "openai", secrets: { api_key: secret.ref } },
+    body: {
+      name: "Console model",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: { opaque: "synthetic-console-model" },
+    },
   });
   assert.equal(enrolled.status, 201, JSON.stringify(enrolled.body));
   const source = resource(enrolled.data);
@@ -1366,11 +1399,7 @@ async function openRepositoryCreate(
   suppliedSetup?: Awaited<ReturnType<typeof repositoryPolicyConsole>>,
 ) {
   const setup = suppliedSetup ?? (await repositoryPolicyConsole(t, true, logger));
-  const { fixture, namespaceId, secret } = setup;
-  const modelSecret =
-    modelAuth === "codex_pat"
-      ? await fixture.createSecret(namespaceId, "console-pat", "synthetic-console-pat")
-      : secret;
+  const { fixture, namespaceId } = setup;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const agents = `/namespaces/${namespaceId}/agents`;
@@ -1380,11 +1409,9 @@ async function openRepositoryCreate(
   if (modelAuth === "codex_pat") {
     await page.getByLabel("Authentication method").selectOption(modelAuth);
   }
-  await selectSecret(
-    page,
-    modelAuth === "codex_pat" ? "Service account token Secret" : "API key Secret",
-    modelSecret,
-  );
+  await page
+    .getByLabel(modelAuth === "codex_pat" ? "Service account token" : "API key", { exact: true })
+    .fill(modelAuth === "codex_pat" ? "at-console-fixture-pat" : "synthetic-console-model");
   const model = page.getByLabel("Model ID", { exact: true });
   if (!(await model.isVisible())) {
     await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
@@ -1393,7 +1420,7 @@ async function openRepositoryCreate(
   await model.press("Tab");
   const mode = page.getByLabel("Repository access mode");
   await mode.waitFor();
-  return { ...setup, page, requests, agents, mode, modelSecret };
+  return { ...setup, page, requests, agents, mode };
 }
 
 const firstRepositoryDeploymentWarning =
@@ -1425,26 +1452,12 @@ test("Console saves, reopens, and edits GitHub repository access through Agent-s
     t,
     createServer(tls, (request, response) => github.handleRequest(request, response)),
   );
-  const setup = await repositoryPolicyConsole(t, true, undefined, fixtureAppId);
-  const { controller, state, fixture, namespaceId, tooling } = setup;
-  const store = controller.selectedDriver("secret").installationSecrets;
-  assert.ok(store);
-  const instance = await controller.activateTokenServiceInstance(
-    "console-git-clients",
-    crypto.randomUUID(),
-  );
-  const tokenService = new OCCTokenServiceDriver(
-    "console-git-clients",
-    controller.installation.id,
-    store,
-    instance,
-    state,
-    undefined,
-    undefined,
-    { apiOrigin, ca: tls.cert, clock },
-  );
-  controller.registerDriver(tokenService);
-  controller.selectDriver("token_service", tokenService.id);
+  const setup = await repositoryPolicyConsole(t, true, undefined, fixtureAppId, {
+    apiOrigin,
+    ca: tls.cert,
+    clock,
+  });
+  const { fixture, namespaceId, tooling } = setup;
   const registered = await fixture.request("POST", "/oauth-clients", {
     body: {
       kind: "github-app",
@@ -1497,78 +1510,26 @@ test("Console saves, reopens, and edits GitHub repository access through Agent-s
   );
 });
 
-test("Create Agent requests ordinary provisioning when eligible GitHub repositories stay unchecked", async (t) => {
-  for (const { method, type, field } of [
-    { method: "api_key", type: "openai", field: "api_key" },
-    { method: "codex_pat", type: "codex-pat", field: "access_token" },
-  ] as const) {
-    await t.test(type, async (t) => {
-      const logs: unknown[] = [];
-      const logger = createOccLogger({
-        component: "occ-api",
-        level: "warn",
-        destination: jsonLineDestination(logs),
-      });
-      const { fixture, page, mode, agents, namespaceId, modelSecret, requests } =
-        await openRepositoryCreate(t, method, logger);
-      assert.equal(await mode.inputValue(), "scoped");
-      const create = page.getByRole("button", { name: "Create Agent", exact: true });
-      await waitForEnabled(create);
-      const provisionUrl = `${fixture.origin}${agents}/provision`;
-      const provisioned = responseTo(page, "POST", provisionUrl);
-      await create.click();
-      const response = await provisioned;
-      const body = record(response.request().postDataJSON());
-      const auth = record(body.harnessAuth);
-      assert.equal(
-        auth.method,
-        "credential_source",
-        `provisioning must use a Gateway Source ID (HTTP ${response.status()})`,
-      );
-      // The HTTP response hides the cause. The matching operator event confirms the
-      // request passed admission and reached the durable provisioning boundary.
-      assert.equal(response.status(), 503, await response.text());
-      const { error, meta } = record(await response.json());
-      assert.equal(record(error).code, "DEPENDENCY_UNAVAILABLE");
-      const requestId = text(record(meta).requestId);
-      const unavailable = logs
-        .map(record)
-        .find(
-          (line) => line.event === "http.dependency_unavailable" && line.requestId === requestId,
-        );
-      assert.equal(
-        unavailable?.message,
-        "Agent provisioning requires durable PostgreSQL state for checkpoints.",
-      );
-      assert.deepEqual(record(body.repositoryAccess).repositories, []);
-      assert.equal(Object.hasOwn(body, "repositoryNetworkPolicy"), false);
-
-      const sources = `/namespaces/${namespaceId}/credential-sources`;
-      const [validation] = pathRequests(requests, "POST", `${agents}/validate`);
-      const [registration] = pathRequests(requests, "POST", sources);
-      assert.ok(validation && registration);
-      assert.deepEqual(record(validation.body).harnessAuth, { method });
-      assert.ok(requests.indexOf(validation) < requests.indexOf(registration));
-      const source = await fixture.request("GET", `${sources}/${text(auth.sourceId)}`);
-      assert.equal(source.status, 200);
-      const saved = record(source.data);
-      assert.equal(saved.ownerCapability, "credential_gateway");
-      assert.equal(saved.state, "ready");
-      assert.equal(saved.type, type);
-      assert.deepEqual(saved.secrets, { [field]: modelSecret.ref });
-
-      // Retrying the same provisioning request preserves the saved Source and request ID.
-      const retry = page.getByRole("button", { name: "Retry provisioning request", exact: true });
-      await waitForEnabled(retry);
-      const retried = responseTo(page, "POST", provisionUrl);
-      await retry.click();
-      const repeated = await retried;
-      assert.equal(repeated.status(), 503, await repeated.text());
-      assert.deepEqual(repeated.request().postDataJSON(), body);
-      assert.equal(pathRequests(requests, "POST", sources).length, 1);
-      assert.equal(pathRequests(requests, "POST", agents).length, 0);
-    });
-  }
+test("Create Agent saves a Source-backed draft when eligible GitHub repositories stay unchecked", async (t) => {
+  const { fixture, page, mode, agents, namespaceId, requests } = await openRepositoryCreate(t);
+  assert.equal(await mode.inputValue(), "scoped");
+  const created = responseTo(page, "POST", `${fixture.origin}${agents}`);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await created;
+  assert.equal(response.status(), 201, await response.text());
+  const saved = agentFields(record(await response.json()).data);
+  const auth = record(saved.harnessAuth);
+  assert.equal(auth.method, "credential_source");
+  const sources = `/namespaces/${namespaceId}/credential-sources`;
+  assert.equal(pathRequests(requests, "POST", sources).length, 1);
+  assert.equal(pathRequests(requests, "POST", `${agents}/provision`).length, 0);
+  const source = await fixture.request("GET", `${sources}/${text(auth.sourceId)}`);
+  assert.equal(source.status, 200);
+  assert.equal(record(source.data).type, "static");
+  assert.deepEqual(
+    record(record(response.request().postDataJSON()).repositoryAccess).repositories,
+    [],
+  );
 });
 
 test("Create Agent warns before deployment without a repository policy", async (t) => {
@@ -1612,13 +1573,14 @@ test("Create Agent warns before deployment without a repository policy", async (
   assert.equal(Object.hasOwn(body, "repositoryNetworkPolicy"), false);
 });
 
-test("a Namespace member enrolls a Gateway model credential before saving a deployable draft", async (t) => {
-  const { fixture, namespaceId, secret } = await repositoryPolicyConsole(t, true);
-  const member = await fixture.createNamespaceMember("gateway-member", namespaceId, [
+test("a Namespace member enrolls a TokenService model credential before saving a deployable draft", async (t) => {
+  const { fixture, namespaceId } = await repositoryPolicyConsole(t, true);
+  const member = await fixture.createNamespaceMember("source-member", namespaceId, [
     ...MEMBER_WRITE,
     ["create", "credential_source"],
     ["read", "credential_source"],
     ["operate", "credential_source"],
+    ["read", "sandbox_policy"],
   ]);
   const { page } = await newPage(t, fixture);
   const namespace = `/namespaces/${namespaceId}`;
@@ -1644,14 +1606,10 @@ test("a Namespace member enrolls a Gateway model credential before saving a depl
   const data = record(record(await answer.json()).data);
   const capabilities = record(data.capabilities);
   assert.equal(capabilities.agentProvisioning, undefined);
-  assert.ok(
-    items(record(capabilities.credentialSources).types).some(
-      (type) => record(type).type === "openai",
-    ),
-  );
-
+  assert.deepEqual(capabilities.modelCredentialSourcePresets, ["openai", "codex-pat"]);
+  assert.equal(await page.getByLabel("Credential storage").isVisible(), false);
   await page.getByLabel("Agent name", { exact: true }).fill("Member model Agent");
-  await selectSecret(page, "API key Secret", secret);
+  await page.getByLabel("API key", { exact: true }).fill("synthetic-console-member-model");
   const model = page.getByLabel("Model ID", { exact: true });
   if (!(await model.isVisible())) {
     await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
@@ -1669,8 +1627,7 @@ test("a Namespace member enrolls a Gateway model credential before saving a depl
   const agent = agentFields(record(await draft.json()).data);
   await page.waitForURL(/\/console\/agents\/[^/?]+\?revision=draft/);
 
-  // A bare Secret would fail the earlier Gateway admission check. The fixture's
-  // IAM facade leaves the exact Agent grant to an administrator.
+  // The fixture's IAM facade leaves the exact Agent grant to an administrator.
   const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
   async function deployDraft() {
     await waitForEnabled(deploy);
@@ -1687,8 +1644,9 @@ test("a Namespace member enrolls a Gateway model credential before saving a depl
   assert.equal(enrolled.status(), 201, await enrolled.text());
   const source = record(record(await enrolled.json()).data);
   const sourceId = text(source.id);
-  assert.equal(source.ownerCapability, "credential_gateway");
-  assert.deepEqual(source.secrets, { api_key: secret.ref });
+  assert.equal(Object.hasOwn(source, "ownerCapability"), false);
+  assert.equal(source.type, "static");
+  assert.equal(record(source.config).provider_preset, "openai");
   assert.deepEqual(agent.harnessAuth, { method: "credential_source", sourceId });
   assert.equal(
     record(record(await checkpoint.json()).error).message,
@@ -1722,6 +1680,23 @@ test("a Namespace member enrolls a Gateway model credential before saving a depl
     },
   });
   assert.equal(grant.status, 201, JSON.stringify(grant.body));
+  const network = `${agents}/${agent.id}/sandbox-policy/networking`;
+  const edit = await fixture.request("PATCH", `${network}/editing`, { body: { enabled: true } });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  const savedPolicy = await fixture.request("PUT", network, {
+    body: {
+      expectedVersion: 1,
+      additions: [
+        {
+          id: "console-codex-model",
+          binary: OPEN_SHELL_CODEX_BINARIES[0],
+          host: "api.openai.com",
+          ports: [{ from: 443, to: 443 }],
+        },
+      ],
+    },
+  });
+  assert.equal(savedPolicy.status, 200, JSON.stringify(savedPolicy.body));
   const admitted = await deployDraft();
   assert.equal(admitted.status(), 202, await admitted.text());
 });
@@ -1807,7 +1782,10 @@ test("the Console saves repository choices, first deny-all, and withdrawals thro
     );
     const path = `/namespaces/${namespaceId}/agents/${agent.id}`;
     const saved = await fixture.request("PATCH", path, {
-      body: { configurationId: agent.configurationId, repositoryBindings: selectedBindings },
+      body: {
+        configurationId: agent.configurationId,
+        repositoryAccess: { defaultProfile: "git-write", repositories: selectedBindings },
+      },
     });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     const base = `${path}/sandbox-policy/networking`;
@@ -2348,44 +2326,6 @@ async function protectedPolicyWithdrawalFixture(t: TestContext) {
   return { fixture, namespace, agent, base, savedGrants, sandboxDriver };
 }
 
-test("the Console preserves model network rules when staging deny-all Repository access", async (t) => {
-  const { fixture, namespace, agent, base } = await protectedPolicyWithdrawalFixture(t);
-  const { page } = await newPage(t, fixture);
-  // The real staged API reports this qualified flag; the separate PostgreSQL workflow
-  // proves staged admission and persistence. This legacy fixture exercises only the Console
-  // request wiring and remains free to reject the staged combination.
-  await page.route(fixture.origin + base, async (route) => {
-    if (route.request().method() !== "GET") {
-      await route.fallback();
-      return;
-    }
-    const response = await route.fetch();
-    const body = record(await response.json());
-    record(body.data).repositoryNetworkPolicySupportsAdditions = true;
-    await route.fulfill({ response, json: body });
-  });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
-  await page.getByRole("button", { name: "Manage rules", exact: true }).click();
-  await page.getByRole("button", { name: "Withdraw saved repository grants", exact: true }).click();
-  const dialog = page.getByRole("dialog");
-  assert.equal(
-    await dialog.getByText("This also removes the saved ordinary network rules.").count(),
-    0,
-  );
-  const submitted = responseTo(page, "PUT", fixture.origin + base);
-  await dialog.getByRole("button", { name: "Save deny-all policy", exact: true }).click();
-  const response = await submitted;
-  assert.deepEqual(response.request().postDataJSON(), {
-    expectedVersion: 2,
-    additions: [delegatedPolicyGrant],
-    repositoryNetworkPolicy: [],
-  });
-  assert.equal(response.status(), 409, "the legacy fixture must not admit staged additions");
-  assert.deepEqual(record(record((await fixture.request("GET", base)).data).policy).additions, [
-    delegatedPolicyGrant,
-  ]);
-});
-
 test("protected execution can withdraw saved repository grants using the current policy version", async (t) => {
   const { fixture, namespace, agent, base, savedGrants, sandboxDriver } =
     await protectedPolicyWithdrawalFixture(t);
@@ -2799,7 +2739,10 @@ test("Agent deployment requires a reload after repository access changes", async
   const initial = await fixture.request("PATCH", path, {
     body: {
       configurationId: agent.configurationId,
-      repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "application", profile: "git-read" }],
+      },
     },
   });
   assert.equal(initial.status, 200);
@@ -2818,7 +2761,10 @@ test("Agent deployment requires a reload after repository access changes", async
   const bindingChange = await fixture.request("PATCH", path, {
     body: {
       configurationId: agent.configurationId,
-      repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "application", profile: "git-full" }],
+      },
     },
   });
   assert.equal(bindingChange.status, 200);
@@ -2853,10 +2799,10 @@ test("Agent deployment requires a reload after repository access changes", async
     },
   });
   assert.equal(intentChange.status, 200);
-  assert.deepEqual(
-    record(intentChange.data).repositoryBindings,
-    record(bindingChange.data).repositoryBindings,
-  );
+  assert.deepEqual(record(intentChange.data).repositoryAccess, {
+    defaultProfile: "git-full",
+    repositories: [{ repositoryRef: "application" }],
+  });
   await deploy.click();
   await page.getByText(staleMessage, { exact: true }).waitFor();
   assert.equal(await deploy.isDisabled(), true);

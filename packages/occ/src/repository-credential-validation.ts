@@ -1,7 +1,6 @@
 import type {
   AdmittedRepositoryBinding,
   RepositoryAccess,
-  RepositoryBindingSelection,
   RepositoryRevisionState,
   SourceBackedRepositoryRevisionState,
 } from "@openclaw-enterprise/contracts";
@@ -76,13 +75,6 @@ function bindingArray(value: unknown, admitted: boolean): boolean {
   return true;
 }
 
-/** Canonical desired state; request defaulting and authority resolution belong to admission. */
-export function validRepositoryBindingSelections(
-  value: unknown,
-): value is readonly RepositoryBindingSelection[] {
-  return bindingArray(value, false);
-}
-
 export function validRepositoryAccess(value: unknown): value is RepositoryAccess {
   const hasClient =
     value !== null && typeof value === "object" && Object.hasOwn(value, "githubAppClientId");
@@ -133,26 +125,12 @@ export function validRepositoryAccess(value: unknown): value is RepositoryAccess
   });
 }
 
-/** Persist intent only alongside the exact profiles it resolves to. */
-export function normalizedRepositoryAccess(
-  value: unknown,
-  bindings: readonly RepositoryBindingSelection[] | undefined,
-): RepositoryAccess | undefined {
+export function normalizedRepositoryAccess(value: unknown): RepositoryAccess | undefined {
   if (value === undefined || value === null) {
     return undefined;
   }
-  if (
-    !validRepositoryAccess(value) ||
-    value.repositories.length !== (bindings?.length ?? 0) ||
-    value.repositories.some(
-      (entry, index) =>
-        entry.repositoryRef !== bindings?.[index]?.repositoryRef ||
-        (entry.profile ?? value.defaultProfile) !== bindings?.[index]?.profile,
-    )
-  ) {
-    throw new ScopeViolationError(
-      "The Agent repository access intent does not match its bindings.",
-    );
+  if (!validRepositoryAccess(value)) {
+    throw new ScopeViolationError("The Agent repository access is invalid.");
   }
   return immutableCopy(value);
 }
@@ -203,16 +181,4 @@ export function validRepositoryRevisionState(
     Number.isSafeInteger(value.deadlineWallMs) &&
     value.deadlineWallMs > 0
   );
-}
-
-export function normalizedRepositoryBindings(
-  value: unknown,
-): readonly RepositoryBindingSelection[] | undefined {
-  if (value === undefined || (Array.isArray(value) && value.length === 0)) {
-    return undefined;
-  }
-  if (!validRepositoryBindingSelections(value)) {
-    throw new ScopeViolationError("The Agent repository bindings are invalid.");
-  }
-  return immutableCopy(value);
 }

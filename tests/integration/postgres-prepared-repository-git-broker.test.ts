@@ -483,7 +483,7 @@ for (const outcome of [
         namespaceId: f.namespace.id,
         agentId: owner.id,
         configurationId: owner.configurationId,
-        repositoryBindings: selections,
+        repositoryAccess: { defaultProfile: "git-write", repositories: selections },
       });
       const binding = driver.resolve({
         namespaceId: f.namespace.id,
@@ -761,7 +761,7 @@ for (const outcome of [
         namespaceId: owner.namespaceId,
         agentId: owner.id,
         configurationId: owner.configurationId,
-        repositoryBindings: [],
+        repositoryAccess: { defaultProfile: "git-write", repositories: [] },
       });
       assert.equal(removed.activeRevisionId, candidate.id);
       if (hold) {
@@ -848,7 +848,7 @@ for (const outcome of [
         namespaceId: owner.namespaceId,
         agentId: owner.id,
         configurationId: owner.configurationId,
-        repositoryBindings: selections,
+        repositoryAccess: { defaultProfile: "git-write", repositories: selections },
       });
       const runCleanupPass = async () => {
         const beforeRetry = statuses.length;
@@ -1251,12 +1251,12 @@ async function withdrawRepositoryBinding(
     "/namespaces/" + agent.namespaceId + "/agents/" + agent.id,
     {
       configurationId: agent.configurationId,
-      repositoryBindings: [],
+      repositoryAccess: { defaultProfile: "git-write", repositories: [] },
     },
   );
   const result = object(response);
   assert.equal(result.status, 200, JSON.stringify(result.error));
-  assert.deepEqual(object(result.data).repositoryBindings ?? [], []);
+  assert.deepEqual(object(object(result.data).repositoryAccess).repositories, []);
   const { requestId } = object(result.meta);
   assert.equal(typeof requestId, "string");
   // Cleanup retains the original deployer, even when another principal removes Git.
@@ -1269,7 +1269,7 @@ async function withdrawRepositoryBinding(
     "/namespaces/" + agent.namespaceId + "/agents/" + agent.id,
     {
       configurationId: agent.configurationId,
-      repositoryBindings: [],
+      repositoryAccess: { defaultProfile: "git-write", repositories: [] },
     },
   );
   const replayResult = object(replay);

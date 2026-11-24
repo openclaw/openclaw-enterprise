@@ -126,8 +126,11 @@ export async function setupStandingWorkerAuthority(
     bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
   }).bindings;
   const binding = selected!;
-  await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
-    JSON.stringify([{ repositoryRef: binding.repositoryRef, profile: binding.profile }]),
+  await f.observerPool.query("UPDATE occ.agents SET repository_access=$1 WHERE id=$2", [
+    JSON.stringify({
+      defaultProfile: "git-write",
+      repositories: [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+    }),
     owner.id,
   ]);
   const scope = driver.standingApprovalScope({ namespaceId: f.namespace.id, binding })!;

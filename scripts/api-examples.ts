@@ -810,11 +810,6 @@ export const responseExamples = {
   createCredentialSource: source,
   getCredentialSource: oauthSource,
   updateCredentialSource: source,
-  adoptCodexPatCredentialSource: {
-    ...source,
-    name: "Codex PAT",
-    config: { provider_preset: "codex-pat" },
-  },
   rotateCredentialSource: oauthSource,
   deleteServiceAccount: { id: account.id, namespaceId, revocation: "skipped" },
   listServiceAccounts: [account],

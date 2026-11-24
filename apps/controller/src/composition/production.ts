@@ -104,8 +104,6 @@ export async function composeProduction(
     configurationDriver,
     secretDriver,
     sandboxDriver,
-    credentialGatewayDriver,
-    credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
     pluginDrivers,
@@ -220,9 +218,6 @@ export async function composeProduction(
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
-        ...(config.drivers.pluginSourceReader === undefined
-          ? {}
-          : { pluginSourceReader: config.drivers.pluginSourceReader }),
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],
@@ -242,14 +237,6 @@ export async function composeProduction(
     controller.selectDriver("channel", channelDriver.id);
     installSelectedSandboxDrivers(controller, config.drivers);
     await installTokenServiceDriver(controller, config.drivers, state);
-    if (credentialGatewayDriver !== undefined) {
-      controller.registerDriver(credentialGatewayDriver);
-      controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
-    }
-    if (credentialRefreshDriver !== undefined) {
-      controller.registerDriver(credentialRefreshDriver);
-      controller.selectDriver("credential_refresh", credentialRefreshDriver.id);
-    }
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
     config.serviceAccountDriverFactory?.(controller, state);

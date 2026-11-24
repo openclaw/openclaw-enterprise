@@ -94,7 +94,7 @@ the paths.
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
-| [Credential sources](#credential-sources) | 7 operations |
+| [Credential sources](#credential-sources) | 6 operations |
 | [IAM](#iam) | 11 operations |
 | [Presets](#presets) | 5 operations |
 | [Secrets](#secrets) | 5 operations |
@@ -2970,6 +2970,7 @@ Get the singleton Installation
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 | `data.capabilities.deviceAuthorization` | `true` | No | — |
+| `data.capabilities.modelCredentialSourcePresets` | `array<"openai" or "codex-pat">` | No | — |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
@@ -3093,6 +3094,7 @@ Example request
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 | `data.capabilities.deviceAuthorization` | `true` | No | — |
+| `data.capabilities.modelCredentialSourcePresets` | `array<"openai" or "codex-pat">` | No | — |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
@@ -4170,6 +4172,7 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 | `data.capabilities.deviceAuthorization` | `true` | No | — |
+| `data.capabilities.modelCredentialSourcePresets` | `array<"openai" or "codex-pat">` | No | — |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
@@ -4570,7 +4573,7 @@ List authorized Agents in one exact Namespace
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources. |
+| `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryAccess, networkProxy, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -4673,16 +4676,13 @@ Create a Namespace-owned Agent
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings. |
+| `repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
 | `repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
-| `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Save the initial GitHub grants on this draft atomically. Requires permission to enable editing, save and read the Agent networking policy. Omit for ordinary profile access. |
 | `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
 | `repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
@@ -4742,16 +4742,13 @@ Example request
 | `data.pluginDriver.id` | `string` | Yes | min length: 1 |
 | `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings. |
+| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
 | `data.repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `data.repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
-| `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.sandboxPolicyEditing` | `boolean` | No | — |
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
@@ -5131,7 +5128,7 @@ List or search available plugins for Agent creation using the selected Driver; c
 
 **Content type:** `application/json`
 
-Schema: `object or object or object or object`.
+Schema: `object or object`.
 
 Example request
 ```json
@@ -5251,7 +5248,7 @@ Read plugin details using the selected Driver; managed MCP discovery requires op
 
 **Content type:** `application/json`
 
-Schema: `object or object or object or object or object`.
+Schema: `object or object or object`.
 
 Example request
 ```json
@@ -5376,16 +5373,13 @@ Create a new Agent and queue first-time provisioning
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings. |
+| `repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
 | `repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
-| `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `workspaceDefaultsId` | `string` | No | pattern: `^[a-f0-9]{64}$` |
 
@@ -6003,16 +5997,13 @@ Begin or retry deletion of the requested Agent and its Agent revisions
 | `data.pluginDriver.id` | `string` | Yes | min length: 1 |
 | `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings. |
+| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
 | `data.repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `data.repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
-| `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.sandboxPolicyEditing` | `boolean` | No | — |
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
@@ -6086,7 +6077,7 @@ Get an exact Namespace-owned Agent
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources. |
+| `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryAccess, networkProxy, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -6167,16 +6158,13 @@ Replace an exact Namespace-owned Agent's editable draft
 | `networkProxy` | `object or null` | No | — |
 | `pluginApprovers` | `PluginApprovers or null` | No | — |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings. |
+| `repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
 | `repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
-| `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryStandingApproval` | `object or object` | No | — |
 
 Example request
@@ -6239,16 +6227,13 @@ Example request
 | `data.pluginDriver.id` | `string` | Yes | min length: 1 |
 | `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings. |
+| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
 | `data.repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `data.repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
-| `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.sandboxPolicyEditing` | `boolean` | No | — |
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
@@ -8291,6 +8276,7 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.driver.id` | `string` | Yes | min length: 1 |
 | `data.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.driverPolicySchema` | `object<string, any>` | Yes | — |
+| `data.hostedCredential` | `"codex_account" or "api_key"` | No | — |
 | `data.policyScopeByPlugin` | `object<string, "enablement_only" or "tool_human_approval">` | No | — |
 | `data.toolDefaults` | `object` | Yes | — |
 | `data.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
@@ -9061,8 +9047,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.repositoryNetworkPolicyCeiling` | `array<object>` | Yes | max items: 32; Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently. |
 | `data.repositoryNetworkPolicyCeiling[].access` | `"read" or "write"` | Yes | — |
 | `data.repositoryNetworkPolicyCeiling[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
-| `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether the editor can request withdrawal of saved grants or submit a repository list for validation. TokenService Git can admit a first list after earlier dedicated standalone model-only deployments. PUT validates the complete list against the current bindings and policy ceiling. |
-| `data.repositoryNetworkPolicySupportsAdditions` | `true` | No | The current repository editor can retain saved network additions. |
+| `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether the editor can request withdrawal or submit a repository list for legacy protected Git. PUT validates the complete list against the Agent selections and policy ceiling. |
 | `data.unavailableReason` | `string` | No | Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -9431,16 +9416,13 @@ Example request
 | `data.pluginDriver.id` | `string` | Yes | min length: 1 |
 | `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings. |
+| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
 | `data.repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `data.repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
-| `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.sandboxPolicyEditing` | `boolean` | No | — |
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
@@ -9619,16 +9601,13 @@ Stop one Agent and keep its saved Agent revision and persistent state
 | `data.pluginDriver.id` | `string` | Yes | min length: 1 |
 | `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings. |
+| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
 | `data.repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `data.repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
-| `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.sandboxPolicyEditing` | `boolean` | No | — |
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
@@ -11231,7 +11210,6 @@ Example response
 | [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source |
 | [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one readable credential source and its available status |
 | [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Update a Source through its recorded owner |
-| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/adopt-codex-pat`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidadoptcodexpat) | Move an unbound Gateway Codex PAT Source to TokenService |
 | [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Ask the recorded owner to refresh a credential source |
 
 #### `GET /namespaces/{namespaceId}/credential-sources`
@@ -11616,18 +11594,6 @@ Update a Source through its recorded owner
 
 **Content type:** `application/json`
 
-**Optional fields: `adoption`, `authorityScope`, `secrets`**
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `adoption` | `"live"` | No | Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission. |
-| `authorityScope` | `"execution"` | No | Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change. |
-| `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-
-**UpdateTokenServiceSourceBody**
-
-Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.
-
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects an approved model operation: openai or codex-pat. |
@@ -11675,73 +11641,6 @@ Example response
     "createdAt": "2026-10-01T12:00:00.000Z",
     "id": "cs_123e4567-e89b-42d3-a456-426614174000",
     "name": "Model credentials",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "ref": {
-      "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "credential_source",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    },
-    "state": "ready",
-    "type": "static"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/adopt-codex-pat`
-
-<span id="post-namespacesnamespaceidcredentialsourcescredentialsourceidadoptcodexpat"></span>
-
-Move an unbound Gateway Codex PAT Source to TokenService
-
-**Operation ID:** `adoptCodexPatCredentialSource`
-
-**Permissions:** Requires update permission on the requested CredentialSource.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `update` | `credential_source` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object or object or object or object or object` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "config": {
-      "provider_preset": "codex-pat"
-    },
-    "createdAt": "2026-10-01T12:00:00.000Z",
-    "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-    "name": "Codex PAT",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
     "ref": {
       "id": "cs_123e4567-e89b-42d3-a456-426614174000",
@@ -12725,7 +12624,6 @@ Create a reusable Namespace-owned Agent Preset
 | `template.agent.pluginApprovers` | `SafeJsonValue` | No | — |
 | `template.agent.plugins` | `SafeJsonValue` | No | — |
 | `template.agent.repositoryAccess` | `SafeJsonValue` | No | — |
-| `template.agent.repositoryBindings` | `SafeJsonValue` | No | — |
 | `template.configuration` | `object` | No | — |
 | `template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -12852,7 +12750,6 @@ Example request
 | `data.template.agent.pluginApprovers` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
 | `data.template.agent.repositoryAccess` | `SafeJsonValue` | No | — |
-| `data.template.agent.repositoryBindings` | `SafeJsonValue` | No | — |
 | `data.template.configuration` | `object` | No | — |
 | `data.template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `data.template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -13041,7 +12938,6 @@ Read one exact Namespace-owned Preset
 | `data.template.agent.pluginApprovers` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
 | `data.template.agent.repositoryAccess` | `SafeJsonValue` | No | — |
-| `data.template.agent.repositoryBindings` | `SafeJsonValue` | No | — |
 | `data.template.configuration` | `object` | No | — |
 | `data.template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `data.template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -13184,7 +13080,6 @@ Update a Preset without changing existing Agents
 | `template.agent.pluginApprovers` | `SafeJsonValue` | No | — |
 | `template.agent.plugins` | `SafeJsonValue` | No | — |
 | `template.agent.repositoryAccess` | `SafeJsonValue` | No | — |
-| `template.agent.repositoryBindings` | `SafeJsonValue` | No | — |
 | `template.configuration` | `object` | No | — |
 | `template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -13311,7 +13206,6 @@ Example request
 | `data.template.agent.pluginApprovers` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
 | `data.template.agent.repositoryAccess` | `SafeJsonValue` | No | — |
-| `data.template.agent.repositoryBindings` | `SafeJsonValue` | No | — |
 | `data.template.configuration` | `object` | No | — |
 | `data.template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `data.template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |

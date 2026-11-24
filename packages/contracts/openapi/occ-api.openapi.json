@@ -13838,6 +13838,15 @@
                               "type": "object"
                             },
                             "deviceAuthorization": { "const": true, "type": "boolean" },
+                            "modelCredentialSourcePresets": {
+                              "items": {
+                                "anyOf": [
+                                  { "const": "openai", "type": "string" },
+                                  { "const": "codex-pat", "type": "string" }
+                                ]
+                              },
+                              "type": "array"
+                            },
                             "nativeAdmin": { "const": true, "type": "boolean" },
                             "nativeWorkers": {
                               "additionalProperties": false,
@@ -14265,6 +14274,15 @@
                               "type": "object"
                             },
                             "deviceAuthorization": { "const": true, "type": "boolean" },
+                            "modelCredentialSourcePresets": {
+                              "items": {
+                                "anyOf": [
+                                  { "const": "openai", "type": "string" },
+                                  { "const": "codex-pat", "type": "string" }
+                                ]
+                              },
+                              "type": "array"
+                            },
                             "nativeAdmin": { "const": true, "type": "boolean" },
                             "nativeWorkers": {
                               "additionalProperties": false,
@@ -16524,6 +16542,15 @@
                               "type": "object"
                             },
                             "deviceAuthorization": { "const": true, "type": "boolean" },
+                            "modelCredentialSourcePresets": {
+                              "items": {
+                                "anyOf": [
+                                  { "const": "openai", "type": "string" },
+                                  { "const": "codex-pat", "type": "string" }
+                                ]
+                              },
+                              "type": "array"
+                            },
                             "nativeAdmin": { "const": true, "type": "boolean" },
                             "nativeWorkers": {
                               "additionalProperties": false,
@@ -16849,7 +16876,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources.",
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryAccess, networkProxy, harnessAuth, and credentialSources.",
                       "items": {
                         "anyOf": [
                           {
@@ -17057,7 +17084,7 @@
                               "plugins": { "$ref": "#/components/schemas/def-6" },
                               "repositoryAccess": {
                                 "additionalProperties": false,
-                                "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
+                                "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
                                 "properties": {
                                   "defaultProfile": {
                                     "maxLength": 128,
@@ -17101,30 +17128,6 @@
                                 },
                                 "required": ["defaultProfile", "repositories"],
                                 "type": "object"
-                              },
-                              "repositoryBindings": {
-                                "items": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "profile": {
-                                      "maxLength": 128,
-                                      "minLength": 1,
-                                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                      "type": "string"
-                                    },
-                                    "repositoryRef": {
-                                      "maxLength": 128,
-                                      "minLength": 1,
-                                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": ["repositoryRef", "profile"],
-                                  "type": "object"
-                                },
-                                "maxItems": 16,
-                                "minItems": 1,
-                                "type": "array"
                               },
                               "sandboxPolicyEditing": { "type": "boolean" },
                               "servicePrincipalId": {
@@ -17188,7 +17191,6 @@
                                     "anyOf": [
                                       { "const": "plugins", "type": "string" },
                                       { "const": "pluginApprovers", "type": "string" },
-                                      { "const": "repositoryBindings", "type": "string" },
                                       { "const": "repositoryAccess", "type": "string" },
                                       { "const": "networkProxy", "type": "string" },
                                       { "const": "harnessAuth", "type": "string" },
@@ -17271,7 +17273,7 @@
                             "type": "object"
                           }
                         ],
-                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources."
+                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryAccess, networkProxy, harnessAuth, and credentialSources."
                       },
                       "type": "array"
                     },
@@ -17600,7 +17602,7 @@
                   "plugins": { "$ref": "#/components/schemas/def-6" },
                   "repositoryAccess": {
                     "additionalProperties": false,
-                    "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
+                    "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
                     "properties": {
                       "defaultProfile": {
                         "maxLength": 128,
@@ -17644,30 +17646,6 @@
                     },
                     "required": ["defaultProfile", "repositories"],
                     "type": "object"
-                  },
-                  "repositoryBindings": {
-                    "description": "Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references.",
-                    "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "profile": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                          "type": "string"
-                        },
-                        "repositoryRef": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                          "type": "string"
-                        }
-                      },
-                      "required": ["repositoryRef"],
-                      "type": "object"
-                    },
-                    "maxItems": 16,
-                    "type": "array"
                   },
                   "repositoryNetworkPolicy": {
                     "description": "Save the initial GitHub grants on this draft atomically. Requires permission to enable editing, save and read the Agent networking policy. Omit for ordinary profile access.",
@@ -17941,7 +17919,7 @@
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
-                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
+                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
                           "properties": {
                             "defaultProfile": {
                               "maxLength": 128,
@@ -17985,30 +17963,6 @@
                           },
                           "required": ["defaultProfile", "repositories"],
                           "type": "object"
-                        },
-                        "repositoryBindings": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "profile": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                "type": "string"
-                              },
-                              "repositoryRef": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["repositoryRef", "profile"],
-                            "type": "object"
-                          },
-                          "maxItems": 16,
-                          "minItems": 1,
-                          "type": "array"
                         },
                         "sandboxPolicyEditing": { "type": "boolean" },
                         "servicePrincipalId": {
@@ -19117,60 +19071,6 @@
                     },
                     "required": ["harnessId"],
                     "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "accessToken": {
-                        "maxLength": 16384,
-                        "minLength": 1,
-                        "pattern": "\\S",
-                        "type": "string",
-                        "writeOnly": true
-                      },
-                      "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
-                      "harnessId": {
-                        "anyOf": [
-                          { "const": "openclaw", "type": "string" },
-                          { "const": "codex", "type": "string" }
-                        ]
-                      },
-                      "q": { "maxLength": 1024, "type": "string" }
-                    },
-                    "required": ["harnessId", "accessToken"],
-                    "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
-                      "harnessId": {
-                        "anyOf": [
-                          { "const": "openclaw", "type": "string" },
-                          { "const": "codex", "type": "string" }
-                        ]
-                      },
-                      "q": { "maxLength": 1024, "type": "string" },
-                      "secretRef": {
-                        "additionalProperties": false,
-                        "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                        "properties": {
-                          "id": {
-                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "kind": { "const": "secret", "type": "string" },
-                          "namespaceId": {
-                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          }
-                        },
-                        "required": ["kind", "namespaceId", "id"],
-                        "type": "object"
-                      }
-                    },
-                    "required": ["harnessId", "secretRef"],
-                    "type": "object"
                   }
                 ]
               }
@@ -19598,58 +19498,6 @@
                       "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                     },
                     "required": ["harnessId", "pluginId"],
-                    "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "accessToken": {
-                        "maxLength": 16384,
-                        "minLength": 1,
-                        "pattern": "\\S",
-                        "type": "string",
-                        "writeOnly": true
-                      },
-                      "harnessId": {
-                        "anyOf": [
-                          { "const": "openclaw", "type": "string" },
-                          { "const": "codex", "type": "string" }
-                        ]
-                      },
-                      "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
-                    },
-                    "required": ["harnessId", "pluginId", "accessToken"],
-                    "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "harnessId": {
-                        "anyOf": [
-                          { "const": "openclaw", "type": "string" },
-                          { "const": "codex", "type": "string" }
-                        ]
-                      },
-                      "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" },
-                      "secretRef": {
-                        "additionalProperties": false,
-                        "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                        "properties": {
-                          "id": {
-                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "kind": { "const": "secret", "type": "string" },
-                          "namespaceId": {
-                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          }
-                        },
-                        "required": ["kind", "namespaceId", "id"],
-                        "type": "object"
-                      }
-                    },
-                    "required": ["harnessId", "pluginId", "secretRef"],
                     "type": "object"
                   }
                 ]
@@ -20202,7 +20050,7 @@
                   "plugins": { "$ref": "#/components/schemas/def-6" },
                   "repositoryAccess": {
                     "additionalProperties": false,
-                    "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
+                    "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
                     "properties": {
                       "defaultProfile": {
                         "maxLength": 128,
@@ -20246,30 +20094,6 @@
                     },
                     "required": ["defaultProfile", "repositories"],
                     "type": "object"
-                  },
-                  "repositoryBindings": {
-                    "description": "Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references.",
-                    "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "profile": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                          "type": "string"
-                        },
-                        "repositoryRef": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                          "type": "string"
-                        }
-                      },
-                      "required": ["repositoryRef"],
-                      "type": "object"
-                    },
-                    "maxItems": 16,
-                    "type": "array"
                   },
                   "requestId": {
                     "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -22036,7 +21860,7 @@
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
-                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
+                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
                           "properties": {
                             "defaultProfile": {
                               "maxLength": 128,
@@ -22080,30 +21904,6 @@
                           },
                           "required": ["defaultProfile", "repositories"],
                           "type": "object"
-                        },
-                        "repositoryBindings": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "profile": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                "type": "string"
-                              },
-                              "repositoryRef": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["repositoryRef", "profile"],
-                            "type": "object"
-                          },
-                          "maxItems": 16,
-                          "minItems": 1,
-                          "type": "array"
                         },
                         "sandboxPolicyEditing": { "type": "boolean" },
                         "servicePrincipalId": {
@@ -22503,7 +22303,7 @@
                             "plugins": { "$ref": "#/components/schemas/def-6" },
                             "repositoryAccess": {
                               "additionalProperties": false,
-                              "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
+                              "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
                               "properties": {
                                 "defaultProfile": {
                                   "maxLength": 128,
@@ -22547,30 +22347,6 @@
                               },
                               "required": ["defaultProfile", "repositories"],
                               "type": "object"
-                            },
-                            "repositoryBindings": {
-                              "items": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "profile": {
-                                    "maxLength": 128,
-                                    "minLength": 1,
-                                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                    "type": "string"
-                                  },
-                                  "repositoryRef": {
-                                    "maxLength": 128,
-                                    "minLength": 1,
-                                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                    "type": "string"
-                                  }
-                                },
-                                "required": ["repositoryRef", "profile"],
-                                "type": "object"
-                              },
-                              "maxItems": 16,
-                              "minItems": 1,
-                              "type": "array"
                             },
                             "sandboxPolicyEditing": { "type": "boolean" },
                             "servicePrincipalId": {
@@ -22634,7 +22410,6 @@
                                   "anyOf": [
                                     { "const": "plugins", "type": "string" },
                                     { "const": "pluginApprovers", "type": "string" },
-                                    { "const": "repositoryBindings", "type": "string" },
                                     { "const": "repositoryAccess", "type": "string" },
                                     { "const": "networkProxy", "type": "string" },
                                     { "const": "harnessAuth", "type": "string" },
@@ -22717,7 +22492,7 @@
                           "type": "object"
                         }
                       ],
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources."
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryAccess, networkProxy, harnessAuth, and credentialSources."
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -23041,7 +22816,7 @@
                   "plugins": { "$ref": "#/components/schemas/def-6" },
                   "repositoryAccess": {
                     "additionalProperties": false,
-                    "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
+                    "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
                     "properties": {
                       "defaultProfile": {
                         "maxLength": 128,
@@ -23085,30 +22860,6 @@
                     },
                     "required": ["defaultProfile", "repositories"],
                     "type": "object"
-                  },
-                  "repositoryBindings": {
-                    "description": "Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references.",
-                    "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "profile": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                          "type": "string"
-                        },
-                        "repositoryRef": {
-                          "maxLength": 128,
-                          "minLength": 1,
-                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                          "type": "string"
-                        }
-                      },
-                      "required": ["repositoryRef"],
-                      "type": "object"
-                    },
-                    "maxItems": 16,
-                    "type": "array"
                   },
                   "repositoryStandingApproval": {
                     "anyOf": [
@@ -23412,7 +23163,7 @@
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
-                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
+                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
                           "properties": {
                             "defaultProfile": {
                               "maxLength": 128,
@@ -23456,30 +23207,6 @@
                           },
                           "required": ["defaultProfile", "repositories"],
                           "type": "object"
-                        },
-                        "repositoryBindings": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "profile": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                "type": "string"
-                              },
-                              "repositoryRef": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["repositoryRef", "profile"],
-                            "type": "object"
-                          },
-                          "maxItems": 16,
-                          "minItems": 1,
-                          "type": "array"
                         },
                         "sandboxPolicyEditing": { "type": "boolean" },
                         "servicePrincipalId": {
@@ -31684,6 +31411,12 @@
                         },
                         "driver": { "$ref": "#/components/schemas/def-1" },
                         "driverPolicySchema": { "additionalProperties": {}, "type": "object" },
+                        "hostedCredential": {
+                          "anyOf": [
+                            { "const": "codex_account", "type": "string" },
+                            { "const": "api_key", "type": "string" }
+                          ]
+                        },
                         "policyScopeByPlugin": {
                           "additionalProperties": {
                             "anyOf": [
@@ -33725,7 +33458,6 @@
                                   "anyOf": [
                                     { "const": "plugins", "type": "string" },
                                     { "const": "pluginApprovers", "type": "string" },
-                                    { "const": "repositoryBindings", "type": "string" },
                                     { "const": "repositoryAccess", "type": "string" },
                                     { "const": "networkProxy", "type": "string" },
                                     { "const": "harnessAuth", "type": "string" },
@@ -35171,12 +34903,7 @@
                           "type": "array"
                         },
                         "repositoryNetworkPolicySaveSupported": {
-                          "description": "Whether the editor can request withdrawal of saved grants or submit a repository list for validation. TokenService Git can admit a first list after earlier dedicated standalone model-only deployments. PUT validates the complete list against the current bindings and policy ceiling.",
-                          "type": "boolean"
-                        },
-                        "repositoryNetworkPolicySupportsAdditions": {
-                          "const": true,
-                          "description": "The current repository editor can retain saved network additions.",
+                          "description": "Whether the editor can request withdrawal or submit a repository list for legacy protected Git. PUT validates the complete list against the Agent selections and policy ceiling.",
                           "type": "boolean"
                         },
                         "unavailableReason": {
@@ -36556,7 +36283,7 @@
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
-                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
+                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
                           "properties": {
                             "defaultProfile": {
                               "maxLength": 128,
@@ -36600,30 +36327,6 @@
                           },
                           "required": ["defaultProfile", "repositories"],
                           "type": "object"
-                        },
-                        "repositoryBindings": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "profile": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                "type": "string"
-                              },
-                              "repositoryRef": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["repositoryRef", "profile"],
-                            "type": "object"
-                          },
-                          "maxItems": 16,
-                          "minItems": 1,
-                          "type": "array"
                         },
                         "sandboxPolicyEditing": { "type": "boolean" },
                         "servicePrincipalId": {
@@ -37320,7 +37023,7 @@
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
-                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. Mutually exclusive with repositoryBindings.",
+                          "description": "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
                           "properties": {
                             "defaultProfile": {
                               "maxLength": 128,
@@ -37364,30 +37067,6 @@
                           },
                           "required": ["defaultProfile", "repositories"],
                           "type": "object"
-                        },
-                        "repositoryBindings": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "profile": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                "type": "string"
-                              },
-                              "repositoryRef": {
-                                "maxLength": 128,
-                                "minLength": 1,
-                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["repositoryRef", "profile"],
-                            "type": "object"
-                          },
-                          "maxItems": 16,
-                          "minItems": 1,
-                          "type": "array"
                         },
                         "sandboxPolicyEditing": { "type": "boolean" },
                         "servicePrincipalId": {
@@ -41105,6 +40784,7 @@
                 "anyOf": [
                   {
                     "additionalProperties": false,
+                    "description": "Register a prepared or credential-free Source offered by the selected Credential Proxy.",
                     "properties": {
                       "config": {
                         "additionalProperties": {
@@ -41604,50 +41284,7 @@
                   "value": { "secret": { "value": "replace-with-your-rotated-model-key" } }
                 }
               },
-              "schema": {
-                "anyOf": [
-                  {
-                    "additionalProperties": false,
-                    "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
-                    "properties": {
-                      "adoption": {
-                        "const": "live",
-                        "description": "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
-                        "type": "string"
-                      },
-                      "authorityScope": {
-                        "const": "execution",
-                        "description": "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
-                        "type": "string"
-                      },
-                      "secrets": {
-                        "additionalProperties": {
-                          "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                          "properties": {
-                            "id": {
-                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "kind": { "const": "secret", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
-                          },
-                          "required": ["kind", "namespaceId", "id"],
-                          "type": "object"
-                        },
-                        "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                        "maxProperties": 16,
-                        "type": "object"
-                      }
-                    },
-                    "type": "object"
-                  },
-                  { "$ref": "#/components/schemas/UpdateTokenServiceSourceBody" }
-                ]
-              }
+              "schema": { "$ref": "#/components/schemas/UpdateTokenServiceSourceBody" }
             }
           },
           "required": true
@@ -41770,146 +41407,6 @@
           }
         },
         "summary": "Update a Source through its recorded owner",
-        "tags": ["Credential sources"],
-        "x-openclaw-permissions": [
-          { "action": "update", "resourceKind": "credential_source", "scope": "requested" }
-        ]
-      }
-    },
-    "/namespaces/{namespaceId}/credential-sources/{credentialSourceId}/adopt-codex-pat": {
-      "post": {
-        "description": "Requires update permission on the requested CredentialSource.",
-        "operationId": "adoptCodexPatCredentialSource",
-        "parameters": [
-          {
-            "examples": {
-              "example": {
-                "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
-              }
-            },
-            "in": "path",
-            "name": "namespaceId",
-            "required": true,
-            "schema": {
-              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
-            }
-          },
-          {
-            "examples": {
-              "example": {
-                "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "cs_123e4567-e89b-42d3-a456-426614174000"
-              }
-            },
-            "in": "path",
-            "name": "credentialSourceId",
-            "required": true,
-            "schema": {
-              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "Example response",
-                    "value": {
-                      "data": {
-                        "config": { "provider_preset": "codex-pat" },
-                        "createdAt": "2026-10-01T12:00:00.000Z",
-                        "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-                        "name": "Codex PAT",
-                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "ref": {
-                          "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "credential_source",
-                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                        },
-                        "state": "ready",
-                        "type": "static"
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-13" }
-              }
-            },
-            "description": "OK"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request does not match the operation contract."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller did not provide valid credentials."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The caller is not allowed to perform this operation."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested platform resource was not found."
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested operation conflicts with the current resource state."
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The platform request could not be completed."
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "A required dependency is unavailable."
-          }
-        },
-        "summary": "Move an unbound Gateway Codex PAT Source to TokenService",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "credential_source", "scope": "requested" }
@@ -44893,8 +44390,7 @@
                           "name": { "$ref": "#/components/schemas/def-0" },
                           "pluginApprovers": { "$ref": "#/components/schemas/def-0" },
                           "plugins": { "$ref": "#/components/schemas/def-0" },
-                          "repositoryAccess": { "$ref": "#/components/schemas/def-0" },
-                          "repositoryBindings": { "$ref": "#/components/schemas/def-0" }
+                          "repositoryAccess": { "$ref": "#/components/schemas/def-0" }
                         },
                         "type": "object"
                       },
@@ -45091,8 +44587,7 @@
                                 "name": { "$ref": "#/components/schemas/def-0" },
                                 "pluginApprovers": { "$ref": "#/components/schemas/def-0" },
                                 "plugins": { "$ref": "#/components/schemas/def-0" },
-                                "repositoryAccess": { "$ref": "#/components/schemas/def-0" },
-                                "repositoryBindings": { "$ref": "#/components/schemas/def-0" }
+                                "repositoryAccess": { "$ref": "#/components/schemas/def-0" }
                               },
                               "type": "object"
                             },
@@ -45542,8 +45037,7 @@
                                 "name": { "$ref": "#/components/schemas/def-0" },
                                 "pluginApprovers": { "$ref": "#/components/schemas/def-0" },
                                 "plugins": { "$ref": "#/components/schemas/def-0" },
-                                "repositoryAccess": { "$ref": "#/components/schemas/def-0" },
-                                "repositoryBindings": { "$ref": "#/components/schemas/def-0" }
+                                "repositoryAccess": { "$ref": "#/components/schemas/def-0" }
                               },
                               "type": "object"
                             },
@@ -45831,8 +45325,7 @@
                           "name": { "$ref": "#/components/schemas/def-0" },
                           "pluginApprovers": { "$ref": "#/components/schemas/def-0" },
                           "plugins": { "$ref": "#/components/schemas/def-0" },
-                          "repositoryAccess": { "$ref": "#/components/schemas/def-0" },
-                          "repositoryBindings": { "$ref": "#/components/schemas/def-0" }
+                          "repositoryAccess": { "$ref": "#/components/schemas/def-0" }
                         },
                         "type": "object"
                       },
@@ -46028,8 +45521,7 @@
                                 "name": { "$ref": "#/components/schemas/def-0" },
                                 "pluginApprovers": { "$ref": "#/components/schemas/def-0" },
                                 "plugins": { "$ref": "#/components/schemas/def-0" },
-                                "repositoryAccess": { "$ref": "#/components/schemas/def-0" },
-                                "repositoryBindings": { "$ref": "#/components/schemas/def-0" }
+                                "repositoryAccess": { "$ref": "#/components/schemas/def-0" }
                               },
                               "type": "object"
                             },

@@ -1,4 +1,4 @@
-import { credentialGatewayOperation } from "./credential-source-drivers.ts";
+import { driverOperation } from "./driver-operation.ts";
 import { lockNamespace } from "./resource-scope.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -504,8 +504,9 @@ export function createEgressAuthority(
       const { namespace, revision } = runtime;
       const verified = await Reflect.apply(verify, driver, [
         {
-          namespace: await credentialGatewayOperation(() =>
-            Reflect.apply(resolve, compute, [namespace]),
+          namespace: await driverOperation(
+            () => Reflect.apply(resolve, compute, [namespace]),
+            "Compute",
           ),
           revision,
           plan: use.installation.plan,

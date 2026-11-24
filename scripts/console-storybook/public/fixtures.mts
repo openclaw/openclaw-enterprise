@@ -900,6 +900,13 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           return response({
             ...scenario.pluginCapabilities,
             discoveryCredential: scenario.pluginDiscoveryCredential ?? "required",
+            ...(scenario.pluginDiscoveryCredential === "none"
+              ? {}
+              : scenario.auth === "oauth"
+                ? { hostedCredential: "codex_account" }
+                : scenario.auth === "api-source"
+                  ? { hostedCredential: "api_key" }
+                  : {}),
           });
         }
         if (suffix === "/plugins" && method === "POST" && scenario.pluginDiscovery) {

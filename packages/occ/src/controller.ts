@@ -41,7 +41,6 @@ import {
 import {
   type CreateCredentialSourceInput,
   type RotateCredentialSourceInput,
-  type UpdateCredentialSourceInput,
 } from "./credential-source-operations.ts";
 
 import { CredentialProxy } from "./credential-proxy.ts";
@@ -1187,18 +1186,6 @@ export class OpenClawController {
     );
   }
 
-  async adoptCodexPatCredentialSource(
-    principalId: string,
-    ref: { readonly namespaceId: string; readonly credentialSourceId: string },
-    audit: (resource: CredentialSourceReference, phase?: "adoption_started") => AuditEvent,
-  ): Promise<Readonly<CredentialSourceMetadata>> {
-    return this.composition.credentials.managedCredentialSources.adoptCodexPatCredentialSource(
-      principalId,
-      ref,
-      audit,
-    );
-  }
-
   async createCredentialSource(
     principalId: string,
     input: CreateCredentialSourceInput,
@@ -1210,18 +1197,6 @@ export class OpenClawController {
       input,
       audit,
       registrationAudit,
-    );
-  }
-
-  async updateCredentialSource(
-    principalId: string,
-    input: UpdateCredentialSourceInput,
-    failureAudit?: (reasonCode: string) => AuditEvent,
-  ): Promise<Readonly<LegacyCredentialSourceMetadata>> {
-    return this.composition.credentials.credentialSourceOperations.updateCredentialSource(
-      principalId,
-      input,
-      failureAudit,
     );
   }
 

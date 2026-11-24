@@ -20,8 +20,6 @@ import type {
   JSONSchema,
   ResolvedCredential,
   SourceLifecycleConfig,
-  SourceAdoptionInput,
-  StaticCredentialSource,
   SourceRefreshOperation,
   SourceRegistrationInput,
   SourceUpdate,
@@ -132,6 +130,7 @@ function encodeGitHubAppCredential(issued: Awaited<ReturnType<GitHubAppSourceIss
 }
 
 export class OCCTokenServiceDriver implements TokenServiceDriver {
+  static readonly implementation = "occ/token-service";
   static readonly configurationSchema: JSONSchema = Object.freeze({
     type: "object",
     properties: Object.freeze({}),
@@ -143,7 +142,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   }
 
   readonly capability = "token_service";
-  readonly implementation = "occ/token-service";
+  readonly implementation = OCCTokenServiceDriver.implementation;
   readonly clientScopes: TokenServiceDriver["clientScopes"] = Object.freeze({
     oauth2: Object.freeze(["installation", "namespace"] as const),
     "github-app": Object.freeze(["installation"] as const),
@@ -584,58 +583,6 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       source = { ...common, consent: { ...input.consent, ...scopes } };
     }
     return oauth.registerSource(source, input.grant, signal);
-  }
-
-  async adoptSource(
-    input: SourceAdoptionInput,
-    resolveCredential: (signal: AbortSignal) => Promise<string>,
-    retireGateway: (signal: AbortSignal) => Promise<void>,
-    signal: AbortSignal,
-  ): Promise<StaticCredentialSource> {
-    signal.throwIfAborted();
-    const ref = this.ownedRef(input);
-    if (
-      input.providerPreset !== "codex-pat" ||
-      !isNonEmptyString(input.expectedGatewayId) ||
-      input.expectedSecretRef.kind !== "secret" ||
-      input.expectedSecretRef.namespaceId !== ref.namespaceId ||
-      !isNonEmptyString(input.expectedSecretRef.id)
-    ) {
-      throw new ScopeViolationError("The admitted Source adoption identity is invalid.");
-    }
-    return this.state.transact(async ({ namespaces, credentialSources }) => {
-      const namespace = await namespaces.lockNamespace(ref.namespaceId);
-      const source = await credentialSources.lockCredentialSource(ref.namespaceId, ref.id);
-      if (
-        namespace?.status !== "ready" ||
-        source?.state !== "ready" ||
-        source.ownerCapability !== "credential_gateway" ||
-        source.driverId !== input.expectedGatewayId ||
-        source.type !== "codex-pat" ||
-        source.egress !== undefined ||
-        Object.keys(source.secrets).length !== 1 ||
-        source.secrets.access_token?.kind !== "secret" ||
-        source.secrets.access_token.namespaceId !== ref.namespaceId ||
-        source.secrets.access_token.id !== input.expectedSecretRef.id ||
-        !(await credentialSources.isCredentialSourceAdoptionSettled(ref.namespaceId, ref.id))
-      ) {
-        throw new ResourceStateConflictError("The Source is not available for adoption.");
-      }
-      const credential = await resolveCredential(signal);
-      signal.throwIfAborted();
-      const encoded = encodeCredential({ access_token: credential });
-      await withComputeAbortSignal(signal, () =>
-        this.store.create(this.storageRef(ref), encoded.stored),
-      );
-      signal.throwIfAborted();
-      await retireGateway(signal);
-      signal.throwIfAborted();
-      const adopted = await credentialSources.adoptGatewayPatSource(input);
-      if (!adopted) {
-        throw new ResourceStateConflictError("The Source changed during adoption.");
-      }
-      return adopted;
-    });
   }
 
   async updateSource(

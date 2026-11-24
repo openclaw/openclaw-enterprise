@@ -54,7 +54,7 @@ export function buildSandboxInstallation() {
           port: 50051,
           insecureTransport: "network-policy",
         } satisfies OpenShellBackendConfiguration,
-        drivers: { sandbox: "openshell-sandbox", credential_gateway: "openshell-credentials" },
+        drivers: { sandbox: "openshell-sandbox" },
       },
     ],
     drivers: {
@@ -65,10 +65,6 @@ export function buildSandboxInstallation() {
           ...base.drivers.compute.configuration,
           servicePrincipalCredentials: { mode: "disabled" },
         },
-      },
-      credential_gateway: {
-        id: "openshell-credentials",
-        configuration: { binaries: ["/app/bin/model-client"] },
       },
       sandbox: {
         id: "openshell-sandbox",

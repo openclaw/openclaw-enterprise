@@ -4,6 +4,9 @@ kind: reference/driver
 
 # CredentialRefreshDriver contract
 
+This Driver describes the retired Credential Gateway path. Configure
+[TokenService Sources](../credential-sources.md#register-a-source) for current Installations.
+
 ## Overview
 
 `CredentialRefreshDriver` is the legacy renewal contract for Gateway-owned

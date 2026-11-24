@@ -127,7 +127,10 @@ grant. Its create request includes:
 
 ```json
 {
-  "repositoryBindings": [{ "repositoryRef": "application", "profile": "git-write" }]
+  "repositoryAccess": {
+    "defaultProfile": "git-write",
+    "repositories": [{ "repositoryRef": "application" }]
+  }
 }
 ```
 

@@ -9,7 +9,7 @@ import {
   type OpenClawConfigurationDocument,
   type PluginDesiredState,
   type PluginDriver,
-  type RepositoryBindingSelection,
+  type RepositoryAccess,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
 } from "@openclaw-enterprise/contracts";
@@ -45,6 +45,12 @@ import {
 interface AgentHarnessTopologyDependencies {
   readonly sandboxDriver: () => SandboxDriver | undefined;
   readonly selectedCompute: () => ComputeDriver | undefined;
+  readonly requireModelSource: (
+    compute: ComputeDriver,
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+  ) => void;
   readonly validatePluginPlacement: (
     driver: PluginDriver,
     plugins: PluginDesiredState | undefined,
@@ -345,7 +351,9 @@ export function createSavedAgentTopologyValidator(dependencies: AgentHarnessTopo
       readonly executionMode: HarnessExecutionMode;
       /** The admission snapshot of the Agent's binding, if save can build one. */
       readonly harnessAuth: () => Promise<HarnessAuthSnapshot | undefined>;
-      readonly repositoryBindings: readonly RepositoryBindingSelection[] | undefined;
+      /** Preflight can supply an authentication method before creating a credential. */
+      readonly plannedHarnessAuth?: boolean;
+      readonly repositoryAccess: RepositoryAccess | undefined;
       readonly workspaceSetup: boolean;
       readonly plugins: PluginDesiredState | undefined;
       readonly pluginDriver: PluginDriver | undefined;
@@ -398,11 +406,13 @@ export function createSavedAgentTopologyValidator(dependencies: AgentHarnessTopo
     // to, so deployment refuses that pair and save does not.
     const auth = selectsModel(configuration.values) ? await agent.harnessAuth() : undefined;
     if (auth !== undefined && compute.validateHarnessAuth !== undefined) {
+      if (!agent.plannedHarnessAuth) {
+        dependencies.requireModelSource(compute, harness, auth, configuration.values);
+      }
       validateAgentHarnessAuth(compute, harness, auth, values, null);
     }
     if (
-      agent.repositoryBindings !== undefined &&
-      agent.repositoryBindings.length > 0 &&
+      agent.repositoryAccess?.repositories.length &&
       compute.validateRepositoryCredentials !== undefined
     ) {
       validateRepositoryTopology(compute, harness, sandbox?.id);

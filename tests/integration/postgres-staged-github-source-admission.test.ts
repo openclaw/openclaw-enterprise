@@ -239,7 +239,7 @@ test(
     );
     assert.ok(runtime);
     assert.ok(runtime.repositoryRegistry && runtime.repositoryAdmission);
-    assert.equal(runtime.credentialGatewayDriver, undefined);
+    assert.equal(Object.hasOwn(runtime.installation.drivers, "credential_gateway"), false);
     assert.equal(runtime.repositoryGitDriver, undefined);
     Reflect.set(
       runtime.computeDriver,
@@ -398,6 +398,20 @@ test(
       values: createHarnessConfiguration("codex", "gpt-4.1"),
     });
     assert.equal(config.statusCode, 201, config.body);
+    Reflect.set(core, "secretUid", randomUUID());
+    const directKey = await request("POST", `${base}/secrets`, {
+      name: "Direct key cannot replace selected Source custody",
+      value: "synthetic-model-key",
+    });
+    assert.equal(directKey.statusCode, 201, directKey.body);
+    const directKeyDraft = await request("POST", `${base}/agents`, {
+      name: `Direct key ${randomUUID()}`,
+      configurationId: config.json().data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key", source: directKey.json().data.ref },
+    });
+    assert.equal(directKeyDraft.statusCode, 400, directKeyDraft.body);
+    assert.match(directKeyDraft.json().error.message, /enroll.*as a TokenService Source/i);
     const issueCountBeforeSave = github.issuesOfTokens.length;
     const selected = (access: "read" | "write") => ({
       githubAppClientId: clientId,
@@ -407,6 +421,22 @@ test(
         { repositoryRef: repositories[1]!.repositoryRef, access },
       ],
     });
+    const withoutClient = {
+      defaultProfile: "github-repository",
+      repositories: [{ repositoryRef: repositories[0]!.repositoryRef }],
+    };
+    const missingClient = await request("POST", `${base}/agents`, {
+      name: `Missing Git Client ${randomUUID()}`,
+      configurationId: config.json().data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+      credentialSources: [{ sourceId: modelSource.id }],
+      repositoryAccess: withoutClient,
+    });
+    assert.equal(missingClient.statusCode, 400, missingClient.body);
+    assert.match(missingClient.json().error.message, /select a GitHub App Client/i);
+    assert.equal(github.issuesOfTokens.length, issueCountBeforeSave);
+
     // The Namespace registry can issue writes, but the Installation ceiling permits only reads
     // on the first repository. Refuse the Agent request before any provider mint.
     const broaderAgent = await request("POST", `${base}/agents`, {
@@ -473,6 +503,23 @@ test(
       const agent = created.json().data;
       assert.equal(agent.gatewayManagedMode, true);
       assert.deepEqual(agent.credentialSources, [{ sourceId: modelSource.id }]);
+      if (gitSourceId !== undefined) {
+        const explicitSource = await request("PATCH", `${base}/agents/${agent.id}`, {
+          configurationId: config.json().data.id,
+          credentialSources: [{ sourceId: modelSource.id }, { sourceId: gitSourceId }],
+        });
+        assert.equal(explicitSource.statusCode, 409, explicitSource.body);
+        assert.match(
+          explicitSource.json().error.message,
+          /deployment selects the repository credential source/i,
+        );
+      } else {
+        const missingClient = await request("PATCH", `${base}/agents/${agent.id}`, {
+          configurationId: config.json().data.id,
+          repositoryAccess: withoutClient,
+        });
+        assert.equal(missingClient.statusCode, 400, missingClient.body);
+      }
       const updated = await request("PATCH", `${base}/agents/${agent.id}`, {
         configurationId: config.json().data.id,
         repositoryAccess: selected(access),
@@ -595,36 +642,6 @@ test(
           }),
           false,
         );
-        // Exercise the actual app-role database validator against the admitted stored revision.
-        // Each mutation removes or changes one independently required Repository boundary.
-        const checked = await pool.query(
-          `SELECT candidate.label,
-                  occ.standalone_credential_deployment_is_valid(candidate.spec, r.namespace_id) AS valid
-             FROM occ.agent_revisions AS r
-             CROSS JOIN LATERAL (VALUES
-               ('valid', r.admitted_spec),
-               ('source-type', jsonb_set(r.admitted_spec, '{credential_sources,1,sourceType}', '"static"')),
-               ('source-instance', jsonb_set(r.admitted_spec, '{credential_sources,1,tokenServiceInstanceId}', to_jsonb($4::text))),
-               ('reader-marker', r.admitted_spec #- '{execution_admission,repositoryNetworkPolicyVersion}'),
-               ('saved-grant', jsonb_set(r.admitted_spec, '{sandbox_policy,repositoryNetworkPolicy,grants}', '[]')),
-               ('legacy-deadline', jsonb_set(r.admitted_spec, '{repository_credentials,deadlineWallMs}', '1')),
-               ('standing-approval', jsonb_set(r.admitted_spec, '{repository_credentials,standingApprovalId}', to_jsonb($4::text)))
-             ) AS candidate(label,spec)
-            WHERE r.namespace_id=$1 AND r.agent_id=$2 AND r.id=$3`,
-          [namespaceId, agent.id, revision.id, randomUUID()],
-        );
-        assert.deepEqual(
-          Object.fromEntries(checked.rows.map(({ label, valid }) => [label, valid])),
-          {
-            valid: true,
-            "source-type": false,
-            "source-instance": false,
-            "reader-marker": false,
-            "saved-grant": false,
-            "legacy-deadline": false,
-            "standing-approval": false,
-          },
-        );
         const insertAlteredRevision = (field: string[], value: unknown) =>
           pool.query(
             `INSERT INTO occ.agent_revisions
@@ -739,45 +756,21 @@ test(
       gitSource.scope.repositories,
       repositories.map(({ repositoryId, repository }) => ({ repositoryId, repository })),
     );
-    // The Namespace registry and Installation ceiling approve the third repository, but the
-    // selected Source token covers only the first two. Admission must refuse before a revision
-    // or delivery work can turn that broader saved Repo grant into credential authority.
+    // A requested ref outside the configured Repository choices cannot reach Source issuance.
+    const mintsBeforeDeniedSelection = github.issuesOfTokens.length;
     const outside = await request("POST", `${base}/agents`, {
-      name: `Outside Source ${randomUUID()}`,
+      name: `Outside Registry ${randomUUID()}`,
       configurationId: config.json().data.id,
       executionMode: "dedicated",
       harnessAuth: { method: "credential_source", sourceId: modelSource.id },
-      credentialSources: [{ sourceId: modelSource.id }, { sourceId: gitSource.id }],
-      repositoryBindings: [
-        {
-          repositoryRef: ungranted.repositoryRef,
-          profile: "github-repository",
-        },
-      ],
-      repositoryNetworkPolicy: [{ repository: ungranted.repository, access: "read" }],
+      repositoryAccess: {
+        defaultProfile: "github-repository",
+        githubAppClientId: clientId,
+        repositories: [{ repositoryRef: "unapproved-ref", access: "read" }],
+      },
     });
-    assert.equal(outside.statusCode, 409, outside.body);
-    // The wider registry allows issues access. This staged Agent can only admit Git requests.
-    const policyPath = `${base}/agents/${agents[0]}/sandbox-policy/networking`;
-    assert.equal(
-      (await request("PATCH", `${policyPath}/editing`, { enabled: true })).statusCode,
-      200,
-    );
-    const current = await request("GET", policyPath);
-    assert.equal(current.statusCode, 200, current.body);
-    const issues = await request("PUT", policyPath, {
-      expectedVersion: current.json().data.policy.version,
-      additions: [modelGrant],
-      repositoryNetworkPolicy: [
-        {
-          repository: repositories[0]!.repository,
-          access: "read",
-          apiLimits: { default: "none", issues: "read" },
-        },
-        { repository: repositories[1]!.repository, access: "write" },
-      ],
-    });
-    assert.equal(issues.statusCode, 409, issues.body);
+    assert.equal(outside.statusCode, 400, outside.body);
+    assert.equal(github.issuesOfTokens.length, mintsBeforeDeniedSelection);
     assert.equal(new Set(agents).size, 2);
 
     const modelOnly = await request("POST", `${base}/agents`, {
@@ -1217,7 +1210,7 @@ test(
       // Removing Repository access from the Agent still withdraws the exact Git Source delivery.
       const cleared = await request("PATCH", agentPath, {
         configurationId: config.json().data.id,
-        repositoryBindings: [],
+        repositoryAccess: { defaultProfile: "github-repository", repositories: [] },
       });
       assert.equal(cleared.statusCode, 200, cleared.body);
       const removal = await succeed(repositoryRemovalWorkKey(agedRevision.id));

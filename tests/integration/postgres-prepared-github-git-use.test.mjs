@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { createPublicKey, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -269,7 +270,7 @@ for (const change of ["repository binding withdrawn", "revision superseded", "se
               ),
             );
           } else {
-            // The State update made by PATCH Agent with its existing configurationId and repositoryBindings: [].
+            // The State update made by PATCH Agent with its existing configurationId and repositoryAccess.repositories: [].
             // Do not close the broker, redeploy, or wait for background reconciliation to obtain this denial.
             const updated = await unit.agents.updateConfiguration(
               agent.namespaceId,
@@ -279,10 +280,11 @@ for (const change of ["repository binding withdrawn", "revision superseded", "se
               undefined,
               undefined,
               undefined,
-              [],
+              undefined,
+              { defaultProfile: "git-write", repositories: [] },
             );
             assert.equal(updated.activeRevisionId, revision.id);
-            assert.deepEqual(updated.repositoryBindings ?? [], []);
+            assert.deepEqual(repositoryAccessSelections(updated.repositoryAccess), []);
           }
         });
       }

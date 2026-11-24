@@ -44,6 +44,17 @@ export interface RepositoryAccess {
   })[];
 }
 
+export function repositoryAccessSelections(
+  access: Readonly<RepositoryAccess> | undefined,
+): readonly RepositoryBindingSelection[] {
+  return access
+    ? access.repositories.map(({ repositoryRef, profile }) => ({
+        repositoryRef,
+        profile: profile ?? access.defaultProfile,
+      }))
+    : [];
+}
+
 export interface RepositoryOption {
   readonly repositoryRef: string;
   readonly displayName: string;

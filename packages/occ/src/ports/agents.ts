@@ -17,7 +17,6 @@ import type {
   PluginDesiredState,
   PluginDriverIdentity,
   RepositoryAccess,
-  RepositoryBindingSelection,
   SandboxPolicy,
   WorkspaceSetup,
 } from "@openclaw-enterprise/contracts";
@@ -76,7 +75,6 @@ export interface AgentRepository extends AgentReadRepository {
     harnessAuth?: HarnessAuthBinding | null,
     backendId?: string | null,
     plugins?: PluginDesiredState,
-    repositoryBindings?: readonly RepositoryBindingSelection[],
     pluginApprovers?: PluginApprovers | null,
     repositoryAccess?: RepositoryAccess | null,
     credentialSources?: readonly AgentCredentialSourceBinding[],

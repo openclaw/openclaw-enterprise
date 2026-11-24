@@ -123,7 +123,7 @@ export async function standingExecutionFixture(
     bindings,
   }).bindings;
   const binding = selected!;
-  await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
+  await f.observerPool.query("UPDATE occ.agents SET repository_access=$1 WHERE id=$2", [
     JSON.stringify(bindings),
     owner.id,
   ]);

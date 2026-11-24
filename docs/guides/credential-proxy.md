@@ -316,7 +316,7 @@ token and session are still valid:
 
    ```bash
    jq -n --arg configuration "$CONFIGURATION_ID" \
-     '{configurationId: $configuration, repositoryBindings: []}' > repository-withdrawal.json
+     '{configurationId: $configuration, repositoryAccess: {defaultProfile:"github-repository", repositories:[]}}' > repository-withdrawal.json
    ./bin/occ agent update "$AGENT_ID" --file repository-withdrawal.json
    ```
 

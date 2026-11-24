@@ -34,6 +34,7 @@ type SourceAdmissionInput = {
 type LostDispatchOptions = {
   proxyDriverId?: string;
   preparedGitHub?: object;
+  protectedSourceOnly?: boolean;
   admitSource?: (
     input: SourceAdmissionInput,
   ) => Promise<{ agent: { id: string }; source: { id: string } }>;

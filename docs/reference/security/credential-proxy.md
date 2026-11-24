@@ -54,7 +54,7 @@ is unknown, inspect the original attempt. Repeating a possible write can apply i
 See [send authorization](../../../packages/occ/src/credential-proxy.ts) and
 [source withdrawal](../credential-sources/withdrawal.md).
 
-Git access through `repositoryBindings` has its own approval and execution
+Git access through `repositoryAccess` has its own approval and execution
 session. An operator can withdraw Git approval while a separately bound metadata
 source still permits the read. Git approval can be standing or time-limited.
 The session expires in either case. Both profiles stop using a token at a local

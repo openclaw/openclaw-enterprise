@@ -327,10 +327,13 @@ async function prepareGitAgent(
     executionMode: "dedicated",
     harnessAuth: { method: "credential_source", sourceId: modelSource.id },
     credentialSources: [{ sourceId: modelSource.id }],
-    repositoryBindings: repositoryRefs.map((repositoryRef) => ({
-      repositoryRef,
-      profile: "github-repository",
-    })),
+    repositoryAccess: {
+      defaultProfile: "git-write",
+      repositories: repositoryRefs.map((repositoryRef) => ({
+        repositoryRef,
+        profile: "github-repository",
+      })),
+    },
   });
   const path = `${base}/agents/${agent.id}`;
   const role = await request("POST", `${base}/iam/roles`, {

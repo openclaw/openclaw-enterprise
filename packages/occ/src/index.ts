@@ -432,7 +432,6 @@ export type { LookupChannelDirectoryInput } from "./setup-discovery.ts";
 export type {
   CreateCredentialSourceInput,
   RotateCredentialSourceInput,
-  UpdateCredentialSourceInput,
 } from "./credential-source-operations.ts";
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";

@@ -24,7 +24,6 @@ interface AgentPluginValidationDependencies {
   readonly pluginDriver: (harnessId: string, forConfiguration: boolean) => PluginDriver;
   readonly computeImplementation: () => string;
   readonly sandboxImplementation: () => string | undefined;
-  readonly credentialGatewayImplementation: () => string | undefined;
 }
 
 function invalidPluginRequest(): never {
@@ -143,7 +142,7 @@ export function createAgentPluginValidation(dependencies: AgentPluginValidationD
     }
     driver.validatePlacement?.(plugins, harness, dependencies.computeImplementation(), {
       sandbox: dependencies.sandboxImplementation(),
-      gateway: dependencies.credentialGatewayImplementation(),
+      gateway: undefined,
       ...(stagedPluginIds === undefined ? {} : { stagedPluginIds }),
     });
     const required = pluginRuntimeHarnessRequirement(driver.implementation, harness);

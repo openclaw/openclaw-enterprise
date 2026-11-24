@@ -606,7 +606,6 @@
         "Agent save refuses initial workspace files in a Sandbox with a 409 that names the Sandbox",
         "Agent create admits private workspace files through the OpenShell initializer contract",
         "Agent admission refuses projected identity only for OpenShell-owned Harnesses",
-        "Credential-source deployment refuses OpenShell projected identity before creating a revision",
         "Agent create refuses dedicated OpenClaw on OpenShell settings its workspace preparation refuses",
         "Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place",
         "Create Agent's preflight refuses a planned Harness authentication that Agent save refuses"

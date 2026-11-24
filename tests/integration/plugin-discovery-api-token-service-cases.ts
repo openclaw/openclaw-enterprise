@@ -8,6 +8,7 @@ import {
   OAuthClientResponse,
 } from "../../packages/contracts/src/api/connection-templates.ts";
 import { DEVICE_ACCOUNT_ID, DEVICE_OAUTH_ACCESS_TOKEN } from "../helpers/device-token-service.ts";
+import { CredentialSourceResponse } from "../../packages/contracts/src/api/resources.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { startProviderServer } from "../helpers/provider-http-transport.ts";
@@ -31,12 +32,32 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
     installation_policy: "AVAILABLE",
     release: { display_name: "Skill", interface: {}, app_ids: [], skills: [{}], mcp_servers: [] },
   };
+  const pat = "at-hosted-apps-test";
+  const patAccount = "pat-issuer-fixture";
   const providerErrors: unknown[] = [];
   const provider = await startProviderServer(t, (request, response) => {
     try {
       assert.equal(request.method, "GET");
-      assert.equal(request.headers.authorization, `Bearer ${DEVICE_OAUTH_ACCESS_TOKEN}`);
-      assert.equal(request.headers["chatgpt-account-id"], DEVICE_ACCOUNT_ID);
+      const usingPat = request.headers.authorization === `Bearer ${pat}`;
+      if (request.url === "/api/accounts/v1/user-auth-credential/whoami") {
+        assert.equal(usingPat, true);
+        assert.equal(request.headers["chatgpt-account-id"], undefined);
+        response.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({
+            chatgpt_account_id: patAccount,
+            chatgpt_account_is_fedramp: false,
+          }),
+        );
+        return;
+      }
+      assert.equal(
+        request.headers.authorization,
+        `Bearer ${usingPat ? pat : DEVICE_OAUTH_ACCESS_TOKEN}`,
+      );
+      assert.equal(
+        request.headers["chatgpt-account-id"],
+        usingPat ? patAccount : DEVICE_ACCOUNT_ID,
+      );
       if (request.url?.startsWith("/backend-api/ps/plugins/list?")) {
         response
           .writeHead(200, { "content-type": "application/json" })
@@ -54,7 +75,9 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
   const fetchThroughFixture = globalThis.fetch;
   t.mock.method(globalThis, "fetch", (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
-    return url.origin === "https://chatgpt.com"
+    return url.origin === "https://chatgpt.com" ||
+      (url.origin === "https://auth.openai.com" &&
+        url.pathname === "/api/accounts/v1/user-auth-credential/whoami")
       ? fetchThroughFixture(
           new URL(url.pathname + url.search, `http://127.0.0.1:${provider.port}`),
           init,
@@ -149,10 +172,16 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
     permissions: { credential_source: ["operate"] },
     resource: templateRef,
   });
+  let afterResolution: (() => void) | undefined;
+  const resolveCredential = fixture.owner.resolveCredential.bind(fixture.owner);
   const resolution = t.mock.method(
     fixture.owner,
     "resolveCredential",
-    fixture.owner.resolveCredential.bind(fixture.owner),
+    async (...args: Parameters<typeof resolveCredential>) => {
+      const value = await resolveCredential(...args);
+      afterResolution?.();
+      return value;
+    },
   );
   const rejectedTemplate = await fixture.request("POST", path, {
     session,
@@ -235,5 +264,41 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
     beforeUnbound,
     "an unbound Source must not reach the hosted origin",
   );
+  // A grant revoked while TokenService is reading custody must prevent hosted I/O.
+  for (const id of ["apps-source-reader", "apps-agent-source-reader"]) {
+    const index = fixture.policy.bindings.findIndex((binding) => binding.id === id);
+    assert.ok(index >= 0);
+    const binding = fixture.policy.bindings[index]!;
+    const beforeRevocation: number = provider.requests.length;
+    afterResolution = () => fixture.policy.bindings.splice(index, 1);
+    const denied = await fixture.request("POST", savedPath, { session, body: {} });
+    afterResolution = undefined;
+    fixture.policy.bindings.splice(index, 0, binding);
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.equal(provider.requests.length, beforeRevocation);
+  }
+
+  // Enroll a pasted PAT using the public Source route, then discover by reference.
+  // Hosted account identity comes from the issuer, and the PAT stays in custody.
+  const enrolled = fixture.fixtureResponse(
+    await fixture.request("POST", `/namespaces/${fixture.namespace.id}/credential-sources`, {
+      body: {
+        name: "Hosted service account",
+        type: "static",
+        config: { provider_preset: "codex-pat" },
+        secret: { opaque: pat },
+      },
+    }),
+    201,
+    CredentialSourceResponse,
+    "enroll the PAT Source",
+  ).data.ref;
+  const beforePat = provider.requests.length;
+  const patCatalog = await fixture.request("POST", path, {
+    body: { harnessId: "codex", credentialSource: enrolled },
+  });
+  assert.equal(patCatalog.status, 200, JSON.stringify(patCatalog.body));
+  assert.equal(provider.requests.length - beforePat, 2, "the issuer supplies PAT account identity");
+  assert.doesNotMatch(JSON.stringify([patCatalog.body, fixture.auditSink.events]), new RegExp(pat));
   assert.deepEqual(providerErrors, []);
 }

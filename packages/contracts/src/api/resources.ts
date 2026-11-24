@@ -309,6 +309,9 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
       {
         ...PluginPolicyCapabilitiesSchema.properties,
         discoveryCredential: PluginDiscoveryCredentialSchema,
+        hostedCredential: Type.Optional(
+          Type.Union([Type.Literal("codex_account"), Type.Literal("api_key")]),
+        ),
         credentialSlots: Type.Optional(Type.Array(SavedPluginCredentialSlotSchema)),
       },
       { additionalProperties: false },
@@ -363,6 +366,9 @@ const InstallationCapabilitiesSchema = Type.Object(
   {
     nativeAdmin: Type.Optional(Type.Literal(true)),
     deviceAuthorization: Type.Optional(Type.Literal(true)),
+    modelCredentialSourcePresets: Type.Optional(
+      Type.Array(Type.Union([Type.Literal("openai"), Type.Literal("codex-pat")])),
+    ),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },
@@ -474,7 +480,6 @@ export const AgentSchema = Type.Object(
     pluginDriver: Type.Optional(Type.Ref("PluginDriverIdentity")),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
-    repositoryBindings: Type.Optional(RepositoryBindingSelectionsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
     desiredRuntimeState: Type.Union([Type.Literal("running"), Type.Literal("stopped")]),
     activeRevisionId: Type.Optional(RevisionId),
@@ -490,7 +495,6 @@ const ConfigurationReadErrorSchema = Type.Object(
     field: Type.Union([
       Type.Literal("plugins"),
       Type.Literal("pluginApprovers"),
-      Type.Literal("repositoryBindings"),
       Type.Literal("repositoryAccess"),
       Type.Literal("networkProxy"),
       Type.Literal("harnessAuth"),
@@ -504,7 +508,7 @@ const ConfigurationReadErrorSchema = Type.Object(
 );
 
 const agentReadDescription =
-  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources.";
+  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryAccess, networkProxy, harnessAuth, and credentialSources.";
 
 export const AgentReadSchema = Type.Union(
   [
@@ -515,7 +519,6 @@ export const AgentReadSchema = Type.Union(
           "pluginDriver",
           "plugins",
           "pluginApprovers",
-          "repositoryBindings",
           "repositoryAccess",
           "networkProxy",
           "harnessAuth",

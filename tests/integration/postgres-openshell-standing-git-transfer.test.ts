@@ -410,7 +410,6 @@ test(
     const computeAdmission = createTestKubernetesComputeDriver(f.compute.id, {
       repositoryCredentials: true,
       protectedDriver: release.owner,
-      credentialGatewayDriver: gateway,
     });
     await f.start(
       {

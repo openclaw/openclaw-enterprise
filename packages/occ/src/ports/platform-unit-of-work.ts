@@ -152,8 +152,6 @@ export function bindPlatformUnitOfWork(
       "confirmOAuthRevocation",
       "lockCredentialSource",
       "createCredentialSource",
-      "isCredentialSourceAdoptionSettled",
-      "adoptGatewayPatSource",
       "markCredentialSourceDeleting",
       "markCredentialSourceReady",
       "updateCredentialSourceConfig",

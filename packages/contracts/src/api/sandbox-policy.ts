@@ -136,13 +136,8 @@ export const SandboxPolicyViewResponse = Type.Object(
         ),
         repositoryNetworkPolicySaveSupported: Type.Boolean({
           description:
-            "Whether the editor can request withdrawal of saved grants or submit a repository list for validation. TokenService Git can admit a first list after earlier dedicated standalone model-only deployments. PUT validates the complete list against the current bindings and policy ceiling.",
+            "Whether the editor can request withdrawal or submit a repository list for legacy protected Git. PUT validates the complete list against the Agent selections and policy ceiling.",
         }),
-        repositoryNetworkPolicySupportsAdditions: Type.Optional(
-          Type.Literal(true, {
-            description: "The current repository editor can retain saved network additions.",
-          }),
-        ),
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),
         deployedPolicyVersion: Type.Optional(

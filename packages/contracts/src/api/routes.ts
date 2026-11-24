@@ -104,7 +104,6 @@ import {
   UpdateAgentBody,
   UpdateConfigurationBody,
   UpdateSecretBody,
-  UpdateCredentialSourceBody,
   UpdateServiceAccountCredentialBody,
   UpdateWorkspaceFileBody,
   WorkspaceFileParams,
@@ -1335,24 +1334,8 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      body: Type.Union([UpdateCredentialSourceBody, Type.Ref("UpdateTokenServiceSourceBody")]),
+      body: Type.Ref("UpdateTokenServiceSourceBody"),
       response: { 200: CredentialSourceResponseRef, ...createErrors },
-    },
-  },
-  {
-    operationId: "adoptCodexPatCredentialSource",
-    method: "POST",
-    path: "/namespaces/:namespaceId/credential-sources/:credentialSourceId/adopt-codex-pat",
-    action: "openclaw.credential_sources.update",
-    iamAction: "update",
-    resourceKind: "credential_source",
-    authorizationTarget: "credential_source",
-    summary: "Move an unbound Gateway Codex PAT Source to TokenService",
-    tags: ["Credential sources"],
-    schema: {
-      querystring: EmptyQuery,
-      params: CredentialSourceParams,
-      response: { 200: CredentialSourceResponseRef, ...mutationErrors },
     },
   },
   {

@@ -362,7 +362,6 @@ test(
         undefined,
         undefined,
         undefined,
-        undefined,
         [],
       );
       for (const source of sources) {

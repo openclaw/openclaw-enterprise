@@ -448,7 +448,6 @@ export async function verifyCredentialSourceContract(
       undefined,
       undefined,
       undefined,
-      undefined,
       [],
     );
     // An inactive historical snapshot does not retain the source.
@@ -803,7 +802,6 @@ export async function verifyCredentialSourceContract(
       undefined,
       undefined,
       undefined,
-      undefined,
       [],
     );
     assert.ok(cleared);
@@ -874,7 +872,6 @@ export async function verifyCredentialSourceContract(
         sourceConfiguration.id,
         undefined,
         harnessAuth,
-        undefined,
         undefined,
         undefined,
         undefined,
@@ -1042,7 +1039,6 @@ export async function verifyCredentialSourceContract(
       sourceConfiguration.id,
       undefined,
       null,
-      undefined,
       undefined,
       undefined,
       undefined,

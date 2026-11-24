@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import {
   openCreateSecretDialog,
   createAgentThroughForm,
@@ -48,7 +49,10 @@ for (const issuesEnabled of [true, false]) {
           agent: {
             name: "Repository teammate",
             executionMode: "dedicated",
-            repositoryBindings: [{ repositoryRef: "application" }],
+            repositoryAccess: {
+              defaultProfile: "git-write",
+              repositories: [{ repositoryRef: "application" }],
+            },
             harnessAuth: { method: "api_key", source: modelSecret.ref },
           },
           configuration: { values: createHarnessConfiguration("codex", "gpt-5.1") },
@@ -123,7 +127,7 @@ for (const issuesEnabled of [true, false]) {
     ];
     assert.equal(agent.executionMode, "dedicated");
     assert.deepEqual(agent.harnessAuth, { method: "api_key", source: modelSecret.ref });
-    assert.deepEqual(agent.repositoryBindings, expectedBindings);
+    assert.deepEqual(repositoryAccessSelections(agent.repositoryAccess), expectedBindings);
     await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
     await page
       .getByText(`application · ${label}, documentation · ${label}`, { exact: true })
@@ -194,8 +198,8 @@ for (const issuesEnabled of [true, false]) {
         `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
       )
     ).data;
-    assert.ok("repositoryBindings" in saved);
-    assert.deepEqual(saved.repositoryBindings, expectedBindings);
+    assert.ok("repositoryAccess" in saved);
+    assert.deepEqual(repositoryAccessSelections(saved.repositoryAccess), expectedBindings);
     assertChannelOnlySlackAccess(configuration.values);
     assert.ok(configuration.secretBindings);
     assert.deepEqual(Object.keys(configuration.secretBindings).sort(), [

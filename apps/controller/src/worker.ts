@@ -67,8 +67,6 @@ import type {
   BackendDefinition,
   SandboxDriver,
   SandboxHarnessObservation,
-  CredentialGatewayDriver,
-  CredentialRefreshDriver,
   SecretBindings,
   SecretDriver,
   RuntimeFailureEvidence,
@@ -212,7 +210,6 @@ export interface ControllerWorkerOptions {
   readonly drivers?: InstallationRuntimeDrivers;
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
-  readonly credentialGatewayDriver?: CredentialGatewayDriver;
   readonly proxyDriver?: LegacyEgressProxyDriver;
   readonly pollIntervalMs?: number;
   readonly leaseDurationMs?: number;
@@ -1374,8 +1371,6 @@ export class ControllerWorker {
   private readonly secretDriver: SecretDriver | undefined;
   private provisioningController: OpenClawController | undefined;
   private readonly sandbox: SandboxDriver | undefined;
-  private readonly credentialGateway: CredentialGatewayDriver | undefined;
-  private readonly credentialRefresh: CredentialRefreshDriver | undefined;
   private connectionRevocationCursor: string | undefined;
   private connectionRevocationScanAfter = 0;
   private connectionMaintenance: Promise<void> | undefined;
@@ -1551,23 +1546,10 @@ export class ControllerWorker {
     ) {
       throw new Error("Staged credential delivery requires the selected Sandbox owner.");
     }
-    this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
-    this.credentialRefresh = drivers?.credentialRefreshDriver;
     this.proxyDriver =
       this.protectedDriver?.require("credential_proxy") ??
       drivers?.proxyDriver ??
       options.proxyDriver;
-    if (
-      (drivers?.installation.drivers.credential_gateway === undefined) !==
-      (drivers?.credentialGatewayDriver === undefined)
-    ) {
-      throw new Error(
-        "The selected Credential Gateway Driver requires shared startup configuration.",
-      );
-    }
-    if (this.credentialGateway !== undefined && this.sandbox === undefined) {
-      throw new Error("The selected Credential Gateway Driver requires a paired Sandbox Driver.");
-    }
     if (
       (drivers?.installation.drivers.sandbox === undefined) !==
       (drivers?.sandboxDriver === undefined)
@@ -1739,8 +1721,6 @@ export class ControllerWorker {
     }
     for (const driver of [
       ...(sandboxOwner ? [] : [this.proxyDriver]),
-      this.credentialGateway,
-      this.credentialRefresh,
       this.iam,
       this.secretDriver,
       this.repositoryPolicy,
@@ -1959,22 +1939,20 @@ export class ControllerWorker {
     installationId: string,
   ): Promise<void> {
     const canRenew = this.tokenServiceDrivers?.installation.drivers.token_service !== undefined;
-    const pollMs = Math.min(this.pollIntervalMs, 250);
-    const cleanupIntervalMs = 5_000;
+    const intervalMs = 5_000;
     const batchSize = 4;
     let cursor: string | undefined;
     let nextCleanupAt = 0;
     while (!this.stopping) {
       if (Date.now() >= nextCleanupAt) {
         // Attempts still need cleanup when connection renewal is disabled.
-        nextCleanupAt = Date.now() + cleanupIntervalMs;
+        nextCleanupAt = Date.now() + intervalMs;
         try {
           await controller.expireAuthenticationStates(32);
         } catch {
           this.emit({ event: "worker.error", code: "AUTHENTICATION_STATE_CLEANUP_FAILED" });
         }
       }
-      let waitMs = cleanupIntervalMs;
       if (canRenew && !this.stopping) {
         try {
           const accounts = await this.state.read((view) =>
@@ -1997,13 +1975,12 @@ export class ControllerWorker {
             continue;
           }
           cursor = undefined;
-          waitMs = pollMs;
         } catch {
           this.emit({ event: "worker.error", code: "CONNECTION_TOKEN_MAINTENANCE_FAILED" });
         }
       }
       try {
-        await delay(waitMs, undefined, { signal: this.abort.signal });
+        await delay(intervalMs, undefined, { signal: this.abort.signal });
       } catch (error) {
         if (!this.stopping) {
           throw error;
@@ -2118,7 +2095,6 @@ export class ControllerWorker {
   private get revisionHarnessCredentialDependencies() {
     return {
       secretDriverId: this.secretDriverId,
-      credentialGateway: this.credentialGateway,
       proxyDriver: this.proxyDriver,
       currentTokenServiceInstanceId: () =>
         this.provisioningController?.currentTokenServiceInstanceId(),
@@ -4833,9 +4809,8 @@ export class ControllerWorker {
         source.tokenServiceInstanceId ===
           this.provisioningController?.currentTokenServiceInstanceId();
     } else {
-      const owner =
-        source.ownerCapability === "credential_gateway" ? this.credentialGateway : this.proxyDriver;
-      ownerMatches = source.driverId === owner?.id;
+      ownerMatches =
+        source.ownerCapability === "credential_proxy" && source.driverId === this.proxyDriver?.id;
     }
     if (!ownerMatches || !credentialSourceMatchesSnapshot(source, snapshot)) {
       throw new CredentialWithdrawalRefusedError(

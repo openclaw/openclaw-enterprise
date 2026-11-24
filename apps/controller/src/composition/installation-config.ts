@@ -66,8 +66,6 @@ import type {
   GitHubRepositoryCredentialBackendDefinition,
   ComputeDriver,
   ConfigurationDriver,
-  CredentialGatewayDriver,
-  CredentialRefreshDriver,
   DriverImplementation,
   IAMDriver,
   Identity,
@@ -140,12 +138,6 @@ import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
-import { bindOpenShellPluginSourceReader } from "./openshell-plugin-source-reader.ts";
-import {
-  OpenShellCredentialGatewayDriver,
-  type OpenShellCredentialGatewayOptions,
-} from "../drivers/credential-gateway/openshell.ts";
-import { OpenShellCredentialRefreshDriver } from "../drivers/credential-refresh/openshell.ts";
 import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
 import { OpenShellTokenServiceDriver } from "../drivers/token-service/openshell.ts";
 
@@ -190,8 +182,6 @@ export interface InstallationStartupConfiguration {
     readonly compute: SelectedDriverConfiguration;
     readonly secret: SelectedDriverConfiguration;
     readonly sandbox?: SelectedDriverConfiguration;
-    readonly credential_gateway?: SelectedDriverConfiguration;
-    readonly credential_refresh?: SelectedDriverConfiguration;
     readonly credential_proxy?: SelectedDriverConfiguration;
     readonly token_service?: SelectedDriverConfiguration;
     readonly plugin?: readonly SelectedDriverConfiguration[];
@@ -240,6 +230,7 @@ export function installationControllerOptions(
   | "iamConfiguration"
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
+  | "modelCredentialSourcePresets"
   | "modelCredentialPreset"
   | "repositoryCredentialAdmission"
   | "stagedRepositoryCeiling"
@@ -247,7 +238,15 @@ export function installationControllerOptions(
   | "supportsStagedRepositoryRecipient"
   | "supportsCredentialDeployment"
 > {
+  const tokenService = installation?.drivers.token_service?.implementation;
+  const modelCredentialSourcePresets =
+    tokenService === OCCTokenServiceDriver.implementation
+      ? (["openai", "codex-pat"] as const)
+      : tokenService === OpenShellTokenServiceDriver.implementation
+        ? (["openai"] as const)
+        : undefined;
   return {
+    modelCredentialSourcePresets,
     modelCredentialPreset: resolveModelCredentialPreset,
     repositoryCredentialAdmission: (input) =>
       admitOpenShellRepositoryCredentials(repositoryRegistry, input),
@@ -308,9 +307,6 @@ export interface InstallationRuntimeDrivers {
   readonly configurationDriver: ConfigurationDriver;
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
-  readonly credentialGatewayDriver?: CredentialGatewayDriver;
-  readonly pluginSourceReader?: ControllerOptions["pluginSourceReader"];
-  readonly credentialRefreshDriver?: CredentialRefreshDriver;
   readonly protectedDriver?: InstalledDriver;
   /** Same selected Sandbox owner, with the native delivery capability when available. */
   readonly credentialDeliveryRegistration?: InstalledDriver;
@@ -755,8 +751,6 @@ function backendConfiguration(
   value: unknown,
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
   repoSelection: InstallationStartupConfiguration["repository"],
-  credentialGatewayId: string | undefined,
-  credentialRefreshId: string | undefined,
   credentialProxyId: string | undefined,
 ): readonly BackendDefinition[] {
   const backends = validateBackendDefinitions(value ?? []);
@@ -766,29 +760,14 @@ function backendConfiguration(
   if (repoSelection !== undefined && !backends.some((backend) => backend.type === "github")) {
     throw new Error("repository requires an owning backend entry with type github.");
   }
-  if (credentialRefreshId !== undefined && credentialGatewayId === undefined) {
-    throw new Error("drivers.credential_refresh requires drivers.credential_gateway.");
-  }
-  if (
-    credentialGatewayId !== undefined &&
-    !backends.some((backend) => backend.type === "openshell")
-  ) {
-    throw new Error(
-      "drivers.credential_gateway requires an owning backend entry with type openshell.",
-    );
-  }
   for (const backend of backends) {
     if (backend.type === "openshell") {
-      // Sandbox membership is checked once the Sandbox selection is resolved.
-      if (backend.drivers.credential_gateway !== credentialGatewayId) {
+      if (
+        backend.drivers.credential_gateway !== undefined ||
+        backend.drivers.credential_refresh !== undefined
+      ) {
         throw new Error(
-          `backend[${backend.id}].drivers.credential_gateway must match the selected drivers.credential_gateway.id.`,
-        );
-      }
-      // Refresh state lives on the gateway's provider record, so both roles share this Backend.
-      if (backend.drivers.credential_refresh !== credentialRefreshId) {
-        throw new Error(
-          `backend[${backend.id}].drivers.credential_refresh must match the selected drivers.credential_refresh.id.`,
+          `backend[${backend.id}] selects retired credential Drivers. Select TokenService and Credential Proxy in the Installation configuration.`,
         );
       }
       if (backend.drivers.credential_proxy !== credentialProxyId) {
@@ -844,8 +823,6 @@ function selected(
     | "compute"
     | "secret"
     | "sandbox"
-    | "credential_gateway"
-    | "credential_refresh"
     | "credential_proxy"
     | "token_service"
     | "plugin"
@@ -1027,8 +1004,6 @@ async function composeInstallationConfiguration(
       "compute",
       "secret",
       "sandbox",
-      "credential_gateway",
-      "credential_refresh",
       "credential_proxy",
       "token_service",
       "plugin",
@@ -1094,28 +1069,6 @@ async function composeInstallationConfiguration(
   const nativeRepositorySelection = repositoryConfiguration?.nativeSender;
   const preparedRepositoryGit = repositoryConfiguration?.prepared;
   let repositoryTransportConfiguration = repositoryConfiguration?.transport;
-  let credentialGateway: SelectedDriverConfiguration | undefined;
-  if (drivers.credential_gateway !== undefined) {
-    const selection = object(drivers.credential_gateway, "drivers.credential_gateway");
-    closed(selection, ["id", "configuration"], "drivers.credential_gateway");
-    credentialGateway = selected(
-      selection,
-      "credential_gateway",
-      "openshell",
-      OpenShellCredentialGatewayDriver,
-    );
-  }
-  let credentialRefresh: SelectedDriverConfiguration | undefined;
-  if (drivers.credential_refresh !== undefined) {
-    const selection = object(drivers.credential_refresh, "drivers.credential_refresh");
-    closed(selection, ["id", "configuration"], "drivers.credential_refresh");
-    credentialRefresh = selected(
-      selection,
-      "credential_refresh",
-      "openshell",
-      OpenShellCredentialRefreshDriver,
-    );
-  }
   const sandboxSelection =
     drivers.sandbox === undefined ? undefined : object(drivers.sandbox, "drivers.sandbox");
   let proxySelection: SelectedDriverConfiguration | undefined;
@@ -1184,8 +1137,6 @@ async function composeInstallationConfiguration(
     configuration.backend,
     serviceAccount,
     repoSelection,
-    credentialGateway?.id,
-    credentialRefresh?.id,
     proxySelection?.id ?? packageProxyId,
   );
   const openShellBackend = backends.find(
@@ -1315,7 +1266,7 @@ async function composeInstallationConfiguration(
       tokenServiceSelection = selected(
         selection,
         "token_service",
-        "occ/token-service",
+        OCCTokenServiceDriver.implementation,
         OCCTokenServiceDriver,
       );
     } else if (selection.id === "openshell" && options.mode === "development") {
@@ -1500,9 +1451,6 @@ async function composeInstallationConfiguration(
       `backend[${openShellBackend.id}].drivers.sandbox must match the selected bundled OpenShell drivers.sandbox.id.`,
     );
   }
-  if (credentialGateway !== undefined && !kubernetesCompute) {
-    throw new Error("drivers.credential_gateway requires the bundled Kubernetes Compute Driver.");
-  }
   if (options.mode === "production" && kubernetesCompute) {
     const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
     if (kubernetes.images.requireImmutableDigest !== true) {
@@ -1548,8 +1496,6 @@ async function composeInstallationConfiguration(
       compute,
       secret,
       ...(sandbox === undefined ? {} : { sandbox }),
-      ...(credentialGateway === undefined ? {} : { credential_gateway: credentialGateway }),
-      ...(credentialRefresh === undefined ? {} : { credential_refresh: credentialRefresh }),
       ...(proxySelection === undefined ? {} : { credential_proxy: proxySelection }),
       ...(tokenServiceSelection === undefined ? {} : { token_service: tokenServiceSelection }),
       plugin: plugins.map(({ config }) => config),
@@ -1611,21 +1557,6 @@ async function composeInstallationConfiguration(
     configuration: repositoryTransportConfiguration,
     resolveDelivery: repositoryRuntime?.resolveRepositoryDelivery,
   };
-  const credentialGatewayDriver =
-    credentialGateway === undefined
-      ? undefined
-      : new OpenShellCredentialGatewayDriver(
-          credentialGateway.configuration as unknown as OpenShellCredentialGatewayOptions,
-          {
-            id: credentialGateway.id,
-            implementation: credentialGateway.implementation,
-            backend: openShell!,
-          },
-        );
-  const pluginSourceReader =
-    credentialGatewayDriver === undefined
-      ? undefined
-      : bindOpenShellPluginSourceReader(openShell!, credentialGatewayDriver);
   if (
     proxySelection !== undefined &&
     sandboxPackage === undefined &&
@@ -1782,7 +1713,6 @@ async function composeInstallationConfiguration(
           proxy: drivers.credential_proxy,
           ...(repositoryTransport && {
             repositoryAuthorityIdentity: repositoryRuntime!.authorityIdentity,
-            modelGateway: drivers.credential_gateway,
           }),
           namespaceBinding,
         },
@@ -1852,14 +1782,6 @@ async function composeInstallationConfiguration(
       "The OpenShell TokenService preview requires a fixed authenticated TLS Gateway and paired Kubernetes Compute and OpenShell Sandbox and Credential Proxy.",
     );
   }
-  const credentialRefreshDriver =
-    credentialRefresh === undefined
-      ? undefined
-      : new OpenShellCredentialRefreshDriver(credentialRefresh.configuration, {
-          id: credentialRefresh.id,
-          implementation: credentialRefresh.implementation,
-          backend: openShell!,
-        });
   const repositoryGitDriver = repositoryDeliveryMode === "protected" ? protectedDriver : undefined;
   // This check admits an implementation to try installation. Compute still verifies its
   // actual recipient and enforcement before release or the first eligible material read.
@@ -1905,21 +1827,6 @@ async function composeInstallationConfiguration(
       lifecycleDrivers: [configurationDriver],
       channelDrivers,
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
-      ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-      // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
-      ...(openShell !== undefined &&
-      sandboxDriver !== undefined &&
-      sandboxPackage === undefined &&
-      options.createSandboxDriver === undefined &&
-      credentialGatewayDriver !== undefined
-        ? {
-            openShellAttachments: {
-              sandboxDriver,
-              credentialGatewayDriver,
-              attachments: credentialGatewayDriver.attachments,
-            },
-          }
-        : {}),
       ...(protectedDriver === undefined ? {} : { protectedDriver }),
       ...(credentialDeliveryRegistration === undefined ? {} : { credentialDeliveryRegistration }),
       preparedTokens: tokenService,
@@ -1973,9 +1880,6 @@ async function composeInstallationConfiguration(
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialDeliveryRegistration === undefined ? {} : { credentialDeliveryRegistration }),
     ...(selectsOpenShellTokenService && { openShellTokenServiceBackend: openShell! }),
-    ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-    ...(pluginSourceReader === undefined ? {} : { pluginSourceReader }),
-    ...(credentialRefreshDriver === undefined ? {} : { credentialRefreshDriver }),
     ...(protectedDriver === undefined
       ? {}
       : { protectedDriver, proxyDriver: protectedDriver.require("credential_proxy") }),

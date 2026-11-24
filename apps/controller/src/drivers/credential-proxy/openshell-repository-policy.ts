@@ -18,7 +18,10 @@ import {
   openShellNetworkRouteMayOverlap,
 } from "../sandbox/openshell-policy.ts";
 import { stagedCredentialPolicies } from "../sandbox/openshell-staged-credential-policy.ts";
-import { OPEN_SHELL_GIT_CREDENTIAL_BINARIES } from "../sandbox/openshell-git-network-policy.ts";
+import {
+  OPEN_SHELL_GIT_CREDENTIAL_BINARIES,
+  openShellGitServiceRules,
+} from "../sandbox/openshell-git-network-policy.ts";
 
 function checkedGrants(
   grants: readonly RepositoryNetworkGrant[],
@@ -41,14 +44,13 @@ function checkedGrants(
 export function openShellRepositoryCredentialRequests(
   grants: readonly RepositoryNetworkGrant[],
 ): readonly DeploymentRequestMatch[] {
-  return checkedGrants(grants).flatMap(({ repository, access }) => {
-    const root = `/${repository}.git`;
+  return checkedGrants(grants).flatMap((grant) => {
+    // Discovery may allow two service queries with the same generic method and path.
+    const requests = new Map(
+      openShellGitServiceRules(grant).map(({ allow }) => [allow.path, allow]),
+    );
     return OPEN_SHELL_GIT_CREDENTIAL_BINARIES.flatMap((binary) =>
-      [
-        { method: "GET", path: `${root}/info/refs` },
-        { method: "POST", path: `${root}/git-upload-pack` },
-        ...(access === "write" ? [{ method: "POST", path: `${root}/git-receive-pack` }] : []),
-      ].map(({ method, path }) => ({
+      [...requests.values()].map(({ method, path }) => ({
         binary,
         host: "github.com",
         ports: [{ from: 443, to: 443 }],
@@ -84,7 +86,15 @@ export function narrowOpenShellRepositoryRoutes(
   ) {
     throw new Error("The admitted repository credential policy is unsupported.");
   }
-  const byRoot = new Map(checkedGrants(grants).map((grant) => [`/${grant.repository}.git`, grant]));
+  const rulesByPath = new Map<string, ReturnType<typeof openShellGitServiceRules>>();
+  for (const rule of grants.flatMap(openShellGitServiceRules)) {
+    const rules = rulesByPath.get(rule.allow.path);
+    if (rules) {
+      rules.push(rule);
+    } else {
+      rulesByPath.set(rule.allow.path, [rule]);
+    }
+  }
   return routes.map((route) => {
     if (route.binding.bindingRef !== binding.bindingRef) {
       return route;
@@ -92,38 +102,19 @@ export function narrowOpenShellRepositoryRoutes(
     if (route.protocol !== "rest") {
       throw new Error("The repository credential needs a REST network rule.");
     }
-    const root = route.path.slice(0, route.path.lastIndexOf("/"));
-    const discoveryRoot = route.path.endsWith("/info/refs")
-      ? route.path.slice(0, -"/info/refs".length)
-      : undefined;
-    const grant = byRoot.get(discoveryRoot ?? root);
-    if (!grant || route.host !== "github.com" || route.port !== 443 || route.rules.length !== 1) {
+    const rules = rulesByPath.get(route.path);
+    const allowed = route.rules[0]?.allow;
+    if (
+      !rules ||
+      route.host !== "github.com" ||
+      route.port !== 443 ||
+      route.rules.length !== 1 ||
+      allowed?.method !== rules[0]?.allow.method ||
+      allowed?.path !== route.path
+    ) {
       throw new Error("The repository route differs from its admitted grant.");
     }
-    const rule = route.rules[0]!;
-    if (
-      discoveryRoot !== undefined &&
-      rule.allow.method === "GET" &&
-      rule.allow.path === route.path
-    ) {
-      const services =
-        grant.access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
-      return {
-        ...route,
-        rules: services.map((service) => ({
-          allow: { method: "GET", path: route.path, query: { service: { glob: service } } },
-        })),
-      };
-    }
-    if (
-      rule.allow.method !== "POST" ||
-      rule.allow.path !== route.path ||
-      (route.path !== `${root}/git-upload-pack` &&
-        !(grant.access === "write" && route.path === `${root}/git-receive-pack`))
-    ) {
-      throw new Error("The repository operation differs from its admitted grant.");
-    }
-    return route;
+    return { ...route, rules };
   });
 }
 

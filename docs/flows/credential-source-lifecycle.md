@@ -63,7 +63,7 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 OCC checks `credential_source:create` and validates any static Template. TokenService creates the Source and stores the credential privately. OCC grants the creator access, audits completion, and returns nonsecret metadata. See the [custody flow](token-service-static-custody.md) for failures between commits.
 
-The same POST accepts Gateway and protected Proxy requests. OCC checks the owner and access to referenced Secrets before registration. See [existing Source registration](../reference/credential-sources/other-delivery-modes.md#register-a-source).
+The same POST accepts prepared and credential-free metadata requests owned by the selected Credential Proxy. OCC authorizes the named Agent and any referenced Secret before registration. See [protected Source registration](../reference/credential-sources/other-delivery-modes.md#register-a-source).
 
 After [Template consent](connection-templates.md#3-authorize-the-account-in-the-browser), TokenService creates the Source and stores the OAuth grant. The Source records the original Template version and client. Each new Plugin deployment resolves the Template’s current approved version. See [Source metadata](../reference/credential-sources.md#read-and-list-sources).
 
@@ -74,6 +74,8 @@ For Codex device login, `packages/occ/src/device-authorization-flow.ts` checks A
 <a id="3-bind-and-admit-an-agent-revision"></a>
 
 ### 2. Bind and admit an Agent revision
+
+First Agent saves approved model network rules before deployment.
 
 `packages/occ/src/harness-auth.ts:authorizeHarnessAuthSource`, `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
 
@@ -147,11 +149,11 @@ OCC sends Proxy each authorized Source reference and TokenService-bound resolver
 
 Before retirement, OCC checks stored Agent, revision, deployment and provisioning references. For Template-backed Sources it also asks the saved Plugin Drivers which Sources their slots select. A blocking reference returns `409` before OCC changes the Source, records OAuth revocation intent or touches custody. An authorized Agent operator can withdraw a deployed binding and remove the remaining references. Once clear, OCC records any OAuth revocation intent and asks the selected Proxy to retire delivery copies before TokenService removes custody. OpenShell requires prior detachment. A Proxy failure returns `503` and retains custody for retry. The OAuth worker also retries pending retirement. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
 
-### 7. Adopt an existing Gateway PAT Source
+### 7. Enroll a Codex PAT Source
 
-`packages/occ/src/managed-credential-sources.ts:adoptCodexPatCredentialSource`, `apps/controller/src/drivers/token-service/occ.ts:adoptSource`
+`packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`, `packages/occ/src/plugin-discovery.ts:withPluginDiscoveryCredential`, `apps/controller/src/drivers/plugin/hosted-catalog.ts`
 
-OCC checks exact Source update and operate, plus operate on its same-Namespace Secret. TokenService locks the Source, refuses unsettled references, reads the Secret through its Driver, takes custody, confirms Gateway Provider removal, then commits the same-ID ownership change. Failed external effects cannot roll back with PostgreSQL and do not report success. See the [operator procedure](../guides/deploy/credential-lifecycle.md#adopt-a-gateway-codex-pat-source).
+A caller enrolls the PAT as a static Source with the `codex-pat` preset. OCC uses the ordinary Source creation grant, and TokenService stores the material. Hosted Apps resolves the authorized Source and the Plugin Driver verifies the account with the issuer. Agent admission records the Source for selected Proxy delivery. See [Enroll a Codex PAT Source](../guides/deploy/credential-lifecycle.md#enroll-a-codex-pat-source).
 
 ## Debugging and Verification
 

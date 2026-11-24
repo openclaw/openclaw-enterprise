@@ -44,6 +44,7 @@ type CreateAgentScenario = {
   rules?: Parameters<typeof createFixtureFetch>[0];
   credentialSourceTypes?: readonly CredentialSourceType[];
   deviceAuthorization?: true;
+  modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
   extraSecrets?: readonly { id: string; name: string }[];
   namespaceStatus?: NamespaceStatus;
   namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
@@ -222,13 +223,15 @@ const pluginPreflightRefusal =
 const pluginDiscoveryForm: StoryAction[] = [
   ...form,
   { selector: "#agent-auth-method", value: "codex_pat" },
-  { selector: "#plugin-discovery-token summary", click: true },
+  { selector: "#agent-name", value: "Hosted Apps demo" },
+  { selector: "#model-credential-storage", value: "source" },
   { selector: "#provider-api-key", value: "at-storybook-pat" },
+  click("Save service account token"),
   click("Configure plugins"),
 ];
 
 const pluginDiscoveryGap =
-  "The real Create Agent controls call simulated OCC discovery routes with a dummy token. Catalog pages and policy capabilities are fixtures. This verifies UI discovery and draft JSON editing, not live plugin-service access or runtime enforcement.";
+  "The real Create Agent controls enroll a simulated Source and call simulated discovery by Source reference. Catalog pages and policy capabilities are fixtures. This verifies UI discovery and draft JSON editing, not live plugin-service access or runtime enforcement.";
 
 const repositoryOptionsPath =
   "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/repository-options";
@@ -537,50 +540,48 @@ export const createAgentFormScenarios = {
     pluginCapabilities,
     actions: [...form, click("Configure plugins")],
     description:
-      "Plugin discovery requires a selected service account Secret or an entered token with the Codex harness. Existing plugin IDs and policies stay in Plugin selections JSON.",
+      "Hosted plugin discovery requires a Codex account Source. Existing plugin IDs and policies stay in Plugin selections JSON.",
     steps: [
       "Click Done, open Plugin selections JSON, and enter a known plugin ID and policy.",
       "Open Configure plugins and choose the configured plugin. Change a policy, click Done, and inspect the JSON.",
     ],
     gap: "API keys do not enable this discovery flow. Enter only dummy credentials in Storybook.",
   },
-  createPluginsSelectedSecret: {
+  createPluginsRequirePatSource: {
     group: "Pages/Create Agent",
-    name: "Discover plugins with a selected PAT Secret",
+    name: "Hosted Apps needs a TokenService Source",
     path: create,
     pluginDiscovery,
     pluginCapabilities,
-    extraSecrets: [{ id: "sec_storybook_pat", name: "Service account PAT (simulated)" }],
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
     actions: [
       ...form,
       { selector: "#agent-auth-method", value: "codex_pat" },
-      { selector: "#provider-credential-secret", value: "sec_storybook_pat" },
       click("Configure plugins"),
     ],
     description:
-      "Selecting the Secret starts catalog discovery before the picker opens, without entering a separate token.",
+      "The selected TokenService enrolls the service account token as a Source for model access and hosted Apps.",
     steps: [
-      "Choose Calendar to load its details, then click Done and select another Secret to clear the catalog.",
-      "Set a default plugin approver, then change Harness to OpenClaw. This Installation serves only the Codex catalog. Switch back to Codex to verify the approver was cleared.",
+      "Close Configure plugins, name the Agent, and enter a simulated service account token.",
+      "Choose Save service account token, then open Configure plugins and load the catalog.",
     ],
-    gap: "The Secret and OCC discovery responses are simulated. This preview does not verify live provider access or Secret storage.",
+    gap: pluginDiscoveryGap,
   },
-  createPluginsSelectedSecretDenied: {
+  createPatSourceEnrollmentDenied: {
     group: "Pages/Create Agent",
-    name: "Selected PAT Secret discovery denied",
+    name: "PAT Source enrollment denied",
     path: create,
+    pluginDiscovery,
     pluginCapabilities,
-    extraSecrets: [{ id: "sec_storybook_pat", name: "Service account PAT (simulated)" }],
-    actions: [
-      ...form,
-      { selector: "#agent-auth-method", value: "codex_pat" },
-      { selector: "#provider-credential-secret", value: "sec_storybook_pat" },
-      click("Configure plugins"),
-    ],
-    rules: [{ suffix: "/agents/plugins", method: "POST", status: 403, code: "FORBIDDEN" }],
-    description:
-      "A denied discovery request explains that permission is required without exposing Secret data.",
-    gap: "The Secret and denial are simulated; this preview does not verify IAM enforcement.",
+    modelCredentialSourcePresets: ["openai", "codex-pat"],
+    actions: pluginDiscoveryForm
+      .slice(0, -1)
+      .filter(
+        (action) => !("selector" in action && action.selector === "#model-credential-storage"),
+      ),
+    rules: [{ suffix: "/credential-sources", method: "POST", status: 403, code: "FORBIDDEN" }],
+    description: "A Source enrollment denial keeps hosted Apps unavailable and shows the reason.",
+    gap: "The Source enrollment refusal is simulated.",
   },
   createPluginsCurated: {
     group: "Pages/Create Agent",
@@ -2724,6 +2725,7 @@ export const createAgentProvisioningScenarios = {
     actions: [
       ...form,
       { selector: "#agent-auth-method", value: "codex_pat" },
+      { selector: "#model-credential-storage", value: "secret" },
       ...createModelSecret("at-storybook-pat"),
     ],
     description:

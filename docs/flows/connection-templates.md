@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
 updated: 2026-11-24
-last_updated_session: authoring-run/7f8ae4d2-1a92-4690-b4a9-d6e3f0ceb3d8
+last_updated_session: authoring-run/12723449-2a3d-4726-9b6e-1901a7a00090
 ---
 
 # How OCC saves a connection template
@@ -87,9 +87,9 @@ After exchange, OCC sends the grant and consent details to the selected TokenSer
 
 ### 5. Renew the grant
 
-`apps/controller/src/backends/token-service/oauth-connection.ts:renew`
+`apps/controller/src/worker.ts:maintainConnections` and `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
 
-The worker renews due OAuth Sources. A trusted consumer obtains a usable credential only through the selected TokenService. Template-backed renewal uses the Source's original consent version and client registration, including the registration's current client secret. A Template update changes the version available for a later Agent admission; it does not widen the original OAuth grant or change its refresh endpoint. TokenService records the next renewal and any narrower granted scopes.
+The Worker checks for due OAuth Sources every five seconds and processes all due batches in a scan. Trusted consumers resolve credentials through the selected TokenService. It can also renew a due grant on demand, including after a short-lived access token expires. Template-backed renewal uses the Source's original consent version and client registration, including the registration's current client secret. A Template update changes the version available for a later Agent admission; it does not widen the original OAuth grant or change its refresh endpoint. TokenService records the next renewal and any narrower granted scopes.
 
 Built-in Codex device login uses no Connection Template. See the [Credential source lifecycle](credential-source-lifecycle.md#1-register-a-source).
 
@@ -112,6 +112,8 @@ Built-in Codex device login uses no Connection Template. See the [Credential sou
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 11:56: Record the OAuth maintenance interval and on-demand renewal. (authoring-run/12723449-2a3d-4726-9b6e-1901a7a00090 - b49a9c6cface9c77134d4e83674c003138169c68)
 
 - 2026-11-24 05:38: Explain initial issuer-granted scopes and the refresh ceiling. (authoring-run/7f8ae4d2-1a92-4690-b4a9-d6e3f0ceb3d8 - 1b597e9758cee83e2a084d5a54d81c6a5be088d3)
 

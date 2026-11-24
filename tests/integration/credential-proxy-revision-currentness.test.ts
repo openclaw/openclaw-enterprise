@@ -28,7 +28,6 @@ async function catalogChangingAfterAdmission(
   const compute = createTestKubernetesComputeDriver("admission-compute", {
     gatewayRuntime: true,
     sandboxDriver: controller.selectedDriver("sandbox"),
-    credentialGatewayDriver: gateway,
   });
   // Use real Compute auth validation; the fixture keeps runtime placement and effects simulated.
   controller.selectedDriver("compute").validateHarnessAuth =

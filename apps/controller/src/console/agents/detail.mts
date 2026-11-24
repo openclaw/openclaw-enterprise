@@ -91,7 +91,11 @@ import {
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
-import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./repositories.mjs";
+import {
+  createRepositoryFields,
+  FIRST_REPOSITORY_DEPLOYMENT_WARNING,
+  repositorySelections,
+} from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
@@ -968,7 +972,9 @@ export async function renderAgentDetail(
     agent.executionMode === "dedicated" && configuredHarnessId(values) === "codex";
   const hasRepositoryPermissions = (values: OpenClawConfigurationDocument) =>
     isDedicatedCodex(values) &&
-    agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
+    repositorySelections(agent.repositoryAccess).some(
+      ({ profile }) => profile === "github-repository",
+    );
   // Sharing policy reads need Installation administration and a denial is audited, so the
   // Access tab is left out (not disabled) when the session probe already showed that access is
   // missing (spec 3.8). It is about the whole Agent, so every version's strip has it, last.
@@ -3525,7 +3531,9 @@ export async function renderAgentDetail(
       !automaticGit &&
       revisionResult.status === "fulfilled" &&
       revisionResult.value.revisions.length === 0 &&
-      agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
+      repositorySelections(agent.repositoryAccess).some(
+        ({ profile }) => profile === "github-repository",
+      );
     async function hasRepositoryPolicy() {
       const permissions = await latestPermissionsRead;
       // OCC requires policy read for scoped deployments. Legacy deployers can
@@ -4613,12 +4621,7 @@ export async function renderAgentDetail(
             deployReloadMessage = "Agent settings changed. Reload this draft before deploying.";
             return;
           }
-          if (
-            JSON.stringify(freshAgent.repositoryAccess) !==
-              JSON.stringify(agent.repositoryAccess) ||
-            JSON.stringify(freshAgent.repositoryBindings) !==
-              JSON.stringify(agent.repositoryBindings)
-          ) {
+          if (!sameValue(freshAgent.repositoryAccess, agent.repositoryAccess)) {
             deployReloadMessage = "Repository access changed. Reload this draft before deploying.";
             return;
           }
@@ -6428,7 +6431,7 @@ export async function renderAgentDetail(
       }
     } else {
       const repositoryBindings = draft
-        ? agent.repositoryBindings
+        ? repositorySelections(agent.repositoryAccess)
         : snapshot.repositoryCredentials?.bindings;
       const details: Parameters<typeof summary>[1] = [
         ["Execution mode", executionMode === "dedicated" ? "Dedicated" : "Embedded"],
@@ -6604,7 +6607,7 @@ export async function renderAgentDetail(
   }
 
   function repositoryAccessSummary(reason: string) {
-    const bindings = agent.repositoryBindings ?? [];
+    const bindings = repositorySelections(agent.repositoryAccess);
     return element(
       "section",
       { className: "agent-card" },
@@ -6756,8 +6759,7 @@ export async function renderAgentDetail(
         }
         if (
           fresh.configurationId !== agent.configurationId ||
-          JSON.stringify(fresh.repositoryAccess) !== JSON.stringify(agent.repositoryAccess) ||
-          JSON.stringify(fresh.repositoryBindings) !== JSON.stringify(agent.repositoryBindings)
+          !sameValue(fresh.repositoryAccess, agent.repositoryAccess)
         ) {
           saveState = "conflict";
           refuse(

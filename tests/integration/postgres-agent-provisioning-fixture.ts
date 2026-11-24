@@ -25,7 +25,7 @@ import {
 } from "../../apps/controller/src/worker.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
@@ -41,7 +41,6 @@ interface FixtureDrivers {
   repoDriver?: InstallationRuntimeDrivers["repositoryPolicy"];
   pluginDriver?: NonNullable<InstallationRuntimeDrivers["pluginDrivers"]>[number] | undefined;
   sandboxDriver?: InstallationRuntimeDrivers["sandboxDriver"];
-  credentialGatewayDriver?: InstallationRuntimeDrivers["credentialGatewayDriver"];
 }
 
 type WorkerEventListener = NonNullable<ControllerWorkerOptions["emit"]>;
@@ -160,7 +159,6 @@ function installationDrivers({
   repoDriver,
   pluginDriver,
   sandboxDriver,
-  credentialGatewayDriver,
 }: FixtureDrivers): InstallationRuntimeDrivers {
   return {
     // The fixture injects Drivers directly and omits loader-only definitions and a logging level.
@@ -176,22 +174,6 @@ function installationDrivers({
                 type: "github" as const,
                 configuration: { registryPath: "/unused/provisioning/registry.json" },
                 drivers: { repo: repoDriver.id },
-              },
-            ]),
-        ...(credentialGatewayDriver === undefined
-          ? []
-          : [
-              {
-                id: "provisioning-credential-gateway",
-                type: "openshell" as const,
-                configuration: {
-                  endpoint: "http://127.0.0.1:8080",
-                  insecureTransport: "network-policy" as const,
-                },
-                drivers: {
-                  sandbox: sandboxDriver!.id,
-                  credential_gateway: credentialGatewayDriver.id,
-                },
               },
             ]),
       ],
@@ -221,15 +203,6 @@ function installationDrivers({
                 configuration: {},
               },
             }),
-        ...(credentialGatewayDriver === undefined
-          ? {}
-          : {
-              credential_gateway: {
-                id: credentialGatewayDriver.id,
-                implementation: credentialGatewayDriver.implementation,
-                configuration: {},
-              },
-            }),
       },
     } as unknown as InstallationRuntimeDrivers["installation"],
     computeDriver,
@@ -239,7 +212,6 @@ function installationDrivers({
     // transport. It does not prove Envoy availability or network enforcement.
     channelDrivers: [{ provider: "slack", driver: new SlackChannelDriver(globalThis.fetch) }],
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
-    ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
     ...(repoDriver === undefined
       ? {}
       : {
@@ -344,7 +316,6 @@ export async function createProvisioningFixture<
     repoDriver: options.repoDriver,
     pluginDriver: options.pluginDriver,
     sandboxDriver: options.sandboxDriver,
-    credentialGatewayDriver: options.credentialGatewayDriver,
   });
   const origin = options.nativeAdmin ? "https://console.oce.localhost:9443" : authBaseURL;
   let nativeAdminSettings: Pick<PostgresDevelopmentConfig, "nativeAdmin" | "gatewayApiKeyPath"> = {
@@ -561,28 +532,6 @@ export async function createProvisioningFixture<
     return principals[0]!.id;
   }
 
-  async function createHistoricalGatewaySource(
-    input: Parameters<OpenClawController["createCredentialSource"]>[1],
-  ) {
-    assert.ok(options.credentialGatewayDriver);
-    const installation = await state.loadInstallation();
-    assert.ok(installation);
-    const controller = new OpenClawController(installation, { state, recordOperations: false });
-    const iamDriver = new NativeIAMDriver(state, { id: "native-iam", implementation: "native" });
-    for (const driver of [
-      iamDriver,
-      computeDriver,
-      secretDriver,
-      options.credentialGatewayDriver,
-    ]) {
-      controller.registerDriver(driver);
-      controller.selectDriver(driver.capability, driver.id);
-    }
-    // Historical Gateway records were created by this controller owner before public
-    // enrollment moved to TokenService Sources. Subsequent requests use the current API.
-    return controller.createCredentialSource(await administratorPrincipalId(), input);
-  }
-
   async function revokeCurrentPrincipal() {
     const principalId = await administratorPrincipalId();
     const result = await pool.query<RevokedBindingRow>(
@@ -617,7 +566,6 @@ export async function createProvisioningFixture<
     cancelProvisioningAtTeardown,
     cancelQueuedWorkAtTeardown,
     computeDriver,
-    createHistoricalGatewaySource,
     pool,
     configurationDriver,
     revokeCurrentPrincipal,

@@ -27,6 +27,7 @@ import {
   type SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
+import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 
@@ -716,6 +717,75 @@ test("Create Agent saves a managed static Source and binds its exact ID to a dra
       }
     });
   }
+});
+
+test("Create Agent saves a PAT Source before loading hosted Apps", async (t) => {
+  const { fixture } = await modelSourceFixture(t);
+  controllerOf(fixture).installPluginDrivers([new CodexPluginDriver()]);
+  const namespace = await readyNamespace(fixture, "Hosted Apps PAT Source");
+  const token = "at-console-pat-fixture";
+  const fetchOriginal = globalThis.fetch;
+  const hostedCalls: string[] = [];
+  t.mock.method(globalThis, "fetch", (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (
+      url.hostname === "auth.openai.com" &&
+      url.pathname === "/api/accounts/v1/user-auth-credential/whoami"
+    ) {
+      assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${token}`);
+      hostedCalls.push("identity");
+      return Promise.resolve(
+        Response.json({
+          chatgpt_account_id: "console-test-account",
+          chatgpt_account_is_fedramp: false,
+        }),
+      );
+    }
+    if (url.hostname === "chatgpt.com" && url.pathname === "/backend-api/ps/plugins/list") {
+      assert.equal(new Headers(init?.headers).get("chatgpt-account-id"), "console-test-account");
+      hostedCalls.push("catalog");
+      return Promise.resolve(Response.json({ plugins: [], pagination: { next_page_token: null } }));
+    }
+    return fetchOriginal(input, init);
+  });
+
+  const { page } = await newPage(t, fixture, { browser });
+  const base = `/namespaces/${namespace.id}`;
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await page.getByLabel("Credential storage").selectOption("source");
+  const save = page.getByRole("button", { name: "Save service account token" });
+  assert.equal(await save.isDisabled(), true);
+  await page.getByLabel("Agent name").fill("Hosted Apps");
+  await page.getByLabel("Service account token", { exact: true }).fill(token);
+  await waitForEnabled(save);
+  assert.equal(pathRequests(requests, "POST", `${base}/agents/plugins`).length, 0);
+  const sourceResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith(`${base}/credential-sources`),
+  );
+  const pluginsResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && response.url().endsWith(`${base}/agents/plugins`),
+  );
+  await save.click();
+  const saved = await sourceResponse;
+  assert.equal(saved.status(), 201);
+  const { data: source } = checked(CredentialSourceResponse, await saved.json());
+  const plugins = await pluginsResponse;
+  assert.equal(plugins.status(), 200);
+  assert.deepEqual(plugins.request().postDataJSON(), {
+    harnessId: "codex",
+    credentialSource: source.ref,
+  });
+  assert.equal(JSON.stringify(await plugins.json()).includes(token), false);
+  assert.deepEqual(hostedCalls, ["identity", "catalog"]);
+  assert.equal(pathRequests(requests, "POST", `${base}/credential-sources`).length, 1);
+  assert.equal(pathRequests(requests, "POST", `${base}/agents`).length, 0);
 });
 
 test("Agent Credentials saves its existing model source without replacing the binding", async (t) => {

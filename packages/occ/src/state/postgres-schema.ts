@@ -17,7 +17,6 @@ import type {
   PluginDriverIdentity,
   PluginApprovers,
   PresetTemplate,
-  RepositoryBindingSelection,
   RepositoryAccess,
   SecretBindings,
   ServiceAccountCredential,
@@ -303,7 +302,6 @@ export const agents = occSchema.table(
     plugins: jsonb("plugins").$type<PluginDesiredState>(),
     pluginDriver: jsonb("plugin_driver").$type<PluginDriverIdentity>(),
     pluginApprovers: jsonb("plugin_approvers").$type<PluginApprovers>(),
-    repositoryBindings: jsonb("repository_bindings").$type<readonly RepositoryBindingSelection[]>(),
     repositoryAccess: jsonb("repository_access").$type<RepositoryAccess>(),
     servicePrincipalId: text("service_principal_id").notNull(),
     harnessAuth: jsonb("harness_auth").$type<HarnessAuthBinding>(),
@@ -389,11 +387,7 @@ export const agents = occSchema.table(
     ),
     check(
       "agents_repository_access_valid",
-      sql`occ.repository_access_is_valid(${table.repositoryAccess}, ${table.repositoryBindings})`,
-    ),
-    check(
-      "agents_repository_bindings_valid",
-      sql`${table.repositoryBindings} IS NULL OR occ.repository_bindings_are_valid(${table.repositoryBindings}, false)`,
+      sql`occ.repository_access_is_valid(${table.repositoryAccess})`,
     ),
     check(
       "agents_name_normalized",
@@ -625,7 +619,7 @@ export const credentialSources = occSchema.table(
       .onUpdate("restrict"),
     check(
       "credential_sources_owner_capability_valid",
-      sql`CASE WHEN ${table.ownerCapability}='token_service' THEN ${table.driverId} IS NULL AND ${table.egress} IS NULL AND ${table.tokenServiceInstanceId} IS NOT NULL AND ${table.type} IN ('static','oauth2-refresh-token','github-app-installation') AND ${table.state} IN ('ready','deleting') ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL AND ${table.connectionTemplateId} IS NULL AND (${table.ownerCapability}='credential_gateway' OR (${table.ownerCapability}='credential_proxy' AND ${table.egress} IS NOT NULL)) END IS TRUE`,
+      sql`CASE WHEN ${table.ownerCapability}='token_service' THEN ${table.driverId} IS NULL AND ${table.egress} IS NULL AND ${table.tokenServiceInstanceId} IS NOT NULL AND ${table.type} IN ('static','oauth2-refresh-token','github-app-installation') AND ${table.state} IN ('ready','deleting') ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL AND ${table.connectionTemplateId} IS NULL AND ${table.ownerCapability}='credential_proxy' AND ${table.egress} IS NOT NULL END IS TRUE`,
     ),
     check(
       "credential_sources_backend_ref_valid",

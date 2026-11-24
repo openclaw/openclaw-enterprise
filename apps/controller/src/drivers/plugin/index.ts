@@ -532,12 +532,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
         throw new ConfigurationHarnessError(`${entry.name} requires Kubernetes Compute.`);
       }
     }
-    requireManagedCredentialRuntime(
-      selections,
-      credentialRuntime?.sandbox,
-      credentialRuntime?.gateway,
-      credentialRuntime?.stagedPluginIds,
-    );
+    requireManagedCredentialRuntime(selections, credentialRuntime?.stagedPluginIds);
   }
 
   validateAgentConfiguration(

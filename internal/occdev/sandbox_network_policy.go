@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -60,7 +61,21 @@ func (r *runner) loadSandboxNetworkPolicies(ctx context.Context, sandboxDriver s
 // A ceiling authorizes future requests; it never becomes a default network grant.
 func (r *runner) loadSandboxNetworkPolicyCeiling(ctx context.Context, sandboxDriver string) ([]any, error) {
 	if r.opts.SandboxNetworkPolicyCeilingFile == "" {
-		return nil, nil
+		if sandboxDriver != "openshell" {
+			return nil, nil
+		}
+		var grants []any
+		for index, binary := range openShellCodexBinaries() {
+			for _, host := range []string{"api.openai.com", "auth.openai.com", "chatgpt.com"} {
+				grants = append(grants, map[string]any{
+					"id":     fmt.Sprintf("first-agent-codex-%d-%s", index, strings.ReplaceAll(host, ".", "-")),
+					"binary": binary,
+					"host":   host,
+					"ports":  []map[string]int{{"from": 443, "to": 443}},
+				})
+			}
+		}
+		return grants, nil
 	}
 	if sandboxDriver == "none" {
 		return nil, fmt.Errorf("--sandbox-network-policy-ceiling-file requires a Sandbox Driver")

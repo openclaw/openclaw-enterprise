@@ -7,8 +7,6 @@ import type {
   EgressMaterialEvidence,
   ProtectedEgressSource,
   SecretReference,
-  SourceAdoptionInput,
-  StaticCredentialSource,
 } from "@openclaw-enterprise/contracts";
 
 export type StoredCredentialWithdrawal = CredentialWithdrawal;
@@ -78,11 +76,6 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
     credentialSourceId: string,
   ): Promise<Readonly<CredentialSource> | undefined>;
   createCredentialSource(source: CredentialSource): Promise<Readonly<CredentialSource>>;
-  /** Requires the caller to hold the Source lock before checking or transferring ownership. */
-  isCredentialSourceAdoptionSettled(namespaceId: string, sourceId: string): Promise<boolean>;
-  adoptGatewayPatSource(
-    input: SourceAdoptionInput,
-  ): Promise<Readonly<StaticCredentialSource> | undefined>;
   /**
    * Points each existing Secret input field at a replacement same-Namespace Secret. The field
    * set is fixed by the source type; only the referenced Secret IDs change.

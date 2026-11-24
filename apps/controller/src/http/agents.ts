@@ -63,7 +63,6 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     networkProxy: agent.networkProxy,
     plugins: agent.plugins,
     pluginApprovers: agent.pluginApprovers,
-    repositoryBindings: agent.repositoryBindings,
     repositoryAccess: agent.repositoryAccess,
     harnessAuth: agent.harnessAuth,
     ...(agent.credentialSources === undefined || agent.credentialSources.length === 0

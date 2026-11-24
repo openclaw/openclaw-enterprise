@@ -1,6 +1,5 @@
 import type {
   RepositoryAccess,
-  RepositoryBindingRequest,
   RepositoryBindingSelection,
   RepositoryOption as CatalogOption,
   RepositoryNetworkGrant,
@@ -21,6 +20,15 @@ import {
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
+
+export function repositorySelections(access: RepositoryAccess | undefined) {
+  return (
+    access?.repositories.map(({ repositoryRef, profile }) => ({
+      repositoryRef,
+      profile: profile ?? access.defaultProfile,
+    })) ?? []
+  );
+}
 
 type RepositoryOption = CatalogOption & { githubAccess?: RepositoryNetworkGrant };
 
@@ -221,7 +229,6 @@ export function createRepositoryFields(
     agentId?: string;
     repositoryAccess?: RepositoryAccess;
     scopedGrants?: [string, RepositoryNetworkGrant][] | undefined;
-    repositoryBindings?: readonly RepositoryBindingRequest[];
   } = {},
   // Read no choices until start(): Create Agent's permission answer is not known yet.
   { held = false }: { held?: boolean } = {},
@@ -234,12 +241,7 @@ export function createRepositoryFields(
   const state: PickerState = {
     options: [],
     selected: new Map(
-      intent
-        ? intent.repositories.map(({ repositoryRef, profile }) => [repositoryRef, profile ?? null])
-        : (initial.repositoryBindings ?? []).map(({ repositoryRef, profile }) => [
-            repositoryRef,
-            profile ?? "git-write",
-          ]),
+      intent?.repositories.map(({ repositoryRef, profile }) => [repositoryRef, profile ?? null]),
     ),
     profile: intent?.defaultProfile ?? "git-full",
     discovery: held ? "held" : "loading",

@@ -1,5 +1,9 @@
 # Enroll repositories for OpenShell Agents
 
+This walkthrough describes the retired Credential Gateway setup. Use
+[GitHub App access](../repository-credentials.md#select-a-github-source-for-an-openshell-agent)
+for current OpenShell Installations.
+
 This Helm walkthrough covers repository access with matching OpenShell **0.1.6**
 components. Check the [OpenShell qualification contract](../../reference/drivers/openshell-sandbox.md#qualification-contract)
 before planning a production rollout. Runtime admission checks the required facilities and policy proof.
@@ -208,17 +212,18 @@ create/update JSON uses registry references, for example:
 
 ```json
 {
-  "repositoryBindings": [{ "repositoryRef": "application" }, { "repositoryRef": "library" }]
+  "repositoryAccess": {
+    "defaultProfile": "github-repository",
+    "repositories": [{ "repositoryRef": "application" }, { "repositoryRef": "library" }]
+  }
 }
 ```
 
 This is a fragment of the Agent request; preserve its other required fields.
 For CLI updates, include the current `configurationId` from `occ agent get` in
 `agent.json`, then run `occ agent update "$AGENT_ID" --file agent.json`.
-Omitting `repositoryBindings` preserves the selection on update; an empty array
-clears it.
-Omitting `profile` resolves to `github-repository` only for the explicit policy
-above. It does not widen an existing `git-write` grant. All selected repositories
+Omitting `repositoryAccess` preserves the selection on update. An empty
+`repositories` array clears it. Each entry inherits the request's `defaultProfile` unless it supplies a profile. All selected repositories
 must share the registry's App and installation and the same approved permissions.
 The worker prepares a token restricted to exactly the selected numeric IDs.
 Repository availability in the registry alone does not authorize an Agent.

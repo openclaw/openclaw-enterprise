@@ -166,7 +166,7 @@ for membership and permissions, and the
 for policy. Prefer repository scope. To expose an
 installation scope, set a distinct `installationAccess.repositoryRef`, allow the
 Namespace with `accessMode: installation`, and select that reference with
-`profile: github-installation` in the Agent's `repositoryBindings`, as its only
+`profile: github-installation` in the Agent's `repositoryAccess.repositories`, as its only
 binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
 `github_installation` support. The bundled OpenShell Credential Proxy requires
 `observedHookPreviewWorkspace`; otherwise deploy answers

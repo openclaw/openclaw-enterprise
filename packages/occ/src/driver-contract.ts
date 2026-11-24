@@ -91,8 +91,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
         "getRefreshStatus",
         "removeSource",
       ].every((operation) => typeof candidate[operation] === "function") &&
-      validClientScopes(candidate.clientScopes) &&
-      (candidate.adoptSource === undefined || typeof candidate.adoptSource === "function")
+      validClientScopes(candidate.clientScopes)
     );
   }
   if (driver.capability === "credential_proxy_delivery") {

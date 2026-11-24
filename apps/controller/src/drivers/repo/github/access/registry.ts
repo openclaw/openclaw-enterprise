@@ -848,35 +848,68 @@ export function resolveSelectedRepositoryScope(
     const policy = repo.namespaces.find((p) => p.namespaceId === namespaceId)!;
     return { repo, policy };
   });
-  const permissions = selected[0]!.policy.permissions;
-  if (
-    !permissions ||
-    selected.some(({ policy }) => !isDeepStrictEqual(policy.permissions, permissions))
-  ) {
-    throw new Error("selected-repository-permissions-differ");
-  }
+  const { permissions, repositories } = repositoryCredentialScope(
+    selected.map(({ repo, policy }) => ({ repository: repo, policy })),
+  );
   const scopedRest: RepositoryGitRestAuthority[number][] = selected.flatMap(({ repo, policy }) => {
     const rest = scopedRestPermissions(policy);
     return rest ? [Object.freeze({ repository: repo.repository, ...rest })] : [];
   });
   const nativeGitModes = new Set(selected.map(({ policy }) => policy.nativeGit));
-  const repositories = selected.map(({ repo }) =>
-    Object.freeze({
-      ...(repo.repositoryId === undefined ? {} : { repositoryId: repo.repositoryId }),
-      repository: repo.repository,
-    }),
-  );
-  repositories.sort(
-    repositories.every((entry) => entry.repositoryId !== undefined)
-      ? (a, b) => Number(a.repositoryId) - Number(b.repositoryId)
-      : (a, b) => a.repository.localeCompare(b.repository, "en"),
-  );
   return Object.freeze({
-    repositories: Object.freeze(repositories),
+    repositories,
     permissions,
     requiresNetworkPolicy: selected.some(({ policy }) => policy.apiLimits !== undefined),
     ...(nativeGitModes.size > 1 && { mixedNativeGit: true }),
     ...(nativeGitModes.size === 1 && nativeGitModes.has("v1") && { nativeGit: "v1" as const }),
     scopedRest: Object.freeze(scopedRest.sort((a, b) => a.repository.localeCompare(b.repository))),
   });
+}
+
+/** Resolve prospective Source scope from approved refs before any Agent grant is issued. */
+export function resolveGitHubRepositorySourceScope(
+  registry: GitHubRepositoryRegistry,
+  namespaceId: string,
+  repositoryRefs: readonly string[],
+) {
+  if (
+    !repositoryRefs.length ||
+    repositoryRefs.length > 16 ||
+    new Set(repositoryRefs).size !== repositoryRefs.length
+  ) {
+    throw new Error("invalid-selected-repository-set");
+  }
+  return repositoryCredentialScope(
+    repositoryRefs.map((ref) => {
+      const resolved = resolveRepositoryNamespacePolicy(
+        registry.repositories.find(({ repositoryRef }) => repositoryRef === ref),
+        namespaceId,
+      );
+      if (!resolved?.policy.profiles.includes("github-repository")) {
+        throw new Error("repository-binding-not-authorized");
+      }
+      return resolved;
+    }),
+  );
+}
+
+function repositoryCredentialScope(
+  selected: readonly NonNullable<ReturnType<typeof resolveRepositoryNamespacePolicy>>[],
+) {
+  const permissions = selected[0]?.policy.permissions;
+  if (
+    !permissions ||
+    selected.some(({ policy }) => !isDeepStrictEqual(policy.permissions, permissions))
+  ) {
+    throw new Error("selected-repository-permissions-differ");
+  }
+  const repositories = selected.map(({ repository: { repositoryId, repository } }) =>
+    Object.freeze({ ...(repositoryId === undefined ? {} : { repositoryId }), repository }),
+  );
+  repositories.sort(
+    repositories.every((entry) => entry.repositoryId !== undefined)
+      ? (a, b) => Number(a.repositoryId) - Number(b.repositoryId)
+      : (a, b) => a.repository.localeCompare(b.repository, "en"),
+  );
+  return { repositories: Object.freeze(repositories), permissions };
 }

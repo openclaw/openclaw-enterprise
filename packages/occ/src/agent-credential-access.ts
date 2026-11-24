@@ -53,10 +53,7 @@ interface AgentCredentialAccessDependencies {
   readonly drivers: Pick<DriverRegistry, "hasSelection">;
   readonly installationId: string;
   readonly timestamp: () => string;
-  readonly sourceDrivers: Pick<
-    CredentialSourceDrivers,
-    "assertCredentialSourceOwnerSelected" | "credentialSourceOwner" | "credentialSourceType"
-  >;
+  readonly sourceDrivers: Pick<CredentialSourceDrivers, "credentialSourceOwner">;
   readonly requireTokenServiceOwner: (instanceId: string) => void;
   readonly offersProtectedType: (type: string) => boolean;
 }
@@ -179,9 +176,6 @@ export function createAgentCredentialAccess({
     for (const { sourceId } of bindings) {
       await authorizeSourceOperate(principalId, namespaceId, sourceId);
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
-      if (!isManagedTokenServiceSource(source)) {
-        sourceDrivers.assertCredentialSourceOwnerSelected();
-      }
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError(
           "The credential source is unavailable in the exact Namespace.",
@@ -215,6 +209,9 @@ export function createAgentCredentialAccess({
           );
         }
       } else {
+        if (source.ownerCapability !== "credential_proxy" || source.egress === undefined) {
+          throw new ResourceStateConflictError("Re-enroll this credential with TokenService.");
+        }
         sourceDrivers.credentialSourceOwner(source);
       }
       sources.push(source);
@@ -450,20 +447,11 @@ export function createAgentCredentialAccess({
           }),
         });
       } else {
-        const owner = sourceDrivers.credentialSourceOwner(source);
-        if (owner.kind === "proxy") {
-          if (!offersProtectedType(source.type)) {
-            throw new CredentialSourceTypeNotOfferedError("proxy");
-          }
-          snapshots.push({ sourceId, credentialProxyId: owner.driver.id, sourceType: source.type });
-        } else {
-          await sourceDrivers.credentialSourceType(owner.driver, source.type);
-          snapshots.push({
-            sourceId,
-            credentialGatewayId: owner.driver.id,
-            sourceType: source.type,
-          });
+        const proxy = sourceDrivers.credentialSourceOwner(source);
+        if (!offersProtectedType(source.type)) {
+          throw new CredentialSourceTypeNotOfferedError("proxy");
         }
+        snapshots.push({ sourceId, credentialProxyId: proxy.id, sourceType: source.type });
       }
     }
     return {

@@ -754,10 +754,10 @@ test(
       const issuedBeforeRemoval = origin.snapshot().issued;
       await fixture.request("PATCH", a.path, {
         configurationId: a.configuration.id,
-        repositoryBindings: [],
+        repositoryAccess: { defaultProfile: "git-write", repositories: [] },
       });
       const saved = await fixture.request("GET", a.path);
-      assert.equal(saved.repositoryBindings, undefined);
+      assert.deepEqual(saved.repositoryAccess?.repositories, []);
       assert.equal(saved.activeRevisionId, a.revision.id);
       const identity = { sandboxId: a.target.sandboxId, revisionId: a.revision.id };
       const witness = async (stage: string) => {

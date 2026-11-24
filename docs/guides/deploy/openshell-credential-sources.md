@@ -1,5 +1,8 @@
 # Use a static credential source on the local OpenShell profile
 
+The linked walkthrough describes the retired Credential Gateway setup. For current Installations,
+follow [managed static Source setup](../../reference/credential-sources/managed-static.md).
+
 This is the static Credential Gateway setup for new and existing sources. It does not qualify protected Credential Proxy access or transfer
 source ownership. For protected setup and upgrade decisions, start with
 [Credential Proxy setup](../credential-proxy.md).

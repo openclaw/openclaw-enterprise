@@ -31,7 +31,7 @@ import pg from "pg";
 import {
   assertCredentialSchemaPrivileges,
   assertInjectedMigrationRollback,
-  retainGatewaySourcesAcrossProxyAdmission,
+  discardRetiredGatewaySourcesAcrossCutover,
 } from "../helpers/credential-source-owner-upgrade.ts";
 import { request, startController } from "../helpers/postgres-platform-state.ts";
 import {
@@ -908,7 +908,7 @@ async function assertHistoryRefused(db, refusal) {
  * @param {Pick<Awaited<ReturnType<typeof historyDatabase>>, "app" | "migrator">} db
  * @param {readonly { hash: string, created_at: string | number | null }[]} [previous]
  */
-async function assertCompletedHistory(db, previous = []) {
+async function assertCompletedHistory(db, previous = [], selectedRepositories = 0) {
   const manifest = JSON.parse(
     await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
@@ -942,8 +942,8 @@ async function assertCompletedHistory(db, previous = []) {
         "SELECT count(*)::integer AS count FROM occ.agents WHERE repository_access IS NOT NULL",
       )
     ).rows[0].count,
-    0,
-    "migration must not invent inheritance intent for existing Agent bindings",
+    selectedRepositories,
+    "Agent repository access reflects existing selections",
   );
   assert.equal(
     catalogDigest(await migrationCatalog(db.migrator, "drizzle")),
@@ -959,7 +959,6 @@ async function assertCompletedHistory(db, previous = []) {
     WHERE n.nspname='occ' AND p.prosecdef ORDER BY identity`)
     ).rows,
     [
-      ["occ.adopt_codex_pat_source(text,text,text,text,text)", true],
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
@@ -1502,13 +1501,6 @@ test(
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
-      [95, "preCodexDeviceTokenService"],
-      [96, "prePluginCredentialDeployment"],
-      [97, "preOAuthInitialGrantedScopes"],
-      [98, "preCredentialClientsAndGitHubSource"],
-      [99, "preCodexPatSourceAdoption"],
-      [100, "preAgentRepositoryClientIntent"],
-      [101, "preSourceBackedRepositoryAuthorization"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1944,13 +1936,6 @@ test(
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
-      [95, "preCodexDeviceTokenService"],
-      [96, "prePluginCredentialDeployment"],
-      [97, "preOAuthInitialGrantedScopes"],
-      [98, "preCredentialClientsAndGitHubSource"],
-      [99, "preCodexPatSourceAdoption"],
-      [100, "preAgentRepositoryClientIntent"],
-      [101, "preSourceBackedRepositoryAuthorization"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -1996,9 +1981,21 @@ test(
           // 0072 requires settings on new rows; earlier prefixes retain their historical shape.
           harnessSettings: prefix >= 72,
         });
+        // Main still accepts direct Agent Repository bindings. The cutover
+        // preserves the selected profiles in the canonical editable access.
+        const legacySelections = [
+          { repositoryRef: "service", profile: "git-read" },
+          { repositoryRef: "website", profile: "git-write" },
+        ];
+        if (prefix === 94) {
+          await db.app.query(
+            "UPDATE occ.agents SET repository_bindings=$1::jsonb WHERE namespace_id=$2",
+            [JSON.stringify(legacySelections), namespaceId],
+          );
+        }
         const assertSourceOwners =
           prefix === 59
-            ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
+            ? await discardRetiredGatewaySourcesAcrossCutover(db.app, namespaceId)
             : undefined;
         const receipts = await historyReceipts(db.migrator);
         const upgrade = async () => {
@@ -2009,7 +2006,18 @@ test(
           });
           assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
           await assertSourceOwners?.();
-          await assertCompletedHistory(db, receipts);
+          if (prefix === 94) {
+            const { rows } = await db.app.query(
+              "SELECT repository_access FROM occ.agents WHERE namespace_id=$1",
+              [namespaceId],
+            );
+            assert.deepEqual(rows, [
+              {
+                repository_access: { defaultProfile: "git-read", repositories: legacySelections },
+              },
+            ]);
+          }
+          await assertCompletedHistory(db, receipts, prefix === 94 ? 1 : 0);
           if (history !== "preNativeGitDelivery") {
             await assertUpgradedRevisionReadable(db);
           }
@@ -2381,6 +2389,167 @@ test(
 );
 
 test(
+  "Credential cutover retires obsolete Gateway bindings and preserves Channel Secrets",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "retired_gateway_draft", { prefix: 94 });
+    const namespaceId = await seedCanonicalData(db, {
+      preset: true,
+      computeAdmission: true,
+      executionAdmission: true,
+      harnessSettings: true,
+    });
+    // The same Namespace already has a configured Agent and unrelated Channel Secret.
+    const sourceId = `cs_${randomUUID()}`;
+    const googleSourceId = `cs_${randomUUID()}`;
+    const slackSourceId = `cs_${randomUUID()}`;
+    const slackAccountSecret = `sec_${randomUUID()}`;
+    const secretId = `sec_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.secrets
+        (id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
+       VALUES ($1,$2,'Channel startup token','secrets','fixture','slack-bot','value',$3,now()),
+              ($4,$2,'Retired Slack user token','secrets','fixture','slack-user','value',$5,now())`,
+      [secretId, namespaceId, randomUUID(), slackAccountSecret, randomUUID()],
+    );
+    const bindings = {
+      SLACK_BOT_TOKEN: {
+        source: { kind: "secret", namespaceId, id: secretId },
+        delivery: { type: "env" },
+      },
+    };
+    await db.app.query(
+      "UPDATE occ.configurations SET secret_bindings=$1::jsonb, generation=generation+1 WHERE namespace_id=$2",
+      [JSON.stringify(bindings), namespaceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources
+         (id,namespace_id,name,type,config,driver_id,owner_capability,state,created_at)
+       VALUES
+         ($1,$2,'Retired Gateway model','openai','{}','openshell','credential_gateway','ready',now()),
+         ($3,$2,'Retired Google account','oauth2-refresh-token',$4::jsonb,'openshell','credential_gateway','ready',now()),
+         ($5,$2,'Retired Slack account','bearer-token',$6::jsonb,'openshell','credential_gateway','ready',now())`,
+      [
+        sourceId,
+        namespaceId,
+        googleSourceId,
+        JSON.stringify({
+          token_url: "https://oauth2.googleapis.com/token",
+          env_var: "GOG_ACCESS_TOKEN",
+          host: "www.googleapis.com",
+          path: "/calendar/**",
+          scope: "https://www.googleapis.com/auth/calendar.readonly",
+        }),
+        slackSourceId,
+        JSON.stringify({
+          protocol: "mcp",
+          host: "mcp.slack.com",
+          path: "/mcp",
+          env_var: "SLACK_MCP_TOKEN",
+        }),
+      ],
+    );
+    await db.app.query(
+      "INSERT INTO occ.credential_source_secrets(namespace_id,credential_source_id,field,secret_id) VALUES($1,$2,'token',$3)",
+      [namespaceId, slackSourceId, slackAccountSecret],
+    );
+    const releaseSha = async (plugin) =>
+      createHash("sha256")
+        .update(
+          await readFile(
+            join(repositoryRoot, `apps/controller/plugins/${plugin}/ai.openclaw.oce/release.json`),
+          ),
+        )
+        .digest("hex");
+    const plugins = {
+      "occ-plugin:google-workspace@1.0.0": {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: await releaseSha("oce-google-workspace"),
+          credentials: { account: googleSourceId },
+        },
+        tools: { "calendar.events.list": { approval: "all_actions" } },
+      },
+      "occ-plugin:slack@1.0.0": {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: await releaseSha("oce-slack"),
+          credentials: { account: slackSourceId },
+          toolNames: ["slack_search_public"],
+        },
+        tools: { slack_search_public: { approval: "all_actions" } },
+      },
+      "occ-plugin:diffs@1.0.0": { enabled: false },
+    };
+    await db.app.query(
+      "UPDATE occ.agents SET harness_auth=$1::jsonb,credential_sources=$2::jsonb,plugins=$3::jsonb,plugin_driver=$4::jsonb WHERE namespace_id=$5",
+      [
+        JSON.stringify({ method: "credential_source", sourceId }),
+        JSON.stringify([sourceId, googleSourceId, slackSourceId].map((sourceId) => ({ sourceId }))),
+        JSON.stringify(plugins),
+        JSON.stringify({ id: "openclaw", implementation: "occ/openclaw-plugin" }),
+        namespaceId,
+      ],
+    );
+    const previous = await historyReceipts(db.migrator);
+    assert.equal(previous.length, 94);
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preTokenServiceCredentialSources",
+    });
+    await assertCompletedHistory(db, previous);
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT harness_auth,credential_sources,plugins FROM occ.agents WHERE namespace_id=$1",
+          [namespaceId],
+        )
+      ).rows,
+      [
+        {
+          harness_auth: null,
+          credential_sources: null,
+          plugins: {
+            "occ-plugin:google-workspace@1.0.0": {
+              enabled: true,
+              tools: plugins["occ-plugin:google-workspace@1.0.0"].tools,
+            },
+            "occ-plugin:slack@1.0.0": { enabled: true },
+            "occ-plugin:diffs@1.0.0": { enabled: false },
+          },
+        },
+      ],
+    );
+    assert.deepEqual(
+      (
+        await db.app.query("SELECT id FROM occ.credential_sources WHERE id=ANY($1::text[])", [
+          [sourceId, googleSourceId, slackSourceId],
+        ])
+      ).rows,
+      [],
+    );
+    assert.deepEqual(
+      (
+        await db.app.query("SELECT id FROM occ.secrets WHERE namespace_id=$1 AND id=$2", [
+          namespaceId,
+          secretId,
+        ])
+      ).rows,
+      [{ id: secretId }],
+    );
+    assert.deepEqual(
+      (
+        await db.app.query("SELECT secret_bindings FROM occ.configurations WHERE namespace_id=$1", [
+          namespaceId,
+        ])
+      ).rows,
+      [{ secret_bindings: bindings }],
+    );
+  },
+);
+
+test(
   "TokenService Source migration refuses a retained pending OAuth Source without mutation",
   requiresHistoryPostgres,
   async (context) => {
@@ -2481,7 +2650,7 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "codex_device_cutover", { prefix: 95 });
+    const db = await historyDatabase(context, fixture, "codex_device_cutover", { prefix: 94 });
     const installationId = `ins_${randomUUID()}`;
     const namespaceId = `ns_${randomUUID()}`;
     const actorId = `usr_${randomUUID()}`;
@@ -2532,7 +2701,7 @@ test(
       ).rows;
     const before = await historySnapshot(db);
     const retainedBefore = await retainedData();
-    assert.equal(before.receipts.length, 95);
+    assert.equal(before.receipts.length, 94);
     assert.equal(retainedBefore.length, 1);
     assert.deepEqual(
       await runHistoryMigration(db, "production", undefined, undefined, (error) => {
@@ -2750,13 +2919,6 @@ test(
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
-      [95, "preCodexDeviceTokenService"],
-      [96, "prePluginCredentialDeployment"],
-      [97, "preOAuthInitialGrantedScopes"],
-      [98, "preCredentialClientsAndGitHubSource"],
-      [99, "preCodexPatSourceAdoption"],
-      [100, "preAgentRepositoryClientIntent"],
-      [101, "preSourceBackedRepositoryAuthorization"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2894,13 +3056,6 @@ test(
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
-      [95, "preCodexDeviceTokenService"],
-      [96, "prePluginCredentialDeployment"],
-      [97, "preOAuthInitialGrantedScopes"],
-      [98, "preCredentialClientsAndGitHubSource"],
-      [99, "preCodexPatSourceAdoption"],
-      [100, "preAgentRepositoryClientIntent"],
-      [101, "preSourceBackedRepositoryAuthorization"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3071,13 +3226,6 @@ test(
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
-      [95, "preCodexDeviceTokenService"],
-      [96, "prePluginCredentialDeployment"],
-      [97, "preOAuthInitialGrantedScopes"],
-      [98, "preCredentialClientsAndGitHubSource"],
-      [99, "preCodexPatSourceAdoption"],
-      [100, "preAgentRepositoryClientIntent"],
-      [101, "preSourceBackedRepositoryAuthorization"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3106,14 +3254,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                // Abort 0102 after it replaces the validator, before it adds the constraint.
-                [101, "ALTER TABLE"],
-                [100, "CREATE FUNCTION"],
-                [99, "CREATE TRIGGER"],
-                [98, "CREATE FUNCTION"],
-                [96, "CREATE FUNCTION"],
-                [95, "GRANT"],
-                [94, "CREATE FUNCTION"],
+                [94, "ALTER TABLE"],
                 [93, "CREATE TRIGGER"],
                 [92, "CREATE FUNCTION"],
                 [91, "ALTER TABLE"],
@@ -3151,32 +3292,11 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
-        } else if (prefix === 100) {
-          // Abort the policy guard replacement after the desired-access validator changed.
-          failAt = `IF NOT occ.repository_access_is_valid(
-            '{"defaultProfile":"github-repository","githubAppClientId":"ccr_00000000-0000-4000-8000-000000000000","repositories":[]}'::jsonb,
-            '[]'::jsonb
-          ) THEN RETURN; END IF;`;
-        } else if (prefix === 99) {
-          // Abort PAT trigger installation after its transition validator was created.
-          failAt =
-            "IF to_regprocedure('occ.codex_pat_source_transition_is_valid(occ.credential_sources,occ.credential_sources)') IS NULL THEN RETURN; END IF;";
-        } else if (prefix === 98) {
-          // Abort the Client migration after its table alterations, before the new guards exist.
-          failAt =
-            "IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='occ.oauth_clients'::regclass AND attname='kind' AND NOT attisdropped) THEN RETURN; END IF;";
-        } else if (prefix === 96) {
-          // Abort the second function replacement after the snapshot validator accepts a Template receipt.
-          failAt = `IF NOT occ.credential_source_snapshots_are_valid(
-            '[{"sourceId":"cs_00000000-0000-4000-8000-000000000000","sourceType":"static",
-              "tokenServiceInstanceId":"00000000-0000-4000-8000-000000000000",
-              "connectionTemplate":{"id":"ctp_00000000-0000-4000-8000-000000000000","version":1}}]'::jsonb
-          ) THEN RETURN; END IF;`;
-        } else if (prefix === 95) {
-          // Abort 0096 at its grant after the device Source column and owner check exist.
+        } else if (prefix === 94) {
+          // Abort late in the cutover after the validator and the unvalidated constraint exist.
           failAt = `IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint WHERE conrelid='occ.authentication_states'::regclass
-              AND conname='authentication_states_device_source_owner'
+            SELECT 1 FROM pg_constraint WHERE conrelid='occ.agent_revisions'::regclass
+              AND conname='agent_revisions_source_backed_repository_authorization' AND NOT convalidated
           ) THEN RETURN; END IF;`;
         } else if (prefix === 93) {
           // Abort the immutability trigger after 0094 installs the reference constraint.

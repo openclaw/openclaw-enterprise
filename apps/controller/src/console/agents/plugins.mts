@@ -47,6 +47,7 @@ type PluginCapabilities = NonNullable<
   InstallationCapabilities["pluginCatalogs"]
 >[number]["pluginPolicies"] & {
   discoveryCredential: NonNullable<PluginDriver["discoveryCredential"]>;
+  hostedCredential?: "codex_account" | "api_key";
   credentialSlots?: readonly SavedAgentPluginCredentialSlot[];
 };
 
@@ -258,15 +259,26 @@ export function renderAgentPlugins(
   let initialCapabilities: PluginCapabilities | undefined;
   // The failed capabilities read's reason, shown once under the policy controls.
   let catalogCapabilityError: "missing" | "unreadable" | undefined;
-  const hasBoundCredential =
-    agent.harnessAuth?.method === "credential_source" ||
-    (agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret");
   const codex = configuredHarnessId(snapshot.values) === "codex";
   // The saved capabilities already resolve the OpenClaw Harness, including the default.
   let openClawDriver = false;
   // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
   // selected plugin disabled at deployment with PLUGIN_AUTH_REQUIRED.
-  const apiKeyAuth = codex && agent.harnessAuth?.method === "api_key";
+  const apiKeyAuth = () =>
+    codex &&
+    (agent.harnessAuth?.method === "api_key" ||
+      initialCapabilities?.hostedCredential === "api_key");
+  const hasCodexAccount = () => initialCapabilities?.hostedCredential === "codex_account";
+  const sourceNotice = statusBlock(
+    "info",
+    null,
+    "Plugin browsing uses this Agent's saved credential source.",
+    [],
+    { role: null },
+  );
+  const apiKeyNotice = statusBlock("warning", null, API_KEY_PLUGIN_MESSAGE, [], { role: null });
+  sourceNotice.hidden = true;
+  apiKeyNotice.hidden = !apiKeyAuth();
   const getSlackBotSecretId = () => {
     const source = snapshot.secretBindings?.SLACK_BOT_TOKEN?.source;
     return source?.kind === "secret" && source.namespaceId === context.namespaceId
@@ -425,10 +437,10 @@ export function renderAgentPlugins(
       (openClawDriver
         ? agent.executionMode === "dedicated" && catalogCredential === "none"
         : codex &&
-          !apiKeyAuth &&
+          !apiKeyAuth() &&
           (catalogCredential === "none" ||
-            (catalogCredential === "required" && hasBoundCredential))),
-    canPrefetch: () => openClawDriver || hasBoundCredential,
+            (catalogCredential === "required" && hasCodexAccount()))),
+    canPrefetch: () => openClawDriver || hasCodexAccount(),
     applyRecheckedCapabilities,
     isPending: () => pending,
     unavailableMessage: () =>
@@ -442,14 +454,14 @@ export function renderAgentPlugins(
             : catalogCapabilityError === "missing" || !codex || openClawDriver
               ? "The selected Plugin Driver does not offer a catalog for this harness and execution mode. You can still edit existing plugin selections."
               : // Only the Codex Plugin Driver's catalog depends on Codex auth (finding 2791).
-                apiKeyAuth
+                apiKeyAuth()
                 ? "Plugin browsing is unavailable with API-key authentication."
-                : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+                : "Hosted plugin browsing requires a TokenService account Source. Sign in with ChatGPT or re-enroll a service account token as a Source.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
       "Check Agent edit access. Hosted browsing also requires that both you and this Agent can use its bound credential. Saved selections can still be edited.",
     unsupportedMessage:
-      "Plugin browsing is unavailable. Select a catalog-capable Driver; hosted catalogs also require a saved ChatGPT login or Service Accounts token Secret under Credentials.",
+      "Plugin browsing is unavailable. Select a catalog-capable Driver; hosted catalogs require a TokenService account Source.",
     availableMessage: () =>
       catalogCredential === "none"
         ? "Load the Installation's curated plugin catalog. Access and tool availability are checked separately."
@@ -511,20 +523,8 @@ export function renderAgentPlugins(
     "section",
     { className: "agent-card" },
     intro,
-    ...(codex && agent.harnessAuth?.method === "credential_source"
-      ? [
-          statusBlock(
-            "info",
-            null,
-            "Plugin browsing uses this Agent's saved credential source.",
-            [],
-            { role: null },
-          ),
-        ]
-      : []),
-    ...(apiKeyAuth
-      ? [statusBlock("warning", null, API_KEY_PLUGIN_MESSAGE, [], { role: null })]
-      : []),
+    sourceNotice,
+    apiKeyNotice,
     discovery.fields.section,
     pendingApprovers,
     capabilitiesStatus,
@@ -770,6 +770,8 @@ export function renderAgentPlugins(
           catalogCredential = capabilities.discoveryCredential;
           openClawDriver = capabilities.driver?.implementation === "occ/openclaw-plugin";
           catalogCapabilityChecked = true;
+          sourceNotice.hidden = !hasCodexAccount();
+          apiKeyNotice.hidden = !apiKeyAuth();
           discovery.fields.setCapabilities(capabilities);
           discovery.update();
           defaultApprovers.hidden = capabilities.approvers?.agent !== true;

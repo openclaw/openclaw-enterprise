@@ -78,7 +78,6 @@ import type {
 } from "../ports/repository-sessions.ts";
 import { memoryRepositorySessions } from "./memory-repository-sessions.ts";
 import {
-  normalizedRepositoryBindings,
   normalizedRepositoryAccess,
   validRepositoryRevisionState,
 } from "../repository-credential-validation.ts";
@@ -1399,8 +1398,8 @@ function assertCredentialSource(source: CredentialSource): void {
       Object.keys(backendRef).length > 0 &&
       Object.values(backendRef).every((value) => typeof value === "string" && value.length > 0));
   const validOwner = legacy
-    ? (source.ownerCapability === "credential_gateway" ||
-        (source.ownerCapability === "credential_proxy" && source.egress !== undefined)) &&
+    ? source.ownerCapability === "credential_proxy" &&
+      source.egress !== undefined &&
       typeof source.driverId === "string" &&
       source.driverId.length >= 1 &&
       source.driverId.length <= 200 &&
@@ -2874,81 +2873,6 @@ function repositories(
           .map(({ namespaceId, id }) => ({ namespaceId, id })),
       ),
     lockCredentialSource: findCredentialSource,
-    isCredentialSourceAdoptionSettled: async (namespaceId, sourceId) => {
-      if (await credentialSources.findBlockingReference(namespaceId, sourceId)) {
-        return false;
-      }
-      if (
-        [...snapshot.credentialWithdrawals.values()].some(
-          (withdrawal) =>
-            withdrawal.namespaceId === namespaceId &&
-            withdrawal.credentialSourceId === sourceId &&
-            withdrawal.state === "pending",
-        )
-      ) {
-        return false;
-      }
-      for (const [key, installation] of snapshot.egressInstallations) {
-        if (
-          installation.plan.execution.namespaceId !== namespaceId ||
-          snapshot.retiredEgressInstallations.has(key)
-        ) {
-          continue;
-        }
-        const revision = (
-          snapshot.revisions.get(agentKey(namespaceId, installation.plan.execution.agentId)) ?? []
-        ).find(({ id }) => id === installation.plan.execution.revisionId);
-        if (
-          harnessCredentialSourceReference(revision?.harnessAuth, sourceId) ||
-          agentCredentialSourceReference(revision?.credentialSources, sourceId)
-        ) {
-          return false;
-        }
-      }
-      return ![...snapshot.egressSendReceipts.values()].some(
-        ({ authorization, settled, material }) =>
-          authorization !== null &&
-          !settled &&
-          material !== null &&
-          material.kind !== "no_material_required" &&
-          material.source.namespaceId === namespaceId &&
-          material.source.source.id === sourceId,
-      );
-    },
-    adoptGatewayPatSource: async (input) => {
-      const { namespaceId, id } = input.sourceRef;
-      const source = await findCredentialSource(namespaceId, id);
-      if (
-        source?.ownerCapability !== "credential_gateway" ||
-        source.type !== "codex-pat" ||
-        source.state !== "ready" ||
-        source.driverId !== input.expectedGatewayId ||
-        source.egress !== undefined ||
-        input.providerPreset !== "codex-pat" ||
-        input.expectedSecretRef.kind !== "secret" ||
-        input.expectedSecretRef.namespaceId !== namespaceId ||
-        Object.keys(source.secrets).length !== 1 ||
-        source.secrets.access_token?.id !== input.expectedSecretRef.id ||
-        snapshot.tokenServiceInstance?.id !== input.tokenServiceInstanceId ||
-        !(await credentialSources.isCredentialSourceAdoptionSettled(namespaceId, id))
-      ) {
-        return undefined;
-      }
-      const adopted = immutableCopy({
-        id,
-        namespaceId,
-        name: source.name,
-        createdAt: source.createdAt,
-        ownerCapability: "token_service" as const,
-        type: "static" as const,
-        state: "ready" as const,
-        tokenServiceInstanceId: input.tokenServiceInstanceId,
-        config: { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: "codex-pat" },
-      });
-      assertCredentialSource(adopted);
-      snapshot.credentialSources.set(agentKey(namespaceId, id), adopted);
-      return adopted;
-    },
     createCredentialSource: async (source) => {
       assertInitialized(snapshot);
       assertCredentialSource(source);
@@ -3605,11 +3529,7 @@ function repositories(
       const plugins = normalizedPlugins(agent.plugins);
       assertPluginDriverSelection(agent.pluginDriver, plugins);
       const pluginApprovers = normalizedPluginApprovers(agent.pluginApprovers);
-      const repositoryBindings = normalizedRepositoryBindings(agent.repositoryBindings);
-      const repositoryAccess = normalizedRepositoryAccess(
-        agent.repositoryAccess,
-        repositoryBindings,
-      );
+      const repositoryAccess = normalizedRepositoryAccess(agent.repositoryAccess);
       const namespace = await namespaces.lockNamespace(agent.namespaceId);
       if (
         namespace === undefined ||
@@ -3657,7 +3577,6 @@ function repositories(
       const {
         plugins: _providedPlugins,
         pluginApprovers: _providedPluginApprovers,
-        repositoryBindings: _providedRepositoryBindings,
         repositoryAccess: _providedRepositoryAccess,
         networkProxy: _providedNetworkProxy,
         ...withoutPlugins
@@ -3670,7 +3589,6 @@ function repositories(
           : { networkProxy: normalizeAgentNetworkProxy(agent.networkProxy) }),
         ...(plugins === undefined ? {} : { plugins }),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
-        ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
         sandboxPolicyEditing: false,
         desiredRuntimeState: "stopped" as const,
@@ -3745,7 +3663,6 @@ function repositories(
       harnessAuth,
       backendId,
       nextPlugins,
-      nextRepositoryBindings,
       nextPluginApprovers,
       nextRepositoryAccess,
       nextCredentialSources,
@@ -3799,24 +3716,14 @@ function repositories(
           : nextPluginApprovers === null
             ? undefined
             : normalizedPluginApprovers(nextPluginApprovers);
-      const repositoryBindings =
-        nextRepositoryBindings === undefined
-          ? current.repositoryBindings
-          : normalizedRepositoryBindings(nextRepositoryBindings);
       const repositoryAccess = normalizedRepositoryAccess(
-        nextRepositoryAccess === undefined
-          ? nextRepositoryBindings === undefined
-            ? current.repositoryAccess
-            : undefined
-          : nextRepositoryAccess,
-        repositoryBindings,
+        nextRepositoryAccess === undefined ? current.repositoryAccess : nextRepositoryAccess,
       );
       const {
         repositoryAccess: _currentRepositoryAccess,
         plugins: _currentPlugins,
         pluginDriver: _currentPluginDriver,
         pluginApprovers: _currentPluginApprovers,
-        repositoryBindings: _currentRepositoryBindings,
         credentialSources: _currentCredentialSources,
         networkProxy: _currentNetworkProxy,
         ...withoutPlugins
@@ -3837,7 +3744,6 @@ function repositories(
           : { credentialSources: agentCredentialSources }),
         ...(plugins === undefined ? {} : { plugins }),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
-        ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
       });
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);

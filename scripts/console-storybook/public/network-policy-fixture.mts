@@ -156,18 +156,13 @@ export function createNetworkPolicyFixture(
     seedAgent: () => { id: unknown; activeRevisionId?: unknown };
   },
 ) {
-  const stagedRepository = scenario.policyState === "stagedRepositoryPermissions";
   const policyGrant = {
-    ...(stagedRepository
-      ? { id: "codex-model", binary: "/usr/bin/codex", host: "chatgpt.com" }
-      : {
-          id: scenario.policyState === "unicode" ? "unicode-tool" : "python-web",
-          binary:
-            scenario.policyState === "unicode"
-              ? "/" + Array(6).fill("\u{10400}".repeat(45)).join("/") + "/tool"
-              : "/usr/bin/python3.11",
-          host: "example.org",
-        }),
+    id: scenario.policyState === "unicode" ? "unicode-tool" : "python-web",
+    binary:
+      scenario.policyState === "unicode"
+        ? "/" + Array(6).fill("\u{10400}".repeat(45)).join("/") + "/tool"
+        : "/usr/bin/python3.11",
+    host: "example.org",
     ports: [{ from: 443, to: 443 }],
   };
   let policyPolls = 0;
@@ -175,8 +170,7 @@ export function createNetworkPolicyFixture(
   const repositoryEditor = scenario.policyState === "repositoryEditor";
   let simulateRepositoryConflict = scenario.policyState === "repositoryEditorConcurrent";
   const blockedByDefault = scenario.policyState === "repositoryPermissionsLimited";
-  const permissions =
-    scenario.policyState === "repositoryPermissions" || blockedByDefault || stagedRepository;
+  const permissions = scenario.policyState === "repositoryPermissions" || blockedByDefault;
   const deployedPermissions = permissions && scenario.deployed === true;
   let policyEditing = permissions ? deployedPermissions : scenario.policyState !== "disabled";
   const canEditRepositoryGrants = repositoryEditor || simulateRepositoryConflict || permissions;
@@ -199,7 +193,7 @@ export function createNetworkPolicyFixture(
       ]
     : [];
   const initialAdditions =
-    scenario.policyState === "protected" || stagedRepository
+    scenario.policyState === "protected"
       ? [policyGrant]
       : Array.from({ length: scenario.policyRuleCount ?? 0 }, (_, index) => ({
           ...structuredClone(policyGrant),
@@ -408,7 +402,7 @@ export function createNetworkPolicyFixture(
         ...(repositoryLimits || protectedExecution || unreadableRevision
           ? {
               repositoryNetworkPolicyCeiling: repositoryCeiling,
-              ...(permissions && !stagedRepository
+              ...(permissions
                 ? {
                     repositoryApiMaxima: [
                       {
@@ -422,7 +416,6 @@ export function createNetworkPolicyFixture(
                 : {}),
               repositoryNetworkPolicySaveSupported:
                 canEditRepositoryGrants || sandboxPolicy.repositoryNetworkPolicy !== undefined,
-              ...(stagedRepository && { repositoryNetworkPolicySupportsAdditions: true }),
             }
           : {}),
         ceiling: policyCeiling,
@@ -515,7 +508,7 @@ export function createNetworkPolicyFixture(
         );
       }
       const explicit = "repositoryNetworkPolicy" in body;
-      if (protectedExecution && body.additions.length > 0 && !(stagedRepository && explicit)) {
+      if (protectedExecution && body.additions.length > 0) {
         return error(
           409,
           "SANDBOX_POLICY_PROTECTED_EXECUTION",
@@ -539,10 +532,7 @@ export function createNetworkPolicyFixture(
         return error(409, "RESOURCE_STATE_CONFLICT");
       }
       const requested = explicit ? body.repositoryNetworkPolicy : undefined;
-      if (
-        explicit &&
-        (!Array.isArray(requested) || (!stagedRepository && body.additions.length > 0))
-      ) {
+      if (explicit && (!Array.isArray(requested) || body.additions.length > 0)) {
         return error(409, "RESOURCE_CONFLICT");
       }
       const choices = Array.isArray(requested)

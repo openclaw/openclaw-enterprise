@@ -7,7 +7,6 @@ import {
   type AgentRevision,
   type ComputeDriver,
   type ComputeRevisionContext,
-  type CredentialGatewayDriver,
   type StoredCredentialSource as CredentialSource,
   type CredentialSourceSnapshot,
   type LegacyEgressProxyDriver,
@@ -132,7 +131,6 @@ interface RevisionCredentialDependencies {
   readonly state: Pick<PostgresPlatformState, "read" | "transactWithQueue">;
   readonly compute: ComputeDriver;
   readonly secretDriverId: string | undefined;
-  readonly credentialGateway: CredentialGatewayDriver | undefined;
   readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   readonly credentialDeliveryRef:
     NonNullable<AgentRevision["credentialDeployment"]>["driver"] | undefined;
@@ -145,16 +143,10 @@ export async function resolveRevisionHarnessAuth(
   {
     state,
     secretDriverId,
-    credentialGateway,
-    proxyDriver,
     currentTokenServiceInstanceId,
   }: Pick<
     RevisionCredentialDependencies,
-    | "state"
-    | "secretDriverId"
-    | "credentialGateway"
-    | "proxyDriver"
-    | "currentTokenServiceInstanceId"
+    "state" | "secretDriverId" | "currentTokenServiceInstanceId"
   >,
   view?: PlatformReadView,
 ): Promise<
@@ -185,66 +177,30 @@ export async function resolveRevisionHarnessAuth(
     harnessAuth = { ...auth, backendRef: secret.backendRef };
   } else if (revision.harnessAuth.method === "credential_source") {
     const auth = revision.harnessAuth;
-    if (auth.tokenServiceInstanceId !== undefined) {
-      if (
-        !revision.credentialDeployment ||
-        currentTokenServiceInstanceId() !== auth.tokenServiceInstanceId
-      ) {
-        return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
-      }
-      const { source, withdrawal } = await resolveRevisionCredentialSource(
-        state,
-        revision,
-        auth,
-        view,
-      );
-      if (withdrawal !== undefined) {
-        return refuseRevisionInputs("CREDENTIAL_WITHDRAWN");
-      }
-      if (
-        source === undefined ||
-        source.ownerCapability !== "token_service" ||
-        source.tokenServiceInstanceId !== auth.tokenServiceInstanceId
-      ) {
-        return refuseRevisionInputs("HARNESS_AUTH_SOURCE_UNAVAILABLE");
-      }
-      harnessAuth = auth;
-    } else {
-      if (credentialGateway === undefined || auth.credentialGatewayId !== credentialGateway.id) {
-        return refuseRevisionInputs("CREDENTIAL_GATEWAY_MISMATCH");
-      }
-      const { source, withdrawal } = await resolveRevisionCredentialSource(
-        state,
-        revision,
-        auth,
-        view,
-      );
-      // A withdrawn source never re-attaches to its revision, for example after Pod loss.
-      if (withdrawal !== undefined) {
-        return refuseRevisionInputs("CREDENTIAL_WITHDRAWN");
-      }
-      // A deleting source can no longer be attached, even to an admitted revision.
-      if (source === undefined || source.ownerCapability === "token_service") {
-        return refuseRevisionInputs("HARNESS_AUTH_SOURCE_UNAVAILABLE");
-      }
-      if (source.egress !== undefined) {
-        const control = proxyDriver?.sourceControl;
-        const provider = control?.providers.find((entry) =>
-          isDeepStrictEqual(entry.ref, source.egress!.key.provider),
-        );
-        if (!provider || !isDeepStrictEqual(control?.backend, source.egress.key.backend)) {
-          return refuseRevisionInputs("EGRESS_PROVIDER_UNAVAILABLE");
-        }
-        // Provider defaults must reach the normal Harness too. In particular, a
-        // source with an omitted optional endpoint cannot escape its protected profile.
-        harnessAuth = {
-          ...auth,
-          source: { ...source, config: provider.normalizeConfig(source.config) },
-        };
-      } else {
-        harnessAuth = { ...auth, source };
-      }
+    if (
+      auth.tokenServiceInstanceId === undefined ||
+      !revision.credentialDeployment ||
+      currentTokenServiceInstanceId() !== auth.tokenServiceInstanceId
+    ) {
+      return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
     }
+    const { source, withdrawal } = await resolveRevisionCredentialSource(
+      state,
+      revision,
+      auth,
+      view,
+    );
+    if (withdrawal !== undefined) {
+      return refuseRevisionInputs("CREDENTIAL_WITHDRAWN");
+    }
+    if (
+      source === undefined ||
+      source.ownerCapability !== "token_service" ||
+      source.tokenServiceInstanceId !== auth.tokenServiceInstanceId
+    ) {
+      return refuseRevisionInputs("HARNESS_AUTH_SOURCE_UNAVAILABLE");
+    }
+    harnessAuth = auth;
   } else {
     harnessAuth = revision.harnessAuth;
   }
@@ -256,7 +212,6 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
     state,
     compute,
     secretDriverId,
-    credentialGateway,
     proxyDriver,
     credentialDeliveryRef,
     currentTokenServiceInstanceId,
@@ -394,12 +349,11 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
         }
         continue;
       }
-      const sourceOwner = snapshot.credentialProxyId ?? snapshot.credentialGatewayId;
       if (
-        sourceOwner !==
-        (snapshot.credentialProxyId === undefined ? credentialGateway?.id : proxyDriver?.id)
+        snapshot.credentialProxyId === undefined ||
+        snapshot.credentialProxyId !== proxyDriver?.id
       ) {
-        return refuseRevisionInputs("CREDENTIAL_GATEWAY_MISMATCH");
+        return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
       }
       const { source, withdrawal } = await resolveRevisionCredentialSource(
         state,

@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { waitForRevisionPass, advanceCleanupRetries } from "./postgres-worker-revision-support.mjs";
 import { deferred } from "./deferred.ts";
@@ -466,7 +467,6 @@ async function repositoryGitJourney(
     ...(modelProvider && { modelProvider }),
     repositoryCredentials: true,
     protectedDriver: owner,
-    credentialGatewayDriver: gateway,
   });
   // Controlled Compute has the same task-owned launcher transport used below.
   t.mock.method(kube, "getAgentRuntimeCredentialStatus", async () => ({
@@ -488,9 +488,12 @@ async function repositoryGitJourney(
     namespaceId: f.namespace.id,
     agentId: agent.id,
     configurationId: configuration.id,
-    repositoryBindings: narrowProfile
-      ? [{ repositoryRef: "source", profile: "git-write" }]
-      : selectedRepositories.map(({ repositoryRef }) => ({ repositoryRef })),
+    repositoryAccess: {
+      defaultProfile: "git-write",
+      repositories: narrowProfile
+        ? [{ repositoryRef: "source", profile: "git-write" }]
+        : selectedRepositories.map(({ repositoryRef }) => ({ repositoryRef })),
+    },
   });
   if (standing) {
     const [review] = await f.controller.listAgentStandingApprovalScopes(
@@ -1812,7 +1815,7 @@ async function repositoryGitJourney(
               namespaceId: f.namespace.id,
               agentId: agent.id,
               configurationId: configuration.id,
-              repositoryBindings: [],
+              repositoryAccess: { defaultProfile: "git-write", repositories: [] },
             }),
           withdraw: () => f.controller.stopAgent(f.actor.id, f.namespace.id, agent.id),
         });
@@ -2088,7 +2091,7 @@ async function repositoryGitJourney(
         namespaceId: f.namespace.id,
         agentId: agent.id,
         configurationId: configuration.id,
-        repositoryBindings,
+        repositoryAccess: { defaultProfile: "git-write", repositories: repositoryBindings },
       });
     const removalState = () => queue.repositoryExpiryState(removalOwner);
     // Unchanged selections and removing a binding outside the admitted set leave this execution alone.
@@ -2103,7 +2106,10 @@ async function repositoryGitJourney(
         namespaceId: f.namespace.id,
         agentId: agent.id,
         configurationId: configuration.id,
-        repositoryBindings: [{ repositoryRef: "A", profile: "github-repository" }],
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: "A", profile: "github-repository" }],
+        },
         repositoryStandingApproval: {
           approved: false,
           approvalId: "missing-approval",
@@ -2113,7 +2119,10 @@ async function repositoryGitJourney(
       }),
       /Standing approval does not belong/,
     );
-    assert.deepEqual((await f.currentAgent(agent))!.repositoryBindings, originalBindings);
+    assert.deepEqual(
+      repositoryAccessSelections((await f.currentAgent(agent))!.repositoryAccess),
+      originalBindings,
+    );
     assert.equal(await removalState(), undefined);
     const sessionsBefore = await f.state.read((view) =>
       view.repositorySessions.listRevisionAttempts(removalOwner),

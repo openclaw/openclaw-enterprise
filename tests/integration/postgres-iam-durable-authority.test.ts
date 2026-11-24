@@ -805,7 +805,10 @@ test(
             name: "Durable repository approval",
             configurationId: configuration.id,
             harnessAuth: { method: "api_key", source: secret.ref },
-            repositoryBindings: [{ repositoryRef: "fixture-repository", profile: "git-read" }],
+            repositoryAccess: {
+              defaultProfile: "git-write",
+              repositories: [{ repositoryRef: "fixture-repository", profile: "git-read" }],
+            },
           },
           app,
         ),

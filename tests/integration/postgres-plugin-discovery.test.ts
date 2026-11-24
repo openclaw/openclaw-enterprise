@@ -712,7 +712,6 @@ test(
     );
     assert.equal(slackBearer.statusCode, 201, slackBearer.body);
     const staticId = slackBearer.json().data.id;
-    const staticPath = `${path}/credential-sources/${staticId}`;
     await grant("credential_source", staticId, sourceReader.id);
     const prospective = await memberRequest("GET", "/plugins/capabilities");
     assert.equal(prospective.statusCode, 200, prospective.body);
@@ -747,13 +746,6 @@ test(
     const selectedStatic = await memberPatch(selectSlack(staticId));
     assert.equal(selectedStatic.statusCode, 200, selectedStatic.body);
     assert.deepEqual(selectedStatic.json().data.credentialSources, explicit);
-    const deleteStatic = await inject("DELETE", staticPath, undefined, app);
-    assert.equal(deleteStatic.statusCode, 409, deleteStatic.body);
-    assert.match(deleteStatic.json().error.message, /still references the credential source/i);
-    const retained = await inject("GET", staticPath, undefined, app);
-    assert.equal(retained.statusCode, 200, retained.body);
-    assert.equal(retained.json().data.state, "ready");
-
     const slackGrant = await grant("credential_source", sourceId);
     const updateSlackTemplate = () =>
       inject("PATCH", `/connection-templates/${connectionTemplateId}`, {
@@ -785,15 +777,6 @@ test(
     assert.equal(saved.statusCode, 200, saved.body);
     assert.deepEqual(saved.json().data.plugins, body.plugins);
     assert.deepEqual(saved.json().data.credentialSources, explicit);
-    // Removing the selection permits retirement to begin. This admission fixture has no
-    // native Proxy service, so retirement must retain custody instead of claiming deletion.
-    const retired = await inject("DELETE", staticPath, undefined, app);
-    assert.equal(retired.statusCode, 503, retired.body);
-    assert.equal(retired.json().error.code, "DEPENDENCY_UNAVAILABLE");
-    const retiring = await inject("GET", staticPath, undefined, app);
-    assert.equal(retiring.statusCode, 200, retiring.body);
-    assert.equal(retiring.json().data.state, "deleting");
-
     const plugins = {
       ...body.plugins,
       [google.id]: {

@@ -142,25 +142,29 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
   return policy.sort((left, right) => (left.repository < right.repository ? -1 : 1));
 }
 
-function repositoryNetworkEndpoint({ repository, access }: RepositoryNetworkGrant) {
+export function openShellGitServiceRules({ repository, access }: RepositoryNetworkGrant) {
   const root = `/${repository}.git`;
   const services =
     access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
+  return services.flatMap((service) => [
+    {
+      allow: {
+        method: "GET",
+        path: `${root}/info/refs`,
+        query: { service: { glob: service } },
+      },
+    },
+    { allow: { method: "POST", path: `${root}/${service}` } },
+  ]);
+}
+
+function repositoryNetworkEndpoint(grant: RepositoryNetworkGrant) {
   return openShellProfileEndpoint({
     host: "github.com",
     port: 443,
     protocol: "rest",
-    path: `${root}/**`,
-    rules: services.flatMap((service) => [
-      {
-        allow: {
-          method: "GET",
-          path: `${root}/info/refs`,
-          query: { service: { glob: service } },
-        },
-      },
-      { allow: { method: "POST", path: `${root}/${service}` } },
-    ]),
+    path: `/${grant.repository}.git/**`,
+    rules: openShellGitServiceRules(grant),
   });
 }
 

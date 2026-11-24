@@ -148,9 +148,6 @@ import {
   checkCanonicalGatewayChannelSecret,
   checkDedicatedModelCredentialPreparation,
   checkExactAccountTokenEgress,
-  checkExactSandboxCredentialWithdrawal,
-  checkExternalChatgptCredentialDelivery,
-  checkPairedCredentialSourceAuthentication,
   checkPodModelCredentialPlacement,
   checkStoppedRevisionCredentialCleanup,
 } from "./kubernetes-credential-delivery-cases.ts";
@@ -4533,11 +4530,6 @@ test(
 );
 
 test(
-  "credential withdrawal revokes through the revision's exact Sandbox",
-  checkExactSandboxCredentialWithdrawal,
-);
-
-test(
   "retired OAuth Harness authentication fails closed before workload preparation",
   rejectRetiredOAuthHarnessAuthentication,
 );
@@ -4575,11 +4567,6 @@ test(
 test(
   "preparation still refuses a gateway password Compute does not generate",
   rejectUnmanagedGatewayPasswordDuringPreparation,
-);
-
-test(
-  "credential-source authentication renders no model Secret and requires the paired gateway",
-  checkPairedCredentialSourceAuthentication,
 );
 
 test("non-model credential sources resolved at dispatch must match the revision's snapshots", () => {
@@ -7413,11 +7400,6 @@ test(
 test(
   "retirement preserves active storage and node routing and deletes exact owned UIDs",
   checkGatewayRetirement,
-);
-
-test(
-  "external ChatGPT source preparation delivers the exact placeholder and account only to its Harness",
-  checkExternalChatgptCredentialDelivery,
 );
 
 test(

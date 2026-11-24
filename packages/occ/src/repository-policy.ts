@@ -4,6 +4,7 @@ import {
   type ResourceRef,
   type RepositoryNetworkPolicyCeiling,
   isInstallationRepositoryProfile,
+  repositoryAccessSelections,
   type Agent,
   type AdmittedRepositoryBinding,
   type BackendDefinition,
@@ -29,11 +30,7 @@ import {
   type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import type { InstalledDriver } from "./installed-driver.ts";
-import {
-  type HarnessResolver,
-  selectsModel,
-  validateRepositoryTopology,
-} from "./agent-harness-topology.ts";
+import { type HarnessResolver, validateRepositoryTopology } from "./agent-harness-topology.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import { exactConfiguration } from "./configuration-operations.ts";
 import { driverOperation } from "./driver-operation.ts";
@@ -45,7 +42,6 @@ import {
   repositoryGrantAuthority,
   repositoryNetworkLimitForSelection,
   type RepositoryGrantPolicy,
-  admitDeploymentRepositoryPolicy,
   assertSelectedRepositoryGrants,
 } from "./repository-network-policy.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -77,11 +73,6 @@ import type { ControllerAuthority } from "./controller-authority.ts";
 import { unchangedDriver, type DriverRegistry, type RegisteredDriver } from "./driver-registry.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { exactNamespace, namespaceIdentity } from "./resource-scope.ts";
-import { assertAgentConfiguration } from "./deployment-policy.ts";
-import { refuseStoredConfigurationSettings } from "./configuration-settings.ts";
-import { resolveConfiguredHarnessId } from "./configured-harness.ts";
-import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
-import { checkedSandboxPolicySnapshot } from "./sandbox-policy-admission.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import {
   eligibleRepositoryApprovalScope,
@@ -133,7 +124,6 @@ interface RepositoryPolicyDependencies {
   readonly selectedProxyOwner: () => InstalledDriver;
   readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
   readonly supportsStagedRepositoryRecipient: SupportsStagedRepositoryRecipient | undefined;
-  readonly ownedTokenServiceDriver: (instanceId: string) => unknown;
   readonly repositoryCredentialAdmission:
     | ((input: {
         readonly namespaceId: string;
@@ -570,12 +560,12 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       }
       // TODO: support multiple independently approved bindings when session admission supports them.
       // Without a repository Driver nothing can be approved (finding 2362).
-      if (agent.repositoryBindings?.length !== 1 || !repositoryConfigured()) {
+      if (agent.repositoryAccess?.repositories.length !== 1 || !repositoryConfigured()) {
         return [];
       }
       const resolved = resolveRepositoryBindings(
         namespaceId,
-        agent.repositoryBindings,
+        repositoryAccessSelections(agent.repositoryAccess),
         "saved",
         selectedStandingRepositoryAdmission(),
       );
@@ -625,33 +615,31 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
 
   function repositorySettings(
     namespaceId: string,
-    input: {
-      readonly repositoryBindings?: readonly RepositoryBindingRequest[];
-      readonly repositoryAccess?: RepositoryAccess;
-    },
-  ): {
-    repositoryBindings: readonly RepositoryBindingSelection[] | undefined;
-    repositoryAccess?: RepositoryAccess;
-  } {
-    const resolve = (bindings: readonly RepositoryBindingRequest[] | undefined) =>
-      repositoryBindingSelections(namespaceId, bindings, "request");
-    if (input.repositoryAccess === undefined) {
-      return {
-        repositoryBindings: resolve(input.repositoryBindings),
-      };
+    access: unknown,
+    origin: "request" | "saved" = "request",
+  ): RepositoryAccess | undefined {
+    if (access === undefined) {
+      return undefined;
     }
-    if (input.repositoryBindings !== undefined || !validRepositoryAccess(input.repositoryAccess)) {
-      throw new RepositoryBindingSelectionError(RepositoryBindingSelectionError.accessOrBindings);
+    if (!validRepositoryAccess(access)) {
+      throw origin === "request"
+        ? new RepositoryBindingSelectionError(RepositoryBindingSelectionError.notApproved)
+        : new SavedRepositorySelectionError();
     }
-    const requested = input.repositoryAccess.repositories.map((entry) => ({
-      repositoryRef: entry.repositoryRef,
-      profile: entry.profile ?? input.repositoryAccess!.defaultProfile,
-    }));
-    const repositoryBindings = resolve(requested);
-    return {
-      repositoryBindings,
-      repositoryAccess: normalizedRepositoryAccess(input.repositoryAccess, repositoryBindings)!,
-    };
+    const resolved = resolveRepositoryBindings(
+      namespaceId,
+      repositoryAccessSelections(access),
+      origin,
+      installationRepositoryAdmission,
+    );
+    if (resolved?.resolution.nativeGit === "v1" && !access.githubAppClientId) {
+      throw origin === "request"
+        ? new RepositoryBindingSelectionError(
+            "Select a GitHub App Client for native Repository access.",
+          )
+        : new SavedRepositorySelectionError();
+    }
+    return normalizedRepositoryAccess(access);
   }
 
   // A provider refusal for a submitted binding is a request error. The same
@@ -746,29 +734,6 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     return { driver, resolution: immutableCopy(resolution), unchanged: owner.unchanged };
   }
 
-  function repositoryBindingSelections(
-    namespaceId: string,
-    bindings: readonly RepositoryBindingRequest[] | undefined,
-    origin: "request" | "saved",
-  ): readonly RepositoryBindingSelection[] | undefined {
-    const resolved = resolveRepositoryBindings(
-      namespaceId,
-      bindings,
-      origin,
-      installationRepositoryAdmission,
-    );
-    if (resolved === undefined || bindings === undefined) {
-      return undefined;
-    }
-    const selections = new Map(
-      resolved.resolution.bindings.map(({ repositoryRef, profile }) => [
-        repositoryRef,
-        { repositoryRef, profile },
-      ]),
-    );
-    return immutableCopy(bindings.map(({ repositoryRef }) => selections.get(repositoryRef)!));
-  }
-
   function supportsStagedRecipient(compute: ComputeDriver, harness: RevisionHarnessDescriptor) {
     try {
       const sandbox = dependencies.sandboxDriver();
@@ -816,16 +781,14 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     };
   }
 
-  function prepareRepositorySource(
-    agent: Pick<Agent, "namespaceId" | "repositoryAccess" | "repositoryBindings">,
-  ) {
+  function prepareRepositorySource(agent: Pick<Agent, "namespaceId" | "repositoryAccess">) {
     const access = agent.repositoryAccess;
     if (!access?.githubAppClientId || access.repositories.length === 0) {
       return undefined;
     }
     const resolved = resolveRepositoryBindings(
       agent.namespaceId,
-      agent.repositoryBindings,
+      repositoryAccessSelections(agent.repositoryAccess),
       "saved",
       installationRepositoryAdmission,
     );
@@ -848,7 +811,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   async function validateRepositoryClientSelection(
     state: PlatformUnitOfWork,
     principalId: string,
-    agent: Pick<Agent, "namespaceId" | "repositoryAccess" | "repositoryBindings">,
+    agent: Pick<Agent, "namespaceId" | "repositoryAccess">,
     previousClientId?: string,
   ) {
     const clientId = agent.repositoryAccess?.githubAppClientId;
@@ -879,7 +842,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   ) {
     const resolved = resolveRepositoryBindings(
       agent.namespaceId,
-      agent.repositoryBindings,
+      repositoryAccessSelections(agent.repositoryAccess),
       "saved",
       installationRepositoryAdmission,
     );
@@ -983,6 +946,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     bindingsChanged: boolean,
     requested: RepositoryStandingApprovalChange | undefined,
   ): Promise<void> {
+    const updatedBindings = repositoryAccessSelections(updated.repositoryAccess);
     // Stop intent can be superseded before the active runtime is retired.
     // Removing a finite grant must remain irreversible throughout that interval.
     if (bindingsChanged && agent.activeRevisionId) {
@@ -998,8 +962,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         !admitted.standingApprovalId &&
         admitted.bindings.some(
           (member) =>
-            includesBinding(agent.repositoryBindings, member) &&
-            !includesBinding(updated.repositoryBindings, member),
+            includesBinding(repositoryAccessSelections(agent.repositoryAccess), member) &&
+            !includesBinding(updatedBindings, member),
         )
       ) {
         await state.repositorySessions.withdrawFinite(
@@ -1014,8 +978,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     ).filter((a) => !a.revokedAt);
     if (
       activeApprovals.length > 0 &&
-      (updated.repositoryBindings?.length !== 1 ||
-        activeApprovals.some((a) => !includesBinding(updated.repositoryBindings, a.binding)))
+      (updatedBindings.length !== 1 ||
+        activeApprovals.some((a) => !includesBinding(updatedBindings, a.binding)))
     ) {
       // The caller holds update on the Agent. Like SecretReferencedError, the text says what
       // blocks without naming it: no approval ID, which only Agent administer reads.
@@ -1028,12 +992,10 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       await holdStandingApprovalAuthority(state, principalId, agent);
       if (requested.approved) {
         // TODO: admit independent sessions before enabling approval for multiple bindings.
-        if (updated.repositoryBindings?.length !== 1) {
+        if (updatedBindings.length !== 1) {
           throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.oneBinding);
         }
-        const selected = updated.repositoryBindings?.find(
-          (b) => b.repositoryRef === requested.repositoryRef,
-        );
+        const selected = updatedBindings.find((b) => b.repositoryRef === requested.repositoryRef);
         // The request's own selections resolved above, so only saved ones can fail here.
         const resolved =
           selected &&
@@ -1171,185 +1133,6 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
   }
 
-  async function qualifyStagedRepositoryEdit(
-    state: PlatformReadView | PlatformUnitOfWork,
-    agent: Readonly<Agent>,
-    version: number,
-    canRead: (target: ResourceRef) => Promise<boolean>,
-    canOperate: ((target: ResourceRef) => Promise<boolean>) | undefined,
-    resolveHarness: HarnessResolver,
-    additions: readonly SandboxNetworkGrant[],
-    admission: InstallationRepositoryAdmission,
-  ): Promise<
-    | (ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> & {
-        readonly allowsStandaloneModelHistory: true;
-        readonly ceiling?: RepositoryNetworkPolicyCeiling;
-      })
-    | undefined
-  > {
-    const auth = agent.harnessAuth;
-    const sources = agent.credentialSources;
-    const approve = dependencies.repositoryCredentialAdmission;
-    if (
-      agent.executionMode !== "dedicated" ||
-      auth?.method !== "credential_source" ||
-      !sources ||
-      sources.length < 2 ||
-      new Set(sources.map(({ sourceId }) => sourceId)).size !== sources.length ||
-      sources.filter(({ sourceId }) => sourceId === auth.sourceId).length !== 1 ||
-      !canOperate ||
-      !approve
-    ) {
-      return undefined;
-    }
-    const { namespaceId } = agent;
-    const configurationRef = {
-      kind: "configuration",
-      id: agent.configurationId,
-      namespaceId,
-    } as const;
-    if (!(await canRead(configurationRef))) {
-      return undefined;
-    }
-    for (const { sourceId } of sources) {
-      const ref = { kind: "credential_source", id: sourceId, namespaceId } as const;
-      if (!(await canRead(ref)) || !(await canOperate(ref))) {
-        return undefined;
-      }
-    }
-    const configuration = dependencies.configurationDriver();
-    const metadata =
-      "audit" in state
-        ? await state.configurations.lockConfiguration(namespaceId, agent.configurationId)
-        : await state.configurations.findConfiguration(namespaceId, agent.configurationId);
-    assertAgentConfiguration(metadata, namespaceId, agent.configurationId);
-    const { values } = exactConfiguration(
-      await driverOperation(() => configuration.read({ id: metadata.id, namespaceId })),
-      metadata,
-    );
-    refuseStoredConfigurationSettings(values);
-    const harnessId = resolveConfiguredHarnessId(values);
-    const descriptor = resolveHarness(harnessId, "dedicated");
-    if (
-      !selectsModel(values) ||
-      descriptor?.id !== harnessId ||
-      !isNonEmptyString(descriptor.version)
-    ) {
-      return undefined;
-    }
-    const harness = { ...descriptor, mode: "dedicated" as const };
-    const readSource = (id: string) =>
-      "audit" in state
-        ? state.credentialSources.lockCredentialSource(namespaceId, id)
-        : state.credentialSources.findCredentialSource(namespaceId, id);
-    const selected = await Promise.all(sources.map(({ sourceId }) => readSource(sourceId)));
-    const model = selected.find((source) => source?.id === auth.sourceId);
-    const repositories = selected.filter(
-      (source) => isManagedTokenServiceSource(source) && source.type === "github-app-installation",
-    );
-    const source = repositories[0];
-    if (
-      !isManagedTokenServiceSource(model) ||
-      model.type === "github-app-installation" ||
-      model.state !== "ready" ||
-      model.namespaceId !== namespaceId ||
-      repositories.length !== 1 ||
-      !isManagedTokenServiceSource(source) ||
-      source.type !== "github-app-installation" ||
-      source.state !== "ready" ||
-      source.namespaceId !== namespaceId ||
-      source.tokenServiceInstanceId !== model.tokenServiceInstanceId
-    ) {
-      return undefined;
-    }
-    const tokenOwner = dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
-    if (dependencies.ownedTokenServiceDriver(model.tokenServiceInstanceId) !== tokenOwner) {
-      return undefined;
-    }
-    const compute = dependencies.selectedCompute();
-    if (!supportsStagedRecipient(compute, harness)) {
-      return undefined;
-    }
-    const owner = dependencies.selectedCredentialDeliveryOwner();
-    const sandbox = dependencies.sandboxDriver();
-    if (!sandbox || owner.require("sandbox") !== sandbox || !sandbox.admitNetworkPolicy) {
-      return undefined;
-    }
-    const admitNetwork = sandbox.admitNetworkPolicy;
-    const resolve = () =>
-      resolveRepositoryBindings(namespaceId, agent.repositoryBindings, "saved", admission);
-    const repository = resolve();
-    if (!repository || repository.resolution.nativeGit !== "v1") {
-      return undefined;
-    }
-    const policyScope = stagedRepositoryAuthority(namespaceId, source, repository);
-    if (!policyScope?.authority) {
-      return undefined;
-    }
-    const { authority, ceiling } = policyScope;
-    const current = (approved?: () => boolean) => {
-      if (
-        !repository.unchanged() ||
-        !isDeepStrictEqual(resolve()?.resolution, repository.resolution) ||
-        !authority.unchanged() ||
-        approved?.() === false ||
-        dependencies.repositoryCredentialAdmission !== approve ||
-        dependencies.configurationDriver() !== configuration ||
-        dependencies.selectedCompute() !== compute ||
-        dependencies.selectedCredentialDeliveryOwner() !== owner ||
-        dependencies.sandboxDriver() !== sandbox ||
-        sandbox.admitNetworkPolicy !== admitNetwork ||
-        dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId) !== tokenOwner
-      ) {
-        throw new ResourceStateConflictError(
-          "The selected Drivers changed during repository network policy admission. Reload before editing.",
-        );
-      }
-    };
-    const admit = (grants: readonly RepositoryNetworkGrant[]) => {
-      current();
-      const { sandboxPolicy, ownerUnchanged } = admitDeploymentRepositoryPolicy(
-        () =>
-          checkedSandboxPolicySnapshot(sandbox, additions, version, undefined, undefined, () =>
-            Reflect.apply(admitNetwork, sandbox, [additions, version]),
-          ),
-        grants,
-        ceiling,
-        sandbox,
-        () => authority,
-        "save",
-      );
-      const policy = sandboxPolicy?.repositoryNetworkPolicy;
-      if (!policy) {
-        return undefined;
-      }
-      if (dependencies.stagedRepositoryCeiling === undefined) {
-        assertSelectedRepositoryGrants(policy.grants, repository.resolution);
-        if (policy.grants.length > 0 && !policyScope.requests(policy.grants)?.length) {
-          return undefined;
-        }
-      }
-      const assertCurrent = () => current(ownerUnchanged);
-      assertCurrent();
-      return { grants: policy.grants, assertCurrent };
-    };
-    return {
-      supports(ceiling) {
-        return ceiling.some((grant) => {
-          try {
-            return admit([{ ...grant, access: "read" }]) !== undefined;
-          } catch {
-            return false;
-          }
-        });
-      },
-      apiMaxima: () => undefined,
-      admit,
-      ...(dependencies.stagedRepositoryCeiling === undefined ? {} : { ceiling }),
-      allowsStandaloneModelHistory: true,
-    };
-  }
-
   async function qualifyRepositoryEdit(
     state: PlatformReadView | PlatformUnitOfWork,
     agent: Readonly<Agent>,
@@ -1357,30 +1140,20 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     canRead: (target: ResourceRef) => Promise<boolean>,
     resolveHarness: HarnessResolver | undefined,
     additions: readonly SandboxNetworkGrant[] = [],
-    canOperate?: (target: ResourceRef) => Promise<boolean>,
   ) {
-    const { namespaceId, repositoryBindings: bindings } = agent;
+    const { namespaceId } = agent;
+    const bindings = repositoryAccessSelections(agent.repositoryAccess);
     const admission = installationRepositoryAdmission;
-    if (!admission || !resolveHarness || !bindings?.length) {
+    if (
+      !admission ||
+      !resolveHarness ||
+      !bindings?.length ||
+      agent.repositoryAccess?.githubAppClientId ||
+      additions.length > 0
+    ) {
       return undefined;
     }
     try {
-      const staged = await qualifyStagedRepositoryEdit(
-        state,
-        agent,
-        version,
-        canRead,
-        canOperate,
-        resolveHarness,
-        additions,
-        admission,
-      );
-      if (staged) {
-        return staged;
-      }
-      if (additions.length > 0) {
-        return undefined;
-      }
       const compute = dependencies.selectedCompute();
       const owner = dependencies.selectedProxyOwner();
       const validate = repositoryPolicySaveValidator(compute, owner);
@@ -1414,7 +1187,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         return undefined;
       }
       const { harness, source } = topology;
-      const sourceDriver = dependencies.credentialSourceOwner(source).driver;
+      const sourceDriver = dependencies.credentialSourceOwner(source);
       const resolve = () => resolveRepositoryBindings(namespaceId, bindings, "saved", admission);
       const repository = resolve();
       if (!repository) {
@@ -1429,7 +1202,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         dependencies.selectedCompute() === compute &&
         dependencies.selectedProxyOwner() === owner &&
         dependencies.configurationDriver() === configuration &&
-        dependencies.credentialSourceOwner(source).driver === sourceDriver;
+        dependencies.credentialSourceOwner(source) === sourceDriver;
       return validate(
         topology.placement,
         harness,
@@ -1461,7 +1234,6 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     listAgentStandingApprovalScopes,
     removeAgentStandingApproval,
     repositorySettings,
-    repositoryBindingSelections,
     admitRepositoryCredentials,
     reconcileAgentBindings,
     applyRepositoryStandingApproval,

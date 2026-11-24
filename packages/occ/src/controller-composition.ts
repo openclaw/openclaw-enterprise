@@ -29,11 +29,7 @@ import {
   createCredentialSourceOperations,
   type CredentialSourceOperations,
 } from "./credential-source-operations.ts";
-import {
-  CREDENTIAL_GATEWAY_TIMEOUT_MS,
-  createCredentialSourceDrivers,
-  credentialGatewayOperation,
-} from "./credential-source-drivers.ts";
+import { createCredentialSourceDrivers } from "./credential-source-drivers.ts";
 import { createCredentialEgressAdmission } from "./credential-egress-admission.ts";
 import type { TokenService, EgressRef } from "@openclaw-enterprise/contracts";
 import {
@@ -70,13 +66,14 @@ import type {
   AdmittedRepositoryBinding,
   ComputeDriver,
   ConfigurationValidationOptions,
-  CredentialGatewayDriver,
   CredentialProxyDriver,
   CredentialSourceReference,
   DeploymentPolicy,
   DeploymentRequestMatch,
+  HarnessAuthSnapshot,
   GitHubAppInstallationCredentialSource,
   Installation,
+  InstallationCapabilities,
   InstallationDeploymentInventory,
   Namespace,
   NamespaceDeleteResult,
@@ -165,11 +162,6 @@ export interface ControllerOptions {
   /** Key material for sealed authentication-state payloads (device-login challenge and handle). */
   readonly authenticationStateEncryptionSecret?: string;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[] | undefined;
-  /** Code-only composition binding for the bundled retained-source plugin reader. */
-  readonly pluginSourceReader?: {
-    readonly gateway: CredentialGatewayDriver;
-    readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
-  };
   /** Code-only binding for Source-scoped cleanup owned by the selected delivery Proxy. */
   readonly credentialSourceDelivery?:
     | ((
@@ -180,6 +172,7 @@ export interface ControllerOptions {
       ) => Promise<void>)
     | undefined;
   readonly preparedTokens?: TokenService | undefined;
+  readonly modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
   readonly modelCredentialPreset?: (input: {
     readonly presetId: string;
     readonly configuration: Readonly<Record<string, unknown>>;
@@ -520,8 +513,7 @@ function createCredentialServices({
   const nextSourceId = () => resourceValues.nextIdentifier("credential_source");
   const { tokenService, preparedIssuer } = createPreparedTokenAccess(preparedTokens);
   const credentialSourceDrivers = createCredentialSourceDrivers({
-    selectedDriver: (capability) => publicController.selectedDriver(capability),
-    hasSelection: (capability) => drivers.hasSelection(capability),
+    selectedCompute: () => publicController.selectedDriver("compute"),
     selectedProxyOwner: () => drivers.selectedProxyOwner(),
   });
   const egressAdmission = createCredentialEgressAdmission({
@@ -531,9 +523,6 @@ function createCredentialServices({
     proxyDriver: () => publicController.selectedDriver("credential_proxy"),
     proxyRegistrationOwner: () => drivers.selection("credential_proxy")?.owner,
     selectedProxyOwner: () => drivers.selectedProxyOwner(),
-    hasGateway: () => drivers.hasSelection("credential_gateway"),
-    sourceDrivers: credentialSourceDrivers,
-    secretDriver,
     issuer: (ref) => preparedTokens?.issuer(ref),
   });
   const credentialSourceOperations: CredentialSourceOperations = createCredentialSourceOperations({
@@ -541,8 +530,6 @@ function createCredentialServices({
     authority,
     sourceDrivers: credentialSourceDrivers,
     egressAdmission,
-    hasProxy: () => drivers.hasSelection("credential_proxy"),
-    secretDriver,
     getNamespace: (principalId, namespaceId) =>
       publicController.getNamespace(principalId, namespaceId),
     bindCreator: iamPolicy.bindCreator,
@@ -718,7 +705,6 @@ export function createControllerComposition(
 
   const authorization: ControllerOptions["authorize"] | undefined = options.authorize;
   const preparedTokens: TokenService | undefined = options.preparedTokens;
-  const pluginSourceReader = options.pluginSourceReader;
   const stateAndAuthority = createStateAndAuthority(
     admittedInstallation,
     options,
@@ -767,7 +753,6 @@ export function createControllerComposition(
   const {
     agentCredentialAccess,
     credentialSourceDrivers,
-    credentialSourceOperations,
     egressAdmission,
     managedCredentialSources,
   } = credentials;
@@ -804,10 +789,8 @@ export function createControllerComposition(
     ceiling: sandboxNetworkPolicyCeiling,
     authority,
     transactions,
-    egressAdmission,
     hasCredentialProxy: () => drivers.hasSelection("credential_proxy"),
-    allowsOrdinaryCredentialGateway: () =>
-      drivers.selectedProxyOwner().allowsOrdinaryCredentialGateway(),
+    hasCredentialProxyDelivery: () => drivers.hasSelection("credential_proxy_delivery"),
     record: workRecorder.record,
     resolveConfiguration: (capability, driverId, scope, key) =>
       configurations.resolve(capability, driverId, scope, key),
@@ -883,8 +866,6 @@ export function createControllerComposition(
     prepareStagedRepositorySource: options.prepareStagedRepositorySource,
     validateDeploymentGitHubAppClient: managedCredentialSources.validateDeploymentGitHubAppClient,
     supportsStagedRepositoryRecipient: options.supportsStagedRepositoryRecipient,
-    ownedTokenServiceDriver: (instanceId) =>
-      managedCredentialSources.ownedTokenServiceDriver(instanceId),
     credentialSourceOwner: credentialSourceDrivers.credentialSourceOwner,
     repositoryNetworkPolicyCeiling: parseRepositoryNetworkPolicyCeiling(
       options.repositoryNetworkPolicyCeiling ?? [],
@@ -909,24 +890,58 @@ export function createControllerComposition(
       drivers.pluginDriver(harnessId, forConfiguration),
     computeImplementation: () => selectedCompute().implementation,
     sandboxImplementation: () => drivers.selection("sandbox")?.implementation,
-    credentialGatewayImplementation: () => drivers.selection("credential_gateway")?.implementation,
   });
   const pluginDiscovery = createPluginDiscovery({
     transactions,
     authority,
-    authorizedCredentialSource: credentialSourceOperations.authorizedCredentialSource,
-    authorizePluginCredentialSources: agentCredentialAccess.authorizePluginCredentialSources,
     qualifyPluginCredentialSource: agentCredentialAccess.qualifyPluginCredentialSource,
-    sourceReader: pluginSourceReader,
     ownedTokenServiceDriver: (instanceId) =>
       managedCredentialSources.ownedTokenServiceDriver(instanceId),
-    secretDriver: secretOperations.secretDriver,
     readConfiguration: (metadata) => configurationOperations.savedConfigurationReader(metadata)(),
     modelPolicyAgent,
     pluginDriver: (harnessId) => drivers.pluginDriver(harnessId),
     validatePluginPlacement: agentPlugins.validatePluginPlacement,
   });
+  const modelCredentialSourcePresets = () =>
+    drivers.hasSelection("credential_proxy_delivery") && drivers.hasSelection("token_service")
+      ? options.modelCredentialSourcePresets
+      : undefined;
+  function requireModelSource(
+    compute: ComputeDriver,
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+  ): void {
+    if (
+      harness.mode !== "dedicated" ||
+      (auth.method !== "api_key" && auth.method !== "codex_pat") ||
+      auth.source.kind !== "secret"
+    ) {
+      return;
+    }
+    const presetId = auth.method === "codex_pat" ? "codex-pat" : "openai";
+    if (!modelCredentialSourcePresets()?.includes(presetId)) {
+      return;
+    }
+    const preset = options.modelCredentialPreset?.({
+      presetId,
+      configuration,
+      harness: {
+        ...harness,
+        configuration:
+          harness.configuration ??
+          compute.resolveHarnessConfiguration?.(harness, auth, configuration) ??
+          {},
+      },
+    });
+    if (preset) {
+      throw new ConfigurationHarnessError(
+        "Enroll this model credential as a TokenService Source and select it for Harness authentication.",
+      );
+    }
+  }
   const validateSavedAgentTopology = createSavedAgentTopologyValidator({
+    requireModelSource,
     sandboxDriver: sandboxPolicyOperations.sandboxDriver,
     selectedCompute: () => drivers.selection("compute")?.driver as ComputeDriver | undefined,
     validatePluginPlacement: agentPlugins.validatePluginPlacement,
@@ -948,18 +963,8 @@ export function createControllerComposition(
     sandboxDriver: sandboxPolicyOperations.sandboxDriver,
     tokenServiceDriver: () =>
       drivers.hasSelection("token_service") ? drivers.selectedDriver("token_service") : undefined,
-    readGatewaySourceTypes: () =>
-      drivers.hasSelection("credential_gateway")
-        ? credentialGatewayOperation(() =>
-            credentialSourceDrivers.credentialGatewayDriver().listSourceTypes({
-              signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-            }),
-          )
-        : undefined,
+    modelCredentialSourcePresets,
     protectedSourceTypes: () => egressAdmission.protectedSourceTypes().map(({ type }) => type),
-    allowsGatewaySourceType: (type) =>
-      egressAdmission.ordinaryCredentialGatewayAllowed(type) ||
-      egressAdmission.staticSourceTypeAvailable(type),
     enabledPluginDrivers: () => drivers.enabledPluginDrivers(),
   });
   const runtimeObservations: AgentRuntimeObservations = new AgentRuntimeObservations({
@@ -1007,12 +1012,11 @@ export function createControllerComposition(
     nextIdentifier: resourceValues.nextIdentifier,
   });
   const harnessAuthOperations = createHarnessAuthOperations({
+    requireModelSource,
     authority,
     authorizeBoundCredentialSources: agentCredentialAccess.authorizeBoundCredentialSources,
-    sourceDrivers: credentialSourceDrivers,
     backends: backendMap,
     secrets: secretOperations,
-    hasCredentialGateway: () => drivers.hasSelection("credential_gateway"),
     hasCredentialProxyDelivery: () => drivers.hasSelection("credential_proxy_delivery"),
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),

@@ -5,8 +5,6 @@ import {
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   type AuditEvent,
   type CredentialSource,
-  type LegacyCredentialSource,
-  type CredentialGatewayDriver,
   type EgressRef,
   type TokenService,
   type StaticCredentialSource,
@@ -25,8 +23,7 @@ import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
-  CREDENTIAL_GATEWAY_TIMEOUT_MS,
-  credentialGatewayOperation,
+  PROTECTED_SOURCE_TIMEOUT_MS,
   type CredentialSourceDrivers,
 } from "./credential-source-drivers.ts";
 import {
@@ -56,7 +53,6 @@ import { selectedPluginBindings } from "./plugin-credential-bindings.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { TokenServiceInstance } from "./ports/token-service.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
-import { secretOperation } from "./secret-operations.ts";
 
 type CreateStaticCredentialSourceInput = Omit<
   Extract<SourceRegistrationInput, { kind: "static" }>,
@@ -78,8 +74,6 @@ export type UpdateManagedCredentialSourceInput =
       readonly secret?: never;
       readonly lifecycleConfig?: never;
     };
-
-const CREDENTIAL_GATEWAY_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_000;
 
 function assertManagedSourceLifecycleSettings(settings: Readonly<Record<string, string>>): void {
   if (Object.hasOwn(settings, SOURCE_PROVIDER_PRESET_CONFIG_KEY)) {
@@ -120,13 +114,7 @@ interface ManagedCredentialSourceDependencies {
     "authorize" | "authorizationDecision" | "holdAuthority"
   >;
   readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator">;
-  readonly sourceDrivers: Pick<
-    CredentialSourceDrivers,
-    | "credentialNamespace"
-    | "credentialSourceOwner"
-    | "assertCredentialSourceOwnerSelected"
-    | "refreshDriverForSource"
-  >;
+  readonly sourceDrivers: Pick<CredentialSourceDrivers, "credentialSourceOwner">;
   readonly preparedIssuer: (ref: EgressRef) => NonNullable<ReturnType<TokenService["issuer"]>>;
   readonly clock: () => Date;
   readonly selectedTokenServiceDriver: () => TokenServiceDriver;
@@ -586,129 +574,6 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     }
   }
 
-  async function adoptCodexPatCredentialSource(
-    principalId: string,
-    ref: { readonly namespaceId: string; readonly credentialSourceId: string },
-    audit: (resource: CredentialSourceReference, phase?: "adoption_started") => AuditEvent,
-  ): Promise<Readonly<CredentialSourceMetadata>> {
-    dependencies.transactions.requireIndependentMutation("Credential source adoption");
-    namespaceIdentity(ref.namespaceId);
-    const resource: CredentialSourceReference = {
-      kind: "credential_source",
-      namespaceId: ref.namespaceId,
-      id: ref.credentialSourceId,
-    };
-    const admitted = await dependencies.transactions.transact(async (state) => {
-      await dependencies.authority.holdAuthority(state);
-      await dependencies.authority.authorize(principalId, "update", resource);
-      await dependencies.authority.authorize(principalId, "operate", resource);
-      const namespace = await lockNamespace(state, ref.namespaceId);
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      const source = await state.credentialSources.lockCredentialSource(
-        ref.namespaceId,
-        resource.id,
-      );
-      if (!source) {
-        throw new ScopeViolationError("The credential source is unavailable.");
-      }
-      if (
-        source.ownerCapability !== "credential_gateway" ||
-        source.type !== "codex-pat" ||
-        source.state !== "ready" ||
-        source.egress !== undefined ||
-        Object.keys(source.secrets).length !== 1
-      ) {
-        throw new ResourceStateConflictError(
-          "Only an unbound Gateway Codex PAT Source can be adopted.",
-        );
-      }
-      const secretRef = source.secrets.access_token;
-      if (!secretRef || secretRef.namespaceId !== ref.namespaceId) {
-        throw new ResourceStateConflictError("The Codex PAT input is unavailable.");
-      }
-      await dependencies.authority.authorize(principalId, "operate", secretRef);
-      const secret = await state.secrets.findSecret(ref.namespaceId, secretRef.id);
-      if (!secret) {
-        throw new ScopeViolationError("The Codex PAT input is unavailable.");
-      }
-      const secretDriver = dependencies.secretDriver(secret.driverId);
-      if (!secretDriver.withValue) {
-        throw new DependencyUnavailableError(
-          "The selected Secret Driver cannot read the Codex PAT input.",
-        );
-      }
-      const owner = dependencies.sourceDrivers.credentialSourceOwner(source);
-      if (owner.kind !== "gateway") {
-        throw new ResourceStateConflictError("The Gateway owner is unavailable.");
-      }
-      const tokenService = ownedTokenServiceDriver();
-      const adoptSource = tokenService.adoptSource?.bind(tokenService);
-      if (!adoptSource) {
-        throw new DependencyUnavailableError(
-          "The selected TokenService cannot adopt legacy Codex PAT Sources.",
-        );
-      }
-      await state.audit.append(audit(resource, "adoption_started"));
-      return {
-        namespace,
-        source,
-        secretRef,
-        secret,
-        secretDriver,
-        gateway: owner.driver,
-        adoptSource,
-        tokenServiceInstanceId: currentTokenServiceInstanceId(),
-      };
-    });
-    const placed = await dependencies.sourceDrivers.credentialNamespace(admitted.namespace);
-    const signal = AbortSignal.timeout(dependencies.tokenServiceTimeoutMs);
-    const adopted = await driverOperation(
-      () =>
-        admitted.adoptSource(
-          {
-            sourceRef: resource,
-            expectedGatewayId: admitted.gateway.id,
-            expectedSecretRef: admitted.secretRef,
-            tokenServiceInstanceId: admitted.tokenServiceInstanceId,
-            providerPreset: "codex-pat",
-          },
-          async (operationSignal) => {
-            operationSignal.throwIfAborted();
-            return secretOperation(() =>
-              admitted.secretDriver.withValue!(admitted.secret, async (value) => value),
-            );
-          },
-          (operationSignal) =>
-            credentialGatewayOperation(() =>
-              admitted.gateway.removeSource({
-                namespace: placed,
-                source: admitted.source,
-                signal: operationSignal,
-              }),
-            ),
-          signal,
-        ),
-      "TokenService",
-    );
-    if (
-      adopted.id !== resource.id ||
-      adopted.namespaceId !== ref.namespaceId ||
-      adopted.type !== "static" ||
-      adopted.ownerCapability !== "token_service" ||
-      adopted.tokenServiceInstanceId !== admitted.tokenServiceInstanceId ||
-      adopted.state !== "ready" ||
-      adopted.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== "codex-pat"
-    ) {
-      throw new ResourceStateConflictError("The TokenService returned an invalid adopted Source.");
-    }
-    return dependencies.transactions.transact(async (state) => {
-      await state.audit.append(audit(resource));
-      return credentialSourceMetadata(adopted);
-    });
-  }
-
   async function retireSourceDelivery(
     namespace: Readonly<Namespace>,
     source: Readonly<CredentialSource>,
@@ -856,106 +721,99 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
         throw deleteDenial;
       }
     }
-    const { namespace, source, gateway } = await dependencies.transactions.transact(
-      async (state) => {
-        const namespace = await lockNamespace(state, namespaceId);
-        if (deleteDenial === undefined) {
-          await dependencies.authority.authorize(principalId, "delete", resource);
-        }
-        const source = await state.credentialSources.lockCredentialSource(
-          namespaceId,
-          credentialSourceId,
+    const { namespace, source } = await dependencies.transactions.transact(async (state) => {
+      const namespace = await lockNamespace(state, namespaceId);
+      if (deleteDenial === undefined) {
+        await dependencies.authority.authorize(principalId, "delete", resource);
+      }
+      const source = await state.credentialSources.lockCredentialSource(
+        namespaceId,
+        credentialSourceId,
+      );
+      if (
+        deleteDenial !== undefined &&
+        (!isManagedTokenServiceSource(source) ||
+          source.type !== "oauth2-refresh-token" ||
+          source.consent.ownerPrincipalId !== principalId)
+      ) {
+        throw deleteDenial;
+      }
+      if (!source) {
+        throw new ScopeViolationError(
+          "The credential source does not belong to the exact Namespace.",
         );
-        if (
-          deleteDenial !== undefined &&
-          (!isManagedTokenServiceSource(source) ||
-            source.type !== "oauth2-refresh-token" ||
-            source.consent.ownerPrincipalId !== principalId)
-        ) {
-          throw deleteDenial;
+      }
+      if (!isManagedTokenServiceSource(source)) {
+        if (source.ownerCapability !== "credential_proxy" || source.egress === undefined) {
+          throw new ResourceStateConflictError("Re-enroll this credential with TokenService.");
         }
-        if (!source) {
-          throw new ScopeViolationError(
-            "The credential source does not belong to the exact Namespace.",
-          );
-        }
-        if (!isManagedTokenServiceSource(source)) {
-          dependencies.sourceDrivers.assertCredentialSourceOwnerSelected();
-          const blocking = await state.credentialSources.findBlockingReference(
-            namespaceId,
-            source.id,
-          );
-          if (blocking === "reference") {
-            throw new ResourceStateConflictError(
-              "An Agent, active revision, pending deployment, or provisioning request still references the credential source. Wait for provisioning to finish, or delete those Agents or deploy them without it, first.",
-            );
-          }
-          if (blocking === "withdrawal_work") {
-            throw new CredentialWithdrawalInProgressError();
-          }
-          const owner = dependencies.sourceDrivers.credentialSourceOwner(source);
-          const deleting =
-            source.state === "deleting"
-              ? source
-              : await state.credentialSources.markCredentialSourceDeleting(namespaceId, source.id);
-          if (!deleting || isManagedTokenServiceSource(deleting)) {
-            throw new ResourceStateConflictError("The credential source changed during deletion.");
-          }
-          return {
-            namespace,
-            source: deleting,
-            gateway: owner.kind === "gateway" ? owner.driver : undefined,
-          };
-        }
-        if (!audit) {
-          throw new ResourceStateConflictError("Source retirement requires audit evidence.");
-        }
-        ownedTokenServiceDriver(source.tokenServiceInstanceId);
+        dependencies.sourceDrivers.credentialSourceOwner(source);
         const blocking = await state.credentialSources.findBlockingReference(
           namespaceId,
           source.id,
         );
         if (blocking === "reference") {
           throw new ResourceStateConflictError(
-            "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
+            "An Agent, active revision, pending deployment, or provisioning request still references the credential source. Wait for provisioning to finish, or delete those Agents or deploy them without it, first.",
           );
         }
         if (blocking === "withdrawal_work") {
           throw new CredentialWithdrawalInProgressError();
         }
-        if (
-          source.connectionTemplateId !== undefined &&
-          (await savedPluginsReferenceSource(state, namespaceId, source.id))
-        ) {
-          throw new ResourceStateConflictError(
-            "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
-          );
-        }
         const deleting =
           source.state === "deleting"
             ? source
             : await state.credentialSources.markCredentialSourceDeleting(namespaceId, source.id);
-        if (!isManagedTokenServiceSource(deleting)) {
-          throw new ResourceStateConflictError("The Source changed during retirement.");
+        if (!deleting || isManagedTokenServiceSource(deleting)) {
+          throw new ResourceStateConflictError("The credential source changed during deletion.");
         }
-        if (
-          source.type === "oauth2-refresh-token" &&
-          source.consent.revocationRequestedBy === undefined
-        ) {
-          await state.credentialSources.requestOAuthRevocation(namespaceId, source.id, principalId);
-        }
-        await state.audit.append(audit([], "retirement_started"));
-        return { namespace, source: deleting, gateway: undefined };
-      },
-    );
+        return {
+          namespace,
+          source: deleting,
+        };
+      }
+      if (!audit) {
+        throw new ResourceStateConflictError("Source retirement requires audit evidence.");
+      }
+      ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      const blocking = await state.credentialSources.findBlockingReference(namespaceId, source.id);
+      if (blocking === "reference") {
+        throw new ResourceStateConflictError(
+          "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
+        );
+      }
+      if (blocking === "withdrawal_work") {
+        throw new CredentialWithdrawalInProgressError();
+      }
+      if (
+        source.connectionTemplateId !== undefined &&
+        (await savedPluginsReferenceSource(state, namespaceId, source.id))
+      ) {
+        throw new ResourceStateConflictError(
+          "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
+        );
+      }
+      const deleting =
+        source.state === "deleting"
+          ? source
+          : await state.credentialSources.markCredentialSourceDeleting(namespaceId, source.id);
+      if (!isManagedTokenServiceSource(deleting)) {
+        throw new ResourceStateConflictError("The Source changed during retirement.");
+      }
+      if (
+        source.type === "oauth2-refresh-token" &&
+        source.consent.revocationRequestedBy === undefined
+      ) {
+        await state.credentialSources.requestOAuthRevocation(namespaceId, source.id, principalId);
+      }
+      await state.audit.append(audit([], "retirement_started"));
+      return { namespace, source: deleting };
+    });
     if (!isManagedTokenServiceSource(source)) {
-      await retireLegacyCredentialSource(namespace, source, gateway);
-      const fenceMs =
-        Date.parse(source.createdAt) +
-        CREDENTIAL_GATEWAY_REGISTRATION_FENCE_MS -
-        dependencies.clock().getTime();
-      if (fenceMs > 0) {
-        throw new RetryLaterError("registrationFence", fenceMs / 1000);
+      if (source.egress?.adoption === "prepared") {
+        await dependencies
+          .preparedIssuer(source.egress.key.provider)
+          .withdraw(source.egress, AbortSignal.timeout(PROTECTED_SOURCE_TIMEOUT_MS));
       }
       await dependencies.transactions.transact(async (state) => {
         await lockNamespace(state, namespace.id);
@@ -1001,32 +859,6 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     );
   }
 
-  async function retireLegacyCredentialSource(
-    namespace: Readonly<Namespace>,
-    source: Readonly<LegacyCredentialSource>,
-    gateway: CredentialGatewayDriver | undefined,
-  ): Promise<void> {
-    if (source.egress?.adoption === "prepared") {
-      await dependencies
-        .preparedIssuer(source.egress.key.provider)
-        .withdraw(source.egress, AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
-      return;
-    }
-    if (gateway && source.egress?.adoption !== "credential_free") {
-      const placed = await dependencies.sourceDrivers.credentialNamespace(namespace);
-      const context = () => ({
-        namespace: placed,
-        source,
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      });
-      const refresh = await dependencies.sourceDrivers.refreshDriverForSource(gateway, source.type);
-      if (refresh !== undefined) {
-        await credentialGatewayOperation(() => refresh.removeRefresh(context()));
-      }
-      await credentialGatewayOperation(() => gateway.removeSource(context()));
-    }
-  }
-
   return {
     activateTokenServiceInstance,
     currentTokenServiceInstanceId,
@@ -1035,7 +867,6 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     prepareDeploymentGitHubAppSource,
     validateDeploymentGitHubAppClient,
     updateManagedCredentialSource,
-    adoptCodexPatCredentialSource,
     deleteCredentialSource,
     finishOAuthRevocation,
   };

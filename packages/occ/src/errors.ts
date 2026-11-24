@@ -517,7 +517,7 @@ export class AgentCredentialSourceBindingError extends ScopeViolationError {
 /**
  * An Agent's repository selections break a rule that depends only on them and on the
  * Installation's repository policy for the Namespace: Installation-wide access combined with
- * another binding (finding 2316), both selection forms or an invalid `repositoryAccess`, or a
+ * another binding (finding 2316), an invalid `repositoryAccess`, or a
  * selection the Repository Driver does not approve. Agent save, provisioning and deploy
  * admission raise it after the caller's grant on the Agent or Namespace, and each text is
  * fixed: it names no repository, Driver reason or other resource, so HTTP reports it as an
@@ -525,9 +525,7 @@ export class AgentCredentialSourceBindingError extends ScopeViolationError {
  */
 export class RepositoryBindingSelectionError extends ScopeViolationError {
   static readonly installationAccessAlone =
-    "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.";
-  static readonly accessOrBindings =
-    "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
+    "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryAccess.repositories, or select each repository with its own profile instead.";
   // The Driver refuses a whole selection without saying which entry; this text lists its rules.
   static readonly notApproved =
     "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
@@ -835,7 +833,7 @@ export class CredentialSourceUnprotectedError extends ResourceStateConflictError
 
 const REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES = Object.freeze({
   several:
-    "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryBindings`.",
+    "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryAccess.repositories`.",
   single:
     "A Credential Proxy cannot deliver this repository's Git access level. Use `github-repository` or `git-write` for it, or ask an administrator to use native prepared Git without a Sandbox or Proxy, then deploy again.",
 });

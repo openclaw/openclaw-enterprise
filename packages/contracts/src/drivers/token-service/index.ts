@@ -6,8 +6,6 @@ import type {
   OAuthConnectionGrant,
   OAuthBuiltinCodexSourceConsent,
   OAuthTemplateSourceConsent,
-  SecretReference,
-  StaticCredentialSource,
 } from "../../index.ts";
 import type { Driver } from "../index.ts";
 
@@ -108,15 +106,6 @@ export type SourceUpdate =
       readonly secret?: SecretFields;
     };
 
-/** An authorized, unbound legacy Source whose identity must survive TokenService adoption. */
-export interface SourceAdoptionInput {
-  readonly sourceRef: CredentialSourceReference;
-  readonly expectedGatewayId: string;
-  readonly expectedSecretRef: SecretReference;
-  readonly tokenServiceInstanceId: string;
-  readonly providerPreset: "codex-pat";
-}
-
 export interface ResolvedCredential {
   readonly credential: string;
   /** Required when the resolved value is pushed to a delivery resource. */
@@ -189,13 +178,6 @@ export interface TokenServiceDriver extends Omit<Driver, "capability"> {
     signal: AbortSignal,
   ): Promise<TokenServiceDeviceAuthorizationResult>;
   createSource(input: SourceRegistrationInput, signal: AbortSignal): Promise<CredentialSource>;
-  /** Optional transition for legacy Gateway-owned Codex PAT Sources. */
-  adoptSource?(
-    input: SourceAdoptionInput,
-    resolveCredential: (signal: AbortSignal) => Promise<string>,
-    retireGateway: (signal: AbortSignal) => Promise<void>,
-    signal: AbortSignal,
-  ): Promise<StaticCredentialSource>;
   updateSource(
     source: TokenServiceSourceInstance,
     update: SourceUpdate,

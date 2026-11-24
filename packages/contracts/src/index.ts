@@ -228,7 +228,6 @@ import { Check } from "typebox/value";
 import { PluginApproversSchema } from "./api/common.ts";
 import type {
   RepositoryAccess,
-  RepositoryBindingSelection,
   RepositoryRevisionState,
   SourceBackedRepositoryRevisionState,
 } from "./drivers/repo/index.ts";
@@ -294,6 +293,7 @@ export {
   githubInstallationProfile,
   isInstallationRepositoryProfile,
   repositoryGitDeliveryProfile,
+  repositoryAccessSelections,
 } from "./drivers/repo/index.ts";
 
 /** Experimental Installation backend composition; separate from native model providers. */
@@ -382,7 +382,9 @@ export interface InstallationCapabilities {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** The selected TokenService supports Codex device authorization. */
   readonly deviceAuthorization?: true;
-  /** A selected Credential Gateway requires source-backed model authentication. */
+  /** Model presets that enroll credentials through the selected TokenService and native delivery. */
+  readonly modelCredentialSourcePresets?: readonly import("./model-providers.ts").SourceProviderPresetId[];
+  /** Source types offered by independently selected protected request transports. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
   /** Plugin catalogs by Harness. */
   readonly pluginCatalogs?: readonly {
@@ -1279,7 +1281,6 @@ export interface Agent extends Scope {
   readonly pluginDriver?: PluginDriverIdentity;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
-  readonly repositoryBindings?: readonly RepositoryBindingSelection[];
   readonly repositoryAccess?: RepositoryAccess;
   readonly servicePrincipalId: string;
   readonly activeRevisionId?: string;
@@ -1292,7 +1293,6 @@ export interface ConfigurationReadError {
   readonly field:
     | "plugins"
     | "pluginApprovers"
-    | "repositoryBindings"
     | "repositoryAccess"
     | "networkProxy"
     | "harnessAuth"
@@ -1307,7 +1307,6 @@ export type AgentMetadata = Omit<
   | "pluginDriver"
   | "plugins"
   | "pluginApprovers"
-  | "repositoryBindings"
   | "repositoryAccess"
   | "networkProxy"
   | "harnessAuth"
@@ -1954,7 +1953,6 @@ export type {
   TokenServiceSourceInstance,
   SourceLifecycleConfig,
   SourceRegistrationInput,
-  SourceAdoptionInput,
   SourceUpdate,
   ResolvedCredential,
   CredentialRefreshStatus,

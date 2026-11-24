@@ -12,10 +12,8 @@ import { responseTo } from "./console-action-helpers.ts";
 import type { PluginFieldCatalog } from "../../apps/controller/src/console/agents/plugin-fields.mjs";
 import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
 import type {
-  CredentialGatewayDriver,
   PluginApprovers,
   PluginCatalogEntry,
-  SandboxDriver,
   SecretMetadata,
 } from "../../packages/contracts/src/index.ts";
 
@@ -28,7 +26,6 @@ import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
-import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   apiRequests,
   detailUrl,
@@ -250,23 +247,89 @@ test("A dedicated Agent with empty configuration can browse the default OpenClaw
     .waitFor({ state: "visible" });
 });
 
-async function savedCodexPluginFixture(t: TestContext) {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Hosted plugin discovery");
+async function savedCodexPluginFixture(
+  t: TestContext,
+  preset: "codex-pat" | "openai" = "codex-pat",
+) {
+  let state: PlatformStateStore | undefined;
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Hosted plugin discovery", {
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
+  });
+  const native = controller(fixture);
+  const { core, driver: secrets } = useInstallationSecretDriver(native);
+  core.addNamespace(namespace.id);
+  assert.ok(secrets.installationSecrets && state);
+  const instance = await native.activateTokenServiceInstance(
+    "console-pat-tokens",
+    crypto.randomUUID(),
+  );
+  const tokens = new OCCTokenServiceDriver(
+    "console-pat-tokens",
+    native.installation.id,
+    secrets.installationSecrets,
+    instance,
+    state,
+  );
+  native.registerDriver(tokens);
+  native.selectDriver("token_service", tokens.id);
   const driver = new CodexPluginDriver();
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
-  const secret = await fixture.createSecret(namespace.id, "Discovery token", "fixture-value");
+  native.registerDriver(driver);
+  native.selectDriver("plugin", driver.id);
+
+  async function enroll(name: string) {
+    const response = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name,
+          type: "static",
+          config: { provider_preset: preset },
+          secret: {
+            opaque: preset === "codex-pat" ? "at-controlled-console-token" : "controlled-api-key",
+          },
+        },
+      },
+    );
+    assert.equal(response.status, 201, JSON.stringify(response.body));
+    return entity(response.data);
+  }
+
+  const source = await enroll("Discovery token");
   const agent = await fixture.createAgent(
     namespace.id,
     "Discovery Agent",
     nativeValues("plugin-discovery", { harnessId: "codex" }),
-    { executionMode: "dedicated", harnessAuth: { method: "codex_pat", source: secret.ref } },
+    {
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: source.id },
+      credentialSources: [{ sourceId: source.id }],
+    },
   );
-  await fixture.grantAgentSecretOperate(agent, secret.ref, { listed: false });
+  fixture.policy.identities.push({
+    kind: "service_principal",
+    id: agent.servicePrincipalId,
+    namespaceId: namespace.id,
+    agentId: agent.id,
+  });
+
+  function grantSource(sourceId: string) {
+    grantRole(fixture.policy, agent.servicePrincipalId, {
+      id: `hosted-discovery-${crypto.randomUUID()}`,
+      namespaceId: namespace.id,
+      permissions: { credential_source: ["operate"] },
+      resource: { kind: "credential_source", id: sourceId },
+    });
+  }
+
+  grantSource(source.id);
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const catalogUrl = new URL(`${path}/plugins`, fixture.origin).href;
   const { page } = await newPage(t, fixture, { browser });
-  return { fixture, namespace, driver, agent, secret, path, page, catalogUrl };
+  return { fixture, namespace, driver, agent, source, enroll, grantSource, path, page, catalogUrl };
 }
 
 async function discoveryResponse(
@@ -279,6 +342,21 @@ async function discoveryResponse(
   assert.equal(response.status(), status);
   return response;
 }
+
+test("A saved OpenAI API-key Source cannot browse Codex hosted Apps", async (t) => {
+  const { fixture, namespace, agent, path, page } = await savedCodexPluginFixture(t, "openai");
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByText(/This Agent uses an API key/).waitFor();
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
+  assert.equal(
+    await dialog.getByRole("button", { name: "Load plugins", exact: true }).isEnabled(),
+    false,
+  );
+  assert.deepEqual(pathRequests(requests, "POST", `${path}/plugins`), []);
+});
 
 test("Agent plugin discovery refuses mismatched details and retries the selected plugin", async (t) => {
   const { fixture, namespace, agent, path, page, catalogUrl } = await savedCodexPluginFixture(t);
@@ -351,14 +429,14 @@ test("Agent plugin discovery refuses mismatched details and retries the selected
 const conflictDraft = '{\n  "codex-plugin:draft@openai-curated-remote": { "enabled": false }\n}';
 
 async function savedPluginConflictFixture(t: TestContext) {
-  const { fixture, namespace, agent, driver, secret, path, page, catalogUrl } =
+  const { fixture, namespace, agent, driver, source, enroll, grantSource, path, page, catalogUrl } =
     await savedCodexPluginFixture(t);
   const requests = apiRequests(page, fixture.origin);
   const input = page.locator("#agent-plugins");
   const approvers = page.getByLabel("Default plugin approvers mode", { exact: true });
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  const replacement = await fixture.createSecret(namespace.id, "Replacement token", "fixture-next");
-  await fixture.grantAgentSecretOperate(agent, replacement.ref, { listed: false });
+  const replacement = await enroll("Replacement token");
+  grantSource(replacement.id);
   const entries = ["Alpha", "Beta"].map((name) => {
     const slug = name.toLowerCase();
     return {
@@ -381,7 +459,8 @@ async function savedPluginConflictFixture(t: TestContext) {
       const { status } = await fixture.request("PATCH", path, {
         body: {
           configurationId: agent.configurationId,
-          harnessAuth: { method: "codex_pat", source: replacement.ref },
+          harnessAuth: { method: "credential_source", sourceId: replacement.id },
+          credentialSources: [{ sourceId: replacement.id }],
         },
       });
       assert.equal(status, 200, "the competing update must replace the saved binding");
@@ -429,7 +508,8 @@ async function savedPluginConflictFixture(t: TestContext) {
   return {
     fixture,
     agent,
-    secret,
+    source,
+    grantSource,
     path,
     page,
     catalogUrl,
@@ -700,7 +780,7 @@ for (const read of ["catalog", "hosted details"] as const) {
   for (const { status, code } of [accessDenied, agentDeleting]) {
     test(`Saved ${read} retires cached plugins on ${code}`, async (t) => {
       const ui = await savedPluginConflictFixture(t);
-      const { fixture, agent, secret, page, dialog } = ui;
+      const { fixture, agent, source, grantSource, page, dialog } = ui;
       const betaId = "codex-plugin:beta@openai-curated-remote";
       const search = dialog.getByRole("searchbox", { name: "Search plugins" });
       const query = { q: "a" };
@@ -716,8 +796,8 @@ for (const read of ["catalog", "hosted details"] as const) {
         const index = fixture.policy.bindings.findIndex(
           (binding) =>
             binding.subjectId === agent.servicePrincipalId &&
-            binding.resourceKind === "secret" &&
-            binding.resourceId === secret.id,
+            binding.resourceKind === "credential_source" &&
+            binding.resourceId === source.id,
         );
         assert.ok(index >= 0, "the Agent must start with the credential grant");
         fixture.policy.bindings.splice(index, 1);
@@ -785,7 +865,7 @@ for (const read of ["catalog", "hosted details"] as const) {
       assert.equal(ui.catalogCalls(), 2, "a refused catalog must not reach the Plugin Driver");
 
       if (status === 403) {
-        await fixture.grantAgentSecretOperate(agent, secret.ref, { listed: false });
+        grantSource(source.id);
         await ui.loadCatalog();
         await ui.button("Beta").waitFor();
         assert.equal(await ui.tool("Original Beta tool").count(), 0);
@@ -803,91 +883,69 @@ for (const read of ["catalog", "hosted details"] as const) {
 }
 
 async function managedSlackPluginFixture(t: TestContext, withSibling = false) {
+  let state: PlatformStateStore | undefined;
   const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
-    await createReadyConsoleNamespace(t, "MCP tool approval");
+    await createReadyConsoleNamespace(t, "MCP tool approval", {
+      wrapState(current: PlatformStateStore) {
+        state = current;
+        return current;
+      },
+    });
   const namespace = entity(namespaceValue);
-  const sourceConfig = {
-    protocol: "mcp",
-    host: "mcp.slack.com",
-    port: "443",
-    path: "/mcp",
-    env_var: "SLACK_MCP_TOKEN",
-  };
-  const unexpectedCredentialEffect = async (): Promise<never> =>
-    assert.fail("This Console save test does not deploy or use credentials");
-  const gateway: CredentialGatewayDriver = {
-    id: "console-mcp-credential-gateway",
-    capability: "credential_gateway",
-    implementation: "openshell",
-    validateSourceConfig() {},
-    async listSourceTypes() {
-      return [
-        {
-          type: "bearer-token",
-          config: Object.keys(sourceConfig).map((name) => ({ name, required: true })),
-          secrets: [{ name: "token", required: true }],
-          rotation: "none",
-        },
-      ];
-    },
-    registerSource: unexpectedCredentialEffect,
-    async sourceStatus() {
-      return { state: "ready" };
-    },
-    updateSource: unexpectedCredentialEffect,
-    removeSource: unexpectedCredentialEffect,
-    attachForRevision: unexpectedCredentialEffect,
-    attachmentStatus: unexpectedCredentialEffect,
-    withdraw: unexpectedCredentialEffect,
-  };
-  const sandbox: SandboxDriver = {
-    id: "console-mcp-sandbox",
-    capability: "sandbox",
-    implementation: "openshell",
-    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
-    facets: ["networking", "filesystem", "process"],
-    provisionHarness: unexpectedCredentialEffect,
-    async cleanup() {},
-  };
-  const compute = createTestKubernetesComputeDriver("compute-mcp", {
-    sandboxDriver: sandbox,
-    credentialGatewayDriver: gateway,
-  });
-  compute.resolveSandboxNamespace = async (namespace) => namespace;
-  const pluginDriver = new OCCPluginDriver();
-  for (const driver of [gateway, sandbox, pluginDriver, compute]) {
-    controller(fixture).registerDriver(driver);
-    controller(fixture).selectDriver(driver.capability, driver.id);
-  }
-  const secret = secretEntity(
-    await fixture.createSecret(namespace.id, "MCP token", "controlled-token"),
+  const native = controller(fixture);
+  const { core, driver } = useInstallationSecretDriver(native);
+  core.addNamespace(namespace.id);
+  assert.ok(driver.installationSecrets);
+  assert.ok(state);
+  const instance = await native.activateTokenServiceInstance(
+    "console-mcp-tokens",
+    crypto.randomUUID(),
   );
-  async function createAccount(name: string) {
-    // This scenario covers the existing Gateway-owned Plugin account path. Public Source
-    // enrollment now accepts TokenService-owned static credentials instead.
-    const source = await controller(fixture).transact((state) =>
-      state.credentialSources.createCredentialSource({
-        id: `cs_${crypto.randomUUID()}`,
-        namespaceId: namespace.id,
+  const tokens = new OCCTokenServiceDriver(
+    "console-mcp-tokens",
+    native.installation.id,
+    driver.installationSecrets,
+    instance,
+    state,
+  );
+  native.registerDriver(tokens);
+  native.selectDriver("token_service", tokens.id);
+  const pluginDriver = new OCCPluginDriver();
+  native.registerDriver(pluginDriver);
+  native.selectDriver("plugin", pluginDriver.id);
+  const compute = createTestKubernetesComputeDriver("compute-mcp");
+  native.registerDriver(compute);
+  native.selectDriver("compute", compute.id);
+
+  // Each eligible account is admitted through the ordinary Source API and pins the Slack destination.
+  const template = await fixture.request("POST", "/connection-templates", {
+    body: {
+      namespaceId: namespace.id,
+      displayName: "Slack bearer",
+      mode: "static_bearer",
+      destinations: [{ method: "POST", host: "mcp.slack.com", port: 443, path: "/mcp" }],
+    },
+  });
+  assert.equal(template.status, 201);
+  const templateId = entity(template.data).id;
+  async function enroll(name: string) {
+    const result = await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+      body: {
         name,
-        type: "bearer-token",
-        config: sourceConfig,
-        secrets: { token: secret.ref },
-        ownerCapability: "credential_gateway",
-        driverId: gateway.id,
-        state: "ready",
-        createdAt: new Date().toISOString(),
-      }),
-    );
-    return source.id;
+        type: "static",
+        connectionTemplateId: templateId,
+        secret: { opaque: crypto.randomUUID() },
+      },
+    });
+    assert.equal(result.status, 201);
+    return entity(result.data).id;
   }
-  const sourceId = await createAccount("Controlled account");
-  const siblingId = withSibling ? await createAccount("Independent account") : undefined;
+  const sourceId = await enroll("Controlled account");
+  const siblingId = withSibling ? await enroll("Independent account") : undefined;
   const agent = agentEntity(
     await fixture.createAgent(namespace.id, "MCP Agent", nativeValues("mcp"), {
       executionMode: "dedicated",
       harnessAuth: null,
-      credentialSources: siblingId ? [{ sourceId }, { sourceId: siblingId }] : [{ sourceId }],
     }),
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -1254,6 +1312,10 @@ test("An empty managed account slot rechecks a regrant and requires fresh discov
   const { page, sourceId, siblingId } = ui;
   const restriction = ui.denySource(sourceId);
   ui.denySource(siblingId);
+  const sourceRead = restrict(ui.fixture.policy, "read", "credential_source", {
+    resourceId: sourceId,
+  });
+  restrict(ui.fixture.policy, "read", "credential_source", { resourceId: siblingId });
   const refusal = await refuseManaged(ui);
   await expectManagedBlocked(ui, refusal);
 
@@ -1283,6 +1345,7 @@ test("An empty managed account slot rechecks a regrant and requires fresh discov
   await ui.checkDraft();
 
   liftRestriction(ui.fixture.policy, restriction);
+  liftRestriction(ui.fixture.policy, sourceRead);
   const accountRecheck = ui.button("Recheck accounts for Slack user account");
   const staleAccountRecheck = await accountRecheck.elementHandle();
   const reads = ui.reads();
@@ -2070,73 +2133,15 @@ test("Managed MCP tool approval is saved per selected tool and removed when the 
 });
 
 test("reconnecting a saved MCP account clears the prior account's tool approvals before attaching", async (t) => {
-  let state: PlatformStateStore | undefined;
-  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
-    await createReadyConsoleNamespace(t, "MCP reconnect", {
-      wrapState(current: PlatformStateStore) {
-        state = current;
-        return current;
-      },
-    });
-  const namespace = entity(namespaceValue);
-  const native = controller(fixture);
-  const { core, driver } = useInstallationSecretDriver(native);
-  core.addNamespace(namespace.id);
-  assert.ok(driver.installationSecrets);
-  assert.ok(state);
-  const instance = await native.activateTokenServiceInstance(
-    "console-mcp-tokens",
-    crypto.randomUUID(),
-  );
-  const tokens = new OCCTokenServiceDriver(
-    "console-mcp-tokens",
-    native.installation.id,
-    driver.installationSecrets,
-    instance,
-    state,
-  );
-  native.registerDriver(tokens);
-  native.selectDriver("token_service", tokens.id);
-  const plugin = new OCCPluginDriver();
-  native.registerDriver(plugin);
-  native.selectDriver("plugin", plugin.id);
-  const compute = createTestKubernetesComputeDriver("compute-mcp-reconnect");
-  native.registerDriver(compute);
-  native.selectDriver("compute", compute.id);
-
-  // Both accounts are real TokenService Sources admitted against an exact Slack destination.
-  // The external OAuth handoff below is controlled; this case proves the Console-to-Agent save.
-  const template = await fixture.request("POST", "/connection-templates", {
-    body: {
-      namespaceId: namespace.id,
-      displayName: "Slack bearer",
-      mode: "static_bearer",
-      destinations: [{ method: "POST", host: "mcp.slack.com", port: 443, path: "/mcp" }],
-    },
-  });
-  assert.equal(template.status, 201);
-  const templateId = entity(template.data).id;
-  async function enroll(name: string) {
-    const result = await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
-      body: {
-        name,
-        type: "static",
-        connectionTemplateId: templateId,
-        secret: { opaque: crypto.randomUUID() },
-      },
-    });
-    assert.equal(result.status, 201);
-    return entity(result.data).id;
-  }
-  const oldSource = await enroll("Old Slack account");
-  const newSource = await enroll("New Slack account");
-  const agent = agentEntity(
-    await fixture.createAgent(namespace.id, "Reconnect Agent", nativeValues("reconnect"), {
-      executionMode: "dedicated",
-      harnessAuth: null,
-    }),
-  );
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const {
+    fixture,
+    namespace,
+    agent,
+    path,
+    sourceId: oldSource,
+    siblingId: newSource,
+  } = await managedSlackPluginFixture(t, true);
+  assert.ok(newSource);
   const capabilities = accountSlot(await fixture.request("GET", `${path}/plugins/capabilities`));
   const releaseSha256 = text(capabilities.slot.releaseSha256);
   const initial = {

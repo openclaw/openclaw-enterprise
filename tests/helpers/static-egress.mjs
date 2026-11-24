@@ -85,7 +85,8 @@ async function buildStaticEgressFixture(
     // Admission uses production composition; execution retains an already admitted owner.
     admissionOnly = false,
     gatewayOnly = false,
-    protectedSourceOnly = false,
+    admitSource,
+    protectedSourceOnly = admitSource !== undefined,
     proxyDriverId = "openshell-egress",
     now = () => new Date(),
     physicalPlacement = false,
@@ -98,7 +99,6 @@ async function buildStaticEgressFixture(
     createPreparedGitHub,
     configurePreparedTokens,
     secretValue,
-    admitSource,
     providerServer = /** @type {((tls: import("node:tls").TlsOptions, handle: import("node:http").RequestListener) => Provider) | undefined} */ (
       undefined
     ),
@@ -465,7 +465,6 @@ async function buildStaticEgressFixture(
       },
       drivers: {
         sandbox: "openshell-sandbox",
-        credential_gateway: "openshell-credentials",
         credential_proxy: proxyDriverId,
       },
     },
@@ -501,12 +500,10 @@ async function buildStaticEgressFixture(
     assert.ok(loaded?.protectedDriver);
     assert.ok(loaded.sandboxDriver instanceof OpenShellSandboxDriver);
     assert.ok(loaded.proxyDriver instanceof OpenShellLegacyEgressProxyDriver);
-    assert.ok(loaded.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
     admissionDrivers = {
       owner: loaded.protectedDriver,
       sandbox: loaded.sandboxDriver,
       proxy: loaded.proxyDriver,
-      catalog: loaded.credentialGatewayDriver,
     };
   }
   const sandbox =

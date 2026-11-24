@@ -265,10 +265,10 @@ test(
       const issuedBeforeRemoval = origin.snapshot().issued;
       await fixture.request("PATCH", a.path, {
         configurationId: a.configuration.id,
-        repositoryBindings: [],
+        repositoryAccess: { defaultProfile: "git-write", repositories: [] },
       });
       const removed = await fixture.request("GET", a.path);
-      assert.equal(removed.repositoryBindings, undefined);
+      assert.deepEqual(removed.repositoryAccess?.repositories, []);
       assert.equal(removed.activeRevisionId, a.revision.id);
       // Do not hold cleanup to force the signed-request race. Require whichever
       // actual boundary answered this ordinary workload request.
