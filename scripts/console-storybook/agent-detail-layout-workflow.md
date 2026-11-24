@@ -82,6 +82,18 @@ unavailable** (`revisionError`) preview still simulates HTTP 403. This null
 rejection is simulated UI proof, not a normal browser network failure or proof of
 backend persistence or deployment.
 
+Open **Pages / Agent detail / Runtime logs filtered and downloaded**
+(`pages-agent-detail--runtime-logs-filtered-download`). Wait for v7's Gateway
+output. Confirm **Filter** contains `slack` and **info** is deselected. Scroll
+within **Runtime log output** toward older lines, note the first visible numbered
+warning, then select **Follow**.
+
+Keep **Viewing version** on v7. Open **Deployment**, then immediately return to
+**Logs**. While **Reading output…** is visible, confirm the pane is empty and the
+filter is blank. After the fresh response, confirm the same filter, level
+selection, and warning position return. **Follow** is unpressed. The fixture
+returns the same Gateway stream on both visits. Use **Reset story** to repeat.
+
 Open **Pages / Agent detail / Runtime Logs Source Switch After Rate Limit**
 (`pages-agent-detail--runtime-logs-source-switch-after-rate-limit`). Wait for
 Gateway output, select **Agent (Harness)** under **Source**, then choose **Refresh

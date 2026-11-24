@@ -202,7 +202,10 @@ export const RuntimeLogsMissingAgentPod = story("runtimeLogsMissingAgentPod");
 export const RuntimeLogsNoPod = story("runtimeLogsNoPod");
 export const RuntimeLogsReplacedVersion = story("runtimeLogsReplacedVersion");
 export const RuntimeLogsFailedRedeploy = story("runtimeLogsFailedRedeploy");
-export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
+export const RuntimeLogsFilteredDownload = {
+  ...story("runtimeLogsFilteredDownload"),
+  name: "Runtime logs filtered and downloaded",
+};
 export const RuntimeLogsRateLimited = story("runtimeLogsRateLimited");
 export const RuntimeLogsRefreshRateLimited = story("runtimeLogsRefreshRateLimited");
 export const RuntimeLogsSourceSwitchAfterRateLimit = story("runtimeLogsSourceSwitchAfterRateLimit");

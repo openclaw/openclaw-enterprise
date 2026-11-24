@@ -36,7 +36,6 @@ interface AgentLogsContext {
   view?: Element;
   isCurrent(): boolean;
   onExpired(): void;
-  onResume?(resume: () => void): void;
   onRevalidate?(check: () => Promise<void>): () => void;
   request(path: string, options: RuntimeReadOptions): Promise<unknown>;
 }
@@ -50,6 +49,7 @@ interface AgentLogsOptions {
   agent: { id: string };
   revisionId: string;
   shown?: Promise<void>;
+  takeReaderPosition?(): LogReaderPosition | null;
   permissions?(options?: {
     fresh: boolean;
   }): Promise<{ operate: boolean; readLogs?: boolean } | null>;
@@ -72,6 +72,7 @@ const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
 const MAX_ROWS = 5_000;
 const TAIL_LINES = 200;
+const MAX_SAVED_FILTER_LENGTH = 512;
 // The output status for a selection with no running Pod. It is also why the log controls that
 // read output are unavailable then (finding 2929).
 const NO_POD_STATUS = "This version has no running Pod for this source.";
@@ -129,16 +130,28 @@ const STATUS_ACCESS_CHANGED =
 
 const LEVELS = ["error", "warn", "info", "debug", "unknown"] satisfies RuntimeLogLevel[];
 
-// Project only the stream fields this view consumes, not the complete wire identity.
+export interface LogReaderPosition {
+  selection: string;
+  stream: string;
+  filter: string;
+  start: number | null;
+  end: number | null;
+  direction: HTMLInputElement["selectionDirection"];
+  hiddenLevels: string[];
+  scrollTop: number | null;
+}
+
 type LogStreamView = {
-  [Key in "source" | "pod" | "container" | "sandbox" | "restartCount"]: RuntimeLogStream[Key];
+  [
+    Key in "source" | "pod" | "podUid" | "container" | "sandbox" | "restartCount"
+  ]: RuntimeLogStream[Key];
 };
 
 function logStream(value: unknown): LogStreamView | null {
   if (value === null) {
     return null;
   }
-  const { source, pod, container, sandbox, restartCount } = responseFields(value);
+  const { source, pod, podUid, container, sandbox, restartCount } = responseFields(value);
   if (
     (source !== "gateway" && source !== "agent" && source !== "sandbox") ||
     (pod !== undefined && typeof pod !== "string") ||
@@ -148,7 +161,42 @@ function logStream(value: unknown): LogStreamView | null {
   ) {
     throw new Error("Invalid log stream.");
   }
-  return { source, pod, container, sandbox, restartCount };
+  return {
+    source,
+    pod,
+    podUid: typeof podUid === "string" ? podUid : undefined,
+    container,
+    sandbox,
+    restartCount,
+  };
+}
+
+function readerStream(
+  stream: LogStreamView | null,
+  source: RuntimeLogSourceId,
+  pod: SourcePod | undefined,
+) {
+  // Sandbox logs lack an instance ID. A container stream must identify the requested selection.
+  if (
+    !stream ||
+    stream.source !== source ||
+    stream.source === "sandbox" ||
+    stream.sandbox !== undefined ||
+    !stream.pod ||
+    !stream.podUid?.trim() ||
+    !stream.container ||
+    stream.restartCount === undefined ||
+    (pod && (stream.pod !== pod.name || stream.container !== pod.container))
+  ) {
+    return null;
+  }
+  return JSON.stringify([
+    stream.source,
+    stream.pod,
+    stream.podUid,
+    stream.container,
+    stream.restartCount,
+  ]);
 }
 
 function logCount(value: unknown): value is number {
@@ -223,6 +271,7 @@ function logPage(value: unknown) {
     stream: shownStream,
     withheld,
     hasLine: projected.some(({ type }) => type === "line"),
+    hasGap: projected.some(({ type }) => type === "gap"),
     rows: projected.map(recordRow),
   };
 }
@@ -313,6 +362,7 @@ export function renderAgentLogs(
     agent,
     revisionId,
     shown = Promise.resolve(),
+    takeReaderPosition = () => null,
     // Returns the caller's newest permission answer; `{ fresh: true }` reads it again.
     permissions = () => Promise.resolve(null),
     versionRead = Promise.resolve(undefined),
@@ -334,6 +384,8 @@ export function renderAgentLogs(
   // log viewer stay back, so the view appears in one step instead of the strip pushing the
   // output down after the page scrolled to it (finding 1413).
   const section = element("section", { className: "agent-logs agent-logs-pending" });
+  let readerPositionInvalidated = false;
+  let openingScrollTop: number | null = null;
   let firstLogRead: Promise<void> | null = null;
   let markFirstView: () => void;
   const firstView = new Promise<void>((resolve) => {
@@ -349,7 +401,7 @@ export function renderAgentLogs(
       // stay paused (finding 1536).
       void shown.then(() => {
         if (current()) {
-          pane.scrollTop = pane.scrollHeight;
+          scrollToOpeningPosition();
         }
       });
     }
@@ -496,6 +548,7 @@ export function renderAgentLogs(
     button(
       level,
       (event) => {
+        takeReaderPosition();
         const chip = event.currentTarget as HTMLButtonElement;
         if (hiddenLevels.has(level)) {
           hiddenLevels.delete(level);
@@ -530,6 +583,21 @@ export function renderAgentLogs(
     tabindex: "0",
     "aria-label": "Runtime log output",
   });
+  function scrollToOpeningPosition() {
+    if (openingScrollTop !== null) {
+      fitLogTimeColumn(pane);
+    }
+    pane.scrollTop = openingScrollTop ?? pane.scrollHeight;
+    openingScrollTop = null;
+  }
+  // Once the viewer is usable, fresh input takes precedence over the old reader position.
+  for (const event of ["input", "change"]) {
+    section.addEventListener(event, () => {
+      if (current()) {
+        takeReaderPosition();
+      }
+    });
+  }
   // The view is built before it is shown: size the time column once the pane is laid out.
   const timeColumn = new ResizeObserver(() => {
     if (fitLogTimeColumn(pane)) {
@@ -548,6 +616,9 @@ export function renderAgentLogs(
       if (pane.isConnected) {
         paneScrollTop = pane.scrollTop;
         paneAtBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24;
+        if (current()) {
+          takeReaderPosition();
+        }
       }
     },
     { passive: true },
@@ -570,6 +641,7 @@ export function renderAgentLogs(
   // The log query (source, Pod, instance, level floor) whose lines the pane shows, and the
   // status line its first page set.
   let shownSelection: string | null = null;
+  let shownReaderStream: string | null = null;
   let shownStatus = "";
   // Updates a manual read's "Try again in N seconds" once that wait has passed.
   let retryHintTimer: number | undefined;
@@ -649,6 +721,7 @@ export function renderAgentLogs(
     pane.replaceChildren();
     rows = 0;
     shownSelection = null;
+    shownReaderStream = null;
     applyFilters();
   }
 
@@ -685,6 +758,7 @@ export function renderAgentLogs(
     source: AgentRuntimeLogSource,
     { manualRead }: { manualRead: boolean },
   ) {
+    shownReaderStream = null;
     if (logsDenied) {
       return;
     }
@@ -710,6 +784,7 @@ export function renderAgentLogs(
     // A refusal from either read clears the displayed output. A page or download already
     // authorized before that refusal can still arrive; neither may put its output back.
     logsDenied = true;
+    invalidateReaderPosition();
     deniedLogViews.add(deniedKey);
     outputRefused ||= rows > 0;
     restartPending = false;
@@ -932,8 +1007,12 @@ export function renderAgentLogs(
     // not read would only be refused: an audited denial on each Logs visit, shown with a Request
     // ID. The strip says why in words and sends no status read; log text, which needs no
     // version read, still shows (finding D794).
-    if ((await versionRead) === false) {
-      if (!current() || superseded()) {
+    const canReadVersion = await versionRead;
+    if (!current()) {
+      return;
+    }
+    if (canReadVersion === false) {
+      if (superseded()) {
         return;
       }
       if (!statusDenied) {
@@ -1010,8 +1089,12 @@ export function renderAgentLogs(
           return;
         }
         if (error.status === 401) {
+          takeReaderPosition();
           context.onExpired();
           return;
+        }
+        if (error.status !== 403) {
+          takeReaderPosition();
         }
         // A status this view already showed was readable: its refusal is a revocation.
         if (error.status === 403 && description !== null && description.observedAt !== null) {
@@ -1081,6 +1164,62 @@ export function renderAgentLogs(
       row.hidden = !rowVisible(row);
     }
     updateFilterStatus();
+  }
+
+  function readerPosition(): LogReaderPosition | null {
+    const source = selectedSource();
+    if (
+      readerPositionInvalidated ||
+      !source ||
+      !readableSelection(source) ||
+      !shownReaderStream ||
+      shownSelection !== logQuery(source, selectedPod()).toString() ||
+      !logError.hidden ||
+      section.classList.contains("agent-logs-pending") ||
+      filterInput.value.length > MAX_SAVED_FILTER_LENGTH
+    ) {
+      return null;
+    }
+    return {
+      selection: shownSelection,
+      stream: shownReaderStream,
+      filter: filterInput.value,
+      start: filterInput.selectionStart,
+      end: filterInput.selectionEnd,
+      direction: filterInput.selectionDirection,
+      hiddenLevels: [...hiddenLevels],
+      scrollTop:
+        pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24 ? null : pane.scrollTop,
+    };
+  }
+
+  function restoreReaderPosition(selection: string) {
+    const saved = takeReaderPosition();
+    if (
+      readerPositionInvalidated ||
+      !saved ||
+      saved.selection !== selection ||
+      saved.stream !== shownReaderStream
+    ) {
+      return false;
+    }
+    filterInput.value = saved.filter;
+    filterInput.setSelectionRange(saved.start, saved.end, saved.direction ?? undefined);
+    for (const level of saved.hiddenLevels) {
+      hiddenLevels.add(level);
+    }
+    levelChips.forEach((chip, index) =>
+      chip.setAttribute("aria-pressed", String(!hiddenLevels.has(LEVELS[index]!))),
+    );
+    openingScrollTop = saved.scrollTop;
+    return true;
+  }
+
+  function invalidateReaderPosition() {
+    // A later successful read or permission check cannot requalify this mounted reader.
+    readerPositionInvalidated = true;
+    openingScrollTop = null;
+    takeReaderPosition();
   }
 
   // The status is a live region: unchanged text is not written again, so a Follow poll that
@@ -1285,6 +1424,9 @@ export function renderAgentLogs(
       if (!logsAllowed && (await permissions())?.readLogs === false) {
         throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
       }
+      if (!current()) {
+        return;
+      }
       const response: unknown = await read(`${base}/logs?${query}`);
       if (!current() || restartPending || logsDenied) {
         restoreShownStatus();
@@ -1293,6 +1435,9 @@ export function renderAgentLogs(
       const page = logPage(response);
       showLogError(null);
       logsAllowed = true;
+      const stream = page.hasGap ? null : readerStream(page.stream, source.id, pod);
+      shownReaderStream = restart || shownReaderStream === stream ? stream : null;
+      const restored = restart && restoreReaderPosition(selection);
       if (restart) {
         pane.replaceChildren();
         rows = 0;
@@ -1301,6 +1446,9 @@ export function renderAgentLogs(
       }
       cursor = page.cursor;
       appendRecords(page.rows);
+      if (restored && !section.classList.contains("agent-logs-pending")) {
+        scrollToOpeningPosition();
+      }
       if (statusDenied) {
         // A page with no running Pod clears the last Pod, so nothing names it.
         lastStream = page.stream;
@@ -1330,6 +1478,7 @@ export function renderAgentLogs(
         restoreShownStatus();
         return;
       }
+      takeReaderPosition();
       if (error.status === 401) {
         context.onExpired();
         return;
@@ -1509,7 +1658,7 @@ export function renderAgentLogs(
   });
   // Timers that fired while Back's cache held this view stopped; pick both polls up again.
   // The page Back's check read is shown, followed or not: it is an audited view (finding 1564).
-  context.onResume?.(() => {
+  function resume() {
     if (current()) {
       pane.scrollTop = paneAtBottom ? pane.scrollHeight : paneScrollTop;
       void loadStatus();
@@ -1520,11 +1669,38 @@ export function renderAgentLogs(
       }
     }
     checked.clear();
-  });
+  }
   applyFilters();
   void loadStatus()
     .then(() => firstLogRead)
     .catch(() => {})
-    .finally(showFirstView);
-  return { section, firstView, showDeploymentFailure, showServingChange };
+    .finally(() => {
+      if (current()) {
+        takeReaderPosition();
+      }
+      showFirstView();
+    });
+  function retire() {
+    forgetCheck?.();
+    clearTimeout(firstViewTimer);
+    clearTimeout(followTimer);
+    clearTimeout(statusTimer);
+    clearTimeout(retryHintTimer);
+    timeColumn.disconnect();
+    checked.clear();
+    cursor = null;
+    pane.replaceChildren();
+    filterInput.value = "";
+    markFirstView();
+  }
+  return {
+    section,
+    firstView,
+    invalidateReaderPosition,
+    readerPosition,
+    resume,
+    retire,
+    showDeploymentFailure,
+    showServingChange,
+  };
 }

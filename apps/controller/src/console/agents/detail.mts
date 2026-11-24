@@ -95,7 +95,7 @@ import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./r
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
-import { renderAgentLogs } from "./logs.mjs";
+import { type LogReaderPosition, renderAgentLogs } from "./logs.mjs";
 import { createNetworkProxyFields } from "./network-proxy.mjs";
 import {
   displayDate,
@@ -169,6 +169,7 @@ export type AgentRecheckHandler = (recheck: ForegroundAgentRecheck) => void | Pr
 
 type DetailContext = Omit<ConsolePageContext, "onRechecked"> & {
   onRechecked?(handler: AgentRecheckHandler): void;
+  onDeactivated?(handler: () => void): void;
   namespaceId: string;
   agentId: string;
   onProtectedReadDenied(error: unknown, receipt: HTMLElement): void;
@@ -1057,6 +1058,20 @@ export async function renderAgentDetail(
   // changes read the page again instead of showing tabs built from earlier reads (findings 2550,
   // 2568).
   let accessChanged = false;
+  let logsView: ReturnType<typeof renderAgentLogs> | null = null;
+  let logsPosition: LogReaderPosition | null = null;
+  context.onDeactivated?.(() => {
+    logsPosition = null;
+  });
+  function takeLogsPosition() {
+    const position = logsPosition;
+    logsPosition = null;
+    return position;
+  }
+  function clearLogsPosition() {
+    logsPosition = null;
+    logsView?.invalidateReaderPosition();
+  }
   // Reads that succeeded on this page. A later refusal of one is a revocation (finding 2568).
   const allowedReads = new Set<string>([path]);
   // Whether refusing this read means the caller's access changed: the same read succeeded on this
@@ -1287,6 +1302,7 @@ export async function renderAgentDetail(
     );
   }
   function enterDeletionView(options?: { focus?: boolean }) {
+    clearLogsPosition();
     harnessAbort?.abort();
     showDeleting(options);
   }
@@ -2068,6 +2084,7 @@ export async function renderAgentDetail(
     if (linked && !deleting) {
       openVersionDetail({ deploy: linked.deploy, edit: linked.edit });
     }
+    logsView?.resume();
   });
   function showDetail() {
     clearTimeout(revealTimer);
@@ -2602,6 +2619,7 @@ export async function renderAgentDetail(
     currentAgent = freshAgent;
     stopPanel.updateAgent(freshAgent);
     if (servingChanged) {
+      clearLogsPosition();
       servingProjectionPending = false;
       renderLiveServing();
       retainedTabs.clear();
@@ -2628,7 +2646,7 @@ export async function renderAgentDetail(
     renderDetailHeading();
     renderVersionNotice();
     versionRecord?.renderDiagnostics();
-    logsServingChange?.(servingChange());
+    logsView?.showServingChange(servingChange());
   }
 
   // The Logs view of a version with no running Pod asks which version serves now. A stop and
@@ -2759,7 +2777,6 @@ export async function renderAgentDetail(
   // viewed version that was selected for service. The view shows it only for a version the reader
   // cannot read, whose runtime status it does not read: the stop showed only in the summary, off
   // screen at phone width (finding 3012). It says no more than the summary does.
-  let logsServingChange: ((text: string | null) => void) | null = null;
   function servingChange() {
     if (selected !== currentRevisionId && !formerCurrent.has(selected)) {
       return null;
@@ -2778,12 +2795,19 @@ export async function renderAgentDetail(
   // The recovery card's failure in one line, and the open Logs view that repeats it in place
   // (finding 2993).
   let recoveryLine: ReturnType<typeof recovery.show> = null;
-  let logsFailure: ((line: typeof recoveryLine) => void) | null = null;
+  function showLogsFailure(line: typeof recoveryLine) {
+    logsView?.showDeploymentFailure(
+      line && {
+        ...line,
+        link: versionLink(`View ${line.version} deployment`, line.revisionId, "deployment"),
+      },
+    );
+  }
   function showRecovery(failure: Parameters<typeof recovery.show>[0]) {
     recoveryLine = recovery.show(failure);
     recoveryRevisionId = failure?.latest.id ?? null;
     versionRecord?.setFailureShownAbove(recoveryRevisionId === selected);
-    logsFailure?.(recoveryLine);
+    showLogsFailure(recoveryLine);
   }
 
   function renderLatestDeployment() {
@@ -5136,6 +5160,9 @@ export async function renderAgentDetail(
         const tabBounds = channelsTab?.getBoundingClientRect();
         appliedReread = reread;
         callerPermissions = permissions;
+        if (permissions?.readLogs !== true) {
+          clearLogsPosition();
+        }
         // A deleting Agent shows only the deletion row. If the page opened in that state,
         // the editor, deployment controls and native admin view were never initialized.
         if (deleting) {
@@ -5312,6 +5339,17 @@ export async function renderAgentDetail(
   }
 
   async function renderTab({ activated = false } = {}) {
+    const retiringLogs = logsView;
+    if (retiringLogs) {
+      // Snapshot while the pane is visible. A rebuilt tab or a read still in flight ends the return.
+      logsPosition =
+        activated && !accessChanged && mountedTab?.pending === 0
+          ? retiringLogs.readerPosition()
+          : null;
+    } else if (!activated) {
+      logsPosition = null;
+    }
+    logsView = null;
     const resumeDrafts = context.suspendDrafts();
     if (mountedTab) {
       mountedTab.resumeDrafts = resumeDrafts;
@@ -5366,6 +5404,7 @@ export async function renderAgentDetail(
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
     if (retained?.nodes && retained.mutations === context.mutationVersion()) {
+      retiringLogs?.retire();
       mountedTab = retained;
       showDraftEditorNavigationBlock = retained.showBlock ?? showBlockInPanel;
       content.replaceChildren(...retained.nodes);
@@ -5424,6 +5463,7 @@ export async function renderAgentDetail(
           // Any tab's refusal of a read the page had the grant for, not only Logs', makes the next
           // tab change read the page again instead of reusing tabs read before (finding 2568).
           if (read && requestFailure(error).status === 403 && readHadGrant(readPath)) {
+            clearLogsPosition();
             accessChanged = true;
           }
           throw error;
@@ -5437,6 +5477,7 @@ export async function renderAgentDetail(
     };
     // Retain the panel's height during reads so loading does not jump the scroll position.
     content.style.minHeight = `${content.getBoundingClientRect().height}px`;
+    retiringLogs?.retire();
     content.replaceChildren();
     if (tab === "deployment") {
       if (selected !== "draft") {
@@ -5561,6 +5602,7 @@ export async function renderAgentDetail(
         agent,
         revisionId: selected,
         shown: revealed,
+        takeReaderPosition: () => (tabContext.isCurrent() ? takeLogsPosition() : null),
         // A rebuilt view asks for a fresh answer when it remembers a status denial; a read
         // still in flight, or in flight when the view opened, is that answer.
         permissions: (options) =>
@@ -5582,20 +5624,14 @@ export async function renderAgentDetail(
           }
         },
         onAccessChanged: () => {
+          clearLogsPosition();
           accessChanged = true;
         },
         runningVersion,
       });
-      logsFailure = (line) =>
-        logs.showDeploymentFailure(
-          line && {
-            ...line,
-            link: versionLink(`View ${line.version} deployment`, line.revisionId, "deployment"),
-          },
-        );
-      logsFailure(recoveryLine);
-      logsServingChange = logs.showServingChange;
-      logsServingChange(servingChange());
+      logsView = logs;
+      showLogsFailure(recoveryLine);
+      logs.showServingChange(servingChange());
       content.append(logs.section);
       state.loading = false;
       // Reserve the previous panel height until the first Logs view is ready.

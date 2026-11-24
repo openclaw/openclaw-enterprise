@@ -115,6 +115,7 @@ interface MountedView {
   deferredAgentSearch?: AgentSearchFocus;
   metaReads: Set<string>;
   resumeHandlers: Set<() => void>;
+  onDeactivate?: () => void;
   revalidators: Set<() => Promise<unknown>>;
   resumeDrafts?: () => void;
   tabNavigation?: TabNavigation;
@@ -1343,6 +1344,7 @@ function resetReads({
     delete mountedViewState.deferredAgentSearch;
     mountedViewState.resumeDrafts = resumeDrafts;
     mountedViewState.active = null;
+    mountedViewState.onDeactivate?.();
   }
   navigateAgentTab = null;
   leaveGuard = null;
@@ -2911,6 +2913,9 @@ async function loadPage({
           namespaceId: selectedNamespace,
           agentId: current.agentId,
           onRechecked: (handler) => viewState.rechecked.add(handler),
+          onDeactivated(handler) {
+            viewState.onDeactivate = handler;
+          },
           onProtectedReadDenied(error, receipt) {
             if (viewIsCurrent()) {
               agentContext.drafts.clear();
