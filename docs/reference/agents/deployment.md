@@ -243,9 +243,10 @@ console shows it as **Cause**, and `occ agent deployment-status` prints it.
 
 `activeRevisionId` names the version the worker last committed to run. Stop
 shuts it down first, coordinated runtime upgrades require it, and runtime
-inspection reads its containers. It is not a health result; each version's [deployment status](../agents.md#deployment-status)
-is. Unless Compute activates before commit, the worker sets the pointer before
-activation finishes.
+inspection reads its containers. Unless Compute activates before commit, the
+worker sets the pointer before activation finishes. Check that version’s
+[deployment status](../agents.md#deployment-status) for the recorded outcome.
+Use [runtime diagnostics](../agents.md#current-runtime-diagnostics) for fresh checks.
 
 Failure before the worker sets the pointer leaves it unchanged: unset for a
 first deployment.
