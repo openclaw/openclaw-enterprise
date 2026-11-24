@@ -8,6 +8,12 @@ then press End and Left to focus the tab before last. Narrow the window to
 920 px, then 390 px. Confirm the label and focus ring stay clear of both faded
 edges and the selected panel stays open.
 
+Open **Pages / Agent detail / Plugin selections, viewer cannot update the Agent**
+and **Plugins in admitted version**. Select **Plugins** in each story. At
+390 px and 920 px, check that the entire long plugin ID and the indented JSON fit
+inside the card without horizontal scrolling. Focus **Plugins** and press Tab to
+reach the JSON. At desktop width, check that the long ID fits on one line.
+
 At 1280 × 1000, open **Pages / Agent detail / Edit Configuration** and make a valid
 edit. Scroll until **Save Configuration** is near the middle of the window and
 **Danger zone** is out of view below it. Save and check that **Edit Configuration**

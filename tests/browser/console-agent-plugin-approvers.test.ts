@@ -2819,26 +2819,36 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
 // deployment uses. The approver field waits for the policy capabilities, a read that needs Agent
 // update and is skipped for this reader, so they show as text, as a version's snapshot does
 // (finding 2447).
-test("A reader sees the version draft's default plugin approvers", async (t) => {
-  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
-    await createRuntimeAuthFixture(t, "Reader plugin approvers");
-  const namespace = entity(namespaceValue);
-  const pluginDriver = new OCCPluginDriver();
-  controller(fixture).registerDriver(pluginDriver);
-  controller(fixture).selectDriver("plugin", pluginDriver.id);
-  const agent = agentEntity(
-    await fixture.createAgent(
-      namespace.id,
-      "Reader Approver Agent",
-      nativeValues("reader-approvers"),
-      { executionMode: "embedded", harnessAuth: { method: "runtime" } },
-    ),
+test("A reader sees the version draft's default plugin approvers and can read long plugin JSON", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Reader plugin approvers");
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Reader Approver Agent",
+    nativeValues("reader-approvers", { harnessId: "codex" }),
+    { executionMode: "dedicated", harnessAuth: null },
   );
+  const token = await fixture.createSecret(
+    namespace.id,
+    "Reader plugin fixture token",
+    "fixture-value",
+  );
+  await fixture.grantAgentSecretOperate(agent, token.ref);
+  const pluginId =
+    "codex-plugin:example-document-review-and-records-retention-workspace@openai-curated-remote";
+  const plugins = { [pluginId]: { enabled: true } };
   const approver = "team:TTEST123:user:UREADER1";
   await fixture.updateAgent(namespace.id, agent.id, {
     configurationId: agent.configurationId,
+    harnessAuth: { method: "codex_pat", source: token.ref },
+    plugins,
     pluginApprovers: [{ channel: "slack", id: approver }],
   });
+  // Admit a version so the same saved selection is available through both read-only views.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  assert.deepEqual(revision.plugins?.plugins, plugins);
   const reader = record(
     await fixture.createNamespaceMember("approver-reader", namespace.id, [
       ["read", "namespace"],
@@ -2848,7 +2858,10 @@ test("A reader sees the version draft's default plugin approvers", async (t) => 
     ]),
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const { page } = await newPage(t, fixture, { browser });
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 390, height: 844 } },
+  });
   const requests = apiRequests(page, fixture.origin);
   await login(
     page,
@@ -2866,6 +2879,34 @@ test("A reader sees the version draft's default plugin approvers", async (t) => 
   // No editable field stands in for the text, and no capabilities read answers 403.
   assert.equal(await page.getByLabel("Default plugin approvers mode").isVisible(), false);
   assert.deepEqual(pathRequests(requests, "GET", `${path}/plugins/capabilities`), []);
+
+  const json = page.getByRole("tabpanel", { name: "Plugins", exact: true }).locator("pre");
+  async function assertReadableSelections() {
+    await json.waitFor();
+    assert.equal(await json.textContent(), JSON.stringify(plugins, null, 2));
+    // Catch clipping inside the JSON block as well as overflow of the whole page.
+    for (const width of [390, 920]) {
+      await page.setViewportSize({ width, height: 844 });
+      await nextFrames(page);
+      const { blockWidth, blockScrollWidth, pageWidth, pageScrollWidth } = await json.evaluate(
+        (element) => ({
+          blockWidth: element.clientWidth,
+          blockScrollWidth: element.scrollWidth,
+          pageWidth: document.documentElement.clientWidth,
+          pageScrollWidth: document.documentElement.scrollWidth,
+        }),
+      );
+      assert.equal(blockScrollWidth, blockWidth, `Plugin JSON fits its block at ${width}px`);
+      assert.equal(pageScrollWidth, pageWidth, `The page fits the viewport at ${width}px`);
+    }
+  }
+
+  await assertReadableSelections();
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "plugins").href);
+  await page
+    .getByText("This version's plugin selections are immutable.", { exact: false })
+    .waitFor();
+  await assertReadableSelections();
 });
 
 test("A saved Agent can clear its selections and default approvers after its catalog is removed", async (t) => {

@@ -2662,6 +2662,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   padding: var(--space-6);
   margin: var(--space-5) 0;
 }
+.agent-card > pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 /* A tab card's first block starts at the card's padding. The Credentials fieldset and the
    repository picker carry the top margin (and the fieldset its rule) that separate them from
    fields above on Create Agent, which left an empty band at the top of the card (finding 2386). */
