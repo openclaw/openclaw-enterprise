@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-24
-last_updated_session: authoring-run/2f82fe10-6549-44c7-9e66-a75aca4b0406
+last_updated_session: authoring-run/fce46218-b73c-4df8-94cb-dba64a455e23
 ---
 
 # Credential source lifecycle flow
@@ -58,11 +58,9 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 
-OCC checks `credential_source:create` for the ready Namespace before looking up an optional Connection Template selection. It rejects an unavailable, foreign, or non-static Template, or a Template selection combined with a model provider preset, before calling TokenService. TokenService creates the canonical Source, saves its optional Template ID, and stores the write-only credential in its private custody. OCC then grants the creator access and records completion. The response never contains the credential. Independent commits can leave orphaned material or a Source without its creator grant if completion fails; the [custody flow](token-service-static-custody.md) owns those cases.
+OCC authorizes `credential_source:create` on a ready Namespace and validates any static Connection Template before it calls TokenService. TokenService creates the Source, saves its optional Template ID, and stores the credential in private custody. OCC then grants the creator access and audits completion. The response contains only the Source ID and nonsecret metadata. See the [custody flow](token-service-static-custody.md) for failures between those commits.
 
-The same POST accepts Gateway and protected Proxy requests. OCC checks the owner and access to referenced Secrets before registration. See [existing Source registration](../reference/credential-sources/other-delivery-modes.md#register-a-source).
-
-Template OAuth consent follows the [browser workflow](connection-templates.md#3-authorize-the-account-in-the-browser). OCC keeps temporary consent state without creating a Source, exchanges the authorization code, and calls the selected TokenService registration boundary with the grant and `connection_template` consent. TokenService creates the ready OAuth Source and takes custody of its tokens; OCC grants access and audits completion. The Source retains its Template ID, original consent version, and selected client. The same Source schema also permits trusted `builtin_codex` authorization without a Template; moving device-login completion to that path is a separate cutover. Resolving the current Template version during Plugin credential admission remains pending.
+The [OAuth consent workflow](connection-templates.md#3-authorize-the-account-in-the-browser) keeps consent state until it exchanges the authorization code. TokenService then creates the ready OAuth Source and stores the grant. The Source association stores the Template ID. The consent record keeps the original Template version and OAuth client. See the [Source reference](../reference/credential-sources.md#read-and-list-sources) for the metadata returned to callers.
 
 <a id="3-bind-and-admit-an-agent-revision"></a>
 
@@ -151,6 +149,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 03:37: Clarify how TokenService creates a Source and how OAuth consent keeps its original Template version. (authoring-run/fce46218-b73c-4df8-94cb-dba64a455e23 - abdf66b8f3645433f29422b9783c24428f6f093c)
 
 - 2026-11-24 10:09: Require selected Proxy retirement before OAuth custody removal in both the API and worker. (authoring-run/2f82fe10-6549-44c7-9e66-a75aca4b0406 - c3fe0bb531242c6e6b8fa22c28a1ffcdcdaef3cb)
 
