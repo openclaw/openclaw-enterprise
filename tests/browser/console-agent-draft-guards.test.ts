@@ -1310,8 +1310,13 @@ test("Create Agent saves GitHub grants before the first deployment and rolls bac
   assert.deepEqual(await access.locator("option").allTextContents(), ["Read-only", "Contributor"]);
   assert.equal(await access.inputValue(), "write");
   await access.selectOption("read");
-  await repositoryCheckbox(page, tooling.repository).uncheck();
-  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  const remove = page.getByRole("button", { name: `Remove ${tooling.repository}`, exact: true });
+  await remove.press("Enter");
+  const undo = page.getByRole("button", { name: "Undo", exact: true });
+  assert.equal(await undo.evaluate((button) => button === document.activeElement), true);
+  await undo.press("Enter");
+  assert.equal(await remove.evaluate((button) => button === document.activeElement), true);
+  assert.equal(await access.inputValue(), "read");
   await mode.selectOption("profiles");
   await mode.selectOption("scoped");
   assert.equal(await access.inputValue(), "read");
