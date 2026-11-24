@@ -8,7 +8,7 @@ author: stevenlee-oai
 
 **RFC-20261124-credential-design-1-0** · [Original proposal #7223](https://github.com/openclaw/openclaw-enterprise/pull/7223) · Created 2026-11-24
 
-An Agent might need a model API key, GitHub repository access, and a Google account for a Plugin. An operator selects the credentials and approved access each Agent needs. The OpenClaw Control Plane (OCC) admits those choices into each Agent's revision. TokenService keeps the credential, and the Credential Proxy injects it into permitted requests. The Harness makes requests with a placeholder.
+An Agent might need a model API key, GitHub repository access, and a Google account for a Plugin. An operator selects each Agent's credentials and approved access. The OpenClaw Control Plane (OCC) admits those choices into each Agent's revision. TokenService keeps the credential, and the Credential Proxy injects it into permitted requests. The Harness makes requests with a placeholder.
 
 This 1.0 target consolidates the credential amendments to [RFC-0023](../0023-egress-proxy-credential-lifecycle/index.md) and [RFC-0027](../0027-agent-oauth-connections/index.md). The [Credential Sources implementation status](../../../docs/reference/credential-sources.md#implementation-status) records which paths are currently available.
 
@@ -27,7 +27,7 @@ The Installation selects one TokenService instance to own its Sources and privat
 
 ## From enrollment to an Agent revision
 
-An authorized caller enrolls a static or account credential. For Git, OCC asks TokenService to resolve the Source at deployment. For browser OAuth, the caller selects a compatible Template and OAuth2Client. OCC completes consent and the initial authorization-code exchange, then gives the resulting grant to TokenService. The built-in Codex device flow uses its fixed issuer and public client through TokenService and creates the Source after authorization succeeds.
+An authorized caller enrolls a static or account credential. For Git, OCC authorizes Source creation or reuse before TokenService resolves it at deployment. For browser OAuth, the caller selects a compatible Template and OAuth2Client. OCC completes consent and the initial authorization-code exchange, then gives the resulting grant to TokenService. The built-in Codex device flow uses its fixed issuer and public client through TokenService and creates the Source after authorization succeeds.
 
 The operator selects a Source for model authentication or a named Plugin connection. PluginDriver describes the selected Plugin's tools, network requirements, and credential connections. OCC checks that the deployer and Agent principal can operate each exact Source, applies the Installation ceiling, and derives one admitted binding list for the revision. A shared Git token also uses a Source binding. Separate Repository grants constrain its use.
 
@@ -109,14 +109,14 @@ Withdrawal detaches the binding for that Agent and removes its request authority
 
 ## Examples
 
-| Use          | How the design applies                                                                                                                                                                                      |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Model preset | Select an API-key Source. The model provider's reviewed profile supplies the inference destination and credential header.                                                                                   |
-| Codex OAuth  | Complete device login, then select the resulting Source. Dedicated Codex receives a placeholder and the account context needed for its login state.                                                         |
-| GitHub App   | Select an App installation and approved repositories. At deployment, OCC asks TokenService to reuse or enroll a matching finite Namespace Source. Agents share its token. One reads A and another writes B. |
-| Plugin OAuth | Connect an account with a Template and OAuth2Client, then select the Source for a named Plugin connection. Both the admitted request rule and the provider's granted OAuth scopes constrain the operation.  |
-| Static HTTP  | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                             |
-| MCP          | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                    |
+| Use          | How the design applies                                                                                                                                                                                                        |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model preset | Select an API-key Source. The model provider's reviewed profile supplies the inference destination and credential header.                                                                                                     |
+| Codex OAuth  | Complete device login, then select the resulting Source. Dedicated Codex receives a placeholder and the account context needed for its login state.                                                                           |
+| GitHub App   | Select an App installation and approved repositories. At deployment, OCC asks TokenService to reuse or enroll a matching finite Namespace Source. Agents selecting A and B share its token under different read/write grants. |
+| Plugin OAuth | Connect an account with a Template and OAuth2Client, then select the Source for a named Plugin connection. Both the admitted request rule and the provider's granted OAuth scopes constrain the operation.                    |
+| Static HTTP  | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                                               |
+| MCP          | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                                      |
 
 Multiple accounts need distinct projections and a Plugin that selects the account per invocation.
 
