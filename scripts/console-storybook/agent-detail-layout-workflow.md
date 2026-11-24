@@ -35,6 +35,11 @@ are unavailable. Choose **Refresh** in the page header and check that **Edit
 Slack** is available again and the access-check message clears. Reload the
 preview to repeat.
 
+After Cancel, scroll to the bottom with **Channels** in view. Switch browser
+tabs and return twice to see the failed check and recovery. Each time, the
+Channels tab should stay in the same place on screen unless the page is too
+short to allow it.
+
 For retained Harness settings, open **Pages / Agent detail / Retained Harness
 history** (`retainedHarnessHistory`). Load older versions, select v1 and read the
 saved-settings warning,
