@@ -941,18 +941,49 @@ test(
       }),
       { mode: 0o600 },
     );
-    const caIdentity: { uid?: unknown } = {};
+    let caUid: string | undefined;
     context.after(async () => {
-      if (!caIdentity.uid) {
+      assert.ok(caUid, "CA Secret creation was not acknowledged");
+      const currentUid = await kubectl(
+        "get",
+        "secret",
+        caName,
+        "-n",
+        envoyNamespace,
+        "--ignore-not-found",
+        "--allow-missing-template-keys=false",
+        "-o",
+        "jsonpath={.metadata.uid}",
+      );
+      if (currentUid.trim() !== caUid) {
         return;
       }
-      const current = await resource("secret", caName, envoyNamespace).catch(() => undefined);
-      if (current && record(record(current).metadata).uid === caIdentity.uid) {
-        await kubectl("delete", "secret", caName, "-n", envoyNamespace, "--wait=false");
-      }
+      // The API must reject deletion if the Secret was replaced after the read.
+      const deleteOptions = join(tlsDirectory, "ca-secret-delete.json");
+      await writeFile(
+        deleteOptions,
+        JSON.stringify({ apiVersion: "v1", kind: "DeleteOptions", preconditions: { uid: caUid } }),
+        { mode: 0o600 },
+      );
+      await kubectl(
+        "delete",
+        `--raw=/api/v1/namespaces/${envoyNamespace}/secrets/${caName}`,
+        "-f",
+        deleteOptions,
+      );
     });
-    await kubectl("apply", "-f", caManifest);
-    caIdentity.uid = record(record(await resource("secret", caName, envoyNamespace)).metadata).uid;
+    // Only the exclusive create response can establish ownership of this Secret.
+    const created = record(JSON.parse(await kubectl("create", "-f", caManifest, "-o", "json")));
+    const { name, namespace, uid } = record(created.metadata);
+    assert.ok(
+      name === caName &&
+        namespace === envoyNamespace &&
+        typeof uid === "string" &&
+        uid.length > 0 &&
+        uid === uid.trim(),
+      "CA Secret create response did not identify the created Secret",
+    );
+    caUid = uid;
     const proxy = await createControlledChannelProxy(context);
     const peerProxy = await createControlledChannelProxy(context, {
       tls: (address) =>
