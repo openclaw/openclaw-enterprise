@@ -2453,6 +2453,8 @@ function runGate(root: string, needs: object, mode: string, lanes?: string) {
   ]);
 }
 
+type ExpectedAggregateIssue = { code: string; lane?: string; need?: string };
+
 // Synthetic lanes, each with one passing test, run and aggregated by the real
 // runner against `root`'s needs.json.
 function syntheticLanes(root: string, sha: string, group: string[], prefix: string) {
@@ -2475,19 +2477,29 @@ function syntheticLanes(root: string, sha: string, group: string[], prefix: stri
   const invoke = (args: string[], at = sha) =>
     run(process.execPath, [runner, ...args], { env: { ...process.env, GITHUB_SHA: at } });
   const common = ["--manifest", "manifest.json", "--root", root];
+  const runLane = (lane: string) =>
+    invoke([
+      "run",
+      lane,
+      ...common,
+      "--state",
+      join(root, `${lane}.state`),
+      "--results",
+      join(root, `results/${lane}.json`),
+    ]);
   return {
-    runLane: (lane: string) =>
-      invoke([
-        "run",
-        lane,
-        ...common,
-        "--state",
-        join(root, `${lane}.state`),
-        "--results",
-        join(root, `results/${lane}.json`),
-      ]),
-    aggregate: ({ lanes, sha: at }: { lanes?: string; sha?: string } = {}) =>
-      invoke(
+    runLane,
+    async runPassingLanes(lanes: readonly string[]) {
+      for (const [i, result] of (await each(lanes, runLane)).entries()) {
+        assert.equal(result.status, 0, `${lanes[i]}: ${result.stderr} ${result.stdout}`);
+      }
+    },
+    async aggregate({
+      lanes,
+      sha: at,
+      issue,
+    }: { lanes?: string | undefined; sha?: string; issue?: ExpectedAggregateIssue } = {}) {
+      const { status, signal, stdout, stderr } = await invoke(
         [
           "aggregate",
           "ci",
@@ -2499,14 +2511,30 @@ function syntheticLanes(root: string, sha: string, group: string[], prefix: stri
           ...(lanes === undefined ? [] : ["--lanes", lanes]),
         ],
         at,
-      ),
+      );
+      const selection = lanes ?? "<omitted>";
+      const diagnostic = `Expected ${JSON.stringify(issue ?? "passed")} for ${selection}\n${stderr}\n${stdout}`;
+      assert.deepEqual({ status, signal }, { status: issue ? 1 : 0, signal: null }, diagnostic);
+      const summary = aggregateData(stdout);
+      assert.equal(summary.status, issue ? "failed" : "passed", diagnostic);
+      if (issue) {
+        assert.partialDeepStrictEqual(summary.issues, [issue], diagnostic);
+      }
+      return summary;
+    },
   };
 }
 
-const hasIssue = (result: ChildResult<string>, code: string, lane?: string) =>
-  aggregateData(result.stdout).issues.some(
-    (issue) => issue.code === code && (lane === undefined || issue.lane === lane),
+function assertAggregateLanes(
+  summary: ReturnType<typeof aggregateData>,
+  expectedLanes: readonly string[],
+  failedLane?: string,
+) {
+  assert.deepEqual(
+    summary.lanes.map(({ lane, status }) => [lane, status]),
+    expectedLanes.map((lane) => [lane, lane === failedLane ? "failed" : "passed"]),
   );
+}
 
 test("workflow selection flows through the gate and full-mode source-bound aggregate", async (t) => {
   // A declared lane must actually have a runner in both full-coverage paths.
@@ -2577,17 +2605,19 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
       assert.equal(state.result, "success", name);
     }
     const fixtureLanes = ["checks-baseline-1", "checks-baseline-2", "postgres"];
-    const { runLane, aggregate } = syntheticLanes(root, f.tested, fixtureLanes, "");
-    for (const [i, result] of (await each(fixtureLanes, runLane)).entries()) {
-      assert.equal(result.status, 0, `${fixtureLanes[i]}: ${result.stderr} ${result.stdout}`);
-    }
-    const passed = await aggregate();
-    assert.equal(passed.status, 0, `${passed.stderr} ${passed.stdout}`);
-    assert.equal(aggregateData(passed.stdout).status, "passed");
+    const { runLane, runPassingLanes, aggregate } = syntheticLanes(
+      root,
+      f.tested,
+      fixtureLanes,
+      "",
+    );
+    await runPassingLanes(fixtureLanes);
+    assertAggregateLanes(await aggregate(), fixtureLanes);
     await command(root, "git", ["checkout", "-q", "--detach", f.head]);
-    const wrongRevision = await aggregate({ sha: f.head });
-    assert.notEqual(wrongRevision.status, 0);
-    assert.ok(hasIssue(wrongRevision, "source-sha-mismatch", "checks-baseline-1"));
+    await aggregate({
+      sha: f.head,
+      issue: { code: "source-sha-mismatch", lane: "checks-baseline-1" },
+    });
     await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
 
     for (const lane of ["checks-baseline-2", "postgres"]) {
@@ -2597,14 +2627,10 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
         const wrongSource = jsonRecord(original.toString("utf8"));
         wrongSource.sourceSha = f.head;
         writeFileSync(artifact, JSON.stringify(wrongSource));
-        const result = await aggregate();
-        assert.notEqual(result.status, 0);
-        assert.ok(hasIssue(result, "source-sha-mismatch", lane));
+        await aggregate({ issue: { code: "source-sha-mismatch", lane } });
       }
       rmSync(artifact);
-      const missing = await aggregate();
-      assert.notEqual(missing.status, 0);
-      assert.ok(hasIssue(missing, "missing-lane-output", lane));
+      await aggregate({ issue: { code: "missing-lane-output", lane } });
       writeFileSync(
         join(root, `tests/integration/${lane}.test.mjs`),
         `import test from "node:test"; test("case ${lane}", () => { throw new Error("failure"); });\n`,
@@ -2613,10 +2639,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
       // A failed matrix job does not make its passing sibling lanes fail.
       needs["pr-safe"].result = "failure";
       assert.notEqual((await runGate(root, needs, mode)).status, 0);
-      const failed = await aggregate();
-      assert.notEqual(failed.status, 0);
-      assert.ok(hasIssue(failed, "lane-failed", lane));
-      const summary = aggregateData(failed.stdout);
+      const summary = await aggregate({ issue: { code: "lane-failed", lane } });
       assert.deepEqual(
         summary.issues
           .filter((entry) => entry.code === "need-not-success")
@@ -2627,40 +2650,36 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
         summary.issues.filter((entry) => entry.code === "lane-failed").map((entry) => entry.lane),
         [lane],
       );
-      assert.ok(
-        summary.lanes
-          .filter((entry) => entry.lane !== lane)
-          .every((entry) => entry.status === "passed"),
-      );
+      assertAggregateLanes(summary, fixtureLanes, lane);
       if (lane === "postgres") {
         // Keep the runner-produced failure intact: an old revision's receipt
         // cannot attribute an outcome to the revision being aggregated.
         await command(root, "git", ["checkout", "-q", "--detach", f.head]);
-        const stale = await aggregate({ sha: f.head });
-        assert.notEqual(stale.status, 0);
-        assert.ok(hasIssue(stale, "source-sha-mismatch", lane));
-        assert.equal(hasIssue(stale, "lane-failed"), false);
-        assert.deepEqual(aggregateData(stale.stdout).lanes, []);
+        const stale = await aggregate({
+          sha: f.head,
+          issue: { code: "source-sha-mismatch", lane },
+        });
+        assert.equal(
+          stale.issues.some((entry) => entry.code === "lane-failed"),
+          false,
+        );
+        assert.deepEqual(stale.lanes, []);
         await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
 
         // A misplaced real receipt likewise cannot fail its passing sibling.
         const sibling = join(root, "results/checks-baseline-1.json");
         const siblingOriginal = readFileSync(sibling);
         cpSync(artifact, sibling);
-        const misfiled = await aggregate();
-        assert.notEqual(misfiled.status, 0);
-        assert.ok(hasIssue(misfiled, "lane-output-mismatch", "checks-baseline-1"));
-        const misplaced = aggregateData(misfiled.stdout);
+        const misplaced = await aggregate({
+          issue: { code: "lane-output-mismatch", lane: "checks-baseline-1" },
+        });
         assert.deepEqual(
           misplaced.issues
             .filter((entry) => entry.code === "lane-failed")
             .map((entry) => entry.lane),
           [lane],
         );
-        assert.deepEqual(
-          misplaced.lanes.map((entry) => entry.lane),
-          ["checks-baseline-2", lane],
-        );
+        assertAggregateLanes(misplaced, ["checks-baseline-2", lane], lane);
         writeFileSync(sibling, siblingOriginal);
       }
       needs["pr-safe"].result = "success";
@@ -2669,9 +2688,8 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     }
     needs["pr-safe"].result = "failure";
     assert.notEqual((await runGate(root, needs, mode)).status, 0);
-    const failedJob = await aggregate();
-    assert.notEqual(failedJob.status, 0);
-    assert.ok(hasIssue(failedJob, "need-not-success"));
+    const failedJob = await aggregate({ issue: { code: "need-not-success", need: "pr-safe" } });
+    assertAggregateLanes(failedJob, fixtureLanes);
   });
 });
 
@@ -3883,46 +3901,34 @@ test("tests mode flows through the gate to a source-bound aggregate of only its 
   // stand-in prepare module is not a runner preparation hook.
   rmSync(join(root, "scripts/ci/prepare.ts"));
   const group = ["checks-baseline-1", "postgres", "k3d-fixture-state"];
-  const { runLane, aggregate } = syntheticLanes(root, f.tested, group, "synthetic-");
+  const { runPassingLanes, aggregate } = syntheticLanes(root, f.tested, group, "synthetic-");
   const ran = ["checks-baseline-1", "postgres"];
-  for (const [i, result] of (await each(ran, runLane)).entries()) {
-    assert.equal(result.status, 0, `${ran[i]}: ${result.stderr} ${result.stdout}`);
-  }
-  const passed = await aggregate({ lanes });
-  assert.equal(passed.status, 0, `${passed.stderr} ${passed.stdout}`);
-  assert.deepEqual(
-    aggregateData(passed.stdout).lanes.map((lane) => lane.lane),
-    ["checks-baseline-1", "postgres"],
-  );
+  await runPassingLanes(ran);
+  assertAggregateLanes(await aggregate({ lanes }), ran);
   // Without the selection, or with a lane that did not run, results are missing.
   const missing = [undefined, '["checks-baseline-1","postgres","k3d-fixture-state"]'];
   const invalid = ["[]", "not json", '["postgres","postgres"]', '["openshell"]', "{}"];
+  const rejectSelection = (selection: string | undefined, code: string) =>
+    aggregate({ lanes: selection, issue: { code } });
   await settle([
-    ...missing.map(async (selection) => {
-      const result = await aggregate(selection === undefined ? {} : { lanes: selection });
-      assert.notEqual(result.status, 0);
-      assert.ok(hasIssue(result, "missing-need"));
-    }),
-    ...invalid.map(async (selection) => {
-      const result = await aggregate(selection === undefined ? {} : { lanes: selection });
-      assert.notEqual(result.status, 0, selection);
-      assert.ok(hasIssue(result, "invalid-lane-selection"), selection);
-    }),
+    ...missing.map((selection) => rejectSelection(selection, "missing-need")),
+    ...invalid.map((selection) => rejectSelection(selection, "invalid-lane-selection")),
   ]);
   // A selected lane's failure or missing evidence still fails.
   const artifact = join(root, "results/postgres.json");
   const original = readFileSync(artifact);
   rmSync(artifact);
-  assert.notEqual((await aggregate({ lanes })).status, 0);
-  for (const change of [{ status: "failed" }, { sourceSha: f.head }]) {
-    writeFileSync(
-      artifact,
-      JSON.stringify({ ...jsonRecord(original.toString("utf8")), ...change }),
-    );
-    assert.notEqual((await aggregate({ lanes })).status, 0);
+  await aggregate({ lanes, issue: { code: "missing-lane-output", lane: "postgres" } });
+  const receipt = jsonRecord(original.toString("utf8"));
+  for (const [change, code] of [
+    [{ status: "failed" }, "lane-failed"],
+    [{ sourceSha: f.head }, "source-sha-mismatch"],
+  ] as const) {
+    writeFileSync(artifact, JSON.stringify({ ...receipt, ...change }));
+    await aggregate({ lanes, issue: { code, lane: "postgres" } });
   }
   writeFileSync(artifact, original);
-  assert.equal((await aggregate({ lanes })).status, 0);
+  assertAggregateLanes(await aggregate({ lanes }), ran);
 });
 
 test("the checked-in suite index and manifests support test-only selection", async (t) => {
