@@ -740,11 +740,11 @@ fi
   await writeCommand(
     bin,
     "jq",
-    `${dispatchJson}if [[ "$*" == *'resourceAttributes'* || "$*" == *'has("destination")'* ]]; then
+    `${dispatchJson}if [[ "$*" == *'resourceAttributes'* ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 case "\${!#}" in
-  */before-workloads.json|*/observed-api-deployment.json|*/observed-worker-deployment.json|*/current-api-deployment.json|*/current-worker-deployment.json|*/quiescence-api-deployment.json|*/quiescence-worker-deployment.json|*/quiescence-pods.json|*/worker-stop-confirmed.json)
+  */inventory/*|*/before-workloads.json|*/observed-api-deployment.json|*/observed-worker-deployment.json|*/current-api-deployment.json|*/current-worker-deployment.json|*/quiescence-api-deployment.json|*/quiescence-worker-deployment.json|*/quiescence-pods.json|*/worker-stop-confirmed.json)
     PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
 esac
 if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
@@ -757,10 +757,6 @@ case "$*" in
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
   *'.installationId == '*) exit 0 ;;
   *'.spec.template.spec as $pod'*) exit 0 ;;
-  *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
-  *'.configurationId | select'*) printf 'cfg_test\\n' ;;
-  *'configurationId: $configurationId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","name":"Test","configurationId":"cfg_test","values":{}}' ;;
-  *'namespaceId: $namespace.id'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","baselineRevisionId":"rev_test"}' ;;
   *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test","gatewayRestarts":0,"gatewayUid":"gateway-test-uid","revisionPods":[{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}]}' ;;
   *'{namespaceId: $namespaceId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","deploymentId":"rev_candidate"}' ;;
   *'role: $role'*) printf '%s\\n' '[{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}]' ;;
@@ -785,7 +781,7 @@ case "$*" in
     printf '%s\\n' "$attempts" >"$READINESS_COUNTER"
     ((attempts >= 2))
     ;;
-  *'.activeRevisionId'*) cat >/dev/null; printf 'rev_candidate\\n' ;;
+  *'.activeRevisionId'*) PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
   *'.executionMode'*) cat >/dev/null; printf 'dedicated\\n' ;;
   *'.deploymentId'*) printf 'rev_candidate\\n' ;;
   *'.role'*) cat >/dev/null; printf 'gateway\\n' ;;
