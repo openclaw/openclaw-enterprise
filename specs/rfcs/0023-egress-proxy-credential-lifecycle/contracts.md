@@ -185,6 +185,8 @@ plugin, Linear and Git renewal workflow; source or fixture checks do not replace
 that runtime proof. Preserve unresolved observations and confirmed retirement
 separately from successful installation.
 
+See the separate [proposal for GitHub Actions downloads](github-actions-downloads.md).
+
 ### Select Sandbox and Credential Proxy from one Driver
 
 An Installation registers a Driver once, with one identity, configuration generation and lifecycle
