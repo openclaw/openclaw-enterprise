@@ -565,10 +565,14 @@ test(
     assert.equal(saved.statusCode, 200, saved.body);
     assert.deepEqual(saved.json().data.plugins, body.plugins);
     assert.deepEqual(saved.json().data.credentialSources, explicit);
+    // Removing the selection permits retirement to begin. This admission fixture has no
+    // native Proxy service, so retirement must retain custody instead of claiming deletion.
     const retired = await inject("DELETE", staticPath, undefined, app);
-    assert.equal(retired.statusCode, 204, retired.body);
-    const removed = await inject("GET", staticPath, undefined, app);
-    assert.equal(removed.statusCode, 404, removed.body);
+    assert.equal(retired.statusCode, 503, retired.body);
+    assert.equal(retired.json().error.code, "DEPENDENCY_UNAVAILABLE");
+    const retiring = await inject("GET", staticPath, undefined, app);
+    assert.equal(retiring.statusCode, 200, retiring.body);
+    assert.equal(retiring.json().data.state, "deleting");
 
     const plugins = {
       ...body.plugins,
