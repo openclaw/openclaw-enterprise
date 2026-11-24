@@ -3,6 +3,11 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
+Open **Pages / Agent detail / First version** at desktop width. Focus the selected tab,
+then press End and Left to focus the tab before last. Narrow the window to
+920 px, then 390 px. Confirm the label and focus ring stay clear of both faded
+edges and the selected panel stays open.
+
 At 1280 × 1000, open **Pages / Agent detail / Edit Configuration** and make a valid
 edit. Scroll until **Save Configuration** is near the middle of the window and
 **Danger zone** is out of view below it. Save and check that **Edit Configuration**
