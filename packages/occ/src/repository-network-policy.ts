@@ -50,6 +50,8 @@ export type RepositoryGrantPolicy = {
 };
 
 export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
+  /** The selected credential has restrictions that only the native network policy can enforce. */
+  readonly requiresNetworkPolicy?: boolean;
   /** The selected registry permits deployment-scoped Git when the Agent saves an ACL. */
   readonly nativeGit?: "v1";
   /** The network access of these resolved bindings. The Namespace ceiling is independent. */
