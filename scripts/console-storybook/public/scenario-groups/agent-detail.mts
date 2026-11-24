@@ -3957,7 +3957,7 @@ export function createAgentDetailRepositoryScenarios(
       "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty. The first save waits ten seconds for the Agent read.",
     steps: [
       "During discovery, inspect Access awaiting verification. After discovery, inspect Choose approved access; Save stays disabled and Channels stays enabled.",
-      "Expand Access for example/application, clear Use Agent default, and choose Contributor. Check that the repository reads Repository collaborator · Custom, then select Save repository access.",
+      "Under Access for example/application, clear Use Agent default and choose Contributor. Check that the repository reads Repository collaborator · Custom, then select Save repository access.",
       "While the save is pending, choose Account → Settings. Check that Repositories stays open, the edit remains selected, and the page asks you to wait for the save.",
       "After Repository access saved appears, choose Account → Settings again. Confirm Signed-in account opens, then go back and check that the custom Repository collaborator access is still saved.",
     ],
