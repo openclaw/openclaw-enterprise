@@ -1022,7 +1022,102 @@ test("a Source-backed revision is delivered from its Source, never from the App"
   );
 });
 
-test("a Source uses the same scoped routes as the App only with declared REST permissions", () => {
+test("a Source with repository API access requires the catalog selection for the current Namespace grant", async () => {
+  const input = sourceRegistryInput();
+  Object.assign(input, { appId: "12345", githubInstallationId: "67890" });
+  const repository = input.repositories[0]!;
+  const registration = repository.namespaces[0]!;
+  const permissions = {
+    metadata: "read",
+    contents: "write",
+    issues: "write",
+    pull_requests: "write",
+  };
+  const apiRegistration = { ...registration, permissions };
+  const appRegistration = {
+    namespaceId: "namespace-c",
+    profiles: registration.profiles,
+    nativeGit: "v1",
+    permissions,
+  };
+  repository.namespaces.push(
+    { ...apiRegistration, namespaceId: "namespace-b", apiLimits: { default: "none" } },
+    appRegistration,
+    { ...apiRegistration, namespaceId: "namespace-d", credentialSource: "cs_namespace_d_token" },
+  );
+  const policyFor = (registry: ReturnType<typeof validateGitHubRepositoryRegistry>) =>
+    new GitHubRepositoryPolicy({ driverId: "github", backendId: "github-primary" }, registry, {
+      sessionDurationSeconds: 600,
+    });
+  const select = async (policy: GitHubRepositoryPolicy, namespaceId: string) => {
+    const { options } = await policy.listCatalog({ namespaceId });
+    const option = options.find(({ displayName }) => displayName === "fixture/token");
+    assert.ok(option);
+    return option.repositoryRef;
+  };
+  const resolve = (policy: GitHubRepositoryPolicy, namespaceId: string, repositoryRef: string) =>
+    policy.resolveBindings({ namespaceId, bindings: [{ repositoryRef }] });
+
+  const previous = policyFor(validateGitHubRepositoryRegistry(input));
+  const savedRef = await select(previous, "namespace-a");
+  assert.equal(savedRef, "token");
+  assert.equal(resolve(previous, "namespace-a", savedRef).credentialSource, "cs_repository_token");
+
+  registration.permissions = permissions;
+  const registry = validateGitHubRepositoryRegistry(input);
+  const policy = policyFor(registry);
+  assert.throws(() => resolve(policy, "namespace-a", savedRef), /not permitted for this Namespace/);
+  const apiRef = await select(policy, "namespace-a");
+  assert.notEqual(apiRef, savedRef);
+  const { bindings, repositoryApiMaxima } = resolve(policy, "namespace-a", apiRef);
+  assert.deepEqual(repositoryApiMaxima, [
+    { repository: "fixture/token", access: "write", issues: "write", pull_requests: "write" },
+  ]);
+  assert.equal(await select(policy, "namespace-b"), savedRef);
+  assert.equal(resolve(policy, "namespace-b", savedRef).repositoryApiMaxima?.[0]?.issues, "none");
+  assert.equal(await select(policy, "namespace-c"), savedRef);
+  assert.equal(resolve(policy, "namespace-c", savedRef).repositoryApiMaxima?.[0]?.issues, "write");
+  const namespaceDRef = await select(policy, "namespace-d");
+  assert.notEqual(namespaceDRef, apiRef);
+  assert.equal(
+    resolve(policy, "namespace-d", namespaceDRef).credentialSource,
+    "cs_namespace_d_token",
+  );
+  assert.throws(() => resolve(policy, "namespace-d", apiRef), /not permitted for this Namespace/);
+
+  // A removed selection cannot be recycled as another registration's configured name.
+  const recycled = sourceRegistryInput();
+  recycled.repositories[0]!.repositoryRef = apiRef;
+  assert.throws(() => validateGitHubRepositoryRegistry(recycled), /invalid-repository-registry/);
+
+  const revision = {
+    ...sourceRevision(bindings, [{ repository: "fixture/token", access: "write" }]),
+    egressPlan: { repositoryGitAuthorization: "network-policy" },
+  } as unknown as AgentRevision;
+  const { delivery } = createGitHubRepositoryDeliveryResolver(registry)(revision);
+  assert.ok("credentialSource" in delivery);
+  assert.equal(delivery.credentialSource, "cs_repository_token");
+  for (const change of [
+    { credentialSource: "cs_replacement_token" },
+    { permissions: { ...permissions, pull_requests: "read" } },
+    { apiLimits: { issues: "read" } },
+  ]) {
+    const currentInput = structuredClone(input);
+    Object.assign(currentInput.repositories[0]!.namespaces[0]!, change);
+    const current = validateGitHubRepositoryRegistry(currentInput);
+    const currentPolicy = policyFor(current);
+    assert.throws(
+      () => resolve(currentPolicy, "namespace-a", apiRef),
+      /not permitted for this Namespace/,
+    );
+    assert.throws(() => createGitHubRepositoryDeliveryResolver(current)(revision));
+    const currentRef = await select(currentPolicy, "namespace-a");
+    assert.notEqual(currentRef, apiRef);
+    assert.doesNotThrow(() => resolve(currentPolicy, "namespace-a", currentRef));
+  }
+});
+
+test("a Source uses the same scoped routes as the App only with declared REST permissions", async () => {
   const grants = [{ repository: "fixture/token", access: "write" }] as const;
   // The same registration on the App, widened with issue and pull request permissions, derives
   // REST routes: that derivation follows the registration's permissions.
@@ -1112,13 +1207,26 @@ test("a Source uses the same scoped routes as the App only with declared REST pe
     repo.namespaces[0]!.permissions = appRegistration.permissions;
   }
   const api = validateGitHubRepositoryRegistry(enabled);
-  const bind = (refs: string[]) =>
-    createGitHubRepositoryDeliveryResolver(api)(sourceRevision(sourceBindings(api, refs), grants))
-      .delivery;
-  const selected = bind(["token"]);
+  const apiPolicy = new GitHubRepositoryPolicy(
+    { driverId: "github", backendId: "github-primary" },
+    api,
+    { sessionDurationSeconds: 600 },
+  );
+  const namespaceId = "namespace-a";
+  const { options } = await apiPolicy.listCatalog({ namespaceId });
+  const bind = (repositories: string[]) => {
+    const requests = repositories.map((repository) => {
+      const option = options.find(({ displayName }) => displayName === repository);
+      assert.ok(option);
+      return { repositoryRef: option.repositoryRef };
+    });
+    const { bindings } = apiPolicy.resolveBindings({ namespaceId, bindings: requests });
+    return createGitHubRepositoryDeliveryResolver(api)(sourceRevision(bindings, grants)).delivery;
+  };
+  const selected = bind(["fixture/token"]);
   assert.ok("credentialSource" in selected);
   assert.deepEqual(selected.scopedRest, appScope.scopedRest);
-  const mixed = bind(["token", "token-peer"]);
+  const mixed = bind(["fixture/token", "fixture/token-peer"]);
   assert.ok("credentialSource" in mixed);
   assert.equal(mixed.scopedRest?.[0]?.createPullRequests, undefined);
   assert.equal(mixed.scopedRest?.[0]?.createIssues, true);

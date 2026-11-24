@@ -1,3 +1,4 @@
+import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   storedSecretBindings,
@@ -672,7 +673,9 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       input.pluginApprovers === null ? null : normalizeAgentPluginApprovers(input.pluginApprovers);
     namespaceIdentity(input.namespaceId);
     return dependencies.transactions.transact(async (state) => {
-      if (input.repositoryStandingApproval !== undefined) {
+      const repositoryChange =
+        input.repositoryBindings !== undefined || input.repositoryAccess !== undefined;
+      if (input.repositoryStandingApproval !== undefined || repositoryChange) {
         await dependencies.authority.holdAuthority(state);
       }
       const target = { kind: "agent", id: input.agentId, namespaceId: input.namespaceId } as const;
@@ -825,15 +828,26 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         await validatePluginCredentialSources(driver, selections, sources, auth);
       }
       const backendId = dependencies.backendId(input.backendId, agent.backendId);
-      const repositoryChange =
-        input.repositoryBindings !== undefined || input.repositoryAccess !== undefined;
       const settings = repositoryChange
-        ? dependencies.repositoryPolicy.repositorySettings(namespace.id, input)
+        ? dependencies.repositoryPolicy.repositorySettings(
+            namespace.id,
+            input,
+            agent.repositoryBindings,
+          )
         : undefined;
       const repositoryBindings =
         settings === undefined ? undefined : (settings.repositoryBindings ?? []);
       const repositoryAccess =
         settings === undefined ? undefined : (settings.repositoryAccess ?? null);
+      if (settings?.requiresPolicyReview) {
+        await deploymentSandboxPolicy(
+          state,
+          dependencies.authority,
+          principalId,
+          namespace.id,
+          agent.id,
+        );
+      }
       // The pair as it will be stored. A pending workspace setup is delivered by the first
       // deployment, so it is checked against the Configuration this update names. A completed
       // setup is delivered by every deployment, so it is checked when the update names another

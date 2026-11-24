@@ -37,6 +37,7 @@ import {
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import {
   compileOpenShellBoundGitRule,
   openShellGitNetworkDefaults,
@@ -227,15 +228,22 @@ async function selectedV5(
   });
   assert.ok(admitted);
   const executionId = randomBytes(24).toString("base64url");
-  const bindings = selectedRegistry
-    ? repositories.map(({ repositoryRef }) =>
-        resolveGitHubRepositoryBinding(selectedRegistry, {
-          namespaceId: f.revision.namespaceId,
-          repositoryRef,
-          profile: "github-repository",
-        }),
-      )
-    : f.revision.repositoryCredentials!.bindings;
+  let bindings = f.revision.repositoryCredentials!.bindings;
+  if (selectedRegistry) {
+    const policy = new GitHubRepositoryPolicy(
+      { driverId: "github", backendId: selectedRegistry.backendId },
+      selectedRegistry,
+      { sessionDurationSeconds: 600 },
+    );
+    const namespaceId = f.revision.namespaceId;
+    const { options } = await policy.listCatalog({ namespaceId });
+    const requests = repositories.map(({ repository }) => {
+      const option = options.find(({ displayName }) => displayName === repository);
+      assert.ok(option);
+      return { repositoryRef: option.repositoryRef, profile: "github-repository" };
+    });
+    bindings = policy.resolveBindings({ namespaceId, bindings: requests }).bindings;
+  }
   const repositoryCredentials = {
     ...f.revision.repositoryCredentials!,
     bindings,

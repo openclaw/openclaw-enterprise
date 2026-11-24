@@ -23,6 +23,10 @@ does not start and logs `PREPARED_GITHUB_APP_KEY_INVALID`.
 An Agent's bindings must resolve to one credential: the App, or one Source.
 Naming another Source changes the grant, so earlier revisions go stale.
 
+Catalog references of the form `pat-api-` followed by 64 lowercase hexadecimal
+digits are reserved for API grants. Use the reference returned by the catalog,
+and avoid this pattern in configured `repositoryRef` values.
+
 ## Issues and pull requests
 
 At enrollment, append `:api` to each Source entry that may use GitHub REST, for
@@ -30,19 +34,29 @@ example `octo/app:write:api,octo/docs:read:api`. Bare entries remain Git-only.
 Use a new Source to expand API access or change the set of repositories while API access is enabled. Upgrade all Workers and
 controllers before using this syntax. Older readers reject it.
 
-Select a dedicated fine-grained token in GitHub. Before enrollment and every
-replacement or scope change, check that the token covers exactly the declared
-repositories with only the permissions needed. If you cannot confirm that,
-keep it Git-only. OCE cannot discover extra token rights or shrink the PAT.
+Use a dedicated fine-grained token. At enrollment and replacement, verify the
+resource owner, match GitHub's selected repositories to the declared set and
+check the minimum required permissions. Stop if you cannot verify them. GitHub
+also grants read access to public repositories. That access does not create a
+direct Sandbox route. OCE cannot verify or reduce the token's GitHub rights.
 
 Set the Namespace registration's `permissions.issues` and
 `permissions.pull_requests` to `read` or `write` as needed. Omission grants
-no direct routes for that resource. Select the repository in the Agent's
-permissions, review [API limits and stock gh api examples](access-levels.md#api-limits),
-and deploy. Read-only permits eligible list and detail requests. Contributor
+no direct routes for that resource. Select the repository from the Agent's
+repository catalog, review [API limits and stock gh api examples](access-levels.md#api-limits),
+and deploy. For a PAT registration with effective API routes, the catalog
+reference identifies the Source, repository, Namespace, permissions and API
+limits. A registration change that changes this identity invalidates the old
+selection, including on the first deployment of a saved draft. Select the
+repository again. If a saved repository policy exists, the editor also needs
+Agent `manage_policy` and SandboxPolicy `read` and `update`. Replacing the token
+within the same scope preserves the selection. Git-only and App references do
+not change. Read-only permits eligible list and detail requests. Contributor
 also permits eligible issue and PR creation. An unenrolled API route refuses
 save, deploy and loans. Disable the APIs on that registration or enroll a
-matching Source.
+matching Source. To keep a grant Git-only, replace its entire `apiLimits` object
+with `{"default":"none"}`. An explicit resource override takes precedence over
+the default.
 
 An ungranted bound repository disables PR creation. If PR creation is otherwise
 enabled and the Source declares another repository outside the Agent's grants,
@@ -53,7 +67,10 @@ GitHub processes fields in allowed requests. A PR head can expose commits from
 another private repository in the same fork network if the PAT can read it.
 Issue parents can link to another repository where the token has triage access.
 Turning off **Create issues** does not prevent PRs from converting issues.
-See [known limits](access-levels.md#known-limits).
+Before broader rollout, obtain separately authorized GitHub evidence that
+read-only repositories did not change and excluded private repositories were
+neither exposed nor changed. Keep rollout restricted while either outcome is
+unknown. See [known limits](access-levels.md#known-limits).
 
 ## Admission and renewal
 

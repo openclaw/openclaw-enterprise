@@ -379,14 +379,19 @@ export function validateGitHubRepositoryRegistry(
   if (namespaceRows > 4096) {
     return invalid();
   }
-  unique([
+  const configuredRefs = [
     ...repositories.map((entry) => entry.repositoryRef),
     ...(installationAccess ? [installationAccess.repositoryRef] : []),
-  ]);
+  ];
+  unique(configuredRefs);
+  // A retired catalog selection must never become a literal registration on reload.
+  if (configuredRefs.some((ref) => /^pat-api-[a-f0-9]{64}$/.test(ref))) {
+    return invalid();
+  }
   unique(repositories.map((entry) => entry.repositoryId));
   unique(repositories.map((entry) => entry.repository));
   repositories.sort((a, b) => a.repositoryRef.localeCompare(b.repositoryRef, "en"));
-  return Object.freeze({
+  const registry: GitHubRepositoryRegistry = Object.freeze({
     version: 1,
     backendId,
     providerInstanceId: text(root.providerInstanceId),
@@ -399,6 +404,8 @@ export function validateGitHubRepositoryRegistry(
     repositories: Object.freeze(repositories),
     ...(installationAccess && { installationAccess }),
   });
+  catalog.set(registry, indexSelections(registry));
+  return registry;
 }
 
 function repositoryTransportPermissions(
@@ -522,6 +529,99 @@ function registryGrantId(
     .digest("hex")}`;
 }
 
+type NamespaceRegistration = GitHubRepositoryRegistration["namespaces"][number];
+
+function registrationGrantId(
+  registry: GitHubRepositoryRegistry,
+  repository: GitHubRepositoryRegistration,
+  policy: NamespaceRegistration,
+  selectedProfile: GitHubProfile | "github-repository",
+) {
+  // Policy changes cannot preserve an earlier grant merely by retaining an operator label.
+  return registryGrantId(registry, {
+    repositoryRef: repository.repositoryRef,
+    repositoryId: repository.repositoryId,
+    repository: repository.repository,
+    namespaceId: policy.namespaceId,
+    allowedProfiles: policy.profiles,
+    ...(policy.pushRefAllowlist === undefined ? {} : { pushRefAllowlist: policy.pushRefAllowlist }),
+    profile: selectedProfile,
+    ...(policy.pullRequestBase === undefined ? {} : { pullRequestBase: policy.pullRequestBase }),
+    ...(policy.draftPullLimit === undefined ? {} : { draftPullLimit: policy.draftPullLimit }),
+    permissions: repositoryTransportPermissions(policy, selectedProfile),
+    scopedRest: scopedRestPermissions(policy),
+    // Bind restrictions even if they currently permit no routes.
+    ...(policy.apiLimits && { apiLimits: policy.apiLimits }),
+    ...(policy.nativeGit === "v1" && { nativeGit: "v1" as const }),
+    // App grants keep their exact digest input; a changed Source is a changed grant.
+    ...(policy.credentialSource !== undefined && { credentialSource: policy.credentialSource }),
+    capabilityPolicy:
+      policy.transport === "git-only"
+        ? gitOnlyCapabilityPolicy
+        : policy.transport === "git-and-draft-pr"
+          ? draftPullCapabilityPolicy
+          : githubCapabilityPolicy,
+  });
+}
+
+// Build this index once for each immutable registry. The catalog and admission use
+// the same keys, including when an operator reuses a configured repository name.
+type Selection = { repository: GitHubRepositoryRegistration; policy: NamespaceRegistration };
+const catalog = new WeakMap<GitHubRepositoryRegistry, Map<string, Map<string, Selection>>>();
+
+function repositoryCatalogRef(
+  registry: GitHubRepositoryRegistry,
+  repository: GitHubRepositoryRegistration,
+  policy: NamespaceRegistration,
+): string {
+  if (policy.credentialSource) {
+    const rest = scopedRestPermissions(policy);
+    if (rest?.readIssues || rest?.readPullRequests) {
+      // A draft retains only the catalog ref and profile, even before its first deploy.
+      const grantId = registrationGrantId(registry, repository, policy, "github-repository");
+      // Keep the admitted grant ID private when returning a public catalog reference.
+      return `pat-api-${createHash("sha256").update(grantId).digest("hex")}`;
+    }
+  }
+  return repository.repositoryRef;
+}
+
+function indexSelections(registry: GitHubRepositoryRegistry) {
+  const index = new Map<string, Map<string, Selection>>();
+  for (const repository of registry.repositories) {
+    for (const policy of repository.namespaces) {
+      let byRef = index.get(policy.namespaceId);
+      if (!byRef) {
+        byRef = new Map();
+        index.set(policy.namespaceId, byRef);
+      }
+      const ref = repositoryCatalogRef(registry, repository, policy);
+      if (byRef.has(ref)) {
+        return invalid();
+      }
+      byRef.set(ref, { repository, policy });
+    }
+  }
+  return index;
+}
+
+function repositorySelections(
+  registry: GitHubRepositoryRegistry,
+  namespaceId: string,
+): ReadonlyMap<string, Selection> | undefined {
+  return (catalog.get(registry) ?? indexSelections(registry)).get(namespaceId);
+}
+
+export function listRepositorySelections(registry: GitHubRepositoryRegistry, namespaceId: string) {
+  return Array.from(
+    repositorySelections(registry, namespaceId) ?? [],
+    ([repositoryRef, entry]) => ({
+      repositoryRef,
+      ...entry,
+    }),
+  );
+}
+
 export function resolveGitHubRepositoryBinding(
   registry: GitHubRepositoryRegistry,
   input: RepositoryBindingRequest & { readonly namespaceId: string },
@@ -551,10 +651,7 @@ export function resolveGitHubRepositoryBinding(
       grant: Object.freeze({ providerInstanceId, repositoryId, grantId }),
     });
   }
-  const resolved = resolveRepositoryNamespacePolicy(
-    registry.repositories.find((entry) => entry.repositoryRef === repositoryRef),
-    namespaceId,
-  );
+  const resolved = repositorySelections(registry, namespaceId)?.get(repositoryRef);
   if (resolved === undefined) {
     throw new Error("repository-binding-not-authorized");
   }
@@ -569,31 +666,7 @@ export function resolveGitHubRepositoryBinding(
   if (!policy.profiles.includes(selectedProfile)) {
     throw new Error("repository-binding-not-authorized");
   }
-  // Policy changes cannot preserve an earlier grant merely by retaining an operator label.
-  const grantId = registryGrantId(registry, {
-    repositoryRef,
-    repositoryId: repository.repositoryId,
-    repository: repository.repository,
-    namespaceId,
-    allowedProfiles: policy.profiles,
-    ...(policy.pushRefAllowlist === undefined ? {} : { pushRefAllowlist: policy.pushRefAllowlist }),
-    profile: selectedProfile,
-    ...(policy.pullRequestBase === undefined ? {} : { pullRequestBase: policy.pullRequestBase }),
-    ...(policy.draftPullLimit === undefined ? {} : { draftPullLimit: policy.draftPullLimit }),
-    permissions: repositoryTransportPermissions(policy, selectedProfile),
-    scopedRest: scopedRestPermissions(policy),
-    // Bind restrictions even if they currently permit no routes.
-    ...(policy.apiLimits && { apiLimits: policy.apiLimits }),
-    ...(policy.nativeGit === "v1" && { nativeGit: "v1" as const }),
-    // App grants keep their exact digest input; a changed Source is a changed grant.
-    ...(policy.credentialSource !== undefined && { credentialSource: policy.credentialSource }),
-    capabilityPolicy:
-      policy.transport === "git-only"
-        ? gitOnlyCapabilityPolicy
-        : policy.transport === "git-and-draft-pr"
-          ? draftPullCapabilityPolicy
-          : githubCapabilityPolicy,
-  });
+  const grantId = registrationGrantId(registry, repository, policy, selectedProfile);
   return Object.freeze({
     repositoryRef,
     profile: selectedProfile,
@@ -612,6 +685,12 @@ export function resolveCurrentGitHubRepositoryBinding(
   namespaceId: string,
   binding: AdmittedRepositoryBinding,
 ): AdmittedRepositoryBinding | undefined {
+  if (
+    binding.profile === "github-repository" &&
+    !repositorySelections(registry, namespaceId)?.has(binding.repositoryRef)
+  ) {
+    return undefined;
+  }
   const current = resolveGitHubRepositoryBinding(registry, {
     namespaceId,
     repositoryRef: binding.repositoryRef,
@@ -858,8 +937,9 @@ export function resolveSelectedRepositoryScope(
     ) {
       throw new Error("selected-repository-grant-changed");
     }
-    const repo = registry.repositories.find((r) => r.repositoryRef === binding.repositoryRef)!;
-    const policy = repo.namespaces.find((p) => p.namespaceId === namespaceId)!;
+    const { repository: repo, policy } = repositorySelections(registry, namespaceId)!.get(
+      binding.repositoryRef,
+    )!;
     return { repo, policy };
   });
   const permissions = selected[0]!.policy.permissions;

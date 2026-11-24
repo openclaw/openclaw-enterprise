@@ -112,8 +112,9 @@ requires read access to the same resource.
 | `{ default: "none", issues: "write" }` | Keep only issue reads and creation           |
 | `{ default: "none" }`                  | Git only                                     |
 
-An omitted resource inherits eligible access. Set `default: "none"` to block
-all unlisted resources, including future ones. OCE rejects any other default,
+An omitted resource inherits eligible access. To make a grant Git-only, replace
+its entire `apiLimits` object with `{"default":"none"}`. A resource override
+takes precedence over the default. OCE rejects any other default,
 an empty object, unknown keys and invalid values.
 
 Any explicit limit requires a saved repository network policy and native
@@ -155,8 +156,10 @@ Inspect the repository before retrying an uncertain creation result.
 
 Remove the retired `scopedRest`, `createIssues` and `apiActions` fields. Review each
 Namespace's Issues and Pull requests permissions and any `apiLimits`
-before deployment. An existing Agent draft can gain eligible REST routes at its
-next deployment. Changed grant identities can interrupt an older revision's
+before deployment. An existing App Agent draft can gain eligible REST routes at
+its next deployment. A PAT registration with effective API routes requires a
+current [catalog selection](repository-token-source.md#issues-and-pull-requests).
+Changed grant identities can interrupt an older revision's
 credential preparation or renewal, affecting Git and REST until recovery. Edit
 the normal draft and redeploy, then verify retirement of the old Sandbox. A
 registration edit does not immediately revoke a running Sandbox's loaded policy
