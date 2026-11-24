@@ -311,7 +311,7 @@ export async function assertAgentTurnAudit(
     runtimeSource,
     sessionId,
     turnId,
-    admissionId,
+    startId,
     model,
     responseIdHash,
     previousIds,
@@ -322,7 +322,7 @@ export async function assertAgentTurnAudit(
     runtimeSource: "openclaw" | "codex";
     sessionId?: string;
     turnId?: string;
-    admissionId?: string;
+    startId?: string;
     model?: string;
     responseIdHash?: string;
     previousIds?: ReadonlySet<string>;
@@ -398,19 +398,14 @@ export async function assertAgentTurnAudit(
         });
       });
       if (value) {
-        const admissions = events.filter(
-          (event) =>
-            event.action === "openclaw.runtime.turn.admitted" &&
-            event.details.sessionId === value.details.sessionId &&
-            event.details.turnId === value.details.turnId,
+        const matching = starts.filter(
+          ({ details }) =>
+            details.sessionId === value.details.sessionId &&
+            details.turnId === value.details.turnId,
         );
-        assert.equal(
-          admissions.length,
-          1,
-          `${label}: expected one admission for the completed turn`,
-        );
-        if (admissionId !== undefined) {
-          assert.equal(admissions[0]!.id, admissionId, `${label}: retry changed the event ID`);
+        assert.equal(matching.length, 1, `${label}: expected one start for the completed turn`);
+        if (startId !== undefined) {
+          assert.equal(matching[0]!.id, startId, `${label}: retry changed the event ID`);
         }
       }
       return {
@@ -423,7 +418,7 @@ export async function assertAgentTurnAudit(
   );
   assert.ok(event);
   log(
-    `${label}: stored matching turn admission, start and result (${event.details.outcome}) on ${revisionId}`,
+    `${label}: stored matching turn start and result (${event.details.outcome}) on ${revisionId}`,
   );
   return event;
 }
@@ -522,35 +517,6 @@ async function savedUserMessageIds(
   return { first, second };
 }
 
-async function checkSessionStarted(
-  reader: AuditReader,
-  revisionId: string,
-  sessionId: string,
-  { empty = false } = {},
-) {
-  await waitFor(
-    `the session creation record for ${sessionId}`,
-    async () => {
-      const events = (await reader.readAudit()).events
-        .filter((event) => event.event === "runtime_activity")
-        .filter(
-          (event) =>
-            event.details.agentRevisionId === revisionId && event.details.sessionId === sessionId,
-        );
-      const starts = events.filter(({ action }) => action === "openclaw.runtime.session.started");
-      assert.ok(starts.length <= 1, `more than one creation record for ${sessionId}`);
-      if (empty) {
-        assert.ok(
-          !events.some(({ details }) => "turnId" in details),
-          "an empty session has a turn",
-        );
-      }
-      return { done: starts.length === 1 };
-    },
-    minute,
-  );
-}
-
 function openHttpChat(stack: KubernetesAccess & Pick<LocalSetup, "api">, agent: SmokeAgent) {
   const signal = stack.commandOptions?.signal;
   const user = `audit-http-${randomUUID()}`;
@@ -597,12 +563,12 @@ async function httpMessageIds(stack: KubernetesAccess, gateway: GatewayPod, sess
   return savedUserMessageIds(stack, gateway, sessionKey, sessionId);
 }
 
-async function recoverChatCreation(
+async function recoverCodexTurn(
   stack: KubernetesAccess & Pick<LocalSetup, "state">,
   gateway: GatewayPod,
   revisionId: string,
   reader: AuditReader,
-  createChat: () => Promise<string>,
+  send: () => Promise<string>,
 ) {
   const queue = (...args: string[]) =>
     kubectl(stack, [
@@ -617,41 +583,48 @@ async function recoverChatCreation(
       "/app/oce-plugins/oce-runtime-audit/sink.mjs",
       ...args,
     ]);
-  // A rejected credential must leave the new session's record in the queue.
-  const { sessionId, eventId } = await withRejectedAuditCredential(stack, revisionId, async () => {
-    const sessionId = await createChat();
-    const eventId = await waitFor(
-      "a held audit event after the listener rejected the Gateway credential",
+  async function heldIds() {
+    const { stdout } = await queue("status");
+    const held = wireField(JSON.parse(stdout), "held");
+    assert.ok(Array.isArray(held));
+    return held.map((event) => {
+      assert.equal(wireField(event, "status"), 401);
+      const id = wireField(event, "eventId");
+      assert.ok(typeof id === "string" && id.length > 0);
+      return id;
+    });
+  }
+  // The same HTTP chat must still answer while the listener rejects its Gateway.
+  const { turnId, ids } = await withRejectedAuditCredential(stack, revisionId, async () => {
+    const turnId = await send();
+    const ids = await waitFor(
+      "Codex turn start, model response and result held after HTTP 401",
       async () => {
-        const { stdout } = await queue("status");
-        const held = wireField(JSON.parse(stdout), "held");
-        assert.ok(Array.isArray(held) && held.length <= 1);
-        if (held.length === 0) {
-          return { done: false };
-        }
-        assert.equal(wireField(held[0], "status"), 401);
-        const id = wireField(held[0], "eventId");
-        assert.ok(typeof id === "string" && id.length > 0);
-        return { done: true, value: id };
+        const held = await heldIds();
+        return { done: held.length >= 3, value: held, state: { held: held.length } };
       },
       minute,
     );
-    assert.ok(eventId);
-    return { sessionId, eventId };
+    assert.ok(ids);
+    return { turnId, ids };
   });
   const page = await reader.readAudit();
   assert.ok(
     !page.events.some(
       (event) =>
         event.event === "runtime_activity" &&
-        event.action === "openclaw.runtime.session.started" &&
-        event.details.sessionId === sessionId,
+        "turnId" in event.details &&
+        event.details.turnId === turnId,
     ),
     "the listener accepted a record before manual recovery",
   );
-  // The original credential works again. Release only the event the operator selected.
-  await queue("retry", eventId);
-  return sessionId;
+  // Restoring the credential and retrying one record must leave the others held.
+  await queue("retry", ids[0]!);
+  assert.deepEqual(await heldIds(), ids.slice(1));
+  for (const id of ids.slice(1)) {
+    await queue("retry", id);
+  }
+  return turnId;
 }
 
 export async function checkHttpTurnAudit(
@@ -668,7 +641,7 @@ export async function checkHttpTurnAudit(
   const gateway = await readyGateway(stack, agent.id, revisionId);
   const chat = openHttpChat(stack, agent);
   const { nonce, text } = chat;
-  async function readTurn(responseNumber: number, turnId: string, admissionId?: string) {
+  async function readTurn(responseNumber: number, turnId: string, startId?: string) {
     if (runtime !== "dedicated-openclaw") {
       await assertModelAnswered(nonce, agent.label, responseNumber);
     }
@@ -677,7 +650,7 @@ export async function checkHttpTurnAudit(
       revisionId,
       runtimeSource: runtime === "codex" ? "codex" : "openclaw",
       turnId,
-      ...(admissionId ? { admissionId } : {}),
+      ...(startId ? { startId } : {}),
       ...(runtime === "codex" ? codexResponse(nonce, responseNumber) : {}),
       ...(runtime === "embedded-openclaw" ? { model: defaultAgentModel } : {}),
     });
@@ -696,20 +669,14 @@ export async function checkHttpTurnAudit(
   );
   const first = await readTurn(1, firstId);
   const sessionId = first.details.sessionId;
-  await checkSessionStarted(reader, revisionId, sessionId);
-  // Keep PostgreSQL rejecting the admission until the second HTTP reply arrives.
+  // Keep PostgreSQL rejecting the turn start until the second HTTP reply arrives.
   const before = await countModelRequests();
-  const { turn, refusedId } = await withRefusedTurnWrite(
-    stack,
-    revisionId,
-    "admitted",
-    async () => {
-      const id = await chat.send();
-      const requests = await countModelRequests();
-      assert.ok(requests > before, `${agent.label}: the turn did not reach the model`);
-      return { id, requests };
-    },
-  );
+  const { turn, refusedId } = await withRefusedTurnWrite(stack, revisionId, async () => {
+    const id = await chat.send();
+    const requests = await countModelRequests();
+    assert.ok(requests > before, `${agent.label}: the turn did not reach the model`);
+    return { id, requests };
+  });
   // Recovery must deliver the original event once without repeating the model request.
   const second = await readTurn(2, turn.id, refusedId);
   assert.equal(
@@ -723,34 +690,20 @@ export async function checkHttpTurnAudit(
   const ids = await httpMessageIds(stack, gateway, sessionId);
   await assertAgentAuditMessage(reader, first, { messageId: ids.first, text });
   await assertAgentAuditMessage(reader, second, { messageId: ids.second, text });
-  if (runtime !== "codex") {
+  log(`${agent.label}: OCC HTTP turn events matched the saved user messages`);
+  if (runtime === "codex") {
+    const beforeRetry = await countModelRequests();
+    const turnId = await recoverCodexTurn(stack, gateway, revisionId, reader, chat.send);
+    const recovered = await readTurn(3, turnId);
+    assert.equal(recovered.details.sessionId, sessionId);
+    assert.equal(await countModelRequests(), beforeRetry + 1, "manual retry repeated the chat");
+    log(`${agent.label}: recovered the held turn with the Gateway retry command`);
+  } else {
     // An HTTP turn can have a reply even when it has no single original user message.
     const combined = await readTurn(3, await chat.send(["An earlier user message.", text]));
     assert.equal(combined.details.messageId, undefined);
     await assert.rejects(reader.readMessage(combined.id), /HTTP 404$/);
   }
-  log(`${agent.label}: OCC HTTP turn events matched the saved user messages`);
-  await checkSessionStarted(reader, revisionId, sessionId);
-
-  // Creating an empty chat must record the session before any user sends a message.
-  async function createChat() {
-    const created = await gatewayRpc(stack, gateway, "sessions.create", {
-      key: `agent:main:empty-${randomUUID()}`,
-      agentId: "main",
-    });
-    const id = wireField(created, "sessionId");
-    assert.ok(typeof id === "string" && id.length > 0);
-    return id;
-  }
-  const emptySessionId =
-    runtime === "codex"
-      ? await recoverChatCreation(stack, gateway, revisionId, reader, createChat)
-      : await createChat();
-  await checkSessionStarted(reader, revisionId, emptySessionId, { empty: true });
-  if (runtime === "codex") {
-    log(`${agent.label}: recovered the held chat creation record with the Gateway retry command`);
-  }
-  log(`${agent.label}: recorded one start for the HTTP session and one for the empty session`);
 }
 
 async function connectedNodeIds(stack: KubernetesAccess, gateway: GatewayPod) {
@@ -833,7 +786,6 @@ export async function startAuditSwitchChat(
       await assertAgentAuditMessage(reader, original, { messageId, text: chat.text });
       const current = await auditedTurn();
       assert.equal(current.details.sessionId, sessionId);
-      await checkSessionStarted(reader, revisionId, sessionId);
       assert.deepEqual(await revisions(), ids);
       // Re-enabling audit must not deliver records for a turn sent while it was off.
       const page = await reader.readAudit();
@@ -883,6 +835,7 @@ export async function checkLinkedChat(
   const callerKey = `caller ${randomUUID()} ${"x".repeat(300)}`;
   const digest = createHash("sha256").update(JSON.stringify(callerKey)).digest("hex");
   const second = await send(callerKey, `sha256:${digest}`);
+  assert.equal(second.turn.details.sessionId, first.turn.details.sessionId);
   // Opening the earlier event after a follow-up must return the first user message.
   const ids = await savedUserMessageIds(stack, gateway, sessionKey, first.turn.details.sessionId);
   await assertAgentAuditMessage(
@@ -1069,7 +1022,6 @@ export async function proveCodexAuditInterruptions(
   const { turn: interrupted, refusedId } = await withRefusedTurnWrite(
     stack,
     revisionId,
-    "started",
     () => start("restart"),
     restart,
   );

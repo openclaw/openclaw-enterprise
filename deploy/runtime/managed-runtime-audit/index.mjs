@@ -152,15 +152,6 @@ function createService(runtime) {
       setup.defer(sink.close);
       const inputs = new Map();
       const owner = { sink, turns: new Map(), inputs };
-      if (typeof runtime.events.onSessionCreated === "function") {
-        setup.defer(
-          runtime.events.onSessionCreated(({ sessionId }) => {
-            if (active === owner) {
-              sink.emit({ action: "openclaw.runtime.session.started", sessionId });
-            }
-          }),
-        );
-      }
       setup.defer(
         runtime.events.onSessionTranscriptUpdate((update) =>
           recordInput(inputs, sink.source, update),
@@ -192,18 +183,11 @@ export default {
       return;
     }
     api.registerService(createService(api.runtime));
-    // This is a dispatch observation. Never require the plugin or await delivery.
-    api.on("before_turn_start", ({ sessionId, runId }) => {
-      active?.sink.emit({ action: "openclaw.runtime.turn.admitted", sessionId, turnId: runId });
+    api.on("session_start", ({ sessionId, resumedFrom }) => {
+      if (sessionId !== resumedFrom) {
+        active?.sink.emit({ action: "openclaw.runtime.session.started", sessionId });
+      }
     });
-    if (typeof api.runtime.events.onSessionCreated !== "function") {
-      // TODO: Remove when the supported Gateway reports every session creation.
-      api.on("session_start", ({ sessionId, resumedFrom }) => {
-        if (sessionId !== resumedFrom) {
-          active?.sink.emit({ action: "openclaw.runtime.session.started", sessionId });
-        }
-      });
-    }
     api.agent.events.registerAgentEventSubscription({
       id,
       streams: ["lifecycle"],

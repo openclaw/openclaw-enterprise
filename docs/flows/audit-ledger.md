@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-24 11:55"
-last_updated_session: "authoring-run/398ebd74-9254-4f53-9416-263c57eca6f2"
+updated: "2026-11-24 15:07"
+last_updated_session: "authoring-run/03d51d83-3016-48c4-8ca8-f10d451e24eb"
 ---
 
 # Audit ledger flow
@@ -264,9 +264,10 @@ Gateway updates per check when grants differ from the setting. Maintenance
 checks the original deployer’s authority. With audit off, Compute removes
 the grant after replacing the Gateway.
 
-Without `onSessionCreated`, the plugin uses `session_start` and can miss new
-chats. Only `before_turn_start` triggers `openclaw.runtime.turn.admitted`.
-Chat continues without OCC confirmation.
+The plugin records new sessions when OpenClaw emits `session_start`.
+`deploy/runtime/managed-runtime-audit/index.mjs:recordLifecycle` records
+turn starts and results from lifecycle events with session and run IDs.
+It needs no prior session record. Chat continues without OCC confirmation.
 
 `deploy/runtime/managed-runtime-audit/sink.mjs:createAuditSink` keeps queued
 events in `/home/node/.openclaw/state/pending-runtime-audit/observations.sqlite`
@@ -342,6 +343,8 @@ a hash. The link requires the original session and message IDs.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 15:07: Trace turn records independent of session starts. (authoring-run/03d51d83-3016-48c4-8ca8-f10d451e24eb - 338c8a4102dfd13457c5714ff78f7af3ae5c9ac1)
 
 - 2026-11-24 11:55: Identify the modules that check message access and record queued work. (authoring-run/398ebd74-9254-4f53-9416-263c57eca6f2 - bf3d0ed3a444c0c70768c713d66efee717152b7a)
 

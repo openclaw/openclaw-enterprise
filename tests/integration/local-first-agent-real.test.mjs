@@ -1260,7 +1260,7 @@ test(
           checkInitialFilesAndExec,
         );
         await nativeContext.test(
-          "dedicated OpenClaw records the session, admission, and message for each HTTP turn",
+          "dedicated OpenClaw links HTTP turns in the same session to their saved messages",
           async (httpContext) => {
             // A failed browser test may have stopped before granting access to its reader.
             const httpReader = await createReader();

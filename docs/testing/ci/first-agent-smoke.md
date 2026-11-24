@@ -43,7 +43,7 @@ it does not use a suite manifest.
 | Setup and action                                                             | Expected outcome                                                                                                                                                                          | Source                                                                              |
 | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | Build the checkout images and run Kubernetes-only Local Setup.               | Installation becomes available with the selected images.                                                                                                                                  | Smoke script: `buildImages` and `startLocalSetup`.                                  |
-| Create embedded OpenClaw and dedicated Codex Agents. Send chat requests.     | Each runtime returns the expected reply. For each revision, the audit API shows when the Gateway accepted, started, and finished the turn.                                                | [First-Agent helper](../../../scripts/first-agent.ts) and smoke script: `chatTurn`. |
+| Create embedded OpenClaw and dedicated Codex Agents. Send chat requests.     | Each runtime returns the expected reply. For each revision, the audit API shows when the turn started and finished.                                                                       | [First-Agent helper](../../../scripts/first-agent.ts) and smoke script: `chatTurn`. |
 | Read gateway logs and dedicated Agent logs through the CLI.                  | `occ agent logs` returns nonempty logs for the selected sources.                                                                                                                          | Smoke script: `readLogs`.                                                           |
 | Withdraw public Git reader access and deploy a revision without that access. | The old workload and policy are removed and open connections close. The retired revision and the successor without reader access make no further reads; the control Agent retains access. | Smoke script: `proveRetirement`.                                                    |
 | Stop and start both Agents, then chat again.                                 | Stopped Pods terminate, starting the Agents creates new revisions, and both chat turns succeed.                                                                                           | Smoke script: `stopAgent`, `deployAgent`, and `chatTurn`.                           |
@@ -119,14 +119,10 @@ disclosure record. The message request must return HTTP 503.
 
 For each runtime, the installed test sends two requests to
 `POST /agents/{agentId}/chat` in one session. Both requests contain the
-same text. Each JSON response must have a different turn ID. The test
-compares the message ID for each turn with the ID in chat history. An
-authorized reader must get the exact text through the audit API.
-
-The session and admission checks require a Gateway with `onSessionCreated`
-and `before_turn_start`. The first HTTP message must create one session
-record. After the second message, the count must still be one. Creating an
-empty chat must produce one session record and zero turns.
+same text. The JSON responses must identify different turns. Both turns
+must have the same session ID in the audit API. The test compares each
+message ID with the ID in chat history. An authorized reader must get
+the exact text through the audit API.
 
 When PostgreSQL rejects the [four records for a successful HTTP chat](../../reference/agent-http-chat.md#kubernetes-configuration-and-audit),
 the user must get a reply. Delivery must preserve each ID without another
@@ -138,18 +134,19 @@ Expect HTTP 503. After recovery, the receipt and result must share a
 request ID. The result must show `PERMISSION_CHECK_UNAVAILABLE`.
 
 Before the second message, the test makes PostgreSQL refuse
-`openclaw.runtime.turn.admitted` for the revision. The user must receive
+`openclaw.runtime.turn.started` for the revision. The user must receive
 a reply while the database refuses this record. After writes resume,
 the audit API must return the original event ID once for the same turn.
 Retrying delivery must cause no extra
 model request. The test counts requests in the OpenShell log for dedicated
 OpenClaw and in the test provider’s log for the other two runtimes.
 
-For Codex, the test makes the control plane reject the Gateway credential
-when the user creates an empty chat. The Gateway must hold the event after
-HTTP 401. The test restores access and runs the
-[retry command](../../guides/topics/audit-log.md#recover-delayed-runtime-events).
-The API must then show one session record for the chat.
+For Codex, the test makes OCC reject the Gateway audit credential during
+a third HTTP turn. The Gateway must hold the events after HTTP 401.
+The test restores access and runs the
+[retry command](../../guides/topics/audit-log.md#recover-delayed-runtime-events)
+for each held event. The API must then show the turn start, result and
+provider response without another model request.
 
 In both OpenClaw modes, the test also sends two user messages in one
 HTTP request. The turn must finish. Its audit event must omit the message
@@ -160,8 +157,9 @@ by turn ID.
 
 For dedicated Codex, the test matches the response ID from the test provider
 to its hash in the audit API. It repeats this check after the provider rejects
-the first request and Codex retries. It also checks the session records after
-the first chat and session deletion. It checks the turn result after cancellation.
+the first request and Codex retries. For a new Gateway chat, it checks
+the session records from `chat.send` and `sessions.delete`. It also checks
+the turn result after cancellation.
 
 To test recovery, PostgreSQL temporarily rejects the record for the start of
 one Codex turn. The provider receives the request. The test restarts the Gateway

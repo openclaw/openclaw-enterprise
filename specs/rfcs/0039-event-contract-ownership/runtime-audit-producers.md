@@ -49,15 +49,12 @@ OCC authenticates each producer and obtains its scope from the saved
 registration. It rejects events for another revision and actions outside the
 producer's role. OCC uses the existing PostgreSQL audit log.
 
-Treat `openclaw.runtime.turn.admitted` as an observation. It means the
-Gateway was about to send work to the Agent. It proves neither permission
-nor execution. This proposal excludes it from the
-[required admission records](index.md#3-reuse-state-and-postgresql).
 For [HTTP chat](../0040-agent-chat-completions.md#iam-trusted-proxy-and-audit),
 use a SQLite queue on the API's private persistent volume. With Control
 Plane audit on, record receipt before checking identity or permission.
 If OCC cannot check access, record the failure with the same request ID.
-OCC must save required admission records before it forwards the message.
+OCC must save the [required admission records](index.md#3-reuse-state-and-postgresql)
+before it forwards the message.
 If PostgreSQL goes down during a turn, OCC can still queue the result.
 OCC must stop the relay if it cannot verify access or the running revision.
 
@@ -78,8 +75,9 @@ per revision, source and endpoint and 512 per Agent, including held events.
 If the queue is full or
 unavailable, chat continues. The Gateway warns that events may be missing.
 
-Without `before_turn_start`, the Gateway cannot report turn admission.
-Without `onSessionCreated`, it can miss the creation of a session.
+Report a session start when OpenClaw emits `session_start` for a new session.
+An empty chat or a first message can create a session without this event.
+Record each observed turn start and result with its session and turn IDs.
 
 Give each execution attempt a new ID. Keep the event ID when retrying
 delivery. OCC accepts identical copies as one record and rejects a different
@@ -104,7 +102,7 @@ protected prompt and response storage.
    unknown.
 4. Reject a write for another revision and a write after revocation. Check
    that the credential gives no read access.
-5. Temporarily refuse the PostgreSQL write for a turn admission event.
+5. Temporarily refuse the PostgreSQL write for `openclaw.runtime.turn.started`.
    Confirm that the user receives a reply. Restore writes. Confirm that
    the API returns the original event ID once, with no extra model request.
 6. Replace the Gateway Pod with an event held for retry. Confirm that the

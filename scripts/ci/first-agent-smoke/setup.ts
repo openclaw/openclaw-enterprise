@@ -796,12 +796,11 @@ export async function checkPostgresOutage(
 export async function withRefusedTurnWrite<T>(
   stack: InstalledAuditStack & KubernetesAccess,
   revisionId: string,
-  phase: "started" | "admitted",
   send: () => Promise<T>,
   restart?: () => Promise<void>,
 ) {
   const marker = `smoke_audit_${randomUUID().replaceAll("-", "")}`;
-  const action = `openclaw.runtime.turn.${phase}`;
+  const action = "openclaw.runtime.turn.started";
   const query = (sql: string, options?: RunOptions) =>
     queryAudit(stack, { revision_id: revisionId, action }, sql, options);
   // PostgreSQL logs the rejected event ID. Compare it with the audit API after recovery.

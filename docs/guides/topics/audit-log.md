@@ -106,17 +106,16 @@ The API returns these `runtime_activity` records.
 
 | Action                                     | What the Gateway observed                                                                                             |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `openclaw.runtime.session.started`         | OpenClaw reported a new session. Some Gateway versions omit empty chats or sessions created by the first message.     |
+| `openclaw.runtime.session.started`         | OpenClaw reported a new session. This event can be missing for an empty chat or a session created by a first message. |
 | `openclaw.runtime.session.ended`           | OpenClaw reported that it deleted the session.                                                                        |
-| `openclaw.runtime.turn.admitted`           | The Gateway was about to send work to the Agent. Only Gateways with `before_turn_start` report this event.            |
 | `openclaw.runtime.turn.started`            | The Gateway observed the start of a run with an identified session.                                                   |
 | `openclaw.runtime.turn.completed`          | The Gateway observed a final result for the run. Read `details.outcome`.                                              |
 | `openclaw.runtime.model_call.started`      | Embedded OpenClaw reported that it started a model call.                                                              |
 | `openclaw.runtime.model_call.completed`    | Embedded OpenClaw reported the result of the call. The same `modelCallId` links the two records.                      |
 | `openclaw.runtime.model_response.observed` | The Codex connection reported a provider response. `responseIdHash` identifies the response without storing its text. |
 
-Find a turn by `sessionId` and `turnId`. Recovery can reuse a turn ID.
-Admission proves neither permission nor execution. A missing result means
+Each turn record includes `sessionId` and `turnId`, even without a session
+start record. Recovery can reuse a turn ID. A missing result means
 the outcome is unknown. OCE hashes IDs that fail format checks or exceed
 256 characters. [Message links](#open-the-message-for-a-turn) require
 original session and message IDs but allow hashed turn IDs.
