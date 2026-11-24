@@ -157,7 +157,9 @@ exec plugin exception. For an exec plugin, follow the credential owner's
 procedure. If it permits running the plugin without kubectl preferences for
 the trusted kubeconfig and context, prefix this command with
 `KUBECTL_KUBERC=false`. The command does not apply any `kuberc` rules,
-including a credential plugin policy. If policy requires those rules for
+including a credential plugin policy. An inherited `KUBECTL_KUBERC=false` or
+`KUBERC=off` also permits the diagnostic to run the plugin. Check with the
+credential owner before using that environment. If policy requires those rules for
 the plugin, use an approved credential without a plugin. If policy requires
 kubectl preferences for every call, use the infrastructure workflow.
 

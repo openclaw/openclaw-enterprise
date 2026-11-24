@@ -215,6 +215,14 @@ class DiagnosticError extends Error {}
 const namePattern = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?![\s\S])/;
 
+// Kubernetes bounds the whole resource name. A TLS hostname also limits each label.
+function isResourceName(value: string): boolean {
+  return (
+    value.length <= 253 &&
+    value.split(".").every((part) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(part))
+  );
+}
+
 function isDnsName(value: string): boolean {
   return value.length <= 253 && value.split(".").every((part) => dnsLabel.test(part));
 }
@@ -302,7 +310,7 @@ function serviceDependency(value: unknown): ServiceDependency | undefined {
   const policyNamespace = requireName(policy.namespace, "serviceDependency.policy.namespace");
   if (
     ![serviceName, serviceNamespace, policyNamespace].every((name) => dnsLabel.test(name)) ||
-    !isDnsName(policyName)
+    !isResourceName(policyName)
   ) {
     throw new DiagnosticError(
       "serviceDependency requires valid Service, namespace and NetworkPolicy names",
@@ -323,7 +331,7 @@ function serviceDependency(value: unknown): ServiceDependency | undefined {
     }
     const secretName = requireName(tls.secretName, "serviceDependency.tls.secretName");
     const serverName = typeof tls.serverName === "string" ? tls.serverName.toLowerCase() : "";
-    if (!isDnsName(secretName) || !isDnsName(serverName) || isIP(serverName)) {
+    if (!isResourceName(secretName) || !isDnsName(serverName) || isIP(serverName)) {
       throw new DiagnosticError(
         "serviceDependency.tls requires a Secret name and a DNS serverName",
       );

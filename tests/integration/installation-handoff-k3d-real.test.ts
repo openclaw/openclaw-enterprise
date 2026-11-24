@@ -366,7 +366,8 @@ test(
     // The two policy grants cover the Service and its translated destination independently.
     const serviceName = "middleware";
     const policyName = "middleware-egress";
-    const secretName = "middleware-tls";
+    // A Secret name can exceed the 63-character limit for a DNS label.
+    const secretName = "middleware-tls".padEnd(64, "s");
     const serverName = "middleware.example.test";
     const servicePort = 9443;
     const targetPort = "https";
