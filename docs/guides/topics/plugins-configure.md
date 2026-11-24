@@ -21,9 +21,11 @@ to verify the installation with `gog --version`. To make Google API calls, choos
 **Google account**, save the selection and deploy. The worker receives an
 OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
 
-The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
-`read` and `operate` on the source, and the Agent needs `operate`. If the
-package digest changes, select the account again. Clearing the slot or removing
+The picker lists compatible sources you can read. Select the account directly in
+the plugin. You and the Agent need `operate` on the source to deploy the selection.
+OpenShell requires distinct placeholder names and refuses another credential on
+a host covered by the Google request guard. If the package digest changes,
+select the account again. Clearing the slot or removing
 the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
 Dedicated Codex Agents with a supported login can browse their app catalog.
@@ -85,11 +87,12 @@ placeholder name, and `protocol: mcp`. Reference the saved access token as its
 For **Load tools**, verify that the OCE API can resolve and reach the MCP endpoint.
 The chart gives the API unrestricted egress; Agent tool calls still use the Sandbox policy.
 
-Open **Plugins** and add the plugin. Choose an existing account or use **Connect account**
-to authorize one from an approved Connection Template. On a saved Agent, connecting a different
-account replaces the current account. Select **Load tools** to see the
-inventory. Choose the tools to enable, then save and deploy. Loading tools again
-refreshes the inventory and preserves your selection. An empty selection leaves
+Open **Plugins** and add the plugin. Choose a compatible account directly in the
+plugin or use **Connect account** to authorize one from an approved Connection
+Template. Switching accounts clears the displayed tool inventory and selected
+tools for that plugin. Select **Load tools**, choose the tools to enable, then
+save and deploy. Loading tools again refreshes the inventory and preserves
+your selection. An empty selection leaves
 the worker server disabled.
 For an enabled tool, open **Tool policy** and set **Require approval for** to
 **Every action** to require human approval for each native call. Select
