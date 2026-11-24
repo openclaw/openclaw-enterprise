@@ -8,7 +8,7 @@ last_updated_session: authoring-run/fc29889e-e795-4b35-91dd-40a401edafe0
 
 ## Overview
 
-An operator registers a credential with TokenService and selects its Source for an Agent. OpenClaw Control Plane (OCC) authorizes the Source, checks the model destination against the saved network permission, and records the approved policy in an Agent revision. Compute, Worker, Sandbox, and Credential Proxy then prepare the credential route before starting the Harness. The [credential reference](../reference/credential-sources.md#intended-credential-flow) describes the broader proposed model and plugin design; its [status table](../reference/credential-sources.md#implementation-status) separates current support from remaining work.
+OpenClaw Control Plane (OCC) authorizes selected Sources and records approved policy in the Agent revision. Compute, Worker, Sandbox, and Credential Proxy prepare credential delivery before Harness startup. See the [credential reference](../reference/credential-sources.md#intended-credential-flow) and [current limits](../reference/credential-sources.md#implementation-status).
 
 ## Entry Points
 

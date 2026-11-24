@@ -275,8 +275,16 @@ export function createAgentCredentialAccess({
       if (source === undefined) {
         await authorizeSourceOperate(principalId, namespaceId, sourceId);
         source = await resolveSource(sourceId);
+        // Gateway-backed selections continue to require their existing explicit attachment.
+        // Leave missing or unattached legacy Sources to the Plugin's slot validator.
+        if (!isManagedTokenServiceSource(source)) {
+          continue;
+        }
       }
-      if (!isManagedTokenServiceSource(source) || source.state !== "ready") {
+      if (!isManagedTokenServiceSource(source)) {
+        continue;
+      }
+      if (source.state !== "ready") {
         throw new ResourceStateConflictError(
           "The Plugin connection requires a ready TokenService Source.",
         );
@@ -397,9 +405,10 @@ export function createAgentCredentialAccess({
       agent.harnessAuth,
       plugin.templates,
     );
+    const staged = selected.filter(({ sourceId }) => plugin.templates.has(sourceId));
     const descriptions =
-      selected.length > 0
-        ? await describePluginBindings(driver, agent.plugins, selected, sources)
+      staged.length > 0
+        ? await describePluginBindings(driver, agent.plugins, staged, sources)
         : new Map<string, PluginDeploymentDescription>();
     const snapshots: CredentialSourceSnapshot[] = [];
     for (const source of sources) {

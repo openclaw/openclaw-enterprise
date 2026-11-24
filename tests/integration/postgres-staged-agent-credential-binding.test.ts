@@ -2049,7 +2049,8 @@ test(
     );
     const missingSelector = structuredClone(mixedSpec);
     delete missingSelector.credential_deployment.networkAccessPolicy.allowed.at(-1).requestPolicy;
-    delete missingSelector.credential_deployment.injectionPolicies[1].allowedRequests[0].requestPolicy;
+    delete missingSelector.credential_deployment.injectionPolicies[1].allowedRequests[0]
+      .requestPolicy;
     // The network grant covers the whole destination, but injecting a Plugin credential
     // still requires a request selector.
     const requestShape = await pool.query(

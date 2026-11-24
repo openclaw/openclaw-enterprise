@@ -13,6 +13,7 @@ import {
   type CredentialSourceMetadata,
   type CredentialSourceReference,
   type Namespace,
+  type PluginDriver,
   type SourceProviderPresetId,
   type SourceRegistrationInput,
   type SourceUpdate,
@@ -48,6 +49,7 @@ import {
   removedAccessBinding,
   type RemovedAccessBinding,
 } from "./iam-policy-cleanup.ts";
+import { selectedPluginBindings } from "./plugin-credential-bindings.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { TokenServiceInstance } from "./ports/token-service.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
@@ -118,6 +120,7 @@ interface ManagedCredentialSourceDependencies {
   readonly preparedIssuer: (ref: EgressRef) => NonNullable<ReturnType<TokenService["issuer"]>>;
   readonly clock: () => Date;
   readonly selectedTokenServiceDriver: () => TokenServiceDriver;
+  readonly pluginDrivers: () => readonly PluginDriver[];
   readonly retireDelivery: (
     namespace: Readonly<Namespace>,
     source: CredentialSourceReference,
@@ -507,6 +510,36 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     };
   }
 
+  async function savedPluginsReferenceSource(
+    state: PlatformUnitOfWork,
+    namespaceId: string,
+    sourceId: string,
+  ): Promise<boolean> {
+    const agents = await state.agents.listAgents(namespaceId);
+    return agents.some(({ plugins, pluginDriver }) => {
+      if (!plugins || Object.keys(plugins).length === 0) {
+        return false;
+      }
+      const driver = dependencies
+        .pluginDrivers()
+        .find(
+          ({ id, implementation }) =>
+            id === pluginDriver?.id && implementation === pluginDriver.implementation,
+        );
+      if (typeof driver?.credentials?.selectedBindings !== "function") {
+        if (Object.values(plugins).some((selection) => selection.driverPolicy !== undefined)) {
+          throw new DependencyUnavailableError(
+            "The saved Plugin Driver cannot report its credential selections.",
+          );
+        }
+        return false;
+      }
+      return selectedPluginBindings(driver, plugins).some(
+        (binding) => binding.sourceId === sourceId,
+      );
+    });
+  }
+
   async function deleteCredentialSource(
     principalId: string,
     namespaceId: string,
@@ -611,7 +644,11 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
             namespaceId,
             source.id,
           );
-          if (blocking === "reference") {
+          if (
+            blocking === "reference" ||
+            (source.connectionTemplateId !== undefined &&
+              (await savedPluginsReferenceSource(state, namespaceId, source.id)))
+          ) {
             throw new ResourceStateConflictError(
               "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
             );

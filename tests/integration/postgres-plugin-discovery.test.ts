@@ -93,7 +93,7 @@ test(
   "a dedicated Agent saves Google and Slack OAuth selections and admits them with its required model",
   requiresPostgres,
   async (t) => {
-    const cleanup: { restoreStarter?: () => Promise<ConnectionTemplate> } = {};
+    const cleanup: { restoreStarter?: () => Promise<void> } = {};
     // Test cleanup runs in registration order. Restore the shared starter before closing Fastify.
     t.after(async () => {
       await cleanup.restoreStarter?.();
@@ -275,7 +275,6 @@ test(
     cleanup.restoreStarter = async () => {
       const restored = await inject("PATCH", starterPath, original);
       assert.equal(restored.statusCode, 200, restored.body);
-      return restored.json().data;
     };
     const googleClient = await inject("POST", "/oauth-clients", {
       connectionTemplateId: starter.id,
@@ -287,10 +286,13 @@ test(
     assert.equal(googleClient.statusCode, 201, googleClient.body);
     const gmailScopes = ["https://www.googleapis.com/auth/gmail.modify"];
     const gmail = { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/me/messages" };
-    const approved = await inject("PATCH", starterPath, {
+    const googleSettings = {
       ...original,
       oauthClientId: googleClient.json().data.id,
       scopes: gmailScopes,
+    };
+    const approved = await inject("PATCH", starterPath, {
+      ...googleSettings,
       destinations: [gmail],
     });
     assert.equal(approved.statusCode, 200, approved.body);
@@ -484,19 +486,20 @@ test(
     await grant("credential_source", modelId);
     const session = await signInToControllerApp(app, credentials);
     const url = `${path}/agents/${agentId}`;
-    const body = {
+    const selectSlack = (account: string) => ({
       configurationId,
       plugins: {
         [slack.id]: {
           enabled: true,
           driverPolicy: {
             releaseSha256: slack.releaseSha256,
-            credentials: { [slack.slotId]: sourceId },
+            credentials: { [slack.slotId]: account },
             toolNames: ["slack_search_public"],
           },
         },
       },
-    };
+    });
+    const body = selectSlack(sourceId);
     const memberPatch = (payload: Omit<UpdateAgentInput, "namespaceId" | "agentId">) =>
       app.inject({
         method: "PATCH",
@@ -522,6 +525,40 @@ test(
         },
       },
     ]);
+    // With no revision and only the model attached, the saved Slack slot alone protects its bearer.
+    const slackBearerTemplate = await inject("POST", "/connection-templates", {
+      namespaceId,
+      displayName: "Slack static bearer",
+      mode: "static_bearer",
+      destinations: [{ ...slack.endpoint, method: "POST" }],
+    });
+    assert.equal(slackBearerTemplate.statusCode, 201, slackBearerTemplate.body);
+    const slackBearer = await inject(
+      "POST",
+      `${path}/credential-sources`,
+      {
+        name: "Slack static bearer",
+        type: "static",
+        connectionTemplateId: slackBearerTemplate.json().data.id,
+        secret: { opaque: randomUUID() },
+      },
+      app,
+    );
+    assert.equal(slackBearer.statusCode, 201, slackBearer.body);
+    const staticId = slackBearer.json().data.id;
+    await grant("credential_source", staticId);
+    const selectedStatic = await memberPatch(selectSlack(staticId));
+    assert.equal(selectedStatic.statusCode, 200, selectedStatic.body);
+    assert.deepEqual(selectedStatic.json().data.credentialSources, explicit);
+    const deleteStatic = await inject(
+      "DELETE",
+      `${path}/credential-sources/${staticId}`,
+      undefined,
+      app,
+    );
+    assert.equal(deleteStatic.statusCode, 409, deleteStatic.body);
+    assert.match(deleteStatic.json().error.message, /still references the credential source/i);
+
     const slackGrant = await grant("credential_source", sourceId);
     const patched = await memberPatch(body);
     assert.equal(patched.statusCode, 200, patched.body);
@@ -581,9 +618,9 @@ test(
     const deployed = await inject("POST", `${url}/deploy`, {}, app);
     assert.equal(deployed.statusCode, 202, deployed.body);
     const revisionId = deployed.json().data.id;
-    const readRevision = () =>
-      state.read((view) => view.revisions.findRevision(namespaceId, agentId, revisionId));
-    const revision = await readRevision();
+    const readRevision = (id: string) =>
+      state.read((view) => view.revisions.findRevision(namespaceId, agentId, id));
+    const revision = await readRevision(revisionId);
     assert.ok(revision?.credentialDeployment);
     const deployment = revision.credentialDeployment;
     assert.deepEqual(
@@ -663,16 +700,74 @@ test(
       ),
     );
 
-    // Restoring the broader Gmail routes must leave the already admitted revision unchanged.
-    const restored = await cleanup.restoreStarter();
-    delete cleanup.restoreStarter;
-    assert.ok(restored.current.version > gmailConsent.version);
+    // Restore the starter destinations and also approve Google's public discovery endpoint.
+    // The admin changes only destinations. The existing account keeps its original grant.
+    const discovery = { host: "www.googleapis.com", port: 443, path: "/discovery/v1/apis" };
+    const broadened = await inject("PATCH", starterPath, {
+      ...googleSettings,
+      destinations: [...destinations, discovery],
+    });
+    assert.equal(broadened.statusCode, 200, broadened.body);
+    const nextVersion = broadened.json().data.current.version;
+    assert.equal(nextVersion, gmailConsent.version + 1);
+    const redeployed = await inject("POST", `${url}/deploy`, {}, app);
+    assert.equal(redeployed.statusCode, 202, redeployed.body);
+    const next = await readRevision(redeployed.json().data.id);
+    assert.ok(next?.credentialDeployment);
+    assert.notEqual(next.id, revisionId);
+    assert.deepEqual(
+      next.credentialSources?.find(({ sourceId }) => sourceId === googleSource.id)
+        ?.connectionTemplate,
+      { id: starter.id, version: nextVersion },
+    );
+    const googleBinding = next.credentialDeployment.bindings.find(
+      ({ sourceRef }) => sourceRef.id === googleSource.id,
+    );
+    assert.ok(googleBinding);
+    const googleInjection = next.credentialDeployment.injectionPolicies.find(
+      ({ bindingRef }) => bindingRef === googleBinding.bindingRef,
+    );
+    assert.ok(googleInjection);
+    assert.deepEqual(
+      googleInjection.allowedRequests.filter(
+        ({ host, requestPolicy }) =>
+          host === gmail.host && requestPolicy?.path === gmail.path + "/send",
+      ),
+      [
+        {
+          binary: google.binaryPath,
+          host: gmail.host,
+          ports: modelGrant.ports,
+          requestPolicy: { type: "http", method: "POST", path: gmail.path + "/send" },
+        },
+      ],
+    );
     assert.ok(
-      restored.current.destinations.some(
-        ({ host, path }) => host === gmail.host && path === "/gmail/**",
+      next.credentialDeployment.networkAccessPolicy.allowed.some(
+        ({ binary, host, requestPolicy }) =>
+          binary === google.binaryPath &&
+          host === discovery.host &&
+          requestPolicy?.type === "http" &&
+          requestPolicy.method === "GET" &&
+          requestPolicy.path === discovery.path,
       ),
     );
-    const frozen = await readRevision();
+    assert.ok(
+      googleInjection.allowedRequests.every(
+        ({ host, requestPolicy }) =>
+          requestPolicy?.type === "http" &&
+          !requestPolicy.path.includes("*") &&
+          !(host === discovery.host && requestPolicy.path === discovery.path),
+      ),
+    );
+    const readGoogle = await inject("GET", `${path}/credential-sources/${googleSource.id}`);
+    assert.equal(readGoogle.statusCode, 200, readGoogle.body);
+    const consent = readGoogle.json().data.consent;
+    assert.equal(consent.version, gmailConsent.version);
+    assert.equal(consent.issuer, issuer);
+    assert.equal(consent.oauthClientId, googleSettings.oauthClientId);
+    assert.deepEqual(consent.grantedScopes, gmailScopes);
+    const frozen = await readRevision(revisionId);
     assert.deepEqual(frozen?.credentialSources, revision.credentialSources);
     assert.deepEqual(frozen?.credentialDeployment, deployment);
   },

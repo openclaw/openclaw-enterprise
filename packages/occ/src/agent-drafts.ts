@@ -284,13 +284,20 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       harnessAuth,
       plugin.templates,
     );
-    if (selected.length > 0) {
-      const descriptions = await describePluginBindings(driver, plugins, selected, plugin.sources);
+    const staged = selected.filter(({ sourceId }) => plugin.templates.has(sourceId));
+    if (staged.length > 0) {
+      const descriptions = await describePluginBindings(driver, plugins, staged, plugin.sources);
       validatePluginRequestAuthority(descriptions, plugin.templates);
     }
+    const stagedPluginIds = new Set(staged.map(({ pluginId }) => pluginId));
+    for (const { pluginId, sourceId } of selected) {
+      if (!plugin.templates.has(sourceId)) {
+        stagedPluginIds.delete(pluginId);
+      }
+    }
     return {
-      sourceIds: pluginSourceIds(selected),
-      stagedPluginIds: new Set(selected.map(({ pluginId }) => pluginId)),
+      sourceIds: pluginSourceIds(staged),
+      stagedPluginIds,
     };
   }
 

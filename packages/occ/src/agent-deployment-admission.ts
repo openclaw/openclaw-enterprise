@@ -1301,7 +1301,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       const revision = await state.revisions.createRevision(
         candidate,
         first?.digest,
-        selectedPlugins,
+        selectedPlugins.filter(({ sourceId }) => admittedSources.templates.has(sourceId)),
       );
       if (
         lockedAgent.activeRevisionId &&

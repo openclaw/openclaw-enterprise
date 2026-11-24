@@ -482,7 +482,10 @@ function createCredentialServices({
   installationId: string;
   stateAndAuthority: ReturnType<typeof createStateAndAuthority>;
   secretDriver: ReturnType<typeof createSecretOperations>["secretDriver"];
-  drivers: Pick<DriverRegistry, "hasSelection" | "selectedProxyOwner" | "selection">;
+  drivers: Pick<
+    DriverRegistry,
+    "hasSelection" | "selectedProxyOwner" | "selection" | "enabledPluginDrivers"
+  >;
   publicController: Pick<
     ControllerDispatch,
     | "selectedDriver"
@@ -577,6 +580,7 @@ function createCredentialServices({
     preparedIssuer,
     clock: resourceValues.now,
     selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
+    pluginDrivers: () => drivers.enabledPluginDrivers(),
     retireDelivery: async (namespace, source, signal) => {
       if (!drivers.hasSelection("credential_proxy_delivery")) {
         return;
