@@ -1082,11 +1082,23 @@ test("a Source-backed registration stays Git-only under the REST derivation", ()
   }
   // The Source Provider's rule binds Git paths only and refuses any REST authority.
   const provider = "oce-github-token-" + "a".repeat(32);
-  const rule = compileOpenShellBoundGitRule(grants, provider, ["/usr/bin/git"], undefined, "source");
+  const rule = compileOpenShellBoundGitRule(
+    grants,
+    provider,
+    ["/usr/bin/git"],
+    undefined,
+    "source",
+  );
   assert.deepEqual(new Set(rule.endpoints.map(({ host }) => host)), new Set(["github.com"]));
   assert.throws(
     () =>
-      compileOpenShellBoundGitRule(grants, provider, ["/usr/bin/git"], appScope.scopedRest, "source"),
+      compileOpenShellBoundGitRule(
+        grants,
+        provider,
+        ["/usr/bin/git"],
+        appScope.scopedRest,
+        "source",
+      ),
     /A Source Provider is Git-only/,
   );
 });
