@@ -251,7 +251,7 @@ for (const width of [1440, 390]) {
     assert.equal(await starts.count(), 1);
     assert.equal(await isFocused(starts.first()), true, "first Add focuses the new range");
     // Typing already preserves focus; structural edits must not change that path.
-    await page.keyboard.press("Control+a");
+    await page.keyboard.press("ControlOrMeta+a");
     await page.keyboard.type("443");
     assert.equal(await starts.first().inputValue(), "443");
     assert.equal(await isFocused(starts.first()), true);
