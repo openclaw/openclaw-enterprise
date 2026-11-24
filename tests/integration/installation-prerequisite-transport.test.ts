@@ -116,7 +116,7 @@ const servicePath = "/api/v1/namespaces/default/services/dependency";
 const secretPath = "/api/v1/namespaces/default/secrets/leaf";
 const dnsName = "gateway.test.invalid";
 
-function object(kind: "Service" | "Secret", name: string, fields: object): Reply {
+function object(kind: "Service" | "Secret", name: string, fields: object) {
   return {
     status: 200,
     body: {
@@ -169,6 +169,8 @@ test(
     });
     const token = randomUUID();
     const rolloutUid = randomUUID();
+    const selectedController = { name: "controller", namespace: "default" };
+    let rolloutIdentity = selectedController;
     const refreshedToken = randomUUID();
     const replacementToken = randomUUID();
     const caBundle = await readFile(ca.caPath);
@@ -196,6 +198,7 @@ test(
     let pauseServiceRead = false;
     let denyDependency = false;
     let serveValidLeaf = false;
+    let dependencyReply: Reply | undefined;
     let secretReply: Reply | undefined;
     let apiServiceReply: Reply | undefined;
     let apiSlicesReply: Reply | undefined;
@@ -257,7 +260,12 @@ test(
           body: {
             kind: "Deployment",
             apiVersion: "apps/v1",
-            metadata: { name: "controller", namespace: "default", uid: rolloutUid, generation: 3 },
+            metadata: {
+              ...rolloutIdentity,
+              uid: rolloutUid,
+              resourceVersion: "42",
+              generation: 3,
+            },
             spec: { replicas: 2 },
             status: {
               observedGeneration: 3,
@@ -316,6 +324,9 @@ test(
             code: 403,
           },
         };
+      }
+      if (requestPath === servicePath) {
+        return dependencyReply;
       }
       if (requestPath === secretPath) {
         return (
@@ -413,7 +424,7 @@ test(
         name: "gateway",
         controllerName: "example.test/controller",
       },
-      controllers: [{ name: "controller", namespace: "default" }],
+      controllers: [selectedController],
       crds: [{ name: "gateways.gateway.networking.k8s.io", version: "v1" }],
       apiCidrs: ["10.32.0.1/32"],
       serviceDependency: {
@@ -1215,6 +1226,37 @@ esac
         denyDependency = false;
       }
     });
+    await t.test("only the selected Service can establish an ExternalName mismatch", async () => {
+      const alias = object("Service", "dependency", {
+        spec: { type: "ExternalName", externalName: dnsName },
+      });
+      try {
+        dependencyReply = alias;
+        const selected = (await observations(verifiedConfig)).get("service-egress");
+        assert.equal(selected?.status, "failed");
+        assert.match(selected.summary, /ExternalName/u);
+
+        dependencyReply = { ...alias, body: { ...alias.body, apiVersion: "example.test/v1" } };
+        const unrelated = (await observations(verifiedConfig)).get("service-egress");
+        assert.equal(unrelated?.status, "unknown");
+        assert.ok(!("resources" in unrelated));
+      } finally {
+        dependencyReply = undefined;
+      }
+    });
+    await t.test("a ready Deployment cannot establish another controller's readiness", async () => {
+      const id = "controller:default/controller";
+      try {
+        for (const mismatch of [{ name: "other-controller" }, { namespace: "other" }]) {
+          rolloutIdentity = { ...selectedController, ...mismatch };
+          const checks = await observations(verifiedConfig);
+          assert.ok(httpsRequests.some(({ path }) => path === rolloutPath));
+          assert.equal(checks.get(id)?.status, "unknown", JSON.stringify(mismatch));
+        }
+      } finally {
+        rolloutIdentity = selectedController;
+      }
+    });
     await t.test("only Kubernetes NotFound reports a selected Secret as absent", async () => {
       const collectSecret = async (reply: Reply) => {
         secretReply = reply;
@@ -1245,6 +1287,14 @@ esac
         });
         assert.equal(intermediary.status, "unknown");
         assert.doesNotMatch(intermediary.summary, /does not exist/u);
+
+        // A matching certificate cannot establish the identity of the returned object.
+        const leaf = object("Secret", "leaf", { data: { "tls.crt": certData } });
+        assert.equal((await collectSecret(leaf)).status, "passed");
+        for (const mismatch of [{ kind: "ConfigMap" }, { apiVersion: "example.test/v1" }]) {
+          const invalid = await collectSecret({ ...leaf, body: { ...leaf.body, ...mismatch } });
+          assert.equal(invalid.status, "unknown", JSON.stringify(mismatch));
+        }
 
         for (const body of ["", "null", "[]", "42", "{}", "{"]) {
           const invalid = await collectSecret({ status: 200, body });

@@ -95,8 +95,6 @@ type KubeconfigView = {
 };
 
 type ApiService = {
-  apiVersion?: string;
-  kind?: string;
   metadata?: NamedMetadata;
   spec: {
     type?: string;
@@ -762,6 +760,45 @@ function verifiedHttpsEndpoint(server: string) {
   return url?.hostname ? { url, authority, suffix } : undefined;
 }
 
+const namedResources = {
+  CustomResourceDefinition: {
+    apiVersion: "apiextensions.k8s.io/v1",
+    plural: "customresourcedefinitions",
+  },
+  GatewayClass: { apiVersion: "gateway.networking.k8s.io/v1", plural: "gatewayclasses" },
+  Deployment: { apiVersion: "apps/v1", plural: "deployments" },
+  Service: { apiVersion: "v1", plural: "services" },
+  NetworkPolicy: { apiVersion: "networking.k8s.io/v1", plural: "networkpolicies" },
+  Secret: { apiVersion: "v1", plural: "secrets" },
+  Namespace: { apiVersion: "v1", plural: "namespaces" },
+};
+
+function namedReader(kube: <T>(path: string, optional: boolean) => Promise<T | null>) {
+  return async function getNamed<T>(
+    kind: keyof typeof namedResources,
+    { name, namespace }: { name: string; namespace?: string },
+    optional = true,
+  ): Promise<T | null> {
+    const { apiVersion, plural } = namedResources[kind];
+    const api = apiVersion === "v1" ? "/api/v1" : `/apis/${apiVersion}`;
+    const scope = namespace === undefined ? api : `${api}/namespaces/${namespace}`;
+    const item = await kube<T & { apiVersion: string; kind: string; metadata: NamedMetadata }>(
+      `${scope}/${plural}/${name}`,
+      optional,
+    );
+    if (
+      item !== null &&
+      (item.apiVersion !== apiVersion ||
+        item.kind !== kind ||
+        item.metadata.name !== name ||
+        item.metadata.namespace !== namespace)
+    ) {
+      throw new DiagnosticError("The Kubernetes response does not identify the selected resource.");
+    }
+    return item;
+  };
+}
+
 function observeResource(
   kind: ResourceObservation["kind"],
   selection: DeploymentSelection,
@@ -1220,10 +1257,7 @@ async function diagnose(
       optional,
     );
   };
-  const apiV1 = "/api/v1";
-  const namespaced = (api: string, namespace: string) => `${api}/namespaces/${namespace}`;
-  const getNamed = <T>(api: string, plural: string, { namespace, name }: DeploymentSelection) =>
-    kube<T>(`${namespaced(api, namespace)}/${plural}/${name}`, true);
+  const getNamed = namedReader(kube);
   async function check(
     id: string,
     action: string,
@@ -1423,15 +1457,12 @@ async function diagnose(
       if (localFailure) {
         return localFailure;
       }
-      service = await kube<ApiService>(`${namespaced(apiV1, "default")}/services/kubernetes`);
-      if (
-        service?.apiVersion !== "v1" ||
-        service.kind !== "Service" ||
-        typeof service.metadata?.uid !== "string" ||
-        !service.metadata.uid ||
-        service.metadata.namespace !== "default" ||
-        service.metadata.name !== "kubernetes"
-      ) {
+      service = await getNamed<ApiService>(
+        "Service",
+        { namespace: "default", name: "kubernetes" },
+        false,
+      );
+      if (typeof service?.metadata?.uid !== "string" || !service.metadata.uid) {
         throw new Error("incomplete API Service");
       }
       return {
@@ -1492,10 +1523,7 @@ async function diagnose(
       `crd:${crd.name}`,
       "Verify that the prerequisite installer established this CRD and serves the required API version.",
       async () => {
-        const item = await kube<CustomResourceDefinition>(
-          `/apis/apiextensions.k8s.io/v1/customresourcedefinitions/${crd.name}`,
-          true,
-        );
+        const item = await getNamed<CustomResourceDefinition>("CustomResourceDefinition", crd);
         if (item === null) {
           return { status: "failed", summary: "The required CRD does not exist." };
         }
@@ -1524,10 +1552,7 @@ async function diagnose(
     "gateway-class",
     "Inspect the selected GatewayClass owner and its controller; require a current Accepted condition before installing OCE.",
     async () => {
-      const item = await kube<GatewayClass>(
-        `/apis/gateway.networking.k8s.io/v1/gatewayclasses/${config.gatewayClass.name}`,
-        true,
-      );
+      const item = await getNamed<GatewayClass>("GatewayClass", config.gatewayClass);
       if (item === null) {
         return { status: "failed", summary: "The selected GatewayClass does not exist." };
       }
@@ -1555,7 +1580,7 @@ async function diagnose(
       `controller:${controller.namespace}/${controller.name}`,
       "Inspect this Deployment's rollout, Pods and events; restore its intended replicas before installing OCE.",
       async () => {
-        const item = await getNamed<Deployment>("/apis/apps/v1", "deployments", controller);
+        const item = await getNamed<Deployment>("Deployment", controller);
         if (item === null) {
           return {
             status: "failed",
@@ -1603,9 +1628,9 @@ async function diagnose(
       "service-egress",
       "Verify read access to the selected Service and NetworkPolicy, then retry the checks.",
       async () => {
-        const observedService = await getNamed<ApiService>(apiV1, "services", selectedService);
+        const observedService = await getNamed<ApiService>("Service", selectedService);
         return serviceEgress(dependency, observedService, () =>
-          getNamed<NetworkPolicy>("/apis/networking.k8s.io/v1", "networkpolicies", policy),
+          getNamed<NetworkPolicy>("NetworkPolicy", policy),
         );
       },
     );
@@ -1617,7 +1642,7 @@ async function diagnose(
           servingCertificate(
             selectedService.namespace,
             tls,
-            await getNamed<TlsSecret>(apiV1, "secrets", {
+            await getNamed<TlsSecret>("Secret", {
               namespace: selectedService.namespace,
               name: tls.secretName,
             }),
@@ -1630,15 +1655,18 @@ async function diagnose(
     "resource-quotas",
     "Inspect ResourceQuota status and planned chart requests in this namespace; ask its owner to resolve exhausted or unreported quotas.",
     async () => {
-      const namespacePath = namespaced(apiV1, config.namespace);
-      const namespace = await kube<{ metadata?: KubernetesMetadata }>(namespacePath, true);
+      const namespace = await getNamed<{ metadata?: KubernetesMetadata }>("Namespace", {
+        name: config.namespace,
+      });
       if (namespace === null) {
         return {
           status: "unknown",
           summary: "The target namespace does not exist; its admission quotas cannot be inspected.",
         };
       }
-      const list = await kube<KubernetesList<ResourceQuota>>(`${namespacePath}/resourcequotas`);
+      const list = await kube<KubernetesList<ResourceQuota>>(
+        `/api/v1/namespaces/${config.namespace}/resourcequotas`,
+      );
       if (
         !list ||
         !Array.isArray(list.items) ||
