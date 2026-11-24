@@ -4607,6 +4607,39 @@ test("native Git rotates a lent Source in place, confirms each version's deliver
   assert.equal(f.calls.material, reads);
   assert.equal(activity.updates, 2);
   assert.equal(confirmed().length, 2);
+
+  // Stop's cleanup reads the copy back against the Provider the Provider code wrote: kept while
+  // the Sandbox attaches it, retired once the Gateway lists it no more.
+  const written = await f.client.getProvider(f.sandbox.workspace, prepared.provider);
+  assert.ok(written);
+  const gateway = { attached: true, deleted: false };
+  const client = Object.assign(Object.create(f.client) as typeof f.client, {
+    getWorkspace: async () => ({ id: "workspace-id", name: f.sandbox.workspace }),
+    listProviders: async () => (gateway.deleted ? [] : [written]),
+    deleteProvider: async (_workspace: string, name: string) => {
+      assert.equal(name, prepared.provider);
+      if (gateway.attached) {
+        throw Object.assign(new Error("provider is attached to a sandbox"), { code: 9 });
+      }
+      gateway.deleted = true;
+    },
+    getProviderProfile: async () => undefined,
+    listProviderProfiles: async () => [],
+    deleteProviderProfile: async () => {},
+  });
+  const retire = () =>
+    f.runtime.retireSourceCopy(
+      revision.id,
+      client as unknown as RuntimeClient,
+      f.sandbox.workspace,
+      t.signal,
+    );
+  assert.equal(await retire(), "provider_present");
+  assert.equal(store.copies.get(revision.id)?.retired, false);
+  gateway.attached = false;
+  assert.equal(await retire(), "retired");
+  assert.equal(gateway.deleted, true);
+  assert.equal(store.copies.get(revision.id)?.retired, true);
 });
 
 /**
