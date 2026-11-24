@@ -101,26 +101,24 @@ inactive history alone does not retain the source indefinitely.
 
 ## Use a personal Codex login
 
-Codex OAuth login is **Experimental**. It requires dedicated Codex and a selected
-Credential Refresh Driver for device login, a paired Credential Gateway for
-access-token retrieval and external-token attachments, and Sandbox token injection. The OpenShell PoC requires
-the [upstream gateway API and alias-enabled supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
-There is no installation opt-in flag.
+Codex OAuth login is **Experimental**. It requires dedicated Codex, the selected
+TokenService, and native OpenShell Credential Proxy and Sandbox delivery. The
+Harness receives a placeholder and account metadata; TokenService retains the
+OAuth grant. See the [native Codex request policy](../../reference/credential-sources.md#codex-account-model-requests).
 
 The initial Codex exchange runs in the OCE API Pods. If sign-in reports
-`auth.openai.com` unreachable, check API Pod HTTPS egress to that issuer (Helm
-`api.modelDiscoveryCidrs`) and retry. OpenShell's gateway needs its own issuer
-access for subsequent refresh.
+`auth.openai.com` unreachable, check API Pod DNS, routing, and HTTPS connectivity
+to that issuer, then retry. The refresh Worker also needs issuer connectivity.
 
 1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
    verification link, enter the displayed code, and complete sign-in.
 2. Search and select plugins using the resulting credential source, then create
-   and deploy the Agent. The Console grants the Agent service principal exact
-   source `operate` permission. Deployment still requires a successful native
-   model probe.
-3. For later plugin edits, use the saved source. OCE asks the Credential Gateway
-   for a usable access token; the token service owns refresh. Another device login
-   is needed only when replacing or recovering the connection.
+   the Agent. Grant its service principal exact Source `operate` permission and
+   allow the selected Codex binary and `chatgpt.com:443` within the Installation
+   network ceiling before deployment. Deployment requires a successful native model probe.
+3. For later plugin edits, use the saved Source. Authorized hosted Apps discovery
+   resolves a usable access token through TokenService. Another device login is
+   needed only when replacing or recovering the connection.
 4. To replace the connection, sign in from the credential editor, save the new
    source, and deploy. Saving a draft does not change the running version.
 
@@ -139,14 +137,18 @@ For API clients, the start response includes a `session` handle with `id` and
 send `POST …/{id}/poll` to check it or `DELETE …/{id}` to cancel.
 
 A pending login expires at the provider deadline. A completed login handle
-expires after 24 hours. **Close login** discards the handle. Deployed Agents
-can continue using the source. Failed or abandoned attempts also leave a source
-in credential-source management. Delete an unused source there.
+expires after 24 hours. **Close login** closes the session; a completed Source
+remains available. No Source is created before the issuer authorizes the grant.
+Deleting a Source that an Agent or revision still references returns `409`; withdraw and
+remove those references first.
 
-If sign-in is unavailable, check the selected Gateway and Refresh capabilities. For a
-`503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
-upstream provider. The paired Refresh Driver owns the provider exchange.
-See [how OCC stores the login session](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
+New or reauthorized Codex account Sources cannot currently deploy with Repository
+credentials on the same Agent; deployment returns `409`. Existing Gateway-bound
+Repository Agents continue serving.
+
+If sign-in is unavailable, check the selected TokenService device-login capability.
+For `503 DEPENDENCY_UNAVAILABLE`, check API or Worker connectivity to the issuer
+and selected Proxy connectivity to OpenShell. See the [Credential source lifecycle](../../flows/credential-source-lifecycle.md).
 
 ### Recover an interrupted Codex sign-in
 

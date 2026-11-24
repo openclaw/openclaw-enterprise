@@ -115,34 +115,13 @@ on the deployed release. An immutable Secret requires a separately reviewed
 configuration change that selects a new Secret with the same Installation
 identity and retains the original for recovery. Verify startup before admitting Agents.
 
-### Allow the worker to reach GitHub
+### Verify worker connectivity
 
-`repositoryCredentials.upstreamCidrs` is an OCE Helm value: a nonempty list of
-approved IPv4 ranges for the worker's outbound repository-credential requests.
-The chart uses it in a Kubernetes NetworkPolicy with
-`repositoryCredentials.upstreamPort` (default `443`). It does not grant the Agent
-or OpenShell supervisor network access.
-
-For this GitHub.com setup, the worker calls `api.github.com` to check the App
-installation and issue or revoke tokens. Get the current `api` ranges from
-[GitHub's Meta endpoint](https://docs.github.com/en/rest/meta/meta#get-github-meta-information).
-Run this in the operator shell to generate a Helm YAML fragment:
-
-```bash
-gh api --hostname github.com /meta --jq '
-  [.api[] | select(contains(":") | not)] | unique |
-  "repositoryCredentials:\n  upstreamCidrs:\n" +
-  (map("    - " + .) | join("\n"))
-' > "$RUN_DIR/github-api-egress.yaml"
-cat "$RUN_DIR/github-api-egress.yaml"
-```
-
-Review the ranges, then merge this fragment into the existing OCE Helm values
-without replacing the other `repositoryCredentials` settings. Keep the approved
-ranges with the deployment record and refresh them when GitHub changes its
-inventory. Do not substitute a snapshot of DNS answers. If the worker uses a
-private issuer or an outbound proxy, use its approved destination ranges instead.
-The OpenShell supervisor's HTTPS access to the Git origin is configured separately.
+The chart gives API and worker Pods unrestricted egress. Verify that the worker
+can resolve `api.github.com` and establish verified HTTPS connections for App
+installation checks and token issue or revocation. This does not grant the Agent
+or OpenShell supervisor network access; configure the supervisor's Git-origin
+access separately.
 
 ### Allow the Supervisor to reach the authority
 
@@ -216,8 +195,8 @@ kubectl --context "$CONTEXT" -n "$PLATFORM_NS" exec -i "$WORKER_POD" -c worker -
 Require `success: true`: HTTP 200, verified TLS and matching App and installation
 IDs. The helper keeps the key, JWT, headers and response body inside the worker.
 Save the context, Pod UID, selected image, runtime image ID and result together.
-Check the result's `connection` addresses against the worker's enforced egress
-rule and approved provider inventory. The helper records at most four DNS
+Check the result's `connection` addresses against the expected provider
+inventory. The helper records at most four DNS
 addresses and four connection errors, plus TCP, verified TLS and request-end
 stages. A DNS snapshot from another Pod or workstation does not verify this path.
 If it fails, keep the Agent stopped and correct the observed prerequisite before

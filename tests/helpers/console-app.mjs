@@ -516,6 +516,12 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.pluginSourceReader === undefined
           ? {}
           : { pluginSourceReader: options.pluginSourceReader }),
+        ...(options.modelCredentialPreset === undefined
+          ? {}
+          : { modelCredentialPreset: options.modelCredentialPreset }),
+        ...(options.supportsCredentialDeployment === undefined
+          ? {}
+          : { supportsCredentialDeployment: options.supportsCredentialDeployment }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
         ...(options.repositoryNetworkPolicyCeiling === undefined
           ? {}
@@ -534,6 +540,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.credentialProxyCapacity === undefined
           ? {}
           : { credentialProxyCapacity: options.credentialProxyCapacity }),
+        ...(options.credentialSourceDelivery === undefined
+          ? {}
+          : { credentialSourceDelivery: options.credentialSourceDelivery }),
       };
       controller =
         options.repositoryAdmission === undefined

@@ -140,13 +140,9 @@ The starter list proves neither runtime compatibility nor provider acceptance.
 Optional model discovery requires Namespace Agent `create`, sends credentials
 upstream without saving them, and lists Codex models for `codex_pat`.
 
-Configure Helm `api.modelDiscoveryCidrs` with provider IPv4 `/32` hosts, then
-upgrade. This grants only API Pods TCP 443 egress; Harness rules are unchanged.
-Destinations: `api.openai.com` (OpenAI API key), `api.anthropic.com` (Anthropic),
-or `auth.openai.com` plus `chatgpt.com` (`codex_pat`). Defaults grant none.
-Operators must refresh addresses when DNS changes, or supply a cluster-specific
-FQDN policy. Standard NetworkPolicy cannot match DNS names or distinguish
-services sharing an IP.
+Model discovery uses the API's unrestricted control-plane egress. Verify API Pod
+DNS and HTTPS connectivity to the selected provider. Harness networking remains
+subject to its separate Sandbox policy.
 
 Failures distinguish credential/model-list rejection, rate limits, connectivity,
 and invalid responses. Errors include request IDs, never upstream response bodies.

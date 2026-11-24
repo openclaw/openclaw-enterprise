@@ -1371,7 +1371,7 @@ export class OpenClawController {
     namespaceId: string,
     harnessId: string,
     agentId?: string,
-    audit?: DeviceAuthorizationAudit,
+    audit?: AuditEvent,
   ) {
     return this.composition.credentials.deviceAuthorization.start(
       principalId,
@@ -1387,12 +1387,14 @@ export class OpenClawController {
     namespaceId: string,
     sessionId: string,
     agentId?: string,
+    audit?: DeviceAuthorizationAudit,
   ) {
     return this.composition.credentials.deviceAuthorization.poll(
       principalId,
       namespaceId,
       sessionId,
       agentId,
+      audit,
     );
   }
 

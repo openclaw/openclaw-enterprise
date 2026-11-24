@@ -48,6 +48,7 @@ import {
   savesCuratedSelectionsInRevision,
   requiresHostedCredentialAndCuratedGrant,
 } from "./plugin-discovery-api-catalog-cases.ts";
+import { discoversTokenServiceAccountApps } from "./plugin-discovery-api-token-service-cases.ts";
 
 test(
   "Plugin discovery uses the selected Driver through authenticated HTTP without creating resources",
@@ -157,6 +158,10 @@ test(
 test(
   "Hosted discovery requires a credential, and curated discovery still requires Agent-create authorization",
   requiresHostedCredentialAndCuratedGrant,
+);
+test(
+  "Hosted Codex Apps discovery uses the authorized TokenService account Source",
+  discoversTokenServiceAccountApps,
 );
 
 async function usesSelectedDriver(t: TestContext) {

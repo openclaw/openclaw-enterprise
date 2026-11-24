@@ -8,7 +8,28 @@ import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-ent
 
 const OAUTH_EXCHANGE_TIMEOUT_MS = 15_000;
 
-async function readResponse(response: Response): Promise<Record<string, unknown> | undefined> {
+/** An omitted initial ceiling permits issuer defaults; every refresh uses the prior grant as its ceiling. */
+export function parseOAuthGrantedScopes(
+  scope: unknown,
+  scopeLimit: readonly string[] | undefined,
+): readonly string[] {
+  if (scope === undefined) {
+    return scopeLimit ?? [];
+  }
+  const reported = typeof scope === "string" ? scope.split(" ") : [];
+  const allowed = scopeLimit && new Set(scopeLimit);
+  if (
+    !reported.length ||
+    reported.some((value) => !isOAuthScopeToken(value) || (allowed && !allowed.has(value)))
+  ) {
+    throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
+  }
+  return [...new Set(reported)];
+}
+
+export async function readOAuthTokenResponse(
+  response: Response,
+): Promise<Record<string, unknown> | undefined> {
   const reader = response.body?.getReader();
   if (!reader) {
     return undefined;
@@ -87,7 +108,7 @@ export async function requestOAuthTokens(
     // A proxy failure does not establish whether the issuer consumed the one-use grant.
     throw new Error("The outcome of the OAuth token exchange is unknown.");
   }
-  const body = await readResponse(response);
+  const body = await readOAuthTokenResponse(response);
   if (!response.ok) {
     // Never include the issuer's text, credential bytes or endpoint in errors or audit.
     if (body?.error === "invalid_grant" || body?.error === "access_denied") {
@@ -117,18 +138,7 @@ export async function requestOAuthTokens(
   }
   // Only the first exchange with no explicit scopes can accept issuer-chosen defaults.
   // On refresh, even an empty list is a ceiling: no reported scopes can gain authority.
-  let grantedScopes = scopeLimit ?? [];
-  if (body.scope !== undefined) {
-    const reported = typeof body.scope === "string" ? body.scope.split(" ") : [];
-    const allowed = scopeLimit && new Set(scopeLimit);
-    if (
-      !reported.length ||
-      reported.some((scope) => !isOAuthScopeToken(scope) || (allowed && !allowed.has(scope)))
-    ) {
-      throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
-    }
-    grantedScopes = [...new Set(reported)];
-  }
+  const grantedScopes = parseOAuthGrantedScopes(body.scope, scopeLimit);
   return {
     accessToken: body.access_token,
     ...(refreshToken === undefined ? {} : { refreshToken }),

@@ -247,8 +247,8 @@ adopt or delete the same stored copy.
   Update pushes new static values; running Agents use them after a redeploy.
 - Compute accepts `openai`/`api_key` credential sources for dedicated Codex or
   native OpenClaw. `openai`/`chatgptAuthTokens` is dedicated-Codex-only and
-  requires the external-auth attachment described above. The bundled catalog
-  includes experimental Codex device login through the paired Refresh Driver.
+  requires the external-auth attachment described above. New Codex account sign-in
+  uses the selected [TokenService](kubernetes-compute/codex-oauth-storage.md).
   Other listed sources need a Sandbox Driver that provisions the Harness.
 - Guided Agent provisioning rejects credential-source Harness authentication.
   Create the Agent, then deploy it.

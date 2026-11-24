@@ -5,7 +5,6 @@ import {
   create,
   createModelSecret,
   createSlackBotSecret,
-  deviceLoginSourceTypes,
   modelCredentialSourceTypes,
   form,
   presetSecretsPath,
@@ -42,6 +41,7 @@ type CreateAgentScenario = {
   actions?: readonly StoryAction[];
   rules?: Parameters<typeof createFixtureFetch>[0];
   credentialSourceTypes?: readonly CredentialSourceType[];
+  deviceAuthorization?: true;
   extraSecrets?: readonly { id: string; name: string }[];
   namespaceStatus?: NamespaceStatus;
   namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
@@ -80,7 +80,7 @@ type CreateAgentScenario = {
   provisioningCancelledByStop?: true;
   provisioningNamesDeploymentWait?: true;
   readOnlyPermissionSummary?: true;
-  repositoryDescriptionsPending?: true;
+  repositoryDescriptionsPending?: boolean;
   repositoryNotConfigured?: true;
   sandboxDriverUnavailable?: true;
   secretCreateNotPermitted?: true;
@@ -1660,6 +1660,31 @@ export const createAgentProvisioningScenarios = {
     description:
       "The picker shows bidi controls and stray joiners as escapes. It preserves a single joiner between letters, marks, or symbols, and the England, Scotland, and Wales flag sequences. In the Team row, the joiner between A and B is present even if it looks like plain AB.",
   },
+  createGitHubRepositoryGrants: {
+    group: "Pages/Create Agent",
+    name: "GitHub repository access",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    repositoryDescriptionsPending: false,
+    repositoryOptions: ["application", "tooling"].map((name) => ({
+      repositoryRef: name,
+      ...(name === "application" ? { description: "Customer portal and API." } : {}),
+      githubAccess: {
+        repository: `example/${name}`,
+        access: name === "tooling" ? "write" : "read",
+      },
+      displayName: `example/${name}`,
+      allowedProfiles: ["github-repository"],
+    })),
+    actions: [
+      ...managedStaticForm.slice(0, -1),
+      { selector: 'input[data-repository-ref="application"]', click: true },
+      { selector: 'input[data-repository-ref="tooling"]', click: true },
+      { selector: "#provider-credential-secret", value: "sec_demo_model" },
+    ],
+    description:
+      "Selecting a GitHub repository shows the model Secret picker and changes the action to Save Agent draft. Application allows only Read-only. Tooling starts at Contributor. Change tooling to Read-only, remove it and undo the removal to check that the narrower choice stays selected. The preview shows the form before saving. Saving and deployment require a supporting Installation.",
+  },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",
     name: "Contributor access and write limits",
@@ -2451,14 +2476,16 @@ export const createAgentProvisioningScenarios = {
     name: "Member Agent created, opens its draft",
     path: create,
     observabilityDenied: true,
-    actions: [...provisionableForm, click("Create Agent")],
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: provisionableForm,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "The session already knows this member does not administer the Installation. The member's deploy gives the Agent access to its Secrets (RFC-0026), so after the Agent saves the form sends no IAM request and opens the Agent's draft, where the member deploys it.",
+      "The member selects an existing Namespace Secret. Console enrolls it with the Credential Gateway and opens the saved Agent draft with the returned Credential Source.",
     steps: [
-      "After Create Agent, the Agent page opens on its draft.",
-      "The request log shows no /iam/ request.",
+      "Select Create Agent. The draft shows a saved Credential Source under Check authentication and credentials.",
+      "The request log shows Source enrollment before Agent creation, with no IAM or provisioning request.",
     ],
+    gap: "The preview simulates Source and IAM responses.",
   },
   createMemberCredentialSource: {
     group: "Pages/Create Agent",
@@ -2571,7 +2598,8 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT OAuth before sign-in (Experimental)",
     path: create,
-    credentialSourceTypes: deviceLoginSourceTypes,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
     pluginDiscovery,
     pluginCapabilities,
     actions: oauthForm,
@@ -2582,7 +2610,8 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login pending (Experimental)",
     path: create,
-    credentialSourceTypes: deviceLoginSourceTypes,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
     oauthPending: true,
     actions: startOAuthLogin,
     description:
@@ -2592,7 +2621,8 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in interrupted by navigation (Experimental)",
     path: create,
-    credentialSourceTypes: deviceLoginSourceTypes,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
     rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
     actions: oauthForm,
     description:
@@ -2602,7 +2632,8 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login ready for plugin discovery (Experimental)",
     path: create,
-    credentialSourceTypes: deviceLoginSourceTypes,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
     pluginDiscovery,
     pluginCapabilities,
     actions: startOAuthLogin,
@@ -2617,7 +2648,8 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login permission denied (Experimental)",
     path: create,
-    credentialSourceTypes: deviceLoginSourceTypes,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
     rules: [{ suffix: "/device-authorizations", method: "POST", status: 403 }],
     actions: startOAuthLogin,
     description:
@@ -2627,35 +2659,36 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login unavailable (Experimental)",
     path: create,
-    credentialSourceTypes: deviceLoginSourceTypes,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
     rules: [
       {
         suffix: "/device-authorizations",
         method: "POST",
         status: 501,
         code: "NOT_IMPLEMENTED",
-        message:
-          "Device login needs a Credential Gateway and a Credential Refresh Driver, and this Installation does not select both. Ask an Installation administrator to select them; see the credential lifecycle guide.",
+        message: "Device authorization is unavailable for the selected TokenService.",
       },
     ],
     actions: startOAuthLogin,
     description:
-      "The Credential Gateway offers device login, but the Installation selects no Credential Refresh Driver. The refused start names the API's reason, and Sign in with OAuth stays unavailable, described by it. No device code or sign-in link appears.",
+      "The selected TokenService reports device authorization but refuses the start. The form shows the API reason and does not display a device code.",
   },
   createOAuthNotOffered: {
     group: "Pages/Create Agent",
-    name: "ChatGPT login not offered by the Drivers (Experimental)",
+    name: "ChatGPT login not offered by TokenService (Experimental)",
     path: create,
     credentialSourceTypes: modelCredentialSourceTypes,
     actions: oauthForm,
     description:
-      "The Installation's Credential Gateway offers no ChatGPT device login. Sign in with OAuth is unavailable before any request: Tab reaches it, it is described by the reason, and Enter sends nothing.",
+      "The selected TokenService does not offer device login. Sign in with OAuth is unavailable before any request: Tab reaches it, it is described by the reason, and Enter sends nothing.",
   },
   createOAuthStartUnconfirmed: {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in start unconfirmed (Experimental)",
     path: create,
-    credentialSourceTypes: deviceLoginSourceTypes,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
     rules: [{ suffix: "/device-authorizations", method: "POST", bodyError: true }],
     actions: oauthForm,
     description:
@@ -2665,7 +2698,8 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login exchange failed (Experimental)",
     path: create,
-    credentialSourceTypes: deviceLoginSourceTypes,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
     rules: [{ suffix: "/poll", method: "POST", status: 503 }],
     actions: startOAuthLogin,
     description:
@@ -2675,7 +2709,8 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login expired (Experimental)",
     path: create,
-    credentialSourceTypes: deviceLoginSourceTypes,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
     oauthExpired: true,
     actions: startOAuthLogin,
     description:

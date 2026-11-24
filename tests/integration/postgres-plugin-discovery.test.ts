@@ -199,11 +199,10 @@ test(
       tokenEndpointAuthMethod: "none",
     });
     assert.equal(client.statusCode, 201, client.body);
+    const slackClientId = client.json().data.id;
     const selected = await inject("GET", `/connection-templates/${connectionTemplateId}`);
     assert.equal(selected.statusCode, 200, selected.body);
     const pinned = selected.json().data.current;
-    assert.equal(pinned.version, template.json().data.current.version + 1);
-    assert.equal(pinned.oauthClientId, client.json().data.id);
     assert.equal(pinned.mode, "mcp_discovery");
     assert.deepEqual(pinned.mcp, { serverUrl: slack.url, resource: slot.mcp.resource });
     assert.deepEqual(pinned.destinations, [slack.endpoint]);
@@ -221,7 +220,7 @@ test(
             kind: "connection_template",
             ownerPrincipalId: principal.id,
             version: pinned.version,
-            oauthClientId: pinned.oauthClientId,
+            oauthClientId: slackClientId,
           },
           grant: {
             accessToken: randomUUID(),
@@ -242,7 +241,7 @@ test(
     assert.equal(metadata.connectionTemplateId, connectionTemplateId);
     assert.equal(metadata.consent.kind, "connection_template");
     assert.equal(metadata.consent.version, pinned.version);
-    assert.equal(metadata.consent.oauthClientId, pinned.oauthClientId);
+    assert.equal(metadata.consent.oauthClientId, slackClientId);
     assert.equal(metadata.consent.issuer, slot.issuer);
     assert.equal(metadata.consent.resource, slot.mcp.resource);
     assert.equal(metadata.consent.mcpServerUrl, slack.url);
@@ -309,7 +308,7 @@ test(
           kind: "connection_template",
           ownerPrincipalId: principal.id,
           version: gmailConsent.version,
-          oauthClientId: gmailConsent.oauthClientId,
+          oauthClientId: googleSettings.oauthClientId,
         },
         grant: {
           accessToken: randomUUID(),
@@ -738,6 +737,22 @@ test(
       ),
     );
 
+    // The revision includes Slack, but the Worker has not selected it as active yet.
+    const prematureWithdrawal = await inject(
+      "POST",
+      `${url}/credential-sources/${sourceId}/withdraw`,
+      undefined,
+      app,
+    );
+    assert.equal(prematureWithdrawal.statusCode, 409, prematureWithdrawal.body);
+    assert.match(prematureWithdrawal.json().error.message, /no active revision to withdraw/i);
+    assert.equal(
+      await state.read((view) =>
+        view.credentialSources.findCredentialWithdrawal(namespaceId, revisionId, sourceId),
+      ),
+      undefined,
+    );
+
     // Restore the starter destinations and also approve Google's public discovery endpoint.
     // The admin changes only destinations. The existing account keeps its original grant.
     const discovery = { host: "www.googleapis.com", port: 443, path: "/discovery/v1/apis" };
@@ -798,7 +813,8 @@ test(
           !(host === discovery.host && requestPolicy.path === discovery.path),
       ),
     );
-    const readGoogle = await inject("GET", `${path}/credential-sources/${googleSource.id}`);
+    const googleSourcePath = `${path}/credential-sources/${googleSource.id}`;
+    const readGoogle = await inject("GET", googleSourcePath);
     assert.equal(readGoogle.statusCode, 200, readGoogle.body);
     const consent = readGoogle.json().data.consent;
     assert.equal(consent.version, gmailConsent.version);
@@ -808,5 +824,27 @@ test(
     const frozen = await readRevision(revisionId);
     assert.deepEqual(frozen?.credentialSources, revision.credentialSources);
     assert.deepEqual(frozen?.credentialDeployment, deployment);
+
+    // Once the Agent clears its saved selections, its queued revisions still protect
+    // the Google Source from revocation and preserve the original token custody.
+    const clearedPlugins = await inject("PATCH", url, { configurationId, plugins: {} }, app);
+    assert.equal(clearedPlugins.statusCode, 200, clearedPlugins.body);
+    assert.deepEqual(clearedPlugins.json().data.plugins, {});
+    const googleCustody = await state.read((view) =>
+      view.oauthCredentials.findTokenCustody(namespaceId, googleSource.id),
+    );
+    assert.ok(googleCustody);
+    const referencedGoogle = await inject("DELETE", googleSourcePath, undefined, app);
+    assert.equal(referencedGoogle.statusCode, 409, referencedGoogle.body);
+    const retainedGoogle = await inject("GET", googleSourcePath);
+    assert.equal(retainedGoogle.statusCode, 200, retainedGoogle.body);
+    assert.equal(retainedGoogle.json().data.state, "ready");
+    assert.equal(retainedGoogle.json().data.consent.revocationRequestedBy, undefined);
+    assert.deepEqual(
+      await state.read((view) =>
+        view.oauthCredentials.findTokenCustody(namespaceId, googleSource.id),
+      ),
+      googleCustody,
+    );
   },
 );

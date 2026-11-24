@@ -207,10 +207,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if eq $google.clientIdKey $google.clientSecretKey -}}{{- fail "auth.google client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.google requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google native browser access is not supported" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $google.egressCidrs) (kindIs "slice" $google.egressCidrs)) -}}{{- fail "auth.google.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $google.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.google.egressCidrs" "cidr" $cidr) -}}
-{{- end -}}
 {{- end -}}
 {{- $oidcCa := default dict $oidc -}}
 {{- if and (hasKey $oidcCa "enrollment") (not $oidcCa.enabled) -}}{{- fail "auth.oidc.enrollment requires auth.oidc.enabled: true" -}}{{- end -}}
@@ -258,10 +254,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- /* The API trims the display name and uses its default when nothing is left. RE2's \p{C} has no unassigned code points, which the API refuses at startup; a positive class would instead refuse characters newer than Helm's Unicode tables that the API accepts, such as new emoji. */ -}}
 {{- $displayName := regexReplaceAll $jsTrim (toString (default "" $oidc.displayName)) "" -}}
 {{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $oidc.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.oidc.egressCidrs" "cidr" $cidr) -}}
-{{- end -}}
 {{- end -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
 {{- $preset := toString (default "" $proxy.preset) -}}
@@ -329,7 +321,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "installation.name must follow the Name rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators" -}}
 {{- end -}}
 {{- if .Release.IsInstall -}}
-{{- $secret := required "bootstrap.credentials.secretName must reference a precreated Secret" .Values.bootstrap.credentials.secretName -}}
+{{- $secret := required "Set bootstrap.credentials.secretName. Use an unused name with occ installation install. Direct Helm and --bootstrap-credentials=existing require a precreated Secret in the release namespace." .Values.bootstrap.credentials.secretName -}}
 {{- include "openclaw.requireString" (dict "label" "bootstrap.credentials.secretName" "value" $secret) -}}
 {{- if or (gt (len $secret) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $secret)) -}}
 {{- fail "bootstrap.credentials.secretName must be a DNS subdomain of at most 253 characters" -}}
@@ -489,29 +481,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not $execution.apiKubeconfigSecretName) (not $execution.workerKubeconfigSecretName) (eq $execution.apiKubeconfigSecretName $execution.workerKubeconfigSecretName) -}}
 {{- fail "executionCluster requires separate API and worker kubeconfig Secrets" -}}
 {{- end -}}
-{{- if or (not $execution.apiCidrs) (not $execution.kubeconfigKey) -}}
-{{- fail "executionCluster requires explicit API CIDRs and kubeconfig key" -}}
-{{- end -}}
+{{- if not $execution.kubeconfigKey -}}{{- fail "executionCluster requires a kubeconfig key" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "executionCluster.kubeconfigKey" "value" $execution.kubeconfigKey) -}}
-{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString $execution.apiPort))) (gt (int $execution.apiPort) 65535) -}}
-{{- fail "executionCluster.apiPort must be an integer TCP port from 1 to 65535" -}}
-{{- end -}}
-{{- range $cidr := $execution.apiCidrs -}}
-{{- $value := toString $cidr -}}
-{{- if regexMatch "^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/([1-9]|[12][0-9]|3[0-2])$" $value -}}
-{{- else if regexMatch "^[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/([1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $value -}}
-{{- $addr := first (splitList "/" $value) -}}
-{{- $tail := regexFind ":(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $addr -}}
-{{- range $octet := splitList "." (default ":0.0.0.0" $tail | trimPrefix ":") -}}
-{{- if gt (int $octet) 255 -}}{{- fail "executionCluster.apiCidrs contains an invalid IPv6 address" -}}{{- end -}}
-{{- end -}}
-{{- $hex := ternary (printf "%s:0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") -}}
-{{- $groups := len (regexFindAll "[0-9A-Fa-f]+" $hex -1) -}}
-{{- if or (not (regexMatch "^(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?)?$" $hex)) (ternary (gt $groups 7) (ne $groups 8) (contains "::" $hex)) -}}{{- fail "executionCluster.apiCidrs contains an invalid IPv6 address" -}}{{- end -}}
-{{- else -}}
-{{- fail "executionCluster.apiCidrs requires an explicit IPv4 or IPv6 CIDR with a nonzero prefix" -}}
-{{- end -}}
-{{- end -}}
 {{- end -}}
 {{- /* YAML and --set read yes/no, true/false, or a bare number as a boolean or number. An unquoted name would mount ConfigMap "true" or skip the theme. */ -}}
 {{- if kindIs "map" .Values.api.consoleTheme -}}
@@ -597,10 +568,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.registryKey" "value" $credentials.registryKey) -}}
 {{- with $credentials.preparedProviderCaConfigMapName -}}
 {{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.preparedProviderCaConfigMapName" "value" .) -}}
-{{- end -}}
-{{- if not $credentials.upstreamCidrs -}}{{- fail "repositoryCredentials.upstreamCidrs must contain approved provider IPv4 CIDRs" -}}{{- end -}}
-{{- range $cidr := $credentials.upstreamCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "repositoryCredentials.upstreamCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- if $repositoryBroker -}}
 {{- include "openclaw.validateImageReference" (dict "label" "repositoryCredentials.image" "image" $credentials.image) -}}

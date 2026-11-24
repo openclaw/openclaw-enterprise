@@ -153,21 +153,6 @@ export function registerExecutionClusterSecretCases({
         }),
         /executionCluster\.apiKubeconfigSecretName must name a dedicated Secret; occ-auth is also auth\.secretName/,
       );
-      for (const cidr of [
-        "not-a-cidr",
-        "10.1.1.1/33",
-        "0.0.0.0/0",
-        "12345::/64",
-        "::ffff:999.1.2.3/64",
-      ]) {
-        await assert.rejects(
-          render({ ...executionClusterValues, "executionCluster.apiCidrs[0]": cidr }),
-          /executionCluster\.apiCidrs/,
-          cidr,
-        );
-      }
-      await render({ ...executionClusterValues, "executionCluster.apiCidrs[0]": "10.1.1.0/28" });
-      await render({ ...executionClusterValues, "executionCluster.apiCidrs[0]": "2001:db8::/64" });
       // Enabling these features reserves the Secrets they read and the Secrets cert-manager writes.
       const collisions: readonly SecretCollision[] = [
         [chatgptValues, "occ-chatgpt-admin", "backend.chatgpt.secretName"],
@@ -230,7 +215,6 @@ export function registerDatabaseCaCases({
       const custodyValues = {
         ...authorityValues,
         "preparedGitHub.custodySecretName": "prepared-github-custody",
-        "preparedGitHub.issuerCidrs[0]": "192.0.2.3/32",
       };
       const issuerCaValues = {
         ...custodyValues,

@@ -1,14 +1,14 @@
 ---
 created: 2026-09-08
-updated: 2026-11-23
-last_updated_session: authoring-run/dd61beab-f923-4970-a46a-5bfc34f8a38b
+updated: 2026-11-24
+last_updated_session: authoring-run/3020b1e1-86c1-4a99-bb6b-890205dab49b
 ---
 
 # Agent Plugin Deployment Flow
 
 ## Overview
 
-OCC saves validated selections, Driver and policy at deployment. The Harness owns tools and approvals.
+OCC freezes selections, Driver and policy at deployment. The Harness owns tools and approvals.
 
 ## Entry Points
 
@@ -29,13 +29,13 @@ graph TD
   E0 -->|no credential| D6
   E0 -->|bound| E1["Caller and Agent operate"] --> D6
   E0 -->|managed MCP| M0["Check credential and discover server tools"] --> D5
-  E0 -->|credentialSource| D2
+  E0 -->|credentialSource| E1
   D1 -->|stored source| D2["Caller source operate"] --> D6["Select Harness catalog"]
   D1 -->|token or none| D6
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|token or none| D4["Call PluginDriver"]
   D6 -->|Secret| D3["Read and recheck"] --> D4
-  D6 -->|CredentialSource| D9["Check source and exact Gateway owner; read unless canceled"]
+  D6 -->|CredentialSource| D9["Check Source and selected owner; resolve unless canceled"]
   D9 -->|success| D10["Recheck authority, source and catalog"]
   D10 -->|allowed and connected| D4
   D9 -->|canceled or failed| D12["Stop"]
@@ -71,37 +71,17 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) rejects
-cross-Namespace requests (`400`), missing Secrets (`404`) and unavailable explicit
-CredentialSources (`409`). Saved discovery requires dedicated Agents.
-Unavailable bound sources return `404`. Only hosted catalogs need credentials.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) rejects cross-Namespace requests (`400`), missing Secrets (`404`) and unavailable explicit Sources (`409`). Saved discovery requires dedicated Agents and returns `404` for unavailable bound Sources. Only hosted catalogs need credentials.
 
-OpenShell metadata/exports use operator mTLS. External Gateways support
-`withSourceToken`. OCC rechecks attachment before dispatch. Owners refresh credentials.
-Cancellation discards late credentials.
+For Codex accounts, [OCC](../../packages/occ/src/plugin-discovery.ts) resolves the bearer through TokenService and reads account metadata from Source consent. Gateway Sources use their Backend reader or `withSourceToken`. Saved discovery checks the Agent binding and service principal’s Source permission. OCC rechecks authority and ownership before dispatch. Cancellation discards late credentials.
 
-`packages/occ/src/plugin-discovery.ts:discoverManagedMcpTools` reads tokens via the Secret Driver,
-rechecking target and grants around `tools/list`. `driverPolicy.toolNames` pins upstream names.
+Managed MCP discovery rechecks the target and grants around `tools/list` with Secret Driver credentials. `driverPolicy.toolNames` pins upstream names. Account changes clear results. Harness changes clear selections and approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) limit size and time, refuse redirects and credential echoes, and send `Cache-Control: no-store`. Canonical duplicates return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`. Missing or mismatched detail IDs prompt retry.
 
-Account changes clear results. Harness changes clear selections/approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-cap size/time, reject redirects/credential echoes, set `Cache-Control: no-store`.
-Canonical duplicates return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`.
-Console rejects missing/mismatched detail IDs with retry.
+On `409 RESOURCE_CONFLICT`, [Console](../../apps/controller/src/console/agents/plugin-discovery.mts) removes stale **Add**, preserves drafts and offers **Load plugins** (catalog), **Load tools** (connection) or **Retry tools** (details).
 
-On `409 RESOURCE_CONFLICT`, [Console](../../apps/controller/src/console/agents/plugin-discovery.mts)
-retires stale **Add**, preserves drafts and offers **Load plugins** (catalog), **Load tools** (connection)
-or **Retry tools** (details).
+Saved catalog/details `403` clears cached **Add** and tools. **Load plugins** retries discovery. For managed tools, **Recheck access** validates Driver, policy, release, slot bindings and unique Source IDs through the capabilities GET. Failure or cancellation preserves refusal guidance and IDs in both tabs. Success hides **Recheck access** until another denial. Reload plugins and tools with an eligible connected Source.
 
-Saved catalog/details `403` clears cached **Add** and tools.
-Use **Load plugins** unless managed tool discovery requires **Recheck access**.
-Both tabs keep current refusal guidance and IDs on cancel or failure. The
-capabilities `GET` checks Driver, policy, release, slot bindings and unique valid
-source IDs. A later discovery `403` can reopen recovery. **Recheck access** disappears on success. Load plugins and tools with an eligible,
-independently connected source.
-
-After managed refusal recovery, choose **Recheck accounts** on an enabled card
-with an empty slot. Both rechecks clear discovery and cancel pending reads. Drafts and
-approvers stay intact. `409 AGENT_DELETING` blocks recovery.
+After recovery, **Recheck accounts** checks empty slots on enabled cards. Both rechecks cancel discovery and clear results while preserving drafts and approvers. `409 AGENT_DELETING` blocks recovery.
 
 `apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
 `requires_local_executor`. `true` requires skills. Details reject unmatched
@@ -112,34 +92,13 @@ MCP/scheduled tasks. Invalid `plugin/list` stops optional stdio
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-HTTP validates input. [`getAgentForBrowsing`](../../packages/occ/src/agent-queries.ts)
-requires exact Agent `read` in its Namespace.
-[Create and PATCH](../../packages/occ/src/agent-drafts.ts) save `plugins` and Driver
-identity. Updates commit state and audit together. Omitted selections
-persist, `{}` clears them, and nonempty maps replace them. Clear selections with
-unknown or different owners before changing catalogs.
+[`getAgentForBrowsing`](../../packages/occ/src/agent-queries.ts) checks exact Agent `read`. [Create and PATCH](../../packages/occ/src/agent-drafts.ts) save `plugins`, Driver identity and audit together. Omitted selections persist. `{}` clears them. Nonempty maps replace them. Clear unknown or differently owned selections before switching catalogs.
 
-`validateAgentPlugins` checks policy and Configuration against the Harness
-catalog on Agent/provisioning writes. Deployment rechecks Configuration.
-OpenClaw refuses selections blocked by `tools.deny`, the sole `agents.entries`
-tool list, the primary provider's `byProvider` lists, or their combination.
-It also refuses selections beside an entry denying `*` or hidden under a
-profile by the sole entry's `alsoAllow`.
-[`openClawPluginSettingConflict`](../../apps/controller/src/drivers/plugin/openclaw-plugin-settings.ts)
-checks [Gateway-rejected settings](../reference/drivers/plugin-bundled.md#native-mappings-and-limits)
-first for OpenClaw Harnesses.
-Unsupported controls or incompatible selections return `400 INVALID_REQUEST`.
+`validateAgentPlugins` checks writes against the Harness catalog and Configuration. Deployment rechecks Configuration. OpenClaw checks `tools.deny`, the sole `agents.entries` tool list, primary-provider `byProvider` lists and their combination. It refuses entries denying `*` and selections hidden by the sole entry’s profile and `alsoAllow`. [Gateway settings](../reference/drivers/plugin-bundled.md#native-mappings-and-limits) take priority in [`openClawPluginSettingConflict`](../../apps/controller/src/drivers/plugin/openclaw-plugin-settings.ts). Incompatible selections or controls return `400 INVALID_REQUEST`.
 
-[`validatePolicies`](../../apps/controller/src/drivers/plugin/runtime-translator.ts)
-detects conflicting enablement defaults. `BundledPluginDriverBase.validate`
-allowlists it for OCC's fixed `PluginPolicyValidationError` advice.
-Unrecognized refusals stay generic. The Console preserves rejected drafts.
+[`validatePolicies`](../../apps/controller/src/drivers/plugin/runtime-translator.ts) detects conflicting enablement defaults. `BundledPluginDriverBase.validate` maps known errors to OCC’s `PluginPolicyValidationError` guidance. Other refusals stay generic. Console preserves rejected drafts.
 
-[Save](../../apps/controller/src/console/agents/plugins.mts#L396) keeps out-of-range
-**Plugin selections JSON** text and skips Agent `GET`/`PATCH`.
-[Picker edits](../../apps/controller/src/console/agents/plugin-fields.mts#L414)
-stop. [Available catalogs](../guides/console/configuration-plugins-and-files.md#plugins-tab)
-remain browsable.
+Out-of-range **Plugin selections JSON** blocks [Save](../../apps/controller/src/console/agents/plugins.mts#L396), Agent `GET`/`PATCH` and [picker edits](../../apps/controller/src/console/agents/plugin-fields.mts#L414). The draft and [catalogs](../guides/console/configuration-plugins-and-files.md#plugins-tab) remain available.
 
 `GET .../plugins/capabilities` requires Agent `read`/`update`. [Slot choices](../reference/drivers/plugin.md#selection-and-catalogs) use eligible attached Sources.
 
@@ -147,13 +106,11 @@ remain browsable.
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-On save, the [Plugin Driver](../../packages/occ/src/plugin-credential-bindings.ts) reports selected Sources. OCC checks exact `operate`, Template and slot. Deployment rechecks caller and Agent authority and intersects reviewed requests with current Template destinations.
-
-OCC freezes the qualified policy and associated Template version for eligible Google OAuth and Slack MCP selections. [Live delivery remains unqualified](../reference/credential-sources.md#bind-a-source-to-an-agent).
+When saving, the [Plugin Driver](../../packages/occ/src/plugin-credential-bindings.ts) reports selected Sources. OCC checks exact `operate`, Template and slot eligibility. At deployment OCC rechecks caller and Agent authority, intersects reviewed requests with current approved Template destinations, and freezes that version and policy in the Agent revision. See [delivery limits](../reference/credential-sources.md#bind-a-source-to-an-agent).
 
 Worker checks Driver–Harness compatibility. Gateway and Worker verify Compute descriptors.
 
-- **CLI packages.** Gateway loads skills. Harness runs the pinned executable. Google’s [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) checks the [guard](../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts) version before attachment. The guard enforces Source scope and approved requests. Unsigned WebSockets and timely frames naming another Sandbox get `PERMISSION_DENIED` immediately. Matching or live late frames get `http_only`. Signed silence waits for the guard budget (default 400 ms) or earlier caller deadline, which can return its own error. Waiting preflights cap at 256 per Sandbox and 1,024 per guard, independently of HTTP.
+- **CLI packages.** Gateway loads skills. Harness runs the pinned executable. Google’s [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) checks the [guard](../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts) version before attachment. The guard enforces Source scope and approved requests. Unsigned WebSockets and timely frames naming another Sandbox get `PERMISSION_DENIED` immediately. Matching or live late frames get `http_only`. Signed silence waits up to 400 ms by default. Earlier caller deadlines can return their own error. Waiting preflights cap at 256 per Sandbox and 1,024 per guard, independently of HTTP.
 - **Hosted MCP packages.** Worker advertises selected tools. Gateway grants same-node execution. Hooks and cross-node calls return Code Mode results or denials. The credential Driver attaches the Source. Sandbox supplies its placeholder. OpenShell enforces tool names and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
@@ -345,6 +302,7 @@ OpenClaw model probes cap CPU-based deadlines at 600 s. CPU wait is max(PSI, thr
 
 ## Changelog
 
+- 2026-11-24 02:32: Resolve hosted signed-in account discovery through the selected TokenService while retaining Gateway discovery. (authoring-run/3020b1e1-86c1-4a99-bb6b-890205dab49b - 1f256635c37842e2d94846259303fa17cfe83be2)
 - 2026-11-23 09:56: Clarify current Template destinations. (authoring-run/dd61beab-f923-4970-a46a-5bfc34f8a38b - c0f1cf9e9)
 - 2026-11-23 08:39: Resolve current Plugin Templates. (authoring-run/82130fc5-2b62-4e13-b10f-9521fbd7b536 - 5dcfdf664)
 - 2026-11-23 08:12: Qualify complete policies. (authoring-run/338bac1c-8735-4511-bc75-825589e83705 - 0d46243a3)

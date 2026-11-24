@@ -24,6 +24,24 @@ import { BUILTIN_CODEX_OAUTH_PRESET } from "./codex-oauth-preset.ts";
 
 type OAuthConnectionCustody = Pick<OAuthTokenCustody, "sourceId" | "secret">;
 
+type OAuthGrantRefresh = (
+  grant: Parameters<typeof refreshPinnedOAuthGrant>[0],
+  signal: AbortSignal,
+  clientSecret: string | undefined,
+) => Promise<
+  | Awaited<ReturnType<typeof refreshPinnedOAuthGrant>>
+  | {
+      readonly refreshToken: string;
+      readonly grantedScopes: readonly string[];
+      readonly accessToken?: never;
+      readonly expiresAt?: never;
+    }
+>;
+
+interface OAuthIssuerClient extends OAuthConnectionClient {
+  readonly refreshGrant?: OAuthGrantRefresh;
+}
+
 type ClientRetry = "client_refused" | "client_unavailable";
 
 type ApprovedGrant = Pick<
@@ -36,8 +54,9 @@ type OAuthMaterial = ApprovedGrant & {
   readonly renewAt: string;
 } & (
     | { readonly phase: "ready" }
+    | { readonly phase: "access_pending" }
     | { readonly phase: ClientRetry }
-    | { readonly phase: "renewing"; readonly renewalDeadline: string }
+    | { readonly phase: "renewing" | "renewing_unavailable"; readonly renewalDeadline: string }
   );
 
 interface FailedRefresh {
@@ -66,7 +85,14 @@ function material(value: string): StoredConnection {
     return data as unknown as FailedRefresh;
   }
   if (
-    !["ready", "renewing", "client_refused", "client_unavailable"].includes(String(data.phase)) ||
+    ![
+      "ready",
+      "access_pending",
+      "renewing",
+      "renewing_unavailable",
+      "client_refused",
+      "client_unavailable",
+    ].includes(String(data.phase)) ||
     !["version", "accessToken", "refreshToken", "expiresAt", "renewAt"].every((key) =>
       isNonEmptyString(data[key]),
     ) ||
@@ -75,7 +101,7 @@ function material(value: string): StoredConnection {
     Object.hasOwn(data, "clientSecret") ||
     !Number.isFinite(Date.parse(data.expiresAt as string)) ||
     !Number.isFinite(Date.parse(data.renewAt as string)) ||
-    (data.phase === "renewing" &&
+    ((data.phase === "renewing" || data.phase === "renewing_unavailable") &&
       (!isNonEmptyString(data.renewalDeadline) ||
         !Number.isFinite(Date.parse(data.renewalDeadline))))
   ) {
@@ -84,7 +110,11 @@ function material(value: string): StoredConnection {
   return data as unknown as OAuthMaterial;
 }
 
-function ready(grant: ApprovedGrant, now = Date.now()): OAuthMaterial {
+function ready(
+  grant: ApprovedGrant,
+  now = Date.now(),
+  version: string = randomUUID(),
+): OAuthMaterial {
   const expires = Date.parse(grant.expiresAt);
   if (!Number.isFinite(expires) || expires <= now) {
     throw new BrowserAuthorizationError("access_token_expired", "retry");
@@ -97,7 +127,7 @@ function ready(grant: ApprovedGrant, now = Date.now()): OAuthMaterial {
     refreshToken: grant.refreshToken,
     expiresAt: grant.expiresAt,
     phase: "ready",
-    version: randomUUID(),
+    version,
     renewAt: new Date(renewAt).toISOString(),
   };
 }
@@ -105,12 +135,16 @@ function ready(grant: ApprovedGrant, now = Date.now()): OAuthMaterial {
 function status(current: StoredConnection): OAuthConnectionStatus {
   if (current.phase === "failed") {
     const failureCode = current.failureCode;
-    const recoveryAction = ["grant_refused", "refresh_outcome_unknown"].includes(failureCode)
+    const recoveryAction = [
+      "grant_refused",
+      "grant_scope_mismatch",
+      "refresh_outcome_unknown",
+    ].includes(failureCode)
       ? "reauthorize"
       : "fix_configuration";
     return { state: "failed", failureCode, recoveryAction };
   }
-  if (current.phase === "renewing") {
+  if (current.phase === "renewing" || current.phase === "renewing_unavailable") {
     // Only a persisted terminal CAS can retire downstream delivery and its renewal schedule.
     return { state: "pending", expiresAt: current.expiresAt };
   }
@@ -123,6 +157,9 @@ function status(current: StoredConnection): OAuthConnectionStatus {
     },
     expiresAt: current.expiresAt,
   };
+  if (current.phase === "access_pending") {
+    return { ...schedule, state: "pending" };
+  }
   if (current.phase !== "ready") {
     return {
       ...schedule,
@@ -213,7 +250,9 @@ export class OAuthGrantStore {
           version: stored.phase !== "failed" ? stored.version : undefined,
           renewAt: stored.phase !== "failed" ? Date.parse(stored.renewAt) : undefined,
           renewalDeadline:
-            stored.phase === "renewing" ? Date.parse(stored.renewalDeadline) : undefined,
+            stored.phase === "renewing" || stored.phase === "renewing_unavailable"
+              ? Date.parse(stored.renewalDeadline)
+              : undefined,
         };
       },
     );
@@ -222,7 +261,7 @@ export class OAuthGrantStore {
   async renew(
     custody: OAuthConnectionCustody,
     signal: AbortSignal,
-    resolveClient: () => Promise<OAuthConnectionClient>,
+    resolveClient: () => Promise<OAuthIssuerClient>,
     scheduledVersion?: string,
   ): Promise<OAuthConnectionStatus> {
     const driver = this.driver(custody.secret.driverId, signal);
@@ -232,7 +271,7 @@ export class OAuthGrantStore {
     if (current.phase === "failed") {
       return observed;
     }
-    if (current.phase === "renewing") {
+    if (current.phase === "renewing" || current.phase === "renewing_unavailable") {
       if (Date.now() < Date.parse(current.renewalDeadline)) {
         return observed;
       }
@@ -258,9 +297,11 @@ export class OAuthGrantStore {
     // is safe to retry because the issuer has received nothing.
     let clientSecret: string | undefined;
     let registration: OAuthConnectionRegistration;
+    let refreshGrant: OAuthGrantRefresh = this.refreshGrant;
     try {
       const client = await resolveClient();
       registration = client.registration;
+      refreshGrant = client.refreshGrant ?? refreshGrant;
       const { readSecret } = client;
       clientSecret =
         registration.tokenEndpointAuthMethod === "none" ? undefined : await readSecret?.(signal);
@@ -279,7 +320,7 @@ export class OAuthGrantStore {
     const deadline = Date.now() + RENEWAL_BUDGET_MS;
     const intent = JSON.stringify({
       ...current,
-      phase: "renewing",
+      phase: current.phase === "ready" ? "renewing" : "renewing_unavailable",
       renewalDeadline: new Date(deadline).toISOString(),
     });
     if (!(await driver.compareAndSwap!(custody.secret, previous, intent))) {
@@ -295,7 +336,7 @@ export class OAuthGrantStore {
     }
     let next: OAuthMaterial | FailedRefresh;
     try {
-      const issued = await this.refreshGrant(
+      const issued = await refreshGrant(
         {
           ...registration!,
           refreshToken: current.refreshToken,
@@ -304,11 +345,25 @@ export class OAuthGrantStore {
         AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
         clientSecret,
       );
-      next = ready({
-        ...current,
-        ...issued,
+      const grant = {
+        accessToken: issued.accessToken ?? current.accessToken,
+        expiresAt: issued.expiresAt ?? current.expiresAt,
+        grantedScopes: issued.grantedScopes,
         refreshToken: issued.refreshToken ?? current.refreshToken,
-      });
+      };
+      const partial = issued.accessToken === undefined;
+      const now = Date.now();
+      if (partial && (current.phase !== "ready" || Date.parse(grant.expiresAt) <= now)) {
+        // Keep the rotated grant for retry without delivering unavailable or expired access.
+        next = {
+          ...grant,
+          phase: "access_pending",
+          version: current.version,
+          renewAt: new Date(now + 60_000).toISOString(),
+        };
+      } else {
+        next = ready(grant, now, partial ? current.version : undefined);
+      }
     } catch (error) {
       // invalid_client rejects authentication before consuming the refresh grant. Keep it
       // for another attempt with the registration's current credential.
@@ -364,6 +419,9 @@ export class OAuthAccountTokens {
     ref: OAuthAccountRef,
     registrationSource?: Readonly<OAuthCredentialSource>,
   ) => Promise<OAuthConnectionClient>;
+  private readonly codexRefresh: OAuthGrantRefresh | undefined;
+  private readonly notifyRenewed:
+    ((ref: OAuthAccountRef, version: string, signal: AbortSignal) => Promise<void>) | undefined;
   private readonly renewing = new Map<string, Promise<OAuthConnectionStatus>>();
 
   constructor(
@@ -373,10 +431,14 @@ export class OAuthAccountTokens {
       ref: OAuthAccountRef,
       registrationSource?: Readonly<OAuthCredentialSource>,
     ) => Promise<OAuthConnectionClient>,
+    codexRefresh?: OAuthGrantRefresh,
+    notifyRenewed?: (ref: OAuthAccountRef, version: string, signal: AbortSignal) => Promise<void>,
   ) {
     this.state = state;
     this.grants = new OAuthGrantStore(secrets, refreshPinnedOAuthGrant);
     this.client = resolveClient;
+    this.codexRefresh = codexRefresh;
+    this.notifyRenewed = notifyRenewed;
   }
 
   private custody(ref: OAuthAccountRef) {
@@ -388,7 +450,7 @@ export class OAuthAccountTokens {
   private async resolveClient(
     ref: OAuthAccountRef,
     registrationSource?: Readonly<OAuthCredentialSource>,
-  ): Promise<OAuthConnectionClient> {
+  ): Promise<OAuthIssuerClient> {
     const source =
       registrationSource ??
       (await this.state.read((view) =>
@@ -404,8 +466,12 @@ export class OAuthAccountTokens {
       throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
     }
     if (source.consent.kind === "builtin_codex") {
+      if (!this.codexRefresh) {
+        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+      }
       return {
         registration: { ...BUILTIN_CODEX_OAUTH_PRESET, tokenEndpointAuthMethod: "none" },
+        refreshGrant: this.codexRefresh,
       };
     }
     return this.client(ref, source);
@@ -505,8 +571,18 @@ export class OAuthAccountTokens {
     const attempt = this.grants
       .renew(custody, signal, () => this.resolveClient(ref), expectedVersion)
       .then(async (outcome) => {
-        if (outcome.state === "pending") {
+        if (outcome.state === "pending" && !outcome.schedule) {
           return outcome;
+        }
+        if (
+          outcome.state === "ready" &&
+          outcome.schedule !== undefined &&
+          outcome.schedule.version !== expectedVersion &&
+          this.notifyRenewed !== undefined
+        ) {
+          // If delivery fails, custody keeps the committed token and rotated grant, and the
+          // old schedule stays due so the same version can be pushed without another exchange.
+          await this.notifyRenewed(ref, outcome.schedule.version, signal);
         }
         await this.state.transact(async (unit) => {
           const source = await unit.credentialSources.lockCredentialSource(
@@ -594,7 +670,7 @@ export class OAuthAccountTokens {
         await delay(50, undefined, { signal });
       } else {
         const outcome = await this.renew(ref, custody, current.version);
-        if (outcome.state === "failed") {
+        if (outcome.state === "failed" || (outcome.state === "pending" && outcome.schedule)) {
           return undefined;
         }
       }

@@ -46,20 +46,6 @@ export const modelCredentialSourceTypes: CredentialSourceType[] = [
   },
 ];
 
-// A Credential Gateway that also offers ChatGPT device login. Without that source type Sign in
-// with OAuth is unavailable before the click (finding 2991).
-export const deviceLoginSourceTypes: CredentialSourceType[] = [
-  ...modelCredentialSourceTypes,
-  {
-    type: "codex-oauth",
-    config: [],
-    secrets: [],
-    rotation: "refresh",
-    deviceAuthorization: { harnessId: "codex" },
-    harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
-  },
-];
-
 export const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
 
 export const createSlackBotSecret: StoryAction[] = [

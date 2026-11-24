@@ -1499,8 +1499,10 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preTokenServiceCredentialSources"],
-      [93, "prePluginCredentialDeployment"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preTokenServiceCredentialSources"],
+      [94, "preCodexDeviceTokenService"],
+      [95, "prePluginCredentialDeployment"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1964,8 +1966,10 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preTokenServiceCredentialSources"],
-      [93, "prePluginCredentialDeployment"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preTokenServiceCredentialSources"],
+      [94, "preCodexDeviceTokenService"],
+      [95, "prePluginCredentialDeployment"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2341,7 +2345,7 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const prefix = 92;
+    const prefix = 93;
     const db = await historyDatabase(context, fixture, "oauth_source_cutover", { prefix });
     const installationId = `ins_${randomUUID()}`;
     const namespaceId = `ns_${randomUUID()}`;
@@ -2626,8 +2630,10 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preTokenServiceCredentialSources"],
-      [93, "prePluginCredentialDeployment"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preTokenServiceCredentialSources"],
+      [94, "preCodexDeviceTokenService"],
+      [95, "prePluginCredentialDeployment"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2762,8 +2768,10 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preTokenServiceCredentialSources"],
-      [93, "prePluginCredentialDeployment"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preTokenServiceCredentialSources"],
+      [94, "preCodexDeviceTokenService"],
+      [95, "prePluginCredentialDeployment"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2931,8 +2939,10 @@ test(
       [89, "preNativeGitDelivery"],
       [90, "preAgentNetworkProxy"],
       [91, "preAgentNetworkProxyAdmission"],
-      [92, "preTokenServiceCredentialSources"],
-      [93, "prePluginCredentialDeployment"],
+      [92, "preAgentRepositoryApiLimits"],
+      [93, "preTokenServiceCredentialSources"],
+      [94, "preCodexDeviceTokenService"],
+      [95, "prePluginCredentialDeployment"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2961,7 +2971,8 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [93, "CREATE FUNCTION"],
+                [95, "CREATE FUNCTION"],
+                [92, "CREATE FUNCTION"],
                 [91, "ALTER TABLE"],
                 [90, "ALTER TABLE"],
                 [89, "CREATE FUNCTION"],
@@ -2997,13 +3008,17 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
-        } else if (prefix === 93) {
+        } else if (prefix === 95) {
           // Abort the second function replacement after the snapshot validator accepts a Template receipt.
           failAt = `IF NOT occ.credential_source_snapshots_are_valid(
             '[{"sourceId":"cs_00000000-0000-4000-8000-000000000000","sourceType":"static",
               "tokenServiceInstanceId":"00000000-0000-4000-8000-000000000000",
               "connectionTemplate":{"id":"ctp_00000000-0000-4000-8000-000000000000","version":1}}]'::jsonb
           ) THEN RETURN; END IF;`;
+        } else if (prefix === 92) {
+          // Fail replacement of the policy validator after the action check and grants exist.
+          failAt =
+            "IF to_regprocedure('occ.repository_api_limits_are_valid(jsonb)') IS NULL THEN RETURN; END IF;";
         } else if (prefix === 89) {
           // Abort 0090 after replacing the execution check, while installing the session guard.
           failAt =

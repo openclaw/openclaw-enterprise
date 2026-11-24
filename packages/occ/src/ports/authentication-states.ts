@@ -13,7 +13,7 @@ export type AuthenticationState = OAuthAuthenticationState | DeviceAuthenticatio
 
 export type DeviceAuthenticationChanges = Pick<
   DeviceAuthorizationSession,
-  "phase" | "expiresAt" | "nextPollAt" | "privateState" | "encryptedChallenge"
+  "phase" | "expiresAt" | "nextPollAt" | "privateState" | "encryptedChallenge" | "sourceId"
 >;
 
 export interface AuthenticationStateReadRepository {

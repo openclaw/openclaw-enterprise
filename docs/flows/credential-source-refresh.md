@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-24
+last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
 ---
 
 # Credential source refresh Flow
@@ -11,9 +11,9 @@ last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 OCC registers an empty OAuth2 provider. The Refresh Driver requests a token;
 the gateway renews it before expiry. See [binding and withdrawal](credential-source-lifecycle.md).
 
-In [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
-the refresh grant; the Harness gets a placeholder and account metadata.
-Authorized discovery can retrieve an access token. These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
+Codex device login and renewal use the selected TokenService. See the
+[Credential source lifecycle](credential-source-lifecycle.md). These
+[Gateway OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
 The Token Service owns [GitHub issuance](#6-issue-and-renew-a-github-installation-token).
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
@@ -116,53 +116,9 @@ failure code. Otherwise OCC commits `ready` with audit.
 
 ### Device authorization and configuration
 
-`packages/occ/src/device-authorization-flow.ts:createDeviceAuthorizationFlow`
-`packages/occ/src/plugin-discovery.ts:withPluginDiscoveryCredential`
-
-OCC checks Agent authority and Namespace `credential_source:create` before registration
-and again before login. Audits `source_registering`, `source_ready`, and
-`session_pending` omit login material. Failed starts retain the source. The
-`device_authorization` row in `occ.authentication_states` stores the sealed challenge
-and provider handle, immutable binding, and versioned progress.
-
-`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` retains
-`start_unconfirmed` across navigation. Agent detail keeps Credentials open for
-replies unless another tab owns the draft. A `501` or unavailable type disables
-sign-in. Poll `403` pauses checks and shows the request ID. Retry uses the same handle.
-See [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
-
-`readSession` checks Agent authority, actor, Namespace, and saved Agent.
-Poll checks source `operate` before changes and after I/O. Scope mismatches audit
-`DEVICE_AUTHORIZATION_SCOPE_MISMATCH` and return `404` (`503` on audit failure).
-Version checks serialize polls and fence cancelled results. OCC rechecks both Drivers
-after I/O. Cancellation and expiry clear encrypted state.
-
-`apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
-sends start, poll, and exchange requests from API Pods to fixed `auth.openai.com`
-endpoints, refusing redirects. `DeviceAuthorizationStartError` classifies connection
-failures and timeouts as `unreachable`; HTTP rejection, malformed replies, and
-`AbortError` as `unavailable`. Both return `503 DEPENDENCY_UNAVAILABLE`; only
-`unreachable` names the host and API Pod egress. The `device_authorization.start_failed`
-warning records the Refresh boundary and failure class, excluding provider messages,
-response bodies, and nested causes.
-
-`apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
-performs the Codex exchange, configures OpenShell refresh material, and stores
-trusted account metadata. Before code acquisition, issuer `429`, `5xx`, or fetch
-connection failures return pending, retaining the handle and interval. An aborted
-initial poll, including OCC's internal timeout, or failure from code acquisition
-onward closes the session without replay. OpenShell owns future refresh and
-successor persistence. After handoff, polls read state: unfinished refresh
-stays pending; a persistent uncertain marker needs operator inspection. Ready confirms
-a usable token. Later versions attach the provider without reseeding credentials;
-account metadata changes require a new login and version.
-
-For plugin configuration, the Gateway reads ownership/account metadata with its
-Backend identity, then calls `GetProviderCredentials` over operator-TLS.
-OpenShell may refresh to keep five minutes remaining. Only access credentials enter
-the callback, which rechecks caller authority and saved-Agent binding/grant before
-provider I/O. Session closure or expiry keeps source-based discovery enabled.
-Cancellation or failed recheck cannot undo a started gateway refresh.
+The selected TokenService owns new Codex account login, token custody, and renewal.
+See the [Credential source lifecycle](credential-source-lifecycle.md#1-register-a-source)
+and [interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 
 ### 3. Background refresh
 
@@ -311,6 +267,8 @@ clears publication buffers on success/failure. Callers own detached reads; clear
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 10:41: Keep Gateway refresh behavior and link new Codex login to its TokenService owner. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:18: Link device login source. (authoring-run/6b146686-4bcb-4c54-9b42-4c9f0f8e7a15 - c77f4a6376b5412d0544e7dc69194877d755e2f7)

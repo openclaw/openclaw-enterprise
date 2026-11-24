@@ -154,9 +154,15 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preAgentNetworkProxyAdmission";
   }
   if (count === 92 && completedCount > 92) {
-    return "preTokenServiceCredentialSources";
+    return "preAgentRepositoryApiLimits";
   }
   if (count === 93 && completedCount > 93) {
+    return "preTokenServiceCredentialSources";
+  }
+  if (count === 94 && completedCount > 94) {
+    return "preCodexDeviceTokenService";
+  }
+  if (count === 95 && completedCount > 95) {
     return "prePluginCredentialDeployment";
   }
   if (count === completedCount) {

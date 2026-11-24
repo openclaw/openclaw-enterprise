@@ -2,6 +2,7 @@ import { registerManagedOpenShellStartupCases } from "./sandbox-driver-managed-s
 import {
   stagedManagedMcpPolicy,
   verifyStagedHarnessActivation,
+  verifyStagedCodexAccountProjection,
   verifyStagedModelPolicyObservation,
 } from "./sandbox-driver-staged-harness-cases.ts";
 import {
@@ -61,6 +62,11 @@ test("OpenShell qualifies and stages the managed MCP session and selected tool p
 test(
   "OpenShell adopts an idle Sandbox and activates with model and Google Provider placeholders",
   verifyStagedHarnessActivation,
+);
+
+test(
+  "OpenShell staged Codex launch carries a placeholder and trusted account context",
+  verifyStagedCodexAccountProjection,
 );
 
 registerManagedPluginPolicyCases(credentialGatewayOverProviders);

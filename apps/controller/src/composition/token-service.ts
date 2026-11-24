@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
 
 import type { InstallationSecretStore } from "@openclaw-enterprise/contracts";
-import type { OpenClawController, PlatformStateStore } from "@openclaw-enterprise/occ";
+import {
+  CredentialDeliveryFailedError,
+  type OpenClawController,
+  type PlatformStateStore,
+} from "@openclaw-enterprise/occ";
 
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
+import { refreshCodexOAuthGrant } from "../drivers/token-service/codex-device-authorization.ts";
 import type { InstallationRuntimeDrivers } from "./installation-config.ts";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -39,7 +44,6 @@ export async function installTokenServiceDriver(
   controller: OpenClawController,
   drivers: InstallationRuntimeDrivers | undefined,
   state: PlatformStateStore,
-  options: { bindSourceUpdatePlacement?: boolean } = {},
 ): Promise<void> {
   const selection = drivers?.installation.drivers.token_service;
   if (!selection || !drivers) {
@@ -56,7 +60,7 @@ export async function installTokenServiceDriver(
   );
   const instanceId = await controller.activateTokenServiceInstance(selection.id, storeIdentity);
   const delivery = drivers.credentialDeliveryRegistration?.require("credential_proxy_delivery");
-  const owner = new OCCTokenServiceDriver(
+  const owner: OCCTokenServiceDriver = new OCCTokenServiceDriver(
     selection.id,
     controller.installation.id,
     store,
@@ -67,11 +71,37 @@ export async function installTokenServiceDriver(
       state,
       drivers.secretDriver,
       controller.resolveConnectionClient.bind(controller),
+      refreshCodexOAuthGrant,
+      delivery === undefined
+        ? undefined
+        : async (ref, version, signal) => {
+            const sourceRef = {
+              kind: "credential_source" as const,
+              namespaceId: ref.namespaceId,
+              id: ref.sourceId,
+            };
+            try {
+              if (delivery.notifyCredentialUpdated === undefined) {
+                throw new Error("The selected Credential Proxy cannot deliver a renewal.");
+              }
+              await delivery.notifyCredentialUpdated(
+                { sourceRef, version },
+                () =>
+                  owner.resolveCredential(
+                    { sourceRef, tokenServiceInstanceId: instanceId },
+                    signal,
+                  ),
+                signal,
+              );
+            } catch {
+              throw new CredentialDeliveryFailedError();
+            }
+          },
     ),
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);
-  if (delivery !== undefined && options.bindSourceUpdatePlacement !== false) {
+  if (delivery !== undefined) {
     const [{ OpenShellCredentialProxyDriver }, { OpenShellCredentialDeliveryRefusedError }] =
       await Promise.all([
         import("../drivers/credential-proxy/openshell.ts"),
@@ -83,10 +113,20 @@ export async function installTokenServiceDriver(
         if (controller.selectedDriver("credential_proxy_delivery") !== delivery) {
           throw new OpenShellCredentialDeliveryRefusedError();
         }
-        const namespace = await state.read((view) =>
-          view.namespaces.findNamespace(sourceRef.namespaceId),
-        );
-        if (namespace?.status !== "ready") {
+        const { namespace, source } = await state.read(async (view) => ({
+          namespace: await view.namespaces.findNamespace(sourceRef.namespaceId),
+          source: await view.credentialSources.findCredentialSource(
+            sourceRef.namespaceId,
+            sourceRef.id,
+          ),
+        }));
+        if (
+          namespace?.status !== "ready" ||
+          source?.ownerCapability !== "token_service" ||
+          source.state !== "ready" ||
+          source.tokenServiceInstanceId !== instanceId ||
+          controller.selectedDriver("token_service") !== owner
+        ) {
           throw new OpenShellCredentialDeliveryRefusedError();
         }
         const compute = controller.selectedDriver("compute");

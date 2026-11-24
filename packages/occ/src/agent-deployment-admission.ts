@@ -19,7 +19,6 @@ import {
   assertExecutionReleaseAllowed,
   inferenceKeyDestination,
   isSourceProviderPresetId,
-  modelProviderRequestApproved,
   sandboxNetworkGrantsWithinCeiling,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   type Agent,
@@ -31,8 +30,8 @@ import {
   type ConfigurationDriver,
   type ConnectionTemplateVersion,
   type CredentialProxyDriver,
-  type StaticCredentialSource,
   type CredentialInjectionPolicy,
+  type CredentialSource,
   type DeploymentCredentialBinding,
   type DeploymentPolicy,
   type DeploymentRequestMatch,
@@ -130,11 +129,13 @@ export interface FirstDeploymentGuard {
     { readonly prepared: PreparedDeploymentChannels } | { readonly error: unknown };
 }
 
-/** A composition-owned, reviewed static credential profile for an explicitly selected model. */
+/** A composition-owned, reviewed credential profile for an explicitly selected model. */
 export interface ModelCredentialPreset {
   readonly providerId: string;
-  readonly provider: Pick<ModelProviderSettings, "baseUrl" | "protocol">;
-  readonly template: StaticKeyTemplateValues;
+  readonly provider?: Pick<ModelProviderSettings, "baseUrl" | "protocol">;
+  readonly destinations: StaticKeyTemplateValues["destinations"];
+  /** Qualified native executables when the preset limits the consumer identity. */
+  readonly binaries?: readonly string[];
   readonly projection: Extract<
     DeploymentCredentialBinding,
     { readonly consumer: { readonly kind: "model" } }
@@ -142,7 +143,7 @@ export interface ModelCredentialPreset {
 }
 
 interface PreparedModelCredentialDeployment {
-  readonly source: Readonly<StaticCredentialSource>;
+  readonly source: Readonly<CredentialSource>;
   readonly preset: ModelCredentialPreset;
   readonly owner: InstalledDriver;
   readonly proxy: CredentialProxyDriver;
@@ -273,15 +274,22 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     if (
       !isManagedTokenServiceSource(source) ||
       source.state !== "ready" ||
-      source.type !== "static" ||
       source.connectionTemplateId !== undefined ||
       source.tokenServiceInstanceId !== auth.tokenServiceInstanceId ||
       source.type !== auth.sourceType
     ) {
       throw new ScopeViolationError("The Harness credential source is unavailable.");
     }
-    const presetId = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
-    if (!isSourceProviderPresetId(presetId)) {
+    const presetId =
+      source.type === "static"
+        ? source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY]
+        : source.consent.kind === "builtin_codex"
+          ? source.consent.kind
+          : undefined;
+    if (
+      presetId === undefined ||
+      (source.type === "static" && !isSourceProviderPresetId(presetId))
+    ) {
       throw new ResourceStateConflictError(
         "The Harness credential source has no permitted model provider preset.",
       );
@@ -304,23 +312,27 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     { source, preset }: PreparedModelCredentialDeployment,
     networkGrants: readonly DeploymentRequestMatch[],
   ) {
-    const destination = inferenceKeyDestination(preset.provider.baseUrl, preset.provider.protocol);
-    const grants = networkGrants.filter(
-      (grant) =>
-        grant.host === destination.host &&
-        grant.ports.some(({ from, to }) => from <= destination.port && destination.port <= to),
-    );
-    if (grants.length !== 1) {
-      throw new ResourceStateConflictError(
-        "The staged model credential needs one exact, unambiguous network grant for its approved inference route.",
+    const requests: DeploymentRequestMatch[] = preset.destinations.map((destination) => {
+      const grants = networkGrants.filter(
+        (grant) =>
+          grant.host === destination.host &&
+          (preset.binaries === undefined || preset.binaries.includes(grant.binary)) &&
+          grant.ports.some(({ from, to }) => from <= destination.port && destination.port <= to),
       );
-    }
-    const request: DeploymentRequestMatch = {
-      binary: grants[0]!.binary,
-      host: destination.host,
-      ports: [{ from: destination.port, to: destination.port }],
-      requestPolicy: { type: "http", method: destination.method, path: destination.path },
-    };
+      if (grants.length !== 1 || destination.path.includes("*")) {
+        throw new ResourceStateConflictError(
+          preset.destinations.length === 1
+            ? "The staged model credential needs one exact, unambiguous network grant for its approved inference route."
+            : "The staged model credential needs one exact, unambiguous network grant for each approved request.",
+        );
+      }
+      return {
+        binary: grants[0]!.binary,
+        host: destination.host,
+        ports: [{ from: destination.port, to: destination.port }],
+        requestPolicy: { type: "http", method: destination.method, path: destination.path },
+      };
+    });
     const binding: DeploymentCredentialBinding = {
       bindingRef: "model",
       sourceRef: credentialSourceRef(source),
@@ -329,9 +341,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     };
     let approved: boolean;
     try {
-      approved =
-        modelProviderRequestApproved(preset.provider, preset.template) &&
-        sandboxNetworkGrantsWithinCeiling([request], networkGrants);
+      approved = sandboxNetworkGrantsWithinCeiling(requests, networkGrants);
     } catch {
       approved = false;
     }
@@ -342,7 +352,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     }
     return {
       binding,
-      injectionPolicy: { bindingRef: binding.bindingRef, allowedRequests: [request] },
+      injectionPolicy: { bindingRef: binding.bindingRef, allowedRequests: requests },
     };
   }
 
@@ -672,6 +682,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           principalId,
           namespace.id,
           agent.id,
+          input.expectedRepositoryPolicyVersion,
         );
         if (!preview) {
           await dependencies.provisioningWorker.guardAgentProvisioning(
@@ -766,6 +777,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         principalId,
         namespace.id,
         lockedAgent.id,
+        input.expectedRepositoryPolicyVersion,
       );
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
@@ -896,24 +908,33 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           ) ?? {},
       });
       if (stagedModel !== undefined) {
-        const resolvedProvider = asRecord(revisionHarness.configuration?.modelProvider);
         let matches: boolean;
-        try {
-          matches =
-            resolvedProvider?.protocol === stagedModel.preset.provider.protocol &&
-            typeof resolvedProvider.baseUrl === "string" &&
-            isDeepStrictEqual(
-              inferenceKeyDestination(
-                resolvedProvider.baseUrl,
-                stagedModel.preset.provider.protocol,
-              ),
-              inferenceKeyDestination(
-                stagedModel.preset.provider.baseUrl,
-                stagedModel.preset.provider.protocol,
-              ),
-            );
-        } catch {
-          matches = false;
+        if (
+          stagedModel.source.type === "oauth2-refresh-token" &&
+          stagedModel.source.consent.kind === "builtin_codex"
+        ) {
+          // Built-in account destinations come from the fixed server-owned preset.
+          matches = !Object.hasOwn(revisionHarness.configuration ?? {}, "modelProvider");
+        } else {
+          const resolvedProvider = asRecord(revisionHarness.configuration?.modelProvider);
+          try {
+            matches =
+              stagedModel.preset.provider !== undefined &&
+              resolvedProvider?.protocol === stagedModel.preset.provider.protocol &&
+              typeof resolvedProvider.baseUrl === "string" &&
+              isDeepStrictEqual(
+                inferenceKeyDestination(
+                  resolvedProvider.baseUrl,
+                  stagedModel.preset.provider.protocol,
+                ),
+                inferenceKeyDestination(
+                  stagedModel.preset.provider.baseUrl,
+                  stagedModel.preset.provider.protocol,
+                ),
+              );
+          } catch {
+            matches = false;
+          }
         }
         if (!matches) {
           throw new ResourceStateConflictError(
@@ -1105,6 +1126,16 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
             )
           : undefined;
       const egressPlan = proxyAdmission?.plan;
+      if (
+        (admittedRepository?.requiresNetworkPolicy ||
+          policy?.repositoryNetworkPolicy?.some((grant) => grant.apiLimits)) &&
+        (!policy?.repositoryNetworkPolicy ||
+          egressPlan?.repositoryGitAuthorization !== "network-policy")
+      ) {
+        throw new ResourceStateConflictError(
+          "Repository restrictions require a saved native repository network policy.",
+        );
+      }
       const executionAdmission: ExecutionAdmission =
         credentialDeployment === undefined
           ? executionAdmissionFor(egressPlan)
@@ -1137,7 +1168,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           ? bindProtectedRepositoryPolicySandbox(compute, sandbox)
           : undefined;
       if (protectedSandbox) {
-        assertSelectedRepositoryGrants(repositoryGrants, admittedRepository?.selectedGrants);
+        assertSelectedRepositoryGrants(repositoryGrants, admittedRepository?.resolution);
       }
       const sandboxSnapshot = await dependencies.sandboxPolicy.admitDeploymentSnapshot(
         policy,
@@ -1235,7 +1266,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         }
         if (protectedSandbox && admittedRepository) {
           const current = admitRepository();
-          assertSelectedRepositoryGrants(repositoryGrants, current?.selectedGrants);
+          assertSelectedRepositoryGrants(repositoryGrants, current?.resolution);
           if (!isDeepStrictEqual(current?.credentials, admittedRepository.credentials)) {
             throw new ResourceStateConflictError(
               "The selected repository credentials changed during deployment.",

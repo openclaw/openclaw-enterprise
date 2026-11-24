@@ -3752,10 +3752,25 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       new Set(projections.map(({ bindingRef }) => bindingRef)).size !== projections.length ||
       projections.some((projection) => {
         const binding = bindings.find(({ bindingRef }) => bindingRef === projection.bindingRef);
+        const auth = context.revision.harnessAuth;
+        const accountRequired =
+          binding?.consumer.kind === "model" &&
+          auth.method === "credential_source" &&
+          auth.tokenServiceInstanceId !== undefined &&
+          auth.sourceType === "oauth2-refresh-token" &&
+          binding.sourceRef.id === auth.sourceId;
+        const account = projection.account;
         return (
           binding === undefined ||
           binding.projection.environment !== projection.environment ||
           !/^[A-Z][A-Z0-9_]*$/.test(projection.environment) ||
+          (accountRequired
+            ? projection.environment !== "CODEX_ACCESS_TOKEN" ||
+              account === undefined ||
+              !isNonEmptyString(account.accountId) ||
+              !isNonEmptyString(account.planType) ||
+              typeof account.isFedramp !== "boolean"
+            : account !== undefined) ||
           (projection.placeholder.kind === "proxy" &&
             !isNonEmptyString(projection.placeholder.value))
         );

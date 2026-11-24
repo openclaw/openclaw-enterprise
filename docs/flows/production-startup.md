@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-23"
-last_updated_session: "authoring-run/07352eb0-f0e9-4aa3-bbe2-6be9c96a1476"
+updated: 2026-11-24
+last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
 ---
 
 # Production Startup Flow
@@ -251,28 +251,19 @@ With `database.caSecretName`, `_helpers.tpl` rejects CA paths that would mask
 active client mounts. It normalizes relative paths, dot segments, and trailing
 slashes for comparison and emits accepted paths as supplied.
 
-The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
-selects only `api`, `worker`, and `initialization` Pods with the release identity.
-It allows DNS, database egress to every `database.cidrs` host, and
-Kubernetes API egress to every `cluster.cidrs` host. Collectors use their separate
-DNS, API, and exporter policy; unknown or missing component labels retain
-default-deny. Pre-install initialization has only its hook DNS/database grants.
-Destinations must be explicit IPv4 `/32` hosts; refresh them when managed
-endpoint addresses change. Chart ports take no leading zeros: `0443` fails.
-
-`deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml` renders separate
-API-only TCP 443 policies for `api.modelDiscoveryCidrs` and
-`api.pluginDiscoveryCidrs`. Each accepts explicit IPv4 `/32` hosts and defaults to
-no egress. Operators maintain addresses for
-[model discovery](../reference/console/create-and-deploy.md#create-an-agent) and
-[MCP tool discovery](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin)
-independently. Console model selection and Harness egress do not depend on these policies.
+The [control-plane NetworkPolicies](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
+keep release ingress restricted. The release-wide default deny selects API and
+worker Pods, but Kubernetes combines selected egress grants: a policy for
+components `api` and `worker` allows unrestricted egress. Initialization has a
+separate DNS, database, and Kubernetes API grant. Agent, Sandbox, collector, and
+proxy Pods do not receive the control-plane grant. Pre-install initialization
+retains its hook DNS and database grants.
 
 Managed channel egress uses one installation configuration for the reserved
-OCC provider listener and per-Agent listener allocation. Helm grants the API
-only its reserved port and the worker only configuration inspection. Startup
-records unavailable egress as a warning; channel operations fail closed while
-OCC stays available. See [channel egress](channel-egress.md).
+OCC provider listener and per-Agent listener allocation. The listener fleet
+restricts ingress to its authorized callers. Startup records an unavailable
+listener as a warning; channel operations fail closed while OCC stays available.
+See [channel egress](channel-egress.md).
 
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Below the supported 1.35 baseline, the API logs
@@ -347,8 +338,9 @@ The shell initializes the missing annotation, patches with UID and
 - For `KUBERNETES_VERSION_BELOW_MINIMUM`, upgrade Kubernetes to 1.35 or later.
 - `startup-error` or `worker.startup-error` with code
   `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
-  `host` and `port`. Check `cluster.cidrs` and `cluster.port`; restarted
-  clusters can move it.
+  `host` and `port`. Check the server endpoint and connectivity from the
+  affected Pod; restarted clusters can move it. Helm `cluster.cidrs` and
+  `cluster.port` restrict initialization egress only.
 - Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
 - `DRIVER_CONFIGURATION_INVALID`: inspect `details` (JSON Pointer, code, message).
   `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
@@ -382,6 +374,8 @@ The shell initializes the missing annotation, patches with UID and
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 10:41: Trace unrestricted API and refresh Worker egress while preserving initialization isolation. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 
 - 2026-11-23: Bound scrapes.
 

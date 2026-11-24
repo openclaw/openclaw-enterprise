@@ -15,14 +15,7 @@ const oauthKeys = [
   "sessionId",
   "redirectUri",
 ] as const;
-const deviceKeys = [
-  "agentId",
-  "harnessId",
-  "credentialGatewayId",
-  "credentialRefreshId",
-  "sourceId",
-  "intervalSeconds",
-] as const;
+const deviceKeys = ["agentId", "harnessId", "tokenServiceInstanceId", "intervalSeconds"] as const;
 type OAuthBinding = Pick<OAuthAuthenticationState, (typeof oauthKeys)[number]>;
 type DeviceBinding = Pick<DeviceAuthenticationState, (typeof deviceKeys)[number]>;
 type CommonRow = { id: string; namespace_id: string; actor_id: string; expires_at: Date };
@@ -34,6 +27,7 @@ type OAuthRow = CommonRow & {
 };
 type DeviceRow = CommonRow & {
   binding: DeviceBinding;
+  credential_source_id: string | null;
   phase: DeviceAuthenticationState["phase"];
   next_poll_at: Date;
   encrypted_challenge: string | null;
@@ -66,6 +60,7 @@ function deviceFromRow(row: DeviceRow): DeviceAuthenticationState {
     ...common(row),
     ...row.binding,
     kind: "device_authorization",
+    ...(row.credential_source_id === null ? {} : { sourceId: row.credential_source_id }),
     phase: row.phase,
     nextPollAt: row.next_poll_at.toISOString(),
     ...(row.encrypted_challenge === null ? {} : { encryptedChallenge: row.encrypted_challenge }),
@@ -130,9 +125,10 @@ export function postgresAuthenticationStates(
     replaceDevice: async (namespaceId, id, version, changes) => {
       const result = await client.query(
         `UPDATE occ.authentication_states SET version = version + 1, expires_at = $4,
-        phase = $5, next_poll_at = $6, encrypted_challenge = $7, private_state = $8
+        phase = $5, next_poll_at = $6, encrypted_challenge = $7, private_state = $8,
+        credential_source_id = $9
         WHERE kind = 'device_authorization' AND namespace_id = $1 AND id = $2 AND version = $3`,
-        [namespaceId, id, version, changes.expiresAt, ...progress(changes)],
+        [namespaceId, id, version, changes.expiresAt, ...progress(changes), changes.sourceId],
       );
       return result.rowCount === 1;
     },
@@ -149,7 +145,7 @@ export function postgresAuthenticationStates(
         `WITH expired AS (
           SELECT id FROM occ.authentication_states WHERE kind = 'device_authorization' AND expires_at <= $1 AND phase <> 'cancelled'
           ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED
-        ) UPDATE occ.authentication_states d SET version = d.version + 1, phase = 'cancelled', private_state = NULL, encrypted_challenge = NULL
+        ) UPDATE occ.authentication_states d SET version = d.version + 1, phase = 'cancelled', private_state = NULL, encrypted_challenge = NULL, credential_source_id = NULL
         FROM expired WHERE d.kind = 'device_authorization' AND d.id = expired.id`,
         [at, limit],
       );

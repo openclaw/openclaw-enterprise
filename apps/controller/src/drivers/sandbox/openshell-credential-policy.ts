@@ -405,7 +405,7 @@ export function compileOpenShellCredentialPolicy(
       ) {
         continue;
       }
-      // The established model route replaces its saved L4 grant with one approved inference request.
+      // Model routes replace their saved L4 grant with approved requests from that same binding.
       // New credential-free grants must not be silently narrowed by that replacement mechanism.
       const model = credentialRoutes.find(
         (candidate) =>
@@ -416,7 +416,8 @@ export function compileOpenShellCredentialPolicy(
       );
       if (
         !model ||
-        (route !== model && route.binary === grant.binary) ||
+        (route.binary === grant.binary &&
+          (!("binding" in route) || route.binding.bindingRef !== model.binding.bindingRef)) ||
         policy.networkAccessPolicy.allowed.filter(
           (candidate) =>
             candidate.requestPolicy === undefined &&

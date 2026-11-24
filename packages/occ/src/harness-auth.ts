@@ -256,7 +256,10 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
     }
     if (isManagedTokenServiceSource(source)) {
       dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
-      if (source.type !== "static") {
+      if (
+        source.type !== "static" &&
+        (source.type !== "oauth2-refresh-token" || source.consent.kind !== "builtin_codex")
+      ) {
         throw new ResourceStateConflictError(
           "This TokenService source cannot authenticate a staged model deployment.",
         );

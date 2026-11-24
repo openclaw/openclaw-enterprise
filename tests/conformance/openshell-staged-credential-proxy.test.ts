@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { resolveModelCredentialPreset } from "../../apps/controller/src/composition/model-credential-presets.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
@@ -959,6 +960,72 @@ test("staged OpenShell Proxy accepts OCC TokenService and reuses its Provider wi
   assert.equal(f.state.creates.length, 1);
   assert.equal(f.state.attaches.length, 1);
   assert.equal(f.state.updates.length, 0);
+});
+
+test("native Proxy prepares one Codex account Provider for the three fixed model requests", async (t) => {
+  const f = await fixture(t);
+  const preset = resolveModelCredentialPreset({
+    presetId: "builtin_codex",
+    configuration: { agents: { defaults: { model: "codex/model-fixture" } } },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+  });
+  assert.ok(preset);
+  const executable =
+    "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex";
+  assert.ok(preset.binaries?.includes(executable));
+  assert.deepEqual(
+    preset.destinations.map(({ method, host, port, path }) => [method, host, port, path]),
+    [
+      ["POST", "chatgpt.com", 443, "/backend-api/codex/responses"],
+      ["GET", "chatgpt.com", 443, "/backend-api/wham/accounts/check"],
+      ["GET", "chatgpt.com", 443, "/backend-api/wham/config/bundle"],
+    ],
+  );
+  const codexBinding = {
+    ...binding,
+    consumer: { kind: "model" as const, providerId: preset.providerId },
+    projection: preset.projection,
+  };
+  const grant = {
+    binary: executable,
+    host: "chatgpt.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const requests = preset.destinations.map(({ method, path }) => ({
+    ...grant,
+    requestPolicy: { type: "http" as const, method, path },
+  }));
+  const policies = [{ bindingRef: "model", allowedRequests: requests }];
+  const context: CredentialDeploymentContext = {
+    ...f.context,
+    revision: {
+      ...f.context.revision,
+      harnessAuth: {
+        method: "credential_source",
+        sourceId: binding.sourceRef.id,
+        sourceType: "oauth2-refresh-token",
+        tokenServiceInstanceId: "tokens",
+      },
+      credentialDeployment: {
+        ...f.context.revision.credentialDeployment!,
+        networkAccessPolicy: { allowed: [grant] },
+        bindings: [codexBinding],
+        injectionPolicies: policies,
+      },
+    },
+  };
+  const result = await f.proxy.configureDeployment(context, {
+    ...configuration,
+    injectionPolicies: policies,
+    bindings: [{ binding: codexBinding, resolveCredential: f.suppliedBinding.resolveCredential }],
+  });
+  assert.deepEqual(result.credentialProjections, [
+    { bindingRef: "model", environment: "CODEX_ACCESS_TOKEN", placeholder: { kind: "runtime" } },
+  ]);
+  assert.equal(f.state.creates.length, 1);
+  assert.deepEqual(record(f.state.creates[0]?.provider).credentials, {
+    CODEX_ACCESS_TOKEN: "synthetic-material",
+  });
 });
 
 test("native Proxy delivers a managed Slack MCP binding and rejects broadened policy readback", async (t) => {

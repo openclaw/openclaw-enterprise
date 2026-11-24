@@ -1,5 +1,6 @@
 import { pluginOwner } from "./agent-plugin-validation.ts";
 import { credentialGatewayOperation } from "./credential-source-drivers.ts";
+import { driverOperation } from "./driver-operation.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   isSecretHarnessAuth,
@@ -19,6 +20,7 @@ import {
   type RevisionHarnessDescriptor,
   type SecretDriver,
   type SecretReference,
+  type TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-harness.ts";
@@ -78,6 +80,7 @@ interface PluginDiscoveryDependencies {
         readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
       }
     | undefined;
+  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
   readonly secretDriver: (driverId: string) => SecretDriver;
   readonly readConfiguration: (
     metadata: ConfigurationOwnership,
@@ -312,6 +315,72 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     const discover = prepareDiscovery(driver);
     const recheck = () => validateCurrent(driver, source);
     if (credentialSource !== undefined) {
+      const selected = await read(async (state) => {
+        const namespace = await exactNamespace(state, namespaceId);
+        const found = await state.credentialSources.findCredentialSource(
+          namespaceId,
+          credentialSource.id,
+        );
+        if (namespace.status !== "ready" || found?.state !== "ready") {
+          throw new ResourceStateConflictError(
+            "The credential source is unavailable. Connect again.",
+          );
+        }
+        return found;
+      });
+      if (selected.ownerCapability === "token_service") {
+        if (selected.type !== "oauth2-refresh-token" || selected.consent.kind !== "builtin_codex") {
+          throw new ResourceStateConflictError(
+            "Choose a signed-in account Source for this catalog.",
+          );
+        }
+        const owner = dependencies.ownedTokenServiceDriver(selected.tokenServiceInstanceId);
+        const account = selected.consent.account;
+        const deadline = AbortSignal.timeout(30_000);
+        const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+        return invokePluginDiscovery(
+          driver,
+          discover,
+          async (invoke) => {
+            const resolved = await driverOperation(
+              () =>
+                owner.resolveCredential(
+                  {
+                    sourceRef: credentialSource,
+                    tokenServiceInstanceId: selected.tokenServiceInstanceId,
+                  },
+                  requestSignal,
+                ),
+              "TokenService",
+            );
+            return invoke({
+              accessToken: resolved.credential,
+              accountId: account.accountId,
+              isFedramp: account.isFedramp,
+            });
+          },
+          async () => {
+            await recheck();
+            const current = await read((state) =>
+              state.credentialSources.findCredentialSource(namespaceId, credentialSource.id),
+            );
+            if (
+              current?.state !== "ready" ||
+              current.ownerCapability !== "token_service" ||
+              current.type !== "oauth2-refresh-token" ||
+              current.consent.kind !== "builtin_codex" ||
+              current.tokenServiceInstanceId !== selected.tokenServiceInstanceId ||
+              !isDeepStrictEqual(current.consent.account, account) ||
+              dependencies.ownedTokenServiceDriver(current.tokenServiceInstanceId) !== owner
+            ) {
+              throw new ResourceStateConflictError(
+                "The account Source changed. Refresh and retry.",
+              );
+            }
+          },
+          signal,
+        );
+      }
       const { gateway, context } = await dependencies.authorizedCredentialSource(
         principalId,
         namespaceId,
@@ -757,25 +826,37 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             "Saved plugin discovery requires a dedicated Agent.",
           );
         }
-        if (credentialSource !== undefined || target.driver.discoveryCredential === "none") {
+        if (credentialSource === undefined && target.driver.discoveryCredential === "none") {
           return {
             ...target,
             source: undefined,
-            credential: credentialSource ? { credentialSource } : {},
+            credential: {},
           };
         }
         const binding = harnessAuthBinding(agent.harnessAuth);
-        if (binding?.method === "credential_source") {
-          const reference = {
-            kind: "credential_source" as const,
-            namespaceId,
-            id: binding.sourceId,
-          };
+        const reference =
+          credentialSource ??
+          (binding?.method === "credential_source"
+            ? { kind: "credential_source" as const, namespaceId, id: binding.sourceId }
+            : undefined);
+        if (reference !== undefined) {
+          if (reference.namespaceId !== namespaceId) {
+            throw new SecretBindingValidationError(
+              "Credential-source references must identify the exact Namespace.",
+            );
+          }
           await authorize(principalId, "operate", reference);
+          if (
+            credentialSource !== undefined &&
+            !(binding?.method === "credential_source" && binding.sourceId === reference.id) &&
+            !agent.credentialSources?.some(({ sourceId }) => sourceId === reference.id)
+          ) {
+            throw new ResourceStateConflictError("Choose a credential source bound to this Agent.");
+          }
           await authorize(agent.servicePrincipalId, "operate", reference);
           const source = await state.credentialSources.findCredentialSource(
             namespaceId,
-            binding.sourceId,
+            reference.id,
           );
           if (source?.state !== "ready") {
             throw new ScopeViolationError("The Agent's plugin credential source is unavailable.");

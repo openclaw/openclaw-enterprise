@@ -28,12 +28,17 @@ user-visible behavior.
 graph TD
   A["Create Agent form"] --> B["Plugins, model, and repository choices"]
   B -->|repository access required and missing| H["Explain the requirement before provisioning"]
-  B -->|supported Dedicated| C["Queue provisioning with inline Configuration"]
+  B -->|Gateway model Secret| K["Validate and register the Secret with Credential Gateway"]
+  K --> P["Prepare Agent request with the selected credential"]
+  B -->|other authentication| P
+  P -->|eligible for guided provisioning| C["Queue provisioning with inline Configuration"]
   C --> D["Worker creates resources, grants and first deployment"]
-  B -->|Credential Source draft| S["Validate, then register the static Source"]
-  S --> E["POST Configuration and Agent"]
-  B -->|ordinary draft| E
-  E --> F["Grant Agent use of selected Secrets"]
+  P -->|member, per-repository access, or other draft| E["Save Configuration and Agent draft"]
+  B -->|direct static Source| S["Validate and register the static Source with TokenService"]
+  S --> E
+  E -->|GitHub access per repository| I["Confirm saved GitHub grants"]
+  I --> F
+  E -->|no per-repository policy| F["Grant Agent access when needed"]
   F -->|failed| G["Retry credential access"]
 ```
 
@@ -142,17 +147,19 @@ follow the [protected admission flow](../credential-source-egress.md#1-admit-sou
 
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
-Supported Dedicated runtimes submit inline Configuration, optional repository
-access, and Secret references to [provisioning](../agent-provisioning.md), even after
-a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. The worker reauthorizes, creates resources
-and exact Secret grants, and deploys; Console polls and opens the saved version.
-For a Dedicated OpenAI API key, **Credential storage** defaults to **Credential Source**.
-The form first validates the Agent, then posts `{type: "static", secret: {opaque: key},
-config: {provider_preset: "openai"}}` to the Namespace's `credential-sources` collection.
-TokenService creates the ready Source. Console clears the key, saves the Agent draft with
-that Source ID, and opens the draft. Guided provisioning does not yet admit managed Sources.
-Where the form cannot follow a placement
-refusal's advice to select Embedded OpenClaw, it shows only the missing setting.
+[Per-repository access](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
+defaults selected repositories to their delegated limits. The API saves the Agent
+draft and grants in one transaction. Console confirms the grants before granting
+credential access. Deployment refuses stale policy versions with HTTP 409.
+
+Otherwise, eligible Dedicated runtimes can [provision](../agent-provisioning.md)
+with inline Configuration, optional repository access, and Secret references.
+When the Credential Gateway offers the selected login method, Console registers
+the model Secret and binds the returned Source ID in the draft or provisioning
+request. Namespace members can enroll from their Agent capabilities and save a draft.
+With **Credential Source** storage, Console validates the Agent, then submits the
+OpenAI API key to TokenService through the Namespace's `credential-sources` collection.
+Console clears the key and opens a draft that binds the returned static Source ID.
 
 The Installation capabilities do not show whether the Compute Driver supplies a Preset's
 operator-managed (`runtime`) binding. When the capabilities are read, `checkRuntimeBinding` sends

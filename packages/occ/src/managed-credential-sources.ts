@@ -660,19 +660,17 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
           throw new ResourceStateConflictError("Source retirement requires audit evidence.");
         }
         ownedTokenServiceDriver(source.tokenServiceInstanceId);
-        if (source.type === "static") {
-          const blocking = await state.credentialSources.findBlockingReference(
-            namespaceId,
-            source.id,
+        const blocking = await state.credentialSources.findBlockingReference(
+          namespaceId,
+          source.id,
+        );
+        if (blocking === "reference") {
+          throw new ResourceStateConflictError(
+            "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
           );
-          if (blocking === "reference") {
-            throw new ResourceStateConflictError(
-              "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
-            );
-          }
-          if (blocking === "withdrawal_work") {
-            throw new CredentialWithdrawalInProgressError();
-          }
+        }
+        if (blocking === "withdrawal_work") {
+          throw new CredentialWithdrawalInProgressError();
         }
         if (
           source.connectionTemplateId !== undefined &&

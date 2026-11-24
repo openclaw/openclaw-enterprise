@@ -51,7 +51,6 @@ const repositoryCredentialValues = {
   "repositoryCredentials.appKeySecretName": "repository-app-key",
   "repositoryCredentials.tlsSecretName": "repository-tls",
   "repositoryCredentials.publicCaSecretName": "repository-public-ca",
-  "repositoryCredentials.upstreamCidrs[0]": "198.51.100.0/24",
   "repositoryCredentials.serviceName": "git",
 };
 const themeValues = { "api.consoleTheme.configMapName": "console-theme-v2" };
@@ -69,7 +68,6 @@ const preparedGitHubValues = {
     "openshell-system",
   "egressAuthority.clients[0].podSelector.matchLabels.app": "openshell-gateway",
   "preparedGitHub.custodySecretName": "prepared-github-custody",
-  "preparedGitHub.issuerCidrs[0]": "192.0.2.3/32",
 };
 const issuerCaValues = {
   ...preparedGitHubValues,

@@ -127,7 +127,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       signal: AbortSignal,
     ) => Promise<Readonly<Namespace>>,
   ): void {
-    this.sourceNamespaceResolver = resolve;
+    this.sourceNamespaceResolver ??= resolve;
   }
 
   async notifyCredentialUpdated(

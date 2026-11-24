@@ -1748,9 +1748,7 @@ export class ControllerWorker {
       }
     }
     provisioning.installPluginDrivers(this.pluginDrivers);
-    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers, this.state, {
-      bindSourceUpdatePlacement: false,
-    });
+    await installTokenServiceDriver(provisioning, this.tokenServiceDrivers, this.state);
     this.provisioningController = provisioning;
     const compute = this.compute;
     if (typeof compute.preflight === "function") {
@@ -6252,6 +6250,23 @@ export class ControllerWorker {
       ) {
         throw new DependencyUnavailableError("The staged source is unavailable or withdrawn.");
       }
+      if (source.type === "oauth2-refresh-token") {
+        const custody = await this.state.read((view) =>
+          view.oauthCredentials.findTokenCustody(revision.namespaceId, source.id),
+        );
+        if (!custody) {
+          throw new DependencyUnavailableError("The staged OAuth grant is unavailable.");
+        }
+        if (custody.due) {
+          const status = await this.provisioningController.maintainConnectionToken(
+            revision.namespaceId,
+            source.id,
+          );
+          if (status.state !== "ready") {
+            throw new DependencyUnavailableError("The staged OAuth grant is not ready.");
+          }
+        }
+      }
       sources.set(source.id, source);
     }
     signal.throwIfAborted();
@@ -6343,29 +6358,42 @@ export class ControllerWorker {
       ) {
         throw new DependencyUnavailableError("The Credential Proxy returned invalid projections.");
       }
-      const expectedEnvironments = new Map(
-        current.bindings.map(({ bindingRef, projection }) => [bindingRef, projection.environment]),
+      const expectedBindings = new Map(
+        current.bindings.map((binding) => [binding.bindingRef, binding]),
       );
       const credentialProjections: CredentialProjection[] = result.credentialProjections.map(
         (projection) => {
+          const binding = projection && expectedBindings.get(projection.bindingRef);
           if (
-            !projection ||
-            typeof projection.bindingRef !== "string" ||
-            typeof projection.environment !== "string" ||
-            expectedEnvironments.get(projection.bindingRef) !== projection.environment ||
+            !binding ||
+            binding.projection.environment !== projection.environment ||
             !projection.placeholder
           ) {
             throw new DependencyUnavailableError(
               "The Credential Proxy returned an invalid projection.",
             );
           }
-          expectedEnvironments.delete(projection.bindingRef);
+          expectedBindings.delete(binding.bindingRef);
+          const source = current.sources.get(binding.sourceRef.id);
+          if (!source) {
+            throw new DependencyUnavailableError(
+              "The Credential Proxy returned an unknown binding.",
+            );
+          }
+          const account =
+            binding.consumer.kind === "model" &&
+            source.ownerCapability === "token_service" &&
+            source.type === "oauth2-refresh-token" &&
+            source.consent.kind === "builtin_codex"
+              ? source.consent.account
+              : undefined;
           const placeholder = projection.placeholder;
           if (placeholder.kind === "runtime") {
             return {
               bindingRef: projection.bindingRef,
               environment: projection.environment,
               placeholder: { kind: "runtime" },
+              ...(account === undefined ? {} : { account }),
             };
           }
           if (placeholder.kind === "proxy" && typeof placeholder.value === "string") {
@@ -6373,6 +6401,7 @@ export class ControllerWorker {
               bindingRef: projection.bindingRef,
               environment: projection.environment,
               placeholder: { kind: "proxy", value: placeholder.value },
+              ...(account === undefined ? {} : { account }),
             };
           }
           throw new DependencyUnavailableError(
