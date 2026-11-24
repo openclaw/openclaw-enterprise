@@ -17037,6 +17037,30 @@
                     "maxItems": 16,
                     "type": "array"
                   },
+                  "repositoryNetworkPolicy": {
+                    "description": "Save the initial GitHub grants on this draft atomically. Requires permission to enable editing, save and read the Agent networking policy. Omit for ordinary profile access.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "access": {
+                          "anyOf": [
+                            { "const": "read", "type": "string" },
+                            { "const": "write", "type": "string" }
+                          ]
+                        },
+                        "repository": {
+                          "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                          "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                          "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["repository", "access"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  },
                   "workspaceDefaultsId": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
                 },
                 "required": ["name", "configurationId"],
@@ -20412,6 +20436,26 @@
                             "minLength": 1,
                             "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
                             "type": "string"
+                          },
+                          "githubAccess": {
+                            "additionalProperties": false,
+                            "description": "Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions.",
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
                           },
                           "repositoryRef": {
                             "maxLength": 128,
@@ -23818,6 +23862,13 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "expectedRepositoryPolicyVersion": {
+                    "anyOf": [
+                      { "maximum": 2147483647, "minimum": 1, "type": "integer" },
+                      { "type": "null" }
+                    ],
+                    "description": "Send the reviewed networking policy version to require a saved repository policy at that version. Send null to require no saved repository policy. Omit to skip this check. A version or a saved repository policy requires SandboxPolicy read. An authorized mismatch returns HTTP 409."
+                  },
                   "harnessOverrides": {
                     "additionalProperties": {},
                     "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
@@ -30661,6 +30712,26 @@
                             "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
                             "type": "string"
                           },
+                          "githubAccess": {
+                            "additionalProperties": false,
+                            "description": "Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions.",
+                            "properties": {
+                              "access": {
+                                "anyOf": [
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "repository": {
+                                "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
+                                "not": { "pattern": "\\.git$|\\s", "type": "string" },
+                                "pattern": "^[a-z0-9][a-z0-9-]{0,38}\\/[a-z0-9][a-z0-9._-]{0,99}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repository", "access"],
+                            "type": "object"
+                          },
                           "repositoryRef": {
                             "maxLength": 128,
                             "minLength": 1,
@@ -32956,56 +33027,28 @@
                                       { "const": "write", "type": "string" }
                                     ]
                                   },
-                                  "apiActions": {
-                                    "anyOf": [
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "allow": {
-                                            "items": {
-                                              "anyOf": [
-                                                { "const": "issues:read", "type": "string" },
-                                                { "const": "issues:create", "type": "string" },
-                                                { "const": "pull_requests:read", "type": "string" },
-                                                {
-                                                  "const": "pull_requests:create",
-                                                  "type": "string"
-                                                }
-                                              ]
-                                            },
-                                            "maxItems": 4,
-                                            "type": "array",
-                                            "uniqueItems": true
-                                          }
-                                        },
-                                        "required": ["allow"],
-                                        "type": "object"
+                                  "apiLimits": {
+                                    "additionalProperties": false,
+                                    "description": "Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply.",
+                                    "minProperties": 1,
+                                    "properties": {
+                                      "default": { "const": "none", "type": "string" },
+                                      "issues": {
+                                        "anyOf": [
+                                          { "const": "none", "type": "string" },
+                                          { "const": "read", "type": "string" },
+                                          { "const": "write", "type": "string" }
+                                        ]
                                       },
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "deny": {
-                                            "items": {
-                                              "anyOf": [
-                                                { "const": "issues:read", "type": "string" },
-                                                { "const": "issues:create", "type": "string" },
-                                                { "const": "pull_requests:read", "type": "string" },
-                                                {
-                                                  "const": "pull_requests:create",
-                                                  "type": "string"
-                                                }
-                                              ]
-                                            },
-                                            "maxItems": 4,
-                                            "type": "array",
-                                            "uniqueItems": true
-                                          }
-                                        },
-                                        "required": ["deny"],
-                                        "type": "object"
+                                      "pull_requests": {
+                                        "anyOf": [
+                                          { "const": "none", "type": "string" },
+                                          { "const": "read", "type": "string" },
+                                          { "const": "write", "type": "string" }
+                                        ]
                                       }
-                                    ],
-                                    "description": "Narrow the native API actions on this Agent's repository. Empty allow removes all optional actions. Empty deny is saved as omission. Redeploy to apply."
+                                    },
+                                    "type": "object"
                                   },
                                   "repository": {
                                     "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
@@ -33029,8 +33072,8 @@
                           "anyOf": [{ "type": "boolean" }, { "type": "null" }],
                           "description": "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone."
                         },
-                        "repositoryApiActionFilters": {
-                          "description": "Selected repositories eligible for action filters and the maximum access and actions permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy.",
+                        "repositoryApiMaxima": {
+                          "description": "Selected repositories eligible for API limits and the maximum Git and API levels permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy.",
                           "items": {
                             "additionalProperties": false,
                             "properties": {
@@ -33040,18 +33083,19 @@
                                   { "const": "write", "type": "string" }
                                 ]
                               },
-                              "available": {
-                                "items": {
-                                  "anyOf": [
-                                    { "const": "issues:read", "type": "string" },
-                                    { "const": "issues:create", "type": "string" },
-                                    { "const": "pull_requests:read", "type": "string" },
-                                    { "const": "pull_requests:create", "type": "string" }
-                                  ]
-                                },
-                                "maxItems": 4,
-                                "type": "array",
-                                "uniqueItems": true
+                              "issues": {
+                                "anyOf": [
+                                  { "const": "none", "type": "string" },
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
+                              },
+                              "pull_requests": {
+                                "anyOf": [
+                                  { "const": "none", "type": "string" },
+                                  { "const": "read", "type": "string" },
+                                  { "const": "write", "type": "string" }
+                                ]
                               },
                               "repository": {
                                 "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
@@ -33060,7 +33104,7 @@
                                 "type": "string"
                               }
                             },
-                            "required": ["repository", "access", "available"],
+                            "required": ["repository", "access", "issues", "pull_requests"],
                             "type": "object"
                           },
                           "maxItems": 32,
@@ -33338,50 +33382,28 @@
                             { "const": "write", "type": "string" }
                           ]
                         },
-                        "apiActions": {
-                          "anyOf": [
-                            {
-                              "additionalProperties": false,
-                              "properties": {
-                                "allow": {
-                                  "items": {
-                                    "anyOf": [
-                                      { "const": "issues:read", "type": "string" },
-                                      { "const": "issues:create", "type": "string" },
-                                      { "const": "pull_requests:read", "type": "string" },
-                                      { "const": "pull_requests:create", "type": "string" }
-                                    ]
-                                  },
-                                  "maxItems": 4,
-                                  "type": "array",
-                                  "uniqueItems": true
-                                }
-                              },
-                              "required": ["allow"],
-                              "type": "object"
+                        "apiLimits": {
+                          "additionalProperties": false,
+                          "description": "Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply.",
+                          "minProperties": 1,
+                          "properties": {
+                            "default": { "const": "none", "type": "string" },
+                            "issues": {
+                              "anyOf": [
+                                { "const": "none", "type": "string" },
+                                { "const": "read", "type": "string" },
+                                { "const": "write", "type": "string" }
+                              ]
                             },
-                            {
-                              "additionalProperties": false,
-                              "properties": {
-                                "deny": {
-                                  "items": {
-                                    "anyOf": [
-                                      { "const": "issues:read", "type": "string" },
-                                      { "const": "issues:create", "type": "string" },
-                                      { "const": "pull_requests:read", "type": "string" },
-                                      { "const": "pull_requests:create", "type": "string" }
-                                    ]
-                                  },
-                                  "maxItems": 4,
-                                  "type": "array",
-                                  "uniqueItems": true
-                                }
-                              },
-                              "required": ["deny"],
-                              "type": "object"
+                            "pull_requests": {
+                              "anyOf": [
+                                { "const": "none", "type": "string" },
+                                { "const": "read", "type": "string" },
+                                { "const": "write", "type": "string" }
+                              ]
                             }
-                          ],
-                          "description": "Narrow the native API actions on this Agent's repository. Empty allow removes all optional actions. Empty deny is saved as omission. Redeploy to apply."
+                          },
+                          "type": "object"
                         },
                         "repository": {
                           "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
@@ -33565,50 +33587,28 @@
                                   { "const": "write", "type": "string" }
                                 ]
                               },
-                              "apiActions": {
-                                "anyOf": [
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "allow": {
-                                        "items": {
-                                          "anyOf": [
-                                            { "const": "issues:read", "type": "string" },
-                                            { "const": "issues:create", "type": "string" },
-                                            { "const": "pull_requests:read", "type": "string" },
-                                            { "const": "pull_requests:create", "type": "string" }
-                                          ]
-                                        },
-                                        "maxItems": 4,
-                                        "type": "array",
-                                        "uniqueItems": true
-                                      }
-                                    },
-                                    "required": ["allow"],
-                                    "type": "object"
+                              "apiLimits": {
+                                "additionalProperties": false,
+                                "description": "Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply.",
+                                "minProperties": 1,
+                                "properties": {
+                                  "default": { "const": "none", "type": "string" },
+                                  "issues": {
+                                    "anyOf": [
+                                      { "const": "none", "type": "string" },
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
                                   },
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "deny": {
-                                        "items": {
-                                          "anyOf": [
-                                            { "const": "issues:read", "type": "string" },
-                                            { "const": "issues:create", "type": "string" },
-                                            { "const": "pull_requests:read", "type": "string" },
-                                            { "const": "pull_requests:create", "type": "string" }
-                                          ]
-                                        },
-                                        "maxItems": 4,
-                                        "type": "array",
-                                        "uniqueItems": true
-                                      }
-                                    },
-                                    "required": ["deny"],
-                                    "type": "object"
+                                  "pull_requests": {
+                                    "anyOf": [
+                                      { "const": "none", "type": "string" },
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
                                   }
-                                ],
-                                "description": "Narrow the native API actions on this Agent's repository. Empty allow removes all optional actions. Empty deny is saved as omission. Redeploy to apply."
+                                },
+                                "type": "object"
                               },
                               "repository": {
                                 "description": "Canonical lowercase GitHub owner/name without a .git suffix.",
@@ -34052,50 +34052,28 @@
                                   { "const": "write", "type": "string" }
                                 ]
                               },
-                              "apiActions": {
-                                "anyOf": [
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "allow": {
-                                        "items": {
-                                          "anyOf": [
-                                            { "const": "issues:read", "type": "string" },
-                                            { "const": "issues:create", "type": "string" },
-                                            { "const": "pull_requests:read", "type": "string" },
-                                            { "const": "pull_requests:create", "type": "string" }
-                                          ]
-                                        },
-                                        "maxItems": 4,
-                                        "type": "array",
-                                        "uniqueItems": true
-                                      }
-                                    },
-                                    "required": ["allow"],
-                                    "type": "object"
+                              "apiLimits": {
+                                "additionalProperties": false,
+                                "description": "Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply.",
+                                "minProperties": 1,
+                                "properties": {
+                                  "default": { "const": "none", "type": "string" },
+                                  "issues": {
+                                    "anyOf": [
+                                      { "const": "none", "type": "string" },
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
                                   },
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "deny": {
-                                        "items": {
-                                          "anyOf": [
-                                            { "const": "issues:read", "type": "string" },
-                                            { "const": "issues:create", "type": "string" },
-                                            { "const": "pull_requests:read", "type": "string" },
-                                            { "const": "pull_requests:create", "type": "string" }
-                                          ]
-                                        },
-                                        "maxItems": 4,
-                                        "type": "array",
-                                        "uniqueItems": true
-                                      }
-                                    },
-                                    "required": ["deny"],
-                                    "type": "object"
+                                  "pull_requests": {
+                                    "anyOf": [
+                                      { "const": "none", "type": "string" },
+                                      { "const": "read", "type": "string" },
+                                      { "const": "write", "type": "string" }
+                                    ]
                                   }
-                                ],
-                                "description": "Narrow the native API actions on this Agent's repository. Empty allow removes all optional actions. Empty deny is saved as omission. Redeploy to apply."
+                                },
+                                "type": "object"
                               },
                               "repository": {
                                 "description": "Canonical lowercase GitHub owner/name without a .git suffix.",

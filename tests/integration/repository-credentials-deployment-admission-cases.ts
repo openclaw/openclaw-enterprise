@@ -1340,7 +1340,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
           200,
         );
         assert.equal(before.repositoryNetworkPolicySaveSupported, true);
-        assert.deepEqual(before.repositoryApiActionFilters, [{ ...selected, available: [] }]);
+        assert.deepEqual(before.repositoryApiMaxima, [{ ...selected, issues: "none", pull_requests: "none" }]);
         const { data: saved } = checkedEnvelope(
           await f.request("PUT", policyPath, {
             expectedVersion: before.policy.version,
@@ -1377,7 +1377,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     }
   });
 
-  test("A repository API action filter requires native policy and Agent edits narrow the next revision", async (t) => {
+  test("A repository API limit requires native policy and Agent edits narrow the next revision", async (t) => {
     selectFixtureRelease(t);
     const { f, writeGrant, fixtureCompute, createSelectedAgent } = await scopedFixture(t, {
       nativeGit: "v1",
@@ -1393,7 +1393,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
                   namespaces: repo.namespaces.map((policy) => ({
                     ...policy,
                     permissions: { ...policy.permissions, issues: "write", pull_requests: "write" },
-                    apiActions: { deny: ["issues:create"] as const },
+                    apiLimits: { issues: "read" as const },
                   })),
                 }
               : repo,
@@ -1436,20 +1436,23 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     const options = [
       {
         ...writeGrant,
-        available: ["issues:read", "pull_requests:read", "pull_requests:create"],
+        issues: "read", pull_requests: "write",
       },
     ];
-    assert.deepEqual(editable.repositoryApiActionFilters, options);
-    for (const apiActions of [
-      { deny: ["issues:create", "issues:create"] },
-      { allow: ["*"] },
-      { allow: [], deny: [] },
+    assert.deepEqual(editable.repositoryApiMaxima, options);
+    for (const fields of [
+      { apiActions: { allow: [] } },
+      { apiLimits: {} },
+      { apiLimits: null },
+      { apiLimits: { default: "read" } },
+      { apiLimits: { pull_requests: "create" } },
+      { apiLimits: { issues: "write", unknown: "none" } },
     ]) {
       checkedEnvelope(
         await f.request("PUT", policyPath, {
           expectedVersion: editable.policy.version,
           additions: [],
-          repositoryNetworkPolicy: [{ ...writeGrant, apiActions }],
+          repositoryNetworkPolicy: [{ ...writeGrant, ...fields }],
         }),
         ErrorResponse,
         400,
@@ -1485,7 +1488,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     assert.ok(routes.includes("POST /repos/example/selected/pulls"));
     assert.ok(!routes.includes("POST /repos/example/selected/issues"));
 
-    const restricted = { ...writeGrant, apiActions: { deny: ["pull_requests:create"] } };
+    const restricted = { ...writeGrant, apiLimits: { pull_requests: "read" } };
     const { data: updated } = checkedEnvelope(
       await f.request("PUT", policyPath, {
         expectedVersion: saved.version,
@@ -1501,7 +1504,7 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
       SandboxPolicyViewResponse,
       200,
     );
-    assert.deepEqual(reloaded.repositoryApiActionFilters, options);
+    assert.deepEqual(reloaded.repositoryApiMaxima, options);
     assert.deepEqual(reloaded.policy.repositoryNetworkPolicy, [restricted]);
     const { data: redeployed } = checkedEnvelope(await deploy(), AgentRevisionResponse, 202);
     const next = await f.state.read((view) =>
@@ -1789,8 +1792,8 @@ export function registerProtectedRepositoryPolicyDeploymentCase({
     ).data;
     assert.deepEqual(available.repositoryNetworkPolicyCeiling, [writeGrant, unselected]);
     assert.equal(available.repositoryNetworkPolicySaveSupported, true);
-    assert.equal(available.repositoryApiActionFilters, undefined);
-    checkedEnvelope(await put([{ ...selected, apiActions: { allow: [] } }]), ErrorResponse, 409);
+    assert.equal(available.repositoryApiMaxima, undefined);
+    checkedEnvelope(await put([{ ...selected, apiLimits: { default: "none" } }]), ErrorResponse, 409);
     checkedEnvelope(
       await f.request("PUT", policyPath, {
         expectedVersion: before.policy.version,

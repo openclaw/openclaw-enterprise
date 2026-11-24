@@ -27,17 +27,57 @@ type installationBootstrapSecret struct {
 	InputDirectory string `json:"inputDirectory"`
 }
 
+func noticeLegacyInstallationBootstrap(output io.Writer, data []byte) {
+	// Best-effort detection in the frozen input. Helm owns loading,
+	// coalescing, and validating the values for the selected chart.
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	for {
+		var values struct {
+			Bootstrap struct {
+				Password   yaml.Node `yaml:"password"`
+				ServiceKey yaml.Node `yaml:"serviceKey"`
+			} `yaml:"bootstrap"`
+		}
+		if decoder.Decode(&values) != nil {
+			return
+		}
+		if !values.Bootstrap.Password.IsZero() || !values.Bootstrap.ServiceKey.IsZero() {
+			_, _ = fmt.Fprintln(output, "Warning: Secret-based charts ignore bootstrap.password and bootstrap.serviceKey and do not write credential files to the old volume. "+
+				"Keep the original inputs and receipt. To clean a separate copy, see occ installation migrate-values --help.")
+			return
+		}
+	}
+}
+
+// Client-side Helm rendering resolves the frozen inputs without querying the
+// cluster. Keep manifests private and only return fixed diagnostic guidance.
+func renderInstallationChart(ctx context.Context, chart, values, namespace, release string, output io.Writer, options ...string) error {
+	args := []string{"template", release, chart, "--dry-run=client", "--namespace", namespace, "--values", values}
+	command := exec.CommandContext(ctx, "helm", append(args, options...)...)
+	var diagnostic installationDiagnostic
+	command.Env = append(os.Environ(), "KUBECONFIG="+os.DevNull, "HELM_DRIVER=secret")
+	command.Stdout = output
+	command.Stderr = &diagnostic
+	command.WaitDelay = time.Second
+	if command.Run() != nil {
+		return errors.New("cannot validate the selected chart and values offline; no installation dispatched. " +
+			"Run helm template with the same local chart, values, release and namespace, and keep manifests and diagnostics in protected local outputs." +
+			diagnostic.templateHint())
+	}
+	return nil
+}
+
 // Resolve through Helm itself, including chart defaults and supplied overrides.
 // Generated credentials require the supported fresh-only hook, never an older
 // chart that can report success after merely verifying an existing Installation.
-func resolveInstallationBootstrap(ctx context.Context, chart, values, namespace, release string) (installationBootstrapSecret, error) {
+func resolveInstallationBootstrap(ctx context.Context, chart, values, namespace, release string, options ...string) (installationBootstrapSecret, error) {
 	var selection installationBootstrapSecret
-	command := exec.CommandContext(ctx, "helm", "template", release, chart, "--namespace", namespace, "--values", values, "--show-only", "templates/jobs.yaml")
 	var out doctorBuffer
-	command.Stdout = &out
-	command.WaitDelay = time.Second
-	if command.Run() != nil || out.overflow {
-		return selection, errors.New("cannot resolve bootstrap inputs from the selected chart; run offline helm template with protected diagnostics")
+	if err := renderInstallationChart(ctx, chart, values, namespace, release, &out, append(options, "--show-only", "templates/jobs.yaml")...); err != nil {
+		return selection, fmt.Errorf("cannot resolve bootstrap inputs: %w", err)
+	}
+	if out.overflow {
+		return selection, errors.New("rendered bootstrap Job exceeds the preflight output limit")
 	}
 	var job struct {
 		Kind string `yaml:"kind"`

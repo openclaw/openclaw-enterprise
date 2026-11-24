@@ -5,8 +5,8 @@ import {
   admitRepositoryNetworkPolicy,
   admitSandboxRepositoryNetworkPolicy,
   RepositoryNetworkPolicyAdmissionError,
-  repositoryApiActions,
-  type RepositoryApiActionFilterOption,
+  type RepositoryApiLevel,
+  type RepositoryApiMaximum,
   type Agent,
   type AgentRevision,
   type AgentRevisionRead,
@@ -52,7 +52,7 @@ export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
   /** The selected registry permits deployment-scoped Git when the Agent saves an ACL. */
   readonly nativeGit?: "v1";
   /** Native filter support on selected repositories, before the Agent narrows access. */
-  readonly repositoryApiActionFilters?: readonly RepositoryApiActionFilterOption[];
+  readonly repositoryApiMaxima?: readonly RepositoryApiMaximum[];
   /** The network access of these resolved bindings. The Namespace ceiling is independent. */
   readonly selectedRepositoryNetworkGrants?: RepositoryNetworkPolicyCeiling;
 };
@@ -349,8 +349,8 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
           return ready;
         });
       },
-      actionFilters(delegatedCeiling: RepositoryNetworkPolicyCeiling) {
-        const options = resolution.repositoryApiActionFilters;
+      apiMaxima(delegatedCeiling: RepositoryNetworkPolicyCeiling) {
+        const options = resolution.repositoryApiMaxima;
         if (resolution.nativeGit !== "v1" || !options) {
           return undefined;
         }
@@ -361,12 +361,14 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
             return [];
           }
           const write = access === "write" && fitsSelected({ repository, access });
-          const available = repositoryApiActions.filter(
-            (action) => (write || action.endsWith(":read")) && option.available.includes(action),
-          );
-          return [
-            { repository, access: write ? ("write" as const) : ("read" as const), available },
-          ];
+          const cap = (level: RepositoryApiLevel): RepositoryApiLevel =>
+            level === "write" && !write ? "read" : level;
+          return [{
+            repository,
+            access: write ? ("write" as const) : ("read" as const),
+            issues: cap(option.issues),
+            pull_requests: cap(option.pull_requests),
+          }];
         });
       },
       admit: admitEdit,
@@ -379,9 +381,9 @@ function selectedRepositoryGrantAllows(
   grant: RepositoryNetworkGrant,
 ): boolean {
   return (
-    (!grant.apiActions ||
+    (!grant.apiLimits ||
       (selected?.nativeGit === "v1" &&
-        selected.repositoryApiActionFilters?.some(
+        selected.repositoryApiMaxima?.some(
           (option) => option.repository === grant.repository,
         ) === true)) &&
     selected?.selectedRepositoryNetworkGrants?.some(

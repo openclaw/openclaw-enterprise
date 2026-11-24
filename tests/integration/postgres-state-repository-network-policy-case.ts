@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import {
+  admitRepositoryNetworkPolicy,
   type AgentRevision,
   type ComputeDriver,
   type SandboxDriver,
@@ -41,8 +42,8 @@ function storedRevisionWriter(pool: PolicyApp["pool"], originalId: string) {
 }
 
 function snapshotPolicy(grants: readonly RepositoryNetworkGrant[]) {
-  const version = 1 as const;
-  return { version, grants, identity: JSON.stringify({ version, grants }) };
+  const ceiling = grants.map(({ repository, access }) => ({repository, access}));
+  return admitRepositoryNetworkPolicy(grants, ceiling)!;
 }
 
 async function verifyLiveApplicationSnapshot(
@@ -250,30 +251,30 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
     {
       repository: "example/project-a",
       access: "read",
-      apiActions: { allow: ["issues:read", "pull_requests:read"] },
+      apiLimits: { pull_requests: "read", issues: "write", default: "none" },
     },
     {
       repository: "example/project-b",
       access: "write",
-      apiActions: { deny: ["issues:create", "pull_requests:create"] },
+      apiLimits: { issues: "read", pull_requests: "none" },
     },
-    { repository: "example/project-c", access: "write", apiActions: { allow: [] } },
+    { repository: "example/project-c", access: "write", apiLimits: { default: "none" } },
     { repository: "example/project-d", access: "read" },
   ];
   const desired = { ...original, version: original.version + 1, repositoryNetworkPolicy: grants };
-  // Writers bypassing OCC must still store an unambiguous, canonical action set.
-  for (const apiActions of [
-    null,
-    {},
-    { allow: [], deny: ["issues:create"] },
-    { deny: [] },
-    { allow: ["issues:read"], other: true },
-    { allow: "issues:read" },
-    { allow: ["issues:*"] },
-    { deny: ["issues:read", "issues:read"] },
-    { allow: ["issues:create", "issues:read"] },
+  // Direct writers must use the same resource levels as the API.
+  for (const fields of [
+    { apiActions: { allow: [] } },
+    { apiLimits: null },
+    { apiLimits: {} },
+    { apiLimits: [] },
+    { apiLimits: { issues: null } },
+    { apiLimits: { default: "read" } },
+    { apiLimits: { issues: "create" } },
+    { apiLimits: { pull_requests: true } },
+    { apiLimits: { issues: "write", other: "none" } },
   ]) {
-    const invalid = { ...desired, repositoryNetworkPolicy: [{ ...grants[0], apiActions }] };
+    const invalid = { ...desired, repositoryNetworkPolicy: [{ ...grants[0], ...fields }] };
     await assert.rejects(
       pool.query("UPDATE occ.sandbox_policies SET version=$2, document=$3 WHERE id=$1", [
         desired.id,
@@ -368,7 +369,7 @@ export async function persistRepositoryNetworkPolicy(t: TestContext): Promise<vo
 
   const marker = { repositoryNetworkPolicyVersion: admitted.version };
   const storedAdmission = { ...scopedUnprotectedRevision.executionAdmission, ...marker };
-  // A revision cannot drop the action filters from its grants or its identity.
+  // A revision cannot drop the API limits from its grants or its identity.
   const unfiltered = snapshotPolicy(
     grants.map(({ repository, access }) => ({ repository, access })),
   );
@@ -605,7 +606,7 @@ async function policyEditor({ deployAgent, inject, state, pool }: PolicyApp) {
 
   const original = await stored();
   const grants = [
-    { repository: "example/project", access: "write", apiActions: { deny: ["issues:create"] } },
+    { repository: "example/project", access: "write", apiLimits: { issues: "read" } },
   ] as const;
   const read = async () => (await view()).policy;
   const seed = async () => {

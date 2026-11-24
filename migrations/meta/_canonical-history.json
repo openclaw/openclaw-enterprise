@@ -742,9 +742,9 @@
       "idx": 93,
       "version": "7",
       "when": 1787000000093,
-      "tag": "0093_agent_repository_api_actions",
+      "tag": "0093_agent_repository_api_limits",
       "breakpoints": true,
-      "sha256": "6e885d1adbca2a7d209f0bc1162a896e62e8a94f68bb92e3621b57916c0baa84"
+      "sha256": "47b1bcce662cc2a2e1f6f7dd1ddeb2f3bf6b5bd110684af68350b9a13389d65a"
     }
   ],
   "initialSchemaStates": {
@@ -945,18 +945,18 @@
       "da9d6f0ee4f24c72f8610ff92dab93999ef8f39c06b7e792a2184482281e384d",
       "e09d2713fb2c674d3d5a916609159973d5708b04931d31b379cfc53cd9398479"
     ],
-    "c5fe1c5370fc92a8d8ff55445e6e23cdd3ec4fee4949a699ec31f6a23de58b39": [
-      "10cb7ada58e619e6dd0c671b1eb2561ff461c248b52e75fdeabde98c308c3cbe",
-      "3ef25f643c4c18dc5660cfe3216e89c10b5395b1072ec4cd3c581485cfcb6f26",
-      "5259606e4caf9a168915a119675776f4011e1f34a77a6fe6ca1804fed9ccb591",
-      "60c3c346f5f9ae07d9f1452bb0e237e8f3b07d37b214e6a110f14e0211286115",
-      "cfaf52d36b8ee7752cb4608e5a6b906b979d9071d4d25f7f56d98970116a79d0",
-      "d31ee0db54449d9a01fe6e9c4f2d641dbf75a0f50d2bdfce8a77e2bbfda6627d",
-      "fe65646a2bed6de78766097dbb156bf3a6cbaa7a7df8d4e2f2873232e731155a"
+    "3142f5cd7ac198011875f0a0b26e23a9a795a1541acb7a67cf2eea62473088b9": [
+      "46c129d7cdcba99cc417b6a3933f0bc7c80f210c3590255b106c44ab4fd25552",
+      "98894b385289029cd53531bb1f10ccc4d778fa7be82b025b703dbee4b1c5bce0",
+      "9ae867a96f927964bed484c9315ad372ef21ae07b0aa4fd09c98a282a59bdd4f",
+      "a1af8be8b8e1c9f15972d10b269427a207160997e795bdf045bdb2d5a2088bb8",
+      "a2acbc1db3320005d5ba55aefbc487ca5b3db864a91ae0f93104ce59513b6fb0",
+      "b5650d39fc5a73696389c816c15e124eb64e90cbc5a996053bf404e168b3707e",
+      "c0a6af53240acda9c9e56fdf2539711ca33242e6ebedbf80a06884dacbd7f040"
     ]
   },
   "catalogs": {
-    "completed": "c5fe1c5370fc92a8d8ff55445e6e23cdd3ec4fee4949a699ec31f6a23de58b39",
+    "completed": "3142f5cd7ac198011875f0a0b26e23a9a795a1541acb7a67cf2eea62473088b9",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -1024,7 +1024,7 @@
     "preNativeGitDelivery": "d7d57933e74466375e7f243cfbe72c411ac7f33571f5f26bc3094074a06ad8f6",
     "preAgentNetworkProxy": "0ab6fa92112169e58c54a516e5333303417a4b9b3c1f65f625f8d869ab81e31b",
     "preAgentNetworkProxyAdmission": "df92ef74e54d39b560f4b33118a8560b68e57c02636342bde80b8c9309ea07d3",
-    "preAgentRepositoryApiActions": "38db6291bcefdfd438f397b5dac550104c9f322aa2aec119ca0cc4c7c31acebf"
+    "preAgentRepositoryApiLimits": "38db6291bcefdfd438f397b5dac550104c9f322aa2aec119ca0cc4c7c31acebf"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

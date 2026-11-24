@@ -1,18 +1,16 @@
 import { isDeepStrictEqual } from "node:util";
 
-export const repositoryApiActions = Object.freeze([
-  "issues:read",
-  "issues:create",
-  "pull_requests:read",
-  "pull_requests:create",
-] as const);
-export type RepositoryApiAction = (typeof repositoryApiActions)[number];
-export type RepositoryApiActions = Readonly<
-  { allow: readonly RepositoryApiAction[] } | { deny: readonly RepositoryApiAction[] }
->;
+export type RepositoryApiLevel = "none" | "read" | "write";
 
-export interface RepositoryApiActionFilterOption extends RepositoryNetworkLimit {
-  readonly available: readonly RepositoryApiAction[];
+export interface RepositoryApiLimits {
+  readonly default?: "none";
+  readonly issues?: RepositoryApiLevel;
+  readonly pull_requests?: RepositoryApiLevel;
+}
+
+export interface RepositoryApiMaximum extends RepositoryNetworkLimit {
+  readonly issues: RepositoryApiLevel;
+  readonly pull_requests: RepositoryApiLevel;
 }
 
 interface RepositoryNetworkLimit {
@@ -21,7 +19,7 @@ interface RepositoryNetworkLimit {
 }
 
 export interface RepositoryNetworkGrant extends RepositoryNetworkLimit {
-  readonly apiActions?: RepositoryApiActions;
+  readonly apiLimits?: RepositoryApiLimits;
 }
 
 export type RepositoryNetworkPolicyCeiling = readonly RepositoryNetworkLimit[];
@@ -48,43 +46,39 @@ export class RepositoryNetworkPolicyAdmissionError extends Error {
 export const repositoryNetworkGrantPattern = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
 export const maxRepositoryNetworkGrants = 32;
 
-/** An empty deny has no effect. An empty allow removes every optional API action. */
-export function parseRepositoryApiActions(
+export function parseRepositoryApiLimits(
   input: unknown,
-  path = "/apiActions",
-): RepositoryApiActions | undefined {
+  path = "/apiLimits",
+): RepositoryApiLimits {
   const invalid = () =>
     new RepositoryNetworkPolicyAdmissionError(
       "INVALID_VALUE",
       path,
-      "Choose one allow or deny list of distinct supported repository API actions.",
+      "Set issues or pull_requests to none, read or write, or default to none.",
     );
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw invalid();
+  }
+  const limits = input as Record<string, unknown>;
   if (
-    !input ||
-    typeof input !== "object" ||
-    Array.isArray(input) ||
-    Reflect.ownKeys(input).length !== 1
+    !Object.keys(limits).length ||
+    Reflect.ownKeys(limits).some((key) => key !== "default" && key !== "issues" && key !== "pull_requests") ||
+    (Object.hasOwn(limits, "default") && limits.default !== "none")
   ) {
     throw invalid();
   }
-  const [key] = Object.keys(input);
-  if (key !== "allow" && key !== "deny") {
-    throw invalid();
+  function level(value: unknown): RepositoryApiLevel {
+    if (value !== "none" && value !== "read" && value !== "write") {
+      throw invalid();
+    }
+    return value;
   }
-  const raw = (input as Record<string, unknown>)[key];
-  if (!Array.isArray(raw) || raw.length > repositoryApiActions.length) {
-    throw invalid();
-  }
-  const actions = Object.freeze(
-    repositoryApiActions.filter((action) => Array.prototype.includes.call(raw, action)),
-  );
-  if (actions.length !== raw.length) {
-    throw invalid();
-  }
-  if (key === "allow") {
-    return Object.freeze({ allow: actions });
-  }
-  return actions.length ? Object.freeze({ deny: actions }) : undefined;
+  // Match the revision identity even if the input or database reordered the keys.
+  return Object.freeze({
+    ...(Object.hasOwn(limits, "default") && { default: "none" as const }),
+    ...(Object.hasOwn(limits, "issues") && { issues: level(limits.issues) }),
+    ...(Object.hasOwn(limits, "pull_requests") && { pull_requests: level(limits.pull_requests) }),
+  });
 }
 
 function parseGrants(
@@ -117,7 +111,7 @@ function parseGrants(
         (key) =>
           key !== "repository" &&
           key !== "access" &&
-          (key !== "apiActions" || path !== "/repositoryNetworkPolicy"),
+          (key !== "apiLimits" || path !== "/repositoryNetworkPolicy"),
       ) ||
       !Object.hasOwn(entry, "repository") ||
       !Object.hasOwn(entry, "access")
@@ -156,10 +150,10 @@ function parseGrants(
       );
     }
     repositories.add(repository);
-    const apiActions = Object.hasOwn(entry, "apiActions")
-      ? parseRepositoryApiActions(entry.apiActions, `${entryPath}/apiActions`)
+    const apiLimits = Object.hasOwn(entry, "apiLimits")
+      ? parseRepositoryApiLimits(entry.apiLimits, `${entryPath}/apiLimits`)
       : undefined;
-    grants.push({ repository, access, ...(apiActions && { apiActions }) });
+    grants.push({ repository, access, ...(apiLimits && { apiLimits }) });
   }
   return grants;
 }

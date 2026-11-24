@@ -168,6 +168,31 @@ const AGENT = "openclaw.dev/agent";
 const REVISION = "openclaw.dev/revision";
 const HASH = "openclaw.dev/strands-box-input-sha256";
 
+function isPodUid(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f-]{36}$/u.test(value);
+}
+
+function listenerState(statuses: unknown = []): Record<string, unknown> | undefined {
+  if (!Array.isArray(statuses)) {
+    throw new DependencyUnavailableError("Invalid Strands init container statuses.");
+  }
+  let state: Record<string, unknown> | undefined;
+  for (const entry of statuses) {
+    const container = asRecord(entry);
+    if (typeof container?.name !== "string" || !container.name) {
+      throw new DependencyUnavailableError("Invalid Strands init container statuses.");
+    }
+    if (container.name === "initialize-listener") {
+      const current = asRecord(container.state);
+      if (state || !current || Object.keys(current).length !== 1) {
+        throw new DependencyUnavailableError("Invalid Strands listener state.");
+      }
+      state = current;
+    }
+  }
+  return state;
+}
+
 function api(context: SandboxNamespaceContext): KubernetesObjectApi {
   if (!(context.kubernetes instanceof KubernetesObjectApi)) {
     throw new Error("Strands Box requires Compute's Kubernetes object client.");
@@ -822,8 +847,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         !/^-----BEGIN CERTIFICATE-----[\r\n]+[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/u.test(
           pem.trim(),
         ) ||
-        typeof podUid !== "string" ||
-        !/^[0-9a-f-]{36}$/u.test(podUid)
+        !isPodUid(podUid)
       ) {
         throw new Error("Invalid Strands execution certificate evidence.");
       }
@@ -871,7 +895,13 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       undefined,
       selector,
     );
-    const pod = pods.items.length === 1 ? pods.items[0] : undefined;
+    const pending = (message: string) =>
+      new TransientDependencyError("sandbox_gateway", "unavailable", message);
+    const items = Array.isArray(pods.items) ? pods.items : undefined;
+    if (items?.length === 0) {
+      throw pending("Awaiting the first Strands execution Pod.");
+    }
+    const pod = items?.length === 1 ? items[0] : undefined;
     const owner = pod?.metadata?.ownerReferences?.find((item) => item.controller === true);
     if (
       !pod?.metadata?.uid ||
@@ -899,12 +929,27 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     ) {
       throw new Error("Strands Pod does not belong to the prepared Deployment.");
     }
-    const init = asRecord(asRecord(pod)?.status)?.initContainerStatuses;
-    const evidence = Array.isArray(init)
-      ? init.find((item) => item.name === "initialize-listener")
-      : undefined;
-    const terminated = asRecord(asRecord(asRecord(evidence)?.state)?.terminated);
+    const rawStatus = asRecord(pod)?.status;
+    const status = asRecord(rawStatus);
+    const state = listenerState(status?.initContainerStatuses);
+    const terminated = asRecord(state?.terminated);
     if (terminated?.exitCode !== 0) {
+      // Only normal startup observations justify retrying without a certificate.
+      const phase = status?.phase;
+      const waiting = asRecord(state?.waiting);
+      const starting =
+        waiting &&
+        (waiting.reason === undefined ||
+          waiting.reason === "ContainerCreating" ||
+          waiting.reason === "PodInitializing");
+      if (
+        isPodUid(pod.metadata.uid) &&
+        (rawStatus === undefined || status) &&
+        (phase === undefined || phase === "Pending" || phase === "Running") &&
+        (!state || starting || asRecord(state.running))
+      ) {
+        throw pending("Awaiting Strands listener certificate.");
+      }
       throw new DependencyUnavailableError("Awaiting Strands listener certificate.");
     }
     const cert = validate(terminated.message, pod.metadata.uid);

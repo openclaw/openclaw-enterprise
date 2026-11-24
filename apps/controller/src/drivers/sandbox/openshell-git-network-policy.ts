@@ -1,5 +1,5 @@
 import {
-  parseRepositoryApiActions,
+  parseRepositoryApiLimits,
   type RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -112,7 +112,7 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
       !grant ||
       typeof grant !== "object" ||
       Array.isArray(grant) ||
-      Reflect.ownKeys(grant).length !== (Object.hasOwn(grant, "apiActions") ? 3 : 2) ||
+      Reflect.ownKeys(grant).length !== (Object.hasOwn(grant, "apiLimits") ? 3 : 2) ||
       !Object.hasOwn(grant, "repository") ||
       !Object.hasOwn(grant, "access")
     ) {
@@ -129,10 +129,10 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
       throw new Error("Invalid repository network grant.");
     }
     seen.add(repository);
-    const apiActions = Object.hasOwn(grant, "apiActions")
-      ? parseRepositoryApiActions(grant.apiActions)
+    const apiLimits = Object.hasOwn(grant, "apiLimits")
+      ? parseRepositoryApiLimits(grant.apiLimits)
       : undefined;
-    policy.push({ repository, access, ...(apiActions && { apiActions }) });
+    policy.push({ repository, access, ...(apiLimits && { apiLimits }) });
   }
   return policy.sort((left, right) => (left.repository < right.repository ? -1 : 1));
 }
@@ -166,17 +166,17 @@ function scopedApiEndpoints(
   permissions: readonly OpenShellScopedRestGrant[] | undefined,
 ): readonly OpenShellProviderProfileEndpoint[] {
   const endpoints: OpenShellProviderProfileEndpoint[] = [];
-  for (const { repository, available } of repositoryGitRestOperations(policy, permissions)) {
+  for (const { repository, issues, pull_requests: pulls } of repositoryGitRestOperations(policy, permissions)) {
     const rules = [];
-    if (available.includes("pull_requests:create")) {
+    if (pulls === "write") {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
     }
-    if (available.includes("issues:create")) {
+    if (issues === "write") {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/issues` } });
     }
     for (const [resource, enabled] of [
-      ["issues", available.includes("issues:read")],
-      ["pulls", available.includes("pull_requests:read")],
+      ["issues", issues !== "none"],
+      ["pulls", pulls !== "none"],
     ] as const) {
       if (!enabled) {
         continue;

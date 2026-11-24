@@ -5,18 +5,17 @@ import {
   type GitHubRepositoryGrant,
 } from "./repository-grant.ts";
 import {
-  permitsRepositoryApiAction,
+  limitRepositoryApi,
   type RepositoryGitDeliveryResolver,
   type RepositoryGitRestAuthority,
 } from "../../access/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import type {
-  RepositoryApiAction,
-  RepositoryApiActions,
-  repositoryApiActions,
   AdmittedRepositoryBinding,
   githubInstallationProfile as installationProfile,
+  RepositoryApiLevel,
+  RepositoryApiLimits,
   RepositoryApprovalScope,
   RepositoryBindingRequest,
   RepositoryNetworkGrant,
@@ -48,8 +47,8 @@ export interface GitHubRepositoryRegistration {
     permissions?: Readonly<Record<string, string>>;
     /** Select deployment-scoped native Git for this repository registration. */
     nativeGit?: "v1";
-    /** Subtract operations from the routes authorized by this native registration. */
-    apiActions?: RepositoryApiActions;
+    /** Narrow the eligible REST routes for this native registration. */
+    apiLimits?: RepositoryApiLimits;
     allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
     transport?: "git-only" | "git-and-draft-pr";
@@ -212,7 +211,7 @@ export function validateGitHubRepositoryRegistry(
         "profiles",
         "permissions",
         "nativeGit",
-        "apiActions",
+        "apiLimits",
         "allowStandingApproval",
         "pushRefAllowlist",
         "transport",
@@ -233,10 +232,10 @@ export function validateGitHubRepositoryRegistry(
       ) {
         return invalid();
       }
-      const apiActions = Object.hasOwn(policy, "apiActions")
-        ? parseApiActions(policy.apiActions)
+      const apiLimits = Object.hasOwn(policy, "apiLimits")
+        ? parseApiLimits(policy.apiLimits)
         : undefined;
-      if (Object.hasOwn(policy, "apiActions") && policy.nativeGit !== "v1") {
+      if (apiLimits && policy.nativeGit !== "v1") {
         return invalid();
       }
       if (
@@ -303,7 +302,7 @@ export function validateGitHubRepositoryRegistry(
         profiles: Object.freeze(profiles),
         ...(permissions && { permissions }),
         ...(policy.nativeGit === "v1" && { nativeGit: "v1" as const }),
-        ...(apiActions && { apiActions }),
+        ...(apiLimits && { apiLimits }),
         ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
         ...(transport === undefined ? {} : { transport }),
@@ -385,7 +384,7 @@ export function allowsGitHubRepositoryNetworkGrant(
     return false;
   }
   const { policy } = resolved;
-  if (grant.apiActions !== undefined && policy.nativeGit !== "v1") {
+  if (grant.apiLimits !== undefined && policy.nativeGit !== "v1") {
     return false;
   }
   return policy.profiles.some((profile) => {
@@ -405,50 +404,42 @@ const installationGrantPolicy = Object.freeze({
   deliveryPolicy: "github-installation-git-basic-api-bearer-online-authorization-v1",
 } as const);
 
-// The standalone credential service has no workspace runtime dependencies.
-// Type-check its local action list and canonical order against the Agent contract.
-const apiActions: typeof repositoryApiActions = [
-  "issues:read",
-  "issues:create",
-  "pull_requests:read",
-  "pull_requests:create",
-] as const;
-
-function parseApiActions(input: unknown): RepositoryApiActions | undefined {
-  const filter = object(input, ["allow", "deny"]);
-  if (Object.keys(filter).length !== 1) {
+// The standalone credential service cannot load workspace code at runtime.
+function parseApiLimits(input: unknown): RepositoryApiLimits {
+  const limits = object(input, ["default", "issues", "pull_requests"]);
+  if (
+    !Object.keys(limits).length ||
+    (Object.hasOwn(limits, "default") && limits.default !== "none")
+  ) {
     return invalid();
   }
-  const allow = Object.hasOwn(filter, "allow");
-  const raw = allow ? filter.allow : filter.deny;
-  if (!Array.isArray(raw) || raw.length > apiActions.length) {
-    return invalid();
+  function level(value: unknown): RepositoryApiLevel {
+    return value === "none" || value === "read" || value === "write" ? value : invalid();
   }
-  // Filtering the literal list gives a stable order. Unknowns and duplicates shorten it.
-  const actions = Object.freeze(apiActions.filter((action) => raw.includes(action)));
-  if (actions.length !== raw.length) {
-    return invalid();
-  }
-  if (allow) {
-    return Object.freeze({ allow: actions });
-  }
-  return actions.length ? Object.freeze({ deny: actions }) : undefined;
+  // Fix key order so the same limits always produce the same grant ID.
+  return Object.freeze({
+    ...(Object.hasOwn(limits, "default") && { default: "none" as const }),
+    ...(Object.hasOwn(limits, "issues") && { issues: level(limits.issues) }),
+    ...(Object.hasOwn(limits, "pull_requests") && { pull_requests: level(limits.pull_requests) }),
+  });
 }
 
 function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"][number]) {
-  const { issues, pull_requests: pullRequests } = policy.permissions ?? {};
-  if (policy.nativeGit !== "v1" || (!issues && !pullRequests)) {
+  const { permissions, apiLimits } = policy;
+  if (policy.nativeGit !== "v1" || (!permissions?.issues && !permissions?.pull_requests)) {
     return undefined;
   }
-  const permitted = (action: RepositoryApiAction) =>
-    permitsRepositoryApiAction(policy.apiActions, action);
+  const access = (resource: "issues" | "pull_requests"): RepositoryApiLevel => {
+    const permission = permissions[resource];
+    return limitRepositoryApi(apiLimits, resource, permission === "read" || permission === "write", permission === "write");
+  };
+  const issues = access("issues");
+  const pulls = access("pull_requests");
   return {
-    readIssues: (issues === "read" || issues === "write") && permitted("issues:read"),
-    ...(issues === "write" && permitted("issues:create") && { createIssues: true as const }),
-    ...((pullRequests === "read" || pullRequests === "write") &&
-      permitted("pull_requests:read") && { readPullRequests: true as const }),
-    ...(pullRequests === "write" &&
-      permitted("pull_requests:create") && { createPullRequests: true as const }),
+    readIssues: issues !== "none",
+    ...(issues === "write" && { createIssues: true as const }),
+    ...(pulls !== "none" && { readPullRequests: true as const }),
+    ...(pulls === "write" && { createPullRequests: true as const }),
   };
 }
 
@@ -532,7 +523,7 @@ export function resolveGitHubRepositoryBinding(
     permissions: repositoryTransportPermissions(policy, selectedProfile),
     scopedRest: scopedRestPermissions(policy),
     // Bind restrictions even if they currently permit no routes.
-    ...(policy.apiActions && { apiActions: policy.apiActions }),
+    ...(policy.apiLimits && { apiLimits: policy.apiLimits }),
     ...(policy.nativeGit === "v1" && { nativeGit: "v1" as const }),
     capabilityPolicy:
       policy.transport === "git-only"
@@ -661,7 +652,7 @@ export function createGitHubRepositoryDeliveryResolver(
       throw new Error("Standing repository policy is unavailable.");
     }
     const savedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
-    const agentFiltered = savedPolicy?.grants.some((grant) => grant.apiActions !== undefined);
+    const agentLimited = savedPolicy?.grants.some((grant) => grant.apiLimits !== undefined);
     if (state?.bindings.length && state.bindings.every((b) => b.profile === "github-repository")) {
       const scope = resolveSelectedRepositoryScope(registry, revision.namespaceId, state.bindings);
       if (savedPolicy !== undefined && scope.mixedNativeGit) {
@@ -669,10 +660,10 @@ export function createGitHubRepositoryDeliveryResolver(
       }
       const nativeGit = savedPolicy !== undefined && scope.nativeGit === "v1";
       if (
-        (scope.requiresNetworkPolicy || agentFiltered) &&
+        (scope.requiresNetworkPolicy || agentLimited) &&
         (!nativeGit || revision.egressPlan?.repositoryGitAuthorization !== "network-policy")
       ) {
-        throw new Error("API action restrictions require a native repository network policy.");
+        throw new Error("API limits require a native repository network policy.");
       }
       if (nativeGit && (state.standingApprovalId !== undefined || !savedPolicy.grants.length)) {
         throw new Error(
@@ -697,8 +688,8 @@ export function createGitHubRepositoryDeliveryResolver(
         }),
       });
     }
-    if (agentFiltered) {
-      throw new Error("API action restrictions require a native repository network policy.");
+    if (agentLimited) {
+      throw new Error("API limits require a native repository network policy.");
     }
     if (!state || state.bindings.length !== 1 || !binding) {
       throw new Error("Repository Git delivery requires one admitted binding.");
@@ -799,7 +790,7 @@ export function resolveSelectedRepositoryScope(
   return Object.freeze({
     repositories: Object.freeze(repositories),
     permissions,
-    requiresNetworkPolicy: selected.some(({ policy }) => policy.apiActions !== undefined),
+    requiresNetworkPolicy: selected.some(({ policy }) => policy.apiLimits !== undefined),
     ...(nativeGitModes.size > 1 && { mixedNativeGit: true }),
     ...(nativeGitModes.size === 1 && nativeGitModes.has("v1") && { nativeGit: "v1" as const }),
     scopedRest: Object.freeze(scopedRest.sort((a, b) => a.repository.localeCompare(b.repository))),

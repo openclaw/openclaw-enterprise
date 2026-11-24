@@ -1,9 +1,9 @@
 import type {
   AdmittedRepositoryBinding,
   AgentRevision,
-  RepositoryApiAction,
-  RepositoryApiActions,
-  RepositoryApiActionFilterOption,
+  RepositoryApiLevel,
+  RepositoryApiLimits,
+  RepositoryApiMaximum,
   RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 
@@ -15,43 +15,33 @@ export type RepositoryGitRestAuthority = readonly Readonly<{
   createPullRequests?: true;
 }>[];
 
-export function permitsRepositoryApiAction(
-  filter: RepositoryApiActions | undefined,
-  action: RepositoryApiAction,
-): boolean {
-  return (
-    !filter || ("allow" in filter ? filter.allow.includes(action) : !filter.deny.includes(action))
-  );
+export function limitRepositoryApi(
+  limits: RepositoryApiLimits | undefined,
+  resource: "issues" | "pull_requests",
+  read: boolean,
+  create: boolean,
+): RepositoryApiLevel {
+  const limit = limits?.[resource] ?? limits?.default;
+  if (!read || limit === "none") {
+    return "none";
+  }
+  return create && limit !== "read" ? "write" : "read";
 }
 
-/** Apply per-grant restrictions to the owner's scoped REST authority. */
+/** Apply the saved Git access and API limits to the owner's scoped REST authority. */
 export function repositoryGitRestOperations(
   grants: readonly RepositoryNetworkGrant[],
   authority: RepositoryGitRestAuthority | undefined,
-): readonly RepositoryApiActionFilterOption[] {
+): readonly RepositoryApiMaximum[] {
   return Object.freeze(
-    grants.map(({ repository, access, apiActions }) => {
+    grants.map(({ repository, access, apiLimits }) => {
       const rest = authority?.find((entry) => entry.repository === repository);
       const write = access === "write";
-      const available: RepositoryApiAction[] = [];
-      if (rest?.readIssues === true) {
-        available.push("issues:read");
-      }
-      if (write && rest?.createIssues === true) {
-        available.push("issues:create");
-      }
-      if (rest?.readPullRequests === true) {
-        available.push("pull_requests:read");
-      }
-      if (write && rest?.createPullRequests === true) {
-        available.push("pull_requests:create");
-      }
       return Object.freeze({
         repository,
         access,
-        available: Object.freeze(
-          available.filter((action) => permitsRepositoryApiAction(apiActions, action)),
-        ),
+        issues: limitRepositoryApi(apiLimits, "issues", rest?.readIssues === true, write && rest?.createIssues === true),
+        pull_requests: limitRepositoryApi(apiLimits, "pull_requests", rest?.readPullRequests === true, write && rest?.createPullRequests === true),
       });
     }),
   );

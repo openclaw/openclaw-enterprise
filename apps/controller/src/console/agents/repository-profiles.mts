@@ -26,8 +26,12 @@ export const repositoryProfiles = Object.freeze([
 ]);
 
 export const repositoryWriteAccessHelp =
-  "GraphQL can permit merges and branch changes within the installation token’s permissions. The optional Git branch push allowlist is best effort and does not restrict GraphQL. Repository administration and workflow permissions are not granted by default.";
+  "With profile-based access, GraphQL can permit merges and branch changes within the installation token’s permissions. The optional Git branch push allowlist is best effort and does not restrict GraphQL. Repository administration and workflow permissions are not granted by default.";
 
 export function repositoryProfile(id: unknown) {
   return repositoryProfiles.find((profile) => profile.id === id);
+}
+
+export function githubAccessLabel(access: "read" | "write") {
+  return access === "read" ? "Read-only" : "Contributor";
 }
