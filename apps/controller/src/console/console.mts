@@ -2859,6 +2859,14 @@ async function loadPage({
           namespaceId: selectedNamespace,
           agentId: current.agentId,
           onRechecked: (handler) => viewState.rechecked.add(handler),
+          repositoryAccessCheck: {
+            pending: () => resumePending,
+            retry: () => {
+              if (viewIsCurrent()) {
+                resumePage();
+              }
+            },
+          },
           onProtectedReadDenied(error, receipt) {
             if (viewIsCurrent()) {
               agentContext.drafts.clear();

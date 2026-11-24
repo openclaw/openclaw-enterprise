@@ -33,6 +33,7 @@ import {
 } from "../environment-references.mjs";
 import {
   button,
+  describeDisabled,
   element,
   field,
   fieldError,
@@ -171,6 +172,7 @@ type DetailContext = Omit<ConsolePageContext, "onRechecked"> & {
   onRechecked?(handler: AgentRecheckHandler): void;
   namespaceId: string;
   agentId: string;
+  repositoryAccessCheck: { pending(): Promise<void> | null; retry(): void };
   onProtectedReadDenied(error: unknown, receipt: HTMLElement): void;
   isPageCurrent?(): boolean;
 };
@@ -290,6 +292,7 @@ interface MountedTab {
   showBlock?(): void;
   refresh?(): void;
   applyOperate?(allowed: boolean | undefined): void;
+  applyRepositoryAccess?(): void;
   nodes?: ChildNode[];
 }
 
@@ -802,6 +805,8 @@ export async function renderAgentDetail(
   // refocus starts with restricted controls unless this view's permission read confirms them.
   let callerPermissions: Permissions | null = null;
   let callerPermissionsSettled = false;
+  let repositoryPermissionsUnconfirmed = false;
+  let repositoryAdmission: AgentRecheck | undefined;
   let foregroundPermissionGeneration = 0;
   let pendingForegroundPermissionScope: (() => boolean) | undefined;
   const callerPermissionsRead: Promise<Permissions | null> = readPermissions(confirmPermissions)
@@ -913,11 +918,12 @@ export async function renderAgentDetail(
     configurationAccessViews.add(rerender);
   }
   function redrawConfigurationAccessViews() {
+    mountedTab?.applyRepositoryAccess?.();
     for (const rerender of configurationAccessViews) {
       rerender();
     }
   }
-  // An Agent-side view (Plugins, Repositories) drawn from one answer is rebuilt when a newer
+  // The Plugins view drawn from one answer is rebuilt when a newer
   // answer changes whether Agent saves are refused: a channel save that rebinds a Secret the
   // caller could not operate makes them editable without a reload (finding 2470).
   function followAgentSaveAccess(isShown: () => boolean) {
@@ -945,6 +951,8 @@ export async function renderAgentDetail(
     // A draft refresh rebuilds the shown tab and then redraws what its answer changed.
     if (!refreshingDraft) {
       redrawConfigurationAccessViews();
+    } else {
+      mountedTab?.applyRepositoryAccess?.();
     }
     refreshDeployControls();
   }
@@ -2163,6 +2171,9 @@ export async function renderAgentDetail(
     if (!context.isCurrent() || deleting) {
       return;
     }
+    if (selectedTab === "repositories") {
+      repositoryAdmission = recheck;
+    }
     agentSaveDenied = rereadPermissions(recheck).then((permissions) =>
       agentSaveDenial(permissions, agent),
     );
@@ -2201,6 +2212,12 @@ export async function renderAgentDetail(
   // The newest revision with its saved settings, read only when a check needs them.
   let latestRevisionDetail: AgentRevisionRead | null = null;
   let latestRevisionDetailReading: string | null = null;
+
+  function repositoryCheckUnavailableHere() {
+    return (
+      selected === "draft" && selectedTab === "repositories" && repositoryPermissionsUnconfirmed
+    );
+  }
 
   function versionNotice() {
     return selected === "draft"
@@ -2270,10 +2287,11 @@ export async function renderAgentDetail(
   }
 
   function renderVersionNotice() {
-    const notice = content.querySelector(".version-selection-notice");
+    const notice = content.querySelector<HTMLElement>(".version-selection-notice");
     if (notice) {
       // Deployment polls call this too; an unchanged notice is left untouched.
       setText(notice, versionNotice());
+      setHidden(notice, repositoryCheckUnavailableHere());
     }
   }
 
@@ -4158,7 +4176,11 @@ export async function renderAgentDetail(
       let pendingDeploymentHint: string | null = null;
       if (!deployPending) {
         let deployMessage: string | undefined;
-        if (callerPermissions?.deploy === false) {
+        if (repositoryCheckUnavailableHere()) {
+          deployMessage = draftEditorState.outcomeUnknown
+            ? "The repository access save outcome is unknown. Check access and reload this draft before deploying."
+            : "Check access before deploying.";
+        } else if (callerPermissions?.deploy === false) {
           deployMessage = AGENT_DEPLOY_DENIED;
         } else if (secretReason) {
           // A refused deployment's alert already says it.
@@ -4977,11 +4999,12 @@ export async function renderAgentDetail(
   }
 
   // Reload draft rereads the Agent, then refreshes in place. The read goes through the tab's
-  // request, so a tab left mid-read is rebuilt rather than retained; a failed read reloads the
-  // page as before.
+  // request, so a tab left mid-read is rebuilt. A read-only save receipt can keep the recovery
+  // guard on failure. Other callers reload the page.
   async function reloadDraftInPlace(
     tabContext: DetailContext,
     options: Omit<DraftRefresh, "agent">,
+    onReadFailure?: (error: unknown) => void,
   ) {
     if (refreshingDraft) {
       return;
@@ -4992,10 +5015,12 @@ export async function renderAgentDetail(
     const tab = mountedTab;
     const current = () => tabContext.isCurrent() && mountedTab === tab && !deleting;
     let fresh;
+    let readFailure: unknown;
     try {
       fresh = await readAgent(tabContext);
-    } catch {
+    } catch (error) {
       fresh = null;
+      readFailure = error;
     }
     refreshingDraft = false;
     if (!current()) {
@@ -5011,6 +5036,9 @@ export async function renderAgentDetail(
     }
     if (fresh) {
       await refreshDraftInPlace({ agent: fresh, ...options });
+    } else if (onReadFailure) {
+      updateNavigationControls();
+      onReadFailure(readFailure);
     } else {
       context.navigate(target("draft", selectedTab), namespaceId, true);
     }
@@ -5074,13 +5102,18 @@ export async function renderAgentDetail(
     const superseded = () =>
       generation !== foregroundPermissionGeneration ||
       (foreground !== undefined && reread < permissionsRereads);
-    const apply = (permissions: Permissions) => {
+    const apply = (permissions: Permissions, repositoryCheckUnavailable = false) => {
       if (superseded()) {
         return latestPermissionsRead;
       }
       if (context.isCurrent() && (foreground?.() ?? true) && reread > appliedReread) {
         appliedReread = reread;
         callerPermissions = permissions;
+        // An ordinary reread can confirm a denial. Restoring a suspended repository editor also
+        // needs foreground admission for this session and Agent.
+        if (foreground !== undefined || agentSaveDenial(permissions, agent) !== undefined) {
+          repositoryPermissionsUnconfirmed = repositoryCheckUnavailable;
+        }
         // A deleting Agent shows only the deletion row. If the page opened in that state,
         // the editor, deployment controls and native admin view were never initialized.
         if (deleting) {
@@ -5109,11 +5142,14 @@ export async function renderAgentDetail(
       }
       return callerPermissions;
     };
-    const read = readPermissions(true).then(apply, () => {
+    const read = readPermissions(true).then(apply, (error: unknown) => {
       if (superseded()) {
         return latestPermissionsRead;
       }
-      return foreground === undefined ? previous : apply(unconfirmedPermissions);
+      const { status } = requestFailure(error);
+      return foreground === undefined
+        ? previous
+        : apply(unconfirmedPermissions, status !== 401 && status !== 403 && status !== 404);
     });
     latestPermissionsRead = read;
     permissionsReadSettled = false;
@@ -5610,7 +5646,10 @@ export async function renderAgentDetail(
   function renderConfigurationTab(context: DetailContext, selectedTab: string, data: Details) {
     const { snapshot, values, draft, executionMode } = data;
     content.append(
-      statusBlock("info", null, versionNotice(), [], { className: "version-selection-notice" }),
+      statusBlock("info", null, versionNotice(), [], {
+        className: "version-selection-notice",
+        hidden: repositoryCheckUnavailableHere(),
+      }),
     );
     if (selectedTab === "repositories" && draft) {
       if (hasRepositoryPermissions(values)) {
@@ -6563,25 +6602,74 @@ export async function renderAgentDetail(
   // answers 403 (finding 2454). As on Plugins, a caller missing only a grant that each Agent update
   // also checks reads the summary too: no save could keep an edit. An unknown answer keeps the
   // editor.
+  const repositoryPermissionUnavailable = "Could not confirm permission to edit repository access.";
+  function retryRepositoryAccess(context: DetailContext) {
+    return button("Retry access check", () => {
+      if (context.isCurrent()) {
+        context.repositoryAccessCheck.retry();
+      }
+    });
+  }
   function renderRepositoryTab(context: DetailContext, data: DraftDetails) {
     const holder = element("div", {});
     let shown: Element = holder;
+    let shownReason: string | undefined;
+    let editor: ReturnType<typeof renderRepositoryEditor> | undefined;
     void agentSaveDenied.then((reason) => {
       if (!context.isCurrent() || !holder.parentNode) {
         return;
       }
-      shown =
-        reason === undefined
-          ? renderRepositoryEditor(context, data)
-          : repositoryAccessSummary(reason);
+      shownReason = repositoryPermissionsUnconfirmed ? repositoryPermissionUnavailable : reason;
+      if (shownReason === undefined) {
+        editor = renderRepositoryEditor(context, data);
+        shown = editor.section;
+      } else {
+        shown = repositoryAccessSummary(shownReason);
+        if (repositoryPermissionsUnconfirmed) {
+          shown.append(retryRepositoryAccess(context));
+        }
+        if (savedNotice) {
+          shown.append(element("p", { role: "status" }, savedNotice));
+        }
+      }
       holder.replaceWith(shown);
     });
-    followAgentSaveAccess(() => context.isCurrent() && shown.isConnected);
+    if (mountedTab) {
+      mountedTab.applyRepositoryAccess = () => {
+        if (!mountedTab || !context.isCurrent() || shown === holder || !shown.isConnected) {
+          return;
+        }
+        const reason = agentSaveDenial(callerPermissions, agent);
+        if (repositoryPermissionsUnconfirmed || reason) {
+          mountedTab.reusable = false;
+        }
+        if (editor) {
+          if (repositoryPermissionsUnconfirmed || !reason) {
+            editor.applyAccess();
+            return;
+          }
+          if (editor.discardFields()) {
+            return;
+          }
+        }
+        if (
+          !refreshingDraft &&
+          (repositoryPermissionsUnconfirmed ? repositoryPermissionUnavailable : reason) !==
+            shownReason
+        ) {
+          mountedTab.reusable = false;
+          void renderTab();
+        }
+      };
+    }
     return holder;
   }
 
   function repositoryAccessSummary(reason: string) {
     const bindings = agent.repositoryBindings ?? [];
+    const summary = repositoryPermissionsUnconfirmed
+      ? "These are the version draft’s saved repository selections."
+      : "These are the version draft’s repository selections, read-only with your access. The next deployment uses them as saved.";
     return element(
       "section",
       { className: "agent-card" },
@@ -6590,7 +6678,7 @@ export async function renderAgentDetail(
         "p",
         { className: "muted" },
         bindings.length
-          ? "These are the version draft’s repository selections, read-only with your access. The next deployment uses them as saved."
+          ? summary
           : "The version draft selects no repositories. The Agent runs without repository access.",
       ),
       bindings.length
@@ -6617,6 +6705,21 @@ export async function renderAgentDetail(
     // Drawn only when the permission answer allows Agent saves or is unknown: a caller it denies
     // reads the summary instead (renderRepositoryTab).
     let saveState = "idle";
+    const baseline = agent;
+    let currentSave: { mutationStarted: boolean } | undefined;
+    let interrupted = false;
+    const retry = retryRepositoryAccess(context);
+    retry.hidden = true;
+    const permissionFeedback = element(
+      "p",
+      {
+        className: "status",
+        "data-tone": "warning",
+        role: "status",
+        hidden: true,
+      },
+      repositoryPermissionUnavailable,
+    );
     const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
     // A refused save is a danger block that takes focus; other notes stay a hint (finding 1966).
     const refuse = (text: string) => {
@@ -6627,10 +6730,25 @@ export async function renderAgentDetail(
     // Reload and Cancel reread the Agent and rebuild this tab in place (finding 1445's rest).
     // Set once Reload or Cancel starts rereading; this editor is about to be replaced.
     let reloading = false;
+    function failedRead(error: unknown) {
+      const { status } = requestFailure(error);
+      if (status === 401) {
+        context.onExpired();
+        return;
+      }
+      if (status === 403 || status === 404) {
+        retireSaveRead(error, "Could not read this Agent’s saved repository access.");
+        return;
+      }
+      reloading = false;
+      update();
+      const outcome = saveState === "uncertain" ? "The save outcome is still unknown. " : "";
+      refuse(`${outcome}Could not reload saved repository access. Try Reload draft again.`);
+    }
     function rebuild(saved: string, focus?: string) {
       reloading = true;
       update();
-      void reloadDraftInPlace(context, { saved, focus });
+      void reloadDraftInPlace(context, { saved, focus }, fields ? undefined : failedRead);
     }
     const reload = button("Reload draft", () => rebuild("Draft reloaded."));
     const save = button("Save repository access", () => void submit(), {
@@ -6638,16 +6756,43 @@ export async function renderAgentDetail(
       disabled: true,
     });
     const cancel = button("Cancel", () => {
-      data.setDraftEditorState({
-        dirty: false,
-        saving: false,
-        outcomeUnknown: false,
-        reloadRequired: false,
-      });
-      rebuild("", "Cancel");
+      data.setDraftEditorState({ dirty: false });
+      if (repositoryPermissionsUnconfirmed) {
+        // Discard the unsaved changes without using an unconfirmed grant for another read.
+        void renderTab();
+        tabControls.get("repositories")?.focus({ preventScroll: true });
+      } else {
+        rebuild("", "Cancel");
+      }
     });
     const actions = element("div", { className: "form-actions" }, save, cancel, reload);
     function update() {
+      const unavailable = repositoryPermissionsUnconfirmed;
+      const dirty = fields?.isDirty() ?? false;
+      const pending = saveState === "saving";
+      const outcomeUnknown = saveState === "uncertain";
+      const reloadRequired = saveState === "conflict";
+      const showWarning = unavailable && Boolean(fields);
+      setHidden(retry, !unavailable);
+      setHidden(permissionFeedback, !showWarning);
+      setHidden(feedback, showWarning);
+      if (showWarning) {
+        let message = repositoryPermissionUnavailable;
+        if (pending) {
+          message += " Waiting for the save result.";
+        } else if (outcomeUnknown || reloadRequired) {
+          message += outcomeUnknown
+            ? " Repository access may already have been saved."
+            : " Repository access changed while you were editing.";
+          message += " Retry the check, then reload this draft.";
+        } else if (dirty) {
+          message += " Your changes are still here.";
+          if (interrupted) {
+            message += " Save was not sent.";
+          }
+        }
+        setText(permissionFeedback, message);
+      }
       if (reloading) {
         // A Save during the reread would write the edit being discarded, and a late field
         // update (repository choices loading, say) must not enable it again.
@@ -6657,23 +6802,27 @@ export async function renderAgentDetail(
         fields?.setDisabled(true);
         return;
       }
-      const dirty = fields?.isDirty() ?? false;
-      const pending = saveState === "saving";
-      const outcomeUnknown = saveState === "uncertain";
-      const reloadRequired = saveState === "conflict";
       const locked = saveState !== "idle";
       data.setDraftEditorState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
+      reload.disabled = showWarning;
+      describeDisabled(reload, showWarning ? permissionFeedback : null);
+      reload.hidden = !outcomeUnknown && !reloadRequired;
+      if (!fields) {
+        actions.hidden = reload.hidden;
+        return;
+      }
       save.disabled =
+        unavailable ||
         locked ||
         !dirty ||
-        !fields?.isSettled() ||
+        !fields.isSettled() ||
         fields.blocksCreate() ||
         (fields.bindings().length > 0 && !fields.hasValidSelection());
+      describeDisabled(save, unavailable ? permissionFeedback : null);
       if (save.getAttribute("aria-busy") !== String(pending)) {
         save.setAttribute("aria-busy", String(pending));
       }
       cancel.disabled = locked;
-      reload.hidden = !outcomeUnknown && !reloadRequired;
       // Without repository access in the Installation only removing every repository can be
       // saved (finding 2398). Otherwise the status says so: Save is not offered, and Cancel only
       // to undo an edit (finding 2386).
@@ -6685,13 +6834,17 @@ export async function renderAgentDetail(
         control.hidden = hidden;
       };
       hide(save, !saveOffered());
-      hide(cancel, Boolean(fields?.notConfigured()) && !dirty);
+      hide(cancel, (fields.notConfigured() || unavailable) && !dirty);
       actions.hidden = save.hidden && cancel.hidden && reload.hidden;
-      fields?.setDisabled(locked);
+      fields.setDisabled(locked || unavailable);
+      setHidden(fields.section, unavailable);
     }
-    const fields = createRepositoryFields(
-      context,
+    let fields: ReturnType<typeof createRepositoryFields> | undefined = createRepositoryFields(
+      { ...context, isCurrent: () => Boolean(fields) && context.isCurrent() },
       (changed) => {
+        if (!fields) {
+          return;
+        }
         if (changed) {
           setStatusTone(feedback, null);
           feedback.textContent = fields.isDirty()
@@ -6703,6 +6856,10 @@ export async function renderAgentDetail(
       { ...agent, agentId: agent.id },
     );
     showDraftEditorNavigationBlock = (focusFeedback) => {
+      if (fields && repositoryPermissionsUnconfirmed) {
+        focusFeedback?.(permissionFeedback);
+        return;
+      }
       // A stale or uncertain save already explains the recovery action.
       if (saveState !== "conflict" && saveState !== "uncertain") {
         setStatusTone(feedback, null);
@@ -6713,7 +6870,9 @@ export async function renderAgentDetail(
       focusFeedback?.(feedback);
     };
     function saveOffered() {
-      return !fields?.notConfigured() || (fields.isDirty() && fields.bindings().length === 0);
+      return Boolean(
+        fields && (!fields.notConfigured() || (fields.isDirty() && !fields.bindings().length)),
+      );
     }
     // While Save is not offered, the guidance names only what the tab offers (finding 2398).
     function pendingEditGuidance(before: string) {
@@ -6721,24 +6880,105 @@ export async function renderAgentDetail(
         ? `Save or cancel repository changes before ${before}.`
         : `Remove every repository and save, or cancel repository changes, before ${before}.`;
     }
-    async function submit() {
-      if (save.disabled || !fields.validate()) {
+    const section = element(
+      "section",
+      { className: "agent-card" },
+      fields.section,
+      permissionFeedback,
+      retry,
+      actions,
+      feedback,
+    );
+    // The mounted section still owns the submitted request or required reload. Remove the
+    // chooser and its edits now, even if another permission check grants access before recovery.
+    function discardFields() {
+      if (fields) {
+        fields.section.remove();
+        fields = undefined;
+        save.remove();
+        cancel.remove();
+        if (currentSave && !currentSave.mutationStarted) {
+          currentSave = undefined;
+          saveState = "idle";
+        }
+        if (saveState === "saving") {
+          setStatusTone(feedback, null);
+          setText(feedback, "Waiting for the repository access save to finish.");
+        }
+        update();
+        focusAfterAccessChange(feedback);
+      }
+      return saveState !== "idle" || reloading;
+    }
+    function applyAccess() {
+      const unavailable = repositoryPermissionsUnconfirmed;
+      if (unavailable === !retry.hidden) {
         return;
       }
+      if (unavailable && currentSave && !currentSave.mutationStarted) {
+        currentSave = undefined;
+        saveState = "idle";
+        interrupted = true;
+        setText(feedback, "Repository access was not saved. Save again when you’re ready.");
+      }
+      update();
+      focusAfterAccessChange(fields && unavailable ? permissionFeedback : feedback);
+    }
+    function focusAfterAccessChange(status: HTMLElement) {
+      // Let the shell finish restoring focus first. Do not take it back from another control.
+      void Promise.resolve(context.repositoryAccessCheck.pending()).then(() => {
+        if (
+          context.isCurrent() &&
+          !status.hidden &&
+          !document.hidden &&
+          !view.inert &&
+          document.hasFocus()
+        ) {
+          // The shell falls back to the tab when the originally focused field is now hidden.
+          const onTab = document.activeElement === tabControls.get("repositories");
+          revealStatus(status, onTab ? document.body : section);
+        }
+      });
+    }
+    async function submit() {
+      if (save.disabled || !fields?.validate()) {
+        return;
+      }
+      const attempt = { mutationStarted: false };
+      currentSave = attempt;
+      interrupted = false;
+      feedback.textContent = "";
       saveState = "saving";
       update();
-      let mutationStarted = false;
       let saved = false;
       try {
+        const admittedBeforeSave = repositoryAdmission;
         const fresh = await readAgent();
-        if (!context.isCurrent()) {
-          return;
+        let pending;
+        while ((pending = context.repositoryAccessCheck.pending()) && currentSave === attempt) {
+          await pending;
         }
         if (
-          fresh.configurationId !== agent.configurationId ||
-          JSON.stringify(fresh.repositoryAccess) !== JSON.stringify(agent.repositoryAccess) ||
-          JSON.stringify(fresh.repositoryBindings) !== JSON.stringify(agent.repositoryBindings)
+          currentSave !== attempt ||
+          !context.isCurrent() ||
+          view.inert ||
+          repositoryPermissionsUnconfirmed ||
+          agentReadOnly() ||
+          !fields
         ) {
+          return;
+        }
+        if (fresh.configurationReadError) {
+          retireSaveRead(fresh.configurationReadError, "Repository access was not saved.");
+          return;
+        }
+        // Neither response alone can rule out a conflicting edit observed by the other.
+        const concurrentRead = repositoryAdmission !== admittedBeforeSave && repositoryAdmission;
+        const changed = (read: PageAgent) =>
+          read.configurationId !== baseline.configurationId ||
+          JSON.stringify(read.repositoryAccess) !== JSON.stringify(baseline.repositoryAccess) ||
+          JSON.stringify(read.repositoryBindings) !== JSON.stringify(baseline.repositoryBindings);
+        if (changed(fresh) || (concurrentRead && changed(agentForPage(concurrentRead.agent)))) {
           saveState = "conflict";
           refuse(
             "Repository access changed while you were editing. Reload this draft before saving.",
@@ -6747,8 +6987,8 @@ export async function renderAgentDetail(
         }
         // TODO: enforce an expected Agent version in PATCH when draft concurrency
         // is implemented; this preflight cannot prevent a write between requests.
-        mutationStarted = true;
         const repositoryAccess = fields.access();
+        attempt.mutationStarted = true;
         const savedAgent = agentForPage(
           await request(path, {
             method: "PATCH",
@@ -6764,17 +7004,36 @@ export async function renderAgentDetail(
           throw new Error("The response did not confirm this Agent’s repository access.");
         }
         saved = true;
-        fields.recordSuccessfulSave();
-        if (context.isCurrent()) {
+        // A denial already being checked must take effect before rebuilding a saved editor.
+        while ((pending = context.repositoryAccessCheck.pending()) && context.isCurrent()) {
+          await pending;
+        }
+        if (!context.isCurrent()) {
+          return;
+        }
+        if (!fields) {
+          // The PATCH confirmed the write. Reread the current Agent for the read-only summary.
+          // Keep a reload receipt if that read fails.
+          saveState = "conflict";
+          await reloadDraftInPlace(context, { saved: "Repository access saved." }, failedRead);
+        } else {
+          fields.recordSuccessfulSave();
           data.setDraftEditorState({ dirty: false, saving: false });
           await refreshDraftInPlace({ agent: savedAgent, saved: "Repository access saved." });
         }
       } catch (error) {
-        if (!context.isCurrent()) {
+        if (currentSave !== attempt || !context.isCurrent()) {
           return;
         }
-        if (requestFailure(error).status === 401) {
+        const { mutationStarted } = attempt;
+        const { status } = requestFailure(error);
+        if (status === 401) {
           context.onExpired();
+        } else if (!mutationStarted && (status === 403 || status === 404)) {
+          retireSaveRead(error, rejectionMessage(refusedSave(error, "agent", false), false));
+        } else if (mutationStarted && !fields && refusedWriteStatuses.includes(status)) {
+          saveState = "conflict";
+          refuse("Repository access was not saved. Reload this draft to see the saved access.");
         } else {
           refuse(
             rejectionMessage(
@@ -6782,21 +7041,24 @@ export async function renderAgentDetail(
               mutationStarted,
             ),
           );
-          if (mutationStarted && !refusedWriteStatuses.includes(requestFailure(error).status)) {
+          if (mutationStarted && !refusedWriteStatuses.includes(status)) {
             saveState = "uncertain";
           }
         }
       } finally {
-        if (saveState === "saving") {
-          saveState = "idle";
-        }
-        if (context.isCurrent()) {
-          update();
+        if (currentSave === attempt) {
+          currentSave = undefined;
+          if (saveState === "saving") {
+            saveState = "idle";
+          }
+          if (context.isCurrent()) {
+            update();
+          }
         }
       }
     }
     update();
-    return element("section", { className: "agent-card" }, fields.section, actions, feedback);
+    return { section, discardFields, applyAccess };
   }
 
   // Edits carried through a save conflict, merged over the Configuration Reload draft reread

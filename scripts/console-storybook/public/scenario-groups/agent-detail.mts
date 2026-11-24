@@ -1887,6 +1887,34 @@ export function createAgentDetailScenarios({
           "The Agent update is refused. The refusal is a danger block under the editor and takes focus; the grey line keeps progress and unsaved-change notes only.",
         gap: "The refusal is simulated; the API decides every save.",
       },
+      repositoryEditorAccessCheckUnavailable: {
+        group: "Pages/Agent detail",
+        name: "Retry a repository access check on tab return",
+        path: `${draft}&tab=repositories`,
+        repositoryAccess: {
+          defaultProfile: "git-full",
+          repositories: [{ repositoryRef: "application" }],
+        },
+        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+        rules: [
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
+            method: "GET",
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+            skip: 1,
+            once: true,
+          },
+        ],
+        actions: [{ selector: "#repository-default-git-read", click: true }],
+        description:
+          "The preview starts with an unsaved Read-only edit. A temporary permission-check failure on tab return pauses editing until access is confirmed again.",
+        steps: [
+          "Open the preview in its own tab. Switch to another browser tab, then return. Check that the permission warning appears and Save repository access is unavailable.",
+          "Choose Retry access check. The Read-only selection returns with Save repository access available. Choose Save repository access to save the draft.",
+          "Repeat at 390 px wide. Check that the warning and retry button fit and can be reached with the keyboard.",
+        ],
+      },
       repositoryAdmitted: {
         group: "Pages/Agent detail",
         name: "Repository access in current version",
