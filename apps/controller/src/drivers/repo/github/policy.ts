@@ -196,6 +196,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         ...(selected === undefined
           ? {}
           : {
+              requiresNetworkPolicy: selected.requiresNetworkPolicy,
               selectedRepositoryNetworkGrants: selectedRepositoryGitNetworkGrants(selected),
               ...(selected.nativeGit && { nativeGit: selected.nativeGit }),
             }),
