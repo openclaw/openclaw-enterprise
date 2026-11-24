@@ -2129,7 +2129,7 @@ worker_stop_matches() {
 }
 
 unconfirmed_worker_stop_message() {
-  local message="The worker Deployment $namespace/openclaw-enterprise-worker is at zero replicas without a confirmed stop for this upgrade and Deployment generation."
+  local message="The worker Deployment $namespace/openclaw-enterprise-worker is at zero replicas without a confirmed stop for this upgrade and Deployment generation. Check worker-stop-confirmed.json in the evidence directory."
   # A Helm submission intent does not clear a recorded external handoff.
   if [[ "$1" == separate && -f "$upgrade_evidence_dir/database-migration-handoff.json" ]]; then
     message+=" Keep both writers fenced. Preserve the evidence and reconcile the external migration and database migration history."
@@ -3191,8 +3191,8 @@ if ((helm_complete == 0)); then
   }
   require_confirmed_worker_stop() {
     local recovery_note="${1:-}"
-    if jq -e '.spec.replicas == 0' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
-      ((resume)) && worker_stop_matches "$evidence_dir/current-worker-deployment.json" ||
+    if jq -e '.spec.replicas == 0' "$evidence_dir/observed-worker-deployment.json" >/dev/null; then
+      ((resume)) && worker_stop_matches "$evidence_dir/observed-worker-deployment.json" ||
         die "$unconfirmed_worker_stop${recovery_note:+ $recovery_note}"
     fi
   }
@@ -3201,7 +3201,7 @@ if ((helm_complete == 0)); then
       deployment="openclaw-enterprise-$component"
       quiescence_remaining
       "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" get "deployment/$deployment" --output json \
-        >"$evidence_dir/current-$component-deployment.json"
+        >"$evidence_dir/observed-$component-deployment.json"
       jq -e --arg release "$release" --arg component "$component" --arg channel "$channel_egress_enabled" '
         .metadata.labels["app.kubernetes.io/instance"] == $release and
         .metadata.labels["app.kubernetes.io/component"] == $component and
@@ -3211,27 +3211,29 @@ if ((helm_complete == 0)); then
          (.metadata.generation | type == "number" and . > 0 and floor == .)) and
         .metadata.deletionTimestamp == null and
         (.spec.replicas == 0 or .spec.replicas == 1)
-      ' "$evidence_dir/current-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
+      ' "$evidence_dir/observed-$component-deployment.json" >/dev/null || die "$deployment has unexpected ownership or replicas."
       if ((existing_handoff)); then
-        require_migration_handoff_writer "$component" "$evidence_dir/current-$component-deployment.json"
+        require_migration_handoff_writer "$component" "$evidence_dir/observed-$component-deployment.json"
       fi
-      # Test and scale atomically: a replacement or concurrent edit must not be stopped.
-      jq '[
-        {op: "test", path: "/metadata/uid", value: .metadata.uid},
-        {op: "test", path: "/metadata/resourceVersion", value: .metadata.resourceVersion},
-        {op: "test", path: "/spec/replicas", value: .spec.replicas},
-        {op: "replace", path: "/spec/replicas", value: 0}
-      ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
     done
+  }
+  writer_stop_patch() {
+    # Test and scale atomically: a replacement or concurrent edit must not be stopped.
+    jq '[
+      {op: "test", path: "/metadata/uid", value: .metadata.uid},
+      {op: "test", path: "/metadata/resourceVersion", value: .metadata.resourceVersion},
+      {op: "test", path: "/spec/replicas", value: .spec.replicas},
+      {op: "replace", path: "/spec/replicas", value: 0}
+    ]' "$evidence_dir/observed-$1-deployment.json"
   }
   observe_quiescence_writers
   require_confirmed_worker_stop
   if [[ "$channel_egress_enabled" == true ]]; then
     pre_agent_stop_writers=$(jq -cs '
       map([.metadata.uid, .metadata.generation, .spec.replicas]) | {api: .[0], worker: .[1]}
-    ' "$evidence_dir/current-api-deployment.json" "$evidence_dir/current-worker-deployment.json")
-    if jq -e '.spec.replicas == 0' "$evidence_dir/current-api-deployment.json" >/dev/null; then
-      ((resume)) && jq -e '.spec.replicas == 0' "$evidence_dir/current-worker-deployment.json" >/dev/null ||
+    ' "$evidence_dir/observed-api-deployment.json" "$evidence_dir/observed-worker-deployment.json")
+    if jq -e '.spec.replicas == 0' "$evidence_dir/observed-api-deployment.json" >/dev/null; then
+      ((resume)) && jq -e '.spec.replicas == 0' "$evidence_dir/observed-worker-deployment.json" >/dev/null ||
         die "OCC API is stopped during partial quiescence. Preserve the original evidence. For a separate migration handoff, keep both writers fenced and reconcile the original migration history. Otherwise, restore API access under exclusive maintenance only after verifying that the selected release, mounted Installation Secret, and database migration history are compatible. This attempt did not stop an additional Agent or writer."
       python3 scripts/upgrade-channel-egress verify-stopped --evidence-dir "$evidence_dir" \
         --occ "$occ" --timeout-seconds "$timeout_seconds" ||
@@ -3250,13 +3252,13 @@ if ((helm_complete == 0)); then
     for component in api worker; do
       jq -e --argjson before "$pre_agent_stop_writers" --arg component "$component" '
         [.metadata.uid, .metadata.generation, .spec.replicas] == $before[$component]
-      ' "$evidence_dir/current-$component-deployment.json" >/dev/null ||
+      ' "$evidence_dir/observed-$component-deployment.json" >/dev/null ||
         die "OCC $component Deployment identity or replicas changed during Agent Stop; no additional OCC writer was stopped. Agent Stop was confirmed. Preserve the original Stop journal."
     done
   fi
   # Refresh before the first writer stop, including resume when the worker still runs.
   # This detects changed selections; exclusive maintenance ownership is still required.
-  if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
+  if jq -e '.spec.replicas == 1' "$evidence_dir/observed-worker-deployment.json" >/dev/null; then
     quiescence_remaining
     if decision=$(named_access_review patch apps deployments openclaw-enterprise-worker "$((remaining_seconds < 15 ? remaining_seconds : 15))"); then
       [[ "$decision" == true ]] ||
@@ -3278,11 +3280,14 @@ if ((helm_complete == 0)); then
   recheck_prepared_migration_secrets
   # These writes are sequential; a later conflict can leave the API stopped.
   for component in api worker; do
-    if jq -e '.spec.replicas == 0' "$evidence_dir/current-$component-deployment.json" >/dev/null; then
+    if jq -e '.spec.replicas == 0' "$evidence_dir/observed-$component-deployment.json" >/dev/null; then
       continue
     fi
     deployment="openclaw-enterprise-$component"
     quiescence_remaining
+    # Keep the submitted request and the observation it uses together on refusal.
+    cp -- "$evidence_dir/observed-$component-deployment.json" "$evidence_dir/current-$component-deployment.json"
+    writer_stop_patch "$component" >"$evidence_dir/quiescence-$component-patch.json"
     native_output quiescence-scale "$component" "quiescence-$component.txt" \
       scale_writer "$component" "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
       --type json --patch-file "$evidence_dir/quiescence-$component-patch.json"
@@ -3337,7 +3342,7 @@ PYTHON
     quiescence_remaining
     "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" get "deployment/openclaw-enterprise-$component" --output json \
       >"$evidence_dir/quiescence-$component-deployment.json"
-    jq -e --slurpfile observed "$evidence_dir/current-$component-deployment.json" '
+    jq -e --slurpfile observed "$evidence_dir/observed-$component-deployment.json" '
       .metadata.uid == $observed[0].metadata.uid and
       .metadata.deletionTimestamp == null and .spec.replicas == 0
     ' "$evidence_dir/quiescence-$component-deployment.json" >/dev/null ||
