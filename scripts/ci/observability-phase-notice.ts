@@ -1,11 +1,9 @@
 import { writeSync } from "node:fs";
 
-const laneName = "k3d-observability";
 const maximumElapsedMs = 24 * 60 * 60 * 1_000;
 type Outcome = "success" | "failure" | "skipped";
 
-function emit(message: string) {
-  const line = `::notice title=Production Observability timing::${message}\n`;
+function emit(line: string) {
   try {
     return writeSync(2, line) === line.length;
   } catch {
@@ -14,14 +12,8 @@ function emit(message: string) {
   }
 }
 
-export function startObservabilityPhase(lane: string, phase: string) {
-  if (
-    lane !== laneName ||
-    (phase !== "cluster-build-pull" &&
-      phase !== "workload-image-imports" &&
-      phase !== "lane-cleanup") ||
-    process.env.GITHUB_ACTIONS !== "true"
-  ) {
+function startPhaseNotice(title: string, lane: string, phase: string) {
+  if (process.env.GITHUB_ACTIONS !== "true") {
     return;
   }
   const { GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: attempt, GITHUB_SHA: sha } = process.env;
@@ -35,20 +27,57 @@ export function startObservabilityPhase(lane: string, phase: string) {
   ) {
     return;
   }
-  const binding = `lane=${laneName} run_id=${run} run_attempt=${attempt} source_sha=${sha} phase=${phase}`;
-  if (!emit(`${binding} event=start`)) {
+  const binding = `::notice title=${title}::lane=${lane} run_id=${run} run_attempt=${attempt} source_sha=${sha} phase=${phase}`;
+  if (!emit(`${binding} event=start\n`)) {
     return;
   }
   return (outcome: Outcome, elapsedMs: number) => {
     if (outcome === "skipped" && phase === "lane-cleanup") {
-      emit(`${binding} event=finish outcome=skipped`);
+      emit(`${binding} event=finish outcome=skipped\n`);
     } else if (
       (outcome === "success" || outcome === "failure") &&
       Number.isSafeInteger(elapsedMs) &&
       elapsedMs >= 0 &&
       elapsedMs <= maximumElapsedMs
     ) {
-      emit(`${binding} event=finish outcome=${outcome} elapsed_ms=${elapsedMs}`);
+      emit(`${binding} event=finish outcome=${outcome} elapsed_ms=${elapsedMs}\n`);
     }
   };
+}
+
+export function startObservabilityPhase(lane: string, phase: string) {
+  if (
+    lane === "k3d-observability" &&
+    ["cluster-build-pull", "workload-image-imports", "lane-cleanup"].includes(phase)
+  ) {
+    return startPhaseNotice("Production Observability timing", lane, phase);
+  }
+}
+
+export function startImageRuntimeStartupPhase(lane: string, phase: string) {
+  if (lane !== "images-runtime-startup") {
+    return;
+  }
+  const {
+    GITHUB_REPOSITORY: repository,
+    GITHUB_EVENT_NAME: event,
+    GITHUB_REF: ref,
+    GITHUB_WORKFLOW_REF: workflow,
+  } = process.env;
+  if (
+    repository === "openclaw/openclaw-enterprise" &&
+    event === "push" &&
+    ref === "refs/heads/main" &&
+    workflow === "openclaw/openclaw-enterprise/.github/workflows/ci.yml@refs/heads/main" &&
+    [
+      "runtime-image-build-cluster",
+      "image-load",
+      "k3d-create",
+      "workspace-envoy-image",
+      "runtime-image-import",
+      "codex-seccomp-profile",
+    ].includes(phase)
+  ) {
+    return startPhaseNotice("Image Runtime Startup preparation", lane, phase);
+  }
 }

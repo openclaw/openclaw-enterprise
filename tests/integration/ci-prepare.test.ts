@@ -465,6 +465,141 @@ startObservabilityPhase("k3d-observability", phase)(outcome, 5);`;
   }
 });
 
+const startupLane = "images-runtime-startup";
+const startupNoticePrefix = "::notice title=Image Runtime Startup preparation::";
+const startupNoticeEnv = {
+  GITHUB_ACTIONS: "true",
+  GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+  GITHUB_EVENT_NAME: "push",
+  GITHUB_REF: "refs/heads/main",
+  GITHUB_WORKFLOW_REF: "openclaw/openclaw-enterprise/.github/workflows/ci.yml@refs/heads/main",
+  GITHUB_RUN_ID: "12345",
+  GITHUB_RUN_ATTEMPT: "2",
+  GITHUB_SHA: "a".repeat(40),
+};
+const startupBinding =
+  `${startupNoticePrefix}lane=${startupLane} run_id=12345 run_attempt=2 ` +
+  `source_sha=${startupNoticeEnv.GITHUB_SHA}`;
+
+test("Image Runtime Startup retains the failed artifact and cluster preparation clocks", async (t) => {
+  const commands = await fixtureImageCommands(t, "artifact-import", startupLane, {
+    ...startupNoticeEnv,
+    // The parent and child actions fail before any real engine or cluster work.
+    OPENCLAW_CI_K3D_BIN: "/bin/false",
+    OCC_CI_RUNTIME_ARTIFACT_DIRECTORY: "/missing-runtime-artifact",
+    OCC_CI_RUNTIME_ARTIFACT_SHA256: "b".repeat(64),
+    OCC_CI_RUNTIME_ARTIFACT_SOURCE_SHA: "f".repeat(40),
+    OCC_CI_RUNTIME_ARTIFACT_RUN_ID: "12345",
+    OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: "2",
+  });
+  await symlink("/usr/bin/git", join(dirname(commands.statePath), "bin", "git"));
+  const prepared = await commands.prepare();
+  assert.equal(prepared.status, 1, prepared.stderr);
+  assertStderrMatch(prepared.stderr, /Runtime artifact source differs from checkout/);
+  assert.match(
+    prepared.stderr,
+    /\[ci-timing\] lane=images-runtime-startup phase=runtime-image-build duration_ms=\d+/,
+  );
+  const notices = prepared.stderr
+    .split("\n")
+    .filter((line) => line.startsWith(startupNoticePrefix))
+    .map((line) => {
+      assert.ok(line.startsWith(startupBinding), line);
+      return line.slice(startupBinding.length + 1);
+    });
+  assert.deepEqual(notices.slice(0, 3), [
+    "phase=runtime-image-build-cluster event=start",
+    "phase=image-load event=start",
+    "phase=k3d-create event=start",
+  ]);
+  const [firstChild, secondChild, enclosing] = notices.slice(3);
+  assert.equal(notices.length, 6, prepared.stderr);
+  for (const [phase, notice] of [
+    ["image-load", [firstChild, secondChild].find((line) => line?.startsWith("phase=image-load "))],
+    ["k3d-create", [firstChild, secondChild].find((line) => line?.startsWith("phase=k3d-create "))],
+    ["runtime-image-build-cluster", enclosing],
+  ] as const) {
+    assert.match(
+      notice ?? "",
+      new RegExp(`^phase=${phase} event=finish outcome=failure elapsed_ms=[0-9]+$`),
+    );
+  }
+  await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
+  await commands.cleanupSuccessfully();
+});
+
+test("Image Runtime Startup notices accept only canonical CI bindings and bounded timings", async () => {
+  const noticeModule = new URL("../../scripts/ci/observability-phase-notice.ts", import.meta.url);
+  const phases = [
+    "runtime-image-build-cluster",
+    "image-load",
+    "k3d-create",
+    "workspace-envoy-image",
+    "runtime-image-import",
+    "codex-seccomp-profile",
+  ];
+  const probe = `
+    import assert from "node:assert/strict";
+    import { closeSync } from "node:fs";
+    const { startImageRuntimeStartupPhase: start } = await import(process.argv[1]);
+    const [lane, ...phases] = process.argv.slice(2);
+    for (const [key, value] of [
+      ["GITHUB_ACTIONS", ""],
+      ["GITHUB_REPOSITORY", "other/openclaw-enterprise"],
+      ["GITHUB_EVENT_NAME", "pull_request"],
+      ["GITHUB_EVENT_NAME", "workflow_dispatch"],
+      ["GITHUB_REF", "refs/heads/other"],
+      ["GITHUB_WORKFLOW_REF", "openclaw/openclaw-enterprise/.github/workflows/other.yml@refs/heads/main"],
+      ["GITHUB_RUN_ID", "0"],
+      ["GITHUB_RUN_ID", "12345\\n::notice::canary"],
+      ["GITHUB_RUN_ATTEMPT", "02"],
+      ["GITHUB_RUN_ATTEMPT", "2%0A"],
+      ["GITHUB_SHA", "a".repeat(39)],
+      ["GITHUB_SHA", "a".repeat(40) + "\\n"],
+    ]) {
+      const previous = process.env[key];
+      process.env[key] = value;
+      assert.equal(start(lane, phases[0]), undefined, key);
+      process.env[key] = previous;
+    }
+    for (const other of [lane + "-2", lane + "-3", "images-packaging", "openshell"]) {
+      assert.equal(start(other, phases[0]), undefined);
+    }
+    assert.equal(start(lane, "image-load\\n::notice::canary"), undefined);
+    for (const phase of phases) {
+      const finish = start(lane, phase);
+      for (const invalid of [-1, Infinity, NaN, 1.5, 86400001, Number.MAX_SAFE_INTEGER, "5"]) {
+        finish("success", invalid);
+      }
+      for (const invalid of ["skipped", "failure\\n::notice::canary", "failure%0A"]) {
+        finish(invalid, 1);
+      }
+      finish("success", 86400000);
+    }
+    const finish = start(lane, "image-load");
+    closeSync(2);
+    assert.doesNotThrow(() => finish("failure", 0));
+    assert.equal(start(lane, "image-load"), undefined);
+  `;
+  const result = await spawnResult(
+    process.execPath,
+    ["--input-type=module", "-e", probe, noticeModule.href, startupLane, ...phases],
+    { env: startupNoticeEnv },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(
+    result.stderr,
+    phases
+      .map(
+        (phase) =>
+          `${startupBinding} phase=${phase} event=start\n` +
+          `${startupBinding} phase=${phase} event=finish outcome=success elapsed_ms=86400000\n`,
+      )
+      .join("") + `${startupBinding} phase=image-load event=start\n`,
+  );
+});
+
 // Most cases wait on preparation children: fake engines, deliberate command timeouts
 // and retry backoff, so a few run at once: two per CPU, at most four. With four copies
 // of this file on one CPU, four at once still passed, while all at once missed the 3 s
