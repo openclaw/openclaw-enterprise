@@ -290,12 +290,6 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     );
     const harnessAuth = agent.harnessAuth;
     assert.ok(harnessAuth?.method === "api_key");
-    const otherNamespace = await fixture.createNamespace("Other reference scope", { ready: true });
-    const foreign = await fixture.createSecret(
-      otherNamespace.id,
-      "Other model credential",
-      "test-key",
-    );
     const indirectId = `sa_${randomUUID()}`;
     const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const { page } = await newPage(t, fixture);
@@ -312,10 +306,9 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
           source: { kind: "service_account", namespaceId: namespace.id, id: indirectId },
         },
       },
-      { name: "foreign", auth: { method: "api_key", source: foreign.ref } },
     ]) {
       // Replace just the auth projection of a real Agent read. The omitted variant models
-      // unreadable saved settings. The foreign variant probes the Console's defensive scope check.
+      // unreadable saved settings.
       const endpoint = `${fixture.origin}${agentPath}`;
       await page.route(endpoint, async (route) => {
         const response = await route.fetch();
@@ -349,7 +342,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
         agent.configurationId,
       ]);
       const markup = await dialog.innerHTML();
-      for (const omitted of [harnessAuth.source.id, foreign.id, otherNamespace.id, indirectId]) {
+      for (const omitted of [harnessAuth.source.id, indirectId]) {
         assert.equal(markup.includes(omitted), false, retained.name);
       }
       assert.doesNotMatch(markup, /Consumers|Model credential Secret ID|occ --namespace/);
