@@ -11,7 +11,7 @@ import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts"
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
-import { callbackGate, waitFor, within } from "../helpers/wait-for.ts";
+import { callbackGate, within } from "../helpers/wait-for.ts";
 
 const authSecret = "request-audit-postgres-auth-secret-minimum-32";
 const fixtureUrl = process.env.OCC_TEST_API_REQUEST_AUDIT_MIGRATION_DATABASE_URL;
@@ -402,6 +402,8 @@ test(
     const { pool, state, principal } = fixture;
     const session = await signInToControllerApp(fixture.app, fixture.adminAccount);
     const app = fixture.createApp();
+    const listenerClosed = callbackGate<void>("API listener shutdown", 5_000);
+    app.server.once("close", () => listenerClosed.resolve());
     const requestStarted = callbackGate<string>("the live Namespace request", 5_000);
     const responseClosed = callbackGate<boolean>("the server-side disconnect", 5_000);
     app.addHook("onRequest", async (request, reply) => {
@@ -418,7 +420,7 @@ test(
         (event) => event.requestId === requestId,
       );
 
-    const requestId = await withPool(migrationUrl, async (migrator) => {
+    const { shutdown } = await withPool(migrationUrl, async (migrator) => {
       const locker = await migrator.connect();
       try {
         await locker.query("BEGIN");
@@ -458,7 +460,12 @@ test(
             (await pool.query("SELECT id FROM occ.namespaces WHERE name = $1", [name])).rowCount,
             0,
           );
-          return id;
+          // Close the listener while the handler still needs PostgreSQL. Read from the
+          // independent fixture as soon as shutdown finishes, without polling for a late audit.
+          const shutdown = app.close().then(() => forRequest(id));
+          void shutdown.catch(() => {});
+          await listenerClosed.reached();
+          return { shutdown };
         } finally {
           disconnect.abort();
         }
@@ -467,14 +474,7 @@ test(
       }
     });
 
-    const records = await waitFor(
-      "the durable result for the disconnected request",
-      async () => {
-        const current = await forRequest(requestId);
-        return current.some(({ action }) => action === resultAction) ? current : undefined;
-      },
-      5_000,
-    );
+    const records = await within(shutdown, "draining the disconnected request", 5_000);
     const mutationAction = "openclaw.namespaces.create";
     assert.deepEqual(records.map(({ action }) => action).sort(), [
       admittedAction,
@@ -492,7 +492,8 @@ test(
       statusCode: 201,
     });
 
-    const read = await fetch(path, {
+    const replacement = await fixture.app.listen({ host: "127.0.0.1", port: 0 });
+    const read = await fetch(`${replacement}/namespaces`, {
       headers: authenticatedHeaders(session),
       signal: AbortSignal.any([t.signal, AbortSignal.timeout(5_000)]),
     });

@@ -786,6 +786,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     {
       denialObserved: boolean;
       resultSelected: boolean;
+      awaitingResult?: true;
       readTarget?: ResourceRef;
       commitOutcomeUnknown?: true;
     }
@@ -3338,6 +3339,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         handler,
       });
     }
+    let pendingResults = 0;
+    let finishDrain: (() => void) | undefined;
+    // Sockets have closed, but a disconnected handler may still be committing.
+    // This child hook runs before the composition closes State and the audit sink.
+    routes.addHook("onClose", (_instance, done) => {
+      finishDrain = done;
+      if (pendingResults === 0) {
+        done();
+      }
+    });
+
     for (const operation of occApiRoutes) {
       // Bootstrap has its own transactional evidence. Runtime log reads have their own
       // disclosure gate and can also return a download.
@@ -3417,15 +3429,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }
           // Admission here means the request can enter the handler. The handler still
           // checks the caller's permission for the exact operation and target.
-          if (
-            controller !== undefined &&
-            requestAuditState.has(request) &&
-            !(await appendRequestAudit(routeAuditSink, request, operation, {
-              action: API_REQUEST_AUDIT_ACTIONS.admitted,
-              outcome: "success",
-            }))
-          ) {
-            throw dependencyUnavailable();
+          const audit = requestAuditState.get(request);
+          if (controller !== undefined && audit !== undefined) {
+            if (finishDrain !== undefined) {
+              throw dependencyUnavailable();
+            }
+            // Chat hijacks the response and can bypass onSend.
+            if (operation.operationId !== "chatWithAgent") {
+              audit.awaitingResult = true;
+              pendingResults++;
+            }
+            if (
+              !(await appendRequestAudit(routeAuditSink, request, operation, {
+                action: API_REQUEST_AUDIT_ACTIONS.admitted,
+                outcome: "success",
+              }))
+            ) {
+              throw dependencyUnavailable();
+            }
           }
           if (controller === undefined) {
             await performFenced(request, reply, operation);
@@ -3462,15 +3483,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   outcome === "success" && statusCode === 200 ? audit.readTarget : undefined;
                 // Preserve the selected response if the append fails. The handler may have
                 // committed its change or already denied the request.
-                await appendRequestAudit(routeAuditSink, request, operation, {
-                  action: API_REQUEST_AUDIT_ACTIONS.result,
-                  outcome,
-                  statusCode,
-                  ...(readTarget === undefined ? {} : { readTarget }),
-                  ...(audit.commitOutcomeUnknown === true
-                    ? { reasonCode: "COMMIT_OUTCOME_UNKNOWN" }
-                    : {}),
-                });
+                try {
+                  await appendRequestAudit(routeAuditSink, request, operation, {
+                    action: API_REQUEST_AUDIT_ACTIONS.result,
+                    outcome,
+                    statusCode,
+                    ...(readTarget === undefined ? {} : { readTarget }),
+                    ...(audit.commitOutcomeUnknown === true
+                      ? { reasonCode: "COMMIT_OUTCOME_UNKNOWN" }
+                      : {}),
+                  });
+                } finally {
+                  if (audit.awaitingResult) {
+                    pendingResults--;
+                    if (pendingResults === 0) {
+                      finishDrain?.();
+                    }
+                  }
+                }
                 return payload;
               },
             }),
