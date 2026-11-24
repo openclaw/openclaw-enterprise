@@ -249,9 +249,8 @@ test("staged release chart records both verified digests and defaults to the con
   const directory = await temporaryDirectory(t, "oce-release-chart-");
   const prepared = join(directory, "prepared");
   const environment = {
-    ...process.env,
-    SOURCE_SHA: sourceSha,
-    GITHUB_WORKFLOW_SHA: sourceSha,
+    ...env,
+    OCC_HELM_BIN: helm,
     GITHUB_RUN_ID: "123",
     GITHUB_RUN_ATTEMPT: "1",
     CI_RUN_ID: "456",
@@ -1473,6 +1472,7 @@ test("native platform exports verify offline and assemble into a digest-bound ar
     const output = join(directory, name);
     const env = {
       ...process.env,
+      GITHUB_WORKFLOW_REF: `${repository}/${publishWorkflow}@refs/heads/main`,
       GITHUB_OUTPUT: join(output, "outputs"),
       IMAGE: "runtime",
       SOURCE_SHA: sourceSha,
