@@ -564,28 +564,89 @@ async function historyAdmin(fixture, database, sql) {
  * @param {import("node:test").TestContext} context
  * @param {HistoryFixture} fixture
  * @param {string} label
- * @param {{ schemas?: boolean, prefix?: number }} [options]
+ * @param {{ schemas?: boolean, prefix?: number, copyLabel?: string }} [options]
  */
-async function historyDatabase(context, fixture, label, { schemas = true, prefix = 0 } = {}) {
-  const suffix = randomUUID().replaceAll("-", "").slice(0, 8);
-  const labelLength = 63 - fixture.databasePrefix.length - suffix.length - 2;
-  assert.ok(labelLength > 0);
-  const name = `${fixture.databasePrefix}_${label.slice(0, labelLength)}_${suffix}`;
-  assert.match(name, /^[a-z0-9_]+$/);
-  const clients = [];
-  await historyAdmin(fixture, "postgres", `CREATE DATABASE ${name}`);
+async function historyDatabase(
+  context,
+  fixture,
+  label,
+  { schemas = true, prefix = 0, copyLabel } = {},
+) {
+  /** @type {{ name: string, clients: pg.Client[] }[]} */
+  const databases = [];
+  const force = copyLabel ? "" : " WITH (FORCE)";
   context.after(async () => {
-    try {
-      await Promise.all(clients.map((client) => client.end()));
-    } finally {
-      await historyAdmin(fixture, "postgres", `DROP DATABASE ${name} WITH (FORCE)`);
+    // Drain owned sessions and attempt every drop even if an earlier cleanup fails.
+    const drained = await Promise.allSettled(
+      databases.flatMap(({ clients }) => clients.map(async (client) => client.end())),
+    );
+    const errors = drained
+      .filter((result) => result.status === "rejected")
+      .map(({ reason }) => reason);
+    for (const { name } of databases) {
+      try {
+        await historyAdmin(fixture, "postgres", `DROP DATABASE ${name}${force}`);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length === 1) {
+      throw errors[0];
+    }
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "Failed to clean up migration history databases.");
     }
   });
+
+  /** @param {string} databaseLabel @param {string} [template] */
+  async function createDatabase(databaseLabel, template) {
+    const suffix = randomUUID().replaceAll("-", "").slice(0, 8);
+    const labelLength = 63 - fixture.databasePrefix.length - suffix.length - 2;
+    assert.ok(labelLength > 0);
+    const name = `${fixture.databasePrefix}_${databaseLabel.slice(0, labelLength)}_${suffix}`;
+    assert.match(name, /^[a-z0-9_]+$/);
+    /** @type {pg.Client[]} */
+    const clients = [];
+    const from = template ? ` TEMPLATE ${template}` : "";
+    await historyAdmin(fixture, "postgres", `CREATE DATABASE ${name}${from}`);
+    databases.push({ name, clients });
+    return { name, clients };
+  }
+
+  const { name, clients } = await createDatabase(label);
   await historyAdmin(
     fixture,
     name,
     `GRANT CREATE ON DATABASE ${name} TO occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;${schemas ? " CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator;" : ""}`,
   );
+
+  if (copyLabel) {
+    const migration = new URL(fixture.migrationUrl);
+    migration.pathname = `/${name}`;
+    const migrator = new pg.Client({ connectionString: migration.toString() });
+    try {
+      await migrator.connect();
+      await installCanonicalPrefix({ migrator }, prefix);
+    } finally {
+      await migrator.end();
+    }
+
+    // TEMPLATE requires an idle source and copies schema ACLs but not database grants.
+    const { name: copyName, clients: copyClients } = await createDatabase(copyLabel, name);
+    await historyAdmin(fixture, "postgres", `GRANT CREATE ON DATABASE ${copyName} TO occ_migrator`);
+    const copy = await connectHistoryDatabase(fixture, copyName, copyClients);
+    return { ...(await connectHistoryDatabase(fixture, name, clients)), copy };
+  }
+
+  const db = await connectHistoryDatabase(fixture, name, clients);
+  if (prefix > 0) {
+    await installCanonicalPrefix(db, prefix);
+  }
+  return db;
+}
+
+/** @param {HistoryFixture} fixture @param {string} name @param {pg.Client[]} clients */
+async function connectHistoryDatabase(fixture, name, clients) {
   const migration = new URL(fixture.migrationUrl);
   migration.pathname = `/${name}`;
   const application = new URL(migration);
@@ -610,9 +671,6 @@ async function historyDatabase(context, fixture, label, { schemas = true, prefix
   assert.deepEqual((await app.query("SELECT current_user,session_user")).rows, [
     { current_user: "occ_app", session_user: "occ_app" },
   ]);
-  if (prefix > 0) {
-    await installCanonicalPrefix(db, prefix);
-  }
   return db;
 }
 
@@ -861,6 +919,16 @@ async function historyReceipts(client) {
     "SELECT id,hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id",
   );
   return receipts.rows;
+}
+
+async function assertCopiedCanonicalPrefix(client, manifest, prefix) {
+  const receipts = await historyReceipts(client);
+  assert.equal(receipts.length, prefix, "Copied database must have the expected prefix length.");
+  assert.deepEqual(
+    receipts.map(({ hash, created_at }) => [hash, Number(created_at)]),
+    manifest.entries.slice(0, prefix).map(({ sha256, when }) => [sha256, when]),
+    "Copied database must have the canonical receipts in manifest order.",
+  );
 }
 
 /** @param {{ migrator: pg.Client }} db */
@@ -1482,6 +1550,9 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
+    const manifest = JSON.parse(
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+    );
     for (const [prefix, history] of await coveringNewestPrefix("pending SandboxPolicy", 76, [
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
@@ -1503,7 +1574,13 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
-        const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
+        const db = await historyDatabase(child, fixture, "pending_policy", {
+          prefix,
+          copyLabel: "unknown_policy_slot",
+        });
+        assert.ok("copy" in db);
+        const unknown = db.copy;
+        await assertCopiedCanonicalPrefix(unknown.migrator, manifest, prefix);
         const namespace = `ns_${randomUUID()}`;
         const { agent, revision } = await seedCanonicalAgent(db, namespace, {
           computeAdmission: true,
@@ -1597,9 +1674,6 @@ test(
               ? before.work.map((row) => ({ ...row, audit_attempt_id: null }))
               : before.work,
         };
-        const manifest = JSON.parse(
-          await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
-        );
         assert.deepEqual(
           (await historyReceipts(db.migrator))
             .slice(prefix)
@@ -1623,7 +1697,6 @@ test(
         });
 
         // An unrelated receipt in the same slot is not an upgradeable canonical prefix.
-        const unknown = await historyDatabase(child, fixture, "unknown_policy_slot", { prefix });
         await unknown.migrator.query(
           "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(repeat('0',64),$1)",
           [manifest.entries[prefix].when],
