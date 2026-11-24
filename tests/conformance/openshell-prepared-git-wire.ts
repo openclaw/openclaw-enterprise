@@ -370,6 +370,9 @@ interface WireState {
   provider?: WireProvider;
   conflict: boolean;
   lost: boolean;
+  // The write's answer is lost before the server applies it: "never" leaves the Provider as it
+  // was, "later" applies the write after the caller has seen the failure.
+  dropped?: "never" | "later";
   denyReads: boolean;
   workspaceId: string;
   workspaceReads: number;
@@ -498,12 +501,23 @@ export async function wire(t: TestContext) {
         callback({ code: grpc.status.ABORTED, details: "concurrent writer" });
         return;
       }
-      state.provider = {
-        ...state.provider,
-        credentials: request.provider.credentials,
-        credential_expiration_times: request.credential_expiration_times,
-        metadata: { ...state.provider.metadata, resource_version: "2" },
+      const apply = () => {
+        assert.ok(state.provider);
+        state.provider = {
+          ...state.provider,
+          credentials: request.provider.credentials,
+          credential_expiration_times: request.credential_expiration_times,
+          metadata: { ...state.provider.metadata, resource_version: "2" },
+        };
       };
+      if (state.dropped) {
+        callback({ code: grpc.status.UNAVAILABLE, details: "connection reset" });
+        if (state.dropped === "later") {
+          setImmediate(apply);
+        }
+        return;
+      }
+      apply();
       if (state.lost) {
         assert.ok(state.provider.credentials.GITHUB_TOKEN);
         callback({
