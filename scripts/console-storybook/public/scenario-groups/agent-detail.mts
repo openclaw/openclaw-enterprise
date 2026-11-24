@@ -3299,6 +3299,26 @@ export function createAgentDetailScenarios({
           "Use Tab to reach Retry and press Enter. Confirm the H1 becomes Research assistant and receives keyboard focus.",
         ],
       },
+      agentReadUnavailableOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Retry an Agent read on tab return",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+            status: 408,
+            skip: 1,
+            once: true,
+          },
+        ],
+        description: "A simulated Agent read timeout masks the Agent name and hides the draft.",
+        steps: [
+          "Open the preview in its own tab. Choose Edit Configuration, make an unsaved edit, and scroll the editor into view.",
+          "Switch to another browser tab and return. Confirm the heading is Agent details, the warning says Could not check Agent details, and the draft is hidden.",
+          "Focus Retry with Tab if needed, then press Enter. Confirm Research assistant and the unsaved edit return at the previous scroll position.",
+        ],
+      },
       configurationError: {
         group: "Pages/Agent detail",
         name: "Configuration unavailable",

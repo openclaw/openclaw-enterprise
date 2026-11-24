@@ -1015,7 +1015,7 @@ function clearPasswordInputs() {
     });
 }
 
-function retainMountedView(returnLink: Element | null) {
+function retainMountedView(returnLink: Element | null, scrollY = window.scrollY) {
   const owner = sessionOwnerKey(session);
   // The mounted view's own node, never another page shown in its place: an Agent page renders
   // hidden behind the page that stands in for it (finding 1542).
@@ -1032,7 +1032,7 @@ function retainMountedView(returnLink: Element | null) {
     state: mountedViewState?.reusable && mountedViewState.pending === 0 ? mountedViewState : null,
     title: app.querySelector<HTMLHeadingElement>(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
-    scrollY: window.scrollY,
+    scrollY,
     returnHref:
       returnLink instanceof HTMLAnchorElement && view.contains(returnLink)
         ? (returnLink.dataset.returnFocusHref ?? returnLink.href)
@@ -1266,7 +1266,13 @@ function resetReads({
   retainView = false,
   returnLink = null,
   keepShell = false,
-}: { retainView?: boolean; returnLink?: Element | null; keepShell?: boolean } = {}) {
+  retainedScrollY,
+}: {
+  retainView?: boolean;
+  returnLink?: Element | null;
+  keepShell?: boolean;
+  retainedScrollY?: number | undefined;
+} = {}) {
   const resumeDrafts = drafts.suspend();
   if (mountedViewState) {
     mountedViewState.deferredConfigurationFocus?.cancel.abort();
@@ -1286,7 +1292,7 @@ function resetReads({
     shellUI.reset();
   }
   if (retainView) {
-    retainMountedView(returnLink);
+    retainMountedView(returnLink, retainedScrollY);
   } else {
     mountedRouteKey = null;
   }
@@ -2252,6 +2258,9 @@ async function loadPage({
     if (unchanged && retainedView && retainedState) {
       stopLoadingTimer();
       forgetRetainedView(taken);
+      if (firstAgent) {
+        retainedView.title = firstAgent.name;
+      }
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       shell = restoredShell;
       // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
@@ -3280,10 +3289,18 @@ async function revalidateMountedAgent(current: Route) {
   }
   const mountedTitle = heading.textContent;
   let admittedAgentName: string | undefined;
-  let identityConcealed = false;
+  let scrollBeforeConceal: number | undefined;
   const concealDetails = () => {
     if (!isCurrent()) {
       return;
+    }
+    if (admittedAgentName === undefined) {
+      // Hiding the Agent ID can remove a header row and move the scroll anchor.
+      scrollBeforeConceal ??= window.scrollY;
+      heading.textContent = "Agent details";
+      if (agentIdentity) {
+        agentIdentity.hidden = true;
+      }
     }
     // Hold the page's space without painting details whose access check failed.
     view.style.opacity = "0";
@@ -3292,13 +3309,6 @@ async function revalidateMountedAgent(current: Route) {
     }
     if (diagnostics) {
       diagnostics.hidden = true;
-    }
-    if (admittedAgentName === undefined) {
-      identityConcealed = true;
-      heading.textContent = "Agent details";
-      if (agentIdentity) {
-        agentIdentity.hidden = true;
-      }
     }
   };
   let retryNotBefore = 0;
@@ -3573,7 +3583,7 @@ async function revalidateMountedAgent(current: Route) {
         }, Math.ceil(delay));
       }
       // Retain the editor in memory only. A Retry goes through normal page admission.
-      resetReads({ retainView: true, keepShell: true });
+      resetReads({ retainView: true, keepShell: true, retainedScrollY: scrollBeforeConceal });
       view.replaceWith(warning);
       pageActions?.remove();
       if (refresh) {
@@ -3597,7 +3607,7 @@ async function revalidateMountedAgent(current: Route) {
     clearStillChecking?.();
     // A newer load may hold this same node on screen; only this check's lifetime releases it.
     if (checked && isCurrent()) {
-      if (identityConcealed) {
+      if (scrollBeforeConceal !== undefined) {
         heading.textContent = mountedTitle;
         if (agentIdentity) {
           agentIdentity.hidden = false;

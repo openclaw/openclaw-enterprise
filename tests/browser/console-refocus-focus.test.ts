@@ -1331,6 +1331,74 @@ test("a transient refocus failure recovers the same focused Agent draft automati
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
+test("keyboard Retry restores the Agent name and reading position on a phone after an exact read reset", async (t) => {
+  const { fixture, page, editor, draft, requests, readCount, agentPath } = await openRefocusDraft(
+    t,
+    (context, fixture) =>
+      newPage(context, fixture, { browser, context: { viewport: { width: 390, height: 844 } } }),
+  );
+  const agentUrl = fixture.origin + agentPath;
+  const heading = page.getByRole("heading", { name: "Example Agent", exact: true });
+  const maskedHeading = page.getByRole("heading", { name: "Agent details", exact: true });
+  const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
+  const retry = warning.getByRole("button", { name: "Retry", exact: true });
+  const configuration = page.getByRole("tabpanel", { name: "Configuration", exact: true });
+  await heading.waitFor();
+  await tagView(page);
+  const scrollY = await editor.evaluate((node) => {
+    node.scrollIntoView({ block: "center" });
+    return window.scrollY;
+  });
+  assert.ok(scrollY > 0, "the editor is below the fold");
+  const panelTop = await configuration.evaluate((node) => node.getBoundingClientRect().top);
+
+  // Reset the first exact Agent GET before the recheck can admit the Agent's identity.
+  const retryRead = await holdRequests(t, page, agentUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await page.route(agentUrl, (route) => route.abort("connectionreset"), { times: 1 });
+  const failed = page.waitForEvent("requestfailed", {
+    predicate: (request) => request.method() === "GET" && request.url() === agentUrl,
+  });
+  await refocus(page);
+  assert.equal((await failed).failure()?.errorText, "net::ERR_CONNECTION_RESET");
+  await warning.waitFor();
+  assert.equal(readCount(agentPath), 1);
+  assert.equal(await hasFocus(retry), true);
+  assert.equal(await maskedHeading.count(), 1);
+  assert.equal(await heading.count(), 0);
+  assert.equal(await editor.count(), 0);
+
+  // The server still serves the same Agent. Hold its genuine answer so the browser cannot
+  // reveal the title or editor before the Retry read completes.
+  const recovered = responseTo(page, "GET", agentUrl);
+  await page.keyboard.press("Enter");
+  try {
+    assert.equal((await retryRead.requested)?.status(), 200);
+    assert.equal(await maskedHeading.count(), 1);
+    assert.equal(await heading.count(), 0);
+    assert.equal(await editor.count(), 0);
+  } finally {
+    retryRead.release();
+  }
+  assert.equal((await recovered).status(), 200);
+  await editor.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await viewTag(page), "kept", "Retry reused the original Agent view");
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await heading.count(), 1, "the readmitted Agent name is the heading");
+  assert.equal(await maskedHeading.count(), 0);
+  assert.equal(
+    await configuration.evaluate((node) => node.getBoundingClientRect().top),
+    panelTop,
+    "the retained Configuration panel returns to its original position in the viewport",
+  );
+  assert.equal(readCount(agentPath), 2);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
 test("persistent refocus failure leaves a local warning and Retry checks fresh access", async (t) => {
   const {
     fixture,
