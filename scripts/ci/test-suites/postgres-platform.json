@@ -129,7 +129,8 @@
     {
       "path": "tests/integration/postgres-plugin-discovery.test.ts",
       "expectedTests": [
-        "saved Agent catalog discovery releases the database connection while reading Configuration"
+        "saved Agent catalog discovery releases the database connection while reading Configuration",
+        "a dedicated Agent saves Google and Slack OAuth selections and admits them with its required model"
       ]
     },
     {

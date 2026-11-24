@@ -214,6 +214,51 @@ export function createAgentCredentialAccess({
     return sources;
   }
 
+  /** An unrelated draft edit retains staged placement only while the Agent can use every selected Source. */
+  async function savedStagedPluginIds(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    bindings: readonly SelectedPluginBinding[],
+  ): Promise<ReadonlySet<string>> {
+    const staged = new Set(bindings.map(({ pluginId }) => pluginId));
+    for (const { pluginId, sourceId } of bindings) {
+      const { decision } = await authority.authorizationDecision(
+        agent.servicePrincipalId,
+        "operate",
+        {
+          kind: "credential_source",
+          namespaceId: agent.namespaceId,
+          id: sourceId,
+        },
+      );
+      if (!decision.allowed) {
+        staged.delete(pluginId);
+        continue;
+      }
+      const source = await state.credentialSources.findCredentialSource(
+        agent.namespaceId,
+        sourceId,
+      );
+      if (
+        !isManagedTokenServiceSource(source) ||
+        source.state !== "ready" ||
+        source.connectionTemplateId === undefined
+      ) {
+        staged.delete(pluginId);
+        continue;
+      }
+      try {
+        requireTokenServiceOwner(source.tokenServiceInstanceId);
+      } catch (error) {
+        if (!(error instanceof DependencyUnavailableError)) {
+          throw error;
+        }
+        staged.delete(pluginId);
+      }
+    }
+    return staged;
+  }
+
   /** Authorize each reported Source and resolve the Template version for this admission. */
   async function authorizePluginCredentialSources(
     state: PlatformReadView,
@@ -345,7 +390,13 @@ export function createAgentCredentialAccess({
         "Agent credential sources require a selected Sandbox Driver.",
       );
     }
-    await validatePluginCredentialSources(driver, agent.plugins, sources, agent.harnessAuth);
+    await validatePluginCredentialSources(
+      driver,
+      agent.plugins,
+      sources,
+      agent.harnessAuth,
+      plugin.templates,
+    );
     const descriptions =
       selected.length > 0
         ? await describePluginBindings(driver, agent.plugins, selected, sources)
@@ -589,6 +640,7 @@ export function createAgentCredentialAccess({
     authorizeBoundCredentialSources,
     authorizeAgentCredentialSources,
     authorizePluginCredentialSources,
+    savedStagedPluginIds,
     admitCredentialSources,
     ensureAgentOperateGrants,
     grantSelectedPluginSources,

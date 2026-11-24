@@ -1008,7 +1008,6 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           admittedConfiguration,
           "stored",
         );
-        dependencies.plugins.validatePluginPlacement(driver, pluginState.plugins, revisionHarness);
       }
       // Decode every earlier revision: one that is unreadable refuses the deploy here (503,
       // nothing created), because the worker must decode them all to stop or retire them.
@@ -1076,6 +1075,19 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
               admittedSources.templates,
               policy?.additions ?? [],
             );
+      if (driver && pluginState) {
+        const stagedPluginIds = new Set(
+          credentialDeployment?.bindings.flatMap(({ consumer }) =>
+            consumer.kind === "plugin" ? [consumer.pluginId] : [],
+          ),
+        );
+        dependencies.plugins.validatePluginPlacement(
+          driver,
+          pluginState.plugins,
+          revisionHarness,
+          stagedPluginIds,
+        );
+      }
       const proxyAdmission =
         credentialDeployment === undefined
           ? await dependencies.egress.admitProxyPlan(

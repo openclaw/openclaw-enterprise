@@ -2048,16 +2048,15 @@ test(
       "an injection bindingRef must be a JSON string",
     );
     const missingSelector = structuredClone(mixedSpec);
-    const { networkAccessPolicy, injectionPolicies } = missingSelector.credential_deployment;
-    delete networkAccessPolicy.allowed.at(-1).requestPolicy;
-    delete injectionPolicies[1].allowedRequests[0].requestPolicy;
+    delete missingSelector.credential_deployment.networkAccessPolicy.allowed.at(-1).requestPolicy;
+    delete missingSelector.credential_deployment.injectionPolicies[1].allowedRequests[0].requestPolicy;
     // The network grant covers the whole destination, but injecting a Plugin credential
     // still requires a request selector.
     const requestShape = await pool.query(
       "SELECT occ.deployment_request_matches_have_valid_shape($1::jsonb) AS network, occ.deployment_request_matches_have_valid_shape($2::jsonb) AS injection",
       [
-        JSON.stringify(networkAccessPolicy.allowed),
-        JSON.stringify(injectionPolicies[1].allowedRequests),
+        JSON.stringify(missingSelector.credential_deployment.networkAccessPolicy.allowed),
+        JSON.stringify(missingSelector.credential_deployment.injectionPolicies[1].allowedRequests),
       ],
     );
     assert.deepEqual(requestShape.rows[0], { network: true, injection: true });
