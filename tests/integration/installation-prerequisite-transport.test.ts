@@ -931,7 +931,7 @@ syncBuiltinESMExports();
             check: {
               status: "passed",
               summary:
-                "The mounted TLS leaf is within its validity window and its extended key usage permits client use.",
+                "The client certificate in the selected Secret is within its validity window and its extended key usage permits client use.",
               resources: [workloadIdentity, { kind: "Secret", ...secretMetadata }],
             },
           },

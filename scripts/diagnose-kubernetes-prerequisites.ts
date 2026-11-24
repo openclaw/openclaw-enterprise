@@ -1173,7 +1173,7 @@ function inspectCertificate(
     return {
       status: "unknown",
       summary:
-        "The mounted TLS leaf is current. Its extended key usage does not establish client authentication suitability.",
+        "The client certificate in the selected Secret is current. Its extended key usage does not establish client authentication suitability.",
       resources,
     };
   }
@@ -1186,7 +1186,7 @@ function inspectCertificate(
   return {
     status: "passed",
     summary:
-      "The mounted TLS leaf is within its validity window and its extended key usage permits client use.",
+      "The client certificate in the selected Secret is within its validity window and its extended key usage permits client use.",
     resources,
   };
 }
