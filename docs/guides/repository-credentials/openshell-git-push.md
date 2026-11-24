@@ -46,7 +46,7 @@ Use the existing isolated installation and the [shared operator session](../depl
 
    `profiles` selects the allowed access mode; `permissions` sets its GitHub capabilities. See [registry profiles](../../reference/repository-credentials/access-levels.md#registry-profiles). The `github-repository` profile delegates ref restrictions to GitHub.
 
-2. Mount the immutable registry ConfigMap in the controller and worker. Mount the App signing key and a persistent 32-byte custody key **only in the worker**. Merge this fragment into the OCE Helm values, replacing the ConfigMap and Secret names. Set `upstreamCidrs` to the [worker GitHub API ranges](openshell-enrollment.md#allow-the-worker-to-reach-github).
+2. Mount the immutable registry ConfigMap in the controller and worker. Mount the App signing key and a persistent 32-byte custody key **only in the worker**. Merge this fragment into the OCE Helm values, replacing the ConfigMap and Secret names.
 
    ```yaml
    repositoryCredentials:
@@ -56,8 +56,6 @@ Use the existing isolated installation and the [shared operator session](../depl
      registryConfigMapName: replace-with-registry-configmap-name
      appKeySecretName: replace-with-app-key-secret-name
      preparedCustodySecretName: replace-with-custody-secret-name
-     upstreamCidrs:
-       - replace-with-approved-issuer-cidr
    ```
 
 3. Merge the [release Installation fragment](../../../deploy/examples/repository-credentials/openshell.fragment.yaml) into the existing Installation, preserving its Credential Gateway selection for model authentication. The following fields select the session duration and worker key paths:

@@ -372,7 +372,7 @@ the install as ready:
   Codex execution; customer upstream proxies are not supported.
 - For Codex hosted plugin discovery and runtime authentication, a
   same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
-  See [discovery egress](#hosted-discovery-egress).
+  See [discovery egress](#hosted-discovery-connectivity).
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed
