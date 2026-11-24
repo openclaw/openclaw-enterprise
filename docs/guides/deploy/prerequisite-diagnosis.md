@@ -273,8 +273,9 @@ shortfall still fails the check. Quota usage can lag and other admission limits 
 storage, images, credentials, database connectivity, and actual allowed/denied
 network paths require their existing deployment checks.
 
-Each command has 20 seconds and a 2 MiB combined output limit. The collection
-has 120 seconds. A timeout, denial, unreadable response, or missing tool yields unknown
+Collection has a 120-second deadline. Kubernetes reads have up to 15 seconds
+each. A subprocess that checks a workload or certificate has up to 45 seconds
+for its reads. Other commands have up to 20 seconds. Output is limited to 2 MiB. A timeout, denial, unreadable response, or missing tool yields unknown
 without copying provider error output into the report. Recheck the selected
 identity and prerequisite resources directly, then rerun after resolving the
 cause. Continue with [production installation](production-installation.md) only

@@ -273,6 +273,7 @@ test(
       resource?: string;
       status: string;
       summary?: string;
+      action?: string;
       limits?: { resource: string; status: string }[];
       stale?: string[];
       missing?: string[];
@@ -979,6 +980,8 @@ test(
     assert.equal(deniedSecret?.status, "unknown");
     assert.match(deniedSecret?.summary ?? "", /not authorized to read this resource/u);
     assert.deepEqual(deniedSecret?.resources, [workloadIdentity]);
+    assert.match(deniedSecret?.action ?? "", /read access/u);
+    assert.doesNotMatch(deniedSecret?.action ?? "", /renew/u);
 
     const workerMounts = "/spec/template/spec/containers/0/volumeMounts";
     async function patchWorkerMounts(operations: object[]) {
@@ -1031,6 +1034,34 @@ test(
       assert.match(result?.summary ?? "", /does not resolve to one mounted tls\.crt/u);
       assert.deepEqual(result?.resources, [await identity("StatefulSet", "statefulset", name)]);
     }
+
+    // Grant only the missing Secret read. The same identity can now check
+    // the client certificate without access to unrelated resources.
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "role",
+      "client-secret-reader",
+      "--verb=get",
+      "--resource=secrets",
+      `--resource-name=${clientSecret}`,
+    );
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "rolebinding",
+      "client-secret-reader",
+      "--role=client-secret-reader",
+      `--serviceaccount=${namespace}:reader`,
+    );
+    const scoped = await diagnose({ ...clientPlan, kubeconfig: deniedConfig, context: "reader" }, [
+      token,
+      ...protectedValues,
+    ]);
+    assert.equal(scoped.checks.get("client-certificate")?.status, "passed");
+    assert.equal(scoped.checks.get("resource-quotas")?.status, "unknown");
 
     const companionItems = [publicItem, { key: "companion", path: "companion.txt" }];
     async function updateClientVolume(

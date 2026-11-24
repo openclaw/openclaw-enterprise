@@ -2005,7 +2005,7 @@ async function diagnose(
     const selection = config.clientCertificate;
     await check(
       "client-certificate",
-      "Verify the selected container's certificate path and renew its mounted Secret through the certificate owner.",
+      "Verify the workload, certificate path and named read access with their owners, then retry.",
       () => project({ kind: "client", selection }),
     );
   }
