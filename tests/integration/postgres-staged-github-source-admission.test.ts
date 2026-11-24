@@ -220,6 +220,7 @@ test(
     Object.assign(namespaceObject, { apiVersion: "v1", kind: "Namespace" });
     let deliveryAttempts = 0;
     let failNextDelivery = true;
+    let holdNextDelivery: (() => Promise<void>) | undefined;
     const observedCredentials: string[] = [];
     const gateway = workspaceGatewayClient([
       {
@@ -283,6 +284,10 @@ test(
           failNextDelivery = false;
           throw new Error("Controlled OpenShell outage before the Provider update.");
         }
+        const holdDelivery = holdNextDelivery;
+        holdNextDelivery = undefined;
+        await holdDelivery?.();
+        assert.equal(gateway.providers.get(request.name)?.resourceVersion, expectedVersion);
         const updated = {
           ...provider,
           config: request.config ?? {},
@@ -1403,8 +1408,59 @@ test(
       agedRevision.id,
     );
 
-    // The public renewal route uses the same finite mint and Provider delivery as API maintenance.
-    const manual = await inject("POST", renewalPath, undefined, resumedAPI);
+    // Pause scheduled delivery after the mint commits, then overlap the real public request.
+    const releaseDelivery = Promise.withResolvers<void>();
+    holdNextDelivery = () => releaseDelivery.promise;
+    const reachedManualRenewal = Promise.withResolvers<void>();
+    const prototype = OCCTokenServiceDriver.prototype as unknown as {
+      renewGitHubAppSource(
+        source: Parameters<OCCTokenServiceDriver["forceRefresh"]>[0],
+        signal: AbortSignal,
+        mode: "due" | "forced",
+      ): Promise<void>;
+    };
+    // Observe the real owner call after it sees the in-flight attempt. The original method runs.
+    const renew = prototype.renewGitHubAppSource;
+    const observe = t.mock.method(
+      prototype,
+      "renewGitHubAppSource",
+      function (this: OCCTokenServiceDriver, ...args: Parameters<typeof renew>) {
+        const [source, , mode] = args;
+        const result = renew.apply(this, args);
+        if (source.sourceRef.id === gitSource.id && mode === "forced") {
+          reachedManualRenewal.resolve();
+        }
+        return result;
+      },
+    );
+    const manual = await (async () => {
+      try {
+        await store.update(
+          sourceStorage,
+          JSON.stringify({
+            ...pending,
+            deliveryPending: undefined,
+            expiresAt: new Date(Date.now() + 30_000).toISOString(),
+          }),
+        );
+        await waitFor(
+          "the scheduled Git Provider update",
+          () => deliveryAttempts === 3 || undefined,
+        );
+        const response = inject("POST", renewalPath, undefined, resumedAPI);
+        await Promise.race([
+          reachedManualRenewal.promise,
+          response.then((result) =>
+            assert.fail(`Rotation returned before joining delivery: ${result.statusCode}`),
+          ),
+        ]);
+        releaseDelivery.resolve();
+        return await response;
+      } finally {
+        releaseDelivery.resolve();
+        observe.mock.restore();
+      }
+    })();
     assert.equal(manual.statusCode, 200, manual.body);
     assert.equal(manual.json().data.id, gitSource.id);
     assert.equal(manual.json().data.type, "github-app-installation");

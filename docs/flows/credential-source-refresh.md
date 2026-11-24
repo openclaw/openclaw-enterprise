@@ -155,8 +155,9 @@ redeploy.
 `POST …/rotate` requires `credential_source:update` on the exact Namespace Source.
 OCC requires a ready OAuth or GitHub App installation Source, then calls the
 selected TokenService's `forceRefresh`. TokenService commits the replacement
-before notifying Credential Proxy. A failed delivery can retry the committed
-version. OCC returns Source metadata after successful renewal. Static Sources
+before notifying Credential Proxy. The API's scheduled and manual Git renewals
+share one attempt per Source through delivery acknowledgement. A failed delivery
+can retry the committed version. OCC returns Source metadata after successful renewal. Static Sources
 use `PATCH` for replacement and return `409` from `/rotate`.
 
 ### 5. Deletion

@@ -346,7 +346,7 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
         const deliveryFailed = error instanceof CredentialDeliveryFailedError;
         await dependencies.transactions
           .transact(async (state) => {
-            if (deliveryFailed && audit) {
+            if (deliveryFailed && error.credentialUpdated && audit) {
               await state.audit.append(audit);
             }
             await state.audit.append(

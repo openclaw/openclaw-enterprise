@@ -157,6 +157,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   private readonly oauth: OAuthAccountTokens | undefined;
   private readonly githubApp: GitHubAppEnrollment | undefined;
   private readonly githubAppIssuer: GitHubAppSourceIssuer;
+  private readonly renewingGitSources = new Map<string, Promise<boolean>>();
   private readonly credentialProxy:
     Pick<CredentialProxyDriver, "notifyCredentialUpdated"> | undefined;
 
@@ -633,13 +634,14 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     source: TokenServiceSourceInstance,
     version: string,
     signal: AbortSignal,
+    credentialUpdated = true,
   ): Promise<void> {
     const proxy = this.credentialProxy;
     if (!proxy) {
       return;
     }
     if (!proxy.notifyCredentialUpdated) {
-      throw new CredentialDeliveryFailedError();
+      throw new CredentialDeliveryFailedError(credentialUpdated);
     }
     try {
       await proxy.notifyCredentialUpdated(
@@ -648,7 +650,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         signal,
       );
     } catch {
-      throw new CredentialDeliveryFailedError();
+      throw new CredentialDeliveryFailedError(credentialUpdated);
     }
   }
 
@@ -767,9 +769,32 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     signal: AbortSignal,
     mode: "due" | "forced",
   ): Promise<void> {
+    signal.throwIfAborted();
     const ref = this.ownedRef(source);
+    const current = this.renewingGitSources.get(ref.id);
+    if (current) {
+      // A forced request can share a mint, but a maintenance check or redelivery does not mint.
+      if (!(await current) && mode === "forced") {
+        await this.renewGitHubAppSource(source, signal, mode);
+      }
+      return;
+    }
+    // Manual rotation and API maintenance share one owner through Provider acknowledgement.
+    const renewal = this.runGitHubAppRenewal(source, signal, mode).finally(() =>
+      this.renewingGitSources.delete(ref.id),
+    );
+    this.renewingGitSources.set(ref.id, renewal);
+    await renewal;
+  }
+
+  private async runGitHubAppRenewal(
+    source: TokenServiceSourceInstance<CredentialSourceReference>,
+    signal: AbortSignal,
+    mode: "due" | "forced",
+  ): Promise<boolean> {
+    const ref = source.sourceRef;
     const stored = this.storageRef(ref);
-    const version = await this.state.transact(
+    const committed = await this.state.transact(
       async ({ namespaces, connectionTemplates, credentialSources }) => {
         const namespace = await namespaces.lockNamespace(ref.namespaceId);
         const current = this.ownedSource(
@@ -791,7 +816,9 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
             this.store.withValue(stored, async (value) => decodeGitHubAppSourceCredential(value)),
           );
           if (Date.parse(receipt.expiresAt) - Date.now() > githubAppRenewalLeadMs) {
-            return receipt.deliveryPending ? receipt.version : undefined;
+            return receipt.deliveryPending
+              ? { version: receipt.version, minted: false }
+              : undefined;
           }
         }
         this.assertGitHubAppClient(
@@ -801,14 +828,18 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         const issued = await this.issueGitHubAppCredential(current, signal);
         const replacement = encodeGitHubAppCredential(issued, this.credentialProxy !== undefined);
         await withComputeAbortSignal(signal, () => this.store.update(stored, replacement.stored));
-        return replacement.version;
+        return { version: replacement.version, minted: true };
       },
     );
-    if (version === undefined || this.credentialProxy === undefined) {
-      return;
+    if (committed === undefined) {
+      return false;
+    }
+    const { version, minted } = committed;
+    if (this.credentialProxy === undefined) {
+      return minted;
     }
     // Keep the pending version in custody so another API pass can retry a failed push.
-    await this.notifyCredentialUpdated(source, version, signal);
+    await this.notifyCredentialUpdated(source, version, signal, minted);
     await this.state.transact(async ({ namespaces, credentialSources }) => {
       const namespace = await namespaces.lockNamespace(ref.namespaceId);
       const current = this.ownedSource(
@@ -826,6 +857,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         }
       });
     });
+    return minted;
   }
 
   async getRefreshStatus(

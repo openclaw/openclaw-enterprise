@@ -192,9 +192,16 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
 
 /** Credential custody committed, but the selected Proxy did not acknowledge delivery. */
 export class CredentialDeliveryFailedError extends DependencyUnavailableError {
-  constructor() {
-    super("The credential source was updated, but credential delivery failed.");
+  readonly credentialUpdated: boolean;
+
+  constructor(credentialUpdated = true) {
+    super(
+      credentialUpdated
+        ? "The credential source was updated, but credential delivery failed."
+        : "Delivery failed for the credential already held by the source.",
+    );
     this.name = "CredentialDeliveryFailedError";
+    this.credentialUpdated = credentialUpdated;
   }
 }
 
