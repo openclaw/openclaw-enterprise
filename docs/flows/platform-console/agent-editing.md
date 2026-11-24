@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-24
-last_updated_session: authoring-run/261aa429-df62-4285-b574-5417ff787bdc
+updated: "2026-11-24 15:51"
+last_updated_session: "authoring-run/acb5e9f3-ca5f-443d-ba44-31a213dffc65"
 ---
 
 # Console Agent editing and runtime requests
@@ -168,13 +168,13 @@ Without review, a `github-repository` binding and empty readable history yield
 `null`. Otherwise Console omits the field. Admission rechecks independently.
 Success opens the version. Uncertainty disables Deploy. Check history before retrying.
 
-`apps/controller/src/console/drafts.mts:createDraftStore` isolates drafts by Namespace
-and Agent. Nothing enters browser storage or URLs. Before teardown, `console.mts:resetReads` and `detail.mts:renderTab`
-exclude passwords from captures. Session expiry, user change, logout, exit or reload clears drafts.
-Configuration, authentication and channel baselines prevent stale saves. Channel
-snapshots include controls and staged Secret metadata. **Reload draft** reapplies
-your edits, flagging overlaps and skips. Save and Cancel clear
-captures. Pending saves retain recovery guards.
+`apps/controller/src/console/drafts.mts:createDraftStore` keeps drafts only in memory by Namespace
+and Agent. `console.mts:resetReads` and `detail.mts:renderTab` exclude passwords.
+Session expiry, user change, logout, exit or browser reload clears drafts.
+Baselines guard saves. Channel snapshots include staged Secret metadata.
+**Reload draft** can reapply edits after conflicts, flagging overlaps and skips.
+After **Outcome unknown**, it discards edits. Success or Cancel clears captures.
+Pending saves retain guards.
 
 `dom.mts:dismissOnBackdrop` requires press and click outside the topmost editor.
 Like Escape, cancellation discards channel drafts, clears Secret inputs, and
@@ -355,6 +355,8 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 15:51: Distinguish draft reload outcomes. (authoring-run/acb5e9f3-ca5f-443d-ba44-31a213dffc65 - 7b0d04f59c01e53e3f19e1e744daee1e428e851c)
 
 - 2026-11-24 06:58: Guard Settings during pending saves. (authoring-run/261aa429-df62-4285-b574-5417ff787bdc - 4d4681144427368743596e0379b28dbadfef8c58)
 

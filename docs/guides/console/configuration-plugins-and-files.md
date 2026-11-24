@@ -73,11 +73,26 @@ Agents or conversations. OCE isolates each Agent and requires OpenClaw's own
 sandbox to stay off. See the [former preset values](https://github.com/openclaw/openclaw/blob/762a2fe60cc37cf6b8c9d05e61c329866e0d3f6f/docs/gateway/security/presets.md#what-the-presets-select)
 and [OCE's deployment defaults](../../reference/configuration.md#agent-references-and-immutable-versions).
 
-Unsaved edits, pending saves, and stale or unknown outcomes block deployment,
-tab switching, and version navigation. Save checks Configuration association and
-generation, and the API refuses later races. Reload stale drafts; after an
-unknown outcome, successfully reload saved state before retrying. Invalid JSON
-and failed saves retain text for correction. A save conflict keeps focus and text
+Unsaved Configuration JSON blocks deployment. You can change tabs or view a
+saved version and return to your edits. Save or cancel **Network proxy** edits
+before changing tabs or versions. A pending save, a required reload or an
+unknown save outcome blocks deployment and changes to Agent tabs or versions.
+
+Before saving, the Console checks the Agent’s Configuration and its generation.
+The API rejects a stale generation.
+
+- **Save conflict.** Select **Reload draft**. For the same editable
+  Configuration, the editor can reapply your unsaved changes over the latest
+  values. Review them and select **Save Configuration** to keep the changes
+  you still want.
+- **Outcome unknown.** The save may have succeeded. Copy your edits privately
+  before selecting **Reload draft**. Reload shows the saved values without
+  reapplying your edits. Compare them before deciding whether to edit again.
+
+Invalid JSON stays in the editor. If the API refuses the update while your
+session is active, the Console keeps your edits. If it denies access to the
+Agent or Configuration during the check before saving, the Console clears
+that Agent’s local drafts and sends no update. A save conflict keeps focus and text
 selection if you moved to another control while saving. If you stayed on
 **Checking Configuration…**, focus moves to **Reload draft**.
 Backend, execution mode, and Harness authentication are Agent fields, not native

@@ -10,7 +10,7 @@ Add managed plugins to a dedicated OpenClaw Agent on Kubernetes, deploy the revi
 This guide walks through two managed plugin types:
 
 - **CLI plugins** using **Google Workspace** (`occ-plugin:google@1.0.0`), which runs the pinned `gog` command on the worker.
-- **Hosted MCP plugins** using **Slack** (`occ-plugin:slack`), which connects to a streamable Model Context Protocol endpoint.
+- **Hosted MCP plugins** using **Slack** (`occ-plugin:slack@1.0.0`), which connects to a streamable Model Context Protocol endpoint.
 
 > [!NOTE]
 > Dedicated Codex Agents use a separate curated app catalog and approval model. If you use Codex, see [Add Codex plugins to an OpenShell Agent](../integrations/codex-plugins.md).
@@ -19,7 +19,7 @@ This guide walks through two managed plugin types:
 
 Before you add plugins to an Agent, make sure your environment meets these requirements:
 
-1. **Dedicated OpenClaw on Kubernetes**: The Agent must use the dedicated OpenClaw Harness on Kubernetes Compute. Embedded OpenClaw supports only the bundled Diffs plugin.
+1. **Dedicated OpenClaw on Kubernetes**: [Dedicated native OpenClaw](../../reference/agents/deployment.md#execution-mode) is experimental. It requires Kubernetes Compute, native worker support and a compatible Sandbox. OpenShell is for development only. Embedded OpenClaw supports only the bundled Diffs plugin.
 2. **Plugin Driver enabled**: The Installation profile must select the bundled OpenClaw Plugin Driver (`occ-plugin` under `drivers.plugin`). See [Driver selection](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 3. **Operator permissions**: You need `agent:read`, `agent:update`, and `agent:deploy` on the target Agent, plus `credential_source:operate` on any attached account source.
 4. **Network connectivity**: For hosted MCP discovery, the OCC API must be able to reach the MCP HTTPS endpoint on port 443. Configure `api.pluginDiscoveryCidrs` in your Helm values to allow egress to the server IP addresses.
@@ -43,13 +43,13 @@ Credentialed Google Workspace calls require two setup steps before deployment:
 ### Configure the plugin in the console
 
 1. Open the OCC console and navigate to **Agents**.
-2. Select your dedicated OpenClaw Agent, then select **Create new version** → **Plugins**.
-3. Select **Configure plugins**.
-4. In the catalog list, find **Google Workspace** and select **Add**.
-5. Choose your account mode:
-   - **Install without an account**: Verifies that the worker image and CLI binary run without injecting external credentials. You can test tool startup by asking the Agent to run `gog --version`.
-   - **Connected account**: Select your attached Google account credential source. The worker receives an OpenShell placeholder for that account, and the Gateway enables the Google Workspace skill.
-6. Select **Save plugin selections**.
+2. Select your dedicated OpenClaw Agent. From a saved version, select **Open draft**.
+3. Select **Plugins → Configure plugins → Google Workspace**.
+4. If new, select **Add Google Workspace**. If disabled, turn on **Enable plugin**.
+5. Under **Google account**, choose one of the following.
+   - Select **Install without an account** to omit the external credentials. After deployment, ask the Agent to run `gog --version` to check tool startup.
+   - Select your attached Google account credential source by name. The worker receives an OpenShell placeholder for that account, and the Gateway enables the Google Workspace skill.
+6. Select **Done**, then **Save plugin selections**.
 
 ### Configure via CLI
 
@@ -84,7 +84,7 @@ Hosted MCP packages declare a fixed remote HTTPS server endpoint and an authenti
 
 Managed MCP plugins require the worker Node executable to be allowed in the Credential Gateway configuration:
 
-- In your Helm values under `drivers.credential_gateway.configuration`, add `/usr/local/bin/node` to `toolBinaries`. Without this entry, bearer-token registration is rejected with `409 RESOURCE_CONFLICT`. See [OpenShell Credential Gateway configuration](../../reference/drivers/openshell-credential-gateway.md#configure-the-driver).
+- In the Installation YAML, add `/usr/local/bin/node` to `drivers.credential_gateway.configuration.toolBinaries`. See [OpenShell Credential Gateway configuration](../../reference/drivers/openshell-credential-gateway.md#configure-the-driver).
 
 ### Set up the credential source
 
@@ -113,11 +113,11 @@ If the Agent already has the intended Slack source, skip registration. Otherwise
 
 ### Load and select MCP tools
 
-1. In the console under **Plugins** → **Configure plugins**, select **Slack**.
-2. In the **Credential Slot**, select your attached Slack credential source.
+1. From a saved version, select **Open draft**. Select **Plugins → Configure plugins → Slack**.
+2. If new, select **Add Slack**. If disabled, turn on **Enable plugin**. Under **Slack user account**, select your attached source.
 3. Select **Load tools**. The OCC API connects to `https://mcp.slack.com/mcp` and fetches the advertised tool descriptors.
 4. Select the explicit tools you want the Agent to access (for example, `slack_search_public`).
-5. Select **Save plugin selections**.
+5. Select **Done**, then **Save plugin selections**.
 
 > [!IMPORTANT]
 > The worker only advertises tools explicitly selected in the tool filter. An empty tool selection leaves the MCP server disabled.
@@ -146,7 +146,7 @@ If the deployment reports a warning such as `PLUGIN_INSTALL_FAILED`, review the 
 
 ## 4. Verify tool calls with the OpenClaw TUI
 
-The OCC Console provides administrative controls rather than an interactive chat interface, and HTTP model verification checks raw model connectivity without emitting tool call events. To interact with the deployed Agent and observe live tool execution, attach using the **OpenClaw TUI**.
+When browser chat is enabled and you have access, use [**Open chat**](../../reference/console.md#open-the-native-admin-ui) to talk to the Agent. To inspect live tool calls in this procedure, attach the **OpenClaw TUI**. HTTP model verification checks connectivity without showing tool events.
 
 ### Attach to the Agent
 

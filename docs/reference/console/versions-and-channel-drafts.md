@@ -10,7 +10,8 @@ Preset variables, and Agent search survive in-document navigation as drafts
 scoped to user, Namespace, and Agent. Passwords clear; reload warns; sign-out
 clears drafts.
 
-**Cancel**, **Start over**, and **Reload** discard edits; **Refresh** retains them.
+**Cancel** and **Start over** discard edits. **Refresh** can retain them.
+After a conflict, **Reload draft** can reapply edits for review.
 Saving clears drafts. Concurrent changes require reload; unsaved edits block
 deployment. Pending or uncertain saves require readback, never automatic retries.
 Backdrop clicks or Escape close the topmost channel, Secret, or plugin editor:
@@ -105,9 +106,16 @@ Configuration changes, and shared Configurations can affect other Agents' future
 deployments.
 
 Before saving, Agent and Configuration reads verify association and generation;
-concurrent changes can still race the PATCH. Refresh after a conflict. An
-unconfirmed PATCH may have succeeded and is never replayed automatically: it shows **Outcome unknown** and disables
-channel writes until Refresh loads saved state. **Disable Slack** changes only
+concurrent changes can still race the PATCH.
+
+- **Save conflict.** Select **Reload draft**. If the Agent still uses the same
+  Configuration and you can edit its Slack settings, review which edits the
+  Console reapplied before saving again.
+- **Outcome unknown.** The save may have succeeded. The Console blocks channel
+  writes and never retries automatically. Select **Reload draft** and inspect
+  the saved settings. This reload does not reapply your edits.
+
+**Disable Slack** changes only
 the draft, not access, execution, or saved versions.
 
 Slack requires dedicated execution and Kubernetes runtime projection. Socket Mode
