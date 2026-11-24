@@ -35,6 +35,14 @@ Static Source enrollment and update take a single write-only credential string. 
 
 A caller with `credential_source:update` on the exact Namespace Source can request renewal with `POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`. A ready OAuth or GitHub App installation Source renews through its selected TokenService's `forceRefresh` operation. The existing committed-update path delivers the replacement through Credential Proxy. If delivery fails after the commit, the delivery retry uses the committed version. Static credentials use the existing update operation.
 
+## Proposed change to protected GitHub metadata
+
+Retire the built-in protected `github-app-metadata` Source that uses a Namespace Secret as its GitHub App signing key. The selected Credential Proxy would stop offering and admitting this Source. Scoped GitHub REST reads through that offer would be unavailable until there is a TokenService-backed replacement.
+
+Keep the credential-free protected repository metadata offer for qualified deployments. Ordinary repository Git uses the registered GitHub App Client, its TokenService installation Source, and each Agent's admitted Repository policy.
+
+This retirement requires a product decision before implementation.
+
 ## Acceptance criteria
 
 Verify existing OAuth consent and rotation. Verify that Installation administrators can register and rotate an App key, that a wrong-App key is refused, and that the next mint uses the replacement without changing the cached token at rotation time. Verify that reads and audit omit key material and that a referenced client cannot be deleted. Verify both manual renewal types, exact Source authorization, and scheduled Git renewal. Retry delivery after a committed update without minting a second time. Verify static enrollment and replacement through the supported callers.
