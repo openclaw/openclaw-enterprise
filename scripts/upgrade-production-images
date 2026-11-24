@@ -2528,6 +2528,23 @@ fi
 
 "${kube[@]}" get deployments,statefulsets,pods,persistentvolumeclaims --all-namespaces \
   --output json >"$evidence_dir/before-workloads.json"
+# Match the later Pod drain selector. These controllers aren't scaled by the helper.
+local extra_writer
+extra_writer=$(jq -er --arg namespace "$namespace" --arg release "$release" '
+  first(.items[] |
+    select(.kind == "Deployment" or .kind == "StatefulSet") |
+    select(.metadata.namespace == $namespace and (.spec.replicas // 1) > 0) |
+    .spec.template.metadata.labels as $labels |
+    $labels["app.kubernetes.io/component"] as $component |
+    select($labels["app.kubernetes.io/name"] == "openclaw-enterprise" and
+      $labels["app.kubernetes.io/instance"] == $release and
+      ($component == "api" or $component == "worker")) |
+    select(.kind != "Deployment" or .metadata.name != ("openclaw-enterprise-" + $component)) |
+    $component) // ""
+' "$evidence_dir/before-workloads.json") || die "cannot inspect the captured workload inventory."
+[[ -z "$extra_writer" ]] ||
+  die "an additional active $extra_writer Deployment or StatefulSet matches this release's Pod drain selector. No OCC writer was stopped. Inspect before-workloads.json, coordinate shutdown of the extra workload with its owner, and start again with fresh evidence."
+
 "${occ_json[@]}" installation get >"$evidence_dir/installation.json"
 installation_id=$(jq -er '.id' "$evidence_dir/installation.json")
 [[ "$installation_id" == "$cluster_installation_id" ]] ||
