@@ -33,7 +33,7 @@ The operator selects a Source for model authentication or a named Plugin connect
 
 For a Template-backed Plugin Source, OCC checks the current compatible Template and freezes its version in the new revision. The Source retains the Template ID. An OAuth Source also retains its original consent version, selected client, and granted scopes. Updating a Template can affect a new admission while an existing revision keeps its admitted policy.
 
-The dashed arrows show the proposed deployment handoffs.
+Dashed arrows show proposed handoffs.
 
 ```mermaid
 ---
@@ -97,7 +97,7 @@ sequenceDiagram
     end
 ```
 
-OCC derives injection authority from the Source and the consumer's requested operations. Rules can restrict the executable, destination, port, HTTP method, and exact path or path subtree. For MCP, OCC checks the Template's server endpoint and derives RPC method and tool restrictions from the admitted Plugin operation. The upstream service independently enforces the credential's granted scopes and capabilities. If a credential has broad upstream permissions, an allowed endpoint can expose those permissions within the limits of the OCE rule.
+OCC derives injection authority from the Source and the consumer's requested operations. Rules can restrict the executable, destination, port, HTTP method, and exact path or path subtree. For MCP, OCC checks the Template's server endpoint and derives RPC method and tool restrictions from the admitted Plugin operation. An issuer can return a valid initial OAuth grant broader than requested. TokenService records requested and granted scopes separately; refresh can keep or narrow the grant. The upstream service enforces that grant independently of OCE's injection rules. An allowed endpoint can expose capabilities of a broad grant.
 
 ## Refresh, retry, and withdraw
 
@@ -118,7 +118,7 @@ Withdrawal detaches the binding for that Agent and removes its request authority
 | Static HTTP  | Select a static Source for a Plugin. Intersect the Plugin's requested HTTP operations with the Template's allowed destinations.                                                                            |
 | MCP          | Bind the selected Source to the admitted MCP endpoint and restrict RPC methods or tools. Discovery can use a separate network-only rule.                                                                   |
 
-Multiple Plugin accounts need distinct credential projections and a Plugin that can select the intended account for each invocation.
+Multiple accounts need distinct projections and a Plugin that selects the account per invocation.
 
 ## 1.0 scope and tradeoffs
 
@@ -133,6 +133,7 @@ The companions preserve the submitted proposals. Source ownership and fresh Harn
 
 - [Client registration, custody, and rotation](client-registration-and-custody.md) from the original proposal
 - [OAuth client selection and consent](oauth-client-associations.md)
+- [Initial OAuth grant scopes and renewal](https://github.com/openclaw/openclaw-enterprise/blob/9d10e151360455757205c3f602152cfd2717d549/specs/rfcs/0027-agent-oauth-connections/contracts.md#client-authentication-and-account-custody) (submitted RFC-0027 amendment in #7224)
 - [Installation ownership and delivery](installation-credential-ownership.md) and [TokenService identity and updates](token-service-instance-and-updates.md)
 - [Source registration and lifecycle](credential-source-ownership.md)
 - [Worker preparation and activation](worker-credential-configuration.md)
