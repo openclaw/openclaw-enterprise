@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-24
-last_updated_session: authoring-run/fc29889e-e795-4b35-91dd-40a401edafe0
+last_updated_session: authoring-run/2f82fe10-6549-44c7-9e66-a75aca4b0406
 ---
 
 # Credential source lifecycle flow
@@ -132,13 +132,11 @@ For each authorized Source, OCC sends Proxy the exact Source reference and a laz
 
 #### Retire the Source
 
-To delete a static Source, OCC checks for blocking references and records retirement intent. It asks the selected Proxy to retire the Source's delivery copies before TokenService removes the Source and credential. If Proxy retirement fails, OCC returns `503` and leaves the Source and credential available for retry. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
-
-For OAuth disconnect, OCC records revocation intent and TokenService retires the private grant. Admission of these OAuth Sources for native delivery remains pending.
+OCC checks for blocking references before starting static Source retirement. For OAuth disconnect, OCC records revocation intent immediately to stop new token resolution. The selected Proxy retires delivery copies before TokenService removes custody. A Sandbox must detach its Provider before OpenShell can delete it. On a Proxy failure, DELETE returns `503` and retains the Source and custody for retry. For OAuth, the worker also retries pending retirement. Agent references can keep the OAuth Source row after custody removal. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
 
 ## Debugging and Verification
 
-Use the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment) for the [managed Source and Agent integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) and [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts). The first exercises Source DELETE, Agent Stop, and active withdrawal through the Fastify API, PostgreSQL Worker, Compute, Sandbox, and Proxy. It simulates prior activation and controls the Kubernetes and OpenShell transports; live withdrawal requires separate qualification. The second sends authenticated active-Source PATCH and manual delivery retry requests through the selected native Proxy and checks authorization preflight and target receipts. Worker-side credential configuration is controlled, Provider attachment is modeled, and resolver failures and stale Gateway observations are simulated. These transports do not establish live delivery, a supervisor, rotation within a running Harness, or a model turn. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) for details.
+The [staged Source and Agent integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) covers DELETE, Stop, and withdrawal through Fastify and PostgreSQL with controlled Kubernetes and OpenShell transports. The [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts) covers active PATCH, retry authorization, and Proxy receipts with modeled attachments. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) for test setup and runtime proof limits.
 
 For a failed retry result, check `credential.resolution_failed` or `credential.delivery_failed` logs and the mutation audit. Logs identify the Namespace, Source, request, and fixed error code without exposing credential material or backend errors.
 
@@ -153,6 +151,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 10:09: Require selected Proxy retirement before OAuth custody removal in both the API and worker. (authoring-run/2f82fe10-6549-44c7-9e66-a75aca4b0406 - c3fe0bb531242c6e6b8fa22c28a1ffcdcdaef3cb)
 
 - 2026-11-24 09:33: Document the existing Gateway and Proxy request and the recorded-owner lifecycle on the Source API. (authoring-run/fc29889e-e795-4b35-91dd-40a401edafe0 - 5fe2168a8d17bc7dee2d63a251093367da3ac446)
 
