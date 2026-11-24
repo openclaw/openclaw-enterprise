@@ -372,7 +372,7 @@ interface WireState {
   lost: boolean;
   // The write's answer is lost before the server applies it: "never" leaves the Provider as it
   // was, "later" applies the write after the caller has seen the failure.
-  dropped?: "never" | "later";
+  dropped?: "never" | "later" | undefined;
   denyReads: boolean;
   workspaceId: string;
   workspaceReads: number;

@@ -363,7 +363,8 @@ export function registerPreparedGitRotationCases(): void {
       assert.ok(state.provider);
       return { result, steps, first, next, provider: state.provider, state };
     };
-    const unknown = (result: { error?: unknown }) =>
+    const unknown = (result: object) =>
+      "error" in result &&
       result.error instanceof OpenShellPreparedGitProviderError &&
       result.error.outcome === "unknown";
     const expiry = (value: string) => String(Math.floor(Date.parse(value) / 1000));
