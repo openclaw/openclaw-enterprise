@@ -170,10 +170,10 @@ convergence deadline passes. The worker rechecks an unready
 version after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
 On Kubernetes, dedicated Codex activation fails with
-`AGENT_GATEWAY_UNAUTHORIZED` if the gateway rejects its in-Pod CLI's credentials
-while applying the workspace node. Rate limiting and pairing refusals leave
-activation pending. Look for `runtime.workspace_node` and its optional `reason` in
-the gateway container log.
+`AGENT_GATEWAY_UNAUTHORIZED` if the gateway permanently rejects in-Pod CLI
+credentials while applying the workspace node. Retryable refusals, including
+rate limits and pairing, leave activation pending. Check the gateway container
+log for `runtime.workspace_node` and its optional `reason`.
 
 Check that `gateway.auth.password` is an environment SecretRef for
 `OPENCLAW_GATEWAY_PASSWORD`. In an [editable Console draft](../../guides/console/configuration-plugins-and-files.md#configuration-tab),
