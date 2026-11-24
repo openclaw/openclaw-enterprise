@@ -99,7 +99,7 @@ On Stop, Compute deletes the Sandbox, then asks Proxy to remove or confirm absen
 
 OCC checks exact `agent:operate`, records each pending revision withdrawal, and queues reconciliation in one transaction. Worker rechecks the requester. Compute asks Proxy to remove the binding from its recorded target. Sandbox verifies the reduced injection policy and removes exclusive network access while retaining independently approved routes. Proxy detaches the Provider and confirms a `REVOKED` receipt or Sandbox absence. Unconfirmed removal stays pending with `DEPENDENCY_UNAVAILABLE`.
 
-Worker derives active bindings from the immutable revision and confirmed withdrawals. It omits a revoked optional Plugin binding during retry and maintenance. Pending withdrawal, a missing required model, or failed policy or Provider readiness prevents activation.
+Worker derives active bindings from the immutable revision and confirmed withdrawals. It omits a revoked optional Plugin binding during retry and maintenance. Pending withdrawal, a missing required model, or failed policy or Provider readiness prevents activation. After the reduced policy loads, Proxy reports readiness as pending until the supervisor reports the Gateway’s current Provider-environment fingerprint.
 
 After confirmed detachment of each binding for the Source, Proxy attempts to retire those delivery Providers and profiles. OpenShell’s attached-Provider refusal preserves a copy still used by another Agent. The last binding removes that copy, while TokenService retains the Source and credential. Withdrawal does not undo an upstream request already sent, and stock OpenShell’s name-based detach retains the [documented same-name replacement limit](../reference/credential-sources.md#implementation-status).
 

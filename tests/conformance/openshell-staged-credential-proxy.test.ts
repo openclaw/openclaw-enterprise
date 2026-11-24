@@ -1423,11 +1423,13 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
   record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(reduced.policy);
   const admission = record(record(f.sandbox.status).configuration_admission);
   const currentProviderEnvironment = String(f.state.config!.provider_env_revision);
-  const previousProviderEnvironment = String(BigInt(currentProviderEnvironment) - 1n);
-  // Provider detach advances the desired environment before the supervisor reports it.
-  admission.provider_env_revision = previousProviderEnvironment;
+  const differentProviderEnvironment = String(BigInt(currentProviderEnvironment) - 1n);
+  // The Provider environment is an opaque fingerprint; either numeric direction can be stale.
+  admission.provider_env_revision = differentProviderEnvironment;
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "pending" });
   admission.provider_env_revision = String(BigInt(currentProviderEnvironment) + 1n);
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "pending" });
+  admission.provider_env_revision = "invalid";
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
     state: "failed",
     code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
@@ -1442,7 +1444,7 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
     endpoints: [{ ...discoveryEndpoint, path: pluginEndpoint.path, rules: pluginEndpoint.rules }],
   };
   record(reduced.policy.network_policies).stale = staleRule;
-  admission.provider_env_revision = previousProviderEnvironment;
+  admission.provider_env_revision = differentProviderEnvironment;
   assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
     state: "failed",
     code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",

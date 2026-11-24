@@ -564,10 +564,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
       if (admission.provider_env_revision !== config.provider_env_revision) {
-        if (BigInt(admission.provider_env_revision) < BigInt(config.provider_env_revision)) {
-          return { state: "pending" };
-        }
-        throw new OpenShellCredentialDeliveryRefusedError();
+        return { state: "pending" };
       }
       for (const { binding, provider } of providers) {
         // Provider-only status reconstruction records a Gateway-owned OBSERVE receipt. It does
