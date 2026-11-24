@@ -2625,29 +2625,30 @@ function publishAgentPluginSkillPath() {
 
 export const GATEWAY_RUNTIME_ENTRYPOINT = gatewayRuntimeEntrypoint(false);
 
-type GatewayWorkspaceNodeProfile = {
-  readonly kind: "inspected-dedicated-codex";
-  readonly revisionId: string;
-  readonly bindingPath: string;
-};
+type GatewayWorkspaceNodeProfile =
+  | {
+      readonly kind: "inspected-dedicated-codex";
+      readonly revisionId: string;
+      readonly bindingPath: string;
+    }
+  | { readonly kind: "inspected-dedicated-openclaw"; readonly revisionId: string };
 
 function inspectedWorkspaceNodeRuntime(profile: GatewayWorkspaceNodeProfile): string {
+  const nativeWorker = profile.kind === "inspected-dedicated-openclaw";
   return String.raw`
-const inspectedWorkspaceNode = ${JSON.stringify({
-    revisionId: profile.revisionId,
-    bindingPath: profile.bindingPath,
-  })};
+const inspectedWorkspaceNode = ${JSON.stringify(profile)};
 
 function requireInspectedWorkspaceNodeLaunch(initialConfigPath) {
   if (
-    !process.env.APP_SERVER_URL ||
-    process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined ||
-    process.env.OPENCLAW_WORKSPACE_NODE_ID !== undefined ||
-    workspaceNodeBindingPath !== inspectedWorkspaceNode.bindingPath ||
+    ${
+      nativeWorker
+        ? 'process.env.APP_SERVER_URL !== undefined || process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== "dedicated-native" || workspaceNodeBindingPath !== undefined || (process.env.OPENCLAW_WORKSPACE_NODE_ID !== undefined && !/^[a-f0-9]{64}$/u.test(process.env.OPENCLAW_WORKSPACE_NODE_ID)) ||'
+        : "!process.env.APP_SERVER_URL || process.env.OPENCLAW_NATIVE_WORKER_PROFILE !== undefined || process.env.OPENCLAW_WORKSPACE_NODE_ID !== undefined || workspaceNodeBindingPath !== inspectedWorkspaceNode.bindingPath ||"
+    }
     process.env.OPENCLAW_AGENT_REVISION_ID !== inspectedWorkspaceNode.revisionId ||
     initialConfigPath !== "/etc/openclaw/openclaw.json"
   ) {
-    throw new Error("Inspected workspace replies require a managed dedicated Codex launch with its revision-owned node binding.");
+    throw new Error("Inspected workspace replies require the admitted dedicated Harness launch and revision-owned node binding.");
   }
 }
 
@@ -2727,9 +2728,11 @@ export function gatewayRuntimeEntrypoint(
   if (
     workspaceNodeProfile !== undefined &&
     (!managedMode ||
-      workspaceNodeProfile.kind !== "inspected-dedicated-codex" ||
+      (workspaceNodeProfile.kind !== "inspected-dedicated-codex" &&
+        workspaceNodeProfile.kind !== "inspected-dedicated-openclaw") ||
       !workspaceNodeProfile.revisionId ||
-      !workspaceNodeProfile.bindingPath.startsWith("/"))
+      (workspaceNodeProfile.kind === "inspected-dedicated-codex" &&
+        !workspaceNodeProfile.bindingPath.startsWith("/")))
   ) {
     throw new Error("Invalid inspected workspace node launch profile.");
   }

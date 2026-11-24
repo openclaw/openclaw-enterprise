@@ -229,7 +229,6 @@ test("released Google and Slack slots accept authorized typed Template Sources w
   const common = {
     version: 1,
     createdAt,
-    oauthClientId: consent.oauthClientId,
     scopes: [],
     authorizationParameters: {},
   } as const;
@@ -244,7 +243,6 @@ test("released Google and Slack slots accept authorized typed Template Sources w
   };
   const slackTemplate: ConnectionTemplateVersion = {
     ...common,
-    oauthClientId: slackConsent.oauthClientId,
     templateId: slack.connectionTemplateId,
     mode: "mcp_discovery",
     issuer: "https://mcp.slack.com",
@@ -324,7 +322,7 @@ test("released Google and Slack slots accept authorized typed Template Sources w
   });
   wrong.set(staticSlack.id, {
     ...staticTemplate,
-    destinations: [{ ...staticTemplate.destinations[0]!, method: "GET" }],
+    destinations: [{ method: "GET", host: "mcp.slack.com", port: 443, path: "/mcp" }],
   });
   assert.deepEqual(
     driver.credentials

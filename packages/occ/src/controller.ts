@@ -20,6 +20,7 @@ import { type CreateNamespaceInput } from "./namespace-operations.ts";
 import {
   type CreateConnectionTemplateInput,
   type CreateOAuthClientInput,
+  type RotateCredentialClientInput,
   type DiscoverMcp,
   type UpdateConnectionTemplateInput,
 } from "./connection-administration.ts";
@@ -648,6 +649,18 @@ export class OpenClawController {
     );
   }
 
+  async listEligibleOAuthClients(
+    principalId: string,
+    namespaceId: string,
+    connectionTemplateId: string,
+  ) {
+    return this.composition.credentials.oauthConsent.listEligibleOAuthClients(
+      principalId,
+      namespaceId,
+      connectionTemplateId,
+    );
+  }
+
   async startNamespaceConnection(
     principalId: string,
     input: StartNamespaceConnectionInput,
@@ -816,14 +829,14 @@ export class OpenClawController {
   async rotateOAuthClientSecret(
     principalId: string,
     id: string,
-    clientSecret: string,
+    input: RotateCredentialClientInput,
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
     return this.composition.credentials.connectionAdministration.rotateOAuthClientSecret(
       principalId,
       id,
-      clientSecret,
+      input,
       audit,
       holdSession,
     );
@@ -1171,6 +1184,18 @@ export class OpenClawController {
       input,
       audit,
       failureAudit,
+    );
+  }
+
+  async adoptCodexPatCredentialSource(
+    principalId: string,
+    ref: { readonly namespaceId: string; readonly credentialSourceId: string },
+    audit: (resource: CredentialSourceReference, phase?: "adoption_started") => AuditEvent,
+  ): Promise<Readonly<CredentialSourceMetadata>> {
+    return this.composition.credentials.managedCredentialSources.adoptCodexPatCredentialSource(
+      principalId,
+      ref,
+      audit,
     );
   }
 

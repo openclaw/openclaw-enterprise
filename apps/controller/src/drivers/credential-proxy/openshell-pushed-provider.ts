@@ -75,8 +75,12 @@ function deliveryOwnership(source: CredentialSourceReference): Record<string, st
 
 function profileFor(binding: DeploymentCredentialBinding): OpenShellProviderProfile {
   if (
-    (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
-    binding.projection.presentation !== "bearer" ||
+    (binding.consumer.kind !== "model" &&
+      binding.consumer.kind !== "plugin" &&
+      binding.consumer.kind !== "repository") ||
+    (binding.consumer.kind === "repository"
+      ? binding.projection.presentation !== "github_repository"
+      : binding.projection.presentation !== "bearer") ||
     !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding.projection.environment)
   ) {
     refuse();
@@ -600,6 +604,38 @@ export function openShellPushedPolicyMatches(
         ),
     )
   );
+}
+
+/** Compare the complete effective policy after removing only Gateway-derived credential markers. */
+export function openShellEffectivePolicyMatches(source: unknown, effective: unknown): boolean {
+  const policy = asRecord(effective);
+  const networks = asRecord(policy?.network_policies);
+  if (!policy || !networks) {
+    return false;
+  }
+  const normalized = Object.fromEntries(
+    Object.entries(networks).map(([name, value]) => {
+      const rule = asRecord(value);
+      if (!rule || !Array.isArray(rule.endpoints)) {
+        return [name, value];
+      }
+      return [
+        name,
+        {
+          ...rule,
+          endpoints: rule.endpoints.map((value) => {
+            const endpoint = asRecord(value);
+            if (!endpoint || !asRecord(endpoint.credential_binding)) {
+              return value;
+            }
+            const { provider_credentialed: _marker, ...rest } = endpoint;
+            return rest;
+          }),
+        },
+      ];
+    }),
+  );
+  return sameOpenShellPolicy(source, { ...policy, network_policies: normalized });
 }
 
 export function assertOpenShellPushedBindingScope(

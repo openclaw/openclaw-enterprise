@@ -7,6 +7,8 @@ import test, { type TestContext } from "node:test";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { resolveModelCredentialPreset } from "../../apps/controller/src/composition/model-credential-presets.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import { openShellRepositoryCredentialRequests } from "../../apps/controller/src/drivers/credential-proxy/openshell-repository-policy.ts";
+import { admitRepositoryNetworkPolicy } from "../../packages/contracts/src/repository-network-policy.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
@@ -15,6 +17,7 @@ import {
   GrpcOpenShellGatewayClient,
   OpenShellAdmissionLimitError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OpenShellGatewayFailure } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import type {
   Backend,
   DeploymentRequestMatch,
@@ -25,6 +28,7 @@ import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-
 import { bindWireServer } from "./openshell-gateway-wire-fixture.ts";
 import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
 import {
+  CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
 } from "../../packages/occ/src/errors.ts";
@@ -155,6 +159,8 @@ async function fixture(t: TestContext) {
     additionalProviderStatuses: new Map<string, Wire>(),
     creates: [] as Wire[],
     updates: [] as Wire[],
+    policyUpdates: [] as Wire[],
+    policyUpdateReadback: "normal" as "normal" | "widened",
     attaches: [] as Wire[],
     detaches: [] as Wire[],
     detachReceipts: new Map<string, Wire>(),
@@ -163,6 +169,7 @@ async function fixture(t: TestContext) {
     profileDeletes: [] as Wire[],
     sandboxReads: 0,
     sandboxPresent: true,
+    sandboxInventoryMode: "normal" as "normal" | "second-page" | "repeated-token",
     workspaceDenied: false,
     sandboxReadMode: "normal" as "normal" | "unavailable-after-detach",
     detachMode: "normal" as "normal" | "permission-denied",
@@ -215,6 +222,22 @@ async function fixture(t: TestContext) {
     status.state = "PROVIDER_READINESS_STATE_READY";
   };
   const methods: Record<string, Handler> = {
+    ListSandboxes: (input) => {
+      assert.equal(record(input.workspace_scope).workspace, namespace.name);
+      const pageToken = String(input.page_token ?? "");
+      if (state.sandboxInventoryMode === "repeated-token") {
+        return { sandboxes: [], next_page_token: "again" };
+      }
+      if (state.sandboxInventoryMode === "second-page" && pageToken === "") {
+        return { sandboxes: [], next_page_token: "page-two" };
+      }
+      if (state.sandboxInventoryMode === "second-page") {
+        assert.equal(pageToken, "page-two");
+      }
+      return {
+        sandboxes: sandboxes.filter((candidate) => candidate !== sandbox || state.sandboxPresent),
+      };
+    },
     GetSandbox: (input) => {
       state.sandboxReads++;
       if (state.sandboxReadMode === "unavailable-after-detach" && state.detaches.length > 0) {
@@ -371,6 +394,47 @@ async function fixture(t: TestContext) {
     },
     GetSandboxConfig: () => state.config,
     GetSandboxPolicyStatus: () => state.policyStatus,
+    UpdateConfig: (input) => {
+      state.policyUpdates.push(input);
+      const target = liveSandbox(String(input.sandbox));
+      assert.ok(target);
+      assert.equal(input.expected_resource_version, target.metadata.resource_version);
+      const source = structuredClone(record(input.policy));
+      target.spec.policy = source;
+      target.metadata.resource_version = String(BigInt(target.metadata.resource_version) + 1n);
+      const version = Number(record(state.policyStatus!.revision).version) + 1;
+      state.policyStatus = {
+        revision: {
+          version,
+          status: "POLICY_STATUS_LOADED",
+          policy: source,
+          policy_hash: "a".repeat(64),
+        },
+        active_version: version,
+      };
+      if (state.config) {
+        const effective = structuredClone(source);
+        for (const rule of Object.values(record(effective.network_policies))) {
+          for (const endpoint of record(rule).endpoints as Wire[]) {
+            if (endpoint.credential_binding) {
+              endpoint.provider_credentialed = true;
+            }
+          }
+        }
+        if (state.policyUpdateReadback === "widened") {
+          record(effective.network_policies).unexpected_github = {
+            name: "unexpected_github",
+            binaries: [{ path: "/usr/bin/curl" }],
+            endpoints: [{ host: "github.com", ports: [443] }],
+          };
+        }
+        Object.assign(state.config, { policy: effective, version, configuration_admitted: true });
+        if (target.status.configuration_admission) {
+          record(target.status.configuration_admission).policy_version = version;
+        }
+      }
+      return { version };
+    },
     GetSandboxProviderStatus: (input) => {
       state.statusReads.push(input);
       const detach = state.detachReceipts.get(String(input.receipt_id));
@@ -2500,4 +2564,371 @@ test("staged OpenShell Proxy reports failure when target membership cannot be co
   assert.deepEqual(f.sandbox.spec.providers, []);
   assert.equal(f.state.provider?.config.oce_source_version, "source-v1");
   assert.deepEqual(f.state.deletes, []);
+});
+
+test("canonical OpenShell Proxy preserves exact Repository authority through delivery, refresh, and withdrawal", async (t) => {
+  const f = await fixture(t);
+  const grants = [
+    { repository: "fixture/repository", access: "read" },
+    { repository: "fixture/write", access: "write" },
+  ] as const;
+  const requests = openShellRepositoryCredentialRequests(grants);
+  const repository = {
+    bindingRef: "repository",
+    sourceRef: { kind: "credential_source", id: "cs_github", namespaceId: namespace.id },
+    consumer: { kind: "repository" },
+    projection: { environment: "GITHUB_TOKEN", presentation: "github_repository" },
+  } as const;
+  const repositoryInjection = { bindingRef: repository.bindingRef, allowedRequests: requests };
+  const optionalPlugin = {
+    bindingRef: "slack-default",
+    sourceRef: { kind: "credential_source", id: "cs_slack", namespaceId: namespace.id },
+    consumer: { kind: "plugin", pluginId: "slack", requirement: "account", connection: "default" },
+    projection: { environment: "SLACK_TOKEN", presentation: "bearer" },
+  } as const;
+  const pluginRequest: DeploymentRequestMatch = {
+    binary: "/usr/local/bin/node",
+    host: "slack.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "POST", path: "/api/chat.postMessage" },
+  };
+  const pluginInjection = {
+    bindingRef: optionalPlugin.bindingRef,
+    allowedRequests: [pluginRequest],
+  };
+  const baselineRule = {
+    name: "baseline",
+    binaries: [{ path: "/usr/bin/curl" }],
+    endpoints: [{ host: "example.com", ports: [443] }],
+  };
+  const baseline = { version: 1, network_policies: { baseline: baselineRule } };
+  const policy = admitRepositoryNetworkPolicy(grants, grants)!;
+  const context: CredentialDeploymentContext = {
+    ...f.context,
+    revision: {
+      ...f.context.revision,
+      sandboxPolicy: {
+        driverId: "sandbox",
+        implementation: "openshell",
+        version: 1,
+        defaults: { baseline: baselineRule },
+        additions: [],
+        repositoryNetworkPolicy: policy,
+      },
+      credentialDeployment: {
+        ...f.context.revision.credentialDeployment!,
+        networkAccessPolicy: { allowed: [...requests, pluginRequest] },
+        bindings: [repository, optionalPlugin],
+        injectionPolicies: [repositoryInjection, pluginInjection],
+      },
+    },
+  };
+  f.sandbox.spec.policy = structuredClone(baseline);
+  f.state.policyStatus = {
+    revision: { version: 1, status: "POLICY_STATUS_LOADED", policy: baseline },
+    active_version: 1,
+  };
+  let resolutions = 0;
+  const input = {
+    ...configuration,
+    bindings: [
+      {
+        binding: repository,
+        resolveCredential: async () => {
+          resolutions++;
+          return { credential: "synthetic-github-token", version: "github-v1" };
+        },
+      },
+    ],
+    // The immutable revision retains the optional Plugin binding, but Worker supplies only the
+    // effective Repository binding after optional Plugin withdrawal.
+    injectionPolicies: [repositoryInjection, pluginInjection],
+  };
+  // A generic allow at the same GitHub destination would bypass the saved Repo grant.
+  const overlapping = {
+    ...context,
+    revision: {
+      ...context.revision,
+      sandboxPolicy: {
+        ...context.revision.sandboxPolicy!,
+        additions: [
+          {
+            id: "bypass",
+            binary: "/usr/bin/git",
+            host: "github.com",
+            ports: [{ from: 443, to: 443 }],
+          },
+        ],
+      },
+    },
+  };
+  await assert.rejects(f.proxy.configureDeployment(overlapping, input), DependencyUnavailableError);
+  assert.equal(resolutions, 0);
+  const configured = await f.proxy.configureDeployment(context, input);
+  assert.deepEqual(configured.credentialProjections, [
+    { bindingRef: "repository", environment: "GITHUB_TOKEN", placeholder: { kind: "runtime" } },
+  ]);
+  assert.equal(resolutions, 1);
+  assert.equal(f.state.policyUpdates.length, 1);
+  // A resumed preparation must use the reduced effective policy even though the immutable
+  // revision still contains the withdrawn Plugin. Recreate a missing Repository Provider.
+  f.sandbox.spec.providers = [];
+  f.state.provider = undefined;
+  f.state.providerStatus = undefined;
+  await f.proxy.configureDeployment(context, input);
+  assert.equal(resolutions, 2);
+  assert.equal(f.state.creates.length, 2);
+  assert.ok(record(f.sandbox.spec.policy!.network_policies).baseline);
+  const source = structuredClone(f.sandbox.spec.policy!);
+  const repoRules = Object.values(record(source.network_policies)).filter(
+    (rule) => record(rule).name !== "baseline",
+  );
+  assert.equal(repoRules.length, 25);
+  assert.deepEqual(
+    [
+      ...new Set(
+        repoRules.flatMap((rule) => (record(rule).binaries as Wire[]).map(({ path }) => path)),
+      ),
+    ].sort(),
+    [
+      "/usr/bin/git",
+      "/usr/lib/git-core/git-remote-http",
+      "/usr/lib/git-core/git-remote-https",
+      "/usr/libexec/git-core/git-remote-http",
+      "/usr/libexec/git-core/git-remote-https",
+    ],
+  );
+  const discovery = repoRules
+    .map((rule) => (record(rule).endpoints as Wire[])[0]!)
+    .find((endpoint) => endpoint.path === "/fixture/repository.git/info/refs")!;
+  assert.deepEqual(record((discovery.rules as Wire[])[0]!).allow, {
+    method: "GET",
+    path: "/fixture/repository.git/info/refs",
+    query: { service: { glob: "git-upload-pack" } },
+  });
+  assert.match(String(record(discovery.credential_binding).provider), /^oce-cs-/);
+  assert.equal(
+    repoRules.some((rule) =>
+      JSON.stringify(rule).includes("/fixture/repository.git/git-receive-pack"),
+    ),
+    false,
+  );
+  const writeDiscovery = repoRules
+    .map((rule) => (record(rule).endpoints as Wire[])[0]!)
+    .find((endpoint) => endpoint.path === "/fixture/write.git/info/refs")!;
+  assert.deepEqual(
+    (writeDiscovery.rules as Wire[]).map((rule) => record(record(rule.allow).query).service),
+    [{ glob: "git-upload-pack" }, { glob: "git-receive-pack" }],
+  );
+  assert.ok(
+    repoRules.some((rule) =>
+      (record(rule).endpoints as Wire[]).some(
+        (endpoint) => endpoint.path === "/fixture/write.git/git-receive-pack",
+      ),
+    ),
+  );
+
+  // The existing receipt fixture supplies controlled serving evidence; it does not qualify a live Sandbox.
+  f.observeServing();
+  const effective = structuredClone(source);
+  for (const rule of Object.values(record(effective.network_policies))) {
+    for (const endpoint of record(rule).endpoints as Wire[]) {
+      if (endpoint.credential_binding) {
+        endpoint.provider_credentialed = true;
+      }
+    }
+  }
+  f.sandbox.spec.policy = source;
+  f.state.config!.policy = effective;
+  record(f.state.policyStatus!.revision).policy = source;
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), { state: "ready" });
+  const effectiveDiscovery = Object.values(record(effective.network_policies))
+    .flatMap((rule) => record(rule).endpoints as Wire[])
+    .find((endpoint) => endpoint.path === discovery.path)!;
+  Reflect.deleteProperty(record(record((effectiveDiscovery.rules as Wire[])[0]!).allow), "query");
+  assert.deepEqual(await f.proxy.getDeploymentStatus(context, configuration), {
+    state: "failed",
+    code: "NATIVE_CREDENTIAL_DEPLOYMENT_REFUSED",
+  });
+  record((effectiveDiscovery.rules as Wire[])[0]!).allow = structuredClone(
+    record((discovery.rules as Wire[])[0]!).allow,
+  );
+
+  // OpenShell retains the creation policy in Sandbox.spec after UpdateConfig. Source refresh
+  // must acknowledge the combined loaded policy against the trusted admitted revision instead.
+  f.sandbox.spec.policy = structuredClone(baseline);
+  const resolvedRevisions: string[] = [];
+  let denyRecipient = false;
+  f.proxy.bindSourceRevisionResolver(async (sourceRef, agentId, revisionId) => {
+    assert.deepEqual(sourceRef, repository.sourceRef);
+    assert.equal(agentId, context.revision.agentId);
+    assert.equal(revisionId, context.revision.id);
+    resolvedRevisions.push(revisionId);
+    if (denyRecipient) {
+      throw new DependencyUnavailableError("The Agent no longer has Source authority.");
+    }
+    return { revision: context.revision, activeBindingRefs: new Set([repository.bindingRef]) };
+  });
+  let refreshResolutions = 0;
+  const refresh = (version: string) =>
+    f.proxy.notifyCredentialUpdated(
+      { sourceRef: repository.sourceRef, version },
+      async () => {
+        refreshResolutions++;
+        return { credential: `synthetic-${version}`, version };
+      },
+      t.signal,
+    );
+  await refresh("github-v2");
+  assert.equal(f.state.provider!.config.oce_source_version, "github-v2");
+  const updates = f.state.updates.length;
+  denyRecipient = true;
+  f.state.sandboxInventoryMode = "second-page";
+  await assert.rejects(refresh("github-revoked"), DependencyUnavailableError);
+  assert.equal(refreshResolutions, 1, "recipient authorization precedes credential resolution");
+  assert.equal(f.state.updates.length, updates, "a denied Agent cannot receive the new token");
+  denyRecipient = false;
+  f.state.sandboxInventoryMode = "repeated-token";
+  await assert.rejects(refresh("github-incomplete"), OpenShellGatewayFailure);
+  assert.equal(refreshResolutions, 1);
+  assert.equal(f.state.updates.length, updates);
+  f.state.sandboxInventoryMode = "normal";
+  // A Provider receipt alone cannot prove injection when the effective endpoint lacks its native marker.
+  Reflect.deleteProperty(effectiveDiscovery, "provider_credentialed");
+  await assert.rejects(refresh("github-uncredentialed"), DependencyUnavailableError);
+  effectiveDiscovery.provider_credentialed = true;
+  assert.deepEqual(resolvedRevisions, Array(5).fill(context.revision.id));
+  assert.deepEqual(f.sandbox.spec.policy, baseline);
+
+  // A withdrawal retry must not report the optional Plugin revoked while the retained Git
+  // policy is loaded but its native credential delivery is no longer ready.
+  effectiveDiscovery.provider_credentialed = false;
+  await assert.rejects(
+    f.proxy.removeDeployment(context, {
+      targetRef: configuration.targetRef,
+      bindingRefs: [optionalPlugin.bindingRef],
+    }),
+    {
+      code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+      message:
+        "The effective reduced policy is unsafe or retained credential delivery is not ready.",
+    },
+  );
+  assert.deepEqual(f.state.detaches, []);
+  effectiveDiscovery.provider_credentialed = true;
+
+  // Even mutually consistent Gateway/supervisor readbacks cannot authorize a widened Git
+  // discovery rule when the exact admitted revision still requires the service query.
+  const discoveryAllow = structuredClone(record((discovery.rules as Wire[])[0]!).allow);
+  const loadedDiscovery = Object.values(
+    record(record(record(f.state.policyStatus!.revision).policy).network_policies),
+  )
+    .flatMap((rule) => record(rule).endpoints as Wire[])
+    .find((endpoint) => endpoint.path === discovery.path)!;
+  for (const endpoint of [loadedDiscovery, effectiveDiscovery]) {
+    Reflect.deleteProperty(record(record((endpoint.rules as Wire[])[0]!).allow), "query");
+  }
+  await assert.rejects(refresh("github-v3"), DependencyUnavailableError);
+  for (const endpoint of [loadedDiscovery, effectiveDiscovery]) {
+    record((endpoint.rules as Wire[])[0]!).allow = structuredClone(discoveryAllow);
+  }
+
+  f.proxy.bindSourceRevisionResolver(async () => ({
+    revision: { ...context.revision, id: "other-revision" },
+    activeBindingRefs: new Set([repository.bindingRef]),
+  }));
+  await assert.rejects(refresh("github-v4"), DependencyUnavailableError);
+
+  const { sandbox: peer, context: peerBase } = addSecondSandboxTarget(f);
+  const peerGrants = [{ repository: "fixture/write", access: "read" }] as const;
+  const peerRequests = openShellRepositoryCredentialRequests(peerGrants);
+  const peerInjection = { bindingRef: repository.bindingRef, allowedRequests: peerRequests };
+  const peerContext: CredentialDeploymentContext = {
+    ...peerBase,
+    revision: {
+      ...peerBase.revision,
+      sandboxPolicy: {
+        ...context.revision.sandboxPolicy!,
+        repositoryNetworkPolicy: admitRepositoryNetworkPolicy(peerGrants, grants)!,
+      },
+      credentialDeployment: {
+        ...context.revision.credentialDeployment!,
+        networkAccessPolicy: { allowed: [...peerRequests, pluginRequest] },
+        injectionPolicies: [peerInjection, pluginInjection],
+      },
+    },
+  };
+  // This wire fixture has one policy-readback slot. Present the peer's initially loaded
+  // baseline while configuring it, then restore the victim's readback before withdrawal.
+  const victimStatus = structuredClone(f.state.policyStatus);
+  const victimConfig = structuredClone(f.state.config);
+  peer.spec.policy = structuredClone(baseline);
+  f.state.config = undefined;
+  f.state.policyStatus = {
+    revision: { version: 1, status: "POLICY_STATUS_LOADED", policy: baseline },
+    active_version: 1,
+  };
+  await f.proxy.configureDeployment(peerContext, {
+    ...secondConfiguration,
+    bindings: input.bindings,
+    injectionPolicies: [peerInjection, pluginInjection],
+  });
+  const sharedProvider = f.state.provider!.metadata.name;
+  assert.equal(resolutions, 2, "a peer must reuse the Source Provider without resolving again");
+  assert.equal(f.state.creates.length, 2);
+  assert.deepEqual(peer.spec.providers, [sharedProvider]);
+  assert.deepEqual(record(f.state.policyStatus.revision).policy, peer.spec.policy);
+  const peerPolicy = structuredClone(peer.spec.policy!);
+  const peerEndpoints = Object.values(record(peerPolicy.network_policies)).flatMap(
+    (rule) => record(rule).endpoints as Wire[],
+  );
+  const peerDiscovery = peerEndpoints.find(
+    (endpoint) => endpoint.path === "/fixture/write.git/info/refs",
+  )!;
+  assert.deepEqual(
+    (peerDiscovery.rules as Wire[]).map((rule) => record(record(rule.allow).query).service),
+    [{ glob: "git-upload-pack" }],
+  );
+  assert.equal(record(peerDiscovery.credential_binding).provider, sharedProvider);
+  const peerUpload = peerEndpoints.find(
+    (endpoint) => endpoint.path === "/fixture/write.git/git-upload-pack",
+  )!;
+  assert.deepEqual(record((peerUpload.rules as Wire[])[0]!).allow, {
+    method: "POST",
+    path: "/fixture/write.git/git-upload-pack",
+  });
+  assert.equal(record(peerUpload.credential_binding).provider, sharedProvider);
+  assert.equal(
+    peerEndpoints.some(
+      (endpoint) =>
+        String(endpoint.path).includes("/fixture/repository") ||
+        String(endpoint.path).endsWith("/git-receive-pack"),
+    ),
+    false,
+  );
+  f.state.policyStatus = victimStatus;
+  f.state.config = victimConfig;
+  // A loaded policy that still permits Git after reduction is a definitive unsafe result.
+  // The Worker must receive a withdrawal refusal before any Provider detach is acknowledged.
+  f.state.policyUpdateReadback = "widened";
+  await assert.rejects(
+    f.proxy.removeDeployment(context, {
+      targetRef: configuration.targetRef,
+      bindingRefs: ["repository"],
+    }),
+    CredentialWithdrawalRefusedError,
+  );
+  assert.deepEqual(f.state.detaches, []);
+  f.state.policyUpdateReadback = "normal";
+  f.state.config!.policy = structuredClone(record(record(f.state.policyStatus!.revision).policy));
+  await f.proxy.removeDeployment(context, {
+    targetRef: configuration.targetRef,
+    bindingRefs: ["repository"],
+  });
+  assert.deepEqual(f.sandbox.spec.providers, []);
+  assert.deepEqual(peer.spec.providers, [sharedProvider]);
+  assert.deepEqual(peer.spec.policy, peerPolicy);
+  assert.equal(f.state.provider!.metadata.name, sharedProvider);
+  assert.deepEqual(Object.keys(record(f.sandbox.spec.policy!.network_policies)), ["baseline"]);
+  assert.equal(f.state.profileDeletes.length, 0);
 });

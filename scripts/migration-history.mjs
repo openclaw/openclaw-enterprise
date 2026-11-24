@@ -168,6 +168,12 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 96 && completedCount > 96) {
     return "preOAuthInitialGrantedScopes";
   }
+  if (count === 97 && completedCount > 97) {
+    return "preCredentialClientsAndGitHubSource";
+  }
+  if (count === 98 && completedCount > 98) {
+    return "preCodexPatSourceAdoption";
+  }
   if (count === completedCount) {
     return "completed";
   }

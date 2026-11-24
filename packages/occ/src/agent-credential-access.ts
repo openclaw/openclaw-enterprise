@@ -196,6 +196,10 @@ export function createAgentCredentialAccess({
       }
       if (isManagedTokenServiceSource(source)) {
         requireTokenServiceOwner(source.tokenServiceInstanceId);
+        if (source.type === "github-app-installation") {
+          sources.push(source);
+          continue;
+        }
         if (
           source.connectionTemplateId !== undefined ||
           (source.type !== "static" &&
@@ -300,6 +304,7 @@ export function createAgentCredentialAccess({
     }
     if (
       current.mode === "static_bearer" ||
+      source.type !== "oauth2-refresh-token" ||
       source.consent.kind !== "connection_template" ||
       source.consent.revocationRequestedBy !== undefined ||
       source.consent.revokedAt !== undefined

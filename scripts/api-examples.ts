@@ -234,16 +234,17 @@ const inferenceAgent = {
 };
 const oauthClientId = id("ccr");
 const oauthClientInput = {
+  kind: "oauth2",
+  namespaceId,
   displayName: "Example provider client",
   clientId: "example-client",
+  issuer: "https://accounts.example.com",
+  tokenUrl: "https://accounts.example.com/token",
   tokenEndpointAuthMethod: "client_secret_basic",
 };
 const oauthClient = {
   ...oauthClientInput,
-  issuer: "https://accounts.example.com",
-  tokenUrl: "https://accounts.example.com/token",
   id: oauthClientId,
-  namespaceId,
   createdAt: time,
 };
 const connectionTemplateInput = {
@@ -269,7 +270,7 @@ const createdConnectionTemplate = {
 };
 const connectionTemplate = {
   ...createdConnectionTemplate,
-  current: { ...createdConnectionTemplate.current, version: 2, oauthClientId },
+  current: { ...createdConnectionTemplate.current, version: 2 },
 };
 const mcpServerUrl = "https://tools.example.com/mcp";
 const discovered = {
@@ -365,7 +366,7 @@ export const requestExamples = {
   },
   launchAgentNativeAdmin: {},
   confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
-  startNamespaceConnection: { connectionTemplateId },
+  startNamespaceConnection: { connectionTemplateId, oauthClientId },
   createModelProvider: modelProviderSettings,
   updateModelProvider: {
     ...modelProviderSettings,
@@ -380,8 +381,6 @@ export const requestExamples = {
   discoverConnectionTemplate: { serverUrl: mcpServerUrl },
   createOAuthClient: {
     ...oauthClientInput,
-    connectionTemplateId,
-    connectionTemplateVersion: 1,
     clientSecret: "example-client-secret",
   },
   rotateOAuthClientSecret: { clientSecret: "replacement-example-client-secret" },
@@ -507,6 +506,7 @@ export const responseExamples = {
     ],
   },
   listUsableConnectionTemplates: [connectionTemplate],
+  listEligibleOAuthClients: [oauthClient],
   startNamespaceConnection: {
     authorizationUrl: "https://accounts.example.com/authorize?state=example-state",
     expiresAt: time,
@@ -777,6 +777,11 @@ export const responseExamples = {
   createCredentialSource: source,
   getCredentialSource: oauthSource,
   updateCredentialSource: source,
+  adoptCodexPatCredentialSource: {
+    ...source,
+    name: "Codex PAT",
+    config: { provider_preset: "codex-pat" },
+  },
   rotateCredentialSource: oauthSource,
   deleteServiceAccount: { id: account.id, namespaceId, revocation: "skipped" },
   listServiceAccounts: [account],

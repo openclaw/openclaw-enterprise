@@ -6,21 +6,45 @@ import type {
   OAuthConnectionGrant,
   OAuthBuiltinCodexSourceConsent,
   OAuthTemplateSourceConsent,
+  SecretReference,
+  StaticCredentialSource,
 } from "../../index.ts";
 import type { Driver } from "../index.ts";
 
-export type TokenServiceSourceRef = CredentialSourceReference | InstallationClientSecretRef;
+export type CredentialClientPurpose = "oauth2" | "github-app";
+export type CredentialClientScope = "installation" | "namespace";
+export type TokenServiceClientScopes = Readonly<
+  Partial<Record<CredentialClientPurpose, readonly CredentialClientScope[]>>
+>;
 
-/** Only authorized control-plane consumers can use an Installation registration secret. */
-export interface InstallationClientSecretRef {
-  readonly kind: "oauth_client";
-  readonly id: string;
-  readonly namespaceId?: never;
+export type OAuthClientSecretRef =
+  | { readonly kind: "oauth_client"; readonly id: string; readonly namespaceId?: never }
+  | { readonly kind: "oauth_client"; readonly id: string; readonly namespaceId: string };
+
+/** OAuth confidential material remains bound to its approved token endpoint and owner. */
+export interface OAuthClientSecretInstance {
+  readonly sourceRef: OAuthClientSecretRef;
+  readonly tokenServiceInstanceId: string;
+  readonly tokenUrl: string;
 }
+
+/** GitHub App signing material is Installation-private and cannot be resolved as OAuth material. */
+export interface GitHubAppClientSecretInstance {
+  readonly sourceRef: {
+    readonly kind: "github_app_client";
+    readonly id: string;
+    readonly namespaceId?: never;
+  };
+  readonly tokenServiceInstanceId: string;
+  readonly appId: string;
+}
+
+export type CredentialClientSecretInstance =
+  OAuthClientSecretInstance | GitHubAppClientSecretInstance;
 
 /** A credential store instance retains its identity across ordinary restarts and redeployments. */
 export interface TokenServiceSourceInstance<
-  Ref extends TokenServiceSourceRef = TokenServiceSourceRef,
+  Ref extends CredentialSourceReference = CredentialSourceReference,
 > {
   readonly sourceRef: Ref;
   readonly tokenServiceInstanceId: string;
@@ -65,7 +89,14 @@ export type SourceRegistrationInput =
             "revocationRequestedBy" | "revokedAt" | "requestedScopes" | "grantedScopes"
           >;
         }
-    ));
+    ))
+  | {
+      readonly kind: "github_app_installation";
+      readonly namespaceId: string;
+      readonly name: string;
+      readonly clientId: string;
+      readonly repositoryRefs: readonly string[];
+    };
 
 export type SourceUpdate =
   | {
@@ -76,6 +107,15 @@ export type SourceUpdate =
       readonly lifecycleConfig: SourceLifecycleConfig;
       readonly secret?: SecretFields;
     };
+
+/** An authorized, unbound legacy Source whose identity must survive TokenService adoption. */
+export interface SourceAdoptionInput {
+  readonly sourceRef: CredentialSourceReference;
+  readonly expectedGatewayId: string;
+  readonly expectedSecretRef: SecretReference;
+  readonly tokenServiceInstanceId: string;
+  readonly providerPreset: "codex-pat";
+}
 
 export interface ResolvedCredential {
   readonly credential: string;
@@ -124,6 +164,20 @@ export type TokenServiceDeviceAuthorizationResult =
 /** The selected owner creates and maintains CredentialSources and their usable credentials. */
 export interface TokenServiceDriver extends Omit<Driver, "capability"> {
   readonly capability: "token_service";
+  /** An absent purpose does not support client registration at any scope. */
+  readonly clientScopes: TokenServiceClientScopes;
+  registerClientSecret(
+    client: CredentialClientSecretInstance,
+    secret: string,
+    signal: AbortSignal,
+  ): Promise<void>;
+  updateClientSecret(
+    client: CredentialClientSecretInstance,
+    secret: string,
+    signal: AbortSignal,
+  ): Promise<void>;
+  resolveClientSecret(client: OAuthClientSecretInstance, signal: AbortSignal): Promise<string>;
+  removeClientSecret(client: CredentialClientSecretInstance, signal: AbortSignal): Promise<void>;
   startDeviceAuthorization?(
     context: TokenServiceDeviceAuthorizationContext,
     signal: AbortSignal,
@@ -135,6 +189,13 @@ export interface TokenServiceDriver extends Omit<Driver, "capability"> {
     signal: AbortSignal,
   ): Promise<TokenServiceDeviceAuthorizationResult>;
   createSource(input: SourceRegistrationInput, signal: AbortSignal): Promise<CredentialSource>;
+  /** Optional transition for legacy Gateway-owned Codex PAT Sources. */
+  adoptSource?(
+    input: SourceAdoptionInput,
+    resolveCredential: (signal: AbortSignal) => Promise<string>,
+    retireGateway: (signal: AbortSignal) => Promise<void>,
+    signal: AbortSignal,
+  ): Promise<StaticCredentialSource>;
   updateSource(
     source: TokenServiceSourceInstance,
     update: SourceUpdate,

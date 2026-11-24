@@ -7,7 +7,10 @@ import {
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -36,8 +39,18 @@ import {
 import { withYieldingComputeStop } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
+import { ManagedOpenShellSandbox } from "../../apps/controller/src/drivers/sandbox/openshell/managed.ts";
+import { inspectedWorkspaceBuild } from "../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
+import {
+  decodeReplacementRuntime,
+  encodeReplacementRuntime,
+} from "../../apps/controller/src/drivers/compute/kubernetes/replacement-runtime.ts";
+import { fixtureRelease, selectFixtureRelease } from "../helpers/inspected-workspace-release.ts";
+import { backendFor } from "../integration/sandbox-driver-openshell-fixture.ts";
+import { buildSandboxInstallation } from "../integration/sandbox-driver-installation-fixture.ts";
+import { resolveModelCredentialPreset } from "../../apps/controller/src/composition/model-credential-presets.ts";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
-import { createCodexStartup, probe } from "../fixtures/codex-native-startup.mjs";
+import { createCodexStartup, login, probe } from "../fixtures/codex-native-startup.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.ts";
@@ -501,6 +514,9 @@ function dedicatedFirstDeployFixture({
   openShellGit,
   credentialGatewayDriver,
   credentialDeliveryRegistration,
+  images,
+  servicePrincipalCredentials,
+  network,
   context,
   splitCluster = false,
   revision: revisionOverrides = {},
@@ -508,6 +524,8 @@ function dedicatedFirstDeployFixture({
   const { state, nodeEnrollment } = createDedicatedDeployEnrollmentFixture(clock);
   const driver = new KubernetesComputeDriver(
     routedOptions({
+      ...(images === undefined ? {} : { images }),
+      ...(servicePrincipalCredentials === undefined ? {} : { servicePrincipalCredentials }),
       ...(splitCluster ? { executionCluster: twoClusterOptions().executionCluster } : {}),
       runtime: {
         transportSecretPrefix: "transport",
@@ -526,7 +544,14 @@ function dedicatedFirstDeployFixture({
       },
       // The API server proxy can reach private status, so activation reads the
       // node OpenClaw applied.
-      ...(statusProxy ? { network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] } } : {}),
+      ...(statusProxy || network !== undefined
+        ? {
+            network: {
+              ...(statusProxy && { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] }),
+              ...network,
+            },
+          }
+        : {}),
     }),
     {
       sandboxDriver,
@@ -656,59 +681,92 @@ function dedicatedFirstDeployFixture({
   };
 }
 
-test("staged Codex account authentication uses fixed routing instead of model provider settings", () => {
+test("staged Codex account and PAT authentication use fixed routing while static OpenAI retains provider settings", () => {
   const driver = new KubernetesComputeDriver(routedOptions());
   const harness = { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {} };
-  const auth = {
+  const accountAuth = {
     method: "credential_source",
     sourceId: "cs_codex_account",
     tokenServiceInstanceId: "tokens",
     sourceType: "oauth2-refresh-token",
   };
+  const staticAuth = { ...accountAuth, sourceType: "static" };
   const configuration = { agents: { defaults: { model: "codex/model-fixture" } } };
-  assert.deepEqual(driver.resolveHarnessConfiguration(harness, auth, configuration), {});
-  assert.throws(
-    () =>
-      driver.resolveHarnessConfiguration(
-        {
-          ...harness,
-          overrides: {
-            modelProvider: {
-              protocol: "openai-responses",
-              baseUrl: "https://other.example.test/v1",
-            },
-          },
-        },
-        auth,
-        configuration,
-      ),
-    /explicit modelProvider override requires/,
+  const withProvider = {
+    ...harness,
+    overrides: {
+      modelProvider: {
+        protocol: "openai-responses",
+        baseUrl: "https://other.example.test/v1",
+      },
+    },
+  };
+  for (const [auth, preset] of [
+    [accountAuth, undefined],
+    [staticAuth, "codex-pat"],
+  ]) {
+    assert.deepEqual(driver.resolveHarnessConfiguration(harness, auth, configuration, preset), {});
+    assert.throws(
+      () => driver.resolveHarnessConfiguration(withProvider, auth, configuration, preset),
+      /explicit modelProvider override requires/,
+    );
+  }
+  const openAi = driver.resolveHarnessConfiguration(
+    withProvider,
+    staticAuth,
+    configuration,
+    "openai",
   );
+  assert.equal(openAi.modelProvider.protocol, "openai-responses");
+  assert.equal(openAi.modelProvider.baseUrl, "https://other.example.test/v1");
 });
 
-test("Compute selects HTTPS account startup for an admitted Codex OAuth model", async (t) => {
+async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat }) {
   // The admission snapshot has a Source type and TokenService owner, but no duplicated loginMode.
   // Controlled Sandbox/Proxy transports capture Compute's launch; no native deployment is claimed.
   const auth = {
     method: "credential_source",
     sourceId: "cs_codex_account",
     tokenServiceInstanceId: "tokens",
-    sourceType: "oauth2-refresh-token",
+    sourceType,
   };
-  const grant = {
-    id: "codex-model",
-    binary: OPEN_SHELL_CODEX_BINARIES[0],
-    host: "chatgpt.com",
+  const preset = resolveModelCredentialPreset({
+    presetId: providerPat ? "codex-pat" : "builtin_codex",
+    configuration: { agents: { defaults: { model: "codex/gpt-5" } } },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
+  });
+  assert.ok(preset);
+  const accountDestinations = [
+    "POST chatgpt.com:443/backend-api/codex/responses",
+    "GET chatgpt.com:443/backend-api/wham/accounts/check",
+    "GET chatgpt.com:443/backend-api/wham/config/bundle",
+  ];
+  const expectedDestinations = providerPat
+    ? [
+        "GET auth.openai.com:443/api/accounts/v1/user-auth-credential/whoami",
+        "GET chatgpt.com:443/backend-api/codex/models",
+        ...accountDestinations,
+        "GET chatgpt.com:443/backend-api/wham/settings/user",
+        "GET chatgpt.com:443/backend-api/wham/usage",
+      ]
+    : accountDestinations;
+  assert.deepEqual(
+    preset.destinations
+      .map(({ method, host, port, path }) => `${method} ${host}:${port}${path}`)
+      .toSorted(),
+    expectedDestinations.toSorted(),
+  );
+  const binary = OPEN_SHELL_CODEX_BINARIES[0];
+  const grants = [...new Set(preset.destinations.map(({ host }) => host))].map((host, index) => ({
+    id: `codex-model-${index}`,
+    binary,
+    host,
     ports: [{ from: 443, to: 443 }],
-  };
-  const requests = [
-    ["POST", "/backend-api/codex/responses"],
-    ["GET", "/backend-api/wham/accounts/check"],
-    ["GET", "/backend-api/wham/config/bundle"],
-  ].map(([method, path]) => ({
-    binary: grant.binary,
-    host: grant.host,
-    ports: grant.ports,
+  }));
+  const requests = preset.destinations.map(({ method, path, host, port }) => ({
+    binary,
+    host,
+    ports: [{ from: port, to: port }],
     requestPolicy: { type: "http", method, path },
   }));
   const binding = {
@@ -775,6 +833,13 @@ test("Compute selects HTTPS account startup for an admitted Codex OAuth model", 
     revision: {
       sandboxDriverId: sandbox.id,
       plugins: undefined,
+      harness: {
+        id: "codex",
+        version: "1.0.0",
+        mode: "dedicated",
+        overrides: {},
+        configuration: {},
+      },
       harnessAuth: auth,
       credentialSources: [
         {
@@ -788,14 +853,14 @@ test("Compute selects HTTPS account startup for an admitted Codex OAuth model", 
         implementation: sandbox.implementation,
         version: 1,
         defaults: {},
-        additions: [grant],
+        additions: grants,
       },
       executionAdmission: { version: 8, mode: "standalone" },
       credentialDeployment: {
         proxyDriverId: proxy.id,
         driver: owner.ref,
         networkAccessPolicy: {
-          allowed: [{ binary: grant.binary, host: grant.host, ports: grant.ports }],
+          allowed: grants.map(({ binary, host, ports }) => ({ binary, host, ports })),
         },
         bindings: [binding],
         injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: requests }],
@@ -805,11 +870,19 @@ test("Compute selects HTTPS account startup for an admitted Codex OAuth model", 
   assert.equal((await fixture.prepare()).ready, false);
   fixture.markReady(fixture.gatewayName);
   await assert.rejects(fixture.prepare(), (error) => error === captured);
-  assert.equal(requirements.loginMode, "chatgptAuthTokens");
+  assert.equal(requirements.loginMode, loginMode);
+  assert.equal(
+    requirements.environment.some(
+      ({ name, value }) => name === "OCE_CODEX_CREDENTIAL_SOURCE" && value === "1",
+    ),
+    providerPat,
+  );
   const { codex } = inspectOpenShellCodexCommand(t, requirements.command, { compact: true });
   const runtime = createCodexStartup(t, {
-    loginMode: "chatgptAuthTokens",
+    loginMode,
+    providerPat,
     native: [
+      ...(providerPat ? [login()] : []),
       probe([
         { type: "turn.started" },
         { type: "item.completed", item: { type: "agent_message", text: "READY" } },
@@ -822,9 +895,11 @@ test("Compute selects HTTPS account startup for an admitted Codex OAuth model", 
   assert.equal(runtime.appServerStarts, 1);
   for (const { args } of [...runtime.probeSpawns, ...runtime.appServerSpawns]) {
     const overrides = args.filter((_, index) => args[index - 1] === "-c");
-    assert.ok(overrides.includes('model_provider="oce-openai-https"'));
-    assert.ok(overrides.includes("model_providers.oce-openai-https.requires_openai_auth=true"));
-    assert.ok(overrides.includes("model_providers.oce-openai-https.supports_websockets=false"));
+    if (!providerPat) {
+      assert.ok(overrides.includes('model_provider="oce-openai-https"'));
+      assert.ok(overrides.includes("model_providers.oce-openai-https.requires_openai_auth=true"));
+      assert.ok(overrides.includes("model_providers.oce-openai-https.supports_websockets=false"));
+    }
     assert.equal(
       overrides.some((value) => value.includes(".base_url=")),
       false,
@@ -833,9 +908,209 @@ test("Compute selects HTTPS account startup for an admitted Codex OAuth model", 
   const authFile = JSON.parse(
     await readFile(join(runtime.appServerSpawns[0].env.CODEX_HOME, "auth.json"), "utf8"),
   );
-  assert.equal(authFile.auth_mode, "chatgptAuthTokens");
-  assert.equal(authFile.tokens.account_id, "account-fixture");
-  assert.match(authFile.tokens.access_token, /^openshell:resolve:env:/);
+  if (providerPat) {
+    assert.deepEqual(Object.keys(authFile), ["personal_access_token"]);
+    assert.match(authFile.personal_access_token, /^openshell:resolve:env:/);
+    assert.equal(runtime.appServerSpawns[0].env.CODEX_ACCESS_TOKEN, undefined);
+  } else {
+    assert.equal(authFile.auth_mode, "chatgptAuthTokens");
+    assert.equal(authFile.tokens.account_id, "account-fixture");
+    assert.match(authFile.tokens.access_token, /^openshell:resolve:env:/);
+  }
+}
+
+for (const { name, ...auth } of [
+  {
+    name: "OAuth",
+    sourceType: "oauth2-refresh-token",
+    loginMode: "chatgptAuthTokens",
+    providerPat: false,
+  },
+  { name: "PAT", sourceType: "static", loginMode: "codex_pat", providerPat: true },
+]) {
+  test(`Compute selects native ${name} startup for an admitted Codex model`, (t) =>
+    verifyNativeCodexStartup(t, auth));
+}
+
+test("staged Repository Compute freezes and revalidates only inspected dedicated Harness releases", async (t) => {
+  for (const harnessId of ["codex", "openclaw"]) {
+    await t.test(harnessId, async (t) => {
+      const base = buildSandboxInstallation().drivers.sandbox.configuration;
+      const sandbox = new ManagedOpenShellSandbox(
+        {
+          ...base,
+          integrationMode: "service",
+          gateway: {},
+          kubernetes: {
+            ...base.kubernetes,
+            sandboxDataMount: {
+              ...base.kubernetes.sandboxDataMount,
+              mountPath: "/sandbox/oce/workspace",
+            },
+          },
+        },
+        { id: "openshell-sandbox", backend: backendFor({}) },
+      );
+      const captured = new Error("captured fresh staged Harness requirements");
+      let requirements;
+      t.mock.method(sandbox, "provisionStagedHarness", async (context) => {
+        requirements = context.requirements;
+        throw captured;
+      });
+      const proxy = {
+        id: sandbox.id,
+        implementation: sandbox.implementation,
+        capability: "credential_proxy_delivery",
+        async deployProxy() {
+          return {};
+        },
+        async configureDeployment() {},
+        async getDeploymentStatus() {
+          return { state: "ready" };
+        },
+        async removeDeployment() {},
+      };
+      const registration = {
+        ref: {
+          id: sandbox.id,
+          implementation: sandbox.implementation,
+          configurationId: "a".repeat(64),
+        },
+        require(capability) {
+          return capability === "sandbox" ? sandbox : proxy;
+        },
+      };
+      const auth = {
+        method: "credential_source",
+        sourceId: "cs_model",
+        sourceType: harnessId === "codex" ? "oauth2-refresh-token" : "static",
+        tokenServiceInstanceId: "tokens",
+      };
+      const model = {
+        bindingRef: "model",
+        sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: auth.sourceId },
+        consumer: { kind: "model", providerId: harnessId === "codex" ? "codex" : "openai" },
+        projection: {
+          environment: harnessId === "codex" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY",
+          presentation: "bearer",
+        },
+      };
+      const repository = {
+        bindingRef: "repository",
+        sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: "cs_git" },
+        consumer: { kind: "repository" },
+        projection: { environment: "GITHUB_TOKEN", presentation: "github_repository" },
+      };
+      const modelRequest = {
+        binary: harnessId === "codex" ? OPEN_SHELL_CODEX_BINARIES[0] : "/usr/local/bin/node",
+        host: harnessId === "codex" ? "chatgpt.com" : "api.openai.com",
+        ports: [{ from: 443, to: 443 }],
+        requestPolicy: {
+          type: "http",
+          method: "POST",
+          path: harnessId === "codex" ? "/backend-api/codex/responses" : "/v1/responses",
+        },
+      };
+      const repositoryRequest = {
+        binary: "/usr/bin/git",
+        host: "github.com",
+        ports: [{ from: 443, to: 443 }],
+        requestPolicy: { type: "http", method: "GET", path: "/octo/project.git/info/refs" },
+      };
+      const grants = [{ repository: "octo/project", access: "read" }];
+      const makeFixture = () =>
+        dedicatedFirstDeployFixture({
+          images: { ...fixtureRelease, requireImmutableDigest: true },
+          servicePrincipalCredentials: { mode: "disabled" },
+          network: {
+            providerHarness: {
+              namespace: "openshell-system",
+              podLabels: { app: "openshell-gateway" },
+              address: "10.43.0.50",
+              port: 8080,
+            },
+          },
+          sandboxDriver: sandbox,
+          credentialDeliveryRegistration: registration,
+          context: { harnessAuth: auth, async configureCredentialDeployment() {} },
+          revision: {
+            ...nativeSandboxRevision(sandbox.id),
+            harness: { id: harnessId, version: "1.0.0", mode: "dedicated", overrides: {} },
+            configuration: createHarnessConfiguration(harnessId, "gpt-5"),
+            harnessAuth: auth,
+            credentialSources: [
+              {
+                sourceId: auth.sourceId,
+                sourceType: auth.sourceType,
+                tokenServiceInstanceId: "tokens",
+              },
+            ],
+            executionAdmission: { version: 8, mode: "standalone" },
+            sandboxPolicy: {
+              driverId: sandbox.id,
+              implementation: sandbox.implementation,
+              version: 1,
+              defaults: {},
+              additions: [],
+              repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
+            },
+            credentialDeployment: {
+              proxyDriverId: proxy.id,
+              driver: registration.ref,
+              bindings: [model, repository],
+              networkAccessPolicy: { allowed: [modelRequest, repositoryRequest] },
+              injectionPolicies: [
+                { bindingRef: model.bindingRef, allowedRequests: [modelRequest] },
+                { bindingRef: repository.bindingRef, allowedRequests: [repositoryRequest] },
+              ],
+            },
+          },
+        });
+      // This controlled release selection exercises Compute; it does not qualify an actual image.
+      assert.throws(makeFixture, /qualified inspected Workspace route and image/);
+      if (harnessId === "codex") {
+        selectFixtureRelease(t);
+      } else {
+        t.mock.getter(inspectedWorkspaceBuild, "openClawRelease", () => ({
+          gatewayDigest: "sha256:" + "a".repeat(64),
+        }));
+      }
+      const fixture = makeFixture();
+      fixture.revision.compute.admission = fixture.driver.admitRevision(fixture.revision);
+      fixture.revision.compute.runtimeInputs = fixture.driver.snapshotRuntimeInputs(
+        fixture.revision,
+      );
+      const frozen = decodeReplacementRuntime(fixture.revision.compute.runtimeInputs);
+      assert.equal(frozen.scope, "repository-policy");
+      assert.equal(frozen.workspace.mode, "service");
+      assert.match(frozen.workspace.url, /\/node$/);
+      fixture.driver.validateRepositoryCredentials(fixture.revision.harness, sandbox.id);
+      // Revision activation must recheck the frozen route before it provisions the Sandbox.
+      const originalInputs = fixture.revision.compute.runtimeInputs;
+      fixture.revision.compute.runtimeInputs = encodeReplacementRuntime({
+        ...frozen,
+        workspace: { ...frozen.workspace, url: frozen.workspace.url + "/other" },
+      });
+      await assert.rejects(
+        fixture.prepare(),
+        /admitted repository runtime images or policy no longer match/,
+      );
+      fixture.revision.compute.runtimeInputs = originalInputs;
+      assert.equal((await fixture.prepare()).ready, false);
+      fixture.markReady(fixture.gatewayName);
+      // Capture the real Compute-to-Sandbox request before any native runtime is launched.
+      await assert.rejects(fixture.prepare(), (error) => error === captured);
+      assert.equal(
+        requirements.image,
+        harnessId === "openclaw" ? fixtureRelease.gateway : fixtureRelease.agent,
+      );
+      assert.equal(
+        requirements.environment.find(({ name }) => name === "OCE_INSPECTED_WORKSPACE_NODE_URL")
+          ?.value,
+        frozen.workspace.url,
+      );
+    });
+  }
 });
 
 test("staged Compute prepares mixed model and HTTP Plugin credential projections", async () => {

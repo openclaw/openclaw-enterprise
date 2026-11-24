@@ -4,6 +4,8 @@ import {
   ConnectionTemplateId,
   ConnectionTemplateResponse,
   OAuthScope,
+  OAuthClientId,
+  OAuthClientSchema,
 } from "./connection-templates.ts";
 
 /** Namespace use lists connectable templates; the Installation's editor presets stay in the admin catalog. */
@@ -12,9 +14,19 @@ export const UsableConnectionTemplatesResponse = Type.Object(
   { additionalProperties: false },
 );
 
+export const EligibleOAuthClientsQuery = Type.Object(
+  { connectionTemplateId: ConnectionTemplateId },
+  { additionalProperties: false },
+);
+export const EligibleOAuthClientsResponse = Type.Object(
+  { data: Type.Array(OAuthClientSchema), meta: Meta },
+  { additionalProperties: false },
+);
+
 export const StartNamespaceConnectionBody = Type.Object(
   {
     connectionTemplateId: ConnectionTemplateId,
+    oauthClientId: OAuthClientId,
     selectedScopes: Type.Optional(Type.Array(OAuthScope, { uniqueItems: true })),
   },
   { additionalProperties: false },

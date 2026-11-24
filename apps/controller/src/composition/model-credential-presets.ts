@@ -34,7 +34,7 @@ export const resolveModelCredentialPreset: NonNullable<
     return undefined;
   }
   const selected = splitModelRef(primary);
-  if (presetId === "builtin_codex") {
+  if (presetId === "builtin_codex" || presetId === "codex-pat") {
     if (
       harness.id !== "codex" ||
       harness.mode !== "dedicated" ||
@@ -46,7 +46,26 @@ export const resolveModelCredentialPreset: NonNullable<
     }
     return {
       providerId: selected.provider,
-      destinations: codexAccountDestinations,
+      destinations:
+        presetId === "codex-pat"
+          ? [
+              {
+                method: "GET",
+                host: "auth.openai.com",
+                port: 443,
+                path: "/api/accounts/v1/user-auth-credential/whoami",
+              },
+              { method: "GET", host: "chatgpt.com", port: 443, path: "/backend-api/codex/models" },
+              ...codexAccountDestinations,
+              {
+                method: "GET",
+                host: "chatgpt.com",
+                port: 443,
+                path: "/backend-api/wham/settings/user",
+              },
+              { method: "GET", host: "chatgpt.com", port: 443, path: "/backend-api/wham/usage" },
+            ]
+          : codexAccountDestinations,
       binaries: OPEN_SHELL_CODEX_BINARIES,
       projection: { environment: "CODEX_ACCESS_TOKEN", presentation: "bearer" },
     };

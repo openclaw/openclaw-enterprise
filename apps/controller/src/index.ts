@@ -17,6 +17,7 @@ import {
   ModelProviderModelSchema,
   CredentialSourceResponse,
   RegisterTokenServiceSourceBody,
+  RegisterGitHubAppTokenServiceSourceBody,
   UpdateTokenServiceSourceBody,
   PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
@@ -486,6 +487,7 @@ function operationTarget(
     (operation.operationId === "createCredentialSource" ||
       operation.operationId === "listCredentialSources" ||
       operation.operationId === "listUsableConnectionTemplates" ||
+      operation.operationId === "listEligibleOAuthClients" ||
       operation.operationId === "startNamespaceConnection") &&
     namespaceId
   ) {
@@ -733,6 +735,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(ModelProviderModelSchema);
   app.addSchema(ModelProviderSchema);
   app.addSchema(RegisterTokenServiceSourceBody);
+  app.addSchema(RegisterGitHubAppTokenServiceSourceBody);
   app.addSchema(UpdateTokenServiceSourceBody);
   app.addSchema(PushAgentCredentialsBody);
   app.addSchema(PushAgentCredentialsResponse);
@@ -745,6 +748,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           schema.title ??= schema.$id;
           switch (schema.$id) {
             case "RegisterTokenServiceSourceBody":
+            case "RegisterGitHubAppTokenServiceSourceBody":
             case "UpdateTokenServiceSourceBody":
             case "PushAgentCredentialsBody":
             case "PushAgentCredentialsResponse":
@@ -1343,6 +1347,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "stopAgent" &&
       operation.operationId !== "listAgentRevisions" &&
       operation.operationId !== "listAgentAuditEvents" &&
+      operation.operationId !== "listEligibleOAuthClients" &&
       operation.operationId !== "recoverAgentFirstDeployment" &&
       operation !== connectionCallbackOperation
     ) {

@@ -189,6 +189,8 @@ export {
 
 export type {
   OAuthClient,
+  GitHubAppClient,
+  CredentialClient,
   OAuthClientAuthMethod,
   McpAuthorizationMetadata,
   ConnectionEndpoint,
@@ -659,8 +661,24 @@ export type OAuthCredentialSource = OAuthCredentialSourceBase &
     | { readonly connectionTemplateId?: never; readonly consent: OAuthBuiltinCodexSourceConsent }
   );
 
-/** The selected TokenService creates and owns either supported Source type. */
-export type CredentialSource = StaticCredentialSource | OAuthCredentialSource;
+/** The finite installation-token scope reviewed against the Namespace repository registry. */
+export interface GitHubAppInstallationScope {
+  readonly appId: string;
+  readonly installationId: string;
+  readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
+  readonly permissions: Readonly<Record<string, string>>;
+}
+
+export interface GitHubAppInstallationCredentialSource extends TokenServiceCredentialSource {
+  readonly type: "github-app-installation";
+  readonly connectionTemplateId?: never;
+  readonly clientId: string;
+  readonly scope: GitHubAppInstallationScope;
+}
+
+/** The selected TokenService creates and owns managed Sources. */
+export type CredentialSource =
+  StaticCredentialSource | OAuthCredentialSource | GitHubAppInstallationCredentialSource;
 
 /** Existing Gateway and Proxy records remain internal to their current runtime owners. */
 export interface LegacyCredentialSource {
@@ -723,7 +741,12 @@ export type CredentialSourceMetadata =
             readonly connectionTemplateId?: never;
             readonly consent: OAuthBuiltinCodexSourceConsentMetadata;
           }
-      ));
+      ))
+  | (CredentialSourceMetadataBase & {
+      readonly type: "github-app-installation";
+      readonly clientId: string;
+      readonly scope: GitHubAppInstallationScope;
+    });
 
 /**
  * An authorized request to revoke one credential source from one Agent revision. `revoked`
@@ -1817,6 +1840,7 @@ export {
 } from "./api/connection-templates.ts";
 export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-providers.ts";
 export {
+  RegisterGitHubAppTokenServiceSourceBody,
   RegisterTokenServiceSourceBody,
   UpdateTokenServiceSourceBody,
 } from "./api/token-service-sources.ts";
@@ -1907,11 +1931,17 @@ export type {
 } from "./drivers/namespace-lifecycle.ts";
 
 export type {
-  TokenServiceSourceRef,
-  InstallationClientSecretRef,
+  CredentialClientPurpose,
+  CredentialClientScope,
+  TokenServiceClientScopes,
+  OAuthClientSecretRef,
+  OAuthClientSecretInstance,
+  GitHubAppClientSecretInstance,
+  CredentialClientSecretInstance,
   TokenServiceSourceInstance,
   SourceLifecycleConfig,
   SourceRegistrationInput,
+  SourceAdoptionInput,
   SourceUpdate,
   ResolvedCredential,
   CredentialRefreshStatus,
@@ -1940,6 +1970,7 @@ export type {
 export { pathCovered } from "./deployment-request-match.ts";
 export { validRequestPath } from "./request-path.ts";
 
+export { isNativeStagedRepositoryRevision } from "./credential-deployment.ts";
 export type {
   BearerCredentialProjection,
   CredentialProjection,

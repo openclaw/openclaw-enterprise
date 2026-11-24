@@ -1,11 +1,14 @@
 import type { CredentialPolicyReductionState } from "./credential-policy-reduction.ts";
 import type {
   StoredCredentialSource as CredentialSource,
+  CredentialSource as TokenServiceCredentialSource,
   CredentialWithdrawal,
   EgressInstallation,
   EgressMaterialEvidence,
   ProtectedEgressSource,
   SecretReference,
+  SourceAdoptionInput,
+  StaticCredentialSource,
 } from "@openclaw-enterprise/contracts";
 
 export type StoredCredentialWithdrawal = CredentialWithdrawal;
@@ -31,6 +34,12 @@ export interface CredentialSourceReadRepository {
     credentialSourceId: string,
   ): Promise<Readonly<CredentialSource> | undefined>;
   listCredentialSources(namespaceId: string): Promise<readonly Readonly<CredentialSource>[]>;
+  listReadyTokenServiceSources(
+    type: TokenServiceCredentialSource["type"],
+    tokenServiceInstanceId: string,
+    limit: number,
+    afterId?: string,
+  ): Promise<readonly { namespaceId: string; id: string }[]>;
   findCredentialWithdrawal(
     namespaceId: string,
     revisionId: string,
@@ -69,6 +78,11 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
     credentialSourceId: string,
   ): Promise<Readonly<CredentialSource> | undefined>;
   createCredentialSource(source: CredentialSource): Promise<Readonly<CredentialSource>>;
+  /** Requires the caller to hold the Source lock before checking or transferring ownership. */
+  isCredentialSourceAdoptionSettled(namespaceId: string, sourceId: string): Promise<boolean>;
+  adoptGatewayPatSource(
+    input: SourceAdoptionInput,
+  ): Promise<Readonly<StaticCredentialSource> | undefined>;
   /**
    * Points each existing Secret input field at a replacement same-Namespace Secret. The field
    * set is fixed by the source type; only the referenced Secret IDs change.

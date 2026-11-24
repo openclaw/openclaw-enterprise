@@ -98,6 +98,27 @@ export const credentialSourceHandlers = {
     namespaceId,
     mutationEvent,
   }) {
+    if (
+      body?.type === "github-app-installation" &&
+      "clientId" in body &&
+      "repositoryRefs" in body
+    ) {
+      const created = await controller.createManagedCredentialSource(
+        context.actorId,
+        namespaceId,
+        {
+          kind: "github_app_installation",
+          clientId: body.clientId as string,
+          repositoryRefs: body.repositoryRefs as readonly string[],
+          name: body.name as string,
+        },
+        (resource, phase) => phaseAudit(mutationEvent(resource), phase),
+      );
+      reply
+        .status(201)
+        .send({ data: clientCredentialSource(created), meta: { requestId: request.id } });
+      return;
+    }
     // TODO: Remove the legacy Source routes' shapes after the Plugin and Git credential cutovers.
     if (body && !("secret" in body)) {
       const created = await controller.createCredentialSource(
@@ -243,6 +264,23 @@ export const credentialSourceHandlers = {
     );
     const source = clientCredentialSource(rotated);
     reply.send({ data: source, meta: { requestId: request.id } });
+  },
+  async adoptCodexPatCredentialSource({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+  }) {
+    const credentialSourceId = params.credentialSourceId as string;
+    const adopted = await controller.adoptCodexPatCredentialSource(
+      context.actorId,
+      { namespaceId, credentialSourceId },
+      (resource, phase) => phaseAudit(mutationEvent(resource), phase),
+    );
+    reply.send({ data: clientCredentialSource(adopted), meta: { requestId: request.id } });
   },
   async pushAgentCredentials({
     controller,

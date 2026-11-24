@@ -84,12 +84,13 @@ test(
       ...createTestSecretDriver({ id: "scope-pg-secret" }),
       capability: "secret" as const,
     };
-    const { controller, state, principal, inject, pool } = await createPostgresAgentApp(t, {
-      label: "scope-grant",
-      authSecret: "scope-grant-test-auth-secret-minimum-32-bytes",
-      secretDriver: secrets,
-      appOptions: { publicOrigin },
-    });
+    const { app, adminAccount, controller, state, principal, inject, pool } =
+      await createPostgresAgentApp(t, {
+        label: "scope-grant",
+        authSecret: "scope-grant-test-auth-secret-minimum-32-bytes",
+        secretDriver: secrets,
+        appOptions: { publicOrigin },
+      });
     await installDeviceTokenService(controller, state, secrets, "scope-token-service");
     const namespace = await inject("POST", "/namespaces", { name: `Scopes ${randomUUID()}` });
     assert.equal(namespace.statusCode, 201, namespace.body);
@@ -107,25 +108,80 @@ test(
     });
     assert.equal(template.statusCode, 201, template.body);
     const client = await inject("POST", "/oauth-clients", {
-      connectionTemplateId: template.json().data.id,
-      connectionTemplateVersion: template.json().data.current.version,
+      namespaceId,
+      issuer: localIssuer,
+      tokenUrl,
       displayName: "Scope client",
       clientId: "scope-client",
       tokenEndpointAuthMethod: "none",
     });
     assert.equal(client.statusCode, 201, client.body);
-    const started = await inject("POST", `/namespaces/${namespaceId}/connections`, {
+    const clientId = client.json().data.id;
+    const second = await inject("POST", "/oauth-clients", {
+      namespaceId,
+      issuer: localIssuer,
+      tokenUrl,
+      displayName: "Second scope client",
+      clientId: "scope-client-2",
+      tokenEndpointAuthMethod: "none",
+    });
+    assert.equal(second.statusCode, 201, second.body);
+    const incompatible = await inject("POST", "/oauth-clients", {
+      namespaceId,
+      issuer: localIssuer,
+      tokenUrl: `${localIssuer}/other-token`,
+      displayName: "Other endpoint",
+      clientId: "scope-other",
+      tokenEndpointAuthMethod: "none",
+    });
+    assert.equal(incompatible.statusCode, 201, incompatible.body);
+    const eligibility = await inject(
+      "GET",
+      `/namespaces/${namespaceId}/connections/oauth-clients?connectionTemplateId=${template.json().data.id}`,
+    );
+    assert.equal(eligibility.statusCode, 200, eligibility.body);
+    assert.deepEqual(
+      eligibility
+        .json()
+        .data.map((value: { id: string }) => value.id)
+        .sort(),
+      [clientId, second.json().data.id].sort(),
+    );
+    assert.ok(
+      eligibility
+        .json()
+        .data.every((value: Record<string, unknown>) => !("tokenServiceInstanceId" in value)),
+    );
+    const missingSelection = await inject("POST", `/namespaces/${namespaceId}/connections`, {
       connectionTemplateId: template.json().data.id,
     });
+    assert.equal(missingSelection.statusCode, 400);
+    const wrongEndpoint = await inject("POST", `/namespaces/${namespaceId}/connections`, {
+      connectionTemplateId: template.json().data.id,
+      oauthClientId: incompatible.json().data.id,
+    });
+    assert.notEqual(wrongEndpoint.statusCode, 201);
+    const started = await inject("POST", `/namespaces/${namespaceId}/connections`, {
+      connectionTemplateId: template.json().data.id,
+      oauthClientId: clientId,
+    });
     assert.equal(started.statusCode, 201, started.body);
+    const secondAdmin = await accountSession(app, adminAccount.email, adminAccount.password);
     const stateValue = new URL(started.json().data.authorizationUrl).searchParams.get("state");
     assert.ok(stateValue);
     let grantType: string | null = null;
+    const exchangeReached = Promise.withResolvers<void>();
+    const resumeExchange = Promise.withResolvers<void>();
+    t.after(() => resumeExchange.resolve());
     // Only the issuer response is controlled; Fastify, IAM, TokenService custody and PostgreSQL are real.
     t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
       assert.equal(String(url), tokenUrl);
       const body = init?.body as URLSearchParams;
       grantType = body.get("grant_type");
+      if (grantType === "authorization_code") {
+        exchangeReached.resolve();
+        await resumeExchange.promise;
+      }
       return Response.json({
         access_token: randomUUID(),
         token_type: "Bearer",
@@ -137,10 +193,28 @@ test(
             : "read issuer.default later.addition",
       });
     });
-    const callback = await inject(
+    const callbackPromise = inject(
       "GET",
       `/oauth/callback?${new URLSearchParams({ state: stateValue, code: "controlled-code", iss: localIssuer })}`,
     );
+    await Promise.race([
+      exchangeReached.promise,
+      callbackPromise.then((reply) => {
+        throw new Error(
+          `Callback returned before exchange: ${reply.statusCode} ${reply.headers.location ?? ""}`,
+        );
+      }),
+    ]);
+    // Consumption is one-time, while the same pending row still protects the selected Client through exchange.
+    const held = await pool.query(
+      "SELECT oauth_client_id, oauth_consumed_at IS NOT NULL AS consumed FROM occ.authentication_states WHERE id=$1",
+      [createHash("sha256").update(stateValue).digest("hex")],
+    );
+    assert.deepEqual(held.rows, [{ oauth_client_id: clientId, consumed: true }]);
+    const inUse = await secondAdmin("DELETE", `/oauth-clients/${clientId}`);
+    assert.equal(inUse.statusCode, 409, inUse.body);
+    resumeExchange.resolve();
+    const callback = await callbackPromise;
     assert.match(String(callback.headers.location), /connection=connected/);
     assert.equal(grantType, "authorization_code");
     const sources = `/namespaces/${namespaceId}/credential-sources`;
@@ -153,6 +227,7 @@ test(
           entry.connectionTemplateId === template.json().data.id,
       );
     assert.ok(source);
+    assert.equal(source.consent.oauthClientId, clientId);
     assert.deepEqual(source.consent.requestedScopes, ["read"]);
     assert.deepEqual(source.consent.grantedScopes, ["read", "issuer.default"]);
     assert.deepEqual(source.consent.destinations, destinations);
@@ -186,8 +261,10 @@ test(
       `/connection-templates/${template.json().data.id}`,
     );
     assert.equal(removedTemplate.statusCode, 204, removedTemplate.body);
-    const removedClient = await inject("DELETE", `/oauth-clients/${client.json().data.id}`);
-    assert.equal(removedClient.statusCode, 204, removedClient.body);
+    for (const id of [clientId, second.json().data.id, incompatible.json().data.id]) {
+      const removed = await inject("DELETE", `/oauth-clients/${id}`);
+      assert.equal(removed.statusCode, 204, removed.body);
+    }
   },
 );
 
@@ -347,21 +424,24 @@ test(
       revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
     });
     assert.equal(template.statusCode, 201, template.body);
-    const manual = { connectionTemplateId: template.json().data.id };
+    const manualTemplateId = template.json().data.id;
     const listsManualTemplate = async (path: string) => {
       const result = await inject("GET", path);
       assert.equal(result.statusCode, 200, result.body);
-      return result
-        .json()
-        .data.some((entry: { id: string }) => entry.id === manual.connectionTemplateId);
+      return result.json().data.some((entry: { id: string }) => entry.id === manualTemplateId);
     };
-    // Admins can configure a saved template before a person can use it to start consent.
+    // The Template is available independently of Client registration; no consent can omit its explicit Client selection.
     assert.equal(await listsManualTemplate("/connection-templates"), true);
-    assert.equal(await listsManualTemplate(`${base}/connection-templates`), false);
-    assert.equal((await inject("POST", connections, manual)).statusCode, 409);
+    assert.equal(await listsManualTemplate(`${base}/connection-templates`), true);
+    assert.equal(
+      (await inject("POST", connections, { connectionTemplateId: manualTemplateId })).statusCode,
+      400,
+    );
     const registered = await inject("POST", "/oauth-clients", {
-      connectionTemplateId: manual.connectionTemplateId,
-      connectionTemplateVersion: template.json().data.current.version,
+      namespaceId,
+      issuer,
+      tokenUrl,
+      revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
       displayName: "Saved accounts",
       clientId,
       clientSecret,
@@ -369,8 +449,16 @@ test(
     });
     assert.equal(registered.statusCode, 201, registered.body);
     const oauthClientId = registered.json().data.id;
-    // Registering the first client makes the current template ready for consent.
-    assert.equal(await listsManualTemplate(`${base}/connection-templates`), true);
+    const manual = { connectionTemplateId: manualTemplateId, oauthClientId };
+    const eligible = await inject(
+      "GET",
+      `${connections}/oauth-clients?connectionTemplateId=${manualTemplateId}`,
+    );
+    assert.equal(eligible.statusCode, 200, eligible.body);
+    assert.deepEqual(
+      eligible.json().data.map((client: { id: string }) => client.id),
+      [oauthClientId],
+    );
     const manualStart = await inject("POST", connections, manual);
     assert.equal(manualStart.statusCode, 201, manualStart.body);
     // Starting consent creates only a browser-bound attempt; there is no Source to expose or retire.
@@ -419,14 +507,18 @@ test(
       issuer,
       serverUrl,
       scopes: ["openid", "profile"],
-      oauthClientId,
     };
     const mcp = await inject("POST", "/connection-templates", { ...mcpConfig, namespaceId });
     assert.equal(mcp.statusCode, 201, mcp.body);
-    const input = { connectionTemplateId: mcp.json().data.id, selectedScopes: ["openid"] };
+    const input = {
+      connectionTemplateId: mcp.json().data.id,
+      oauthClientId,
+      selectedScopes: ["openid"],
+    };
     for (const selectedScopes of [undefined, ["profile"], ["openid", "other"]]) {
       const refused = await inject("POST", connections, {
         connectionTemplateId: input.connectionTemplateId,
+        oauthClientId,
         ...(selectedScopes && { selectedScopes }),
       });
       assert.equal(refused.statusCode, 400, refused.body);
@@ -441,12 +533,14 @@ test(
     assert.equal(unrestrictedMcp.statusCode, 201, unrestrictedMcp.body);
     const unrestrictedId = unrestrictedMcp.json().data.id;
     assert.equal(
-      (await inject("POST", connections, { connectionTemplateId: unrestrictedId })).statusCode,
+      (await inject("POST", connections, { connectionTemplateId: unrestrictedId, oauthClientId }))
+        .statusCode,
       400,
     );
     const manyScopes = ["openid", ...Array.from({ length: 32 }, (_, i) => "custom." + i)];
     const freeStart = await inject("POST", connections, {
       connectionTemplateId: unrestrictedId,
+      oauthClientId,
       selectedScopes: manyScopes,
     });
     assert.equal(freeStart.statusCode, 201, freeStart.body);
@@ -509,7 +603,6 @@ test(
     const unrestrictedManual = await inject("POST", "/connection-templates", {
       ...manualConfig,
       namespaceId,
-      oauthClientId,
       scopes: [],
       displayName: "Provider defaults",
     });
@@ -527,6 +620,7 @@ test(
     await keycloakRealmAdmin(issuer, secrets.admin, "PUT", defaultPath);
     const defaults = await owner("POST", connections, {
       connectionTemplateId: unrestrictedManual.json().data.id,
+      oauthClientId,
       selectedScopes: [],
     });
     assert.equal(defaults.statusCode, 201, defaults.body);
@@ -556,7 +650,6 @@ test(
       "/connection-templates/" + defaultSource.connectionTemplateId,
       {
         ...manualConfig,
-        oauthClientId,
         scopes: [],
         destinations: widened,
       },
@@ -878,10 +971,11 @@ test(
     assert.equal(deferred.rows[0].deferred, true);
     assert.equal((await owner("POST", source + "/rotate")).statusCode, 200);
     assert.equal(await subject(await prepared()), alice);
-    // A new default registration is for future consent, even when its credentials are unusable.
+    // Future consent can select a different Client without changing an existing Source's pair.
     const futureRegistration = await inject("POST", "/oauth-clients", {
-      connectionTemplateId: mcp.json().data.id,
-      connectionTemplateVersion: mcp.json().data.current.version,
+      namespaceId,
+      issuer,
+      tokenUrl,
       displayName: "Future consent",
       clientId: clientId + "-future",
       clientSecret: randomUUID(),
@@ -891,7 +985,7 @@ test(
     const switchRegistration = await inject(
       "PATCH",
       "/connection-templates/" + mcp.json().data.id,
-      { ...mcpConfig, oauthClientId: futureRegistration.json().data.id },
+      { ...mcpConfig, authorizationParameters: { prompt: "login" } },
     );
     assert.equal(switchRegistration.statusCode, 200, switchRegistration.body);
     // Consent stays pinned to the original version and client when the Template advances.
@@ -916,7 +1010,10 @@ test(
     assert.deepEqual((await currentMcp()).destinations, [recipient]);
     assert.equal((await currentMcp()).oauthClientId, oauthClientId);
     assert.equal((await currentMcp()).version, savedConsent.version);
-    const futureConsent = await owner("POST", connections, input);
+    const futureConsent = await owner("POST", connections, {
+      ...input,
+      oauthClientId: futureRegistration.json().data.id,
+    });
     assert.equal(futureConsent.statusCode, 201, futureConsent.body);
     assert.equal(
       new URL(futureConsent.json().data.authorizationUrl).searchParams.get("client_id"),
@@ -1123,20 +1220,35 @@ test(
     assert.equal(secondTemplate.statusCode, 201, secondTemplate.body);
     const secondTemplateId = secondTemplate.json().data.id;
     const secondClient = await inject("POST", "/oauth-clients", {
-      connectionTemplateId: secondTemplateId,
-      connectionTemplateVersion: 1,
+      namespaceId,
+      issuer: secondIssuer,
+      tokenUrl: secondIssuer + "/token",
       displayName: "Second server public registration",
       clientId: randomUUID(),
       tokenEndpointAuthMethod: "none",
     });
     assert.equal(secondClient.statusCode, 201, secondClient.body);
-    const switchIssuer = await inject("PATCH", "/connection-templates/" + secondTemplateId, {
-      ...manualConfig,
-      oauthClientId,
+    const secondStart = await inject("POST", connections, {
+      connectionTemplateId: secondTemplateId,
+      oauthClientId: secondClient.json().data.id,
     });
+    assert.equal(secondStart.statusCode, 201, secondStart.body);
+    const secondState = new URL(secondStart.json().data.authorizationUrl).searchParams.get(
+      "state",
+    )!;
+    const switchIssuer = await inject(
+      "PATCH",
+      "/connection-templates/" + secondTemplateId,
+      manualConfig,
+    );
     assert.equal(switchIssuer.statusCode, 200, switchIssuer.body);
     const ambiguous = await owner("GET", pending.callback);
     assert.match(String(ambiguous.headers.location), /reason=issuer_required/);
+    const cancelSecond = await inject(
+      "GET",
+      `/oauth/callback?${new URLSearchParams({ state: secondState, error: "access_denied", iss: secondIssuer })}`,
+    );
+    assert.match(String(cancelSecond.headers.location), /reason=consent_denied/);
     assert.equal(
       (await inject("DELETE", "/connection-templates/" + secondTemplateId)).statusCode,
       204,

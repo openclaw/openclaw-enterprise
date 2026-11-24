@@ -49,7 +49,7 @@ const Meta = Type.Object(
   { requestId: RequestId, redirectUri: Type.Optional(Type.String()) },
   { additionalProperties: false },
 );
-const OAuthClientId = Type.String({
+export const OAuthClientId = Type.String({
   pattern: "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
 });
 const DisplayName = Type.String({ minLength: 1, maxLength: 200 });
@@ -72,7 +72,6 @@ const Parameters = Type.Record(
 const fields = {
   scopes: Scopes,
   authorizationParameters: Type.Optional(Parameters),
-  oauthClientId: Type.Optional(OAuthClientId),
 };
 const staticBearer = {
   mode: Type.Literal("static_bearer"),
@@ -123,16 +122,28 @@ const registration = {
   clientId: Type.String({ minLength: 1, maxLength: 256 }),
   tokenEndpointAuthMethod: AuthMethod,
 };
-export const CreateOAuthClientBody = Type.Object(
+const createOAuthClient = Type.Object(
   {
     ...registration,
-    connectionTemplateId: ConnectionTemplateId,
-    connectionTemplateVersion: Type.Integer({ minimum: 1 }),
+    namespaceId: Type.Optional(NamespaceId),
+    issuer: HttpsUrl,
+    tokenUrl: HttpsUrl,
+    revocationUrl: Type.Optional(HttpsUrl),
     clientSecret: Type.Optional(ClientSecret),
   },
   strict,
 );
-export const RotateOAuthClientSecretBody = Type.Object({ clientSecret: ClientSecret }, strict);
+const appId = Type.String({ pattern: "^[1-9][0-9]{0,15}$" });
+const privateKey = Type.String({ minLength: 1, maxLength: 20000 });
+const createGitHubAppClient = Type.Object(
+  { kind: Type.Literal("github-app"), displayName: DisplayName, appId, privateKey },
+  strict,
+);
+export const CreateOAuthClientBody = Type.Union([createOAuthClient, createGitHubAppClient]);
+export const RotateOAuthClientSecretBody = Type.Union([
+  Type.Object({ clientSecret: ClientSecret }, strict),
+  Type.Object({ privateKey }, strict),
+]);
 export const DiscoverTemplateBody = Type.Object(
   { serverUrl: HttpsUrl, issuer: Type.Optional(HttpsUrl) },
   strict,
@@ -154,8 +165,9 @@ const Observed = Type.Object(
   },
   strict,
 );
-const publicClient = Type.Object(
+export const OAuthClientSchema = Type.Object(
   {
+    kind: Type.Literal("oauth2"),
     ...registration,
     namespaceId: Type.Optional(NamespaceId),
     issuer: HttpsUrl,
@@ -166,6 +178,17 @@ const publicClient = Type.Object(
   },
   strict,
 );
+const publicGitHubAppClient = Type.Object(
+  {
+    kind: Type.Literal("github-app"),
+    id: OAuthClientId,
+    displayName: DisplayName,
+    appId,
+    createdAt: Type.String(),
+  },
+  strict,
+);
+const publicClient = Type.Union([OAuthClientSchema, publicGitHubAppClient]);
 export const OAuthConnectionTemplateVersionSchema = Type.Object(
   {
     templateId: ConnectionTemplateId,
@@ -179,7 +202,6 @@ export const OAuthConnectionTemplateVersionSchema = Type.Object(
     destinations: ConnectionDestinationsSchema,
     scopes: Scopes,
     authorizationParameters: Parameters,
-    oauthClientId: Type.Optional(OAuthClientId),
     mcp: Type.Optional(Type.Object({ serverUrl: HttpsUrl, resource: HttpsUrl }, strict)),
     observed: Type.Optional(Observed),
   },

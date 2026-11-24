@@ -89,11 +89,11 @@ The chart gives the API unrestricted egress; Agent tool calls still use the Sand
 
 Open **Plugins** and add the plugin. Choose a compatible account directly in the
 plugin or use **Connect account** to authorize one from an approved Connection
-Template. Switching accounts clears the displayed tool inventory and selected
-tools for that plugin. Select **Load tools**, choose the tools to enable, then
-save and deploy. Loading tools again refreshes the inventory and preserves
-your selection. An empty selection leaves
-the worker server disabled.
+Template. Switching accounts clears the plugin's tool inventory, tool selection,
+and per-tool approval overrides. Select **Load tools**, choose the tools to
+enable, and set their approvals again before you save and deploy. Loading tools
+again refreshes the inventory and preserves your selection. An empty selection
+leaves the worker server disabled.
 For an enabled tool, open **Tool policy** and set **Require approval for** to
 **Every action** to require human approval for each native call. Select
 **No additional approval** to run without a prompt. The request names the server and tool;

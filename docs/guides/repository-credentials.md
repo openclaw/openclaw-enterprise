@@ -46,6 +46,29 @@ docker build -f deploy/runtime/Dockerfile \
 The image includes Git, the client helper and pinned `gh` 2.103.2. Publish or
 import it, select its digest and configure model authentication.
 
+## Select a GitHub Source for an OpenShell Agent
+
+This path requires the selected TokenService, the paired OpenShell Sandbox and
+Credential Proxy in service mode, and qualified runtime images. Select the
+GitHub Backend and its approved registry with `repository.id` and
+`repository.configuration.sessionDurationSeconds`. The Client registration
+supplies the signing key for this path.
+
+1. As Installation administrator, open **Credentials → Credential clients →
+   Register client**. Select **GitHub App**, enter the App ID, and select its
+   PEM signing key. TokenService verifies the key and keeps it private.
+2. In the Agent's **Repositories** settings, choose the approved repositories
+   and their access levels. Under **GitHub credential**, select a Source or use
+   **Create a GitHub Source…** to mint a finite installation token. Pick the
+   registered Client and enter a Source name.
+3. Select the model credential, then save and deploy. The Agent's saved grants
+   control which Git requests can use the Source. Credential Proxy injects the
+   token on those requests.
+
+Use **Rotate GitHub App key** on the same Client to replace its signing key.
+TokenService uses that key at the next mint. Existing installation tokens keep
+their own expiry.
+
 ## Keep Git access on the same running Agent
 
 An Agent administrator can approve one repository binding until they remove that approval.

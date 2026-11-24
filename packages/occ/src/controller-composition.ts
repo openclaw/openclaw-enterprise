@@ -20,6 +20,7 @@ import {
 import {
   createRepositoryPolicyOperations,
   type InstallationRepositoryAdmission,
+  type SupportsStagedRepositoryRecipient,
   validateRepositoryBrokerNetworkProxy,
 } from "./repository-policy.ts";
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
@@ -66,12 +67,15 @@ import { createDeviceAuthorizationFlow } from "./device-authorization-flow.ts";
 import type {
   Agent,
   AgentRevision,
+  AdmittedRepositoryBinding,
   ComputeDriver,
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
   CredentialProxyDriver,
   CredentialSourceReference,
   DeploymentPolicy,
+  DeploymentRequestMatch,
+  GitHubAppInstallationCredentialSource,
   Installation,
   InstallationDeploymentInventory,
   Namespace,
@@ -80,6 +84,7 @@ import type {
   LoggingLevel,
   OpenClawConfigurationDocument,
   PresetDraftDefinition,
+  RepositoryNetworkGrant,
   BackendDefinition,
   RevisionHarnessDescriptor,
   ResourceKind,
@@ -180,6 +185,15 @@ export interface ControllerOptions {
     readonly configuration: Readonly<Record<string, unknown>>;
     readonly harness: RevisionHarnessDescriptor;
   }) => ModelCredentialPreset | undefined;
+  /** Bundled composition verifies finite Git Source coverage against the current Repo registry. */
+  readonly repositoryCredentialAdmission?: (input: {
+    readonly namespaceId: string;
+    readonly source: Readonly<GitHubAppInstallationCredentialSource>;
+    readonly bindings: readonly AdmittedRepositoryBinding[];
+    readonly grants: readonly RepositoryNetworkGrant[];
+  }) => readonly DeploymentRequestMatch[] | undefined;
+  /** Qualify the exact selected native recipient without extending a Driver contract. */
+  readonly supportsStagedRepositoryRecipient?: SupportsStagedRepositoryRecipient;
   /** Composition qualifies the selected implementations against the complete deployment policy. */
   readonly supportsCredentialDeployment?: (input: {
     readonly sandbox: SandboxDriver;
@@ -578,6 +592,7 @@ function createCredentialServices({
     preparedIssuer,
     clock: resourceValues.now,
     selectedTokenServiceDriver: () => publicController.selectedDriver("token_service"),
+    secretDriver,
     pluginDrivers: () => drivers.enabledPluginDrivers(),
     retireDelivery: async (namespace, source, signal) => {
       if (!drivers.hasSelection("credential_proxy_delivery")) {
@@ -614,7 +629,9 @@ function createCredentialServices({
     installationId,
     transactions,
     authority,
-    secretDriver,
+    tokenServiceDriver: managedCredentialSources.ownedTokenServiceDriver,
+    tokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
+    tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
     now: resourceValues.now,
     timestamp: resourceValues.timestamp,
   });
@@ -857,6 +874,11 @@ export function createControllerComposition(
     installationId: admittedInstallation.id,
     configurationDriver: configurationOperations.selectedDriver,
     selectedProxyOwner: () => drivers.selectedProxyOwner(),
+    selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
+    repositoryCredentialAdmission: options.repositoryCredentialAdmission,
+    supportsStagedRepositoryRecipient: options.supportsStagedRepositoryRecipient,
+    ownedTokenServiceDriver: (instanceId) =>
+      managedCredentialSources.ownedTokenServiceDriver(instanceId),
     credentialSourceOwner: credentialSourceDrivers.credentialSourceOwner,
     repositoryNetworkPolicyCeiling: parseRepositoryNetworkPolicyCeiling(
       options.repositoryNetworkPolicyCeiling ?? [],

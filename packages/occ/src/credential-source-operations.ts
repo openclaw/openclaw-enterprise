@@ -34,6 +34,7 @@ import {
 import {
   credentialSourceMetadata,
   oauthCredentialSourceMetadata,
+  githubAppCredentialSourceMetadata,
   legacyCredentialSourceMetadata,
   type LegacyCredentialSourceMetadata as CredentialSourceMetadata,
   type CredentialSourceManagementMetadata,
@@ -992,6 +993,9 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
       if (source.type === "static") {
         return credentialSourceMetadata(source);
       }
+      if (source.type === "github-app-installation") {
+        return githubAppCredentialSourceMetadata(source);
+      }
       let refresh: OAuthConnectionStatus | undefined;
       if (source.state === "ready") {
         try {
@@ -1089,7 +1093,9 @@ export function createCredentialSourceOperations(dependencies: CredentialSourceD
               ? legacyCredentialSourceMetadata(source)
               : source.type === "static"
                 ? credentialSourceMetadata(source)
-                : oauthCredentialSourceMetadata(view, source),
+                : source.type === "github-app-installation"
+                  ? githubAppCredentialSourceMetadata(source)
+                  : oauthCredentialSourceMetadata(view, source),
           ),
         ),
       ),

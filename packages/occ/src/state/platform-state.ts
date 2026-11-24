@@ -1,6 +1,7 @@
 import type { SelectedPluginBinding } from "../plugin-credential-bindings.ts";
 import {
   isCanonicalRepositoryNetworkPolicy,
+  isNativeStagedRepositoryRevision,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
 } from "@openclaw-enterprise/contracts";
 import type {
@@ -62,7 +63,7 @@ import type {
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
 import type { PredecessorReplacement } from "../ports/agent-reads.ts";
-import type { StoredOAuthClient } from "../ports/oauth-client.ts";
+import type { StoredCredentialClient } from "../ports/oauth-client.ts";
 import type { TokenServiceInstance } from "../ports/token-service.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
@@ -583,6 +584,11 @@ export function validStandaloneCredentialDeployment(
     | "harnessAuth"
     | "credentialSources"
     | "plugins"
+    | "egressPlan"
+    | "harness"
+    | "sandboxDriverId"
+    | "sandboxPolicy"
+    | "repositoryCredentials"
   >,
 ): boolean {
   if (revision.executionAdmission.mode !== "standalone") {
@@ -596,6 +602,7 @@ export function validStandaloneCredentialDeployment(
   }
   const used = new Set<string>();
   let modelBindings = 0;
+  let repositoryBinding = false;
   const pluginConsumers = new Set<string>();
   for (const binding of policy.bindings) {
     const snapshot = snapshots.find(({ sourceId }) => sourceId === binding.sourceRef.id);
@@ -639,6 +646,8 @@ export function validStandaloneCredentialDeployment(
         return false;
       }
       pluginConsumers.add(key);
+    } else if (binding.consumer.kind === "repository") {
+      repositoryBinding = true;
     } else {
       return false;
     }
@@ -646,7 +655,12 @@ export function validStandaloneCredentialDeployment(
   const managedHarness =
     auth.method === "credential_source" && auth.tokenServiceInstanceId !== undefined;
   return (
-    (managedHarness ? modelBindings === 1 : modelBindings === 0) && used.size === snapshots.length
+    (managedHarness ? modelBindings === 1 : modelBindings === 0) &&
+    used.size === snapshots.length &&
+    (repositoryBinding
+      ? isNativeStagedRepositoryRevision(revision)
+      : revision.repositoryCredentials === undefined &&
+        revision.sandboxPolicy?.repositoryNetworkPolicy === undefined)
   );
 }
 
@@ -753,7 +767,7 @@ interface PlatformSnapshot {
   readonly connectionTemplates: Map<string, Readonly<ConnectionTemplate>>;
   readonly clientRegistrations: Map<
     string,
-    Readonly<StoredOAuthClient> & { cleanupAfter?: string }
+    Readonly<StoredCredentialClient> & { cleanupAfter?: string }
   >;
   readonly connectionTemplateVersions: Map<string, Readonly<ConnectionTemplateVersion>>;
   readonly connectionTokenCustody: Map<string, Readonly<OAuthTokenCustody>>;
@@ -1239,6 +1253,54 @@ function assertProtectedEgressSource(
   }
 }
 
+function isGitHubScopeId(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    /^[1-9][0-9]{0,15}$/.test(value) &&
+    Number.isSafeInteger(Number(value))
+  );
+}
+
+function validGitHubAppSourceScope(scope: unknown): boolean {
+  if (
+    !isPlainRecord(scope) ||
+    Object.keys(scope).length !== 4 ||
+    !isGitHubScopeId(scope.appId) ||
+    !isGitHubScopeId(scope.installationId) ||
+    !Array.isArray(scope.repositories) ||
+    scope.repositories.length < 1 ||
+    scope.repositories.length > 16 ||
+    !isPlainRecord(scope.permissions) ||
+    scope.permissions.metadata !== "read"
+  ) {
+    return false;
+  }
+  const ids = new Set<unknown>();
+  const names = new Set<string>();
+  for (const entry of scope.repositories) {
+    if (
+      !isPlainRecord(entry) ||
+      Object.keys(entry).length !== 2 ||
+      !isGitHubScopeId(entry.repositoryId) ||
+      typeof entry.repository !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(entry.repository) ||
+      entry.repository.includes("..")
+    ) {
+      return false;
+    }
+    ids.add(entry.repositoryId);
+    names.add(entry.repository.toLowerCase());
+  }
+  return (
+    ids.size === scope.repositories.length &&
+    names.size === scope.repositories.length &&
+    Object.entries(scope.permissions).every(
+      ([name, level]) =>
+        /^[a-z][a-z0-9_]{0,63}$/.test(name) && (level === "read" || level === "write"),
+    )
+  );
+}
+
 /** Mirrors the PostgreSQL credential source constraints for the in-memory adapter. */
 function assertCredentialSource(source: CredentialSource): void {
   const legacy = source.ownerCapability !== "token_service";
@@ -1246,9 +1308,7 @@ function assertCredentialSource(source: CredentialSource): void {
     assertProtectedEgressSource(source.egress, source.namespaceId, source.id);
   }
   const config: unknown =
-    source.ownerCapability === "token_service" && source.type === "oauth2-refresh-token"
-      ? {}
-      : source.config;
+    source.ownerCapability === "token_service" && source.type !== "static" ? {} : source.config;
   const secretInputs: unknown = legacy ? source.secrets : {};
   const validOwner = legacy
     ? (source.ownerCapability === "credential_gateway" ||
@@ -1257,7 +1317,14 @@ function assertCredentialSource(source: CredentialSource): void {
       source.driverId.length >= 1 &&
       source.driverId.length <= 200 &&
       source.driverId === source.driverId.trim()
-    : (source.type === "static" || source.type === "oauth2-refresh-token") &&
+    : (source.type === "static" ||
+        source.type === "oauth2-refresh-token" ||
+        (source.type === "github-app-installation" &&
+          typeof source.clientId === "string" &&
+          /^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+            source.clientId,
+          ) &&
+          validGitHubAppSourceScope(source.scope))) &&
       typeof source.tokenServiceInstanceId === "string" &&
       (source.state === "ready" || source.state === "deleting");
   if (
@@ -1400,6 +1467,9 @@ function repositories(
             (source) =>
               source.ownerCapability === "token_service" &&
               source.tokenServiceInstanceId === current.id,
+          ) ||
+          Array.from(snapshot.clientRegistrations.values()).some(
+            (client) => client.tokenServiceInstanceId === current.id,
           ))
       ) {
         throw new ResourceStateConflictError("The TokenService instance still has registrations.");
@@ -1597,23 +1667,6 @@ function repositories(
         "The version must match the template identity and authentication method.",
       );
     }
-    if (version.mode === "static_bearer" || !version.oauthClientId) {
-      return;
-    }
-    const registration = snapshot.clientRegistrations.get(version.oauthClientId);
-    if (
-      !registration ||
-      registration.cleanupAfter !== undefined ||
-      (registration.namespaceId !== undefined &&
-        registration.namespaceId !== template.namespaceId) ||
-      registration.issuer !== version.issuer ||
-      registration.tokenUrl !== version.tokenUrl ||
-      (version.revocationUrl !== undefined && registration.revocationUrl !== version.revocationUrl)
-    ) {
-      throw new ResourceStateConflictError(
-        "The OAuth client registration must match the template scope and client.",
-      );
-    }
   };
   const connectionTemplates: ConnectionTemplateRepository = {
     findConnectionTemplate,
@@ -1621,13 +1674,46 @@ function repositories(
       Array.from(snapshot.connectionTemplates.values()).filter(
         (template) => template.namespaceId === namespaceId,
       ).length,
-    hasOtherConnectionIssuer: async (issuer) =>
-      [...snapshot.connectionTemplateVersions.values()].some(
-        (version) =>
-          version.mode !== "static_bearer" &&
-          version.oauthClientId !== undefined &&
-          version.issuer !== issuer,
-      ),
+    hasOtherConnectionIssuer: async (issuer) => {
+      const available = [...snapshot.clientRegistrations.values()].filter(
+        (client) => client.kind === "oauth2" && client.cleanupAfter === undefined,
+      );
+      const reachableCurrent = [...snapshot.connectionTemplates.values()].some((template) => {
+        const version = template.current;
+        if (version.mode === "static_bearer" || version.issuer === issuer) {
+          return false;
+        }
+        return available.some(
+          (client) =>
+            client.kind === "oauth2" &&
+            (template.namespaceId === undefined ||
+              client.namespaceId === undefined ||
+              client.namespaceId === template.namespaceId) &&
+            client.issuer === version.issuer &&
+            client.tokenUrl === version.tokenUrl &&
+            (version.revocationUrl === undefined ||
+              client.revocationUrl === version.revocationUrl) &&
+            (version.observed === undefined ||
+              (version.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
+                client.tokenEndpointAuthMethod,
+              )),
+        );
+      });
+      return (
+        reachableCurrent ||
+        [...snapshot.authenticationStates.values()].some((state) => {
+          if (state.kind !== "oauth_connection" || Date.parse(state.expiresAt) <= Date.now()) {
+            return false;
+          }
+          const version = snapshot.connectionTemplateVersions.get(
+            versionKey(state.connectionTemplateId, state.connectionTemplateVersion),
+          );
+          return (
+            version !== undefined && version.mode !== "static_bearer" && version.issuer !== issuer
+          );
+        })
+      );
+    },
     listConnectionTemplates: async () =>
       Object.freeze(
         Array.from(snapshot.connectionTemplates.values())
@@ -1640,37 +1726,46 @@ function repositories(
         ? undefined
         : immutableCopy(found);
     },
-    listOAuthClients: async () =>
+    listCredentialClients: async () =>
       Object.freeze(
         Array.from(snapshot.clientRegistrations.values())
           .filter((row) => row.cleanupAfter === undefined)
-          .map((row) => immutableCopy(row))
+          .map(({ cleanupAfter: _cleanup, ...client }) => immutableCopy(client))
           .sort((a, b) => a.id.localeCompare(b.id)),
       ),
-    countNamespaceOAuthClients: async (namespaceId) =>
+    countNamespaceCredentialClients: async (namespaceId) =>
       Array.from(snapshot.clientRegistrations.values()).filter(
         (client) => client.namespaceId === namespaceId,
       ).length,
-    findOAuthClient: async (id) => {
+    findCredentialClient: async (id) => {
       const row = snapshot.clientRegistrations.get(id);
-      return row?.cleanupAfter === undefined ? row : undefined;
+      if (!row || row.cleanupAfter !== undefined) {
+        return undefined;
+      }
+      const { cleanupAfter: _cleanup, ...client } = row;
+      return immutableCopy(client);
     },
-    lockOAuthClient: async (id) => connectionTemplates.findOAuthClient(id),
-    listOAuthClientCleanups: async (limit) =>
+    lockCredentialClient: async (id) => connectionTemplates.findCredentialClient(id),
+    listCredentialClientCleanups: async (limit) =>
       [...snapshot.clientRegistrations.values()]
         .filter((row) => row.cleanupAfter && Date.parse(row.cleanupAfter) <= Date.now())
         .sort((a, b) => a.cleanupAfter!.localeCompare(b.cleanupAfter!))
         .slice(0, limit)
         .map((row) => row.id),
-    lockOAuthClientForCleanup: async (id, dueOnly) => {
+    lockCredentialClientForCleanup: async (id, dueOnly) => {
       const row = snapshot.clientRegistrations.get(id);
-      return row?.cleanupAfter && (!dueOnly || Date.parse(row.cleanupAfter) <= Date.now())
-        ? row
-        : undefined;
+      if (!row?.cleanupAfter || (dueOnly && Date.parse(row.cleanupAfter) > Date.now())) {
+        return undefined;
+      }
+      const { cleanupAfter: _cleanup, ...client } = row;
+      return immutableCopy(client);
     },
-    setOAuthClientCleanup: async (id, cleanupAfter) => {
+    setCredentialClientCleanup: async (id, cleanupAfter) => {
       const row = snapshot.clientRegistrations.get(id);
       if (row) {
+        if (cleanupAfter !== null && row.tokenServiceInstanceId === undefined) {
+          throw new ResourceConflictError("Only confidential clients require private cleanup.");
+        }
         const { cleanupAfter: _old, ...client } = row;
         snapshot.clientRegistrations.set(
           id,
@@ -1679,15 +1774,18 @@ function repositories(
       }
     },
     lockConnectionTemplate: findConnectionTemplate,
-    createOAuthClient: async (registration, cleanupAfter) => {
+    createCredentialClient: async (registration, cleanupAfter) => {
       assertInitialized(snapshot);
+      const confidential =
+        registration.kind === "github-app" || registration.tokenEndpointAuthMethod !== "none";
       if (
-        (registration.tokenEndpointAuthMethod === "none") !==
-          (registration.secretDriverId === undefined) ||
-        registration.secretDriverId === ""
+        confidential !== (registration.tokenServiceInstanceId !== undefined) ||
+        (confidential &&
+          registration.tokenServiceInstanceId !== snapshot.tokenServiceInstance?.id) ||
+        (!confidential && cleanupAfter !== undefined)
       ) {
         throw new ResourceConflictError(
-          "Only confidential OAuth clients have a private Secret Driver.",
+          "Private client material must belong to the selected TokenService.",
         );
       }
       if (
@@ -1696,35 +1794,59 @@ function repositories(
       ) {
         throw new ResourceStateConflictError("The client registration Namespace does not exist.");
       }
-      // The issuer and client ID identify a registration within the template's scope.
+      if (
+        registration.kind === "github-app" &&
+        (!/^[1-9][0-9]{0,15}$/.test(registration.appId) ||
+          !Number.isSafeInteger(Number(registration.appId)))
+      ) {
+        throw new ResourceConflictError("The GitHub App ID is invalid.");
+      }
       if (
         snapshot.clientRegistrations.has(registration.id) ||
-        Array.from(snapshot.clientRegistrations.values()).some(
-          (existing) =>
-            existing.namespaceId === registration.namespaceId &&
-            existing.issuer === registration.issuer &&
-            existing.clientId === registration.clientId,
-        )
+        (registration.kind === "oauth2" &&
+          Array.from(snapshot.clientRegistrations.values()).some(
+            (existing) =>
+              existing.kind === "oauth2" &&
+              existing.namespaceId === registration.namespaceId &&
+              existing.issuer === registration.issuer &&
+              existing.clientId === registration.clientId,
+          ))
       ) {
-        throw new ResourceConflictError("The OAuth client is already registered.");
+        throw new ResourceConflictError("The client is already registered.");
       }
       const saved = immutableCopy(registration);
       snapshot.clientRegistrations.set(
         saved.id,
         immutableCopy({ ...registration, ...(cleanupAfter && { cleanupAfter }) }),
       );
-      return immutableCopy(saved);
+      return saved;
     },
-    deleteOAuthClient: async (registrationId, retainForCleanup) => {
+    deleteCredentialClient: async (registrationId, retainForCleanup) => {
       if (
-        Array.from(snapshot.connectionTemplateVersions.values()).some(
-          (version) => version.mode !== "static_bearer" && version.oauthClientId === registrationId,
+        [...snapshot.credentialSources.values()].some(
+          (source) =>
+            (source.type === "oauth2-refresh-token" &&
+              source.ownerCapability === "token_service" &&
+              source.consent.kind === "connection_template" &&
+              source.consent.oauthClientId === registrationId) ||
+            (source.ownerCapability === "token_service" &&
+              source.type === "github-app-installation" &&
+              source.clientId === registrationId),
+        ) ||
+        [...snapshot.authenticationStates.values()].some(
+          (state) =>
+            state.kind === "oauth_connection" &&
+            "oauthClientId" in state &&
+            state.oauthClientId === registrationId,
         )
       ) {
         return false;
       }
       if (retainForCleanup) {
-        await connectionTemplates.setOAuthClientCleanup(registrationId, new Date().toISOString());
+        await connectionTemplates.setCredentialClientCleanup(
+          registrationId,
+          new Date().toISOString(),
+        );
         return snapshot.clientRegistrations.has(registrationId);
       }
       return snapshot.clientRegistrations.delete(registrationId);
@@ -1777,6 +1899,7 @@ function repositories(
         [...snapshot.credentialSources.values()].some(
           (source) =>
             source.ownerCapability === "token_service" &&
+            source.type !== "github-app-installation" &&
             source.connectionTemplateId === templateId,
         ) ||
         [...snapshot.authenticationStates.values()].some(
@@ -1800,11 +1923,23 @@ function repositories(
     const version = snapshot.connectionTemplateVersions.get(
       versionKey(record.connectionTemplateId, record.connectionTemplateVersion),
     );
+    const client = snapshot.clientRegistrations.get(record.oauthClientId);
     if (
       !template ||
       (template.namespaceId !== undefined && template.namespaceId !== record.namespaceId) ||
       !version ||
-      version.mode === "static_bearer"
+      version.mode === "static_bearer" ||
+      !client ||
+      client.cleanupAfter !== undefined ||
+      client.kind !== "oauth2" ||
+      (client.namespaceId !== undefined && client.namespaceId !== record.namespaceId) ||
+      client.issuer !== version.issuer ||
+      client.tokenUrl !== version.tokenUrl ||
+      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl) ||
+      (version.observed !== undefined &&
+        !(version.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
+          client.tokenEndpointAuthMethod,
+        ))
     ) {
       throw new ResourceStateConflictError(
         "The OAuth consent must use a Template and client in its scope.",
@@ -2128,12 +2263,20 @@ function repositories(
         state?.kind !== "oauth_connection" ||
         state.actorId !== actorId ||
         state.sessionId !== sessionId ||
+        state.consumedAt !== undefined ||
         state.expiresAt <= at
       ) {
         return undefined;
       }
-      snapshot.authenticationStates.delete(id);
-      return state;
+      const consumed = storedCopy({ ...state, consumedAt: at });
+      snapshot.authenticationStates.set(id, consumed);
+      return consumed;
+    },
+    releaseOAuth: async (id) => {
+      const state = snapshot.authenticationStates.get(id);
+      if (state?.kind === "oauth_connection" && state.consumedAt !== undefined) {
+        snapshot.authenticationStates.delete(id);
+      }
     },
     expire: async (at, limit) => {
       let oauthCount = 0;
@@ -2618,7 +2761,101 @@ function repositories(
           .map((source) => immutableCopy(source)),
       );
     },
+    listReadyTokenServiceSources: async (type, instanceId, limit, afterId) =>
+      Object.freeze(
+        [...snapshot.credentialSources.values()]
+          .filter((source) => {
+            const namespace = snapshot.namespaces.get(source.namespaceId);
+            return (
+              source.ownerCapability === "token_service" &&
+              source.tokenServiceInstanceId === instanceId &&
+              source.type === type &&
+              source.state === "ready" &&
+              source.id > (afterId ?? "") &&
+              namespace?.status === "ready" &&
+              namespace.deletedAt === undefined
+            );
+          })
+          .sort((left, right) => left.id.localeCompare(right.id))
+          .slice(0, limit)
+          .map(({ namespaceId, id }) => ({ namespaceId, id })),
+      ),
     lockCredentialSource: findCredentialSource,
+    isCredentialSourceAdoptionSettled: async (namespaceId, sourceId) => {
+      if (await credentialSources.findBlockingReference(namespaceId, sourceId)) {
+        return false;
+      }
+      if (
+        [...snapshot.credentialWithdrawals.values()].some(
+          (withdrawal) =>
+            withdrawal.namespaceId === namespaceId &&
+            withdrawal.credentialSourceId === sourceId &&
+            withdrawal.state === "pending",
+        )
+      ) {
+        return false;
+      }
+      for (const [key, installation] of snapshot.egressInstallations) {
+        if (
+          installation.plan.execution.namespaceId !== namespaceId ||
+          snapshot.retiredEgressInstallations.has(key)
+        ) {
+          continue;
+        }
+        const revision = (
+          snapshot.revisions.get(agentKey(namespaceId, installation.plan.execution.agentId)) ?? []
+        ).find(({ id }) => id === installation.plan.execution.revisionId);
+        if (
+          harnessCredentialSourceReference(revision?.harnessAuth, sourceId) ||
+          agentCredentialSourceReference(revision?.credentialSources, sourceId)
+        ) {
+          return false;
+        }
+      }
+      return ![...snapshot.egressSendReceipts.values()].some(
+        ({ authorization, settled, material }) =>
+          authorization !== null &&
+          !settled &&
+          material !== null &&
+          material.kind !== "no_material_required" &&
+          material.source.namespaceId === namespaceId &&
+          material.source.source.id === sourceId,
+      );
+    },
+    adoptGatewayPatSource: async (input) => {
+      const { namespaceId, id } = input.sourceRef;
+      const source = await findCredentialSource(namespaceId, id);
+      if (
+        source?.ownerCapability !== "credential_gateway" ||
+        source.type !== "codex-pat" ||
+        source.state !== "ready" ||
+        source.driverId !== input.expectedGatewayId ||
+        source.egress !== undefined ||
+        input.providerPreset !== "codex-pat" ||
+        input.expectedSecretRef.kind !== "secret" ||
+        input.expectedSecretRef.namespaceId !== namespaceId ||
+        Object.keys(source.secrets).length !== 1 ||
+        source.secrets.access_token?.id !== input.expectedSecretRef.id ||
+        snapshot.tokenServiceInstance?.id !== input.tokenServiceInstanceId ||
+        !(await credentialSources.isCredentialSourceAdoptionSettled(namespaceId, id))
+      ) {
+        return undefined;
+      }
+      const adopted = immutableCopy({
+        id,
+        namespaceId,
+        name: source.name,
+        createdAt: source.createdAt,
+        ownerCapability: "token_service" as const,
+        type: "static" as const,
+        state: "ready" as const,
+        tokenServiceInstanceId: input.tokenServiceInstanceId,
+        config: { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: "codex-pat" },
+      });
+      assertCredentialSource(adopted);
+      snapshot.credentialSources.set(agentKey(namespaceId, id), adopted);
+      return adopted;
+    },
     createCredentialSource: async (source) => {
       assertInitialized(snapshot);
       assertCredentialSource(source);
@@ -2657,7 +2894,23 @@ function repositories(
           throw new ResourceStateConflictError("The OAuth Source requires its approved Template.");
         }
       }
-      if (source.ownerCapability === "token_service" && source.connectionTemplateId !== undefined) {
+      if (source.ownerCapability === "token_service" && source.type === "github-app-installation") {
+        const client = snapshot.clientRegistrations.get(source.clientId);
+        if (
+          client?.kind !== "github-app" ||
+          client.cleanupAfter !== undefined ||
+          client.namespaceId !== undefined ||
+          client.appId !== source.scope.appId ||
+          client.tokenServiceInstanceId !== source.tokenServiceInstanceId
+        ) {
+          throw new ResourceStateConflictError("The GitHub App Source client is unavailable.");
+        }
+      }
+      if (
+        source.ownerCapability === "token_service" &&
+        source.type !== "github-app-installation" &&
+        source.connectionTemplateId !== undefined
+      ) {
         const template = snapshot.connectionTemplates.get(source.connectionTemplateId);
         if (
           !template ||
@@ -2679,10 +2932,24 @@ function repositories(
           const version = snapshot.connectionTemplateVersions.get(
             versionKey(source.connectionTemplateId, source.consent.version),
           );
+          const client = snapshot.clientRegistrations.get(source.consent.oauthClientId);
           if (
             !version ||
             version.mode === "static_bearer" ||
-            version.oauthClientId !== source.consent.oauthClientId
+            !client ||
+            client.kind !== "oauth2" ||
+            client.cleanupAfter !== undefined ||
+            (client.namespaceId !== undefined && client.namespaceId !== source.namespaceId) ||
+            client.issuer !== version.issuer ||
+            client.tokenUrl !== version.tokenUrl ||
+            (version.revocationUrl !== undefined &&
+              client.revocationUrl !== version.revocationUrl) ||
+            (version.observed !== undefined &&
+              !(version.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
+                client.tokenEndpointAuthMethod,
+              )) ||
+            (client.tokenEndpointAuthMethod !== "none" &&
+              client.tokenServiceInstanceId !== source.tokenServiceInstanceId)
           ) {
             throw new ResourceStateConflictError(
               "The OAuth consent does not match its Template version and client.",

@@ -7,15 +7,21 @@ import type {
   CredentialProxyDriver,
   CredentialSource,
   CredentialSourceDeviceAuthorization,
+  CredentialClientSecretInstance,
+  OAuthClientSecretInstance,
   OAuthCredentialSource,
   StoredCredentialSource,
   CredentialSourceReference,
   ErrorDetail,
+  GitHubAppInstallationCredentialSource,
+  GitHubAppInstallationScope,
   InstallationSecretRef,
   InstallationSecretStore,
   JSONSchema,
   ResolvedCredential,
   SourceLifecycleConfig,
+  SourceAdoptionInput,
+  StaticCredentialSource,
   SourceRefreshOperation,
   SourceRegistrationInput,
   SourceUpdate,
@@ -41,8 +47,30 @@ import {
   pollCodexDeviceAuthorization,
   startCodexDeviceAuthorization,
 } from "./codex-device-authorization.ts";
+import {
+  createGitHubAppSourceIssuer,
+  type GitHubAppIssuerOptions,
+  type GitHubAppSourceIssuer,
+} from "./github-app-issuer.ts";
+import { parseGitHubNumericId } from "../repo/github/access/repository-grant.ts";
+import { providerClockSkewMs } from "../repo/github/access/driver/lifetime.ts";
+import type { GitHubRepositoryRegistry } from "../repo/github/access/registry.ts";
+import {
+  admitGitHubAppSourceScope,
+  decodeGitHubAppSourceCredential,
+  githubAppClientSigningKeyRef,
+  isGitHubAppSourceScopeCurrent,
+  resolveGitHubAppSourceCredential,
+} from "./github-app-source.ts";
 
 const maxSecretValueBytes: number = Reflect.get(SecretValue, "maxLength");
+const removedCredential = JSON.stringify({ removed: true });
+// Renew before the next ordinary maintenance sweep; every new token has at least one minute of life.
+const githubAppRenewalLeadMs = 45_000;
+
+interface GitHubAppEnrollment {
+  readonly registry: GitHubRepositoryRegistry;
+}
 
 function checkLifecycle(config: SourceLifecycleConfig): void {
   if (config.type !== "static" || Object.keys(config.settings).length !== 0) {
@@ -89,6 +117,17 @@ function decodeCredential(value: string): ResolvedCredential {
   return { credential: record.credential, version: record.version };
 }
 
+function encodeGitHubAppCredential(issued: Awaited<ReturnType<GitHubAppSourceIssuer["issue"]>>) {
+  const version = randomUUID();
+  const stored = JSON.stringify({ ...issued, version });
+  if (Buffer.byteLength(stored, "utf8") > maxSecretValueBytes) {
+    throw new TokenServiceSourceInputError(
+      "The encoded credential exceeds the Secret storage limit.",
+    );
+  }
+  return { stored, version };
+}
+
 export class OCCTokenServiceDriver implements TokenServiceDriver {
   static readonly configurationSchema: JSONSchema = Object.freeze({
     type: "object",
@@ -102,12 +141,18 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
 
   readonly capability = "token_service";
   readonly implementation = "occ/token-service";
+  readonly clientScopes: TokenServiceDriver["clientScopes"] = Object.freeze({
+    oauth2: Object.freeze(["installation", "namespace"] as const),
+    "github-app": Object.freeze(["installation"] as const),
+  });
   readonly id: string;
   private readonly installationId: string;
   private readonly store: InstallationSecretStore;
   private readonly tokenServiceInstanceId: string;
   private readonly state: PlatformStateStore;
   private readonly oauth: OAuthAccountTokens | undefined;
+  private readonly githubApp: GitHubAppEnrollment | undefined;
+  private readonly githubAppIssuer: GitHubAppSourceIssuer;
   private readonly credentialProxy:
     Pick<CredentialProxyDriver, "notifyCredentialUpdated"> | undefined;
 
@@ -119,6 +164,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     state: PlatformStateStore,
     credentialProxy?: Pick<CredentialProxyDriver, "notifyCredentialUpdated">,
     oauth?: OAuthAccountTokens,
+    githubAppIssuerOptions?: GitHubAppIssuerOptions,
+    githubApp?: GitHubAppEnrollment,
   ) {
     if (!isNonEmptyString(tokenServiceInstanceId)) {
       throw new ResourceStateConflictError("The TokenService instance identity is unavailable.");
@@ -130,6 +177,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     this.state = state;
     this.credentialProxy = credentialProxy;
     this.oauth = oauth;
+    this.githubApp = githubApp;
+    this.githubAppIssuer = createGitHubAppSourceIssuer(githubAppIssuerOptions);
   }
 
   private ownedRef(source: TokenServiceSourceInstance): CredentialSourceReference {
@@ -169,6 +218,122 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         ref.id,
       ]),
     };
+  }
+
+  private clientSecretRef(client: CredentialClientSecretInstance): InstallationSecretRef {
+    const ref = client.sourceRef;
+    if (
+      client.tokenServiceInstanceId !== this.tokenServiceInstanceId ||
+      !isNonEmptyString(ref.id)
+    ) {
+      throw new ScopeViolationError("The client secret is not owned by this TokenService.");
+    }
+    let authority: string;
+    if (ref.kind === "oauth_client" && "tokenUrl" in client) {
+      if (
+        (ref.namespaceId !== undefined && !isNonEmptyString(ref.namespaceId)) ||
+        !/^https:\/\/[^/?#@\s\\]+(?:[/?][^#\s\\]*)?$/.test(client.tokenUrl) ||
+        !URL.canParse(client.tokenUrl)
+      ) {
+        throw new ScopeViolationError("The client secret is not owned by this TokenService.");
+      }
+      authority = client.tokenUrl;
+    } else if (
+      ref.kind === "github_app_client" &&
+      ref.namespaceId === undefined &&
+      "appId" in client &&
+      parseGitHubNumericId(client.appId) !== undefined
+    ) {
+      return githubAppClientSigningKeyRef(
+        this.installationId,
+        this.tokenServiceInstanceId,
+        ref.id,
+        client.appId,
+      );
+    } else {
+      throw new ScopeViolationError("The client secret is not owned by this TokenService.");
+    }
+    return {
+      installationId: this.installationId,
+      id: JSON.stringify([
+        "token_service",
+        this.tokenServiceInstanceId,
+        ref.kind,
+        ref.namespaceId ?? null,
+        ref.id,
+        authority,
+      ]),
+    };
+  }
+
+  private assertClientSecret(secret: string): void {
+    if (
+      !isNonEmptyString(secret) ||
+      secret.includes("\0") ||
+      !secret.isWellFormed() ||
+      Buffer.byteLength(secret, "utf8") > maxSecretValueBytes
+    ) {
+      throw new ScopeViolationError("The client secret is invalid.");
+    }
+  }
+
+  private async validateClientSecret(
+    client: CredentialClientSecretInstance,
+    secret: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    this.assertClientSecret(secret);
+    if (client.sourceRef.kind === "github_app_client" && "appId" in client) {
+      try {
+        await this.githubAppIssuer.verifySigningKey(client.appId, secret, signal);
+      } catch {
+        signal.throwIfAborted();
+        throw new ScopeViolationError("The GitHub App identity could not be verified.");
+      }
+    }
+  }
+
+  async registerClientSecret(
+    client: CredentialClientSecretInstance,
+    secret: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const ref = this.clientSecretRef(client);
+    await this.validateClientSecret(client, secret, signal);
+    await withComputeAbortSignal(signal, () => this.store.create(ref, secret));
+  }
+
+  async updateClientSecret(
+    client: CredentialClientSecretInstance,
+    secret: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const ref = this.clientSecretRef(client);
+    await this.validateClientSecret(client, secret, signal);
+    await withComputeAbortSignal(signal, () => this.store.update(ref, secret));
+  }
+
+  async resolveClientSecret(
+    client: OAuthClientSecretInstance,
+    signal: AbortSignal,
+  ): Promise<string> {
+    signal.throwIfAborted();
+    if (client.sourceRef.kind !== "oauth_client") {
+      throw new ScopeViolationError("Only an OAuth client secret can be resolved.");
+    }
+    return withComputeAbortSignal(signal, () =>
+      this.store.withValue(this.clientSecretRef(client), async (value) => value),
+    );
+  }
+
+  async removeClientSecret(
+    client: CredentialClientSecretInstance,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    await withComputeAbortSignal(signal, () => this.store.delete(this.clientSecretRef(client)));
   }
 
   private assertDeviceEnrollment(context: TokenServiceDeviceAuthorizationContext): void {
@@ -222,6 +387,112 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     return { status: "ready", source };
   }
 
+  private issueGitHubAppCredential(
+    { clientId, scope }: Pick<GitHubAppInstallationCredentialSource, "clientId" | "scope">,
+    signal: AbortSignal,
+  ) {
+    const keyRef = githubAppClientSigningKeyRef(
+      this.installationId,
+      this.tokenServiceInstanceId,
+      clientId,
+      scope.appId,
+    );
+    return withComputeAbortSignal(signal, () =>
+      this.store.withValue(keyRef, (privateKey) =>
+        this.githubAppIssuer.issue(scope, privateKey, signal),
+      ),
+    );
+  }
+
+  private assertGitHubAppClient(
+    candidate: unknown,
+    { clientId, scope }: Pick<GitHubAppInstallationCredentialSource, "clientId" | "scope">,
+  ): void {
+    const client = asRecord(candidate);
+    if (
+      client?.kind !== "github-app" ||
+      client.id !== clientId ||
+      client.appId !== scope.appId ||
+      client.namespaceId !== undefined ||
+      client.tokenServiceInstanceId !== this.tokenServiceInstanceId
+    ) {
+      throw new ResourceStateConflictError("The GitHub App client is unavailable for this Source.");
+    }
+  }
+
+  private assertCurrentGitHubAppRegistryScope(
+    source: Readonly<GitHubAppInstallationCredentialSource>,
+  ): void {
+    if (
+      source.tokenServiceInstanceId !== this.tokenServiceInstanceId ||
+      source.state !== "ready" ||
+      this.githubApp === undefined ||
+      !isGitHubAppSourceScopeCurrent(source, this.githubApp.registry)
+    ) {
+      throw new ResourceStateConflictError("The GitHub App Source scope is no longer approved.");
+    }
+  }
+
+  /** Validate effective Source authority without reading credential material. */
+  async assertCurrentGitHubAppSourceScope(
+    source: Readonly<GitHubAppInstallationCredentialSource>,
+  ): Promise<void> {
+    this.assertCurrentGitHubAppRegistryScope(source);
+    const client = await this.state.read(({ connectionTemplates }) =>
+      connectionTemplates.findCredentialClient(source.clientId),
+    );
+    this.assertGitHubAppClient(client, source);
+  }
+
+  private async createGitHubAppSource(
+    input: Extract<SourceRegistrationInput, { kind: "github_app_installation" }>,
+    ref: CredentialSourceReference,
+    signal: AbortSignal,
+  ): Promise<GitHubAppInstallationCredentialSource> {
+    const { githubApp } = this;
+    if (githubApp === undefined) {
+      throw new ResourceStateConflictError("GitHub App Source enrollment is unavailable.");
+    }
+    const scope = admitGitHubAppSourceScope(input, githubApp.registry);
+    return this.state.transact(async ({ namespaces, connectionTemplates, credentialSources }) => {
+      const namespace = await namespaces.lockNamespace(ref.namespaceId);
+      if (namespace?.status !== "ready") {
+        throw new ResourceStateConflictError("The credential source Namespace is not ready.");
+      }
+      const source: GitHubAppInstallationCredentialSource = {
+        id: ref.id,
+        namespaceId: ref.namespaceId,
+        name: input.name,
+        type: "github-app-installation",
+        clientId: input.clientId,
+        ownerCapability: "token_service",
+        tokenServiceInstanceId: this.tokenServiceInstanceId,
+        state: "ready",
+        scope,
+        createdAt: new Date().toISOString(),
+      };
+      // Serialize enrollment with client retirement before pinning a reference.
+      this.assertGitHubAppClient(
+        await connectionTemplates.lockCredentialClient(input.clientId),
+        source,
+      );
+      await credentialSources.createCredentialSource(source);
+      const issued = await this.issueGitHubAppCredential(source, signal);
+      try {
+        const { stored } = encodeGitHubAppCredential(issued);
+        await withComputeAbortSignal(signal, () => this.store.create(this.storageRef(ref), stored));
+        signal.throwIfAborted();
+      } catch (error) {
+        // The Source cannot commit after a custody failure. Try to retire its token.
+        await this.githubAppIssuer
+          .revoke(scope, issued.credential, AbortSignal.timeout(3_000))
+          .catch(() => false);
+        throw error;
+      }
+      return source;
+    });
+  }
+
   async createSource(
     input: SourceRegistrationInput,
     signal: AbortSignal,
@@ -266,6 +537,9 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         return source;
       });
     }
+    if (input.kind === "github_app_installation") {
+      return this.createGitHubAppSource(input, ref, signal);
+    }
     const oauth = this.oauth;
     if (!oauth) {
       throw new ResourceStateConflictError("OAuth custody is unavailable for this TokenService.");
@@ -298,6 +572,58 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       source = { ...common, consent: { ...input.consent, ...scopes } };
     }
     return oauth.registerSource(source, input.grant, signal);
+  }
+
+  async adoptSource(
+    input: SourceAdoptionInput,
+    resolveCredential: (signal: AbortSignal) => Promise<string>,
+    retireGateway: (signal: AbortSignal) => Promise<void>,
+    signal: AbortSignal,
+  ): Promise<StaticCredentialSource> {
+    signal.throwIfAborted();
+    const ref = this.ownedRef(input);
+    if (
+      input.providerPreset !== "codex-pat" ||
+      !isNonEmptyString(input.expectedGatewayId) ||
+      input.expectedSecretRef.kind !== "secret" ||
+      input.expectedSecretRef.namespaceId !== ref.namespaceId ||
+      !isNonEmptyString(input.expectedSecretRef.id)
+    ) {
+      throw new ScopeViolationError("The admitted Source adoption identity is invalid.");
+    }
+    return this.state.transact(async ({ namespaces, credentialSources }) => {
+      const namespace = await namespaces.lockNamespace(ref.namespaceId);
+      const source = await credentialSources.lockCredentialSource(ref.namespaceId, ref.id);
+      if (
+        namespace?.status !== "ready" ||
+        source?.state !== "ready" ||
+        source.ownerCapability !== "credential_gateway" ||
+        source.driverId !== input.expectedGatewayId ||
+        source.type !== "codex-pat" ||
+        source.egress !== undefined ||
+        Object.keys(source.secrets).length !== 1 ||
+        source.secrets.access_token?.kind !== "secret" ||
+        source.secrets.access_token.namespaceId !== ref.namespaceId ||
+        source.secrets.access_token.id !== input.expectedSecretRef.id ||
+        !(await credentialSources.isCredentialSourceAdoptionSettled(ref.namespaceId, ref.id))
+      ) {
+        throw new ResourceStateConflictError("The Source is not available for adoption.");
+      }
+      const credential = await resolveCredential(signal);
+      signal.throwIfAborted();
+      const encoded = encodeCredential({ access_token: credential });
+      await withComputeAbortSignal(signal, () =>
+        this.store.create(this.storageRef(ref), encoded.stored),
+      );
+      signal.throwIfAborted();
+      await retireGateway(signal);
+      signal.throwIfAborted();
+      const adopted = await credentialSources.adoptGatewayPatSource(input);
+      if (!adopted) {
+        throw new ResourceStateConflictError("The Source changed during adoption.");
+      }
+      return adopted;
+    });
   }
 
   async updateSource(
@@ -336,21 +662,33 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       signal.throwIfAborted();
       return found;
     });
-    if (version && this.credentialProxy) {
-      if (!this.credentialProxy.notifyCredentialUpdated) {
-        throw new CredentialDeliveryFailedError();
-      }
-      try {
-        await this.credentialProxy.notifyCredentialUpdated(
-          { sourceRef: ref, version },
-          () => this.resolveCredential(source, signal),
-          signal,
-        );
-      } catch {
-        throw new CredentialDeliveryFailedError();
-      }
+    if (version) {
+      await this.notifyCredentialUpdated(source, version, signal);
     }
     return updated;
+  }
+
+  private async notifyCredentialUpdated(
+    source: TokenServiceSourceInstance,
+    version: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const proxy = this.credentialProxy;
+    if (!proxy) {
+      return;
+    }
+    if (!proxy.notifyCredentialUpdated) {
+      throw new CredentialDeliveryFailedError();
+    }
+    try {
+      await proxy.notifyCredentialUpdated(
+        { sourceRef: this.ownedRef(source), version },
+        () => this.resolveCredential(source, signal),
+        signal,
+      );
+    } catch {
+      throw new CredentialDeliveryFailedError();
+    }
   }
 
   async resolveCredential(
@@ -387,9 +725,12 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
           : {}),
       };
     }
-    const resolved = await withComputeAbortSignal(signal, () =>
-      this.store.withValue(this.storageRef(ref), async (value) => decodeCredential(value)),
-    );
+    const resolved =
+      found.type === "github-app-installation"
+        ? await this.resolveGitHubAppCredential(found, ref, signal)
+        : await withComputeAbortSignal(signal, () =>
+            this.store.withValue(this.storageRef(ref), async (value) => decodeCredential(value)),
+          );
     signal.throwIfAborted();
     return resolved;
   }
@@ -421,9 +762,97 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       );
       return { ...source, operationId: randomUUID() };
     }
+    if (found.type === "github-app-installation") {
+      await this.renewGitHubAppSource(source, signal, "forced");
+      return { ...source, operationId: randomUUID() };
+    }
     throw new ResourceStateConflictError(
       "A static credential cannot be refreshed; update the source.",
     );
+  }
+
+  /** Process one page independently of Agent deployments. */
+  async maintainSources(limit: number, afterId?: string) {
+    const sources = await this.state.read(({ credentialSources }) =>
+      credentialSources.listReadyTokenServiceSources(
+        "github-app-installation",
+        this.tokenServiceInstanceId,
+        limit,
+        afterId,
+      ),
+    );
+    const outcomes = await Promise.allSettled(
+      sources.map(({ id, namespaceId }) =>
+        this.renewGitHubAppSource(
+          {
+            sourceRef: { kind: "credential_source", namespaceId, id },
+            tokenServiceInstanceId: this.tokenServiceInstanceId,
+          },
+          AbortSignal.timeout(30_000),
+          "due",
+        ),
+      ),
+    );
+    return {
+      cursor: sources.length === limit ? sources.at(-1)?.id : undefined,
+      failed: outcomes.some(
+        (outcome) =>
+          outcome.status === "rejected" &&
+          !(outcome.reason instanceof CredentialDeliveryFailedError),
+      ),
+      deliveryFailed: outcomes.some(
+        (outcome) =>
+          outcome.status === "rejected" && outcome.reason instanceof CredentialDeliveryFailedError,
+      ),
+    };
+  }
+
+  private async renewGitHubAppSource(
+    source: TokenServiceSourceInstance<CredentialSourceReference>,
+    signal: AbortSignal,
+    mode: "due" | "forced",
+  ): Promise<void> {
+    const ref = this.ownedRef(source);
+    const stored = this.storageRef(ref);
+    const version = await this.state.transact(
+      async ({ namespaces, connectionTemplates, credentialSources }) => {
+        const namespace = await namespaces.lockNamespace(ref.namespaceId);
+        const current = this.ownedSource(
+          await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
+        );
+        if (
+          namespace?.status !== "ready" ||
+          current?.type !== "github-app-installation" ||
+          current.state !== "ready"
+        ) {
+          if (mode === "forced") {
+            throw new ResourceStateConflictError("The GitHub App Source is unavailable.");
+          }
+          return undefined;
+        }
+        this.assertCurrentGitHubAppRegistryScope(current);
+        if (mode === "due") {
+          const { expiresAt } = await withComputeAbortSignal(signal, () =>
+            this.store.withValue(stored, async (value) => decodeGitHubAppSourceCredential(value)),
+          );
+          if (Date.parse(expiresAt) - Date.now() > githubAppRenewalLeadMs) {
+            return undefined;
+          }
+        }
+        this.assertGitHubAppClient(
+          await connectionTemplates.findCredentialClient(current.clientId),
+          current,
+        );
+        const issued = await this.issueGitHubAppCredential(current, signal);
+        const replacement = encodeGitHubAppCredential(issued);
+        await withComputeAbortSignal(signal, () => this.store.update(stored, replacement.stored));
+        return replacement.version;
+      },
+    );
+    if (version !== undefined) {
+      // The previous installation token expires at GitHub. Push only the committed version.
+      await this.notifyCredentialUpdated(source, version, signal);
+    }
   }
 
   async getRefreshStatus(
@@ -451,7 +880,48 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       const { schedule: _schedule, ...refresh } = status;
       return refresh;
     }
+    if (found.type === "github-app-installation") {
+      const { expiresAt } = await this.resolveGitHubAppCredential(found, ref, signal);
+      signal.throwIfAborted();
+      return { state: "ready", expiresAt };
+    }
     throw new ResourceStateConflictError("A static credential has no refresh operation.");
+  }
+
+  private async resolveGitHubAppCredential(
+    source: GitHubAppInstallationCredentialSource,
+    ref: CredentialSourceReference,
+    signal: AbortSignal,
+  ) {
+    await this.assertCurrentGitHubAppSourceScope(source);
+    return withComputeAbortSignal(signal, () =>
+      this.store.withValue(this.storageRef(ref), async (value) =>
+        resolveGitHubAppSourceCredential(value, Date.now()),
+      ),
+    );
+  }
+
+  private async retireGitHubAppCredential(
+    scope: GitHubAppInstallationScope,
+    stored: InstallationSecretRef,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const current = await withComputeAbortSignal(signal, () =>
+      this.store.withValue(stored, async (value) =>
+        value === removedCredential ? undefined : decodeGitHubAppSourceCredential(value),
+      ),
+    );
+    if (
+      current === undefined ||
+      Date.parse(current.providerExpiresAt) + providerClockSkewMs <= Date.now()
+    ) {
+      return;
+    }
+    if (!(await this.githubAppIssuer.revoke(scope, current.credential, signal))) {
+      throw new ResourceStateConflictError(
+        "GitHub App Source credential retirement is unconfirmed.",
+      );
+    }
   }
 
   async removeSource(
@@ -495,46 +965,64 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         return Object.freeze(removed);
       });
     }
-    return this.state.transact(async ({ namespaces, credentialSources, iamPolicy }) => {
-      if (!(await namespaces.lockNamespace(ref.namespaceId))) {
-        throw new ResourceStateConflictError("The credential source Namespace is unavailable.");
-      }
-      const found = this.ownedSource(
-        await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
-      );
-      if (found?.state !== "deleting") {
-        throw new ResourceStateConflictError("The credential source is not retiring.");
-      }
-      if (await credentialSources.findBlockingReference(ref.namespaceId, ref.id)) {
-        throw new ResourceStateConflictError("The credential source is still referenced.");
-      }
-      const stored = this.storageRef(ref);
-      // Erase material before deletion; an installation Secret may remain terminating under a finalizer.
-      await withoutMutationDeadline(() =>
-        withComputeAbortSignal(signal, async () => {
-          const tombstone = JSON.stringify({ removed: true });
-          try {
-            await this.store.update(stored, tombstone);
-          } catch (updateError) {
-            signal.throwIfAborted();
-            try {
-              await this.store.create(stored, tombstone);
-            } catch {
-              throw updateError;
+    const retirement = await this.state.transact(
+      async ({ namespaces, credentialSources, iamPolicy }) => {
+        if (!(await namespaces.lockNamespace(ref.namespaceId))) {
+          throw new ResourceStateConflictError("The credential source Namespace is unavailable.");
+        }
+        const found = this.ownedSource(
+          await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
+        );
+        if (found?.state !== "deleting") {
+          throw new ResourceStateConflictError("The credential source is not retiring.");
+        }
+        if (await credentialSources.findBlockingReference(ref.namespaceId, ref.id)) {
+          throw new ResourceStateConflictError("The credential source is still referenced.");
+        }
+        const stored = this.storageRef(ref);
+        const githubApp = found.type === "github-app-installation";
+        if (githubApp) {
+          await this.retireGitHubAppCredential(found.scope, stored, signal);
+        }
+        // Erase material before deletion; an installation Secret may remain terminating under a finalizer.
+        await withoutMutationDeadline(() =>
+          withComputeAbortSignal(signal, async () => {
+            if (githubApp) {
+              // Keep the marker until the Source transaction commits so a retry can see retirement.
+              await this.store.update(stored, removedCredential);
+              return;
             }
-          }
-          signal.throwIfAborted();
-          await this.store.delete(stored);
-        }),
-      );
-      signal.throwIfAborted();
-      const removedBindings = (await iamPolicy.listAccessBindings(ref.namespaceId)).filter(
-        (binding) => binding.resourceKind === "credential_source" && binding.resourceId === ref.id,
-      );
-      if (!(await credentialSources.deleteCredentialSource(ref.namespaceId, ref.id))) {
-        throw new ResourceStateConflictError("The credential source changed during deletion.");
-      }
-      return Object.freeze(removedBindings);
-    });
+            try {
+              await this.store.update(stored, removedCredential);
+            } catch (updateError) {
+              signal.throwIfAborted();
+              try {
+                await this.store.create(stored, removedCredential);
+              } catch {
+                throw updateError;
+              }
+            }
+            signal.throwIfAborted();
+            await this.store.delete(stored);
+          }),
+        );
+        signal.throwIfAborted();
+        const removedBindings = (await iamPolicy.listAccessBindings(ref.namespaceId)).filter(
+          (binding) =>
+            binding.resourceKind === "credential_source" && binding.resourceId === ref.id,
+        );
+        if (!(await credentialSources.deleteCredentialSource(ref.namespaceId, ref.id))) {
+          throw new ResourceStateConflictError("The credential source changed during deletion.");
+        }
+        return { bindings: Object.freeze(removedBindings), marker: githubApp ? stored : undefined };
+      },
+    );
+    if (retirement.marker) {
+      const marker = retirement.marker;
+      await withoutMutationDeadline(() =>
+        withComputeAbortSignal(signal, () => this.store.delete(marker)),
+      ).catch(() => undefined);
+    }
+    return retirement.bindings;
   }
 }

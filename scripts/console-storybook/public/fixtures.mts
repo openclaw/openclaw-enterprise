@@ -12,7 +12,7 @@ import type {
   AgentRuntimeEvent,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
-  RepositoryOption,
+  RepositoryOptionListResponse,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
@@ -29,6 +29,8 @@ import {
   fixtureError as error,
   fixtureResponse as response,
 } from "./preview-rules.mts";
+
+type RepositoryOption = RepositoryOptionListResponse["data"][number];
 
 type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
   Parameters<typeof createAgentLifecycle>[0] &
@@ -468,7 +470,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       signedIn = false;
       return response({});
     }
-    const templateResponse = templates(path, method, body);
+    const templateResponse = templates(path, method, body, url.searchParams);
     if (templateResponse) {
       return templateResponse;
     }
@@ -792,6 +794,47 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
               secrets: { api_key: secret.ref },
               state: "ready",
               ref: { kind: "credential_source", namespaceId, id },
+            };
+            credentialSources.set(id, saved);
+            return response(saved, 201);
+          }
+          if (input.type === "github-app-installation") {
+            const refs = Array.isArray(input.repositoryRefs) ? input.repositoryRefs : [];
+            const selected = refs.map((ref) =>
+              scenario.repositoryOptions?.find((option) => option.repositoryRef === ref),
+            );
+            if (
+              typeof input.name !== "string" ||
+              input.clientId !== "ccr_00000000-0000-4000-8000-000000000008" ||
+              !refs.length ||
+              refs.length > 16 ||
+              selected.some((option) => !option?.githubAccess)
+            ) {
+              return error(
+                400,
+                "INVALID_REQUEST",
+                "Select an App Client and approved GitHub repositories.",
+              );
+            }
+            const id = nextId("cs");
+            const saved: StoredCredentialSource = {
+              id,
+              namespaceId,
+              name: input.name,
+              type: "github-app-installation",
+              clientId: input.clientId,
+              state: "ready",
+              createdAt,
+              ref: { kind: "credential_source", namespaceId, id },
+              scope: {
+                appId: "12345",
+                installationId: "456",
+                repositories: selected.map((option, index) => ({
+                  repositoryId: String(789 + index),
+                  repository: option!.githubAccess!.repository,
+                })),
+                permissions: { contents: "write", metadata: "read" },
+              },
             };
             credentialSources.set(id, saved);
             return response(saved, 201);

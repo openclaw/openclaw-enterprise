@@ -2,7 +2,10 @@ import type { ChannelProviderDriver } from "../drivers/channel/routing.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import { sandboxNamespaceLifecycleBinding } from "./namespace-lifecycle.ts";
 import { resolveModelCredentialPreset } from "./model-credential-presets.ts";
-import { supportsOpenShellCredentialDeployment } from "./openshell-credential-admission.ts";
+import {
+  admitOpenShellRepositoryCredentials,
+  supportsOpenShellCredentialDeployment,
+} from "./openshell-credential-admission.ts";
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -17,9 +20,9 @@ import type { GitHubRepositoryRegistry } from "../drivers/repo/github/access/reg
 import { openAiStaticProviderRef } from "../drivers/egress-proxy/openai-provider.ts";
 import { openShellGitOriginRefusal } from "../drivers/sandbox/openshell-git-network-policy.ts";
 import type { RepositoryTransportBinding } from "./repository-credentials/contracts.ts";
-import type {
+import {
   OpenShellSandboxDriver,
-  OpenShellSandboxDriverSelection,
+  type OpenShellSandboxDriverSelection,
 } from "../drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../drivers/sandbox/openshell.ts";
 import type {
@@ -220,11 +223,12 @@ export function installationDriverConfigurations(
 }
 
 /**
- * The controller options that come from the Installation alone. API compositions spread them
- * unchanged, so a startup setting cannot be loaded and then dropped before the controller.
+ * Controller options supplied by the Installation and its selected Repository registry. API
+ * compositions spread them unchanged, so a startup setting cannot be dropped before OCC.
  */
 export function installationControllerOptions(
   installation: InstallationStartupConfiguration | undefined,
+  repositoryRegistry?: GitHubRepositoryRegistry,
 ): Pick<
   ControllerOptions,
   | "driverConfigurations"
@@ -234,10 +238,34 @@ export function installationControllerOptions(
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
   | "modelCredentialPreset"
+  | "repositoryCredentialAdmission"
+  | "supportsStagedRepositoryRecipient"
   | "supportsCredentialDeployment"
 > {
   return {
     modelCredentialPreset: resolveModelCredentialPreset,
+    repositoryCredentialAdmission: (input) =>
+      admitOpenShellRepositoryCredentials(repositoryRegistry, input),
+    supportsStagedRepositoryRecipient: ({ compute, sandbox, proxy, harness }) => {
+      if (
+        !(compute instanceof KubernetesComputeDriver) ||
+        !(sandbox instanceof OpenShellSandboxDriver) ||
+        !(proxy instanceof OpenShellCredentialProxyDriver) ||
+        sandbox.repositoryAccess !== undefined ||
+        proxy.id !== sandbox.id ||
+        proxy.implementation !== sandbox.implementation ||
+        harness.mode !== "dedicated" ||
+        harness.id !== "codex"
+      ) {
+        return false;
+      }
+      try {
+        compute.validateRepositoryCredentials(harness, sandbox.id);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     supportsCredentialDeployment: supportsOpenShellCredentialDeployment,
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
@@ -651,12 +679,23 @@ function selectGitHubRepositoryDelivery(
     bundledSandbox: boolean;
     openShellBackend: boolean;
     kubernetes: boolean;
+    stagedTokenService: boolean;
   },
-): "native" | "protected" | undefined {
+): "native" | "protected" | "token-service" | undefined {
   if (!repository) {
     return undefined;
   }
   const { nativeSender, prepared, transport } = repository;
+  if (
+    input.stagedTokenService &&
+    !nativeSender &&
+    !prepared &&
+    !transport &&
+    !input.externalProxy &&
+    !input.bundledProxy
+  ) {
+    return "token-service";
+  }
   const external = input.externalProxy && !!prepared && !transport;
   if (
     nativeSender &&
@@ -1206,14 +1245,6 @@ async function composeInstallationConfiguration(
   );
   const sshCompute = computePackage === undefined && computeSelection.id === "compute-ssh";
   const kubernetesCompute = computePackage === undefined && !sshCompute;
-  const repositoryDeliveryMode = selectGitHubRepositoryDelivery(repositoryConfiguration, {
-    externalProxy: packageProxyId !== undefined,
-    bundledProxy: proxySelection !== undefined,
-    sandbox: sandboxSelection !== undefined,
-    bundledSandbox: sandboxSelection !== undefined && sandboxSelection.package === undefined,
-    openShellBackend: openShellBackend !== undefined,
-    kubernetes: kubernetesCompute,
-  });
   if (sshCompute && sandboxSelection !== undefined) {
     throw new Error(
       "drivers.sandbox is unsupported with compute-ssh; it requires the bundled Kubernetes Compute Driver.",
@@ -1266,6 +1297,19 @@ async function composeInstallationConfiguration(
     sandboxPackage === undefined &&
     (sandbox.configuration as unknown as OpenShellSandboxDriverOptions).integrationMode ===
       "service";
+  const repositoryDeliveryMode = selectGitHubRepositoryDelivery(repositoryConfiguration, {
+    externalProxy: packageProxyId !== undefined,
+    bundledProxy: proxySelection !== undefined,
+    sandbox: sandboxSelection !== undefined,
+    bundledSandbox: sandboxSelection !== undefined && sandboxSelection.package === undefined,
+    openShellBackend: openShellBackend !== undefined,
+    kubernetes: kubernetesCompute,
+    stagedTokenService:
+      tokenServiceSelection !== undefined &&
+      openShellBackend !== undefined &&
+      openShellServiceIntegration &&
+      !boxPackage,
+  });
   if (openShellServiceIntegration && options.createSandboxDriver !== undefined) {
     throw new Error(
       "Managed Kubernetes + OpenShell Compute requires its bundled Sandbox collaborator.",

@@ -2548,7 +2548,7 @@ async function loadPage({
           view,
           "Installation administrator access required",
           current.feature === oauthClientsPage
-            ? "Installation administrators manage OAuth clients."
+            ? "Installation administrators manage credential clients."
             : "Installation administrators manage connection templates.",
         );
       if (installationAdmin) {

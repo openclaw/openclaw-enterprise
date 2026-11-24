@@ -12,17 +12,30 @@ import {
 } from "../../apps/controller/src/drivers/sandbox/openshell-staged-harness.ts";
 import { supportsOpenShellCredentialDeployment } from "../../apps/controller/src/composition/openshell-credential-admission.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import {
+  narrowOpenShellRepositoryRoutes,
+  openShellRepositoryCredentialRequests,
+  openShellRepositoryDeploymentPolicy,
+} from "../../apps/controller/src/drivers/credential-proxy/openshell-repository-policy.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
-import { openShellCredentialProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
+import {
+  compileOpenShellCredentialPolicy,
+  openShellCredentialProviderName,
+} from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
 import {
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import type {
-  AgentRevision,
-  DeploymentCredentialBinding,
+import { encodeReplacementRuntime } from "../../apps/controller/src/drivers/compute/kubernetes/replacement-runtime.ts";
+import { inspectedWorkspaceBuild } from "../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
+import { ManagedOpenShellSandbox } from "../../apps/controller/src/drivers/sandbox/openshell/managed.ts";
+import { workspaceNodePathFor } from "../../apps/controller/src/drivers/sandbox/openshell-workspace-node-policy.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  type AgentRevision,
+  type DeploymentCredentialBinding,
 } from "../../packages/contracts/src/index.ts";
 import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
@@ -31,17 +44,28 @@ import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { backendFor, openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
 import { openShellWorkspaceHarnessConfiguration } from "./sandbox-driver-installation-fixture.ts";
 import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
-import { workspaceNodeSetupSecret } from "./sandbox-driver-workspace-node-setup-fixture.ts";
 import {
+  workspaceNodeSetupSecret,
+  workspaceNodeSetupSecretData,
+} from "./sandbox-driver-workspace-node-setup-fixture.ts";
+import {
+  harnessService,
   harnessRuntimeCommand,
   runtimeSandboxFixture,
 } from "./sandbox-driver-startup-orchestration.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
-export async function verifyStagedModelPolicyObservation(): Promise<void> {
+export async function verifyStagedModelPolicyObservation(t: TestContext): Promise<void> {
   const gateway = workspaceGatewayClient();
-  const driver = openShellDriver(gateway, openShellWorkspaceHarnessConfiguration());
+  const configuration = openShellWorkspaceHarnessConfiguration();
+  configuration.integrationMode = "service";
+  configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+  const driver = new ManagedOpenShellSandbox(configuration, {
+    id: "openshell-sandbox",
+    backend: backendFor(gateway),
+  });
   const fixture = runtimeSandboxFixture(driver);
+  fixture.requirements.workspaceMounts = [];
   fixture.requirements.credentialAttachments = [];
   const grant = {
     id: "model",
@@ -84,11 +108,19 @@ export async function verifyStagedModelPolicyObservation(): Promise<void> {
     },
   };
   const context = { ...fixture.context, revision, requirements: fixture.requirements };
+  let loaded: Record<string, unknown> = {};
   gateway.createSandbox = async (request) => {
-    const sandbox = storedSandbox(request, { id: "sandbox-fixture", resourceVersion: "1" });
+    const sandbox = storedSandbox(request, {
+      id: "sandbox-fixture",
+      resourceVersion: "1",
+      phase: "SANDBOX_PHASE_READY",
+    });
+    loaded = structuredClone(request.spec.policy as Record<string, unknown>);
     gateway.sandboxes.set(sandbox.name, sandbox);
     return sandbox;
   };
+  gateway.getService = async (_workspace, name) =>
+    harnessService(name, "", "http://codex.example.test:8080/");
   await driver.ensureNamespace(context);
   await driver.provisionStagedHarness(context);
   const sandbox = [...gateway.sandboxes.values()][0]!;
@@ -123,7 +155,7 @@ export async function verifyStagedModelPolicyObservation(): Promise<void> {
       },
     },
   };
-  let loaded: Record<string, unknown> = retained;
+  loaded = retained;
   gateway.getPolicyStatus = async () => ({
     policy: loaded,
     version: 1,
@@ -131,6 +163,20 @@ export async function verifyStagedModelPolicyObservation(): Promise<void> {
     state: "POLICY_STATUS_LOADED",
   });
   assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
+  for (const name of ["oce-proxy-credential-unadmitted", "oce-staged-http-unadmitted"]) {
+    loaded = {
+      ...retained,
+      network_policies: {
+        ...retained.network_policies,
+        [name]: retained.network_policies["oce-agent-model"],
+      },
+    };
+    await assert.rejects(
+      driver.observeNetworkPolicy(context, revision.sandboxPolicy!),
+      /Live Sandbox policy differs from its admitted baseline/,
+    );
+  }
+  loaded = retained;
 
   gateway.updatePolicy = async ({ policy }) => {
     loaded = structuredClone(policy);
@@ -142,6 +188,211 @@ export async function verifyStagedModelPolicyObservation(): Promise<void> {
   });
   assert.deepEqual(loaded, retained, "new model-only policy keeps the same canonical shape");
   assert.equal((await driver.observeNetworkPolicy(context, revision.sandboxPolicy!)).matches, true);
+
+  // A new revision combines the model with native Git. The Proxy, rather than the
+  // generic Sandbox compiler, owns Git's exact service-query authorization.
+  const repositoryGrants = [{ repository: "fixture/repository", access: "read" }] as const;
+  const repositoryRequests = openShellRepositoryCredentialRequests(repositoryGrants);
+  const repositoryBinding = {
+    bindingRef: "repository",
+    sourceRef: {
+      kind: "credential_source",
+      namespaceId: revision.namespaceId,
+      id: "cs_repository",
+    },
+    consumer: { kind: "repository" },
+    projection: { environment: "GITHUB_TOKEN", presentation: "github_repository" },
+  } as const;
+  // Simulate the trusted build-time release selection; this does not qualify a live image.
+  const gatewayDigest = "sha256:" + "a".repeat(64);
+  const agentDigest = "sha256:" + "b".repeat(64);
+  t.mock.getter(inspectedWorkspaceBuild, "release", () => ({ gatewayDigest, agentDigest }));
+  const gatewayImage = `docker.io/example/gateway@${gatewayDigest}`;
+  const agentImage = `docker.io/example/agent@${agentDigest}`;
+  const workspaceUrl = `wss://gateway.example.test${workspaceNodePathFor(revision.namespaceId, revision.agentId)}`;
+  const repositoryRevision: AgentRevision = {
+    ...revision,
+    id: "rev_00000000-0000-4000-8000-000000000002",
+    gatewayManagedMode: true,
+    compute: {
+      ...revision.compute,
+      runtimeInputs: encodeReplacementRuntime({
+        scope: "repository-policy",
+        gateway: gatewayImage,
+        agent: agentImage,
+        compatibility: "a".repeat(64),
+        workspace: { url: workspaceUrl, mode: "service" },
+      }),
+    },
+    sandboxPolicy: {
+      ...revision.sandboxPolicy!,
+      repositoryNetworkPolicy: admitRepositoryNetworkPolicy(repositoryGrants, repositoryGrants)!,
+    },
+    credentialDeployment: {
+      ...revision.credentialDeployment!,
+      bindings: [binding, repositoryBinding],
+      networkAccessPolicy: {
+        allowed: [
+          ...revision.credentialDeployment!.networkAccessPolicy.allowed,
+          ...repositoryRequests,
+        ],
+      },
+      injectionPolicies: [
+        {
+          ...revision.credentialDeployment!.injectionPolicies[0]!,
+          allowedRequests: [
+            request,
+            {
+              ...request,
+              requestPolicy: { type: "http", method: "POST", path: "/v1/chat/completions" },
+            },
+          ],
+        },
+        { bindingRef: repositoryBinding.bindingRef, allowedRequests: repositoryRequests },
+      ],
+    },
+  };
+  const repositoryContext = {
+    ...context,
+    revision: repositoryRevision,
+    requirements: {
+      ...context.requirements,
+      image: agentImage,
+      environment: [
+        ...context.requirements.environment,
+        { name: "OCE_INSPECTED_WORKSPACE_NODE_URL", value: workspaceUrl },
+      ],
+      labels: { ...context.requirements.labels, "openclaw.dev/revision": repositoryRevision.id },
+    },
+  };
+  const readSecret = repositoryContext.kubernetes.read;
+  repositoryContext.kubernetes.read = async (request) =>
+    request.metadata.name === "workspace-node"
+      ? workspaceNodeSetupSecret(
+          request.metadata,
+          repositoryRevision.namespaceId,
+          repositoryRevision.agentId,
+          workspaceNodeSetupSecretData({
+            url: workspaceUrl,
+            bootstrapToken: fixture.nodeSetup.bootstrapToken,
+            expiresAtMs: fixture.nodeSetup.expiresAtMs,
+          }),
+        )
+      : readSecret(request);
+  // Exercise Repository composition on a fresh managed target, separate from model-only recovery.
+  gateway.sandboxes.clear();
+  await driver.provisionStagedHarness(repositoryContext);
+  const repositorySandboxName = driver.harnessResource(repositoryContext).resourceName;
+  const repositorySandbox = gateway.sandboxes.get(repositorySandboxName)!;
+  const repositoryIdle = repositorySandbox.spec!.policy as Record<string, unknown>;
+  const repositoryRoutes = narrowOpenShellRepositoryRoutes(
+    repositoryRevision,
+    compileOpenShellCredentialPolicy(
+      repositoryRevision.credentialDeployment!,
+      repositoryRevision.sandboxPolicy!.defaults,
+    ).credentialRoutes,
+  );
+  const combined = openShellRepositoryDeploymentPolicy(
+    repositoryRevision,
+    repositoryIdle,
+    repositoryRoutes,
+  ).combined as Record<string, unknown> & {
+    network_policies: Record<string, Record<string, unknown>>;
+  };
+  const repositoryProvider = openShellCredentialProviderName(repositoryBinding);
+  gateway.sandboxes.set(repositorySandboxName, {
+    ...repositorySandbox,
+    spec: {
+      ...repositorySandbox.spec!,
+      providers: [provider, repositoryProvider],
+      policy: combined,
+    },
+  });
+  loaded = combined;
+  const discoveryEntry = Object.entries(combined.network_policies).find(([, rule]) =>
+    (rule.endpoints as Record<string, unknown>[]).some(
+      (endpoint) => endpoint.path === "/fixture/repository.git/info/refs",
+    ),
+  );
+  assert.ok(discoveryEntry);
+  const discovery = (discoveryEntry[1].endpoints as Record<string, unknown>[])[0]!;
+  const allowed = (discovery.rules as { allow: Record<string, unknown> }[])[0]!.allow;
+  assert.deepEqual(allowed, {
+    method: "GET",
+    path: "/fixture/repository.git/info/refs",
+    query: { service: { glob: "git-upload-pack" } },
+  });
+  assert.equal(
+    (await driver.observeNetworkPolicy(repositoryContext, repositoryRevision.sandboxPolicy!))
+      .matches,
+    true,
+  );
+
+  const stagedEntry = Object.entries(combined.network_policies).find(([name]) =>
+    name.startsWith("oce-staged-http-"),
+  );
+  assert.ok(stagedEntry, "multiple model requests require staged HTTP policy rules");
+  const extraStaged = structuredClone(combined);
+  extraStaged.network_policies["oce-staged-http-unadmitted"] = structuredClone(stagedEntry[1]);
+  loaded = extraStaged;
+  assert.equal(
+    (await driver.observeNetworkPolicy(repositoryContext, repositoryRevision.sandboxPolicy!))
+      .matches,
+    false,
+  );
+  const alteredStaged = structuredClone(combined);
+  const alteredEndpoint = (
+    alteredStaged.network_policies[stagedEntry[0]]!.endpoints as Record<string, unknown>[]
+  )[0]!;
+  (alteredEndpoint.rules as { allow: Record<string, unknown> }[])[0]!.allow.path = "/v1/unadmitted";
+  loaded = alteredStaged;
+  assert.equal(
+    (await driver.observeNetworkPolicy(repositoryContext, repositoryRevision.sandboxPolicy!))
+      .matches,
+    false,
+  );
+
+  // Prefixes partition reconciliation ownership; they do not authorize extra routes.
+  const unadmittedRoute = structuredClone(combined);
+  unadmittedRoute.network_policies["oce-proxy-credential-unadmitted"] = structuredClone(
+    discoveryEntry[1],
+  );
+  loaded = unadmittedRoute;
+  assert.equal(
+    (await driver.observeNetworkPolicy(repositoryContext, repositoryRevision.sandboxPolicy!))
+      .matches,
+    false,
+  );
+
+  // The creation annotation still binds fixed Sandbox policy independently of dynamic rules.
+  const changedBaseline = structuredClone(combined);
+  changedBaseline.network_policies["unadmitted-fixed"] = structuredClone(discoveryEntry[1]);
+  loaded = changedBaseline;
+  await assert.rejects(
+    driver.observeNetworkPolicy(repositoryContext, repositoryRevision.sandboxPolicy!),
+    /Live Sandbox policy differs from its admitted baseline/,
+  );
+
+  // A broad discovery query or a missing Git rule must not be accepted as ready.
+  const queryless = structuredClone(combined);
+  const querylessEndpoint = (
+    queryless.network_policies[discoveryEntry[0]]!.endpoints as Record<string, unknown>[]
+  )[0]!;
+  delete (querylessEndpoint.rules as { allow: Record<string, unknown> }[])[0]!.allow.query;
+  loaded = queryless;
+  assert.equal(
+    (await driver.observeNetworkPolicy(repositoryContext, repositoryRevision.sandboxPolicy!))
+      .matches,
+    false,
+  );
+  const missing = structuredClone(combined);
+  delete missing.network_policies[discoveryEntry[0]];
+  loaded = missing;
+  assert.equal(
+    (await driver.observeNetworkPolicy(repositoryContext, repositoryRevision.sandboxPolicy!))
+      .matches,
+    false,
+  );
 }
 
 export async function verifyStagedCodexAccountProjection(t: TestContext): Promise<void> {

@@ -77,6 +77,8 @@ interface SandboxPolicyDependencies {
     version: number,
     canRead: (target: ResourceRef) => Promise<boolean>,
     resolveHarness: HarnessResolver | undefined,
+    additions?: readonly SandboxNetworkGrant[],
+    canOperate?: (target: ResourceRef) => Promise<boolean>,
   ) => Promise<
     ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> | undefined
   >;
@@ -383,6 +385,9 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
               async (ref) =>
                 (await authorizationDecision(principalId, "read", ref)).decision.allowed,
               resolveHarness,
+              policy.additions,
+              async (ref) =>
+                (await authorizationDecision(principalId, "operate", ref)).decision.allowed,
             )
           : undefined;
       const repositoryNetworkPolicyCeiling = dependencies.repositoryCeiling(namespaceId);
@@ -623,7 +628,9 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
         assertScopedRepositoryHistory(await state.revisions.listRevisions(namespaceId, agentId));
       }
       const admittedEdit =
-        repositoryOnly && !withdrawal && networkPolicyUnavailable() === undefined
+        explicitList &&
+        (!withdrawal || additions.length > 0) &&
+        networkPolicyUnavailable() === undefined
           ? (
               await dependencies.qualifyRepositoryEdit(
                 state,
@@ -633,6 +640,10 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
                   (await authorizationDecision(principalId, "read", ref, iam, decide)).decision
                     .allowed,
                 resolveHarness,
+                additions,
+                async (ref) =>
+                  (await authorizationDecision(principalId, "operate", ref, iam, decide)).decision
+                    .allowed,
               )
             )?.admit(repositoryNetworkPolicy)
           : undefined;
@@ -651,7 +662,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       const repositoryGrants =
         admittedEdit?.grants ?? (withdrawal ? [] : previous.repositoryNetworkPolicy);
       const admittedAdditions =
-        clearsAll || admittedEdit
+        clearsAll || (admittedEdit && additions.length === 0)
           ? []
           : admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
               repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,

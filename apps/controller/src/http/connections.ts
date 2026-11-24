@@ -18,6 +18,15 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
       const data = await controller.listUsableConnectionTemplates(context.actorId, namespaceId);
       reply.send({ data, meta: { requestId: request.id } });
     },
+    async listEligibleOAuthClients({ controller, context, request, reply, namespaceId }) {
+      const { connectionTemplateId } = request.query as { connectionTemplateId: string };
+      const data = await controller.listEligibleOAuthClients(
+        context.actorId,
+        namespaceId,
+        connectionTemplateId,
+      );
+      reply.send({ data, meta: { requestId: request.id } });
+    },
     async startNamespaceConnection({
       controller,
       context,
@@ -46,6 +55,7 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
         {
           namespaceId,
           connectionTemplateId: body!.connectionTemplateId as string,
+          oauthClientId: body!.oauthClientId as string,
           ...(body!.selectedScopes === undefined
             ? {}
             : { selectedScopes: body!.selectedScopes as string[] }),

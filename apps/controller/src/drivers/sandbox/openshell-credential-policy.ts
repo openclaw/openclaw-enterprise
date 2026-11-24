@@ -13,6 +13,8 @@ import { managedMcpRule } from "./openshell-managed-mcp-policy.ts";
 import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors.ts";
 import { openShellNetworkRouteMayOverlap } from "./openshell-policy.ts";
 
+export { OPEN_SHELL_PROXY_CREDENTIAL_RULE_PREFIX } from "./openshell-policy.ts";
+
 interface OpenShellCredentialRouteBase {
   readonly binding: DeploymentCredentialBinding;
   readonly provider: string;
@@ -23,7 +25,13 @@ interface OpenShellCredentialRouteBase {
   readonly endpointPath?: string;
 }
 
-type RestRule = { allow: { method: string; path: string } };
+type RestRule = {
+  allow: {
+    method: string;
+    path: string;
+    query?: Readonly<Record<string, { readonly glob: string }>>;
+  };
+};
 type McpRule = ReturnType<typeof managedMcpRule>;
 type RestCredentialRoute = OpenShellCredentialRouteBase & {
   readonly protocol: "rest";
@@ -266,11 +274,15 @@ export function compileOpenShellCredentialPolicy(
     if (
       !binding.bindingRef ||
       !requests?.length ||
-      (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
+      (binding.consumer.kind !== "model" &&
+        binding.consumer.kind !== "plugin" &&
+        binding.consumer.kind !== "repository") ||
       binding.sourceRef.kind !== "credential_source" ||
       !binding.sourceRef.id ||
       !binding.sourceRef.namespaceId ||
-      binding.projection.presentation !== "bearer" ||
+      (binding.consumer.kind === "repository"
+        ? binding.projection.presentation !== "github_repository"
+        : binding.projection.presentation !== "bearer") ||
       !/^[A-Z][A-Z0-9_]*$/.test(environment) ||
       environments.has(environment)
     ) {
@@ -312,6 +324,12 @@ export function compileOpenShellCredentialPolicy(
           (route.binding.bindingRef !== binding.bindingRef ||
             route.binary !== request.binary ||
             route.protocol !== protocol) &&
+          !(
+            binding.consumer.kind === "repository" &&
+            route.binding.bindingRef === binding.bindingRef &&
+            route.path === path &&
+            route.protocol === protocol
+          ) &&
           openShellCredentialPathsOverlap(route.path, path)
         ) {
           // OpenShell's Source resolver distinguishes endpoint paths, but not HTTP methods or executables.

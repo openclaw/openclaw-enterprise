@@ -2,6 +2,7 @@ import type { AuditEvent, OccApiOperationId } from "@openclaw-enterprise/contrac
 import type {
   CreateConnectionTemplateInput,
   CreateOAuthClientInput,
+  RotateCredentialClientInput,
   OpenClawController,
   PlatformUnitOfWork,
   UpdateConnectionTemplateInput,
@@ -127,11 +128,10 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
     mutationEvent,
   }) {
     const { oauthClientId } = request.params as { oauthClientId: string };
-    const { clientSecret } = request.body as { clientSecret: string };
     const client = await controller.rotateOAuthClientSecret(
       actorId,
       oauthClientId,
-      clientSecret,
+      request.body as RotateCredentialClientInput,
       mutationEvent(oauthClientId),
       holdSession,
     );

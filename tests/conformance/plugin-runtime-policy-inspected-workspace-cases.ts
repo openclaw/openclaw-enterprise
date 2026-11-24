@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, matchesGlob } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { runInContext } from "node:vm";
 
 import { gatewayRuntimeEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { workspaceNodeNetworkPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-workspace-node-policy.ts";
+import {
+  admitsInspectedOpenClawWorkspace,
+  inspectedWorkspaceBuild,
+} from "../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
 import { WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding } from "../helpers/plugin-runtime.mjs";
 import {
   codexGatewayConfig,
@@ -68,6 +73,142 @@ function acknowledgedNode(sandbox: RuntimeSandbox) {
 }
 
 export function registerInspectedWorkspaceCases() {
+  test("Dedicated OpenClaw inspected placement requires a qualified immutable Gateway image and scopes node traffic", (t) => {
+    const gateway = "registry.example.test/gateway@sha256:" + "a".repeat(64);
+    const agent = "registry.example.test/codex@sha256:" + "b".repeat(64);
+    const revision = { namespaceId: "ns_123", agentId: "agt_456", gatewayManagedMode: true };
+    const path = `/namespaces/${revision.namespaceId}/agents/${revision.agentId}/node`;
+    const url = `wss://gateway.example.test${path}`;
+    assert.equal(admitsInspectedOpenClawWorkspace({ gateway, agent }, revision, url), false);
+    t.mock.getter(inspectedWorkspaceBuild, "openClawRelease", () => ({
+      gatewayDigest: "sha256:" + "a".repeat(64),
+    }));
+    assert.equal(admitsInspectedOpenClawWorkspace({ gateway, agent }, revision, url), true);
+    assert.equal(admitsInspectedOpenClawWorkspace({ gateway: agent, agent }, revision, url), false);
+    assert.equal(
+      admitsInspectedOpenClawWorkspace({ gateway, agent }, revision, url + "/other"),
+      false,
+    );
+    const policy = record(
+      workspaceNodeNetworkPolicy({
+        host: "gateway.example.test",
+        port: 443,
+        path,
+        tls: true,
+        inspected: true,
+        nativeWorker: true,
+      })["workspace-node-enrollment"],
+    );
+    assert.deepEqual(policy.binaries, [{ path: "/usr/local/bin/node" }]);
+    const endpoints = policy.endpoints;
+    assert.ok(Array.isArray(endpoints));
+    for (const endpoint of endpoints) {
+      const admitted = record(endpoint);
+      assert.equal(admitted.host, "gateway.example.test");
+      assert.deepEqual(admitted.ports, [443]);
+      assert.equal(admitted.enforcement, "NETWORK_ENFORCEMENT_MODE_ENFORCE");
+      assert.ok(typeof admitted.path === "string" && admitted.path.startsWith(path));
+      assert.equal(admitted.credential_binding, undefined);
+      assert.equal(admitted.path.includes("native-hook"), false);
+    }
+    // Probe concrete Worker requests against the generated policy. This is a policy-shape
+    // check, not an assertion that an OpenShell runtime has enforced the policy.
+    const matches = (pattern: unknown, requestPath: string) =>
+      typeof pattern === "string" && matchesGlob(requestPath, pattern);
+    const permits = (protocol: string, method: string, requestPath: string) =>
+      endpoints.some((item) => {
+        const endpoint = record(item);
+        if (endpoint.protocol !== protocol || !matches(endpoint.path, requestPath)) {return false;}
+        const denied =
+          Array.isArray(endpoint.deny_rules) &&
+          endpoint.deny_rules.some((item) => {
+            const rule = record(item);
+            return rule.method === method && matches(rule.path, requestPath);
+          });
+        return (
+          !denied &&
+          Array.isArray(endpoint.rules) &&
+          endpoint.rules.some((item) => {
+            const allow = record(record(item).allow);
+            return allow.method === method && matches(allow.path, requestPath);
+          })
+        );
+      });
+    const digest = "a".repeat(64);
+    const worker = `${path}/__openclaw__/worker`;
+    const bundle = `${path}/__openclaw__/worker-bundle/v1/bundles/${digest}`;
+    const transfer = `${path}/__openclaw__/worker-transfer/v1/environments/env_123`;
+    for (const [protocol, method, requestPath] of [
+      ["websocket", "GET", worker],
+      ["websocket", "WEBSOCKET_TEXT", worker],
+      ["rest", "GET", bundle],
+      ["rest", "GET", `${transfer}/snapshots/${digest}/manifest`],
+      ["rest", "GET", `${transfer}/snapshots/${digest}/pack`],
+      ["rest", "GET", `${transfer}/blobs/${digest}`],
+      ["rest", "POST", `${transfer}/reconciliations/${digest}`],
+    ] as const) {
+      assert.equal(permits(protocol, method, requestPath), true, `${method} ${requestPath}`);
+    }
+    for (const [protocol, method, requestPath] of [
+      ["websocket", "HEAD", worker],
+      ["rest", "POST", bundle],
+      ["rest", "GET", `${transfer}/reconciliations/${digest}`],
+      ["rest", "GET", `${transfer}/blobs/${digest}/extra`],
+      ["rest", "GET", `${transfer}/nested/blobs/${digest}`],
+      ["rest", "GET", bundle.replace("agt_456", "agt_foreign")],
+      ["rest", "POST", `${path}/__openclaw__/native-hook/codex-${"a".repeat(40)}`],
+    ] as const) {
+      assert.equal(permits(protocol, method, requestPath), false, `${method} ${requestPath}`);
+    }
+  });
+
+  test("inspected Dedicated OpenClaw uses the enrolled native worker and exact bounded reply policy", async () => {
+    const entrypoint = gatewayRuntimeEntrypoint(true, {
+      kind: "inspected-dedicated-openclaw",
+      revisionId: "revision-1",
+    });
+    const env = {
+      OPENCLAW_AGENT_REVISION_ID: "revision-1",
+      OPENCLAW_NATIVE_WORKER_PROFILE: "dedicated-native",
+      OPENCLAW_WORKSPACE_NODE_ID: enrolled,
+    };
+    const baseConfig = {
+      gateway: { port: 8080 },
+      agents: { defaults: { workspace: root } },
+      plugins: { entries: {} },
+    };
+    const { files, calls } = await launchGateway(undefined, [], {
+      baseConfig,
+      env,
+      gatewayEntrypoint: entrypoint,
+    });
+    const config = readConfig(files, configPath);
+    assert.equal(field(config, "cloudWorkers", "requiredProfile"), "dedicated-native");
+    assert.equal(
+      field(config, "cloudWorkers", "profiles", "dedicated-native", "settings", "device"),
+      enrolled,
+    );
+    assert.equal(field(transferPolicy(config), "nodes", enrolled, "boundedReplies"), true);
+    assert.equal(field(transferPolicy(config), "workspaces", "main", "nodeId"), enrolled);
+    assert.equal(nativeGatewaySpawns(calls).length, 1);
+    for (const extra of [
+      { OPENCLAW_WORKSPACE_NODE_PATH: WORKSPACE_NODE_BINDING_PATH },
+      { OPENCLAW_AGENT_REVISION_ID: "foreign" },
+      { APP_SERVER_URL: "ws://other.example.test" },
+      { OPENCLAW_NATIVE_WORKER_PROFILE: "other-profile" },
+      { OPENCLAW_WORKSPACE_NODE_ID: "not-a-device" },
+    ]) {
+      await assert.rejects(
+        launchGateway(undefined, [], {
+          baseConfig,
+          env: { ...env, ...extra },
+          gatewayEntrypoint: entrypoint,
+        }),
+        /revision-owned node binding/,
+      );
+    }
+  });
+
   test("controller builds pin a complete inspected Workspace image digest pair", async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "inspected-workspace-image-"));
     t.after(() => rm(directory, { recursive: true, force: true }));

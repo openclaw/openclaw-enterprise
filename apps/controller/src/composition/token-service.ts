@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
-import type { InstallationSecretStore } from "@openclaw-enterprise/contracts";
+import {
+  credentialSourceMatchesSnapshot,
+  isNativeStagedRepositoryRevision,
+  revisionCredentialSourceSnapshot,
+  type InstallationSecretStore,
+} from "@openclaw-enterprise/contracts";
 import {
   CredentialDeliveryFailedError,
   type OpenClawController,
@@ -98,6 +104,8 @@ export async function installTokenServiceDriver(
             }
           },
     ),
+    undefined,
+    drivers.repositoryRegistry === undefined ? undefined : { registry: drivers.repositoryRegistry },
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);
@@ -136,6 +144,83 @@ export async function installTokenServiceDriver(
           throw new OpenShellCredentialDeliveryRefusedError();
         }
         return placed;
+      });
+      delivery.bindSourceRevisionResolver(async (sourceRef, agentId, revisionId, signal) => {
+        signal.throwIfAborted();
+        if (
+          controller.selectedDriver("credential_proxy_delivery") !== delivery ||
+          controller.selectedDriver("token_service") !== owner
+        ) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        const { agent, revision, withdrawals, source } = await state.read(async (view) => ({
+          agent: await view.agents.findAgent(sourceRef.namespaceId, agentId),
+          revision: await view.revisions.findRevision(sourceRef.namespaceId, agentId, revisionId),
+          withdrawals: await view.credentialSources.listCredentialWithdrawals(
+            sourceRef.namespaceId,
+            revisionId,
+          ),
+          source: await view.credentialSources.findCredentialSource(
+            sourceRef.namespaceId,
+            sourceRef.id,
+          ),
+        }));
+        const deployment = revision?.credentialDeployment;
+        if (
+          agent?.status !== "active" ||
+          agent.desiredRuntimeState !== "running" ||
+          agent.activeRevisionId !== revisionId ||
+          revision?.servicePrincipalId !== agent.servicePrincipalId ||
+          revision.executionAdmission.version !== 8 ||
+          revision.executionAdmission.mode !== "standalone" ||
+          revision.sandboxDriverId !== delivery.id ||
+          deployment?.proxyDriverId !== delivery.id ||
+          !isDeepStrictEqual(deployment.driver, drivers.credentialDeliveryRegistration?.ref) ||
+          deployment.bindings.some(
+            ({ sourceRef: bound }) => bound.namespaceId !== sourceRef.namespaceId,
+          ) ||
+          source?.ownerCapability !== "token_service" ||
+          source.type !== "github-app-installation" ||
+          source.state !== "ready" ||
+          source.tokenServiceInstanceId !== instanceId ||
+          !credentialSourceMatchesSnapshot(
+            source,
+            revisionCredentialSourceSnapshot(revision, sourceRef.id),
+          )
+        ) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        const withdrawn = new Set(withdrawals.map(({ credentialSourceId }) => credentialSourceId));
+        const activeBindings = deployment.bindings.filter(
+          ({ sourceRef: bound }) => !withdrawn.has(bound.id),
+        );
+        if (
+          !isNativeStagedRepositoryRevision(revision) ||
+          !revision.repositoryCredentials ||
+          Date.now() >= revision.repositoryCredentials.deadlineWallMs ||
+          !activeBindings.some(
+            ({ sourceRef: bound, consumer }) =>
+              consumer.kind === "repository" && bound.id === sourceRef.id,
+          )
+        ) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        const iam = controller.selectedDriver("iam");
+        for (const { sourceRef: bound } of activeBindings) {
+          const decision = await iam.authorize({
+            principalId: agent.servicePrincipalId,
+            action: "operate",
+            resource: bound,
+          });
+          if (decision.driverId !== iam.id || !decision.allowed) {
+            throw new OpenShellCredentialDeliveryRefusedError();
+          }
+        }
+        signal.throwIfAborted();
+        return {
+          revision,
+          activeBindingRefs: new Set(activeBindings.map(({ bindingRef }) => bindingRef)),
+        };
       });
     }
   }

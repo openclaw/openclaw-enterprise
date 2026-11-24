@@ -1,6 +1,7 @@
 import {
   assertExecutionReleaseAllowed,
   credentialSourceMatchesSnapshot,
+  isNativeStagedRepositoryRevision,
   isSecretHarnessAuth,
   normalizeSecretBindings,
   type AgentRevision,
@@ -71,6 +72,15 @@ export async function validateRepositoryNetworkPolicy(
   revision: AgentRevision,
 ): Promise<void> {
   if (revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
+    if (revision.executionAdmission.mode === "standalone") {
+      if (!isNativeStagedRepositoryRevision(revision) || !compute.validateRepositoryCredentials) {
+        throw new DependencyUnavailableError(
+          "The staged revision has no supported native Repository binding.",
+        );
+      }
+      compute.validateRepositoryCredentials(revision.harness, revision.sandboxDriverId);
+      return;
+    }
     if (compute.validateProtectedRepositoryNetworkPolicy === undefined) {
       throw new DependencyUnavailableError(
         "The selected Compute cannot enforce this repository network policy.",
@@ -356,7 +366,12 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
         const bindings = revision.credentialDeployment.bindings.filter(
           ({ sourceRef }) => sourceRef.id === snapshot.sourceId,
         );
-        if (bindings.length === 0 || bindings.some(({ consumer }) => consumer.kind !== "plugin")) {
+        if (
+          bindings.length === 0 ||
+          bindings.some(
+            ({ consumer }) => consumer.kind !== "plugin" && consumer.kind !== "repository",
+          )
+        ) {
           return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
         }
         const { source, withdrawal } = await resolveRevisionCredentialSource(

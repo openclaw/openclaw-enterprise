@@ -764,7 +764,7 @@ export function createShell({
       for (const [name, label] of [
         ["secrets", "Secrets"],
         [connectionTemplatesPage, "Connection templates"],
-        [oauthClientsPage, "OAuth clients"],
+        [oauthClientsPage, "Credential clients"],
       ] as const) {
         if (name !== "secrets" && !state.installationAdmin) {
           continue;

@@ -217,6 +217,7 @@
 ### Connections
 
 - [`listConnectionTemplates`](../api.md#get-connectiontemplates): List all Installation-wide and Namespace-scoped connection templates.
+- [`listEligibleOAuthClients`](../api.md#get-namespacesnamespaceidconnectionsoauthclients): List OAuth clients eligible for a connection template in this Namespace.
 - [`listOAuthClients`](../api.md#get-oauthclients): List registered OAuth clients.
 - [`listUsableConnectionTemplates`](../api.md#get-namespacesnamespaceidconnectiontemplates): List connection templates available in this Namespace.
 - [`completeNamespaceConnection`](../api.md#get-oauthcallback): Complete a browser connection for the signed-in person who started it.
@@ -236,6 +237,7 @@
 - [`getCredentialSource`](../api.md#get-namespacesnamespaceidcredentialsourcescredentialsourceid): Get one readable credential source and its available status.
 - [`createCredentialSource`](../api.md#post-namespacesnamespaceidcredentialsources): Register a credential source.
 - [`updateCredentialSource`](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid): Update a Source through its recorded owner.
+- [`adoptCodexPatCredentialSource`](../api.md#post-namespacesnamespaceidcredentialsourcescredentialsourceidadoptcodexpat): Move an unbound Gateway Codex PAT Source to TokenService.
 - [`rotateCredentialSource`](../api.md#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate): Ask the recorded owner to refresh a credential source.
 - [`deleteCredentialSource`](../api.md#delete-namespacesnamespaceidcredentialsourcescredentialsourceid): Remove an unreferenced credential source.
 

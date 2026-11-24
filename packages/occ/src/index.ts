@@ -14,6 +14,7 @@ export type {
 export type {
   CreateConnectionTemplateInput,
   CreateOAuthClientInput,
+  RotateCredentialClientInput,
   UpdateConnectionTemplateInput,
 } from "./connection-administration.ts";
 export type {

@@ -1,8 +1,11 @@
-import type { AgentPluginCredentialSlot, ConnectionTemplate } from "@openclaw-enterprise/contracts";
+import type {
+  AgentPluginCredentialSlot,
+  ConnectionTemplate,
+  OAuthClient,
+} from "@openclaw-enterprise/contracts";
 import { requestFailure } from "../api-client.mjs";
 import { button, dismissOnBackdrop, element, field, mayReturnFocus } from "../dom.mjs";
-import { connectionTemplatesPage } from "../navigation.mjs";
-import { availableInNamespace } from "../oauth-client-registration.mjs";
+import { connectionTemplatesPage, oauthClientsPage } from "../navigation.mjs";
 import { namespacePath } from "./list.mjs";
 import type { PluginDiscoveryContext } from "./plugin-discovery.mjs";
 
@@ -360,53 +363,34 @@ export function pluginConnectionControl(
     root.append(dialog);
     dialog.showModal();
     let selected: OAuthTemplate | undefined;
+    let selectedClient: OAuthClient | undefined;
     let selectedScopes: string[] | null | undefined;
-    void Promise.all([
-      context.request(`${namespacePath(context.namespaceId)}/connection-templates`, {
-        readOnly: true,
-      }),
-      context.installationAdmin === true
-        ? context
-            .request("/connection-templates", {
-              readOnly: true,
-              installationAdministration: "required",
-            })
-            .catch(() => undefined)
-        : undefined,
-    ]).then(
-      ([answer, adminAnswer]) => {
-        if (!dialog.open || !Array.isArray(answer)) {
-          return;
-        }
-        const templates = (answer as ConnectionTemplate[]).filter(
-          (template): template is OAuthTemplate =>
-            compatibleTemplate(slot, template) && !!template.current.oauthClientId,
-        );
-        const setup = Array.isArray(adminAnswer)
-          ? (adminAnswer as ConnectionTemplate[]).filter(
-              (template): template is OAuthTemplate =>
-                availableInNamespace(template, context.namespaceId) &&
-                compatibleTemplate(slot, template) &&
-                !template.current.oauthClientId,
-            )
-          : [];
-        const settings = new URL(`/console/${connectionTemplatesPage}`, location.origin);
-        settings.searchParams.set("namespace", context.namespaceId);
-        const refresh = () =>
-          button(
-            "Refresh templates",
-            () => {
-              dialog.close();
-              choose();
-            },
-            { size: "sm" },
+    void context
+      .request(`${namespacePath(context.namespaceId)}/connection-templates`, { readOnly: true })
+      .then(
+        (answer) => {
+          if (!dialog.open || !Array.isArray(answer)) {
+            return;
+          }
+          const templates = (answer as ConnectionTemplate[]).filter(
+            (template): template is OAuthTemplate => compatibleTemplate(slot, template),
           );
-        content.replaceChildren();
-        if (!templates.length && !setup.length) {
-          status.textContent =
-            "No compatible OAuth template is available for this slot in this Namespace. Ask an Installation administrator to configure this server.";
-          if (context.installationAdmin === true) {
-            if (Array.isArray(adminAnswer)) {
+          const refresh = () =>
+            button(
+              "Refresh templates",
+              () => {
+                dialog.close();
+                choose();
+              },
+              { size: "sm" },
+            );
+          content.replaceChildren();
+          if (!templates.length) {
+            status.textContent =
+              "No compatible OAuth template is available for this slot in this Namespace. Ask an Installation administrator to configure this server.";
+            if (context.installationAdmin === true) {
+              const settings = new URL(`/console/${connectionTemplatesPage}`, location.origin);
+              settings.searchParams.set("namespace", context.namespaceId);
               settings.searchParams.set("create", "1");
               if (slot.issuers?.length === 1) {
                 settings.searchParams.set("issuer", slot.issuers[0]!);
@@ -416,86 +400,118 @@ export function pluginConnectionControl(
               } else if (slot.recipient?.mode === "manual") {
                 settings.searchParams.set("tokenUrl", slot.recipient.tokenUrl);
               }
-            } else {
-              status.textContent =
-                "Could not check existing connection templates. Open Connection templates or refresh before creating one.";
+              content.append(
+                element(
+                  "a",
+                  { href: settings.href, target: "_blank", rel: "noopener noreferrer" },
+                  "Create connection template",
+                ),
+              );
             }
-            content.append(
-              element(
-                "a",
-                { href: settings.href, target: "_blank", rel: "noopener noreferrer" },
-                Array.isArray(adminAnswer)
-                  ? "Create connection template"
-                  : "Manage connection templates",
-              ),
-            );
+            content.append(refresh());
+            return;
           }
-          content.append(refresh());
-          return;
-        }
-        for (const template of setup) {
-          const edit = new URL(settings);
-          edit.searchParams.set("edit", template.id);
-          content.append(
-            element(
-              "div",
-              { className: "stack" },
-              element(
-                "p",
-                {},
-                `${template.displayName} needs an OAuth client before connecting an account.`,
-              ),
-              element(
-                "a",
-                { href: edit.href, target: "_blank", rel: "noopener noreferrer" },
-                `Configure ${template.displayName}`,
-              ),
+          const picker = element(
+            "select",
+            { "aria-label": `Connection template for ${slot.label}` },
+            element("option", { value: "" }, "Choose a template"),
+            ...templates.map((template) =>
+              element("option", { value: template.id }, template.displayName),
             ),
           );
-        }
-        if (!templates.length) {
-          status.textContent = "Register or select an OAuth client, then refresh templates.";
-          content.append(refresh());
-          return;
-        }
-        const picker = element(
-          "select",
-          { "aria-label": `Connection template for ${slot.label}` },
-          element("option", { value: "" }, "Choose a template"),
-          ...templates.map((template) =>
-            element("option", { value: template.id }, template.displayName),
-          ),
-        );
-        const scopeArea = element("div");
-        content.append(field({ label: "Connection template", control: picker }), scopeArea);
-        status.textContent = "";
-        function select() {
-          selected = templates.find((template) => template.id === picker.value);
-          selectedScopes = undefined;
-          scopeArea.replaceChildren();
-          connect.disabled = !selected;
-          if (selected) {
+          const clientArea = element("div");
+          const scopeArea = element("div");
+          content.append(
+            field({ label: "Connection template", control: picker }),
+            clientArea,
+            scopeArea,
+          );
+          let selectionNumber = 0;
+          const updateConnect = () => {
+            connect.disabled = !selected || !selectedClient || selectedScopes === null;
+          };
+          async function select() {
+            const number = ++selectionNumber;
+            selected = templates.find((template) => template.id === picker.value);
+            selectedClient = undefined;
+            selectedScopes = undefined;
+            clientArea.replaceChildren();
+            scopeArea.replaceChildren();
+            updateConnect();
+            if (!selected) {
+              status.textContent = "";
+              return;
+            }
+            const template = selected;
             scopeArea.append(
-              scopeChoices(selected, (scopes) => {
+              scopeChoices(template, (scopes) => {
                 selectedScopes = scopes;
-                connect.disabled = scopes === null;
+                updateConnect();
               }),
             );
+            status.textContent = "Loading eligible OAuth clients…";
+            try {
+              const clients = (await context.request(
+                `${namespacePath(context.namespaceId)}/connections/oauth-clients?connectionTemplateId=${encodeURIComponent(template.id)}`,
+                { readOnly: true },
+              )) as OAuthClient[];
+              if (!dialog.open || number !== selectionNumber) {
+                return;
+              }
+              if (!Array.isArray(clients) || !clients.length) {
+                status.textContent =
+                  "No eligible OAuth client is registered for this template. Ask an Installation administrator to register one.";
+                if (context.installationAdmin === true) {
+                  const settings = new URL(`/console/${oauthClientsPage}`, location.origin);
+                  settings.searchParams.set("namespace", context.namespaceId);
+                  clientArea.append(
+                    element(
+                      "a",
+                      { href: settings.href, target: "_blank", rel: "noopener noreferrer" },
+                      "Manage OAuth clients",
+                    ),
+                  );
+                }
+                clientArea.append(refresh());
+                return;
+              }
+              const clientPicker = element(
+                "select",
+                { "aria-label": `OAuth client for ${slot.label}` },
+                ...clients.map((client) =>
+                  element("option", { value: client.id }, client.displayName),
+                ),
+              );
+              clientPicker.value = clients[0]!.id;
+              selectedClient = clients[0];
+              clientPicker.addEventListener("change", () => {
+                selectedClient = clients.find((client) => client.id === clientPicker.value);
+                updateConnect();
+              });
+              clientArea.append(field({ label: "OAuth client", control: clientPicker }));
+              status.textContent = "";
+              updateConnect();
+            } catch (cause) {
+              if (dialog.open && number === selectionNumber) {
+                status.textContent = connectionError(cause);
+              }
+            }
           }
-        }
-        picker.addEventListener("change", select);
-        if (templates.length === 1) {
-          picker.value = templates[0]!.id;
-          select();
-        }
-        picker.focus();
-      },
-      (cause) => {
-        status.textContent = connectionError(cause);
-      },
-    );
+          picker.addEventListener("change", () => void select());
+          if (templates.length === 1) {
+            picker.value = templates[0]!.id;
+            void select();
+          } else {
+            status.textContent = "";
+          }
+          picker.focus();
+        },
+        (cause) => {
+          status.textContent = connectionError(cause);
+        },
+      );
     async function start() {
-      if (!selected || connect.disabled || selectedScopes === null) {
+      if (!selected || !selectedClient || connect.disabled || selectedScopes === null) {
         return;
       }
       attempt?.abort();
@@ -512,6 +528,7 @@ export function pluginConnectionControl(
               signal: active.signal,
               body: {
                 connectionTemplateId: selected!.id,
+                oauthClientId: selectedClient!.id,
                 ...(selectedScopes === undefined ? {} : { selectedScopes }),
               },
             }) as Promise<ConsentStart>,

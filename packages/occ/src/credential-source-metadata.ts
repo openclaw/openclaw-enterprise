@@ -3,11 +3,14 @@ import type {
   CredentialSourceMetadata,
   CredentialSourceReference,
   CredentialSourceStatus,
+  GitHubAppInstallationCredentialSource,
   LegacyCredentialSource,
   OAuthCredentialSource,
   StaticCredentialSource,
   StoredCredentialSource,
 } from "@openclaw-enterprise/contracts";
+
+import { immutableCopy } from "@openclaw-enterprise/utils";
 
 import { ResourceStateConflictError } from "./errors.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
@@ -72,6 +75,31 @@ export function credentialSourceMetadata(
   });
 }
 
+export function githubAppCredentialSourceMetadata(
+  source: Readonly<GitHubAppInstallationCredentialSource>,
+): Extract<CredentialSourceMetadata, { type: "github-app-installation" }> {
+  const { appId, installationId, repositories, permissions } = source.scope;
+  return immutableCopy({
+    id: source.id,
+    namespaceId: source.namespaceId,
+    name: source.name,
+    type: source.type,
+    state: source.state,
+    createdAt: source.createdAt,
+    ref: credentialSourceRef(source),
+    clientId: source.clientId,
+    scope: {
+      appId,
+      installationId,
+      repositories: repositories.map(({ repositoryId, repository }) => ({
+        repositoryId,
+        repository,
+      })),
+      permissions,
+    },
+  });
+}
+
 /** Derive nonsecret issuer details from the Source's server-owned OAuth provenance. */
 export async function oauthCredentialSourceMetadata(
   view: PlatformReadView,
@@ -107,12 +135,13 @@ export async function oauthCredentialSourceMetadata(
     source.connectionTemplateId,
     source.consent.version,
   );
-  const client = await view.connectionTemplates.findOAuthClient(source.consent.oauthClientId);
+  const client = await view.connectionTemplates.findCredentialClient(source.consent.oauthClientId);
   if (
     !version ||
     !client ||
-    version.oauthClientId !== client.id ||
-    client.issuer !== version.issuer
+    client.kind !== "oauth2" ||
+    client.issuer !== version.issuer ||
+    client.tokenUrl !== version.tokenUrl
   ) {
     throw new ResourceStateConflictError("The original OAuth consent registration is unavailable.");
   }

@@ -610,10 +610,7 @@ const deploymentConsumer = Type.Union([
     { kind: Type.Literal("model"), providerId: nonemptyDeploymentString },
     strictDeploymentShape,
   ),
-  Type.Object(
-    { kind: Type.Literal("repository"), repositoryId: nonemptyDeploymentString },
-    strictDeploymentShape,
-  ),
+  Type.Object({ kind: Type.Literal("repository") }, strictDeploymentShape),
 ]);
 const credentialDeploymentShape = Type.Object(
   {

@@ -716,7 +716,7 @@ export function registerDeploymentPolicyCases(): void {
           bindings: [
             {
               ...binding,
-              consumer: { kind: "repository", repositoryId: "repo_calendar" },
+              consumer: { kind: "repository" },
               projection: { ...binding.projection, presentation: "repository_git" },
             },
           ],

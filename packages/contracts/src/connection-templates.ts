@@ -25,6 +25,7 @@ export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_sec
 
 /** A client may send its credentials only to its configured provider endpoints. */
 export interface OAuthClient {
+  readonly kind: "oauth2";
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
@@ -35,6 +36,18 @@ export interface OAuthClient {
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
   readonly createdAt: string;
 }
+
+/** Installation-scoped registration metadata; the signing key never leaves TokenService. */
+export interface GitHubAppClient {
+  readonly kind: "github-app";
+  readonly id: string;
+  readonly displayName: string;
+  readonly appId: string;
+  readonly namespaceId?: never;
+  readonly createdAt: string;
+}
+
+export type CredentialClient = OAuthClient | GitHubAppClient;
 
 /** Public metadata observed during MCP discovery. The administrator selects a subset. */
 export interface McpAuthorizationMetadata {
@@ -58,7 +71,6 @@ export interface ConnectionTemplateValues {
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   readonly revocationUrl?: string;
-  readonly oauthClientId?: string;
   /** An empty list leaves scope selection to the account owner and provider. */
   readonly scopes: readonly string[];
   readonly authorizationParameters: Readonly<Record<string, string>>;
@@ -324,7 +336,6 @@ export function connectionValuesChanged(
     current.mode !== next.mode ||
     current.mcp?.serverUrl !== next.mcp?.serverUrl ||
     current.mcp?.resource !== next.mcp?.resource ||
-    current.oauthClientId !== next.oauthClientId ||
     current.issuer !== next.issuer ||
     current.authorizationUrl !== next.authorizationUrl ||
     current.tokenUrl !== next.tokenUrl ||
@@ -373,6 +384,7 @@ export interface ConnectionSession {
   readonly actorId: string;
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
+  readonly oauthClientId: string;
   readonly createdAt: string;
   readonly expiresAt: string;
 }

@@ -2,12 +2,12 @@ import { requestFailure } from "./api-client.mjs";
 import { button, element, requestIdLine } from "./dom.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
-import type { ConnectionTemplate, OAuthClient } from "@openclaw-enterprise/contracts";
+import type { ConnectionTemplate, CredentialClient } from "@openclaw-enterprise/contracts";
 
 export function oauthDeleteButton(
   context: Pick<ConsolePageContext, "request" | "isCurrent">,
-  kind: "connection template" | "OAuth client",
-  item: ConnectionTemplate | OAuthClient,
+  kind: "connection template" | "credential client",
+  item: ConnectionTemplate | CredentialClient,
   scope: string,
   refresh: (message?: string) => Promise<unknown>,
   fallbackFocus: HTMLButtonElement,
@@ -110,12 +110,6 @@ export function oauthDeleteButton(
         let message = serverMessage ?? `OCE refused to delete this ${kind}.`;
         if (uncertain) {
           message = "Could not confirm deletion. Close to reload the list before trying again.";
-        } else if (
-          status === 409 &&
-          serverMessage === "A template version still references this OAuth client."
-        ) {
-          message +=
-            " Earlier versions can still reference it after the template selects another client.";
         }
         feedback.append(element("p", {}, message));
         if (requestId) {

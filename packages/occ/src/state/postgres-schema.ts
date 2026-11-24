@@ -7,6 +7,7 @@ import type {
   AgentDesiredRuntimeState,
   AgentStatus,
   CredentialSourceState,
+  GitHubAppInstallationScope,
   CredentialSourceOwnerCapability,
   BuiltinCodexOAuthAccount,
   HarnessExecutionMode,
@@ -556,6 +557,11 @@ export const credentialSources = occSchema.table(
       onDelete: "restrict",
       onUpdate: "restrict",
     }),
+    githubAppClientId: text("github_app_client_id").references(() => oauthClients.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
+    githubAppScope: jsonb("github_app_scope").$type<GitHubAppInstallationScope>(),
     oauthOwnerPrincipalId: text("oauth_owner_principal_id").references(() => iamIdentities.id, {
       onDelete: "restrict",
       onUpdate: "restrict",
@@ -593,6 +599,16 @@ export const credentialSources = occSchema.table(
     ),
     check("credential_sources_type_valid", sql`${table.type} ~ '^[a-z][a-z0-9-]{0,63}$'`),
     check(
+      "credential_sources_github_app_client_shape",
+      sql`(${table.type}='github-app-installation')=(${table.githubAppClientId} IS NOT NULL)`,
+    ),
+    check(
+      "credential_sources_github_app_scope_valid",
+      sql`CASE WHEN ${table.ownerCapability}='token_service' AND ${table.type}='github-app-installation' THEN
+        ${table.githubAppClientId} IS NOT NULL AND ${table.connectionTemplateId} IS NULL AND ${table.config}='{}'::jsonb AND occ.github_app_source_scope_is_valid(${table.githubAppScope})
+      ELSE ${table.githubAppClientId} IS NULL AND ${table.githubAppScope} IS NULL END IS TRUE`,
+    ),
+    check(
       "credential_sources_config_valid",
       sql`occ.credential_source_config_is_valid(${table.config})`,
     ),
@@ -608,7 +624,7 @@ export const credentialSources = occSchema.table(
       .onUpdate("restrict"),
     check(
       "credential_sources_owner_capability_valid",
-      sql`CASE WHEN ${table.ownerCapability}='token_service' THEN ${table.driverId} IS NULL AND ${table.egress} IS NULL AND ${table.tokenServiceInstanceId} IS NOT NULL AND ${table.type} IN ('static','oauth2-refresh-token') AND ${table.state} IN ('ready','deleting') ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL AND ${table.connectionTemplateId} IS NULL AND (${table.ownerCapability}='credential_gateway' OR (${table.ownerCapability}='credential_proxy' AND ${table.egress} IS NOT NULL)) END IS TRUE`,
+      sql`CASE WHEN ${table.ownerCapability}='token_service' THEN ${table.driverId} IS NULL AND ${table.egress} IS NULL AND ${table.tokenServiceInstanceId} IS NOT NULL AND ${table.type} IN ('static','oauth2-refresh-token','github-app-installation') AND ${table.state} IN ('ready','deleting') ELSE ${table.driverId} IS NOT NULL AND ${table.tokenServiceInstanceId} IS NULL AND ${table.connectionTemplateId} IS NULL AND (${table.ownerCapability}='credential_gateway' OR (${table.ownerCapability}='credential_proxy' AND ${table.egress} IS NOT NULL)) END IS TRUE`,
     ),
     check(
       "credential_sources_oauth_shape",
@@ -869,7 +885,6 @@ export const agentRevisions = occSchema.table(
               ))
           OR (${table.admittedSpec} #>> '{execution_admission,mode}' = 'standalone'
             AND ${table.admittedSpec} #> '{execution_admission,version}' = '8'::jsonb
-            AND NOT ((${table.admittedSpec}->'execution_admission') ? 'repositoryNetworkPolicyVersion')
             AND NOT (${table.admittedSpec} ? 'egress_plan')
             AND NOT ((${table.admittedSpec}->'harness_auth') ? 'protectedExecutionVersion')
             AND occ.standalone_credential_deployment_is_valid(${table.admittedSpec}, ${table.namespaceId}))
@@ -2521,38 +2536,50 @@ export const oauthClients = occSchema.table(
   "oauth_clients",
   {
     id: text("id").primaryKey(),
+    kind: text("kind")
+      .$type<import("@openclaw-enterprise/contracts").CredentialClient["kind"]>()
+      .notNull(),
     namespaceId: text("namespace_id").references(() => namespaces.id, {
       onDelete: "restrict",
       onUpdate: "restrict",
     }),
-    issuer: collatedText("issuer").notNull(),
+    issuer: collatedText("issuer"),
     displayName: text("display_name").notNull(),
-    clientId: collatedText("client_id").notNull(),
+    clientId: collatedText("client_id"),
     cleanupAfter: timestamp("cleanup_after", { withTimezone: true }),
-    tokenEndpointAuthMethod: text("token_endpoint_auth_method")
-      .$type<import("@openclaw-enterprise/contracts").OAuthClientAuthMethod>()
-      .notNull(),
-    tokenUrl: text("token_url").notNull(),
+    tokenEndpointAuthMethod: text("token_endpoint_auth_method").$type<
+      import("@openclaw-enterprise/contracts").OAuthClientAuthMethod
+    >(),
+    tokenUrl: text("token_url"),
     revocationUrl: text("revocation_url"),
-    secretDriverId: collatedText("secret_driver_id"),
+    appId: text("app_id"),
+    tokenServiceInstanceId: text("token_service_instance_id").references(
+      () => tokenServiceInstances.id,
+      { onDelete: "restrict", onUpdate: "restrict" },
+    ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
     check(
-      "oauth_clients_secret_owner",
-      sql`(${table.tokenEndpointAuthMethod} = 'none') = (${table.secretDriverId} IS NULL) AND (${table.secretDriverId} IS NULL OR length(${table.secretDriverId}) > 0)`,
+      "oauth_clients_kind_shape",
+      sql`CASE WHEN ${table.kind}='oauth2' THEN
+          ${table.issuer} IS NOT NULL AND ${table.clientId} IS NOT NULL AND ${table.tokenUrl} IS NOT NULL
+          AND ${table.tokenEndpointAuthMethod} IN ('none','client_secret_basic','client_secret_post')
+          AND ${table.appId} IS NULL
+          AND ((${table.tokenEndpointAuthMethod}='none')=(${table.tokenServiceInstanceId} IS NULL))
+        WHEN ${table.kind}='github-app' THEN
+          ${table.namespaceId} IS NULL AND ${table.issuer} IS NULL AND ${table.clientId} IS NULL
+          AND ${table.tokenUrl} IS NULL AND ${table.revocationUrl} IS NULL AND ${table.tokenEndpointAuthMethod} IS NULL
+          AND CASE WHEN ${table.appId} ~ '^[1-9][0-9]{0,15}$' THEN ${table.appId}::numeric <= 9007199254740991 ELSE false END
+          AND ${table.tokenServiceInstanceId} IS NOT NULL
+        ELSE false END IS TRUE`,
     ),
-    unique("oauth_clients_pair_unique")
-      .on(table.namespaceId, table.issuer, table.clientId)
-      .nullsNotDistinct(),
-    unique("oauth_clients_identity").on(table.id, table.issuer, table.tokenUrl),
+    uniqueIndex("oauth_clients_pair_unique")
+      .on(sql`coalesce(${table.namespaceId}, '')`, table.issuer, table.clientId)
+      .where(sql`${table.kind}='oauth2'`),
     check(
       "oauth_clients_display_name_check",
       sql`length(${table.displayName}) BETWEEN 1 AND 200 AND ${table.displayName} = btrim(${table.displayName})`,
-    ),
-    check(
-      "oauth_clients_token_endpoint_auth_method_check",
-      sql`${table.tokenEndpointAuthMethod} IN ('none','client_secret_basic','client_secret_post')`,
     ),
     check(
       "oauth_clients_token_url_check",
@@ -2572,7 +2599,7 @@ export const oauthClients = occSchema.table(
     ),
     check(
       "oauth_clients_cleanup_confidential",
-      sql`${table.cleanupAfter} IS NULL OR ${table.tokenEndpointAuthMethod} <> 'none'`,
+      sql`${table.cleanupAfter} IS NULL OR ${table.tokenServiceInstanceId} IS NOT NULL`,
     ),
     check(
       "oauth_clients_client_id_valid",
@@ -2657,10 +2684,6 @@ export const oauthConnectionTemplateVersions = occSchema.table(
       .notNull()
       .references(() => connectionTemplates.id, { onDelete: "cascade", onUpdate: "restrict" }),
     version: integer("version").notNull(),
-    oauthClientId: text("oauth_client_id").references(() => oauthClients.id, {
-      onDelete: "restrict",
-      onUpdate: "restrict",
-    }),
     issuer: collatedText("issuer").notNull(),
     mode: text("mode").$type<"manual" | "mcp_discovery">().notNull(),
     revocationUrl: text("revocation_url"),
@@ -2681,11 +2704,6 @@ export const oauthConnectionTemplateVersions = occSchema.table(
   },
   (table) => [
     primaryKey({ columns: [table.templateId, table.version] }),
-    foreignKey({
-      name: "oauth_connection_template_versions_client_issuer",
-      columns: [table.oauthClientId, table.issuer, table.tokenUrl],
-      foreignColumns: [oauthClients.id, oauthClients.issuer, oauthClients.tokenUrl],
-    }),
     check(
       "oauth_connection_template_versions_mode_check",
       sql`${table.mode} IN ('manual','mcp_discovery')`,
@@ -2758,6 +2776,11 @@ export const authenticationStates = occSchema.table(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     connectionTemplateId: text("connection_template_id"),
     connectionTemplateVersion: integer("connection_template_version"),
+    oauthClientId: text("oauth_client_id").references(() => oauthClients.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
+    oauthConsumedAt: timestamp("oauth_consumed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }),
     binding: jsonb("binding").notNull(),
     credentialSourceId: text("credential_source_id"),
@@ -2803,6 +2826,11 @@ export const authenticationStates = occSchema.table(
       AND jsonb_typeof(${table.binding}->'selectedScopes') = 'array'
       AND NOT jsonb_path_exists(${table.binding}, '$.selectedScopes[*] ? (@.type() != "string")')
     ) IS TRUE)`,
+    ),
+    check(
+      "authentication_states_client_shape",
+      sql`((${table.kind}='oauth_connection')=(${table.oauthClientId} IS NOT NULL))
+        AND (${table.kind}='oauth_connection' OR ${table.oauthConsumedAt} IS NULL)`,
     ),
     check(
       "authentication_states_device_source_owner",

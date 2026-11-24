@@ -69,6 +69,7 @@ export function createTokenAuthority({
   const tokens = new Map<string, Token>();
   const issuesOfTokens: Issuance[] = [];
   const authenticationAttempts: { tokenIndex: number | undefined; boundary: string }[] = [];
+  let appPublicKey = publicKey;
 
   function tokenFrom(authorization: string | undefined) {
     if (authorization?.startsWith("Basic ")) {
@@ -93,7 +94,7 @@ export function createTokenAuthority({
     token.uses++;
     return true;
   }
-  function issue(authorization: string | undefined, body: unknown) {
+  function verifyAppJwt(authorization: string | undefined) {
     const jwt = tokenFrom(authorization);
     const [header, payload, signature, extra] = jwt?.split(".") ?? [];
     assert.ok(
@@ -105,7 +106,7 @@ export function createTokenAuthority({
       verify(
         "sha256",
         Buffer.from(`${header}.${payload}`),
-        publicKey,
+        appPublicKey,
         Buffer.from(signature, "base64url"),
       ),
       "invalid App JWT signature",
@@ -120,7 +121,11 @@ export function createTokenAuthority({
     assert.ok(iat <= clock.wallNow() / 1000);
     assert.ok(exp > clock.wallNow() / 1000);
     assert.ok(exp - iat <= 600);
+    return { jwt, claims };
+  }
 
+  function issue(authorization: string | undefined, body: unknown) {
+    const { jwt, claims } = verifyAppJwt(authorization);
     assert.ok(isObject(body), "invalid issuance body");
     const installation = installationAccess && Object.keys(body).length === 0;
     let repositoryIds: RepositoryId[] | "installation" = "installation";
@@ -231,6 +236,10 @@ export function createTokenAuthority({
   return {
     permitsRepository,
     issue,
+    verifyAppJwt,
+    setAppPublicKey(key: KeyObject) {
+      appPublicKey = key;
+    },
     authorize,
     authorizeRepository(authorization: string | undefined, repositoryId: RepositoryId) {
       if (!authorize(authorization, `repository:${repositoryId}`)) {

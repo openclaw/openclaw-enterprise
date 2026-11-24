@@ -25,6 +25,8 @@ import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
 import { PushAgentCredentialsResponse } from "./agent-credential-push.ts";
 import {
   ConnectionStartResponse,
+  EligibleOAuthClientsQuery,
+  EligibleOAuthClientsResponse,
   StartNamespaceConnectionBody,
   UsableConnectionTemplatesResponse,
 } from "./connections.ts";
@@ -1227,6 +1229,22 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "listEligibleOAuthClients",
+    method: "GET",
+    path: "/namespaces/:namespaceId/connections/oauth-clients",
+    action: "openclaw.namespaces.connections.clients.list_eligible",
+    iamAction: "create",
+    resourceKind: "credential_source",
+    authorizationTarget: "namespace_collection",
+    summary: "List OAuth clients eligible for a connection template in this Namespace",
+    tags: ["Connections"],
+    schema: {
+      querystring: EligibleOAuthClientsQuery,
+      params: NamespaceParams,
+      response: { 200: EligibleOAuthClientsResponse, ...readErrors },
+    },
+  },
+  {
     operationId: "startNamespaceConnection",
     method: "POST",
     path: "/namespaces/:namespaceId/connections",
@@ -1256,7 +1274,11 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      body: Type.Union([CreateCredentialSourceBody, Type.Ref("RegisterTokenServiceSourceBody")]),
+      body: Type.Union([
+        CreateCredentialSourceBody,
+        Type.Ref("RegisterTokenServiceSourceBody"),
+        Type.Ref("RegisterGitHubAppTokenServiceSourceBody"),
+      ]),
       response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
     },
   },
@@ -1307,6 +1329,22 @@ export const occApiRoutes = [
       params: CredentialSourceParams,
       body: Type.Union([UpdateCredentialSourceBody, Type.Ref("UpdateTokenServiceSourceBody")]),
       response: { 200: CredentialSourceResponseRef, ...createErrors },
+    },
+  },
+  {
+    operationId: "adoptCodexPatCredentialSource",
+    method: "POST",
+    path: "/namespaces/:namespaceId/credential-sources/:credentialSourceId/adopt-codex-pat",
+    action: "openclaw.credential_sources.update",
+    iamAction: "update",
+    resourceKind: "credential_source",
+    authorizationTarget: "credential_source",
+    summary: "Move an unbound Gateway Codex PAT Source to TokenService",
+    tags: ["Credential sources"],
+    schema: {
+      querystring: EmptyQuery,
+      params: CredentialSourceParams,
+      response: { 200: CredentialSourceResponseRef, ...mutationErrors },
     },
   },
   {

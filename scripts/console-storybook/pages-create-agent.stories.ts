@@ -182,6 +182,11 @@ export const GitHubRepositoryGrants = {
   ...story("createGitHubRepositoryGrants"),
   name: "GitHub repository access",
 };
+export const GitHubSource = story("createGitHubSource");
+export const GitHubSourceNoClients = story("createGitHubSourceNoClients");
+export const GitHubSourceLoading = story("createGitHubSourceLoading");
+export const GitHubSourceError = story("createGitHubSourceError");
+export const GitHubSourceMember = story("createGitHubSourceMember");
 export const RepositoryContributor = {
   ...story("createRepositoriesContributor"),
   name: "Contributor without issue management",

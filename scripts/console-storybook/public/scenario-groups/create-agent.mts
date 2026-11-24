@@ -26,10 +26,12 @@ import type {
   InstallationCapabilities,
   NamespaceStatus,
   PresetVariable,
-  RepositoryOption,
+  RepositoryOptionListResponse,
 } from "@openclaw-enterprise/contracts";
 import type { createFixtureFetch } from "../preview-rules.mts";
 import type { servePluginDiscovery } from "../plugin-discovery-fixture.mts";
+
+type RepositoryOption = RepositoryOptionListResponse["data"][number];
 
 type CreateAgentScenario = {
   group: "Pages/Create Agent";
@@ -699,7 +701,7 @@ export const createAgentFormScenarios = {
       click("Connect account"),
     ],
     description:
-      "The Create Agent Plugin editor uses the same compatible account Template and scope dialog as a saved Agent. Consent will save a user-owned Source; the draft only stages its ID.",
+      "The Create Agent Plugin editor uses the same compatible account Template, explicit OAuth Client selection, and scope dialog as a saved Agent. Consent will save a user-owned Source; the draft only stages its ID.",
     gap: "Displayed Template and Plugin metadata are simulated. This preview does not complete OAuth, create a Source, or create an Agent.",
   },
   createPluginsDiscovered: {
@@ -982,6 +984,28 @@ export const createAgentFormScenarios = {
     ],
   },
 } satisfies Record<string, CreateAgentScenario>;
+
+const gitSourcePreview = {
+  group: "Pages/Create Agent",
+  path: create,
+  credentialSourceTypes: modelCredentialSourceTypes,
+  repositoryOptions: [
+    {
+      repositoryRef: "application",
+      displayName: "example/application",
+      allowedProfiles: ["github-repository"],
+      githubAccess: { repository: "example/application", access: "read" },
+    },
+  ],
+  actions: [
+    ...managedStaticForm.slice(0, -1),
+    { selector: 'input[data-repository-ref="application"]', click: true },
+  ],
+} satisfies Partial<CreateAgentScenario>;
+const openGitSourceEnrollment = [
+  ...gitSourcePreview.actions,
+  { selector: "#github-source", value: "new" },
+];
 
 export const createAgentProvisioningScenarios = {
   createProvisioningSecrets: {
@@ -1745,6 +1769,51 @@ export const createAgentProvisioningScenarios = {
       "Uncheck both repositories. Before Create Agent, read the warning about deployment without a repository policy and the need for a new Agent to add Per-repository access later.",
       "Switch to Access profiles and check its existing warning. Return to Per-repository access and select application again; Save Agent draft returns and the deployment warning disappears.",
     ],
+  },
+  createGitHubSource: {
+    ...gitSourcePreview,
+    name: "Create a GitHub Source from a registered App",
+    oauthCatalog: "ready",
+    description:
+      "An Installation administrator selects an existing GitHub App Client and creates a finite Source from the approved repository selection. The Agent must still save its own repository grant.",
+    steps: [
+      "Choose Create a GitHub Source…, choose Repository automation in GitHub App Client, and create the Source.",
+      "Confirm the created Source is selected. Save Agent draft and inspect its selected Source and saved repository policy.",
+    ],
+    gap: "Simulated Console proof. No GitHub mint, PostgreSQL, IAM, or OpenShell runtime is exercised.",
+  },
+  createGitHubSourceNoClients: {
+    ...gitSourcePreview,
+    name: "GitHub Source without a registered App",
+    oauthCatalog: "empty",
+    actions: openGitSourceEnrollment,
+    description:
+      "The administrator sees the prerequisite and cannot create a Source until a GitHub App Client is registered.",
+  },
+  createGitHubSourceLoading: {
+    ...gitSourcePreview,
+    name: "GitHub App Clients loading",
+    oauthCatalog: "ready",
+    actions: openGitSourceEnrollment,
+    rules: [{ path: "/oauth-clients", method: "GET", hold: true }],
+    description: "Client discovery is pending. Source creation remains unavailable.",
+  },
+  createGitHubSourceError: {
+    ...gitSourcePreview,
+    name: "GitHub App Client discovery failed",
+    oauthCatalog: "ready",
+    actions: openGitSourceEnrollment,
+    rules: [{ path: "/oauth-clients", method: "GET", status: 503 }],
+    description: "The administrator can refresh after the Client catalog request fails.",
+  },
+  createGitHubSourceMember: {
+    ...gitSourcePreview,
+    name: "GitHub Source selection for a member",
+    oauthCatalog: "ready",
+    observabilityDenied: true,
+    actions: managedStaticForm.slice(0, -1),
+    description:
+      "A member cannot open the Installation Client catalog or enroll a GitHub App Source.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",

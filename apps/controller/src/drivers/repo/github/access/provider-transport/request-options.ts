@@ -1,4 +1,10 @@
-import { parseGitHubNumericId, validateGitHubRepositoryGrant } from "../repository-grant.ts";
+import type { GitHubAppInstallationScope } from "@openclaw-enterprise/contracts";
+
+import {
+  parseGitHubNumericId,
+  validateGitHubFiniteInstallationScope,
+  validateGitHubRepositoryGrant,
+} from "../repository-grant.ts";
 import type { RequestOptions } from "node:https";
 import { isGitHubWireCredential } from "../wire-credential.ts";
 import type { GitHubPreparationAdmission } from "../prepared-contracts.ts";
@@ -53,19 +59,20 @@ function canonicalPermissions(permissions: Readonly<Record<string, string>>) {
   );
 }
 
+function projectFiniteScope(scope: GitHubAppInstallationScope): IssuanceProjection {
+  return {
+    kind: "selected",
+    repositories: scope.repositories
+      .map((r) => ({ id: numericId(r.repositoryId), name: r.repository }))
+      .sort((a, b) => a.id - b.id),
+    permissions: canonicalPermissions(scope.permissions),
+  };
+}
+
 function projectIssuanceScope(scope: GitHubPreparationAdmission["grant"]): IssuanceProjection {
   if (scope.profile === "github-repository") {
     validateGitHubRepositoryGrant(scope);
-    return {
-      kind: "selected",
-      repositories: scope.repositories
-        .map((r) => ({
-          id: numericId(r.repositoryId),
-          name: r.repository,
-        }))
-        .sort((a, b) => a.id - b.id),
-      permissions: canonicalPermissions(scope.permissions),
-    };
+    return projectFiniteScope(scope);
   }
   if (scope.profile === "github-installation") {
     // Reject a mixed persisted grant instead of silently dropping its narrowing constraints.
@@ -95,6 +102,22 @@ export function prepareProviderScope(
   origin: string,
   scope: GitHubPreparationAdmission["grant"],
 ): ProviderScope {
+  return prepareScope(origin, scope, projectIssuanceScope(scope));
+}
+
+export function prepareFiniteGitHubProviderScope(
+  origin: string,
+  scope: GitHubAppInstallationScope,
+): ProviderScope {
+  validateGitHubFiniteInstallationScope(scope);
+  return prepareScope(origin, scope, projectFiniteScope(scope));
+}
+
+function prepareScope(
+  origin: string,
+  scope: Pick<GitHubAppInstallationScope, "appId" | "installationId">,
+  projection: IssuanceProjection,
+): ProviderScope {
   if (parseCanonicalGitHubOrigin(origin) === undefined) {
     throw new Error("invalid-provider-origin");
   }
@@ -104,7 +127,6 @@ export function prepareProviderScope(
     appId: scope.appId,
     installationId: numericId(scope.installationId),
   };
-  const projection = projectIssuanceScope(scope);
   const issuance: GitHubIssuanceScope =
     projection.kind === "inherited"
       ? Object.freeze({ ...target, kind: "inherited" })
@@ -146,19 +168,49 @@ export function providerRequestOptions(
   if (!isGitHubWireCredential(authorization)) {
     throw new Error("invalid-provider-credential");
   }
-  const origin = new URL(endpoint.issuance.origin);
   const issue = operation === "issue";
   const body = issue ? issueBody : "";
+  return githubRequestOptions(
+    endpoint.issuance.origin,
+    issue ? "POST" : "DELETE",
+    issue
+      ? `/app/installations/${endpoint.issuance.installationId}/access_tokens`
+      : "/installation/token",
+    authorization,
+    ca,
+    body,
+  );
+}
+
+/** App identity verification cannot mint or revoke an installation token. */
+export function appIdentityRequestOptions(
+  origin: string,
+  authorization: string,
+  ca: Uint8Array | undefined,
+): Readonly<{ options: RequestOptions; body: string }> {
+  if (!parseCanonicalGitHubOrigin(origin) || !isGitHubWireCredential(authorization)) {
+    throw new Error("invalid-provider-identity-request");
+  }
+  return githubRequestOptions(origin, "GET", "/app", authorization, ca, "");
+}
+
+function githubRequestOptions(
+  originValue: string,
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  authorization: string,
+  ca: Uint8Array | undefined,
+  body: string,
+): Readonly<{ options: RequestOptions; body: string }> {
+  const origin = new URL(originValue);
   return {
     body,
     options: {
       protocol: "https:",
       hostname: origin.hostname.replace(/^\[|\]$/g, ""),
       port: origin.port || 443,
-      method: issue ? "POST" : "DELETE",
-      path: issue
-        ? `/app/installations/${endpoint.issuance.installationId}/access_tokens`
-        : "/installation/token",
+      method,
+      path,
       agent: false,
       rejectUnauthorized: true,
       maxHeaderSize: 32768,

@@ -1539,8 +1539,34 @@ export function createAgentDetailScenarios({
         ...accountConsent,
         name: "Connect an account from a saved Plugin slot",
         description:
-          "Review the compatible simulated MCP Template and its preselected scopes in the same account consent dialog used by Create Agent.",
+          "Review the compatible simulated MCP Template, the first eligible OAuth Client selected by default, and its preselected scopes in the same account consent dialog used by Create Agent.",
         gap: "Storybook supplies Template and Plugin metadata. It does not complete OAuth, create a Source, or grant an Agent access.",
+      },
+      pluginAccountConsentNoClients: {
+        ...accountConsent,
+        name: "No eligible OAuth Client for a Plugin Template",
+        rules: [{ suffix: "/connections/oauth-clients", method: "GET", data: [] }],
+        description:
+          "The selected Template has no compatible Client. The dialog explains the missing registration and cannot start consent.",
+        gap: "Client eligibility is simulated; this does not prove Namespace authorization or TokenService custody.",
+      },
+      pluginAccountConsentClientsLoading: {
+        ...accountConsent,
+        name: "Loading eligible OAuth Clients",
+        rules: [
+          { suffix: "/connections/oauth-clients", method: "GET", delayMs: 4000, status: 503 },
+        ],
+        description:
+          "The dialog shows that eligible Clients are loading and keeps consent disabled until selection succeeds.",
+        gap: "The delayed response is simulated.",
+      },
+      pluginAccountConsentClientsFailed: {
+        ...accountConsent,
+        name: "OAuth Client discovery unavailable",
+        rules: [{ suffix: "/connections/oauth-clients", method: "GET", status: 503 }],
+        description:
+          "The dialog reports a failed eligible-Client lookup and does not submit a consent request.",
+        gap: "The API refusal is simulated.",
       },
       pluginAccountConsentStartFailed: {
         ...accountConsent,

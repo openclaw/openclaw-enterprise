@@ -1,19 +1,18 @@
-import type { Namespace, OAuthClient } from "@openclaw-enterprise/contracts";
-import { refusedAsNonAdministrator } from "./api-client.mjs";
-import { button, element } from "./dom.mjs";
+import type { CredentialClient, Namespace } from "@openclaw-enterprise/contracts";
+import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
+import { button, element, field, validateFields } from "./dom.mjs";
 import { oauthCatalog } from "./oauth-catalog.mjs";
 import { oauthDeleteButton } from "./oauth-deletion.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 import {
   availabilityLabel,
-  isOAuthTemplate,
-  type OAuthTemplate,
   availableInNamespace,
   oauthClients,
   oauthFailure,
-  openOAuthClientRegistration,
+  openCredentialClientRegistration,
+  privateKeyFile,
+  readPrivateKey,
 } from "./oauth-client-registration.mjs";
-import { connectionTemplates, openConnectionTemplateEditor } from "./connection-templates.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
 
@@ -22,47 +21,53 @@ export function renderOAuthClients(
   namespaces: readonly Namespace[],
   currentNamespace: string | null,
 ) {
-  const create = button("Register OAuth client", () => edit(), { tone: "primary", size: "sm" });
-  const { section, list, notice, showRows } = oauthCatalog("OAuth clients", create, "Client", [
-    "Issuer",
+  const create = button("Register client", () => edit(), { tone: "primary", size: "sm" });
+  const { section, list, notice, showRows } = oauthCatalog("Credential clients", create, "Client", [
+    "Type",
+    "Issuer or App ID",
     "Availability",
-    "Token endpoint authentication method",
+    "Authentication",
   ]);
   let redirectUri: string | undefined;
-  let clients: OAuthClient[] = [];
-  let templates: OAuthTemplate[] = [];
   async function refresh(message?: string) {
     create.disabled = true;
     list.replaceChildren();
-    notice.textContent = "Loading OAuth clients…";
+    notice.textContent = "Loading credential clients…";
     try {
-      const [available, saved] = await Promise.all([
-        oauthClients(context),
-        connectionTemplates(context),
-      ]);
-      const { data, meta } = available;
+      const { data, meta } = await oauthClients(context);
       if (!context.isCurrent()) {
         return;
       }
-      clients = data;
-      templates = saved
-        .filter(isOAuthTemplate)
-        .filter((item) => availableInNamespace(item, currentNamespace));
-      const visibleClients = data.filter((item) => availableInNamespace(item, currentNamespace));
       redirectUri = meta?.redirectUri;
+      const visible = data.filter((item) => availableInNamespace(item, currentNamespace));
       showRows(
-        visibleClients.map((item) => {
+        visible.map((item) => {
           const scope = availabilityLabel(item, namespaces);
+          const github = item.kind === "github-app";
+          const actions = [];
+          if (github || item.tokenEndpointAuthMethod !== "none") {
+            actions.push(rotationButton(item));
+          }
+          actions.push(
+            oauthDeleteButton(context, "credential client", item, scope, refresh, create),
+          );
           return {
             name: item.displayName,
-            details: [item.issuer, scope, element("code", {}, item.tokenEndpointAuthMethod)],
-            actions: [oauthDeleteButton(context, "OAuth client", item, scope, refresh, create)],
+            details: github
+              ? ["GitHub App", item.appId, scope, "Signing key"]
+              : [
+                  "OAuth 2.0",
+                  item.issuer,
+                  scope,
+                  element("code", {}, item.tokenEndpointAuthMethod),
+                ],
+            actions,
           };
         }),
       );
       notice.textContent =
         message ??
-        (visibleClients.length ? "" : "No OAuth clients are available for this selection.");
+        (visible.length ? "" : "No credential clients are available for this selection.");
       create.disabled = false;
     } catch (cause) {
       if (!context.isCurrent()) {
@@ -72,42 +77,147 @@ export function renderOAuthClients(
         section.remove();
         return;
       }
-      notice.textContent = oauthFailure(cause, "the OAuth client list");
-      list.append(button("Reload OAuth clients", () => void refresh(), { size: "sm" }));
+      notice.textContent = oauthFailure(cause, "the credential client list");
+      list.append(button("Reload clients", () => void refresh(), { size: "sm" }));
     }
   }
 
   function edit() {
-    let recoveryNotice: string | undefined;
-    const closeRegistration = openOAuthClientRegistration(context, {
+    openCredentialClientRegistration(context, {
       parent: section,
-      templates,
       namespaces,
+      currentNamespace,
       redirectUri,
-      createTemplate(selectCreated) {
-        openConnectionTemplateEditor(context, {
-          parent: section,
-          namespaces,
-          currentNamespace,
-          clients,
-          oauthOnly: true,
-          onSaved(saved) {
-            if (isOAuthTemplate(saved)) {
-              templates.push(saved);
-              selectCreated(saved);
-            }
-          },
-          onUnconfirmed() {
-            recoveryNotice =
-              "Could not confirm template creation. Reopen registration and check the template list before creating another.";
-            closeRegistration();
-          },
-        });
-      },
       onClose(client) {
-        void refresh(client ? `Registered ${client.displayName}.` : recoveryNotice);
+        void refresh(client ? "Registered " + client.displayName + "." : undefined);
       },
     });
+  }
+
+  function rotationButton(client: CredentialClient) {
+    return button("Rotate", () => rotate(client), {
+      size: "sm",
+      "aria-label": "Rotate " + client.displayName,
+    });
+  }
+
+  function rotate(client: CredentialClient) {
+    const github = client.kind === "github-app";
+    const title = github ? "Rotate GitHub App key" : "Rotate OAuth client secret";
+    const dialog = element("dialog", {
+      className: "dialog dialog--framed",
+      "aria-label": title,
+    });
+    const form = element("form", { id: "credential-client-rotation", novalidate: "" });
+    const status = element("p", { className: "hint", role: "status" });
+    const value = github
+      ? privateKeyFile("client-rotation-private-key")
+      : element("input", { type: "password", required: true, autocomplete: "new-password" });
+    const valueField = field({
+      label: github ? "New private key file" : "New client secret",
+      control: value,
+      help: github
+        ? "The selected TokenService verifies the key before replacement. Subsequent mints use it without a restart."
+        : "Subsequent OAuth exchanges use the replacement secret.",
+    });
+    const cancel = button("Cancel", () => dialog.close());
+    const confirm = button("Rotate", () => undefined, {
+      tone: "primary",
+      type: "submit",
+      form: form.id,
+    });
+    let pending = false;
+    let uncertain = false;
+    let message: string | undefined;
+    form.append(
+      element("p", {}, client.displayName),
+      element("p", { className: "resource-id" }, client.id),
+      valueField,
+      status,
+    );
+    dialog.append(
+      element("header", { className: "dialog-header" }, element("h2", {}, title)),
+      element("div", { className: "dialog-body" }, form),
+      element("div", { className: "dialog-actions" }, cancel, confirm),
+    );
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void submit();
+    });
+    dialog.addEventListener("cancel", (event) => {
+      if (pending) {
+        event.preventDefault();
+      }
+    });
+    dialog.addEventListener(
+      "close",
+      () => {
+        value.value = "";
+        dialog.remove();
+        if ((message || uncertain) && context.isCurrent()) {
+          void refresh(message);
+        }
+      },
+      { once: true },
+    );
+    section.append(dialog);
+    dialog.showModal();
+    value.focus();
+
+    async function submit() {
+      if (pending || uncertain || !validateFields([value])) {
+        return;
+      }
+      pending = true;
+      cancel.disabled = confirm.disabled = true;
+      try {
+        const privateKey = github ? await readPrivateKey(value) : undefined;
+        if (github && privateKey === undefined) {
+          return;
+        }
+        value.disabled = true;
+        status.textContent = "Rotating…";
+        const result = (await context.request(
+          "/oauth-clients/" + encodeURIComponent(client.id) + "/rotate-secret",
+          {
+            method: "POST",
+            installationAdministration: "required",
+            body: github ? { privateKey } : { clientSecret: value.value },
+          },
+        )) as CredentialClient;
+        if (!dialog.open || !context.isCurrent()) {
+          return;
+        }
+        if (
+          result.id !== client.id ||
+          result.kind !== client.kind ||
+          result.displayName !== client.displayName ||
+          (client.kind === "github-app" &&
+            (result.kind !== "github-app" || result.appId !== client.appId)) ||
+          (client.kind === "oauth2" &&
+            (result.kind !== "oauth2" ||
+              result.namespaceId !== client.namespaceId ||
+              result.issuer !== client.issuer ||
+              result.tokenUrl !== client.tokenUrl ||
+              result.revocationUrl !== client.revocationUrl ||
+              result.clientId !== client.clientId ||
+              result.tokenEndpointAuthMethod !== client.tokenEndpointAuthMethod))
+        ) {
+          throw Error("Unconfirmed client rotation");
+        }
+        message = "Rotated " + client.displayName + ".";
+        dialog.close();
+      } catch (cause) {
+        const code = requestFailure(cause).status;
+        uncertain = code === undefined || code >= 500 || code === 408;
+        status.textContent = oauthFailure(cause, "client rotation");
+      } finally {
+        value.value = "";
+        pending = false;
+        value.disabled = confirm.disabled = uncertain;
+        cancel.disabled = false;
+      }
+    }
   }
   void refresh();
   return section;

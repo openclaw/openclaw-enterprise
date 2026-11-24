@@ -190,7 +190,7 @@ export async function composePostgresDevelopment(
       persistedInstallation,
       {
         authenticationStateEncryptionSecret: config.authSecret,
-        ...installationControllerOptions(drivers?.installation),
+        ...installationControllerOptions(drivers?.installation, drivers?.repositoryRegistry),
         credentialSourceDelivery: credentialSourceDeliveryBinding(drivers),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,

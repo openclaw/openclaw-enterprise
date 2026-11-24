@@ -1,3 +1,6 @@
+import { isNativeStagedRepositoryRevision } from "@openclaw-enterprise/contracts";
+import { admitOpenShellRepositoryCredentials } from "./composition/openshell-credential-admission.ts";
+import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
 import { hasOnlyScopedRepositoryRevisions, reduceCredentialPolicy } from "@openclaw-enterprise/occ";
@@ -348,6 +351,7 @@ interface RepositoryExpiryWithdrawal {
   readonly withdrawal: "withdrawn" | "pending" | "retire-runtime";
   readonly denial?: RevisionDispatchResult;
   readonly nativeRemoval?: true;
+  readonly stagedRemoval?: true;
 }
 
 type RepositoryCleanupEffect = RepositoryCleanupOutcome & {
@@ -2389,6 +2393,28 @@ export class ControllerWorker {
     }
   }
 
+  private async assertCurrentRepositoryAuthority(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    if (revision.executionAdmission.mode !== "standalone") {
+      await this.assertRepositoryAuthority(claim, revision);
+      return;
+    }
+    if (!isNativeStagedRepositoryRevision(revision)) {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_RUNTIME_UNSUPPORTED");
+    }
+    validateExecutionAdmission(this.compute, revision, this.credentialDeliveryRegistration?.ref);
+    this.repositoryCredentials.validate(revision);
+    const backend = await this.resolveRevisionBackend(revision);
+    if (backend !== undefined) {
+      throw new RepositoryCredentialAuthorityError(backend.code);
+    }
+    await this.withClaimHeartbeat(claim, (signal) =>
+      this.authorizedCredentialDeployment(claim, revision, signal),
+    );
+  }
+
   private async prepareRevision(
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
@@ -2588,15 +2614,21 @@ export class ControllerWorker {
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
     let prepared = context;
     if (revision.repositoryCredentials !== undefined) {
-      const repositoryCredentials = await this.repositoryCredentials.prepare(claim, revision);
-      prepared = {
-        ...context,
-        repositoryCredentials,
-        verifyRepositorySessionRelease: (binding) =>
-          this.repositoryCredentials.verifyRelease(claim, revision, binding),
-      };
-      await this.assertRepositoryAuthority(claim, revision);
-      this.repositoryCredentials.validate(revision);
+      if (revision.executionAdmission.mode === "standalone") {
+        // This recipient never opens a repository session. It must independently satisfy
+        // the current Repo, issuer, Source, IAM and frozen native policy checks first.
+        await this.assertCurrentRepositoryAuthority(claim, revision);
+      } else {
+        const repositoryCredentials = await this.repositoryCredentials.prepare(claim, revision);
+        prepared = {
+          ...context,
+          repositoryCredentials,
+          verifyRepositorySessionRelease: (binding) =>
+            this.repositoryCredentials.verifyRelease(claim, revision, binding),
+        };
+        await this.assertRepositoryAuthority(claim, revision);
+        this.repositoryCredentials.validate(revision);
+      }
     }
     await this.recheckRevokedCredentialSources(claim, revision);
     if (revision.credentialDeployment !== undefined) {
@@ -2757,7 +2789,7 @@ export class ControllerWorker {
     return this.state.transactWithQueue(async (unit, queue) => {
       const expiry = effect.runtime?.kind === "expiry" ? effect.runtime : undefined;
       let { settled } = effect;
-      if (expiry?.nativeRemoval === true) {
+      if (expiry?.nativeRemoval === true || expiry?.stagedRemoval === true) {
         // Configured IAM writers take this lock before Namespace and Agent.
         await unit.installations.holdIAMConfiguration("shared");
       }
@@ -2794,11 +2826,18 @@ export class ControllerWorker {
         let retireRuntime =
           expiry.withdrawal === "retire-runtime" ||
           (expiry.nativeRemoval === true && expiryState !== "removal") ||
+          (expiry.stagedRemoval === true &&
+            expiryState !== "expiry" &&
+            expiryState !== "removal") ||
           !ownsActiveRepositoryRevision(agent, expiry.revision) ||
           (!waitingForStop && agent.desiredRuntimeState !== "running") ||
           (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready" ||
           expiryState === "retiring";
-        if (!retireRuntime && expiry.nativeRemoval === true && agent !== undefined) {
+        if (
+          !retireRuntime &&
+          (expiry.nativeRemoval === true || expiry.stagedRemoval === true) &&
+          agent !== undefined
+        ) {
           const refusal = await this.validateRetainedModelAuthority(
             claim,
             agent,
@@ -2920,6 +2959,28 @@ export class ControllerWorker {
       if (expiry === undefined || expiry === "retiring") {
         return { withdrawal: "pending" };
       }
+      if (revision.executionAdmission.mode === "standalone") {
+        if (!isNativeStagedRepositoryRevision(revision)) {
+          return { withdrawal: "retire-runtime" };
+        }
+        const refusal = await this.validateRetainedModelAuthority(claim, agent, revision);
+        signal.throwIfAborted();
+        if (refusal !== undefined) {
+          return {
+            withdrawal: "retire-runtime",
+            ...(refusal.authorization === undefined ? {} : { denial: refusal }),
+          };
+        }
+        try {
+          validateExecutionAdmission(compute, revision, this.credentialDeliveryRegistration?.ref);
+        } catch {
+          return { withdrawal: "retire-runtime" };
+        }
+        return {
+          withdrawal: await this.withdrawStagedRepositoryAccess(revision, signal),
+          stagedRemoval: true,
+        };
+      }
       if (
         expiry === "removal" &&
         this.repositoryCredentials.selectsFiniteNativeWithdrawal(revision)
@@ -3027,6 +3088,53 @@ export class ControllerWorker {
         return { withdrawal: "pending" };
       }
     });
+  }
+
+  private async withdrawStagedRepositoryAccess(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<"withdrawn" | "pending" | "retire-runtime"> {
+    const deployment = revision.credentialDeployment!;
+    const binding = deployment.bindings.find(({ consumer }) => consumer.kind === "repository")!;
+    if (
+      !this.compute.withdrawCredentialSource ||
+      deployment.bindings.some(
+        (candidate) =>
+          candidate.bindingRef !== binding.bindingRef &&
+          candidate.sourceRef.id === binding.sourceRef.id,
+      )
+    ) {
+      return "retire-runtime";
+    }
+    try {
+      const source = await this.state.read((view) =>
+        view.credentialSources.findCredentialSource(revision.namespaceId, binding.sourceRef.id),
+      );
+      if (
+        source?.ownerCapability !== "token_service" ||
+        source.type !== "github-app-installation"
+      ) {
+        return "retire-runtime";
+      }
+      this.assertCredentialWithdrawalOwner(revision, source);
+      const removed = await this.compute.withdrawCredentialSource(revision, source, signal);
+      signal.throwIfAborted();
+      if (removed.sourceId !== source.id) {
+        return "retire-runtime";
+      }
+      if (removed.state === "revoked" || removed.state === "absent") {
+        return "withdrawn";
+      }
+      return removed.state === "pending" ? "pending" : "retire-runtime";
+    } catch (error) {
+      if (signal.aborted || error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      return error instanceof CredentialWithdrawalRefusedError ||
+        (error instanceof SandboxGatewayUnauthorizedError && !error.transient)
+        ? "retire-runtime"
+        : "pending";
+    }
   }
 
   private async validateRetainedModelAuthority(
@@ -4479,6 +4587,7 @@ export class ControllerWorker {
     return (
       this.repositoryGitMaterial !== undefined &&
       revision.repositoryCredentials !== undefined &&
+      !isNativeStagedRepositoryRevision(revision) &&
       !protectedRepositoryGitAdmission(revision.executionAdmission) &&
       isCandidateDeployment(claim)
     );
@@ -5125,7 +5234,7 @@ export class ControllerWorker {
         return;
       }
       if (revision.repositoryCredentials !== undefined) {
-        await this.assertRepositoryAuthority(claim, revision);
+        await this.assertCurrentRepositoryAuthority(claim, revision);
         this.repositoryCredentials.validate(revision);
       }
       const activeMaintenance = active && maintenance;
@@ -5491,7 +5600,7 @@ export class ControllerWorker {
       }
       if (this.shouldActivatePublishedRevision(compute)) {
         if (revision.repositoryCredentials !== undefined) {
-          await this.assertRepositoryAuthority(claim, revision);
+          await this.assertCurrentRepositoryAuthority(claim, revision);
           this.repositoryCredentials.validate(revision);
         }
         await this.withClaimHeartbeat(claim, async (signal) => {
@@ -6025,7 +6134,7 @@ export class ControllerWorker {
         };
       }
       if (revision.repositoryCredentials !== undefined) {
-        await this.assertRepositoryAuthority(claim, revision);
+        await this.assertCurrentRepositoryAuthority(claim, revision);
         this.repositoryCredentials.validate(revision);
       }
       const agent = await this.state.read((view) =>
@@ -6239,7 +6348,10 @@ export class ControllerWorker {
         revision,
         snapshot,
       );
-      if (withdrawal?.state === "revoked" && consumer.kind === "plugin") {
+      if (
+        withdrawal?.state === "revoked" &&
+        (consumer.kind === "plugin" || consumer.kind === "repository")
+      ) {
         continue;
       }
       if (
@@ -6271,6 +6383,49 @@ export class ControllerWorker {
     }
     signal.throwIfAborted();
     const bindings = policy.bindings.filter(({ sourceRef }) => sources.has(sourceRef.id));
+    const repositoryBinding = bindings.find(({ consumer }) => consumer.kind === "repository");
+    if (repositoryBinding) {
+      const repository = revision.repositoryCredentials;
+      const grants = revision.sandboxPolicy?.repositoryNetworkPolicy?.grants;
+      const source = sources.get(repositoryBinding.sourceRef.id);
+      if (
+        !isNativeStagedRepositoryRevision(revision) ||
+        !repository ||
+        Date.now() >= repository.deadlineWallMs ||
+        !grants ||
+        source?.ownerCapability !== "token_service" ||
+        source.type !== "github-app-installation" ||
+        !(owner instanceof OCCTokenServiceDriver)
+      ) {
+        throw new DependencyUnavailableError("The staged Repository authority is unavailable.");
+      }
+      await owner.assertCurrentGitHubAppSourceScope(source);
+      const matches = admitOpenShellRepositoryCredentials(
+        this.tokenServiceDrivers?.repositoryRegistry,
+        {
+          namespaceId: revision.namespaceId,
+          source,
+          bindings: repository.bindings,
+          grants,
+        },
+      );
+      const injection = policy.injectionPolicies.find(
+        ({ bindingRef }) => bindingRef === repositoryBinding.bindingRef,
+      );
+      const network = policy.networkAccessPolicy.allowed.filter(
+        ({ host, ports }) =>
+          host.toLowerCase() === "github.com" &&
+          ports.some(({ from, to }) => from <= 443 && 443 <= to),
+      );
+      if (
+        !matches?.length ||
+        !isDeepStrictEqual(injection?.allowedRequests, matches) ||
+        !isDeepStrictEqual(network, matches)
+      ) {
+        throw new DependencyUnavailableError("The staged Repository policy is no longer approved.");
+      }
+    }
+    signal.throwIfAborted();
     return { namespace, owner, instanceId, sources, policy, bindings };
   }
 
@@ -6630,7 +6785,7 @@ export class ControllerWorker {
     }
     if (resolved.outcome === "success" && resolved.revision?.repositoryCredentials !== undefined) {
       try {
-        await this.assertRepositoryAuthority(claim, resolved.revision);
+        await this.assertCurrentRepositoryAuthority(claim, resolved.revision);
         this.repositoryCredentials.validate(resolved.revision);
       } catch (error) {
         if (error instanceof WorkClaimLostError) {
@@ -6779,7 +6934,7 @@ export class ControllerWorker {
         }
         if (this.shouldActivateAfterCommit(compute)) {
           if (activated.repositoryCredentials !== undefined) {
-            await this.assertRepositoryAuthority(claim, activated);
+            await this.assertCurrentRepositoryAuthority(claim, activated);
             this.repositoryCredentials.validate(activated);
           }
           await this.withClaimHeartbeat(claim, async (signal) => {
@@ -7506,7 +7661,7 @@ export class ControllerWorker {
     }
     if (revision.repositoryCredentials !== undefined) {
       try {
-        await this.assertRepositoryAuthority(claim, revision);
+        await this.assertCurrentRepositoryAuthority(claim, revision);
         this.repositoryCredentials.validate(revision);
       } catch (error) {
         if (error instanceof WorkClaimLostError) {
@@ -7876,7 +8031,13 @@ export class ControllerWorker {
     withdrawnInterval?: number,
   ): Promise<void> {
     const interval = withdrawnInterval ?? this.revisionMaintenanceInterval(revision)!;
-    let maintenanceBucket = Math.floor((Date.now() + interval) / interval);
+    const remaining = (revision.repositoryCredentials?.deadlineWallMs ?? 0) - Date.now();
+    // TODO(OpenShell #2881): replace Worker-only grant deadlines with native per-Agent expiry.
+    const delayMs =
+      withdrawnInterval === undefined && remaining > 0 && isNativeStagedRepositoryRevision(revision)
+        ? Math.min(interval, remaining)
+        : interval;
+    let maintenanceBucket = Math.floor((Date.now() + delayMs) / interval);
     const maintenancePrefix = `agent_revision:${revision.id}:maintenance:`;
     const currentBucket = previousMaintenanceKey.startsWith(maintenancePrefix)
       ? Number(previousMaintenanceKey.slice(maintenancePrefix.length))
@@ -7900,7 +8061,7 @@ export class ControllerWorker {
         actorId: claim.actorId,
       },
       undefined,
-      { delayMs: interval },
+      { delayMs },
     );
   }
 

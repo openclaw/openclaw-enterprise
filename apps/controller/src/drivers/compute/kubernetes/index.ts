@@ -1,5 +1,8 @@
+import { isNativeStagedRepositoryRevision } from "@openclaw-enterprise/contracts";
 import {
+  admitsInspectedOpenClawWorkspace,
   admitsInspectedWorkspace,
+  hasInspectedOpenClawImage,
   hasInspectedWorkspaceImages,
 } from "../../sandbox/inspected-workspace-release.ts";
 import { enabledChannelEntries } from "@openclaw-enterprise/occ";
@@ -176,6 +179,7 @@ import type {
   HarnessLaunchDescription,
   HarnessRetainedDirectory,
   HarnessAuthSnapshot,
+  SourceProviderPresetId,
   PluginDeploymentWarning,
   ResolvedHarnessAuth,
   RevisionHarnessDescriptor,
@@ -1194,6 +1198,37 @@ interface NativeRuntimeSnapshot {
   readonly configuration: string;
 }
 
+function stagedCodexStaticAuth(
+  harness: RevisionHarnessDescriptor,
+  auth: HarnessAuthSnapshot,
+): auth is Extract<HarnessAuthSnapshot, { readonly method: "credential_source" }> {
+  return (
+    harness.id === "codex" &&
+    harness.mode === "dedicated" &&
+    auth.method === "credential_source" &&
+    auth.tokenServiceInstanceId !== undefined &&
+    auth.sourceType === "static"
+  );
+}
+
+function stagedCodexPat(revision: Readonly<AgentRevision>, auth: HarnessAuthSnapshot): boolean {
+  return (
+    revision.executionAdmission.version === 8 &&
+    revision.executionAdmission.mode === "standalone" &&
+    stagedCodexStaticAuth(revision.harness, auth) &&
+    revision.credentialDeployment?.bindings.some(
+      ({ consumer, sourceRef, projection }) =>
+        consumer.kind === "model" &&
+        consumer.providerId === "codex" &&
+        sourceRef.kind === "credential_source" &&
+        sourceRef.namespaceId === revision.namespaceId &&
+        sourceRef.id === auth.sourceId &&
+        projection.environment === "CODEX_ACCESS_TOKEN" &&
+        projection.presentation === "bearer",
+    ) === true
+  );
+}
+
 /** One rendering step; neither credential values nor backend lookups belong here. */
 function prepareHarnessAuth(
   revision: Readonly<AgentRevision>,
@@ -1226,7 +1261,9 @@ function prepareHarnessAuth(
   ) {
     const selected = harnessModelAuthentication(configuration);
     const accountLogin = resolvedAuth.sourceType === "oauth2-refresh-token";
-    const environmentName = accountLogin ? "CODEX_ACCESS_TOKEN" : selected.environmentName;
+    const patLogin = stagedCodexPat(revision, resolvedAuth);
+    const environmentName =
+      accountLogin || patLogin ? "CODEX_ACCESS_TOKEN" : selected.environmentName;
     if (
       (accountLogin && (harness.id !== "codex" || selected.providerId !== "codex")) ||
       !revision.credentialDeployment?.bindings.some(
@@ -1245,9 +1282,12 @@ function prepareHarnessAuth(
       );
     }
     // This is the concrete launcher's presentation mode, derived from the admitted binding.
-    const loginMode = accountLogin ? "chatgptAuthTokens" : "api_key";
+    const loginMode = accountLogin ? "chatgptAuthTokens" : patLogin ? "codex_pat" : "api_key";
     if (harness.id === "codex") {
       environment.push({ name: "CODEX_LOGIN_MODE", value: loginMode });
+      if (patLogin) {
+        environment.push({ name: "OCE_CODEX_CREDENTIAL_SOURCE", value: "1" });
+      }
     }
     return { loginMode, environment };
   } else if (
@@ -1447,16 +1487,18 @@ const WORKSPACE_NODE_BINDING_FILE = "workspace-node.json";
 const WORKSPACE_NODE_BINDING_PATH =
   WORKSPACE_NODE_BINDING_DIRECTORY + "/" + WORKSPACE_NODE_BINDING_FILE;
 
-function gatewayLaunch(managed: boolean, inspectedRevision?: string): string {
+function gatewayLaunch(managed: boolean, inspectedRevision?: string, nativeWorker = false): string {
   return gatewayRuntimeEntrypoint(
     managed,
     inspectedRevision === undefined
       ? undefined
-      : {
-          kind: "inspected-dedicated-codex",
-          revisionId: inspectedRevision,
-          bindingPath: WORKSPACE_NODE_BINDING_PATH,
-        },
+      : nativeWorker
+        ? { kind: "inspected-dedicated-openclaw", revisionId: inspectedRevision }
+        : {
+            kind: "inspected-dedicated-codex",
+            revisionId: inspectedRevision,
+            bindingPath: WORKSPACE_NODE_BINDING_PATH,
+          },
   );
 }
 
@@ -4852,6 +4894,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       return;
     }
+    if (
+      this.stagedRepositoryComposition(sandboxDriverId) &&
+      (hasInspectedWorkspaceImages(this.options.images) ||
+        hasInspectedOpenClawImage(this.options.images.gateway))
+    ) {
+      return;
+    }
     if (this.sandboxDriver !== undefined) {
       throw new SandboxRepositoryRecipientUnverifiedError();
     }
@@ -4871,6 +4920,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     sandboxDriverId?: string,
   ): void {
     this.validateRepositoryCredentialSupport(sandboxDriverId);
+    if (this.stagedRepositoryComposition(sandboxDriverId)) {
+      if (
+        harness.mode === "dedicated" &&
+        ((harness.id === "codex" && hasInspectedWorkspaceImages(this.options.images)) ||
+          (harness.id === "openclaw" && hasInspectedOpenClawImage(this.options.images.gateway)))
+      ) {
+        return;
+      }
+      throw new ConfigurationFailure(
+        "Staged repository credentials require a qualified dedicated Harness image.",
+      );
+    }
     if (!(
       (!this.preparedRepositoryIngress &&
         !this.sandboxDriver?.repositoryAccess &&
@@ -4884,6 +4945,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
           : "Repository credentials require an embedded OpenClaw or dedicated Codex Kubernetes runtime.",
       );
     }
+  }
+
+  private stagedRepositoryComposition(sandboxDriverId: string | undefined): boolean {
+    return (
+      this.options.runtime !== undefined &&
+      this.options.executionCluster === undefined &&
+      this.sandboxDriver?.repositoryAccess === undefined &&
+      sandboxDriverId !== undefined &&
+      sandboxDriverId === this.sandboxDriver?.id &&
+      this.selectedHarness instanceof ManagedOpenShellHarnessRuntime &&
+      this.credentialDeliveryRegistration?.require("sandbox") === this.sandboxDriver &&
+      this.credentialDeploymentProxyDriver?.capability === "credential_proxy_delivery" &&
+      this.credentialDeploymentProxyDriver.id === sandboxDriverId
+    );
   }
 
   validateAgentProvisioning(input: ComputeAgentProvisioningInput): void {
@@ -5005,6 +5080,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     configuration: OpenClawConfigurationDocument,
     secretBindings?: SecretBindings | null,
     credentialSourceType?: CredentialSourceType,
+    revision?: AgentRevision,
   ): void {
     // Agent save passes null bindings and checks only what depends on the Agent. What the
     // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) waits
@@ -5118,7 +5194,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const authentication = harnessModelAuthentication(configuration, embedded);
     if (
       stage === "preparation" &&
-      this.usesModelProvider(harness, auth, configuration) !==
+      (this.usesModelProvider(harness, auth, configuration) &&
+        !(revision && stagedCodexPat(revision, auth))) !==
         (savedModelProvider(harness.configuration) !== undefined)
     ) {
       throw new ConfigurationFailure(
@@ -7034,7 +7111,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): void {
     const provider = this.providerAdmission(revision);
     const saved =
-      revision.sandboxPolicy?.repositoryNetworkPolicy === undefined
+      revision.sandboxPolicy?.repositoryNetworkPolicy === undefined ||
+      revision.executionAdmission.mode === "standalone"
         ? this.replacementRuntime(revision)
         : this.repositoryPolicyRuntime(revision, "execute");
     if (
@@ -7063,7 +7141,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (
         revision.harness.mode !== "dedicated" ||
         revision.sandboxDriverId !== this.sandboxDriver?.id ||
-        revision.repositoryCredentials !== undefined ||
+        (revision.repositoryCredentials !== undefined &&
+          !isNativeStagedRepositoryRevision(revision)) ||
         context?.existingHarnessOnly === true ||
         context?.configureCredentialDeployment === undefined ||
         revision.sandboxPolicy === undefined
@@ -7459,6 +7538,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         admittedRevision.configuration,
         revision.secretBindings,
         await this.admittedCredentialSourceType(revision),
+        revision,
       ),
     );
     const channels = this.enabledChannels(admittedRevision);
@@ -8941,6 +9021,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       admittedRevision.configuration,
       revision.secretBindings,
       await this.admittedCredentialSourceType(revision),
+      revision,
     );
     const channels = this.enabledChannels(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
@@ -13807,9 +13888,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const defaults = asRecord(asRecord(input.revision?.configuration.agents)?.defaults);
     const inspectedWorkspaceUrl =
       input.provider &&
-      !input.native &&
       !input.setupFile &&
-      input.revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined
+      input.revision?.sandboxPolicy?.repositoryNetworkPolicy !== undefined &&
+      (!input.native ||
+        admitsInspectedOpenClawWorkspace(
+          this.options.images,
+          input.revision,
+          required(this.getGatewayEndpoint(input.revision), "Workspace Gateway route") + "/node",
+        ))
         ? required(this.getGatewayEndpoint(input.revision), "Workspace Gateway route") + "/node"
         : undefined;
     const environment: SandboxEnvironmentVariable[] = [
@@ -16012,9 +16098,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
+    modelPreset?: SourceProviderPresetId,
   ): Readonly<Record<string, unknown>> {
     const overrides = normalizeHarnessSettings(harness.overrides ?? {});
-    const applicable = this.usesModelProvider(harness, auth, configuration);
+    const fixedPat = modelPreset === "codex-pat" && stagedCodexStaticAuth(harness, auth);
+    const applicable = !fixedPat && this.usesModelProvider(harness, auth, configuration);
     if (
       overrides.modelProvider !== undefined &&
       (!applicable || auth.method !== "credential_source")
@@ -16088,7 +16176,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           (revision.harnessAuth.method === "api_key" ||
             (revision.harnessAuth.method === "credential_source" &&
               (revision.harnessAuth.tokenServiceInstanceId !== undefined
-                ? revision.harnessAuth.sourceType === "static"
+                ? revision.harnessAuth.sourceType === "static" &&
+                  !stagedCodexPat(revision, revision.harnessAuth)
                 : revision.harnessAuth.loginMode === "api_key"))) !==
             (provider !== undefined)) ||
         (revision.harness.id === "codex" &&
@@ -16276,9 +16365,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ) {
       openShellProgram = "account";
     } else if (
-      revision.executionAdmission.mode === "unprotected" &&
-      auth.method === "credential_source" &&
-      auth.loginMode === "codex_pat"
+      stagedCodexPat(revision, auth) ||
+      (revision.executionAdmission.mode === "unprotected" &&
+        auth.method === "credential_source" &&
+        auth.loginMode === "codex_pat")
     ) {
       openShellProgram = "pat";
     }
@@ -16380,28 +16470,36 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private repositoryRuntimeInputs(revision: Readonly<AgentRevision>): ReplacementRuntime {
     const plan = revision.egressPlan;
     const nativeGit = revision.executionAdmission.version === 9;
+    const stagedRepository =
+      isNativeStagedRepositoryRevision(revision) &&
+      this.stagedRepositoryComposition(revision.sandboxDriverId) &&
+      revision.sandboxPolicy?.implementation === this.sandboxDriver?.implementation &&
+      revision.credentialDeployment?.proxyDriverId === revision.sandboxDriverId;
+    const protectedRepository =
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated" &&
+      revision.executionAdmission.mode === "protected" &&
+      nativeGit &&
+      plan?.repositoryGitAuthorization === "network-policy" &&
+      plan.repositoryGit !== undefined &&
+      isDeepStrictEqual(plan.repositoryGit, revision.repositoryCredentials) &&
+      plan.execution.revisionId === revision.id &&
+      plan.execution.agentId === revision.agentId &&
+      plan.execution.namespaceId === revision.namespaceId &&
+      plan.execution.servicePrincipalId === revision.servicePrincipalId &&
+      revision.sandboxDriverId === this.protectedExecution?.sandbox.id;
     if (
       revision.compute.id !== this.id ||
       revision.compute.implementation !== this.implementation ||
-      revision.harness.id !== "codex" ||
-      revision.harness.mode !== "dedicated" ||
-      revision.executionAdmission.mode !== "protected" ||
-      !plan ||
-      !nativeGit ||
-      plan.repositoryGitAuthorization !== "network-policy" ||
+      (!stagedRepository && !protectedRepository) ||
       !revision.sandboxPolicy?.repositoryNetworkPolicy?.grants.length ||
-      plan.repositoryGit === undefined ||
-      !isDeepStrictEqual(plan.repositoryGit, revision.repositoryCredentials) ||
-      plan.execution.revisionId !== revision.id ||
-      plan.execution.agentId !== revision.agentId ||
-      plan.execution.namespaceId !== revision.namespaceId ||
-      plan.execution.servicePrincipalId !== revision.servicePrincipalId ||
-      revision.sandboxDriverId !== this.protectedExecution?.sandbox.id ||
       revision.compute.admission === undefined ||
       revision.compute.admission !== this.admitRevision(revision)
     ) {
       throw new ConfigurationFailure(
-        "Repository network policy requires its admitted protected Codex runtime.",
+        revision.executionAdmission.mode === "standalone"
+          ? "Repository network policy requires an admitted staged Repository runtime."
+          : "Repository network policy requires its admitted protected Codex runtime.",
       );
     }
     this.validateExecutionAdmission(revision, "stored");
@@ -16414,12 +16512,21 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const url = this.getGatewayEndpoint(revision) + "/node";
     const mode =
       this.selectedHarness instanceof ManagedOpenShellHarnessRuntime ? "service" : "legacy";
+    const inspectedWorkspace =
+      revision.harness.id === "openclaw"
+        ? admitsInspectedOpenClawWorkspace({ gateway, agent }, revision, url)
+        : admitsInspectedWorkspace({ gateway, agent }, revision, url);
+    if (stagedRepository && (mode !== "service" || !inspectedWorkspace)) {
+      throw new ConfigurationFailure(
+        "Staged repository credentials require a qualified inspected Workspace route and image.",
+      );
+    }
     return {
       gateway,
       agent,
       compatibility: this.runtimeCompatibility(revision, revision.compute.admission),
       scope: "repository-policy",
-      ...(admitsInspectedWorkspace({ gateway, agent }, revision, url) && {
+      ...(inspectedWorkspace && {
         workspace: { url, mode },
       }),
     };
@@ -16455,6 +16562,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             revision.gatewayManagedMode
             ? revision.id
             : undefined,
+          revision.harness.id === "openclaw",
         ),
         harnessEntrypoint: COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
         harnessWithNodeEntrypoint: COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
@@ -16608,7 +16716,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
   ): PluginRuntimeSnapshot | undefined {
-    const provider = savedModelProvider(revision.harness.configuration);
+    // PAT authentication uses Codex's account-selected backend, never the static API endpoint.
+    const provider = stagedCodexPat(revision, revision.harnessAuth)
+      ? undefined
+      : savedModelProvider(revision.harness.configuration);
     let openaiBaseUrl: string | undefined;
     if (
       provider !== undefined ||
@@ -19000,6 +19111,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               gatewayLaunch(
                 configuration.gatewayManagedMode,
                 configuration.inspectedWorkspace ? configuration.revisionId : undefined,
+                configuration.nativeWorkerProfile !== undefined,
               ),
           ),
         ];

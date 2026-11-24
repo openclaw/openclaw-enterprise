@@ -8,7 +8,7 @@ import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-ent
 
 const OAUTH_EXCHANGE_TIMEOUT_MS = 15_000;
 
-/** An omitted initial ceiling permits issuer defaults; every refresh uses the prior grant as its ceiling. */
+/** Initial exchanges accept the issuer's grant; refresh uses the prior grant as its ceiling. */
 export function parseOAuthGrantedScopes(
   scope: unknown,
   scopeLimit: readonly string[] | undefined,

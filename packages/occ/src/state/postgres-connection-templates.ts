@@ -6,13 +6,13 @@ import type {
   OAuthConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "../errors.ts";
-import type { StoredOAuthClient } from "../ports/oauth-client.ts";
+import type { StoredCredentialClient } from "../ports/oauth-client.ts";
 import type { ConnectionTemplateRepository } from "../ports/connection-templates.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 type Row = Record<string, unknown>;
 
-const versionColumns = `v.template_id, v.version, v.oauth_client_id, v.issuer, v.mode, v.observed_metadata, v.revocation_url,
+const versionColumns = `v.template_id, v.version, v.issuer, v.mode, v.observed_metadata, v.revocation_url,
   v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.destinations, v.created_at AS version_created_at`;
 
 function invalid(): never {
@@ -50,7 +50,6 @@ function versionFromRow(row: Row): OAuthConnectionTemplateVersion {
   return {
     templateId: text(row, "template_id"),
     version: integer(row, "version"),
-    ...(row.oauth_client_id === null ? {} : { oauthClientId: text(row, "oauth_client_id") }),
     mode: row.mode === "manual" || row.mode === "mcp_discovery" ? row.mode : invalid(),
     ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
     ...(row.observed_metadata === null
@@ -99,19 +98,31 @@ function staticVersionFromRow(
   };
 }
 
-function registrationFromRow(row: Row): Readonly<StoredOAuthClient> {
-  return immutableCopy({
+function registrationFromRow(row: Row): Readonly<StoredCredentialClient> {
+  const common = {
     id: text(row, "id"),
+    displayName: text(row, "display_name"),
+    createdAt: timestamp(row, "created_at"),
+    ...(row.token_service_instance_id === null
+      ? {}
+      : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
+  };
+  if (row.kind === "github-app") {
+    return immutableCopy({ ...common, kind: "github-app", appId: text(row, "app_id") });
+  }
+  if (row.kind !== "oauth2") {
+    return invalid();
+  }
+  return immutableCopy({
+    ...common,
+    kind: "oauth2",
     ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
     issuer: text(row, "issuer"),
     clientId: text(row, "client_id"),
-    displayName: text(row, "display_name"),
     tokenUrl: text(row, "token_url"),
     ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
     tokenEndpointAuthMethod:
       row.token_endpoint_auth_method as OAuthClient["tokenEndpointAuthMethod"],
-    ...(row.secret_driver_id === null ? {} : { secretDriverId: text(row, "secret_driver_id") }),
-    createdAt: timestamp(row, "created_at"),
   });
 }
 
@@ -133,13 +144,12 @@ async function insertVersion(
   }
   await client.query(
     `INSERT INTO occ.oauth_connection_template_versions
-     (template_id, version, oauth_client_id, issuer, mode, authorization_url, token_url, revocation_url, scopes,
+     (template_id, version, issuer, mode, authorization_url, token_url, revocation_url, scopes,
       authorization_parameters, destinations, observed_metadata, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
     [
       version.templateId,
       version.version,
-      version.oauthClientId ?? null,
       version.issuer,
       version.mode,
       version.authorizationUrl,
@@ -189,7 +199,23 @@ export function postgresConnectionTemplates(
     hasOtherConnectionIssuer: async (issuer) =>
       (
         await client.query(
-          "SELECT 1 FROM occ.oauth_connection_template_versions WHERE oauth_client_id IS NOT NULL AND issuer <> $1 LIMIT 1",
+          `SELECT 1 FROM occ.connection_templates t
+           JOIN occ.oauth_connection_template_versions v
+             ON v.template_id=t.id AND v.version=t.current_oauth_version
+           JOIN occ.oauth_clients c ON c.kind='oauth2' AND c.cleanup_after IS NULL
+             AND c.issuer=v.issuer AND c.token_url=v.token_url
+             AND (v.revocation_url IS NULL OR c.revocation_url=v.revocation_url)
+             AND (t.namespace_id IS NULL OR c.namespace_id IS NULL OR t.namespace_id=c.namespace_id)
+             AND (v.observed_metadata IS NULL OR
+                  coalesce(v.observed_metadata->'tokenEndpointAuthMethods', '["client_secret_basic"]'::jsonb)
+                    ? c.token_endpoint_auth_method)
+           WHERE v.issuer<>$1
+           UNION ALL
+           SELECT 1 FROM occ.authentication_states a
+           JOIN occ.oauth_connection_template_versions v
+             ON v.template_id=a.connection_template_id AND v.version=a.connection_template_version
+           WHERE a.kind='oauth_connection' AND a.expires_at>now() AND v.issuer<>$1
+           LIMIT 1`,
           [issuer],
         )
       ).rows.length > 0,
@@ -204,7 +230,7 @@ export function postgresConnectionTemplates(
       ).rows;
       return row === undefined ? undefined : immutableCopy(versionFromRow(row as Row));
     },
-    listOAuthClients: async () =>
+    listCredentialClients: async () =>
       Object.freeze(
         (
           await client.query(
@@ -213,7 +239,7 @@ export function postgresConnectionTemplates(
           )
         ).rows.map((row) => registrationFromRow(row as Row)),
       ),
-    countNamespaceOAuthClients: async (namespaceId) =>
+    countNamespaceCredentialClients: async (namespaceId) =>
       integer(
         (
           await client.query("SELECT count(*) AS n FROM occ.oauth_clients WHERE namespace_id=$1", [
@@ -222,7 +248,7 @@ export function postgresConnectionTemplates(
         ).rows[0] as Row,
         "n",
       ),
-    findOAuthClient: async (registrationId) => {
+    findCredentialClient: async (registrationId) => {
       const [row] = (
         await client.query(
           `SELECT * FROM occ.oauth_clients WHERE id = $1 AND cleanup_after IS NULL`,
@@ -231,7 +257,7 @@ export function postgresConnectionTemplates(
       ).rows;
       return row === undefined ? undefined : registrationFromRow(row as Row);
     },
-    lockOAuthClient: async (id) => {
+    lockCredentialClient: async (id) => {
       const [row] = (
         await client.query(
           "SELECT * FROM occ.oauth_clients WHERE id=$1 AND cleanup_after IS NULL FOR UPDATE",
@@ -240,14 +266,14 @@ export function postgresConnectionTemplates(
       ).rows;
       return row === undefined ? undefined : registrationFromRow(row as Row);
     },
-    listOAuthClientCleanups: async (limit) =>
+    listCredentialClientCleanups: async (limit) =>
       (
         await client.query(
           "SELECT id FROM occ.oauth_clients WHERE cleanup_after<=now() ORDER BY cleanup_after,id LIMIT $1",
           [limit],
         )
       ).rows.map((row) => text(row as Row, "id")),
-    lockOAuthClientForCleanup: async (id, dueOnly) => {
+    lockCredentialClientForCleanup: async (id, dueOnly) => {
       const [row] = (
         await client.query(
           "SELECT * FROM occ.oauth_clients WHERE id=$1 AND cleanup_after IS NOT NULL AND (NOT $2::boolean OR cleanup_after<=now()) FOR UPDATE SKIP LOCKED",
@@ -256,7 +282,7 @@ export function postgresConnectionTemplates(
       ).rows;
       return row === undefined ? undefined : registrationFromRow(row as Row);
     },
-    setOAuthClientCleanup: async (id, cleanupAfter) => {
+    setCredentialClientCleanup: async (id, cleanupAfter) => {
       await client.query("UPDATE occ.oauth_clients SET cleanup_after=$2 WHERE id=$1", [
         id,
         cleanupAfter,
@@ -269,34 +295,41 @@ export function postgresConnectionTemplates(
       // A concurrent editor may have committed a new current version while we waited.
       return (await selectTemplates("WHERE t.id = $1", [templateId]))[0];
     },
-    createOAuthClient: async (registration, cleanupAfter) => {
+    createCredentialClient: async (registration, cleanupAfter) => {
       await requireInitialized();
+      const oauth = registration.kind === "oauth2" ? registration : undefined;
       await client.query(
         `INSERT INTO occ.oauth_clients
-         (id, namespace_id, issuer, client_id, secret_driver_id, created_at, display_name, token_url, revocation_url, token_endpoint_auth_method, cleanup_after)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         (id, kind, namespace_id, issuer, client_id, token_service_instance_id, created_at, display_name,
+          token_url, revocation_url, token_endpoint_auth_method, app_id, cleanup_after)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
           registration.id,
-          registration.namespaceId ?? null,
-          registration.issuer,
-          registration.clientId,
-          registration.secretDriverId ?? null,
+          registration.kind,
+          oauth?.namespaceId ?? null,
+          oauth?.issuer ?? null,
+          oauth?.clientId ?? null,
+          registration.tokenServiceInstanceId ?? null,
           registration.createdAt,
           registration.displayName,
-          registration.tokenUrl,
-          registration.revocationUrl ?? null,
-          registration.tokenEndpointAuthMethod,
+          oauth?.tokenUrl ?? null,
+          oauth?.revocationUrl ?? null,
+          oauth?.tokenEndpointAuthMethod ?? null,
+          registration.kind === "github-app" ? registration.appId : null,
           cleanupAfter ?? null,
         ],
       );
       return immutableCopy(registration);
     },
-    deleteOAuthClient: async (id, retainForCleanup) => {
+    deleteCredentialClient: async (id, retainForCleanup) => {
       const mutation = retainForCleanup
         ? "UPDATE occ.oauth_clients r SET cleanup_after=now()"
         : "DELETE FROM occ.oauth_clients r";
       const result = await client.query(
-        `${mutation} WHERE r.id=$1 AND NOT EXISTS(SELECT 1 FROM occ.oauth_connection_template_versions v WHERE v.oauth_client_id=r.id)`,
+        `${mutation} WHERE r.id=$1
+         AND NOT EXISTS(SELECT 1 FROM occ.credential_sources s
+                        WHERE s.oauth_client_id=r.id OR s.github_app_client_id=r.id)
+         AND NOT EXISTS(SELECT 1 FROM occ.authentication_states a WHERE a.oauth_client_id=r.id)`,
         [id],
       );
       return result.rowCount === 1;

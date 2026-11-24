@@ -51,7 +51,7 @@ import {
 registerSandboxDriverStartupWiringCases(credentialGatewayOverProviders);
 
 test(
-  "OpenShell observes and applies the canonical model-only staged policy",
+  "OpenShell observes canonical staged model and exact Repository policies",
   verifyStagedModelPolicyObservation,
 );
 

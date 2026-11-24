@@ -25,9 +25,9 @@ graph TD
   Admin -->|Manual OAuth settings| Version
   Admin -->|MCP server URL| Discovery["OCC reads provider metadata"]
   Discovery --> Version
-  Version -->|Static template| Saved["OCC returns the saved version"]
-  Version -->|OAuth confidential client| Secret["Secret Driver stores its secret"]
-  Version -->|OAuth public client| Publish["OCC publishes the registration"]
+  Version --> Saved["OCC returns the saved version"]
+  Admin -->|Confidential client| Secret["TokenService stores its secret"]
+  Admin -->|Public client| Publish["OCC publishes the client registration"]
   Secret --> Publish
 ```
 
@@ -35,7 +35,7 @@ graph TD
 
 ```mermaid
 graph TD
-  Start["Person selects a template"] --> Attempt["OCC records the browser attempt"]
+  Start["Person selects a template and a compatible client"] --> Attempt["OCC records the browser attempt"]
   Attempt --> Provider["Provider asks for consent"]
   Provider -->|Authorization code| Callback["OCC consumes the attempt and exchanges the code"]
   Callback --> Custody["TokenService creates the OAuth Source and stores the grant"]
@@ -49,7 +49,7 @@ graph TD
 
 `apps/controller/src/console/connection-templates.mts:openConnectionTemplateEditor`, `packages/occ/src/connection-administration.ts:createConnectionTemplate`, `packages/occ/src/connection-administration.ts:updateConnectionTemplate`, `packages/occ/src/state/postgres-connection-templates.ts:postgresConnectionTemplates`, and `apps/controller/src/connections/mcp-discovery.ts:discoverMcpAuthorization`
 
-The Console lists both static Bearer and OAuth templates. Its editor sends the selected authentication method and settings to the same Template API. The OAuth client registration picker filters out static templates because they do not use a client.
+The Console lists both static Bearer and OAuth templates. Its editor sends the selected authentication method and settings to the same Template API.
 
 OCC checks Installation administration and the selected Namespace before saving a template. For a static Bearer template, it validates and canonicalizes each complete method, host, port and path row. The path uses the same validator as credential request policy matching (`packages/contracts/src/request-path.ts:validRequestPath`); PostgreSQL enforces the same grammar when it stores a version. No discovery or OAuth client is required. The repository stores version 1 with the template identity. An edit that changes settings adds an immutable version and advances the current version; a rename alone keeps the version. OCC commits each mutation with its audit record.
 
@@ -63,9 +63,9 @@ For manual OAuth, OCC accepts the configured settings and destinations. For MCP,
 
 If the save response lacks a valid version, the Console keeps the editor open and disables another save. Close the editor to refresh the catalog and check whether the change was saved before continuing registration.
 
-A template can exist before its OAuth client. OCC takes the registration's availability and endpoints from the selected version. For a confidential client, it reserves a hidden row and asks the Installation's Secret Driver to store the secret under the registration ID. A public registration supplies a client ID and skips this private write. OCC rechecks the version, publishes the registration and records the audit. If the template lacked a client, that transaction also selects the new one.
+A client registration records its own scope, issuer and token endpoint. For a confidential client, OCC reserves a hidden row and asks the selected TokenService to store the secret. Public registration needs only the client ID and metadata. OCC publishes the registration and records the audit.
 
-Rotation replaces the confidential client's secret at the same private reference. Code exchange and renewal read its current value. A template version that still references the client prevents deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
+Rotation replaces the confidential client's secret at the same private reference. Code exchange and renewal read its current value. A pending consent attempt or retained OAuth Source blocks deletion of its client. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
 
 ### 3. Authorize the account in the browser
 
@@ -75,7 +75,7 @@ Before listing available templates, OCC checks `credential_source:create` and co
 
 Before starting browser consent and again before exchanging the code, OCC checks that the IAM Driver can grant the creator read and operate access to the new Source.
 
-OCC verifies the person's Namespace permission and selected TokenService, then pins the selected Template version in an `oauth_connection` row in `occ.authentication_states`. The immutable version identifies the client. The row contains the state hash, browser session, principal, requested scopes, and Proof Key for Code Exchange (PKCE) verifier. No Source exists yet. The provider receives the state and the challenge derived from the verifier. OCC includes the OAuth resource for MCP consent and omits the scope parameter when the person requests provider defaults. The worker removes expired attempts. Device login uses the same store with a different kind and lifecycle.
+OCC verifies the person's Namespace permission and selected TokenService, then saves the chosen client and Template version in an `oauth_connection` row in `occ.authentication_states`. The row contains the state hash, browser session, principal, requested scopes, and Proof Key for Code Exchange (PKCE) verifier. The provider receives the state and the challenge derived from the verifier. OCC includes the OAuth resource for MCP consent and omits the scope parameter when the person requests provider defaults. The worker removes expired attempts. Device login uses the same store with a different kind and lifecycle.
 
 ### 4. Exchange the code and save the account
 
@@ -113,7 +113,7 @@ Built-in Codex device login uses no Connection Template. See the [Credential sou
 
 ## Changelog
 
-- 2026-11-24 05:38: Explain initial issuer-granted scopes and the refresh ceiling. (authoring-run/7f8ae4d2-1a92-4690-b4a9-d6e3f0ceb3d8 - d6403c2401e338964f5486f8db2fcb40a3758448)
+- 2026-11-24 05:38: Explain initial issuer-granted scopes and the refresh ceiling. (authoring-run/7f8ae4d2-1a92-4690-b4a9-d6e3f0ceb3d8 - 1b597e9758cee83e2a084d5a54d81c6a5be088d3)
 
 - 2026-11-24 10:41: Link built-in Codex device login to its Source lifecycle owner. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 

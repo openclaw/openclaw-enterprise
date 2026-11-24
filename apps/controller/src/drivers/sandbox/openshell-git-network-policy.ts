@@ -15,12 +15,17 @@ export type OpenShellGitNetworkTarget =
   | { readonly repository: string; readonly installationId?: never }
   | { readonly repository?: never; readonly installationId: string };
 
-const binaries = Object.freeze([
+/** Stock Git and transport helpers eligible to receive Repository credentials. */
+export const OPEN_SHELL_GIT_CREDENTIAL_BINARIES = Object.freeze([
   "/usr/bin/git",
   "/usr/lib/git-core/git-remote-https",
   "/usr/lib/git-core/git-remote-http",
   "/usr/libexec/git-core/git-remote-https",
   "/usr/libexec/git-core/git-remote-http",
+]);
+
+const binaries = Object.freeze([
+  ...OPEN_SHELL_GIT_CREDENTIAL_BINARIES,
   "/usr/bin/curl",
   "/usr/local/bin/node",
   "/usr/bin/node",

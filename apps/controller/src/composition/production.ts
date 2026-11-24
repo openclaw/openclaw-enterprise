@@ -211,7 +211,10 @@ export async function composeProduction(
       persistedInstallation,
       {
         authenticationStateEncryptionSecret: config.authSecret,
-        ...installationControllerOptions(config.drivers.installation),
+        ...installationControllerOptions(
+          config.drivers.installation,
+          config.drivers.repositoryRegistry,
+        ),
         credentialSourceDelivery: credentialSourceDeliveryBinding(config.drivers),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,

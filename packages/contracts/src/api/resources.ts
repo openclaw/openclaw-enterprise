@@ -1,3 +1,4 @@
+import { OAuthClientId } from "./connection-templates.ts";
 import { SandboxPolicyDecisionSchema } from "../sandbox-policy.ts";
 import { Type } from "typebox";
 import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
@@ -821,9 +822,47 @@ export const OAuthCredentialSourceSchema = Type.Union([
   ),
 ]);
 
+const GitHubNumericId = Type.String({ pattern: "^[1-9][0-9]{0,15}$" });
+export const GitHubAppInstallationCredentialSourceSchema = Type.Object(
+  {
+    ...CredentialSourceCommon,
+    type: Type.Literal("github-app-installation"),
+    clientId: OAuthClientId,
+    scope: Type.Object(
+      {
+        appId: GitHubNumericId,
+        installationId: GitHubNumericId,
+        repositories: Type.Array(
+          Type.Object(
+            { repositoryId: GitHubNumericId, repository: Type.String({ minLength: 3 }) },
+            { additionalProperties: false },
+          ),
+          { minItems: 1, maxItems: 16 },
+        ),
+        permissions: Type.Record(
+          Type.String(),
+          Type.Union([Type.Literal("read"), Type.Literal("write")]),
+          {
+            minProperties: 1,
+          },
+        ),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  {
+    $id: "GitHubAppInstallationCredentialSource",
+    additionalProperties: false,
+    description: "GitHub App installation Source metadata with the verified finite token scope.",
+  },
+);
+
 export const CredentialSourceSchema = Type.Union([
   StaticCredentialSourceSchema,
   OAuthCredentialSourceSchema,
+  Type.Object(GitHubAppInstallationCredentialSourceSchema.properties, {
+    additionalProperties: false,
+  }),
 ]);
 
 const LegacyCredentialSourceSchema = Type.Object(

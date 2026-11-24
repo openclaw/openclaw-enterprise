@@ -17,6 +17,7 @@ import {
   type SourceProviderPresetId,
   type SourceRegistrationInput,
   type SourceUpdate,
+  type SecretDriver,
   type TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -29,6 +30,7 @@ import {
 } from "./credential-source-drivers.ts";
 import {
   credentialSourceMetadata,
+  githubAppCredentialSourceMetadata,
   credentialSourceRef,
   isManagedTokenServiceSource,
 } from "./credential-source-metadata.ts";
@@ -53,14 +55,20 @@ import { selectedPluginBindings } from "./plugin-credential-bindings.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { TokenServiceInstance } from "./ports/token-service.ts";
 import { lockNamespace, namespaceIdentity } from "./resource-scope.ts";
+import { secretOperation } from "./secret-operations.ts";
 
-export type CreateManagedCredentialSourceInput = Omit<
+type CreateStaticCredentialSourceInput = Omit<
   Extract<SourceRegistrationInput, { kind: "static" }>,
   "kind" | "namespaceId" | "config"
 > & {
+  readonly kind?: never;
   readonly providerPreset?: string;
   readonly connectionTemplateId?: string;
 };
+
+export type CreateManagedCredentialSourceInput =
+  | CreateStaticCredentialSourceInput
+  | Omit<Extract<SourceRegistrationInput, { kind: "github_app_installation" }>, "namespaceId">;
 
 export type UpdateManagedCredentialSourceInput =
   | (SourceUpdate & { readonly providerPreset?: string | null })
@@ -120,6 +128,7 @@ interface ManagedCredentialSourceDependencies {
   readonly preparedIssuer: (ref: EgressRef) => NonNullable<ReturnType<TokenService["issuer"]>>;
   readonly clock: () => Date;
   readonly selectedTokenServiceDriver: () => TokenServiceDriver;
+  readonly secretDriver: (driverId: string) => SecretDriver;
   readonly pluginDrivers: () => readonly PluginDriver[];
   readonly retireDelivery: (
     namespace: Readonly<Namespace>,
@@ -190,6 +199,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       id: namespaceId,
       namespaceId,
     };
+    const staticInput = input.kind === undefined ? input : undefined;
     const owner = await dependencies.transactions.transact(async (state) => {
       await dependencies.authority.holdAuthority(state);
       await dependencies.authority.authorize(principalId, "create", collection);
@@ -197,21 +207,29 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      assertManagedSourceLifecycleSettings(input.lifecycleConfig.settings);
-      if (input.providerPreset !== undefined && !isSourceProviderPresetId(input.providerPreset)) {
-        throw new CredentialSourceConfigError(
-          SOURCE_PROVIDER_PRESET_CONFIG_KEY,
-          "Choose an approved credential source provider preset.",
-        );
+      if (staticInput) {
+        assertManagedSourceLifecycleSettings(staticInput.lifecycleConfig.settings);
+        if (
+          staticInput.providerPreset !== undefined &&
+          !isSourceProviderPresetId(staticInput.providerPreset)
+        ) {
+          throw new CredentialSourceConfigError(
+            SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+            "Choose an approved credential source provider preset.",
+          );
+        }
       }
-      if (input.connectionTemplateId !== undefined && input.providerPreset !== undefined) {
+      if (
+        staticInput?.connectionTemplateId !== undefined &&
+        staticInput.providerPreset !== undefined
+      ) {
         throw new ResourceStateConflictError(
           "A Connection Template Source cannot use a model provider preset.",
         );
       }
-      if (input.connectionTemplateId !== undefined) {
+      if (staticInput?.connectionTemplateId !== undefined) {
         const template = await state.connectionTemplates.findConnectionTemplate(
-          input.connectionTemplateId,
+          staticInput.connectionTemplateId,
         );
         if (
           !template ||
@@ -231,14 +249,12 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       await state.audit.append(audit(collection, "registration_started"));
       return owner;
     });
+    const providerPreset = staticInput?.providerPreset;
     const config =
-      input.providerPreset === undefined
-        ? {}
-        : { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: input.providerPreset };
-    const created = await driverOperation(
-      () =>
-        owner.createSource(
-          {
+      providerPreset === undefined ? {} : { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset };
+    const registration: SourceRegistrationInput =
+      input.kind === undefined
+        ? {
             kind: "static",
             namespaceId,
             name: input.name,
@@ -248,9 +264,11 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
             lifecycleConfig: input.lifecycleConfig,
             secret: input.secret,
             config,
-          },
-          AbortSignal.timeout(dependencies.tokenServiceTimeoutMs),
-        ),
+          }
+        : { ...input, namespaceId };
+    const created = await driverOperation(
+      () =>
+        owner.createSource(registration, AbortSignal.timeout(dependencies.tokenServiceTimeoutMs)),
       "TokenService",
     );
     if (
@@ -258,12 +276,28 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       created.namespaceId !== namespaceId ||
       created.tokenServiceInstanceId !== currentTokenServiceInstanceId() ||
       created.state !== "ready" ||
-      created.type !== input.lifecycleConfig.type ||
-      created.name !== input.name ||
-      created.type !== "static" ||
-      created.connectionTemplateId !== input.connectionTemplateId ||
-      JSON.stringify(created.config) !== JSON.stringify(config)
+      created.name !== input.name
     ) {
+      throw new ResourceStateConflictError(
+        "The TokenService returned an invalid credential source.",
+      );
+    }
+    let metadata: CredentialSourceMetadata;
+    if (
+      registration.kind === "static" &&
+      created.type === "static" &&
+      created.type === registration.lifecycleConfig.type &&
+      created.connectionTemplateId === registration.connectionTemplateId &&
+      JSON.stringify(created.config) === JSON.stringify(config)
+    ) {
+      metadata = credentialSourceMetadata(created);
+    } else if (
+      registration.kind === "github_app_installation" &&
+      created.type === "github-app-installation" &&
+      created.clientId === registration.clientId
+    ) {
+      metadata = githubAppCredentialSourceMetadata(created);
+    } else {
       throw new ResourceStateConflictError(
         "The TokenService returned an invalid credential source.",
       );
@@ -273,14 +307,14 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       await dependencies.iamPolicy.bindCreator(state, principalId, ref);
       const completed = audit(ref);
       await state.audit.append(
-        input.providerPreset === undefined
+        providerPreset === undefined
           ? completed
           : {
               ...completed,
-              details: { ...completed.details, providerPreset: input.providerPreset },
+              details: { ...completed.details, providerPreset },
             },
       );
-      return credentialSourceMetadata(created);
+      return metadata;
     });
   }
 
@@ -456,6 +490,121 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       }
       throw error;
     }
+  }
+
+  async function adoptCodexPatCredentialSource(
+    principalId: string,
+    ref: { readonly namespaceId: string; readonly credentialSourceId: string },
+    audit: (resource: CredentialSourceReference, phase?: "adoption_started") => AuditEvent,
+  ): Promise<Readonly<CredentialSourceMetadata>> {
+    dependencies.transactions.requireIndependentMutation("Credential source adoption");
+    namespaceIdentity(ref.namespaceId);
+    const resource: CredentialSourceReference = {
+      kind: "credential_source",
+      namespaceId: ref.namespaceId,
+      id: ref.credentialSourceId,
+    };
+    const admitted = await dependencies.transactions.transact(async (state) => {
+      await dependencies.authority.holdAuthority(state);
+      await dependencies.authority.authorize(principalId, "update", resource);
+      await dependencies.authority.authorize(principalId, "operate", resource);
+      const namespace = await lockNamespace(state, ref.namespaceId);
+      if (namespace.status !== "ready") {throw new NamespaceNotReadyError();}
+      const source = await state.credentialSources.lockCredentialSource(
+        ref.namespaceId,
+        resource.id,
+      );
+      if (!source) {throw new ScopeViolationError("The credential source is unavailable.");}
+      if (
+        source.ownerCapability !== "credential_gateway" ||
+        source.type !== "codex-pat" ||
+        source.state !== "ready" ||
+        source.egress !== undefined ||
+        Object.keys(source.secrets).length !== 1
+      )
+        {throw new ResourceStateConflictError(
+          "Only an unbound Gateway Codex PAT Source can be adopted.",
+        );}
+      const secretRef = source.secrets.access_token;
+      if (!secretRef || secretRef.namespaceId !== ref.namespaceId) {
+        throw new ResourceStateConflictError("The Codex PAT input is unavailable.");
+      }
+      await dependencies.authority.authorize(principalId, "operate", secretRef);
+      const secret = await state.secrets.findSecret(ref.namespaceId, secretRef.id);
+      if (!secret) {throw new ScopeViolationError("The Codex PAT input is unavailable.");}
+      const secretDriver = dependencies.secretDriver(secret.driverId);
+      if (!secretDriver.withValue) {
+        throw new DependencyUnavailableError(
+          "The selected Secret Driver cannot read the Codex PAT input.",
+        );
+      }
+      const owner = dependencies.sourceDrivers.credentialSourceOwner(source);
+      if (owner.kind !== "gateway")
+        {throw new ResourceStateConflictError("The Gateway owner is unavailable.");}
+      const tokenService = ownedTokenServiceDriver();
+      const adoptSource = tokenService.adoptSource?.bind(tokenService);
+      if (!adoptSource) {
+        throw new DependencyUnavailableError(
+          "The selected TokenService cannot adopt legacy Codex PAT Sources.",
+        );
+      }
+      await state.audit.append(audit(resource, "adoption_started"));
+      return {
+        namespace,
+        source,
+        secretRef,
+        secret,
+        secretDriver,
+        gateway: owner.driver,
+        adoptSource,
+        tokenServiceInstanceId: currentTokenServiceInstanceId(),
+      };
+    });
+    const placed = await dependencies.sourceDrivers.credentialNamespace(admitted.namespace);
+    const signal = AbortSignal.timeout(dependencies.tokenServiceTimeoutMs);
+    const adopted = await driverOperation(
+      () =>
+        admitted.adoptSource(
+          {
+            sourceRef: resource,
+            expectedGatewayId: admitted.gateway.id,
+            expectedSecretRef: admitted.secretRef,
+            tokenServiceInstanceId: admitted.tokenServiceInstanceId,
+            providerPreset: "codex-pat",
+          },
+          async (operationSignal) => {
+            operationSignal.throwIfAborted();
+            return secretOperation(() =>
+              admitted.secretDriver.withValue!(admitted.secret, async (value) => value),
+            );
+          },
+          (operationSignal) =>
+            credentialGatewayOperation(() =>
+              admitted.gateway.removeSource({
+                namespace: placed,
+                source: admitted.source,
+                signal: operationSignal,
+              }),
+            ),
+          signal,
+        ),
+      "TokenService",
+    );
+    if (
+      adopted.id !== resource.id ||
+      adopted.namespaceId !== ref.namespaceId ||
+      adopted.type !== "static" ||
+      adopted.ownerCapability !== "token_service" ||
+      adopted.tokenServiceInstanceId !== admitted.tokenServiceInstanceId ||
+      adopted.state !== "ready" ||
+      adopted.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== "codex-pat"
+    ) {
+      throw new ResourceStateConflictError("The TokenService returned an invalid adopted Source.");
+    }
+    return dependencies.transactions.transact(async (state) => {
+      await state.audit.append(audit(resource));
+      return credentialSourceMetadata(adopted);
+    });
   }
 
   async function retireSourceDelivery(
@@ -782,6 +931,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     ownedTokenServiceDriver,
     createManagedCredentialSource,
     updateManagedCredentialSource,
+    adoptCodexPatCredentialSource,
     deleteCredentialSource,
     finishOAuthRevocation,
   };

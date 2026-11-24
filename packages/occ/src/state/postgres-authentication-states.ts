@@ -23,6 +23,8 @@ type OAuthRow = CommonRow & {
   binding: OAuthBinding;
   connection_template_id: string;
   connection_template_version: number;
+  oauth_client_id: string;
+  oauth_consumed_at: Date | null;
   created_at: Date;
 };
 type DeviceRow = CommonRow & {
@@ -51,6 +53,8 @@ function oauthFromRow(row: OAuthRow): OAuthAuthenticationState {
     kind: "oauth_connection",
     connectionTemplateId: row.connection_template_id,
     connectionTemplateVersion: row.connection_template_version,
+    oauthClientId: row.oauth_client_id,
+    ...(row.oauth_consumed_at === null ? {} : { consumedAt: row.oauth_consumed_at.toISOString() }),
     createdAt: row.created_at.toISOString(),
   });
 }
@@ -98,8 +102,8 @@ export function postgresAuthenticationStates(
         record.kind === "oauth_connection" ? pick(record, oauthKeys) : pick(record, deviceKeys);
       await client.query(
         `INSERT INTO occ.authentication_states
-        (kind,id,namespace_id,actor_id,expires_at,connection_template_id,connection_template_version,created_at,binding,phase,next_poll_at,encrypted_challenge,private_state,version)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        (kind,id,namespace_id,actor_id,expires_at,connection_template_id,connection_template_version,oauth_client_id,created_at,binding,phase,next_poll_at,encrypted_challenge,private_state,version)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
         [
           record.kind,
           record.id,
@@ -108,6 +112,7 @@ export function postgresAuthenticationStates(
           record.expiresAt,
           oauth?.connectionTemplateId,
           oauth?.connectionTemplateVersion,
+          oauth?.oauthClientId,
           oauth?.createdAt,
           binding,
           ...(device ? progress(device) : [null, null, null, null]),
@@ -134,11 +139,17 @@ export function postgresAuthenticationStates(
     },
     consumeOAuth: async (id, actorId, sessionId, at) => {
       const { rows } = await client.query(
-        `DELETE FROM occ.authentication_states WHERE kind = 'oauth_connection' AND id = $1 AND actor_id = $2
-        AND binding->>'sessionId' = $3 AND expires_at > $4 RETURNING *`,
+        `UPDATE occ.authentication_states SET oauth_consumed_at=$4 WHERE kind = 'oauth_connection' AND id = $1 AND actor_id = $2
+        AND binding->>'sessionId' = $3 AND expires_at > $4 AND oauth_consumed_at IS NULL RETURNING *`,
         [id, actorId, sessionId, at],
       );
       return rows[0] === undefined ? undefined : oauthFromRow(rows[0] as OAuthRow);
+    },
+    releaseOAuth: async (id) => {
+      await client.query(
+        "DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND id=$1 AND oauth_consumed_at IS NOT NULL",
+        [id],
+      );
     },
     expire: async (at, limit) => {
       await client.query(

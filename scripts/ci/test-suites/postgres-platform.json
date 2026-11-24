@@ -10,6 +10,7 @@
     "tests/integration/postgres-bootstrap-failures.test.ts",
     "tests/integration/postgres-agent-provisioning.test.ts",
     "tests/integration/postgres-device-authorization.test.ts",
+    "tests/integration/postgres-codex-pat-adoption.test.ts",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.ts",
     "tests/integration/postgres-deployment-inventory.test.ts",
@@ -125,6 +126,13 @@
       "expectedTests": [
         "shared authentication state isolates browser consent from device login across API replicas",
         "completed Codex login admits the direct Agent model binding and refuses referenced Source deletion"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-codex-pat-adoption.test.ts",
+      "expectedTests": [
+        "PAT adoption preserves the Source and Secret identities while restricting the owner transition",
+        "authenticated PAT adoption requires exact grants and preserves the Agent draft and IAM identities"
       ]
     },
     {

@@ -5,24 +5,34 @@ import {
   type RepositoryNetworkPolicyCeiling,
   isInstallationRepositoryProfile,
   type Agent,
+  type AdmittedRepositoryBinding,
   type BackendDefinition,
   type ComputeDriver,
+  type CredentialProxyDriver,
+  type DeploymentRequestMatch,
+  type GitHubAppInstallationCredentialSource,
   type RepositoryAccess,
   type RepositoryBindingRequest,
   type RepositoryBindingSelection,
   type RepositoryCredentialResolution,
   type RepositoryOption,
   type RepositoryOptions,
+  type RepositoryNetworkGrant,
   type RepositoryPolicyDriver,
   type RepositoryRevisionState,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
+  type SandboxNetworkGrant,
   codexProxiesRepositoryBroker,
   codexRepositoryBrokerNetworkProxy,
   type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import type { InstalledDriver } from "./installed-driver.ts";
-import { type HarnessResolver, validateRepositoryTopology } from "./agent-harness-topology.ts";
+import {
+  type HarnessResolver,
+  selectsModel,
+  validateRepositoryTopology,
+} from "./agent-harness-topology.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import { exactConfiguration } from "./configuration-operations.ts";
 import { driverOperation } from "./driver-operation.ts";
@@ -33,6 +43,8 @@ import {
   delegatedRepositoryCeiling,
   repositoryGrantAuthority,
   type RepositoryGrantPolicy,
+  admitDeploymentRepositoryPolicy,
+  assertSelectedRepositoryGrants,
 } from "./repository-network-policy.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -63,6 +75,11 @@ import type { ControllerAuthority } from "./controller-authority.ts";
 import { unchangedDriver, type DriverRegistry, type RegisteredDriver } from "./driver-registry.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { exactNamespace, namespaceIdentity } from "./resource-scope.ts";
+import { assertAgentConfiguration } from "./deployment-policy.ts";
+import { refuseStoredConfigurationSettings } from "./configuration-settings.ts";
+import { resolveConfiguredHarnessId } from "./configured-harness.ts";
+import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
+import { checkedSandboxPolicySnapshot } from "./sandbox-policy-admission.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import {
   eligibleRepositoryApprovalScope,
@@ -76,6 +93,13 @@ interface SelectedRepositoryPolicyOwner {
   readonly unchanged: () => boolean;
 }
 
+export type SupportsStagedRepositoryRecipient = (input: {
+  readonly compute: ComputeDriver;
+  readonly sandbox: SandboxDriver;
+  readonly proxy: CredentialProxyDriver;
+  readonly harness: RevisionHarnessDescriptor;
+}) => boolean;
+
 interface RepositoryPolicyDependencies {
   readonly installationId: string;
   readonly configurationDriver: () => ConfigurationDriver;
@@ -83,6 +107,17 @@ interface RepositoryPolicyDependencies {
     typeof createCredentialSourceDrivers
   >["credentialSourceOwner"];
   readonly selectedProxyOwner: () => InstalledDriver;
+  readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
+  readonly supportsStagedRepositoryRecipient: SupportsStagedRepositoryRecipient | undefined;
+  readonly ownedTokenServiceDriver: (instanceId: string) => unknown;
+  readonly repositoryCredentialAdmission:
+    | ((input: {
+        readonly namespaceId: string;
+        readonly source: Readonly<GitHubAppInstallationCredentialSource>;
+        readonly bindings: readonly AdmittedRepositoryBinding[];
+        readonly grants: readonly RepositoryNetworkGrant[];
+      }) => readonly DeploymentRequestMatch[] | undefined)
+    | undefined;
   readonly repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling;
   readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
   readonly selectedRepository: () => RepositoryPolicyDriver;
@@ -687,12 +722,33 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     return immutableCopy(bindings.map(({ repositoryRef }) => selections.get(repositoryRef)!));
   }
 
+  function supportsStagedRecipient(compute: ComputeDriver, harness: RevisionHarnessDescriptor) {
+    try {
+      const sandbox = dependencies.sandboxDriver();
+      const owner = dependencies.selectedCredentialDeliveryOwner();
+      const proxy = owner.require("credential_proxy_delivery");
+      return (
+        sandbox !== undefined &&
+        owner.require("sandbox") === sandbox &&
+        dependencies.repositoryCredentialAdmission !== undefined &&
+        dependencies.supportsStagedRepositoryRecipient?.({ compute, sandbox, proxy, harness }) ===
+          true
+      );
+    } catch {
+      return false;
+    }
+  }
+
   function admitRepositoryCredentials(
     agent: Readonly<Agent>,
     compute: ComputeDriver,
     harness: RevisionHarnessDescriptor,
     sandboxDriverId: string | undefined,
     admittedAtWallMs: number,
+    staged?: {
+      readonly source: Readonly<GitHubAppInstallationCredentialSource>;
+      readonly grants: readonly RepositoryNetworkGrant[];
+    },
   ) {
     const resolved = resolveRepositoryBindings(
       agent.namespaceId,
@@ -703,7 +759,32 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     if (resolved === undefined) {
       return undefined;
     }
-    validateRepositoryTopology(compute, harness, sandboxDriverId);
+    let requests: readonly DeploymentRequestMatch[] | undefined;
+    if (staged) {
+      if (
+        staged.source.namespaceId !== agent.namespaceId ||
+        staged.source.state !== "ready" ||
+        sandboxDriverId !== dependencies.sandboxDriver()?.id ||
+        !supportsStagedRecipient(compute, harness) ||
+        resolved.resolution.nativeGit !== "v1"
+      ) {
+        throw new ResourceStateConflictError("The staged repository recipient is unavailable.");
+      }
+      assertSelectedRepositoryGrants(staged.grants, resolved.resolution);
+      requests = dependencies.repositoryCredentialAdmission?.({
+        namespaceId: agent.namespaceId,
+        source: staged.source,
+        bindings: resolved.resolution.bindings,
+        grants: staged.grants,
+      });
+      if (!requests?.length || !resolved.unchanged()) {
+        throw new ResourceStateConflictError(
+          "The staged repository Source and saved grants cannot be admitted.",
+        );
+      }
+    } else {
+      validateRepositoryTopology(compute, harness, sandboxDriverId);
+    }
     const snapshot: RepositoryRevisionState = {
       driver: { id: resolved.driver.id, implementation: resolved.driver.implementation },
       deadlineWallMs: admittedAtWallMs + resolved.resolution.sessionDurationSeconds * 1000,
@@ -719,6 +800,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       resolution: resolved.resolution,
       nativeGit: resolved.resolution.nativeGit,
       requiresNetworkPolicy: resolved.resolution.requiresNetworkPolicy,
+      requests,
     };
   }
 
@@ -944,12 +1026,189 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
   }
 
+  async function qualifyStagedRepositoryEdit(
+    state: PlatformReadView | PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    version: number,
+    canRead: (target: ResourceRef) => Promise<boolean>,
+    canOperate: ((target: ResourceRef) => Promise<boolean>) | undefined,
+    resolveHarness: HarnessResolver,
+    additions: readonly SandboxNetworkGrant[],
+    admission: InstallationRepositoryAdmission,
+  ): Promise<
+    ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> | undefined
+  > {
+    const auth = agent.harnessAuth;
+    const sources = agent.credentialSources;
+    const approve = dependencies.repositoryCredentialAdmission;
+    if (
+      agent.executionMode !== "dedicated" ||
+      auth?.method !== "credential_source" ||
+      !sources ||
+      sources.length < 2 ||
+      new Set(sources.map(({ sourceId }) => sourceId)).size !== sources.length ||
+      sources.filter(({ sourceId }) => sourceId === auth.sourceId).length !== 1 ||
+      !canOperate ||
+      !approve
+    ) {
+      return undefined;
+    }
+    const { namespaceId } = agent;
+    const configurationRef = {
+      kind: "configuration",
+      id: agent.configurationId,
+      namespaceId,
+    } as const;
+    if (!(await canRead(configurationRef))) {
+      return undefined;
+    }
+    for (const { sourceId } of sources) {
+      const ref = { kind: "credential_source", id: sourceId, namespaceId } as const;
+      if (!(await canRead(ref)) || !(await canOperate(ref))) {
+        return undefined;
+      }
+    }
+    const configuration = dependencies.configurationDriver();
+    const metadata =
+      "audit" in state
+        ? await state.configurations.lockConfiguration(namespaceId, agent.configurationId)
+        : await state.configurations.findConfiguration(namespaceId, agent.configurationId);
+    assertAgentConfiguration(metadata, namespaceId, agent.configurationId);
+    const { values } = exactConfiguration(
+      await driverOperation(() => configuration.read({ id: metadata.id, namespaceId })),
+      metadata,
+    );
+    refuseStoredConfigurationSettings(values);
+    const harnessId = resolveConfiguredHarnessId(values);
+    const descriptor = resolveHarness(harnessId, "dedicated");
+    if (
+      !selectsModel(values) ||
+      descriptor?.id !== harnessId ||
+      !isNonEmptyString(descriptor.version)
+    ) {
+      return undefined;
+    }
+    const harness = { ...descriptor, mode: "dedicated" as const };
+    const readSource = (id: string) =>
+      "audit" in state
+        ? state.credentialSources.lockCredentialSource(namespaceId, id)
+        : state.credentialSources.findCredentialSource(namespaceId, id);
+    const selected = await Promise.all(sources.map(({ sourceId }) => readSource(sourceId)));
+    const model = selected.find((source) => source?.id === auth.sourceId);
+    const repositories = selected.filter(
+      (source) => isManagedTokenServiceSource(source) && source.type === "github-app-installation",
+    );
+    const source = repositories[0];
+    if (
+      !isManagedTokenServiceSource(model) ||
+      model.type === "github-app-installation" ||
+      model.state !== "ready" ||
+      model.namespaceId !== namespaceId ||
+      repositories.length !== 1 ||
+      !isManagedTokenServiceSource(source) ||
+      source.type !== "github-app-installation" ||
+      source.state !== "ready" ||
+      source.namespaceId !== namespaceId ||
+      source.tokenServiceInstanceId !== model.tokenServiceInstanceId
+    ) {
+      return undefined;
+    }
+    const tokenOwner = dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+    if (dependencies.ownedTokenServiceDriver(model.tokenServiceInstanceId) !== tokenOwner) {
+      return undefined;
+    }
+    const compute = dependencies.selectedCompute();
+    if (!supportsStagedRecipient(compute, harness)) {
+      return undefined;
+    }
+    const owner = dependencies.selectedCredentialDeliveryOwner();
+    const sandbox = dependencies.sandboxDriver();
+    if (!sandbox || owner.require("sandbox") !== sandbox || !sandbox.admitNetworkPolicy) {
+      return undefined;
+    }
+    const admitNetwork = sandbox.admitNetworkPolicy;
+    const authority = readGrantAuthority(namespaceId, admission);
+    const resolve = () =>
+      resolveRepositoryBindings(namespaceId, agent.repositoryBindings, "saved", admission);
+    const repository = resolve();
+    if (!authority || !repository || repository.resolution.nativeGit !== "v1") {
+      return undefined;
+    }
+    const current = (approved?: () => boolean) => {
+      if (
+        !repository.unchanged() ||
+        !isDeepStrictEqual(resolve()?.resolution, repository.resolution) ||
+        !authority.unchanged() ||
+        approved?.() === false ||
+        dependencies.repositoryCredentialAdmission !== approve ||
+        dependencies.configurationDriver() !== configuration ||
+        dependencies.selectedCompute() !== compute ||
+        dependencies.selectedCredentialDeliveryOwner() !== owner ||
+        dependencies.sandboxDriver() !== sandbox ||
+        sandbox.admitNetworkPolicy !== admitNetwork ||
+        dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId) !== tokenOwner
+      ) {
+        throw new ResourceStateConflictError(
+          "The selected Drivers changed during repository network policy admission. Reload before editing.",
+        );
+      }
+    };
+    const admit = (grants: readonly RepositoryNetworkGrant[]) => {
+      current();
+      const { sandboxPolicy, ownerUnchanged } = admitDeploymentRepositoryPolicy(
+        () =>
+          checkedSandboxPolicySnapshot(sandbox, additions, version, undefined, undefined, () =>
+            Reflect.apply(admitNetwork, sandbox, [additions, version]),
+          ),
+        grants,
+        dependencies.repositoryNetworkPolicyCeiling,
+        sandbox,
+        () => authority,
+        "save",
+      );
+      const policy = sandboxPolicy?.repositoryNetworkPolicy;
+      if (!policy) {
+        return undefined;
+      }
+      assertSelectedRepositoryGrants(policy.grants, repository.resolution);
+      if (
+        policy.grants.length > 0 &&
+        !approve({
+          namespaceId,
+          source,
+          bindings: repository.resolution.bindings,
+          grants: policy.grants,
+        })?.length
+      ) {
+        return undefined;
+      }
+      const assertCurrent = () => current(ownerUnchanged);
+      assertCurrent();
+      return { grants: policy.grants, assertCurrent };
+    };
+    return {
+      supports(ceiling) {
+        return ceiling.some((grant) => {
+          try {
+            return admit([{ ...grant, access: "read" }]) !== undefined;
+          } catch {
+            return false;
+          }
+        });
+      },
+      apiMaxima: () => undefined,
+      admit,
+    };
+  }
+
   async function qualifyRepositoryEdit(
     state: PlatformReadView | PlatformUnitOfWork,
     agent: Readonly<Agent>,
     version: number,
     canRead: (target: ResourceRef) => Promise<boolean>,
     resolveHarness: HarnessResolver | undefined,
+    additions: readonly SandboxNetworkGrant[] = [],
+    canOperate?: (target: ResourceRef) => Promise<boolean>,
   ) {
     const { namespaceId, repositoryBindings: bindings } = agent;
     const admission = installationRepositoryAdmission;
@@ -957,6 +1216,22 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       return undefined;
     }
     try {
+      const staged = await qualifyStagedRepositoryEdit(
+        state,
+        agent,
+        version,
+        canRead,
+        canOperate,
+        resolveHarness,
+        additions,
+        admission,
+      );
+      if (staged) {
+        return staged;
+      }
+      if (additions.length > 0) {
+        return undefined;
+      }
       const compute = dependencies.selectedCompute();
       const owner = dependencies.selectedProxyOwner();
       const validate = repositoryPolicySaveValidator(compute, owner);

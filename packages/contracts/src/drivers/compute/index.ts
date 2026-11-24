@@ -28,6 +28,7 @@ import type {
   ResolvedHarnessAuth,
   RevisionHarnessDescriptor,
   Scope,
+  SourceProviderPresetId,
   SecretBindings,
   SecretEnvironmentProjection,
   ServiceAccountCredential,
@@ -412,6 +413,7 @@ export interface ComputeDriver extends Driver {
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
+    modelPreset?: SourceProviderPresetId,
   ): Readonly<Record<string, unknown>>;
   /** Check source consent against the resolved settings before any credential delivery. */
   validateHarnessCredentialSources?(

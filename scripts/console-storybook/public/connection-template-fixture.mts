@@ -47,7 +47,6 @@ export function createConnectionTemplateFixture(
               resource: "https://mcp.example.com/mcp",
               tokenEndpointAuthMethods: ["none", "client_secret_basic"],
             },
-            oauthClientId: "ccr_00000000-0000-4000-8000-000000000006",
             createdAt,
           },
         },
@@ -93,6 +92,7 @@ export function createConnectionTemplateFixture(
   const oauthClients: Record<string, unknown>[] = populated
     ? [
         {
+          kind: "oauth2",
           id: "ccr_00000000-0000-4000-8000-000000000006",
           displayName: "Support service",
           namespaceId,
@@ -103,6 +103,7 @@ export function createConnectionTemplateFixture(
           createdAt,
         },
         {
+          kind: "oauth2",
           id: "ccr_00000000-0000-4000-8000-000000000007",
           displayName: "Customer operations reporting",
           issuer: "https://identity.example.com/organizations/customer-operations",
@@ -111,10 +112,21 @@ export function createConnectionTemplateFixture(
           tokenEndpointAuthMethod: "client_secret_basic",
           createdAt,
         },
+        {
+          kind: "github-app",
+          id: "ccr_00000000-0000-4000-8000-000000000008",
+          displayName: "Repository automation",
+          appId: "12345",
+          createdAt,
+        },
       ]
     : [];
-  const previousVersions: Record<string, unknown>[] = [];
-  return (path: string, method: string, body: unknown): Response | undefined => {
+  return (
+    path: string,
+    method: string,
+    body: unknown,
+    query?: URLSearchParams,
+  ): Response | undefined => {
     if (path === "/connection-templates" && method === "GET") {
       return response(templates);
     }
@@ -123,9 +135,24 @@ export function createConnectionTemplateFixture(
         templates.filter(
           (template) =>
             (!template.namespaceId || template.namespaceId === namespaceId) &&
-            isRecord(template.current) &&
-            (template.current.mode === "static_bearer" ||
-              template.current.oauthClientId !== undefined),
+            isRecord(template.current),
+        ),
+      );
+    }
+    if (path === `/namespaces/${namespaceId}/connections/oauth-clients` && method === "GET") {
+      const template = templates.find(
+        (candidate) => candidate.id === query?.get("connectionTemplateId"),
+      );
+      const version = template && isRecord(template.current) ? template.current : undefined;
+      return response(
+        oauthClients.filter(
+          (client) =>
+            client.kind === "oauth2" &&
+            (!client.namespaceId || client.namespaceId === namespaceId) &&
+            version &&
+            client.issuer === version.issuer &&
+            client.tokenUrl === version.tokenUrl &&
+            (version.revocationUrl === undefined || client.revocationUrl === version.revocationUrl),
         ),
       );
     }
@@ -148,19 +175,11 @@ export function createConnectionTemplateFixture(
         return error(404, "NOT_FOUND", "The OAuth client does not exist.");
       }
       const client = oauthClients[index]!;
-      if (
-        templates.some(
-          (t) =>
-            (isRecord(t.current) && t.current.oauthClientId === client.id) ||
-            previousVersions.some(
-              (version) => version.templateId === t.id && version.oauthClientId === client.id,
-            ),
-        )
-      ) {
+      if (client.id === "ccr_00000000-0000-4000-8000-000000000006") {
         return error(
           409,
           "RESOURCE_STATE_CONFLICT",
-          "A template version still references this OAuth client.",
+          "An active credential Source still references this client.",
         );
       }
       oauthClients.splice(index, 1);
@@ -184,39 +203,39 @@ export function createConnectionTemplateFixture(
           : response(observed);
       }
       if (path === "/oauth-clients" && method === "POST") {
-        const selected = templates.find((t) => t.id === body.connectionTemplateId);
-        const version = selected?.current;
-        if (
-          !selected ||
-          !isRecord(version) ||
-          version.version !== body.connectionTemplateVersion ||
-          typeof version.version !== "number"
-        ) {
-          return error(409, "RESOURCE_STATE_CONFLICT", "Reload the selected connection template.");
-        }
-        if (version.mode === "static_bearer") {
-          return error(
-            409,
-            "RESOURCE_STATE_CONFLICT",
-            "A static template cannot register an OAuth client.",
-          );
-        }
-        const client = {
-          id: nextId("ccr"),
-          displayName: body.displayName,
-          clientId: body.clientId,
-          tokenEndpointAuthMethod: body.tokenEndpointAuthMethod,
-          namespaceId: selected.namespaceId,
-          issuer: version.issuer,
-          tokenUrl: version.tokenUrl,
-          revocationUrl: version.revocationUrl,
-          createdAt,
-        };
-        if (!version.oauthClientId) {
-          selected.current = { ...version, oauthClientId: client.id, version: version.version + 1 };
-        }
+        const client =
+          body.kind === "github-app"
+            ? {
+                kind: "github-app",
+                id: nextId("ccr"),
+                displayName: body.displayName,
+                appId: body.appId,
+                createdAt,
+              }
+            : {
+                kind: "oauth2",
+                id: nextId("ccr"),
+                displayName: body.displayName,
+                clientId: body.clientId,
+                tokenEndpointAuthMethod: body.tokenEndpointAuthMethod,
+                ...(typeof body.namespaceId === "string" && { namespaceId: body.namespaceId }),
+                issuer: body.issuer,
+                tokenUrl: body.tokenUrl,
+                ...(typeof body.revocationUrl === "string" && {
+                  revocationUrl: body.revocationUrl,
+                }),
+                createdAt,
+              };
         oauthClients.push(client);
         return response(client, 201);
+      }
+      if (method === "POST" && path.endsWith("/rotate-secret")) {
+        const client = oauthClients.find(
+          (item) => path === "/oauth-clients/" + item.id + "/rotate-secret",
+        );
+        return client
+          ? response(client)
+          : error(404, "RESOURCE_NOT_FOUND", "The credential client does not exist.");
       }
       if (path.startsWith("/connection-templates/") && method === "PATCH") {
         const template = templates.find((item) => path === "/connection-templates/" + item.id);
@@ -236,7 +255,6 @@ export function createConnectionTemplateFixture(
           template.current.mode === "static_bearer" &&
           JSON.stringify(config.destinations) === JSON.stringify(template.current.destinations);
         if (config.mode !== undefined && !sameStaticSettings) {
-          previousVersions.push(template.current);
           template.current = {
             ...config,
             templateId: template.id,

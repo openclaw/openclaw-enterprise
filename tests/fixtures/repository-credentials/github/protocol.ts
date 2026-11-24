@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import type { KeyObject } from "node:crypto";
 import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
 import { sharedRsaKeyPair } from "../shared-keys.ts";
-import { fixtureInstallationId, fixtureRepository, fixtureRepositoryId } from "./metadata.ts";
+import {
+  fixtureAppId,
+  fixtureInstallationId,
+  fixtureRepository,
+  fixtureRepositoryId,
+} from "./metadata.ts";
 import { createTokenAuthority, type Permissions, type WallClock } from "./token-authority.ts";
 import {
   createRepositoryResources,
@@ -116,6 +121,7 @@ export function createGitHubProtocol({
   ];
   const trace: RequestTrace[] = [];
   const errors: string[] = [];
+  let appIdentityId = Number(fixtureAppId);
   let disconnectMutation: { method: string; matches: (path: string) => boolean } | undefined;
   function disconnect(request: IncomingMessage, response: ServerResponse, url: URL) {
     if (
@@ -160,6 +166,15 @@ export function createGitHubProtocol({
         response.writeHead(status, { "content-type": "application/json", ...headers });
         response.end(JSON.stringify(value));
       };
+      if (request.method === "GET" && url.pathname === "/app") {
+        try {
+          authority.verifyAppJwt(request.headers.authorization);
+          json(200, { id: appIdentityId });
+        } catch {
+          json(401, { message: "Unauthorized" });
+        }
+        return;
+      }
       if (
         request.method === "POST" &&
         url.pathname === `/app/installations/${fixtureInstallationId}/access_tokens`
@@ -316,6 +331,10 @@ export function createGitHubProtocol({
     authorizeRepository: authority.authorizeRepository,
     acceptStatic: authority.acceptStatic,
     tokenState: authority.tokenState,
+    setAppPublicKey: authority.setAppPublicKey,
+    setAppIdentityId(id: number) {
+      appIdentityId = id;
+    },
     setRevokeStatus(status: number) {
       revokeStatus = status;
     },

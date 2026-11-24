@@ -238,8 +238,9 @@ test(
     assert.equal(template.statusCode, 201, template.body);
     const connectionTemplateId = template.json().data.id;
     const client = await inject("POST", "/oauth-clients", {
-      connectionTemplateId,
-      connectionTemplateVersion: template.json().data.current.version,
+      namespaceId,
+      issuer: slot.issuer,
+      tokenUrl: discoveredTokenUrl,
       displayName: "Slack public client",
       clientId: `slack-probe-${randomUUID()}`,
       tokenEndpointAuthMethod: "none",
@@ -304,7 +305,6 @@ test(
       revocationUrl,
       authorizationParameters,
       scopes,
-      oauthClientId,
       destinations,
     } = starter.current;
     const original = {
@@ -315,7 +315,6 @@ test(
       revocationUrl,
       authorizationParameters,
       scopes,
-      oauthClientId,
       destinations,
     };
     const starterPath = `/connection-templates/${starter.id}`;
@@ -324,18 +323,20 @@ test(
       assert.equal(restored.statusCode, 200, restored.body);
     };
     const googleClient = await inject("POST", "/oauth-clients", {
-      connectionTemplateId: starter.id,
-      connectionTemplateVersion: starter.current.version,
+      namespaceId,
+      issuer,
+      tokenUrl,
+      revocationUrl,
       displayName: "Google public client",
       clientId: `google-admission-${randomUUID()}`,
       tokenEndpointAuthMethod: "none",
     });
     assert.equal(googleClient.statusCode, 201, googleClient.body);
+    const googleClientId = googleClient.json().data.id;
     const gmailScopes = ["https://www.googleapis.com/auth/gmail.modify"];
     const gmail = { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/me/messages" };
     const googleSettings = {
       ...original,
-      oauthClientId: googleClient.json().data.id,
       scopes: gmailScopes,
     };
     const approved = await inject("PATCH", starterPath, {
@@ -354,7 +355,7 @@ test(
           kind: "connection_template",
           ownerPrincipalId: principal.id,
           version: gmailConsent.version,
-          oauthClientId: googleSettings.oauthClientId,
+          oauthClientId: googleClientId,
         },
         grant: {
           accessToken: randomUUID(),
@@ -1061,7 +1062,7 @@ test(
     const consent = readGoogle.json().data.consent;
     assert.equal(consent.version, gmailConsent.version);
     assert.equal(consent.issuer, issuer);
-    assert.equal(consent.oauthClientId, googleSettings.oauthClientId);
+    assert.equal(consent.oauthClientId, googleClientId);
     assert.deepEqual(consent.grantedScopes, gmailScopes);
     const frozen = await readRevision(revisionId);
     assert.deepEqual(frozen?.credentialSources, revision.credentialSources);

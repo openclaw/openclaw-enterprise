@@ -25,6 +25,7 @@ import {
   ResourceStateConflictError,
   ScopeViolationError,
 } from "./errors.ts";
+import type { StoredCredentialClient } from "./ports/oauth-client.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
@@ -36,6 +37,7 @@ export interface StartNamespaceConnectionInput {
   readonly sessionId: string;
   readonly namespaceId: string;
   readonly connectionTemplateId: string;
+  readonly oauthClientId: string;
   readonly redirectUri: string;
 }
 export interface CompleteNamespaceConnectionInput {
@@ -134,11 +136,38 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       await exactNamespace(state, namespaceId);
       const templates = await state.connectionTemplates.listConnectionTemplates();
       return templates.filter(
-        (template) =>
-          (template.current.mode === "static_bearer" ||
-            template.current.oauthClientId !== undefined) &&
-          (template.namespaceId === undefined || template.namespaceId === namespaceId),
+        (template) => template.namespaceId === undefined || template.namespaceId === namespaceId,
       );
+    });
+  }
+  async function listEligibleOAuthClients(
+    principalId: string,
+    namespaceId: string,
+    connectionTemplateId: string,
+  ): Promise<readonly Readonly<OAuthClient>[]> {
+    await authorizeCreate(principalId, namespaceId);
+    return deps.read(async (state) => {
+      await exactNamespace(state, namespaceId);
+      const template = await state.connectionTemplates.findConnectionTemplate(connectionTemplateId);
+      if (
+        !template ||
+        (template.namespaceId !== undefined && template.namespaceId !== namespaceId)
+      ) {
+        throw new ScopeViolationError("The connection template does not exist.");
+      }
+      if (template.current.mode === "static_bearer") {
+        throw new ResourceStateConflictError("A static template cannot use an OAuth client.");
+      }
+      const version = template.current;
+      const owner = deps.selectedTokenServiceDriver();
+      const instanceId = deps.currentTokenServiceInstanceId();
+      return (await state.connectionTemplates.listCredentialClients())
+        .filter(
+          (client): client is Extract<typeof client, { kind: "oauth2" }> =>
+            client.kind === "oauth2" &&
+            eligibleClient(client, namespaceId, version, owner, instanceId),
+        )
+        .map(({ tokenServiceInstanceId: _owner, ...metadata }) => metadata);
     });
   }
   async function startNamespaceConnection(
@@ -167,7 +196,12 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
         throw new ResourceStateConflictError("A static template cannot start OAuth consent.");
       }
       const selectedScopes = connectionConsentScopes(version, input.selectedScopes);
-      const client = await connectionClientForVersion(state, input.namespaceId, version);
+      const client = await connectionClientForVersion(
+        state,
+        input.namespaceId,
+        version,
+        input.oauthClientId,
+      );
       await connectionOwnerPolicy(state, input.namespaceId);
       const started = startBrowserAuthorization(
         browserAuthorizationRequest(version, client, input.redirectUri, selectedScopes),
@@ -186,6 +220,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
         actorId: principalId,
         connectionTemplateId: template.id,
         connectionTemplateVersion: version.version,
+        oauthClientId: client.id,
         createdAt,
         expiresAt,
       });
@@ -218,99 +253,110 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
     if (!session) {
       throw new BrowserAuthorizationError("unknown_session", "retry");
     }
-    await authorizeCreate(principalId, session.namespaceId);
-    const { version, client } = await deps.transact(async (state) => {
-      await holdSession?.(state);
-      const namespace = await lockNamespace(state, session.namespaceId);
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      const template = await state.connectionTemplates.findConnectionTemplate(
-        session.connectionTemplateId,
-      );
-      if (
-        !template ||
-        (template.namespaceId !== undefined && template.namespaceId !== session.namespaceId)
-      ) {
-        throw new ScopeViolationError("The connection template is unavailable in this Namespace.");
-      }
-      const version = await state.connectionTemplates.findOAuthConnectionTemplateVersion(
-        session.connectionTemplateId,
-        session.connectionTemplateVersion,
-      );
-      if (!version || (input.iss !== undefined && input.iss !== version.issuer)) {
-        throw new BrowserAuthorizationError("issuer_mismatch", "fix_configuration");
-      }
-      if (input.error !== undefined || !isNonEmptyString(input.code)) {
-        throw new BrowserAuthorizationError(
-          input.error === "access_denied" ? "consent_denied" : "provider_error",
-          "retry",
+    try {
+      await authorizeCreate(principalId, session.namespaceId);
+      const { version, client } = await deps.transact(async (state) => {
+        await holdSession?.(state);
+        const namespace = await lockNamespace(state, session.namespaceId);
+        if (namespace.status !== "ready") {
+          throw new NamespaceNotReadyError();
+        }
+        const template = await state.connectionTemplates.findConnectionTemplate(
+          session.connectionTemplateId,
         );
-      }
-      if (
-        input.iss === undefined &&
-        (session.issuerRequired ||
-          (await state.connectionTemplates.hasOtherConnectionIssuer(version.issuer)))
-      ) {
-        throw new BrowserAuthorizationError("issuer_required", "fix_configuration");
-      }
-      await connectionOwnerPolicy(state, session.namespaceId);
-      return {
-        version,
-        client: await connectionClientForVersion(state, session.namespaceId, version),
-      };
-    });
-    const owner = deps.selectedTokenServiceDriver();
-    const tokenServiceInstanceId = deps.currentTokenServiceInstanceId();
-    const signal = AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS);
-    const grant = await deps.withOAuthClientSecret(client, (secret) =>
-      exchangeAuthorizationCode(
-        browserAuthorizationRequest(version, client, session.redirectUri, session.selectedScopes),
-        session.pkceVerifier,
-        input.code!,
-        secret,
-        signal,
-      ),
-    );
-    const source = await owner.createSource(
-      {
-        kind: "oauth_refresh_token",
-        namespaceId: session.namespaceId,
-        name: `Connection ${randomUUID()}`,
-        connectionTemplateId: session.connectionTemplateId,
-        consent: {
-          kind: "connection_template",
-          version: session.connectionTemplateVersion,
-          oauthClientId: client.id,
-          ownerPrincipalId: principalId,
+        if (
+          !template ||
+          (template.namespaceId !== undefined && template.namespaceId !== session.namespaceId)
+        ) {
+          throw new ScopeViolationError(
+            "The connection template is unavailable in this Namespace.",
+          );
+        }
+        const version = await state.connectionTemplates.findOAuthConnectionTemplateVersion(
+          session.connectionTemplateId,
+          session.connectionTemplateVersion,
+        );
+        if (!version || (input.iss !== undefined && input.iss !== version.issuer)) {
+          throw new BrowserAuthorizationError("issuer_mismatch", "fix_configuration");
+        }
+        if (input.error !== undefined || !isNonEmptyString(input.code)) {
+          throw new BrowserAuthorizationError(
+            input.error === "access_denied" ? "consent_denied" : "provider_error",
+            "retry",
+          );
+        }
+        if (
+          input.iss === undefined &&
+          (session.issuerRequired ||
+            (await state.connectionTemplates.hasOtherConnectionIssuer(version.issuer)))
+        ) {
+          throw new BrowserAuthorizationError("issuer_required", "fix_configuration");
+        }
+        await connectionOwnerPolicy(state, session.namespaceId);
+        return {
+          version,
+          client: await connectionClientForVersion(
+            state,
+            session.namespaceId,
+            version,
+            session.oauthClientId,
+          ),
+        };
+      });
+      const owner = deps.selectedTokenServiceDriver();
+      const tokenServiceInstanceId = deps.currentTokenServiceInstanceId();
+      const signal = AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS);
+      const grant = await deps.withOAuthClientSecret(client, (secret) =>
+        exchangeAuthorizationCode(
+          browserAuthorizationRequest(version, client, session.redirectUri, session.selectedScopes),
+          session.pkceVerifier,
+          input.code!,
+          secret,
+          signal,
+        ),
+      );
+      const source = await owner.createSource(
+        {
+          kind: "oauth_refresh_token",
+          namespaceId: session.namespaceId,
+          name: `Connection ${randomUUID()}`,
+          connectionTemplateId: session.connectionTemplateId,
+          consent: {
+            kind: "connection_template",
+            version: session.connectionTemplateVersion,
+            oauthClientId: client.id,
+            ownerPrincipalId: principalId,
+          },
+          grant,
         },
-        grant,
-      },
-      signal,
-    );
-    if (
-      source.type !== "oauth2-refresh-token" ||
-      source.state !== "ready" ||
-      source.ownerCapability !== "token_service" ||
-      source.tokenServiceInstanceId !== tokenServiceInstanceId ||
-      source.namespaceId !== session.namespaceId ||
-      source.consent.kind !== "connection_template" ||
-      source.connectionTemplateId !== session.connectionTemplateId ||
-      source.consent.version !== session.connectionTemplateVersion ||
-      source.consent.oauthClientId !== client.id ||
-      source.consent.ownerPrincipalId !== principalId ||
-      !isDeepStrictEqual(source.consent.requestedScopes, session.selectedScopes) ||
-      !isDeepStrictEqual(source.consent.grantedScopes, grant.grantedScopes)
-    ) {
-      throw new ResourceStateConflictError("TokenService returned an invalid OAuth Source.");
-    }
-    await deps.transact(async (state) => {
-      await grantConnectionOwner(state, source.namespaceId, principalId, source.id);
-      if (audit) {
-        await state.audit.append(audit(source));
+        signal,
+      );
+      if (
+        source.type !== "oauth2-refresh-token" ||
+        source.state !== "ready" ||
+        source.ownerCapability !== "token_service" ||
+        source.tokenServiceInstanceId !== tokenServiceInstanceId ||
+        source.namespaceId !== session.namespaceId ||
+        source.consent.kind !== "connection_template" ||
+        source.connectionTemplateId !== session.connectionTemplateId ||
+        source.consent.version !== session.connectionTemplateVersion ||
+        source.consent.oauthClientId !== client.id ||
+        source.consent.ownerPrincipalId !== principalId ||
+        !isDeepStrictEqual(source.consent.requestedScopes, session.selectedScopes) ||
+        !isDeepStrictEqual(source.consent.grantedScopes, grant.grantedScopes)
+      ) {
+        throw new ResourceStateConflictError("TokenService returned an invalid OAuth Source.");
       }
-    });
-    return source;
+      await deps.transact(async (state) => {
+        await grantConnectionOwner(state, source.namespaceId, principalId, source.id);
+        if (audit) {
+          await state.audit.append(audit(source));
+        }
+      });
+      return source;
+    } finally {
+      await deps.transact((state) => state.authenticationStates.releaseOAuth(session.id));
+    }
   }
   async function resolveConnectionClient(
     ref: OAuthAccountRef,
@@ -337,10 +383,15 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
         source.connectionTemplateId,
         source.consent.version,
       );
-      if (!version || version.oauthClientId !== source.consent.oauthClientId) {
+      if (!version) {
         throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
       }
-      const client = await connectionClientForVersion(view, ref.namespaceId, version);
+      const client = await connectionClientForVersion(
+        view,
+        ref.namespaceId,
+        version,
+        source.consent.oauthClientId,
+      );
       return {
         registration: {
           issuer: client.issuer,
@@ -362,24 +413,50 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       };
     });
   }
+  function eligibleClient(
+    client: Extract<StoredCredentialClient, { kind: "oauth2" }>,
+    namespaceId: string,
+    version: OAuthConnectionTemplateVersion,
+    owner: TokenServiceDriver,
+    instanceId: string,
+  ): boolean {
+    const scope = client.namespaceId === undefined ? "installation" : "namespace";
+    return (
+      (client.namespaceId === undefined || client.namespaceId === namespaceId) &&
+      owner.clientScopes.oauth2?.includes(scope) === true &&
+      (client.tokenEndpointAuthMethod === "none" || client.tokenServiceInstanceId === instanceId) &&
+      client.issuer === version.issuer &&
+      client.tokenUrl === version.tokenUrl &&
+      (version.revocationUrl === undefined || client.revocationUrl === version.revocationUrl) &&
+      (version.observed === undefined ||
+        (version.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
+          client.tokenEndpointAuthMethod,
+        ))
+    );
+  }
+
   async function connectionClientForVersion(
     view: PlatformReadView,
     namespaceId: string,
     version: OAuthConnectionTemplateVersion,
-  ) {
-    const client = version.oauthClientId
-      ? await view.connectionTemplates.findOAuthClient(version.oauthClientId)
-      : undefined;
+    clientId: string,
+  ): Promise<Readonly<OAuthClient>> {
+    const client = await view.connectionTemplates.findCredentialClient(clientId);
     if (
       !client ||
-      (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
-      client.issuer !== version.issuer ||
-      client.tokenUrl !== version.tokenUrl ||
-      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl)
+      client.kind !== "oauth2" ||
+      !eligibleClient(
+        client,
+        namespaceId,
+        version,
+        deps.selectedTokenServiceDriver(),
+        deps.currentTokenServiceInstanceId(),
+      )
     ) {
       throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
     }
-    return client;
+    const { tokenServiceInstanceId: _owner, ...metadata } = client;
+    return metadata;
   }
 
   async function connectionOwnerPolicy(
@@ -448,6 +525,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
 
   return {
     listUsableConnectionTemplates,
+    listEligibleOAuthClients,
     startNamespaceConnection,
     expireAuthenticationStates,
     completeNamespaceConnection,

@@ -2159,20 +2159,28 @@ test("reconnecting a saved MCP account clears the prior account's tool approvals
   const recipient = record(capabilities.slot.recipient);
   const issuers: unknown = capabilities.slot.issuers;
   assert.ok(Array.isArray(issuers) && typeof issuers[0] === "string");
+  const fakeClientId = `ccr_${crypto.randomUUID()}`;
   const fakeTemplate = {
-    id: `ct_${crypto.randomUUID()}`,
+    id: `ctp_${crypto.randomUUID()}`,
     namespaceId: namespace.id,
     displayName: "Controlled OAuth template",
     current: {
       mode: "mcp_discovery",
       issuer: issuers[0],
-      oauthClientId: `oc_${crypto.randomUUID()}`,
       mcp: { serverUrl: recipient.serverUrl, resource: recipient.resource },
       scopes: [],
     },
   };
   await page.route(`**/namespaces/${namespace.id}/connection-templates`, (route) =>
     route.fulfill({ json: { data: [fakeTemplate], meta: {} } }),
+  );
+  await page.route(`**/namespaces/${namespace.id}/connections/oauth-clients?*`, (route) =>
+    route.fulfill({
+      json: {
+        data: [{ kind: "oauth2", id: fakeClientId, displayName: "Controlled client" }],
+        meta: {},
+      },
+    }),
   );
   await page.route(`**/namespaces/${namespace.id}/connections`, (route) =>
     route.fulfill({
@@ -2198,7 +2206,12 @@ test("reconnecting a saved MCP account clears the prior account's tool approvals
   await dialog.getByRole("button", { name: "Connect account", exact: true }).click();
   const consent = page.getByRole("dialog", { name: "Connect an account", exact: true });
   const patch = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
+  const started = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && new URL(request.url()).pathname.endsWith("/connections"),
+  );
   await consent.getByRole("button", { name: "Connect and attach", exact: true }).click();
+  assert.equal((await started).postDataJSON().oauthClientId, fakeClientId);
   const attached = await patch;
   assert.equal(attached.status(), 200, await attached.text());
   await dialog.getByText("Account attached.", { exact: true }).waitFor();

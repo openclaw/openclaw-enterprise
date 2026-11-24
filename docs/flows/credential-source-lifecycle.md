@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-11-24
-last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
+last_updated_session: authoring-run/cb980faf-dd8e-4334-bc01-d795ff83eaeb
 ---
 
 # Credential source lifecycle flow
@@ -12,7 +12,7 @@ OpenClaw Control Plane (OCC) authorizes selected Sources and records approved po
 
 ## Entry Points
 
-- Trigger: register, bind, deploy, withdraw, update, retry delivery for, or retire a managed credential Source.
+- Trigger: register, adopt an existing Gateway PAT Source, bind, deploy, withdraw, update, retry delivery for, or retire a managed credential Source.
 - Source: `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 - Source: `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
 - Source: `packages/occ/src/agent-credential-retry.ts:pushAgentCredentials`
@@ -24,6 +24,8 @@ OpenClaw Control Plane (OCC) authorizes selected Sources and records approved po
 graph TD
   Select["<b>OCC</b><br/>Authorize create and validate optional Template"] --> Register["<b>TokenService</b><br/>Store credential and Source"]
   Register --> Associate["<b>OCC</b><br/>Grant creator access and audit"]
+  Adopt["<b>OCC</b><br/>Authorize unbound PAT Source"] --> Transfer["<b>TokenService</b><br/>Take custody, retire Gateway copy, commit same Source"]
+  Transfer --> Kind
   Associate --> Kind{"Template-associated Source?"}
   Kind -->|Yes| Discover["<b>OCC</b><br/>Resolve current Template for a selected Plugin Source"]
   Kind -->|No, model preset| Admit["<b>OCC</b><br/>Authorize Sources and save policies"]
@@ -59,13 +61,15 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`
 
-OCC authorizes `credential_source:create` on a ready Namespace and validates any static Connection Template before it calls TokenService. TokenService creates the Source, saves its optional Template ID, and stores the credential in private custody. OCC then grants the creator access and audits completion. The response contains only the Source ID and nonsecret metadata. See the [custody flow](token-service-static-custody.md) for failures between those commits.
+OCC checks `credential_source:create` and validates any static Template. TokenService creates the Source and stores the credential privately. OCC grants the creator access, audits completion, and returns nonsecret metadata. See the [custody flow](token-service-static-custody.md) for failures between commits.
 
 The same POST accepts Gateway and protected Proxy requests. OCC checks the owner and access to referenced Secrets before registration. See [existing Source registration](../reference/credential-sources/other-delivery-modes.md#register-a-source).
 
-OCC exchanges the authorization code from the [Template consent workflow](connection-templates.md#3-authorize-the-account-in-the-browser). TokenService then creates the OAuth Source and stores the tokens. OCC grants access and audits completion. The Source’s `connectionTemplateId` identifies the Template. `OAuthCredentialSource.consent` keeps the original consent version and client. Each new Plugin deployment resolves that Template’s current approved version. See [Source metadata](../reference/credential-sources.md#read-and-list-sources).
+After [Template consent](connection-templates.md#3-authorize-the-account-in-the-browser), TokenService creates the Source and stores the OAuth grant. The Source records the original Template version and client. Each new Plugin deployment resolves the Template’s current approved version. See [Source metadata](../reference/credential-sources.md#read-and-list-sources).
 
-For Codex device login, `packages/occ/src/device-authorization-flow.ts` checks the exact Agent and Source creation permissions, then stores the temporary challenge and issuer handle in `authentication_states`. After authorization, the selected TokenService exchanges the grant and asks OCC to recheck the session, caller, and selected owner before it creates the built-in OAuth Source and takes custody of the tokens. OCC grants the creator access, audits completion, and returns the Source ID. Cancelling an ungranted login creates no Source.
+For Codex device login, `packages/occ/src/device-authorization-flow.ts` checks Agent and Source creation permissions and saves the challenge and issuer handle. TokenService exchanges the grant. OCC rechecks the session, caller, and selected owner before TokenService creates the Source. Cancelling an ungranted login creates no Source.
+
+For a GitHub App installation Source, `apps/controller/src/drivers/token-service/occ.ts:createGitHubAppSource` reads the registered Client's current signing key, checks the selected Repository registry, and requests one finite installation token. TokenService saves the token privately before the Source becomes ready. Each Agent still requires its own saved Repository grants. At deploy, OCC includes the model and Git bindings in one revision. Worker rechecks the Source scope and the exact Repository routes before Credential Proxy configures OpenShell.
 
 <a id="3-bind-and-admit-an-agent-revision"></a>
 
@@ -141,6 +145,12 @@ For each authorized Source, OCC sends Proxy its exact reference and TokenService
 
 Before retirement, OCC checks stored Agent, revision, deployment and provisioning references. For Template-backed Sources it also asks the saved Plugin Drivers which Sources their slots select. A blocking reference returns `409` before OCC changes the Source, records OAuth revocation intent or touches custody. An authorized Agent operator can withdraw a deployed binding and remove the remaining references. Once clear, OCC records any OAuth revocation intent and asks the selected Proxy to retire delivery copies before TokenService removes custody. OpenShell requires prior detachment. A Proxy failure returns `503` and retains custody for retry. The OAuth worker also retries pending retirement. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
 
+### 7. Adopt an existing Gateway PAT Source
+
+`packages/occ/src/managed-credential-sources.ts:adoptCodexPatCredentialSource`, `apps/controller/src/drivers/token-service/occ.ts:adoptSource`
+
+OCC checks exact Source update and operate, plus operate on its same-Namespace Secret. TokenService locks the Source, refuses unsettled references, reads the Secret through its Driver, takes custody, confirms Gateway Provider removal, then commits the same-ID ownership change. Failed external effects cannot roll back with PostgreSQL and do not report success. See the [operator procedure](../guides/deploy/credential-lifecycle.md#adopt-a-gateway-codex-pat-source).
+
 ## Debugging and Verification
 
 The [staged Source and Agent integration](../../tests/integration/postgres-staged-agent-credential-binding.test.ts) covers DELETE, Stop, and withdrawal through Fastify and PostgreSQL with controlled Kubernetes and OpenShell transports. The [Worker integration](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts) covers active PATCH, retry authorization, and Proxy receipts with modeled attachments. See the [custody verification notes](token-service-static-custody.md#debugging-and-verification) for test setup and runtime proof limits.
@@ -159,6 +169,7 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 
 ## Changelog
 
+- 2026-11-24 12:24: Trace PAT adoption and its failure boundary. (authoring-run/cb980faf-dd8e-4334-bc01-d795ff83eaeb - eefcbef7958ee233386b3172384d1777ebbb693d)
 - 2026-11-24 10:41: Trace grant-only Codex login, native account delivery, renewal notification, and referenced Source refusal before revocation. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 - 2026-11-24 03:37: Clarify how TokenService creates a Source and how OAuth consent keeps its original Template version. (authoring-run/fce46218-b73c-4df8-94cb-dba64a455e23 - abdf66b8f3645433f29422b9783c24428f6f093c)
 
