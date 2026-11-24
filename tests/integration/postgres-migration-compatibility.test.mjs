@@ -2435,6 +2435,83 @@ test(
 );
 
 test(
+  "Codex device migration refuses a retained closed Gateway login without mutation",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "codex_device_cutover", { prefix: 94 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const actorId = `usr_${randomUUID()}`;
+    const sourceId = `cs_${randomUUID()}`;
+    const sessionId = `sec_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Migration fixture','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','migration-fixture',$1)",
+      [actorId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,owner_capability,state,created_at)
+       VALUES($1,$2,'Closed Codex login','codex-oauth','{}','credential-gateway-openshell','credential_gateway','ready',now())`,
+      [sourceId, namespaceId],
+    );
+    // Closing or expiring the old login retained its Gateway-shaped session and registered Source.
+    await db.app.query(
+      `INSERT INTO occ.authentication_states
+         (id,kind,namespace_id,actor_id,expires_at,binding,phase,next_poll_at,version)
+       VALUES($1,'device_authorization',$2,$3,now()-interval '1 hour',$4::jsonb,'cancelled',now()-interval '1 hour',1)`,
+      [
+        sessionId,
+        namespaceId,
+        actorId,
+        JSON.stringify({
+          harnessId: "codex",
+          credentialGatewayId: "credential-gateway-openshell",
+          credentialRefreshId: "credential-refresh-openshell",
+          sourceId,
+          intervalSeconds: 5,
+        }),
+      ],
+    );
+    const retainedData = async () =>
+      (
+        await db.app.query(
+          `SELECT to_jsonb(s) AS source,to_jsonb(a) AS session
+           FROM occ.credential_sources s JOIN occ.authentication_states a ON a.id=$2 WHERE s.id=$1`,
+          [sourceId, sessionId],
+        )
+      ).rows;
+    const before = await historySnapshot(db);
+    const retainedBefore = await retainedData();
+    assert.equal(before.receipts.length, 94);
+    assert.equal(retainedBefore.length, 1);
+    assert.deepEqual(
+      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
+        assert.ok(error instanceof Error);
+        const failure = error.cause ?? error;
+        assert.ok(failure instanceof Error);
+        assert.ok("code" in failure);
+        assert.equal(failure.code, "55000");
+        assert.equal(
+          failure.message,
+          "Codex device-login cutover requires disposition of residual temporary device authorization rows",
+        );
+      }),
+      { ok: false, code: "MIGRATION_FAILED" },
+    );
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(await retainedData(), retainedBefore);
+  },
+);
+
+test(
   "External ChatGPT migration rejects retired OAuth state and admits only source metadata",
   requiresHistoryPostgres,
   async (context) => {
