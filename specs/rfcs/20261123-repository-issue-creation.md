@@ -1,6 +1,6 @@
 ---
-status: Proposed
-implementation_status: Not implemented
+status: Accepted
+implementation_status: Partially implemented
 author: freeqaz-openai
 ---
 
@@ -21,7 +21,7 @@ An Agent should push fixes and open pull requests (PRs) in `acme/web` while leav
 
 ## Motivation
 
-The [shipped GitHub App policy](20261119-repository-network-policy.md) requires a separate REST setting and cannot create issues. An Admin should be able to choose one role per repository, review exceptions and edit them later from the Agent.
+The [original native GitHub App policy](20261119-repository-network-policy.md) required a separate REST setting and could not create issues. An Admin should be able to choose one role per repository, review exceptions and edit them later from the Agent.
 
 <a id="scope"></a>
 
@@ -77,15 +77,17 @@ To block **all unlisted resources, including future ones**, set `"default": "non
 
 **Indirect effects.** OpenShell checks direct routes without inspecting the request body. Issue reads can return PRs. Opening a PR can [convert an issue](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request) even with issue creation off. GitHub can label a new issue and [link it to a parent](https://docs.github.com/en/rest/issues/issues#create-an-issue) in another repository. Wider rollout depends on AC-4.
 
-### Per-Agent controls (separate follow-up)
+<a id="per-agent-controls-separate-follow-up"></a>
 
-New eligible [Create Agent](https://github.com/openclaw/openclaw-enterprise/pull/7178) forms default to **Per-repository access**. Check a repository to grant Contributor where Write is permitted, otherwise Read-only. Unselected repositories receive no grant. In the [proposed editor](https://github.com/openclaw/openclaw-enterprise/pull/7180), save the draft and customize exceptions in **Repositories → Manage permissions → Advanced**. Set Issues or Pull requests to Read-only to turn off creation independently. Show exceptions beside the role before deployment. A saved opt-out persists if the Namespace later permits that action.
+### Per-Agent controls
+
+New eligible [Create Agent](https://github.com/openclaw/openclaw-enterprise/pull/7178) forms default to **Per-repository access**. Check a repository to grant Contributor where Write is permitted, otherwise Read-only. Unselected repositories receive no grant. Save the draft and customize exceptions in **Repositories → Manage permissions → Advanced**. Set Issues or Pull requests to Read-only to turn off creation independently. Show exceptions beside the role before deployment. A saved opt-out persists if the Namespace later permits that action.
 
 For a running Agent, **Configuration → Edit repository permissions** opens the same editor. Preserve untouched grants and limits, including `default`. Show whether the saved policy version matches the deployed revision, differs or is unknown. Redeploy to apply changes. An Agent first deployed without a repository policy needs a new Agent ID to adopt one.
 
 ### Request lifecycle
 
-This proposed flow shows first deployment from the Console on stock OpenShell. The Controller rechecks Namespace limits at deploy. The version check covers only the Agent policy. Expanding Namespace permissions can enable new actions at deployment even if the Agent policy version stays the same.
+The flow shows first deployment from the Console on stock OpenShell. The Controller rechecks Namespace limits at deploy. The version check covers only the Agent policy. Expanding Namespace permissions can enable new actions at deployment even if the Agent policy version stays the same.
 
 ```mermaid
 sequenceDiagram
@@ -124,7 +126,11 @@ No new endpoints. Permit GitHub’s existing `POST /repos/{owner}/{repo}/issues`
 
 ### IAM
 
-No new permissions. Catalog hints require Installation administration and Namespace-wide Agent and policy read. Enabling edits requires Installation and Agent administration. Saving and deploying scoped grants require policy read/update and Agent `manage_policy`, in addition to normal create or deploy authority.
+No new permissions. Catalog hints require Installation administration and Namespace-wide Agent and policy read. Enabling edits requires Installation and Agent administration.
+
+The Console requires `read` on the Agent and SandboxPolicy to show the editor. [Policy PUT](../../docs/reference/sandbox-policies.md#repository-network-policy) requires Agent `manage_policy` and SandboxPolicy `update`. The first or any nonempty list requires Configuration and Harness credential source read access. An empty list, including withdrawal, requires SandboxPolicy `read`.
+
+Creation with grants enables editing, reads the policy and saves it under the same checks. Scoped deployment requires Agent `manage_policy` and SandboxPolicy `read` and `update`. Normal create and deploy permissions still apply.
 
 ### Database entities
 
@@ -155,4 +161,4 @@ Use the [installed workflow and evidence by criterion](../plans/20261123-reposit
 
 Remove retired settings before upgrade. Existing Write grants can gain issue or PR creation on redeployment. Set restrictions first. A running Sandbox keeps its loaded rules and can lose renewal after a change. The operator must Stop and verify Sandbox retirement to withdraw access immediately.
 
-The [plan](../plans/20261123-repository-issue-creation.md) records earlier controlled checks. Repeat them with `apiLimits`. Live parent-link effects and the deployed Console workflow remain unverified.
+The [plan](../plans/20261123-repository-issue-creation.md) records the merged policies, [Console editor](https://github.com/openclaw/openclaw-enterprise/pull/7180) and controlled checks. The upgrade sequence, live parent-link effects and the complete deployed Console workflow remain unverified.
