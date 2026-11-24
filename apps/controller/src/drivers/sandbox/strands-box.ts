@@ -175,6 +175,14 @@ const AGENT = "openclaw.dev/agent";
 const REVISION = "openclaw.dev/revision";
 const HASH = "openclaw.dev/strands-box-input-sha256";
 
+type StrandsBoxPolicySpec = Omit<ReturnType<typeof strandsBoxStaticNetworkPolicy>, "egress"> & {
+  readonly egress: readonly unknown[];
+};
+
+function policySpec(policy: KubernetesObject): unknown {
+  return networkPolicySpecToJson(asRecord(policy)?.spec as V1NetworkPolicySpec);
+}
+
 function isPodUid(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f-]{36}$/u.test(value);
 }
@@ -518,10 +526,10 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       const endpointEgress = (await this.endpointAddresses(context.signal)).map(
         strandsBoxEndpointEgress,
       );
-      await this.refreshEndpointPolicy(context, ref, current, [
-        ...networkPolicy.egress,
-        ...endpointEgress,
-      ]);
+      await this.refreshEndpointPolicy(context, ref, hash, current, {
+        ...networkPolicy,
+        egress: [...networkPolicy.egress, ...endpointEgress],
+      });
       await this.ensureDiagnosticService(context, ref, hash);
       return ref;
     }
@@ -535,6 +543,10 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     const endpointEgress = (await this.endpointAddresses(context.signal)).map(
       strandsBoxEndpointEgress,
     );
+    const resolvedPolicy = {
+      ...networkPolicy,
+      egress: [...networkPolicy.egress, ...endpointEgress],
+    };
     const resources = strandsBoxResources(
       context,
       this.options,
@@ -559,10 +571,11 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     }
     for (const resource of resources) {
       let current = await read(context, resource);
+      let created = false;
       if (!current) {
         try {
-          await api(context).create(networkPolicyToSdk(resource));
-          continue;
+          current = await api(context).create(networkPolicyToSdk(resource));
+          created = true;
         } catch (error) {
           current = await read(context, resource);
           if (!current) {
@@ -570,13 +583,16 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
           }
         }
       }
-      this.requireAdoptable(context, current, hash);
+      if (!created || resource.kind === "NetworkPolicy") {
+        this.requireAdoptable(context, current, hash);
+      }
       if (resource.kind === "NetworkPolicy") {
-        const policy = this.checkEndpointPolicy(current, networkPolicy);
-        await this.refreshEndpointPolicy(context, ref, policy, [
-          ...networkPolicy.egress,
-          ...endpointEgress,
-        ]);
+        if (created) {
+          this.requireAppliedPolicy(current, resolvedPolicy);
+        } else {
+          const policy = this.checkEndpointPolicy(current, networkPolicy);
+          await this.refreshEndpointPolicy(context, ref, hash, policy, resolvedPolicy);
+        }
       }
     }
     return ref;
@@ -626,7 +642,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     desired: ReturnType<typeof strandsBoxStaticNetworkPolicy>,
   ) {
     const { uid, resourceVersion } = policy.metadata!;
-    const spec = asRecord(networkPolicySpecToJson(asRecord(policy)?.spec as V1NetworkPolicySpec));
+    const spec = asRecord(policySpec(policy));
     if (!uid || !resourceVersion || !Array.isArray(spec?.egress)) {
       throw new Error("Strands Box revision NetworkPolicy is not adoptable.");
     }
@@ -660,13 +676,20 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     return { uid, resourceVersion, egress: spec.egress };
   }
 
+  private requireAppliedPolicy(policy: KubernetesObject, desired: StrandsBoxPolicySpec): void {
+    if (!isDeepStrictEqual(policySpec(policy), desired)) {
+      throw new Error("Strands Box revision NetworkPolicy differs from the submitted policy.");
+    }
+  }
+
   private async refreshEndpointPolicy(
     context: SandboxHarnessContext,
     ref: SandboxResourceRef,
+    hash: string,
     current: { uid: string; resourceVersion: string; egress: unknown[] },
-    egress: readonly unknown[],
+    desired: StrandsBoxPolicySpec,
   ): Promise<void> {
-    if (isDeepStrictEqual(current.egress, egress)) {
+    if (isDeepStrictEqual(current.egress, desired.egress)) {
       return;
     }
     const patch = {
@@ -678,9 +701,9 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         uid: current.uid,
         resourceVersion: current.resourceVersion,
       },
-      spec: { egress },
+      spec: { egress: desired.egress },
     };
-    await api(context).patch(
+    const applied = await api(context).patch(
       patch,
       undefined,
       undefined,
@@ -688,6 +711,8 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       undefined,
       PatchStrategy.MergePatch,
     );
+    this.requireAdoptable(context, applied, hash);
+    this.requireAppliedPolicy(applied, desired);
   }
 
   private async transportVerifier(context: SandboxHarnessContext): Promise<string> {

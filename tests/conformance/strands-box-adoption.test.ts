@@ -44,7 +44,9 @@ function harness() {
   const patches: Resource[] = [];
   const effects: {
     beforeRead?: (key: string, count: number) => void;
+    afterCreate?: (resource: Resource) => void;
     beforePatch?: (current: Resource) => void;
+    afterPatch?: (current: Resource) => void;
   } = {};
   const key = ({ kind, metadata }: Resource) => `${kind}/${metadata.name}`;
   const transport = {
@@ -87,8 +89,11 @@ function harness() {
           : structuredClone(resource);
       stored.metadata.uid = `uid-${id}`;
       stored.metadata.resourceVersion = "1";
+      effects.afterCreate?.(stored);
       resources.set(id, stored);
-      return stored;
+      return stored.kind === "NetworkPolicy"
+        ? ObjectSerializer.deserialize(structuredClone(stored), "V1NetworkPolicy")
+        : structuredClone(stored);
     },
     async patch(
       patch: Resource,
@@ -111,7 +116,8 @@ function harness() {
       }
       current.spec = { ...current.spec, ...patch.spec };
       current.metadata.resourceVersion = "2";
-      return current;
+      effects.afterPatch?.(current);
+      return ObjectSerializer.deserialize(structuredClone(current), "V1NetworkPolicy");
     },
   };
   Object.setPrototypeOf(client, KubernetesObjectApi.prototype);
@@ -194,6 +200,57 @@ for (const direction of ["ingress", "egress"] as const) {
   });
 }
 
+for (const [description, rule] of [
+  ["a CIDR range", endpoint("127.0.0.0/24")],
+  [
+    "an additional peer",
+    { ...endpoint("127.0.0.1/32"), to: [...endpoint("127.0.0.1/32").to, { podSelector: {} }] },
+  ],
+  [
+    "a port range",
+    { ...endpoint("127.0.0.1/32"), ports: [{ protocol: "TCP", port: 31443, endPort: 31444 }] },
+  ],
+] as const) {
+  test(`Strands Box refuses a previous endpoint rule with ${description}`, async () => {
+    const f = harness();
+    await f.provision();
+    const spec = f.resources.get(f.policy)?.spec;
+    assert.ok(spec?.egress);
+    spec.egress.splice(-1, 1, structuredClone(rule));
+    await assert.rejects(f.provision(), /endpoint rule/);
+    assert.deepEqual(f.patches, []);
+  });
+}
+
+test("Strands Box stops before workload creation when admission broadens the created policy", async () => {
+  const f = harness();
+  f.effects.afterCreate = (resource) => {
+    if (resource.kind === "NetworkPolicy") {
+      // A mutating admission webhook can add this valid allow-all rule before storage.
+      resource.spec!.egress!.push({});
+    }
+  };
+  await assert.rejects(f.provision(), /NetworkPolicy/);
+  assert.ok(f.resources.has(f.policy));
+  assert.ok(!f.creates.includes(f.deployment));
+  assert.deepEqual(f.patches, []);
+});
+
+test("Strands Box refuses a policy broadened by admission during endpoint refresh", async () => {
+  const f = harness();
+  await f.provision();
+  const policy = f.resources.get(f.policy);
+  assert.ok(policy?.spec?.egress);
+  policy.spec.egress.splice(-1, 1, endpoint("127.0.0.1/32"));
+  f.effects.afterPatch = (current) => {
+    current.spec!.ingress!.push({});
+  };
+
+  await assert.rejects(f.provision(), /NetworkPolicy/);
+  assert.equal(f.patches.length, 1);
+  assert.deepEqual(policy.spec.ingress?.at(-1), {});
+});
+
 test("Strands Box endpoint refresh does not overwrite a newer policy version", async () => {
   const f = harness();
   await f.provision();
@@ -241,6 +298,20 @@ test("Strands Box reuses matching ConfigMap created after preflight", async () =
   assert.deepEqual(await f.provision(), f.ref);
   assert.ok(!f.creates.includes(f.configMap));
   assert.ok(f.creates.includes(f.deployment));
+});
+
+test("Strands Box refuses a deleting ConfigMap with matching revision metadata", async () => {
+  const f = harness();
+  await f.provision();
+  f.resources.delete(f.deployment);
+  const configMap = f.resources.get(f.configMap);
+  assert.ok(configMap);
+  configMap.metadata.deletionTimestamp = new Date("2026-11-24T00:00:00Z");
+  const created = f.creates.length;
+
+  await assert.rejects(f.provision(), /not adoptable/);
+  assert.equal(f.creates.length, created);
+  assert.deepEqual(f.patches, []);
 });
 
 test("Strands Box refuses policy drift introduced after successful preflight", async () => {
