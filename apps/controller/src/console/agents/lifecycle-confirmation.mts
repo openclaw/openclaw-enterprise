@@ -139,7 +139,7 @@ export function keptResources(agent: AgentRead) {
       ? element(
           "p",
           {},
-          "If you have access, open Secrets in this Namespace, search by ID and select the Secret to review Consumers.",
+          "If you have access, open Credentials → Secrets in the sidebar. In this Namespace, find the Secret by ID to review its Consumers.",
         )
       : null,
   );

@@ -251,8 +251,9 @@ version. See [Stop and resume](../../reference/agents/deployment.md#stop-and-res
 **Permanently delete Agent** irreversibly removes the Agent, version history,
 and workspace data. Namespace Configurations and Secrets remain. Open
 **View retained resource IDs** to see the Namespace and Configuration IDs. If
-the dialog shows a model credential Secret ID, open [Secrets](secrets.md) in
-that Namespace if you have access. Search by ID, select the Secret, and review
+the dialog shows a model credential Secret ID and you have access, choose
+**Credentials** in the sidebar and use the [Secrets](secrets.md) tab for that
+Namespace. Search by ID, select the Secret, and review
 **Consumers**. The confirmation cannot determine whether another resource still
 uses the Configuration or Secret. Exact Agent `delete` permission is required.
 After deletion starts, cleanup status replaces the tabs.

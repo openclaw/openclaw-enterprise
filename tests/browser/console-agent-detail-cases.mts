@@ -158,16 +158,6 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     await page.getByRole("heading", { name: "Cancel Candidate" }).waitFor();
     requests.length = 0;
 
-    await page.getByRole("button", { name: "Delete Agent" }).click();
-    const dialog = page.getByRole("dialog", { name: "Delete Cancel Candidate?" });
-    await dialog.getByText(/Agent, its version history, and its workspace data/i).waitFor();
-    const harnessAuth = agent.harnessAuth;
-    assert.ok(harnessAuth?.method === "api_key");
-    const cancel = dialog.getByRole("button", { name: "Cancel" });
-    assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
-    assert.match(await accessibleDescription(dialog), /This cannot be undone\./);
-    assert.ok((await accessibleDescription(dialog)).endsWith(keptConfigurationAndSecret));
-
     // The disclosure is a keyboard-reachable lookup aid. It cannot initiate a request or write
     // to the clipboard. Count any Clipboard API access without granting browser permissions.
     const clipboardAccesses = await page.evaluateHandle(() => {
@@ -183,7 +173,18 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
       return () => count;
     });
     await waitForIdleFetches(page);
-    const beforeDisclosure = requests.length;
+    const beforeOpen = requests.length;
+
+    await page.getByRole("button", { name: "Delete Agent" }).click();
+    const dialog = page.getByRole("dialog", { name: "Delete Cancel Candidate?" });
+    await dialog.getByText(/Agent, its version history, and its workspace data/i).waitFor();
+    const harnessAuth = agent.harnessAuth;
+    assert.ok(harnessAuth?.method === "api_key");
+    const cancel = dialog.getByRole("button", { name: "Cancel" });
+    assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
+    assert.match(await accessibleDescription(dialog), /This cannot be undone\./);
+    assert.ok((await accessibleDescription(dialog)).endsWith(keptConfigurationAndSecret));
+
     const disclosure = dialog.getByText("View retained resource IDs", { exact: true });
     const configuration = dialog.getByText(agent.configurationId, { exact: true });
     const secret = dialog.getByText(harnessAuth.source.id, { exact: true });
@@ -212,7 +213,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     assert.equal(await secret.evaluate((node) => getComputedStyle(node).overflowWrap), "anywhere");
     await dialog
       .getByText(
-        "If you have access, open Secrets in this Namespace, search by ID and select the Secret to review Consumers.",
+        "If you have access, open Credentials → Secrets in the sidebar. In this Namespace, find the Secret by ID to review its Consumers.",
         { exact: true },
       )
       .waitFor();
@@ -233,7 +234,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     await settlePageRequests(page);
     assert.deepEqual(
       requests
-        .slice(beforeDisclosure)
+        .slice(beforeOpen)
         .filter(({ path }) => !path.startsWith("/console/favicon-16.png?request-sentinel=")),
       [],
     );
