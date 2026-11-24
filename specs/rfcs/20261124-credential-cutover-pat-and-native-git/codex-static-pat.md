@@ -16,7 +16,7 @@ For an Agent bound directly to a PAT Secret, the operator re-enters the PAT thro
 
 OCC checks exact ServiceAccount update and Namespace Source create permissions before asking the ServiceAccount Driver to mint. The Driver passes the freshly issued bearer in-process to the selected TokenService's existing static Codex PAT enrollment. The API returns the Source reference. The Agent uses ordinary exact Source operate grants.
 
-TokenService commits custody in its own Namespace transaction. The ServiceAccount issuance flow resumes to record the Source reference and issuer receipt, then audits completion. On a failed enrollment, the issuer revokes the new credential. The ServiceAccount Driver retains the private issuer credential ID for exact revocation and removes the upstream credential when the ServiceAccount is deleted. A managed binding cannot be replaced or discarded through generic static Source mutation. TokenService holds the sole stored bearer. Existing issued Secret credentials require replacement through fresh issuance.
+TokenService commits custody in its own Namespace transaction. The ServiceAccount issuance flow resumes to record the Source reference and issuer receipt, then audits completion. If enrollment or ServiceAccount finalization fails, the issuer revokes the new credential once OCC confirms the failure. The ServiceAccount Driver retains the private issuer credential ID for exact revocation and removes the upstream credential when the ServiceAccount is deleted. A managed binding cannot be replaced or discarded through generic static Source mutation. TokenService holds the sole stored bearer. Existing issued Secret credentials require replacement through fresh issuance.
 
 ## PAT recipient and enforcement
 
@@ -64,6 +64,6 @@ Reuse static custody, Source IAM, and ordinary Proxy push. Specialize only the C
 ## Acceptance criteria
 
 - Through authenticated Fastify and PostgreSQL, enroll a PAT as a static Source, bind it to an Agent, and verify that hosted Apps gets its account identity from the issuer. Check permission denial before hosted requests and preserve Namespace Secrets and inactive revisions during cutover.
-- Through authenticated ServiceAccount issuance, verify that a caller missing Source create cannot mint, a new Source binds as the Codex PAT, and a failed enrollment revokes the minted credential. Verify issuer revocation on ServiceAccount deletion.
+- Through authenticated ServiceAccount issuance, verify that a caller missing Source create cannot mint, a new Source binds as the Codex PAT, and a failed enrollment or finalization revokes the minted credential. Verify issuer revocation on ServiceAccount deletion.
 - Through ordinary Agent deployment, verify the trusted executable, admitted request policy, native Provider delivery and Source-update push, placeholder-only startup, and serving-process `personalAccessToken` readiness. Invalid authority, policy, or login must prevent activation.
 - Separately qualify a genuine Codex model turn and native Git on the final candidate. PostgreSQL and controlled transport checks do not prove live enforcement or authentication.
