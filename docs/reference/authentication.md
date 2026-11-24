@@ -1,20 +1,19 @@
 # Authentication
 
-OpenClaw Control Plane (OCC) authenticates human API clients with
-sessions from email/password sign-in or an enrolled
-Google or OIDC identity. OIDC supports opt-in
-[team enrollment](authentication/team-enrollment.md). Non-Agent automation uses service
-API keys. Better Auth owns
-password verification, revocable session cookies, and hashed API-key storage.
-The selected IAM Driver resolves the authenticated account or service identity
-to an explicitly provisioned Principal or ServicePrincipal and owns
-[authorization](authorization.md).
+OpenClaw Control Plane (OCC) supports email/password, Google and OpenID Connect (OIDC)
+sessions. Opt-in OIDC [team enrollment](authentication/team-enrollment.md)
+checks group claims at sign-in. When `createAccount.enabled` is true, OCC can create
+accounts for admitted identities meeting the profile requirements.
 
-See [human administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator)
-or the [service-key procedure](authentication/service-api-keys.md).
-The [platform console](console.md) at `/console/` uses these session endpoints. Unrestricted public signup, OIDC
-provisioning or claim mapping, and bearer credentials are unsupported; generic OIDC
-sign-in for enrolled accounts is in [OIDC sign-in](../guides/deploy/oidc-sign-in.md).
+Non-Agent automation uses service API keys. Better Auth verifies passwords,
+issues revocable session cookies and stores hashed API keys. The selected IAM
+Driver resolves each identity to an explicitly provisioned Principal or ServicePrincipal
+and owns [authorization](authorization.md).
+
+See [administrator sign-in](authentication/service-api-keys.md#sign-in-as-a-human-administrator),
+[service keys](authentication/service-api-keys.md) and [OIDC sign-in](../guides/deploy/oidc-sign-in.md).
+The [Console](console.md) at `/console/` uses the session endpoints under `/api/auth/`.
+OCC offers no unrestricted public signup or Controller API bearer authentication.
 
 ## Installation and account ownership
 
@@ -100,6 +99,18 @@ not require Origin, and an invalid key never falls back to a session cookie.
 | `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                                                                 |
 | `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                                                                        |
 
+Session cookies use `Secure`, `HttpOnly`, `SameSite=Lax` and `Path=/`.
+`OCC_AUTH_BASE_URL` sets the trusted origin. The default name is
+`__Secure-openclaw_occ_shared.session_token`. [Host-only exchange](#native-admin-shared-sessions)
+uses `__Host-openclaw_occ.session_token` and requires guarded OIDC without Google.
+The checked-in OpenAPI contract names `openclaw_occ.session_token`. With authentication
+configured, the controller builds its schema with the active cookie name.
+
+For a valid session, inspection exposes only `authenticated`, `sessionKey` and account
+`id`, `email` and `name`. OCC checks stored sessions without cookie caching.
+Protected session requests reject missing, expired, revoked or forged sessions
+and any `Authorization` header.
+
 Human-session Namespace IAM writes retain assigning authority through their transaction; see
 [Sharing commit guarantees](authorization.md#manage-namespace-policy).
 
@@ -167,14 +178,15 @@ wrong passwords return `429`.
 
 ### Known devices
 
-Every successful sign-in, password or external, sets `__Host-occ_known_device`
-(`occ_known_device` over plain HTTP): HttpOnly, `SameSite=Strict`, `Path=/`, no
-`Domain`, 90 days. It holds up to three entries, one per recent account, each an
-HMAC under the auth secret over a hash of the account's email, the issue time and
-a random nonce, so every sign-in gets its own entry; it never carries the email.
-Each entry is also bound to the account's password: its user, password method and
-that method's authentication version, which the database bumps on every password
-change. An external sign-in marks the browser only when the account has a password.
+Successful sign-in updates `__Host-occ_known_device` only when the account’s
+password state is available. Otherwise this cookie stays unchanged. It uses
+`Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`, no `Domain` and a 90-day lifetime.
+It holds entries for up to three recent accounts. Each new entry replaces any for the same email.
+OCC uses the auth secret to compute an HMAC over the email hash, issue time
+and a random nonce.
+The cookie omits the email. Each entry binds the user, password method and
+authentication version, which increases on every password change.
+
 When fresh account proof is available, a later password attempt with a valid
 entry spends that browser's own budget, the size of the email's, and does not
 wait for the email's slowed slots. Spending the shared email budget alone cannot
@@ -201,18 +213,8 @@ limits proof reads to 30 per signed entry per minute, two active per entry,
 queue. If a read fails or is refused, its signed entry keys also constrain the
 ordinary email/address lane: losing proof cannot reopen a spent device allowance.
 These keys never grant an exemption. Reserved accounts retain the existing paced
-password check. Rotating the auth secret invalidates every entry; the next
-successful sign-in issues a new one. A new browser gets no exemption.
-
-The controller configures the Better Auth cookie with the `openclaw_occ`
-prefix; the OpenAPI contract names it `openclaw_occ.session_token`. Cookies are
-HTTP-only, use `SameSite=Lax`, and cover `/`. Production enables secure cookies;
-the configured base URL is also the trusted origin. Session inspection exposes
-only `authenticated`, `sessionKey`, and the account's `id`, `email`, and `name`.
-
-Protected requests resolve the current stored session with cookie caching
-disabled. A missing, expired, revoked, or forged session is rejected, as is an
-`Authorization` header even alongside a session cookie.
+password check. Rotating the auth secret invalidates every entry.
+Reissuance at sign-in still requires password state. A new browser gets no exemption.
 
 ## External sign-in for existing accounts
 
