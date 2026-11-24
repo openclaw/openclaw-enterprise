@@ -4262,15 +4262,15 @@ test("embedded custom provider deploys through the existing Secret binding workf
     name: "Configured provider consumer",
     secretName: "configured-provider-key",
   });
-  const saved = await request(context.app, "GET", item);
-  assert.equal(saved.status, 200);
-  assert.deepEqual(saved.body.data.values.models, values.models);
+  const saved = await readData(context, item);
+  assert.deepEqual(saved.values.models, values.models);
   await deployAccepted(context, agentPath);
-  const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
-  assert.equal(revisions.status, 200);
-  assert.equal(revisions.body.data.length, 1);
-  assert.equal(revisions.body.data[0].harness.mode, "embedded");
-  assert.equal((await readData(context, agentPath)).harnessAuth.method, "api_key");
+  const revisions = await readData(context, `${agentPath}/revisions`);
+  assert.equal(revisions.length, 1);
+  assert.equal(revisions[0].harness.mode, "embedded");
+  const { harnessAuth } = await readData(context, agentPath);
+  assert.equal(harnessAuth.method, "api_key");
+  assert.equal(harnessAuth.source.kind, "secret");
   for (const apiKey of [
     "${OPENAI_API_KEY}",
     { source: "env", provider: "default", id: "OTHER_KEY" },
@@ -4278,21 +4278,27 @@ test("embedded custom provider deploys through the existing Secret binding workf
     const invalid = structuredClone(values);
     invalid.models.providers.router.apiKey = apiKey;
     const edited = await request(context.app, "PATCH", item, { body: { values: invalid } });
-    assert.equal(edited.status, 400, JSON.stringify(edited.body));
-    assert.match(JSON.stringify(edited.body), /OCE_MODEL_API_KEY/);
+    assert.equal(edited.status, 400);
+    assert.equal(edited.body.error.code, "INVALID_REQUEST");
+    assert.match(
+      edited.body.error.message,
+      /\bmodels\.providers\.router\.apiKey\b.*\bOCE_MODEL_API_KEY\b/,
+    );
   }
-  const competing = await request(context.app, "PATCH", agentPath, {
-    body: {
-      secretBindings: {
-        OCE_MODEL_API_KEY: {
-          source: {
-            kind: "secret",
-            namespaceId: namespace.id,
-            id: "sec_00000000-0000-4000-8000-000000000001",
-          },
-        },
-      },
-    },
-  });
-  assert.equal(competing.status, 400, JSON.stringify(competing.body));
+  const secretBindings = { OCE_MODEL_API_KEY: { source: harnessAuth.source } };
+  const misplaced = await request(context.app, "PATCH", agentPath, { body: { secretBindings } });
+  assert.equal(misplaced.status, 400);
+  assert.equal(misplaced.body.error.code, "INVALID_REQUEST");
+  assert.match(misplaced.body.error.message, /^The request does not match the operation contract/);
+
+  const reserved = await request(context.app, "PATCH", item, { body: { values, secretBindings } });
+  assertRefused(
+    reserved,
+    "A secret binding destination uses the reserved prefix OCE_MODEL_API_KEY*: OCE_MODEL_API_KEY.",
+  );
+  assert.deepEqual(reserved.body.error.details, [
+    { path: "/secretBindings/OCE_MODEL_API_KEY", code: "INVALID_VALUE" },
+  ]);
+  assert.deepEqual(await readData(context, item), saved);
+  assert.deepEqual((await readData(context, agentPath)).harnessAuth, harnessAuth);
 });
