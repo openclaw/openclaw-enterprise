@@ -619,6 +619,21 @@ export function renderSecrets(
     const { value, reveal, multiline } = secretValueControl("secret-value", {
       "aria-describedby": valueNoticeId,
     });
+    if (value instanceof HTMLTextAreaElement) {
+      value.addEventListener("keyup", (event) => {
+        if (
+          event.isTrusted &&
+          event.key === "Tab" &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          document.activeElement === value
+        ) {
+          // Native Tab can leave the textarea clipped when its caret is already visible.
+          value.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }
+      });
+    }
     const valueField = field({
       label: "Value",
       control: value,

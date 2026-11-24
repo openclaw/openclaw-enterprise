@@ -3647,6 +3647,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .secret-value--masked {
   -webkit-text-security: disc;
 }
+.secret-dialog {
+  scroll-padding-block: var(--space-2);
+}
 .secret-dialog h3,
 .secret-dialog h4 {
   margin-top: var(--space-4);

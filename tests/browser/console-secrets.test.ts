@@ -67,13 +67,39 @@ const secretPath = (namespace: Namespace) => `/namespaces/${namespace.id}/secret
 const dialog = (page: Page, name: string) => page.getByRole("dialog", { name, exact: true });
 const SECRET_REFERENCED = "This Secret is referenced.";
 
-async function createFromConsole(page: Page, name: string, value: string) {
-  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
-  const form = dialog(page, "Create Secret");
-  await form.getByLabel("Secret name", { exact: true }).fill(name);
-  await form.getByLabel("Value", { exact: true }).fill(value);
-  await form.getByRole("button", { name: "Create Secret", exact: true }).click();
-  await dialog(page, "Secret created").getByRole("button", { name: "Close" }).click();
+async function expectSecretFocusInView(control: Locator, stop: string) {
+  const { focused, outlined, clearance } = await control.evaluate((node) => {
+    const dialog = node.closest("dialog");
+    if (!dialog) {
+      throw new Error("The Secret control is outside its dialog");
+    }
+    const box = node.getBoundingClientRect();
+    const bounds = dialog.getBoundingClientRect();
+    const left = bounds.left + dialog.clientLeft;
+    const top = bounds.top + dialog.clientTop;
+    const style = globalThis.getComputedStyle(node);
+    const outlineWidth = Number.parseFloat(style.outlineWidth);
+    const outlineReach = Math.max(0, outlineWidth + Number.parseFloat(style.outlineOffset));
+    // The outline must fit inside both the dialog's scrollport and the viewport.
+    const clearance =
+      Math.min(
+        box.left - Math.max(left, 0),
+        box.top - Math.max(top, 0),
+        Math.min(left + dialog.clientWidth, globalThis.innerWidth) - box.right,
+        Math.min(top + dialog.clientHeight, globalThis.innerHeight) - box.bottom,
+      ) - outlineReach;
+    return {
+      focused: node === globalThis.document.activeElement && node.matches(":focus-visible"),
+      outlined: style.outlineStyle !== "none" && outlineWidth > 0,
+      clearance,
+    };
+  });
+  assert.equal(focused, true, `${stop} has visible keyboard focus`);
+  assert.equal(outlined, true, `${stop} draws a focus outline`);
+  assert.ok(
+    clearance >= -0.5,
+    `${stop} must fit with its focus outline (${clearance}px clearance)`,
+  );
 }
 
 async function fillDirectoryTemplate(editor: Locator) {
@@ -756,14 +782,38 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   });
   const other = await fixture.createNamespace("Other tenant", { ready: true });
   await fixture.createSecret(other.id, "Other tenant credential", "synthetic-other-value");
-  const { page } = await newPage(t, fixture, { browser });
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 640, height: 360 }, reducedMotion: "reduce" },
+  });
   await login(page, fixture, secretsUrl(namespace));
   await page.locator(settledView).getByRole("heading", { name: "No Secrets yet" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Other tenant credential" }).count(), 0);
 
+  await page.getByRole("button", { name: "Create Secret", exact: true }).press("Enter");
+  const creation = dialog(page, "Create Secret");
+  const name = creation.getByLabel("Secret name", { exact: true });
+  const value = creation.getByLabel("Value", { exact: true });
+  assert.equal(await hasFocus(name), true);
+  await page.keyboard.press("Tab");
+  await expectSecretFocusInView(
+    creation.getByRole("button", { name: "Show value" }),
+    "Create Show value",
+  );
+  // On the short sheet, Chromium can focus the caret while the bottom of Value is clipped.
+  await page.keyboard.press("Tab");
+  await expectSecretFocusInView(value, "Create Value after Tab");
+  await page.keyboard.press("Tab");
+  await expectSecretFocusInView(creation.getByRole("button", { name: "Close" }), "Create Close");
+  await page.keyboard.press("Shift+Tab");
+  await expectSecretFocusInView(value, "Create Value after Shift+Tab");
+
   // New material is opaque: spaces, Unicode and newlines must reach storage unchanged.
   const original = "  synthetic-console-credential\nsecond line π  ";
-  await createFromConsole(page, "Shared model", original);
+  await name.fill("Shared model");
+  await value.fill(original);
+  await creation.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog(page, "Secret created").getByRole("button", { name: "Close" }).click();
   const listed = await fixture.request("GET", secretPath(namespace));
   assert.equal(listed.status, 200);
   const { data: secrets }: SecretListResponse = listed.body;
@@ -781,8 +831,21 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     .getByRole("button", { name: "Replace value", exact: true })
     .click();
   const replacement = dialog(page, "Replace Secret value");
-  assert.equal(await replacement.getByLabel("Value", { exact: true }).inputValue(), "");
-  await replacement.getByLabel("Value", { exact: true }).fill("synthetic-console-replacement");
+  const replacementValue = replacement.getByLabel("Value", { exact: true });
+  assert.equal(await replacementValue.inputValue(), "");
+  await page.keyboard.press("Tab");
+  await expectSecretFocusInView(
+    replacement.getByRole("button", { name: "Close" }),
+    "Replace Close",
+  );
+  await page.keyboard.press("Shift+Tab");
+  await expectSecretFocusInView(replacementValue, "Replace Value after Shift+Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expectSecretFocusInView(
+    replacement.getByRole("button", { name: "Show value" }),
+    "Replace Show value",
+  );
+  await replacementValue.fill("synthetic-console-replacement");
   await replacement.getByRole("button", { name: "Replace value", exact: true }).click();
   await dialog(page, "Secret value replaced").getByRole("button", { name: "Close" }).click();
   assert.equal(storage.valueFor(secret), "synthetic-console-replacement");
