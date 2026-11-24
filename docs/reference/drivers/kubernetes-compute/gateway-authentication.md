@@ -23,10 +23,20 @@ identities containing `@`, so such variants would share one grant.
 > **Access withdrawal is not execution cancellation.** Already accepted work,
 > including background commands, may continue after a role change or
 > Gateway-access removal. This feature does not guarantee cancellation before
-> further effects. Remove the person from both `allowUsers` and `identityScopes`;
-> identity grants can also authorize linked channel identities. Withdrawal does
-> not delete saved personal model accounts or clear existing sessions' account
-> selections. Revoke credentials with the provider when their use must stop.
+> further effects.
+>
+> - For static ingress, remove the person from both `allowUsers` and
+>   `identityScopes`. Review the Configuration and redeploy each affected running
+>   Agent with the change. Identity grants can also authorize linked channel identities.
+> - For [OCC browser access](#occ-browser-delegation), withdraw both effective
+>   permissions on the Agent, `administer` and `operate`. Check direct and Group
+>   [bindings](../../authorization.md#access-bindings-and-groups) on this Agent
+>   and across its Namespace or Installation. Removing `administer` alone can
+>   leave chat available.
+>
+> Withdrawal does not delete saved personal model accounts or clear existing
+> sessions' account selections. Revoke credentials with the provider when their
+> use must stop.
 >
 > **IdP withdrawal has no OCE revocation deadline.** When identity-provider account
 > disablement or group-membership removal blocks new Gateway admission depends

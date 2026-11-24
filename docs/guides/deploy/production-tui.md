@@ -18,9 +18,11 @@ into the selected gateway. The Agent needs a valid model credential and the
 
 ## Select and verify the requested version
 
-Use the requested `REVISION_ID`. This Bash function waits up to five minutes
-for OCC to select it and for exactly one Ready gateway Pod to mount its
-immutable ConfigMap. A previous version cannot satisfy both checks:
+Use the requested `REVISION_ID`. This function makes up to 60 attempts and waits
+five seconds between attempts. Commands can extend the wait beyond five
+minutes. The function checks that OCC has selected the requested revision. It
+selects exactly one Running, Ready gateway Pod with matching labels and a
+volume referencing that revision’s ConfigMap. It excludes terminating Pods.
 
 ```bash
 # Single-cluster shares the tenant; two-cluster dedicated uses the control target.
@@ -86,9 +88,10 @@ print(ready[0]["metadata"]["name"])
 }
 ```
 
-Attach only after the lookup succeeds. If it times out, check [deployment
-status](../../reference/agents.md#deployment-status) and retry; do not use a
-previous Pod or the Agent-wide Service.
+Attach only after the lookup succeeds. If all 60 attempts find no match,
+check [deployment status](../../reference/agents.md#deployment-status) and
+retry. Resolve any command error or multiple matches before retrying. Do not
+use a previous Pod or the Agent-wide Service.
 
 ```bash
 if GATEWAY_POD="$(find_gateway_for_revision)"; then
