@@ -2219,6 +2219,8 @@ async function loadPage({
       unchanged =
         namespaceId === current.namespace &&
         validations.every((result) => result.status === "fulfilled") &&
+        (!current.agentId ||
+          matchesAgentIdentity(firstAgent, current.agentId, selectedNamespace)) &&
         // A matching refusal or malformed summary cannot readmit a foreground Agent view.
         (!confirmDetailPermissions || isAgentPermissionSummary(fresh.get(agentPermissionsPath))) &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
