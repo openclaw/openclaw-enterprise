@@ -685,12 +685,6 @@ export function resolveCurrentGitHubRepositoryBinding(
   namespaceId: string,
   binding: AdmittedRepositoryBinding,
 ): AdmittedRepositoryBinding | undefined {
-  if (
-    binding.profile === "github-repository" &&
-    !repositorySelections(registry, namespaceId)?.has(binding.repositoryRef)
-  ) {
-    return undefined;
-  }
   const current = resolveGitHubRepositoryBinding(registry, {
     namespaceId,
     repositoryRef: binding.repositoryRef,
