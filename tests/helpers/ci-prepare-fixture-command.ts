@@ -360,7 +360,8 @@ async function fakeCommand({
       const project = argument(4);
       assert.match(project, /^openclaw_ci_pg_/);
       if (equals(args.slice(5), ["up", "-d", "--wait"])) {
-        assert.equal(env.OCC_POSTGRES_PORT, "0");
+        // Podman Compose needs an explicitly empty host port; Docker Compose uses 0.
+        assert.equal(env.OCC_POSTGRES_PORT, command === "podman" ? "" : "0");
         const port = 45000 + postgresServers.size;
         assert.ok(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, "the fixture sets the socket directory");
         postgresServers.set(
