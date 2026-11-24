@@ -35,8 +35,11 @@ stories retain their older profile fixtures.
    awaiting verification**. Discovery must not rewrite the inherited selection,
    send a PATCH, or make Channels unavailable. Once discovery completes,
    **Choose approved access** appears and Save remains disabled. Clear **Use
-   Agent default** for application and choose **Repository collaborator**.
-   Only this explicit edit permits saving collaborator access.
+   Agent default** for application and choose **Contributor**. Only this explicit
+   edit permits saving collaborator access. Save, then choose **Account → Settings**
+   during the ten-second Agent read. Repositories stays open with the edit selected
+   and a wait message. After the saved message, open Settings and go back to confirm
+   the custom collaborator access remains saved.
 3. The Read-only story operates the default radio and repository checkbox through
    the real UI. Confirm Read-only remains selected and Save is disabled. Choose
    an explicit collaborator override: Save succeeds while the default stays
@@ -64,3 +67,19 @@ Both states direct you to your Namespace operator. In the search story, replace
 the query with `application`. Matching repository choices return and the help
 disappears. Compare with **Repository discovery pending** and **Repository
 discovery denied**, which display their own status instead.
+
+## First-deployment warning
+
+Open **GitHub repository access** under **Pages / Create Agent**
+(`createGitHubRepositoryGrants`). The story starts with two repositories
+selected and **Save Agent draft** available. Uncheck both. Before **Create Agent**,
+check the warning about deployment without a repository policy. Select a repository
+again. The warning disappears and **Save Agent draft** returns. **Access profiles**
+retains its existing hint.
+
+Open **Set permissions on a saved draft** under **Pages / Agent detail**
+(`repositoryPermissionsDraft`). Read the conditional warning before **Deploy new
+version**, then follow **Set repository permissions**. This story has a profile
+binding and simulated policy data; it does not cover an empty-binding draft or a
+confirmed deny-all policy. Neither story establishes real deployment, policy
+persistence, authorization, or runtime repository access.

@@ -1,7 +1,7 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
-  admitRepositoryNetworkPolicy,
+  isCanonicalRepositoryNetworkPolicy,
   assertExecutionAdmission,
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
@@ -664,7 +664,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
   cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
-  cs.token_service_instance_id,
+  cs.token_service_instance_id, cs.backend_ref,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -744,6 +744,9 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
           ...(row.token_service_instance_id == null
             ? {}
             : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
+          ...(row.backend_ref == null
+            ? {}
+            : { backendRef: jsonObject(row.backend_ref) as Record<string, string> }),
         }
       : { ownerCapability, driverId: text(row, "driver_id") }),
     state,
@@ -823,7 +826,7 @@ function executionAdmissionFromRow(
       (hasReaderVersion &&
         (policy?.version !== 1 ||
           repositoryNetworkPolicyVersion !== policy.version ||
-          !isDeepStrictEqual(admitRepositoryNetworkPolicy(policy.grants, policy.grants), policy)))
+          !isCanonicalRepositoryNetworkPolicy(policy)))
     ) {
       throw new Error("Invalid persisted repository network policy reader version.");
     }
@@ -3306,8 +3309,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         try {
           await client.query(
             `INSERT INTO occ.credential_sources
-             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id)
-             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11)`,
+             (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability, token_service_instance_id, backend_ref)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12::jsonb)`,
             [
               source.id,
               source.namespaceId,
@@ -3321,6 +3324,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               source.ownerCapability,
               source.ownerCapability === "token_service"
                 ? (source.tokenServiceInstanceId ?? null)
+                : null,
+              "backendRef" in source && source.backendRef !== undefined
+                ? JSON.stringify(source.backendRef)
                 : null,
             ],
           );

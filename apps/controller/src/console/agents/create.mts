@@ -34,6 +34,7 @@ import {
   REVEAL_FIELD,
   revealField,
   setFieldError,
+  setHidden,
   setStatusTone,
   setText,
   setUnavailable,
@@ -53,7 +54,7 @@ import {
   notIncluded,
 } from "./access-reasons.mjs";
 import { repositoryReviewFrom, reviewRepositoryDraft } from "./detail.mjs";
-import { createRepositoryFields } from "./repositories.mjs";
+import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./repositories.mjs";
 import { ensureCredentialOperateBinding, secretOperateAnswer } from "./credential-access.mjs";
 import {
   createSecretReferenceField,
@@ -2472,9 +2473,15 @@ function renderAgentForm(
     recoveryMessage,
     element("div", { className: "form-actions" }, reloadRepositories, startNewDraft),
   );
+  const repositoryDeploymentWarning = element(
+    "p",
+    { id: "create-agent-repository-warning", className: "hint", hidden: true },
+    `Create Agent requests deployment. ${FIRST_REPOSITORY_DEPLOYMENT_WARNING} Select a repository to save a draft.`,
+  );
   const actions = element(
     "div",
     { className: "form-actions" },
+    repositoryDeploymentWarning,
     // Cancel is the explicit discard; other exits keep the draft (finding 1902).
     button("Cancel", () => {
       const configurationToKeep = savedAgent ? undefined : savedConfiguration;
@@ -3548,6 +3555,14 @@ function renderAgentForm(
       credentialSourceRefused() ||
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
+    setHidden(
+      repositoryDeploymentWarning,
+      submitUnavailable ||
+        saved ||
+        planLocked ||
+        !shouldProvision() ||
+        !repositories.hasUncheckedScopedAccess(),
+    );
     // Create Agent names why it waits: the status line above says so (finding 2007).
     let submitReason: HTMLElement | null = checkingSecret;
     if (
@@ -3559,6 +3574,8 @@ function renderAgentForm(
     } else if (capabilityDiscoveryDenied && !capabilitiesUnreadable && !accessStatus.hidden) {
       // The refused Installation read's block above the form says why Create waits (finding 2092).
       submitReason = accessStatus;
+    } else if (!repositoryDeploymentWarning.hidden) {
+      submitReason = repositoryDeploymentWarning;
     }
     if (submitReason) {
       submit.setAttribute("aria-describedby", submitReason.id);

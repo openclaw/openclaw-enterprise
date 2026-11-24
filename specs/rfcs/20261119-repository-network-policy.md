@@ -18,7 +18,7 @@ author: freeqaz-openai
 
 OpenClaw Enterprise (OCE) installs per-Agent repository grants at deployment and renews the credential. OpenShell checks each native request. GitHub applies the credential’s permissions.
 
-Native GitHub App v1 supports pull requests (PRs). [Proposed REST Write grants](#planned-rest-write-grants) add issue creation by default.
+Native GitHub App delivery supports pull requests (PRs). [REST Write grants](#planned-rest-write-grants) now include issue creation where permitted.
 
 ## Motivation
 
@@ -114,21 +114,24 @@ sequenceDiagram
 
 ### What can the Agent do on GitHub?
 
-**Current GitHub App v1.** Repositories sharing an App token [require identical permission maps](../../apps/controller/src/drivers/repo/github/access/registry.ts). Here A and B have Contents write, Issues read and Pull requests write. C is unbound.
+**Native GitHub App.** Repositories sharing an App token [require identical permission maps](../../apps/controller/src/drivers/repo/github/access/registry.ts). Here GitHub and the Namespace allow Contents, Issues and Pull requests write on A and B. C is unbound.
 
 | Agent action                          | A (read) | B (write) | C (no grant) |
 | ------------------------------------- | -------- | --------- | ------------ |
 | Clone or fetch code                   | Yes      | Yes       | No           |
 | List issues or read one issue         | Yes      | Yes       | No           |
+| Create an issue                       | No       | Yes       | No           |
 | List PRs or read one PR               | Yes      | Yes       | No           |
 | Push a branch                         | No       | Yes       | No           |
 | Open a PR (draft or ready for review) | No       | Yes       | No           |
 
+With only Issues read, B can still push and open PRs, but cannot create issues.
+
 **If C is bound without a saved grant, the Agent cannot open a PR anywhere.** Permitted Git operations and REST reads continue. To restore PR creation on B, unbind C or grant it Read if needed, then redeploy. An upgraded Worker refuses renewal for a Sandbox that still allows forbidden PR creation. Its token expires within an hour. Redeploy to restore access.
 
-**Shipped behavior.** [#7118](https://github.com/openclaw/openclaw-enterprise/pull/7118) requires `scopedRest: "v1"` alongside `nativeGit: "v1"` for REST. The proposal below removes the REST setting.
+**Earlier REST support.** [#7118](https://github.com/openclaw/openclaw-enterprise/pull/7118) required `scopedRest: "v1"` and excluded issue creation. [#6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) removed that setting and added the issue POST.
 
-The [registration and GitHub App](../../docs/reference/repository-credentials/access-levels.md#native-git-delivery) must allow `issues` for issue reads and `pull_requests` for PR reads. Creation requires `pull_requests: write` and Write on the target. Under `/repos/{owner}/{repo}`, the [rules](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts) allow GET on `/issues`, `/pulls` and their numbered detail paths, plus eligible POSTs to `/pulls`. Issue reads can return PRs. Issue creation, PR updates, merges and GraphQL remain unavailable.
+The [registration and GitHub App](../../docs/reference/repository-credentials/access-levels.md#native-git-delivery) must allow `issues` for issue reads and `pull_requests` for PR reads. PR creation requires `pull_requests: write` and Write on the target. Under `/repos/{owner}/{repo}`, the [rules](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts) allow GET on `/issues`, `/pulls` and their numbered detail paths, plus eligible POSTs to either collection. Issue reads can return PRs. PR updates, merges and GraphQL remain unavailable.
 
 **What creation permits.** The rule checks the destination of [PR creation](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request). It leaves query parameters and JSON fields unrestricted.
 
@@ -137,11 +140,13 @@ The [registration and GitHub App](../../docs/reference/repository-credentials/ac
 
 The [bundled Codex skill](https://github.com/openclaw/openclaw-enterprise/pull/6658) teaches `gh api` and grants no access. Use `--input` for writes and verify the remote result before retrying.
 
-### Planned REST Write grants
+<a id="planned-rest-write-grants"></a>
+
+### REST Write grants
 
 **One permission model.** [Issue creation with repository Write access](20261123-repository-issue-creation.md) removes `scopedRest`. For native App delivery, derive routes from the approved Namespace permissions and saved Agent grant. Metadata and Contents alone keep Git-only access. Existing agents with broader permissions can gain eligible routes on their next deployment. There is no separate REST version or Agent upgrade approval.
 
-**Issue creation.** Issues write plus saved Write allows the [full issue POST](https://docs.github.com/en/rest/issues/issues#create-an-issue). Proposed [API limits](20261123-repository-issue-creation.md#optional-api-restrictions) narrow direct requests per repository for a Namespace or one Agent. Set `apiLimits.issues` to `read` to turn off issue creation. Other bindings do not veto issue creation. The existing PR safeguard still applies. Eligible PRs can still convert issues.
+**Issue creation.** Issues write plus saved Write allows the [full issue POST](https://docs.github.com/en/rest/issues/issues#create-an-issue). [API limits](20261123-repository-issue-creation.md#optional-api-restrictions) narrow direct requests for every Agent using a Namespace registration or for one Agent on its saved grant. Set `apiLimits.issues` to `read` to turn off issue creation. Other bindings do not veto issue creation. The existing PR safeguard still applies. Eligible PRs can still convert issues.
 
 **Outside this proposal.** [#7149](https://github.com/openclaw/openclaw-enterprise/pull/7149) proposes Git-only personal access tokens. PRs backed by personal or shared installation tokens need a separate decision because those credentials can cover repositories beyond the Agent’s bindings.
 
@@ -149,7 +154,7 @@ The [bundled Codex skill](https://github.com/openclaw/openclaw-enterprise/pull/6
 
 | Delivery path                                       | Startup nonce | OCE check on a request                                    |
 | --------------------------------------------------- | ------------- | --------------------------------------------------------- |
-| Native Git with optional REST reads and PR creation | None          | None while the credential is valid.                       |
+| Native Git with API reads and issue and PR creation | None          | None while the credential is valid.                       |
 | Existing protected `git-write`                      | Required      | Exact ref and optional `git-and-draft-pr` restrictions.   |
 | Existing protected `github-repository`              | Required      | Worker checks each permitted request against the binding. |
 | Existing `github-installation` preview              | Required      | Worker hook in the single-Sandbox workspace.              |

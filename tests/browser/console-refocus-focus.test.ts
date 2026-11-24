@@ -209,6 +209,119 @@ test("refocusing the Agents list restores its focused link unless the reader mov
   }
 });
 
+test("Agents Retry restores the interrupted search selection unless the reader moved on", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Search recovery");
+  await fixture.createAgent(namespace.id, "Fleet Report", nativeValues("fleet-report"));
+  const { credentials } = await fixture.createNamespaceMember("reader", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  const path = `/console/agents?namespace=${namespace.id}`;
+  const api = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+  await login(page, fixture, path, credentials);
+  const view = page.locator(settledView);
+  const search = view.getByRole("searchbox", { name: "Search Agents", exact: true });
+  const retry = view.getByRole("button", { name: "Retry", exact: true });
+  const row = view.getByRole("link", { name: "Fleet Report", exact: true });
+  const loading = page.getByRole("heading", { name: "Loading…", exact: true });
+  const statuses: number[] = [];
+  await search.waitFor();
+  await waitForIdleFetches(page);
+  page.on("response", (response) => {
+    if (response.url() === api && response.request().method() === "GET") {
+      statuses.push(response.status());
+    }
+  });
+
+  const holdFailure = (status: number, retryAfter = false) =>
+    holdRequests(t, page, api, {
+      once: true,
+      method: "GET",
+      fulfill: {
+        ...(status === 503
+          ? apiErrorResponse(status, "DEPENDENCY_UNAVAILABLE", "Try again.")
+          : proxyErrorResponse(status)),
+        ...(retryAfter ? { headers: { "retry-after": "60" } } : {}),
+      },
+    });
+  const expectRetry = async (expected: number[], focused = true) => {
+    await retry.waitFor();
+    await waitForIdleFetches(page);
+    assert.deepEqual(statuses, expected, "recovery waits for explicit Retry");
+    assert.equal(await search.count(), 0);
+    assert.equal(await row.count(), 0, "an unavailable list withholds Agent rows");
+    assert.equal(await hasFocus(retry), focused);
+  };
+
+  for (const attempt of ["restore", "move", "retry-after"] as const) {
+    statuses.length = 0;
+    await search.fill("Fleet Rep");
+    await search.evaluate((input: HTMLInputElement) => input.setSelectionRange(6, 9, "backward"));
+    assert.equal(await hasFocus(search), true);
+    const status = attempt === "move" ? 502 : 503;
+    const failure = await holdFailure(status, attempt === "retry-after");
+    await refocus(page);
+    await failure.requested;
+    failure.release();
+    await expectRetry([status], attempt !== "retry-after");
+    if (attempt === "retry-after") {
+      break;
+    }
+
+    const expected = [status];
+    if (attempt === "restore") {
+      // A second temporary failure keeps the same selection and returns focus to the new Retry.
+      const again = await holdFailure(503);
+      try {
+        await page.keyboard.press("Enter");
+        await again.requested;
+        await loading.waitFor();
+      } finally {
+        again.release();
+      }
+      expected.push(503);
+      await expectRetry(expected);
+    }
+
+    const pending = await holdRequests(t, page, api, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    try {
+      await page.keyboard.press("Enter");
+      const response = await pending.requested;
+      assert.equal(response?.status(), 200, "the real Controller readmits the list");
+      if (attempt === "move") {
+        // Let the slow load transfer focus to its replacement heading before the reader moves.
+        const heading = page.locator(".content h1");
+        await loading.waitFor();
+        assert.equal(await hasFocus(heading), true);
+        const account = page.locator(".account-toggle");
+        await account.focus();
+        assert.equal(await hasFocus(account), true);
+        await heading.focus();
+        assert.equal(await hasFocus(heading), true);
+      }
+    } finally {
+      pending.release();
+    }
+    await search.waitFor();
+    await row.waitFor();
+    assert.equal(page.url(), `${fixture.origin}${path}`);
+    assert.deepEqual(statuses, [...expected, 200]);
+    assert.equal(await search.inputValue(), "Fleet Rep");
+    assert.equal(await hasFocus(search), attempt === "restore");
+    if (attempt === "restore") {
+      const direction = await search.evaluate(
+        (input: HTMLInputElement) => input.selectionDirection,
+      );
+      assert.equal(direction, "backward");
+      await page.keyboard.press("r");
+      assert.equal(await search.inputValue(), "Fleet r", "typing replaces the original selection");
+    }
+  }
+});
+
 test("Back keeps the keyboard-focused Agent in view when the filtered list changes", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Report workspace");
   const query = "Fleet Report";
@@ -2230,6 +2343,159 @@ async function activate(foreground: BrowserWindow, background: BrowserWindow) {
     }),
   ]);
 }
+
+test("Agents list restores search after a recheck unless focus moved", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Returning to search");
+  await fixture.createAgent(namespace.id, "Fleet Report", nativeValues("fleet-report"));
+  const { credentials } = await fixture.createNamespaceMember("reader", namespace.id, AGENT_READ);
+  const { page } = await openNativeTabBrowser(t, fixture);
+  await trackSettledFetches(page);
+  const listWindow = await windowFor(page);
+  const popup = page.waitForEvent("popup");
+  await page.evaluate(() => {
+    window.open("about:blank", "_blank", "popup,width=360,height=280");
+  });
+  const other = await windowFor(await popup);
+  assert.notEqual(listWindow.windowId, other.windowId, "use two native browser windows");
+  await activate(listWindow, other);
+
+  const path = `/console/agents?namespace=${namespace.id}`;
+  const apiPath = `/namespaces/${namespace.id}/agents`;
+  const api = fixture.origin + apiPath;
+  await login(page, fixture, path, credentials);
+  const view = page.locator(settledView);
+  const search = page.getByRole("searchbox", { name: "Search Agents", exact: true });
+  await view.getByRole("link", { name: "Fleet Report", exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+
+  const state = () =>
+    search.evaluate((node: HTMLInputElement) => ({
+      focused: document.activeElement === node,
+      value: node.value,
+      range: [node.selectionStart, node.selectionEnd],
+      direction: node.selectionDirection,
+    }));
+  const selection = { focused: true, value: "Fleet Rep", range: [6, 9], direction: "backward" };
+  const reads = () => requests.filter(({ method, path }) => method === "GET" && path === apiPath);
+  const returnToList = async () => {
+    const held = await holdRequests(t, page, api, { once: true, method: "GET", afterServer: true });
+    const response = responseTo(page, "GET", api);
+    await activate(listWindow, other);
+    assert.equal((await held.requested)?.status(), 200);
+    await page.locator(heldView).waitFor();
+    return async () => {
+      held.release();
+      assert.equal((await response).status(), 200);
+    };
+  };
+
+  const selectSearchSuffix = async () => {
+    // Replace the previous pass's edit before selecting the suffix again.
+    await search.press("ControlOrMeta+A");
+    await page.keyboard.insertText("Fleet Rep");
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await hasFocus(search), true);
+    await page.keyboard.press("End");
+    for (let press = 0; press < 3; press++) {
+      await page.keyboard.press("Shift+ArrowLeft");
+    }
+    assert.deepEqual(await state(), selection);
+  };
+
+  for (const moveFocus of [false, true]) {
+    const before = reads().length;
+    await selectSearchSuffix();
+
+    await activate(other, listWindow);
+    const finishFirst = await returnToList();
+
+    // Leave before the first genuine read reaches the Console. Its hidden completion may
+    // retain the selection, but the input must remain unfocused until a new admission.
+    await activate(other, listWindow);
+    await finishFirst();
+    await page.waitForFunction(
+      (selector) =>
+        document.hidden &&
+        !document.hasFocus() &&
+        globalThis.inFlightFetchCount?.() === 0 &&
+        !document.querySelector(selector),
+      heldView,
+      { polling: 25 },
+    );
+    assert.deepEqual(await state(), { ...selection, focused: false });
+
+    const finishSecond = await returnToList();
+    assert.equal(await hasFocus(search), false, "wait for the second list read");
+    if (moveFocus) {
+      // A newer focus choice still wins when the control later loses focus to the body.
+      const account = page.locator(".account-toggle");
+      await account.click();
+      await page.keyboard.press("Escape");
+      assert.equal(await hasFocus(account), true);
+      await account.evaluate((node: HTMLElement) => node.blur());
+      assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+    }
+    await finishSecond();
+    await view.waitFor();
+    await waitForIdleFetches(page);
+
+    assert.deepEqual(await state(), { ...selection, focused: !moveFocus });
+    if (!moveFocus) {
+      await page.keyboard.press("r");
+      assert.equal(await search.inputValue(), "Fleet r", "typing replaces the original selection");
+    }
+    assert.equal(page.url(), fixture.origin + path);
+    assert.equal(reads().length - before, 2);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+  }
+
+  for (const rebuild of [false, true]) {
+    await t.test(`foreground recheck ${rebuild ? "rebuilds" : "retains"} the list`, async () => {
+      const before = reads().length;
+      await selectSearchSuffix();
+      await tagView(page);
+      if (rebuild) {
+        await fixture.createAgent(namespace.id, "Fleet Report 02", nativeValues("fleet-report-02"));
+      }
+      await activate(other, listWindow);
+      const finish = await returnToList();
+      const namespaceSelector = page.getByRole("combobox", { name: "Namespace", exact: true });
+      const bodyHasFocus = () => page.evaluate(() => document.activeElement === document.body);
+      try {
+        for (let press = 0; press < 35 && !(await hasFocus(namespaceSelector)); press++) {
+          await page.keyboard.press("Tab");
+        }
+        assert.equal(await hasFocus(namespaceSelector), true, "Tab reaches the Namespace selector");
+        assert.equal(await namespaceSelector.inputValue(), namespace.id);
+        // The non-interactive scope line leaves focus on the body after the reader moved away.
+        await page.locator("main .page-header .page-title .scope").click();
+        assert.equal(await bodyHasFocus(), true);
+      } finally {
+        await finish();
+      }
+
+      await view.waitFor();
+      await waitForIdleFetches(page);
+      assert.equal(await viewTag(page), rebuild ? null : "kept");
+      const bodyFocusedBeforeTyping = await bodyHasFocus();
+      await page.keyboard.press("r");
+      assert.deepEqual(
+        { bodyFocusedBeforeTyping, query: await search.inputValue() },
+        { bodyFocusedBeforeTyping: true, query: selection.value },
+        "the completed read leaves focus on the body and typing leaves the filter intact",
+      );
+      await view.getByRole("link", { name: "Fleet Report", exact: true }).waitFor();
+      if (rebuild) {
+        await view.getByRole("link", { name: "Fleet Report 02", exact: true }).waitFor();
+      }
+      assert.equal(page.url(), fixture.origin + path);
+      assert.equal(reads().length - before, 1);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+    });
+  }
+});
 
 async function selectedAgentId(page: Page) {
   return page.locator(".page-meta-id .resource-id").evaluate((id) => {

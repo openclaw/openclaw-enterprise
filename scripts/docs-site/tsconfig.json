@@ -19,6 +19,7 @@
     "github-anchors.ts",
     "preview-client.mts",
     "public-markdown.ts",
+    "repository-limits.mts",
     "site.mts"
   ]
 }

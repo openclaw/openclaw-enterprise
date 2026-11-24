@@ -67,9 +67,31 @@ test(
   "separate migration Helm upgrades keep writers stopped until the database passes verification",
   observabilitySelection,
   async (t) => {
+    const recordPhaseTiming = (
+      stage:
+        | "fixture-bootstrap"
+        | "cli-rebuild"
+        | "initial-apply-writer-pause"
+        | "migration-apply-verify"
+        | "attested-resume",
+      startedAt: number,
+    ) => {
+      const timing = {
+        kind: "production-migration-phase",
+        stage,
+        outcome: "passed",
+        elapsedMs: Math.round(performance.now() - startedAt),
+      };
+      t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(timing)}`);
+    };
+
     // Use the same approved manifest in both runtime slots. The explicit incumbent
     // tag makes the dedicated slot a distinct reference for the image upgrade.
-    const f = await installObservabilityControlPlane(t, { initialAgentImageTag: "incumbent" });
+    const bootstrapStarted = performance.now();
+    const f = await installObservabilityControlPlane(t, {
+      initialAgentImageTag: "incumbent",
+      metricsProbes: false,
+    });
     const installation = record(await f.api("GET", "/installation"));
     const installationId = string(installation.id);
     const { kubeconfigPath, kubernetesContext } = f.selection;
@@ -113,6 +135,8 @@ test(
           await sql("SELECT count(*) FROM occ.controller_work WHERE state IN ('queued', 'claimed')")
         ).trim() === "0",
     );
+    recordPhaseTiming("fixture-bootstrap", bootstrapStarted);
+
     // The upgrade workflow requires the same Installation binding as prepare.
     await f.kubectl(
       "-n",
@@ -126,7 +150,9 @@ test(
     // runtime-only plan selects the incumbent controller for compatibility checks;
     // no Agent is admitted until these checks finish.
     const occ = join(f.directory, "occ");
+    const cliRebuildStarted = performance.now();
     await f.run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
+    recordPhaseTiming("cli-rebuild", cliRebuildStarted);
     const source = (await f.run("git", ["rev-parse", "HEAD"])).trim();
     const keyPath = join(f.directory, "service-key.json");
     // The fixture has already removed the fresh-install credential Secret.
@@ -624,6 +650,7 @@ test(
     };
 
     // The real CLI stops the writers and records their identity before submitting Helm.
+    const initialApplyStarted = performance.now();
     const pauseStartedAt = Date.now();
     const paused = await runUpgrade(["apply", "--evidence-dir", upgradeRun]);
     const pauseFinishedAt = Date.now();
@@ -671,6 +698,7 @@ test(
       await assertPreflightClean();
     };
     await assertWriterFence();
+    recordPhaseTiming("initial-apply-writer-pause", initialApplyStarted);
 
     const attempt = record(
       JSON.parse(await readFile(join(upgradeRun, "prepared-helm-attempt.json"), "utf8")),
@@ -719,6 +747,7 @@ test(
     await assertWriterFence();
 
     // Both Jobs must complete and clean up before the explicit resume.
+    const migrationApplyStarted = performance.now();
     const applied = await runUpgrade(migrationApply);
     assert.equal(applied.code, 0, applied.stdout + applied.stderr);
     assert.match(applied.stdout, /Database migration verified and its Jobs and Pods are gone/);
@@ -745,12 +774,14 @@ test(
     );
     await assertDatabase(fencedDatabase, "migration-verified-after");
     await assertWriterFence();
+    recordPhaseTiming("migration-apply-verify", migrationApplyStarted);
 
     // The original run also needs the explicit resume attestation.
     const resume = ["resume", upgradeRun];
     assertMigrationPause(await runUpgrade(resume));
     await assertWriterFence();
 
+    const attestedResumeStarted = performance.now();
     const resumeStartedAt = Date.now();
     const resumed = await runUpgrade(resume, ["--migration-history-checked"]);
     const resumeFinishedAt = Date.now();
@@ -790,6 +821,7 @@ test(
     const admission = await agent.deploy();
     assert.equal(admission.agentId, agentId);
     assert.deepEqual(await revisionIds(), [admission.id]);
+    recordPhaseTiming("attested-resume", attestedResumeStarted);
     await agent.stop();
 
     // Separately submit a real chart upgrade to exercise Helm's own safety gate

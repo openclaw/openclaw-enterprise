@@ -1,4 +1,4 @@
-import { admitRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
+import { isCanonicalRepositoryNetworkPolicy } from "@openclaw-enterprise/contracts";
 import type {
   WorkspaceSetupRepository,
   SandboxPolicyRepository,
@@ -1141,6 +1141,14 @@ function assertCredentialSource(source: CredentialSource): void {
   }
   const config: unknown = source.config;
   const secretInputs: unknown = source.secrets;
+  const backendRef = "backendRef" in source ? source.backendRef : undefined;
+  const validBackendRef =
+    backendRef === undefined ||
+    (source.ownerCapability === "token_service" &&
+      source.tokenServiceInstanceId !== undefined &&
+      isPlainRecord(backendRef) &&
+      Object.keys(backendRef).length > 0 &&
+      Object.values(backendRef).every((value) => typeof value === "string" && value.length > 0));
   const validOwner =
     source.ownerCapability === "token_service"
       ? source.egress === undefined &&
@@ -1179,6 +1187,7 @@ function assertCredentialSource(source: CredentialSource): void {
         value.length > 2048,
     ) ||
     !isPlainRecord(secretInputs) ||
+    !validBackendRef ||
     !validOwner ||
     (source.state !== "registering" && source.state !== "ready" && source.state !== "deleting")
   ) {
@@ -3494,7 +3503,8 @@ function repositories(
       const grants = policy?.repositoryNetworkPolicy;
       const admittedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
       if (
-        !isDeepStrictEqual(admittedPolicy, admitRepositoryNetworkPolicy(grants, grants)) ||
+        !isDeepStrictEqual(grants, admittedPolicy?.grants) ||
+        (admittedPolicy !== undefined && !isCanonicalRepositoryNetworkPolicy(admittedPolicy)) ||
         (grants !== undefined && revision.sandboxPolicy?.version !== policy?.version)
       ) {
         throw new ScopeViolationError(

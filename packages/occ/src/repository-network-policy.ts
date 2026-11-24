@@ -5,6 +5,8 @@ import {
   admitRepositoryNetworkPolicy,
   admitSandboxRepositoryNetworkPolicy,
   RepositoryNetworkPolicyAdmissionError,
+  type RepositoryApiLevel,
+  type RepositoryApiMaximum,
   type Agent,
   type AgentRevision,
   type AgentRevisionRead,
@@ -49,6 +51,8 @@ export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
   readonly requiresNetworkPolicy?: boolean;
   /** The selected registry permits deployment-scoped Git when the Agent saves an ACL. */
   readonly nativeGit?: "v1";
+  /** Eligible native API levels, before the Agent narrows access. */
+  readonly repositoryApiMaxima?: readonly RepositoryApiMaximum[];
   /** The network access of these resolved bindings. The Namespace ceiling is independent. */
   readonly selectedRepositoryNetworkGrants?: RepositoryNetworkPolicyCeiling;
 };
@@ -285,7 +289,7 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
       }
     };
     const fitsSelected = (grant: RepositoryNetworkGrant) =>
-      selectedRepositoryGrantAllows(resolution.selectedRepositoryNetworkGrants, grant);
+      selectedRepositoryGrantAllows(resolution, grant);
     const dedicated = { id: harness.id, version: harness.version, mode: "dedicated" } as const;
     const { type, ownerCapability, driverId } = source;
     const topology: ProtectedRepositoryNetworkPolicySaveContext = immutableCopy({
@@ -345,17 +349,45 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
           return ready;
         });
       },
+      apiMaxima(delegatedCeiling: RepositoryNetworkPolicyCeiling) {
+        const options = resolution.repositoryApiMaxima;
+        if (resolution.nativeGit !== "v1" || !options) {
+          return undefined;
+        }
+        // Project only selected, delegated names. Never forward provider metadata.
+        return delegatedCeiling.flatMap(({ repository, access }) => {
+          const option = options.find((item) => item.repository === repository);
+          if (!option || !fitsSelected({ repository, access: "read" })) {
+            return [];
+          }
+          const write = access === "write" && fitsSelected({ repository, access });
+          const cap = (level: RepositoryApiLevel): RepositoryApiLevel =>
+            level === "write" && !write ? "read" : level;
+          return [
+            {
+              repository,
+              access: write ? ("write" as const) : ("read" as const),
+              issues: cap(option.issues),
+              pull_requests: cap(option.pull_requests),
+            },
+          ];
+        });
+      },
       admit: admitEdit,
     };
   };
 }
 
 function selectedRepositoryGrantAllows(
-  selected: RepositoryNetworkPolicyCeiling | undefined,
+  selected: RepositoryPolicyResolution | undefined,
   grant: RepositoryNetworkGrant,
 ): boolean {
   return (
-    selected?.some(
+    (!grant.apiLimits ||
+      (selected?.nativeGit === "v1" &&
+        selected.repositoryApiMaxima?.some((option) => option.repository === grant.repository) ===
+          true)) &&
+    selected?.selectedRepositoryNetworkGrants?.some(
       ({ repository, access }) =>
         repository === grant.repository && (access === grant.access || access === "write"),
     ) === true
@@ -364,7 +396,7 @@ function selectedRepositoryGrantAllows(
 
 export function assertSelectedRepositoryGrants(
   grants: readonly RepositoryNetworkGrant[] | undefined,
-  selected: RepositoryNetworkPolicyCeiling | undefined,
+  selected: RepositoryPolicyResolution | undefined,
 ): void {
   if (grants?.some((grant) => !selectedRepositoryGrantAllows(selected, grant))) {
     throw new ResourceStateConflictError(
