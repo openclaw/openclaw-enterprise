@@ -26,7 +26,7 @@ a separate public CA Secret, worker-only App-key and custody Secrets, and sender
 configuration and TLS Secrets. The [registry reference](../reference/repository-credentials.md#canonical-platform-registry)
 defines repository and Namespace policy. For OpenShell native Git, a registration
 can instead name a `github` Source holding a fine-grained token
-([repository token Source](../reference/repository-credentials/access-levels.md#repository-token-source));
+([repository token Source](../reference/repository-credentials/repository-token-source.md));
 without a GitHub App, leave `repositoryCredentials.appKeySecretName` empty. Set `sessionDurationSeconds: 86400` for
 a 24-hour version; keep it within the registry's maximum.
 
