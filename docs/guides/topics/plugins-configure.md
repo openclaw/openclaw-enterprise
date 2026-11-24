@@ -176,9 +176,8 @@ The API requires `configurationId` on every Agent update and replaces the whole
 plugin map; sending only Diffs would remove any other saved selections.
 
 ```bash
-occ agent get "$AGENT_ID" --output json > agent-before-plugins.json
-
-node --input-type=module <<'JS'
+occ agent get "$AGENT_ID" --output json > agent-before-plugins.json &&
+node --input-type=module <<'JS' &&
 import { readFileSync, writeFileSync } from "node:fs";
 const agent = JSON.parse(readFileSync("agent-before-plugins.json", "utf8"));
 const plugins = {
@@ -188,7 +187,6 @@ const plugins = {
 writeFileSync("agent-plugin-update.json",
   JSON.stringify({ configurationId: agent.configurationId, plugins }, null, 2) + "\n");
 JS
-
 occ agent update "$AGENT_ID" --file agent-plugin-update.json --output json
 ```
 
