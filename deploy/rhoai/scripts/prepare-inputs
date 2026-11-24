@@ -56,6 +56,7 @@ oc -n openshift-ingress get pods \
     if length > 0 and all(type == "string" and (contains(":") | not)) then map(. + "/32")
     else error("expected IPv4 router Pod addresses") end' > "$OCC_INPUT_DIRECTORY/router-cidrs.json"
 
+values_copied=false
 for name in values installation; do
   if [[ ! -e "$OCC_INPUT_DIRECTORY/$name.yaml" ]]; then
     if [[ "$mode" == refresh ]]; then
@@ -63,6 +64,9 @@ for name in values installation; do
       exit 1
     fi
     install -m 600 "$OCE_CHECKOUT/deploy/examples/production/$name.yaml" "$OCC_INPUT_DIRECTORY/$name.yaml"
+    if [[ "$name" == values ]]; then
+      values_copied=true
+    fi
   fi
 done
 for name in control-plane-postgres-egress control-plane-kube-api-egress; do
@@ -101,7 +105,6 @@ if [[ "$mode" == bootstrap ]]; then
   # Configure it after Agent deployment; an OAuth Route alone is insufficient.
   # See deploy/rhoai/README.md#other-profiles.
   yq -i '.agentNativeAdmin.enabled = false |
-    .agentNativeAdmin.domain = "" | .agentNativeAdmin.sharedCookieDomain = "" |
     .gatewayRouting.enabled = false' "$OCC_INPUT_DIRECTORY/values.yaml"
   yq -i '.drivers.compute.configuration.network.gatewayTrustedProxyCidrs = ["127.0.0.1/32"] |
     .drivers.compute.configuration.network.gatewayClients = [{"namespace":"openclaw-system","podLabels":{
@@ -119,6 +122,16 @@ else
     .api.trustedProxy.cidrs = load(strenv(OCC_INPUT_DIRECTORY) + "/router-cidrs.json") |
     .cluster.cidrs = [strenv(API_SERVICE_CIDR)] + load(strenv(OCC_INPUT_DIRECTORY) + "/api-cidrs.json")' \
     "$OCC_INPUT_DIRECTORY/values.yaml"
+fi
+
+# The chart refuses the retired sharedCookieDomain and requires an Agent DNS
+# suffix that shares the Console's cookie scope, even with the launcher off.
+# Keep a domain from retained values; otherwise use agents.<Console parent>.
+yq -i 'del(.agentNativeAdmin.sharedCookieDomain)' "$OCC_INPUT_DIRECTORY/values.yaml"
+if [[ "$values_copied" == true ]] ||
+  ! yq -e '(.agentNativeAdmin.domain // "") != ""' "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null 2>&1; then
+  yq -i '.agentNativeAdmin.domain = (.auth.baseUrl | sub("^https://"; "") |
+    sub("[:/].*$"; "") | sub("^[^.]+[.]"; "agents."))' "$OCC_INPUT_DIRECTORY/values.yaml"
 fi
 
 yq -i '.spec.egress[0].to = (load(strenv(OCC_INPUT_DIRECTORY) + "/api-cidrs.json") | map({"ipBlock":{"cidr":.}})) |

@@ -267,6 +267,12 @@ Review the generated `values.yaml` and `installation.yaml` before continuing.
 They assume `gp3-csi`, the `oce-role` labels, and the default OpenShift DNS and
 ingress selectors. Adjust them for another profile.
 
+`agentNativeAdmin.domain` is `agents.` plus the Console host's parent domain,
+for example `agents.$CLUSTER_APPS_DOMAIN`. The chart requires this Agent DNS
+suffix even while the admin launcher is disabled, because the Console session
+cookie is scoped to the suffix it shares with the Console host. A domain already
+set in a retained `values.yaml` is kept.
+
 Generate the bootstrap administrator credentials once, then create the
 bootstrap Secret before Helm. The chart reads `admin-password` and
 `admin-service-key` from the Secret named by
@@ -563,7 +569,9 @@ changes.
   router restart, or database failover, run `prepare-inputs refresh` to update
   the discovered addresses and egress inputs without resetting routing,
   approved API clients, the trusted-proxy preset, or admin-launcher settings.
-  Then apply the updated values, egress inputs, and Installation Secret.
+  It also removes the retired `agentNativeAdmin.sharedCookieDomain` and fills
+  an empty `agentNativeAdmin.domain`. Then apply the updated values, egress
+  inputs, and Installation Secret.
 - The widget preview certificate is a wildcard for the whole apps domain, so
   the private CA can vouch for every host under it. Trust that CA only on the
   clients that use previews.
