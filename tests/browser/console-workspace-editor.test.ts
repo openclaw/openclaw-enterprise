@@ -60,11 +60,17 @@ declare global {
 }
 
 async function chooseWorkspaceFile(page: Page, name: string) {
-  const picker = page.getByRole("combobox", { name: "Workspace file", exact: true });
+  const picker = page
+    .getByRole("combobox", { name: "Workspace file", exact: true })
+    .filter({ visible: true });
+  const tab = page
+    .getByRole("tab", { name: new RegExp(name.replace(".", "\\.")) })
+    .filter({ visible: true });
+  await picker.or(tab).first().waitFor();
   if (await picker.isVisible()) {
     await picker.selectOption(name);
   } else {
-    await page.getByRole("tab", { name: new RegExp(name.replace(".", "\\.")) }).click();
+    await tab.click();
   }
 }
 
