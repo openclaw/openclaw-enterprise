@@ -134,30 +134,33 @@ test(
     assert.notEqual(selectedConfig.clusters[0].cluster["insecure-skip-tls-verify"], true);
 
     const databaseUrl = required("OCC_TEST_DATABASE_URL");
-    const database = new URL(databaseUrl);
+    // Parse without throwing the original input into test output.
+    const database = URL.parse(databaseUrl);
+    assert.ok(database, "Invalid test database URL");
     assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(database.hostname));
-    assert.match(database.pathname, /^\/openclaw_k8s_[a-z0-9_]+$/);
+    assert.ok(
+      /^\/openclaw_k8s_[a-z0-9_]+$/.test(database.pathname),
+      "Use a disposable Kubernetes test database",
+    );
     const runtimeImage = required("OCC_TEST_KUBERNETES_RUNTIME_IMAGE");
-    assert.match(runtimeImage, /^\S+@sha256:[a-f0-9]{64}$/u);
+    assert.ok(/^\S+@sha256:[a-f0-9]{64}$/u.test(runtimeImage), "Use a digest-pinned runtime image");
     const packageRoot = required("OCC_TEST_OPENSANDBOX_PACKAGE_ROOT");
     const model = required("OCC_TEST_OPENAI_MODEL").replace(/^(?:openai|codex)\//u, "");
     const modelPlaceholder = required("OCC_TEST_OPENSANDBOX_MODEL_PLACEHOLDER");
-    assert.match(
-      modelPlaceholder,
-      /^oce-fixture-[a-f0-9]{64}$/u,
+    assert.ok(
+      /^oce-fixture-[a-f0-9]{64}$/u.test(modelPlaceholder),
       "Only a generated fixture bearer may enter the Harness",
     );
-    const modelEndpoint = new URL(required("OCC_TEST_CODEX_OPENAI_BASE_URL"));
-    assert.equal(modelEndpoint.protocol, "https:");
-    assert.equal(modelEndpoint.pathname, "/v1");
-    assert.equal(
-      [
-        modelEndpoint.username,
-        modelEndpoint.password,
-        modelEndpoint.search,
-        modelEndpoint.hash,
-      ].join(""),
-      "",
+    const modelEndpoint = URL.parse(required("OCC_TEST_CODEX_OPENAI_BASE_URL"));
+    assert.ok(
+      modelEndpoint &&
+        modelEndpoint.protocol === "https:" &&
+        modelEndpoint.pathname === "/v1" &&
+        !modelEndpoint.username &&
+        !modelEndpoint.password &&
+        !modelEndpoint.search &&
+        !modelEndpoint.hash,
+      "Use the fixture HTTPS endpoint without credentials, query or fragment",
     );
     const modelCaPath = process.env.OCC_TEST_OPENSANDBOX_MODEL_CA_PATH;
     const modelSenderCaPem = modelCaPath ? await readFile(modelCaPath, "utf8") : undefined;
@@ -207,9 +210,8 @@ test(
     ]);
     const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
     context.after(() => pool.end());
-    assert.equal(
-      await new PostgresPlatformState(pool).loadInstallation(),
-      undefined,
+    assert.ok(
+      (await new PostgresPlatformState(pool).loadInstallation()) === undefined,
       "Use a fresh migrated test database",
     );
 
