@@ -13,6 +13,43 @@
 {{- end -}}
 {{- if not (regexMatch (include "openclaw.ipv4Cidr" .) $cidr) -}}{{- fail (printf "%s requires explicit IPv4 CIDRs with prefixes 1 through 32" $label) -}}{{- end -}}
 {{- end -}}
+{{- /* A dotted tail occupies two groups. Each caller checks its own CIDR prefix. */ -}}
+{{- define "openclaw.requireIpv6Address" -}}
+{{- $hex := .address -}}
+{{- $tail := regexFind ":(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $hex -}}
+{{- if $tail -}}
+{{- range $octet := splitList "." (trimPrefix ":" $tail) -}}
+{{- if gt (int $octet) 255 -}}{{- fail (printf "%s contains an invalid IPv6 address" $.label) -}}{{- end -}}
+{{- end -}}
+{{- $hex = printf "%s:0:0" (trimSuffix $tail $hex) -}}
+{{- end -}}
+{{- $groups := len (regexFindAll "[0-9A-Fa-f]+" $hex -1) -}}
+{{- if or (not (regexMatch "^(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?)?$" $hex)) (ternary (gt $groups 7) (ne $groups 8) (contains "::" $hex)) -}}{{- fail (printf "%s contains an invalid IPv6 address" .label) -}}{{- end -}}
+{{- end -}}
+
+{{- /* Expand a validated address. Only :: can supply missing bits between the two halves. */ -}}
+{{- define "openclaw.ipv6Bits" -}}
+{{- $halves := list -}}
+{{- range $half := splitList "::" .address -}}
+{{- $bits := "" -}}
+{{- range $group := compact (splitList ":" $half) -}}
+{{- if contains "." $group -}}
+{{- range $octet := splitList "." $group -}}
+{{- $bits = printf "%s%08b" $bits (int $octet) -}}
+{{- end -}}
+{{- else -}}
+{{- $bits = printf "%s%016b" $bits (int (printf "0x%s" $group)) -}}
+{{- end -}}
+{{- end -}}
+{{- $halves = append $halves $bits -}}
+{{- end -}}
+{{- $missing := int (sub 128 (len (join "" $halves))) -}}
+{{- if or (gt (len $halves) 2) (ternary (lt $missing 16) (ne $missing 0) (eq (len $halves) 2)) -}}
+{{- fail (printf "%s contains an invalid IPv6 address" .label) -}}
+{{- end -}}
+{{- join (repeat $missing "0") $halves -}}
+{{- end -}}
+
 {{- /* YAML and --set read yes/no, on/off, true/false or a bare number as a boolean or number, which would otherwise render as the name "true" or "1". */ -}}
 {{- define "openclaw.requireString" -}}
 {{- if not (kindIs "string" .value) -}}
@@ -280,14 +317,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- else if regexMatch "^[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/([1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $value -}}
 {{- $addr := first (splitList "/" $value) -}}
 {{- $prefix := int (last (splitList "/" $value)) -}}
-{{- /* A dotted tail has to end the address. Replacing it with 0:0 leaves one hex grammar: at most one ::, then fewer than 8 groups, or exactly 8 without it. */ -}}
-{{- $tail := regexFind ":(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $addr -}}
-{{- range $octet := splitList "." (default ":0.0.0.0" $tail | trimPrefix ":") -}}
-{{- if gt (int $octet) 255 -}}{{- fail "api.trustedProxy.cidrs contains an invalid IPv6 address" -}}{{- end -}}
-{{- end -}}
-{{- $hex := ternary (printf "%s:0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") -}}
-{{- $groups := len (regexFindAll "[0-9A-Fa-f]+" $hex -1) -}}
-{{- if or (not (regexMatch "^(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?)?$" $hex)) (ternary (gt $groups 7) (ne $groups 8) (contains "::" $hex)) -}}{{- fail "api.trustedProxy.cidrs contains an invalid IPv6 address" -}}{{- end -}}
+{{- include "openclaw.requireIpv6Address" (dict "address" $addr "label" "api.trustedProxy.cidrs") -}}
 {{- if and (regexMatch "^(?i)::ffff:(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $addr) (gt $prefix 32) -}}{{- fail "api.trustedProxy.cidrs contains an IPv4-mapped address, whose prefix must be 1 through 32" -}}{{- end -}}
 {{- else -}}
 {{- fail "api.trustedProxy.cidrs requires IPv4 or IPv6 CIDRs with a nonzero prefix" -}}
@@ -496,18 +526,15 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString $execution.apiPort))) (gt (int $execution.apiPort) 65535) -}}
 {{- fail "executionCluster.apiPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
+{{- if not (kindIs "slice" $execution.apiCidrs) -}}
+{{- fail "executionCluster.apiCidrs must be a list of CIDRs" -}}
+{{- end -}}
 {{- range $cidr := $execution.apiCidrs -}}
 {{- $value := toString $cidr -}}
 {{- if regexMatch "^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/([1-9]|[12][0-9]|3[0-2])$" $value -}}
 {{- else if regexMatch "^[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/([1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $value -}}
 {{- $addr := first (splitList "/" $value) -}}
-{{- $tail := regexFind ":(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $addr -}}
-{{- range $octet := splitList "." (default ":0.0.0.0" $tail | trimPrefix ":") -}}
-{{- if gt (int $octet) 255 -}}{{- fail "executionCluster.apiCidrs contains an invalid IPv6 address" -}}{{- end -}}
-{{- end -}}
-{{- $hex := ternary (printf "%s:0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") -}}
-{{- $groups := len (regexFindAll "[0-9A-Fa-f]+" $hex -1) -}}
-{{- if or (not (regexMatch "^(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?)?$" $hex)) (ternary (gt $groups 7) (ne $groups 8) (contains "::" $hex)) -}}{{- fail "executionCluster.apiCidrs contains an invalid IPv6 address" -}}{{- end -}}
+{{- include "openclaw.requireIpv6Address" (dict "address" $addr "label" "executionCluster.apiCidrs") -}}
 {{- else -}}
 {{- fail "executionCluster.apiCidrs requires an explicit IPv4 or IPv6 CIDR with a nonzero prefix" -}}
 {{- end -}}
@@ -800,24 +827,7 @@ contain the entire ::ffff:0:0/96 range. Such entries must not trust forwarded he
 {{- $address := lower (first (splitList "/" .)) -}}
 {{- if contains ":" $address -}}
 {{- $prefix := int (last (splitList "/" .)) -}}
-{{- /* Both checks concern only the first 96 bits; a dotted tail occupies the final two groups. */ -}}
-{{- $tail := regexFind "[0-9]+(\\.[0-9]+){3}$" $address -}}
-{{- if $tail -}}{{- $address = printf "%s0:0" (trimSuffix $tail $address) -}}{{- end -}}
-{{- $halves := splitList "::" $address -}}
-{{- $groups := splitList ":" $address -}}
-{{- if eq (len $halves) 2 -}}
-{{- $left := compact (splitList ":" (first $halves)) -}}
-{{- $right := compact (splitList ":" (last $halves)) -}}
-{{- $missing := sub 8 (add (len $left) (len $right)) -}}
-{{- if lt $missing 1 -}}{{- fail "api.trustedProxy.cidrs contains an invalid IPv6 address" -}}{{- end -}}
-{{- $groups = concat $left (splitList ":" (trimSuffix ":" (repeat (int $missing) "0:"))) $right -}}
-{{- end -}}
-{{- /* Guard expansion before inspecting bits; malformed input must never panic the template. */ -}}
-{{- if or (gt (len $halves) 2) (ne (len $groups) 8) -}}{{- fail "api.trustedProxy.cidrs contains an invalid IPv6 address" -}}{{- end -}}
-{{- $bits := "" -}}
-{{- range $group := $groups -}}
-{{- $bits = printf "%s%016b" $bits (int (printf "0x%s" $group)) -}}
-{{- end -}}
+{{- $bits := include "openclaw.ipv6Bits" (dict "address" $address "label" "api.trustedProxy.cidrs") -}}
 {{- $mappedPrefix := printf "%s%s" (repeat 80 "0") (repeat 16 "1") -}}
 {{- if hasPrefix $mappedPrefix $bits -}}
 {{- if gt $prefix 32 -}}{{- fail "api.trustedProxy.cidrs contains an IPv4-mapped address, whose prefix must be 1 through 32" -}}{{- end -}}

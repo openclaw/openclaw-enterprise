@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -13,6 +15,7 @@ import {
   type render as chartRender,
 } from "../helpers/production-chart-network-fixture.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const chartResources = Type.Array(
   Type.Object({
@@ -200,6 +203,32 @@ export function registerExecutionClusterSecretCases({
       }
     },
   );
+
+  test("execution API egress requires a YAML list of CIDRs", tooling, async (t) => {
+    const directory = await temporaryDirectory(t, "oce-execution-api-cidrs-");
+    const valuesFile = join(directory, "execution.yaml");
+    const cidr = "192.0.2.10/32";
+    const options = { valuesFiles: [valuesFile], omit: ["executionCluster.apiCidrs[0]"] };
+
+    // Supply the CIDRs only through YAML so the indexed fixture override cannot mask the shape.
+    await writeFile(valuesFile, `executionCluster:\n  apiCidrs:\n    - "${cidr}"\n`);
+    const objects = await resources((await render(executionClusterValues, options)).stdout);
+    const policy = findResource(
+      objects,
+      "NetworkPolicy",
+      "openclaw-enterprise-execution-api-egress",
+    );
+    assert.partialDeepStrictEqual(policy?.spec, {
+      egress: [{ to: [{ ipBlock: { cidr } }], ports: [{ protocol: "TCP", port: 6443 }] }],
+    });
+
+    // Helm can iterate a map too, which would treat an entry named "disabled" as an allow rule.
+    await writeFile(valuesFile, `executionCluster:\n  apiCidrs:\n    disabled: "${cidr}"\n`);
+    await assert.rejects(
+      render(executionClusterValues, options),
+      helmRefusal("executionCluster.apiCidrs must be a list of CIDRs"),
+    );
+  });
 }
 
 export function registerDatabaseCaCases({
