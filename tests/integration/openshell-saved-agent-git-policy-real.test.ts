@@ -2985,8 +2985,61 @@ if (savedAgentAcl === "source") {
       values.push(replacement);
       sourceIndices.add(replacementIndex);
       const confirmedBefore = (await confirmations()).length;
+      // The policy read reports the running revision's delivery from platform state only: no
+      // token, only the delivery fields, and "confirmed" only once the Worker saw the Sandbox
+      // activate the committed version. Whether "pending" is caught between reads is evidence.
+      const fields = [
+        "revisionId",
+        "state",
+        "committedSourceVersion",
+        "committedAt",
+        "confirmedSourceVersion",
+        "confirmedAt",
+      ];
+      const readDelivery = async () => {
+        const view: SandboxPolicyViewWire = await request("GET", policyPath);
+        const credential = view.repositoryCredential;
+        const text = JSON.stringify(credential ?? null);
+        const leaked = values.some((value) => text.includes(value));
+        assert.ok(!leaked && !network.containsIssuedCredential(Buffer.from(text)));
+        assert.ok(credential?.kind === "credential_source" && "deliveries" in credential);
+        const entry = credential.deliveries.find((d) => d.revisionId === narrowed.revision.id);
+        assert.ok(entry, "SOURCE_POLICY_READ_DELIVERY");
+        const extra = Object.keys(entry).filter((key) => !fields.includes(key));
+        assert.deepEqual(extra, [], "SOURCE_POLICY_READ_FIELDS");
+        return {
+          state: entry.state,
+          committed: entry.committedSourceVersion,
+          confirmed: entry.confirmedSourceVersion,
+        };
+      };
+      const before = await readDelivery();
+      assert.equal(before.committed, undefined, "SOURCE_POLICY_READ_BEFORE");
+      const reads: (typeof before & { seconds: number })[] = [];
+      let pollUntil = Infinity;
+      const pollDelivery = async () => {
+        while (Date.now() < pollUntil) {
+          const read = await readDelivery();
+          const last = reads.at(-1);
+          if (
+            !last ||
+            (["state", "committed", "confirmed"] as const).some((k) => last[k] !== read[k])
+          ) {
+            reads.push({ ...read, seconds: (Date.now() - committedAt) / 1000 });
+          }
+          if (read.state === "confirmed" && read.committed !== undefined) {
+            return reads.at(-1);
+          }
+          await delay(1_000, undefined, { signal: t.signal });
+        }
+        return undefined;
+      };
       await request("PATCH", source.path, { secret: { token: replacement } });
       const committedAt = Date.now();
+      const polled = pollDelivery();
+      // Awaited once the origin has seen the value; a poll that outlives a failed stage ends with
+      // the test's signal.
+      polled.catch(() => undefined);
       let probes = 0;
       const delivered = await observeUntil(
         "Source replacement at the origin",
@@ -3001,6 +3054,35 @@ if (savedAgentAcl === "source") {
         },
         15 * 60_000,
       );
+      pollUntil = delivered.at + 60_000;
+      const firstConfirmed = await polled;
+      // Versions are opaque: each read names its versions relative to the ones this stage knows.
+      const committed = reads[0]?.committed;
+      const names = new Map([
+        [committed, "committed"],
+        [before.confirmed, "previous"],
+        [undefined, "none"],
+      ]);
+      const name = (version?: string) => names.get(version) ?? "other";
+      evidence("replacement-policy-read", {
+        before: { state: before.state, confirmed: name(before.confirmed) },
+        reads: reads.map((r) => ({
+          ...r,
+          committed: name(r.committed),
+          confirmed: name(r.confirmed),
+        })),
+        pendingSeen: reads.some(({ state }) => state === "pending"),
+        originFirstSeenSeconds: (delivered.at - committedAt) / 1000,
+        firstConfirmedSeconds: firstConfirmed?.seconds ?? "not within the bound",
+      });
+      assert.ok(firstConfirmed, "SOURCE_POLICY_READ_CONFIRMED_AFTER_REPLACEMENT");
+      // The PATCH stamps the copy before it answers; no read shows a version other than the
+      // previous and the committed one, or reads confirmed before the committed one is activated.
+      for (const { state, committed: stamped, confirmed: seen } of reads) {
+        assert.ok(stamped !== undefined && stamped === committed, "SOURCE_POLICY_READ_COMMITTED");
+        assert.ok(seen === committed || seen === before.confirmed, "SOURCE_POLICY_READ_NEWER");
+        assert.ok(state !== "confirmed" || seen === committed, "SOURCE_POLICY_READ_STATE");
+      }
       const confirmed = (await confirmations()).slice(confirmedBefore);
       evidence("replacement", {
         committedAt: new Date(committedAt).toISOString(),
