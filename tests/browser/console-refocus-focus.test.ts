@@ -8,6 +8,7 @@ import { Check } from "typebox/value";
 
 import {
   AgentListResponse,
+  AgentReadResponse,
   type NamespaceWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -1396,6 +1397,53 @@ test("keyboard Retry restores the Agent name and reading position on a phone aft
     "the retained Configuration panel returns to its original position in the viewport",
   );
   assert.equal(readCount(agentPath), 2);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("Agent Retry rejects a mismatch already refused by the mounted editor", async (t) => {
+  const { fixture, agent, page, editor, draft, requests, readCount, agentPath } =
+    await openRefocusDraft(t);
+  const agentUrl = fixture.origin + agentPath;
+  const wrongId = agent.id.slice(0, -1) + (agent.id.endsWith("0") ? "1" : "0");
+  const wrongName = "Synthetic mismatched Agent";
+  const wrongHeading = page.getByRole("heading", { name: wrongName, exact: true });
+  const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
+
+  // Save's exact read returns a valid Agent reply for the wrong identity.
+  const genuine = fixture.fixtureResponse(
+    await fixture.request("GET", agentPath),
+    200,
+    AgentReadResponse,
+    "Read the original Agent",
+  );
+  const mismatch = { ...genuine, data: { ...genuine.data, id: wrongId, name: wrongName } };
+  await fulfillMethod(page, agentUrl, "GET", { status: 200, json: mismatch });
+  const preflight = responseTo(page, "GET", agentUrl);
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  const first = await preflight;
+  assert.equal(first.status(), 200);
+  assert.deepEqual(await first.json(), mismatch);
+  await page.locator('#configuration-editor-feedback[role="alert"]').waitFor();
+  assert.equal(await editor.inputValue(), draft);
+
+  // Refocus resets the exact read. Retry must reject the same mismatched reply.
+  await page.route(agentUrl, (route) => route.abort("connectionreset"), { times: 1 });
+  const failed = page.waitForEvent("requestfailed", {
+    predicate: (request) => request.method() === "GET" && request.url() === agentUrl,
+  });
+  await refocus(page);
+  assert.equal((await failed).failure()?.errorText, "net::ERR_CONNECTION_RESET");
+  await warning.waitFor();
+  const retryRead = responseTo(page, "GET", agentUrl);
+  await warning.getByRole("button", { name: "Retry", exact: true }).click();
+  assert.equal((await retryRead).status(), 200);
+  const unavailable = page.getByRole("heading", { name: "Request unavailable", exact: true });
+  await unavailable.or(wrongHeading).first().waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await unavailable.count(), 1);
+  assert.equal(await wrongHeading.count(), 0);
+  assert.equal(await editor.count(), 0);
+  assert.equal(readCount(agentPath), 3);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
