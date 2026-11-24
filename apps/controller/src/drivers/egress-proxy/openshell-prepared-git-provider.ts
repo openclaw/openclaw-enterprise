@@ -41,14 +41,15 @@ import {
 
 /**
  * Whether the Gateway answered a conditional UpdateProvider in a way that proves it was not
- * applied. At the pinned OpenShell, update_provider refuses a missing Provider (NOT_FOUND) and a
- * refresh-owned key (FAILED_PRECONDITION) before it writes, and a write that lost its resource
- * version condition answers ABORTED (RESOURCE_VERSION_CONFLICT), which the client wraps. A
- * transport failure, a deadline or a cancellation proves nothing.
+ * applied. At the pinned OpenShell, update_provider refuses a missing Provider (NOT_FOUND) before
+ * it writes, and a write that lost its resource version condition answers ABORTED ("provider was
+ * modified concurrently"), which the client wraps without its details. FAILED_PRECONDITION proves
+ * nothing: the request replay layer also answers it (REQUEST_OUTCOME_UNCERTAIN) when it cannot
+ * record its admission after the handler has committed the write. A transport failure, a
+ * deadline or a cancellation proves nothing either.
  */
 function writeUnapplied(error: unknown): boolean {
-  const raw = statusCode(error);
-  if (raw === 5 || raw === 9) {
+  if (statusCode(error) === 5) {
     return true;
   }
   const answered = (error as { grpcStatus?: unknown } | null)?.grpcStatus;

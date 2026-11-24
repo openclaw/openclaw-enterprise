@@ -373,6 +373,9 @@ interface WireState {
   // The write's answer is lost before the server applies it: "never" leaves the Provider as it
   // was, "later" applies the write after the caller has seen the failure.
   dropped?: "never" | "later" | undefined;
+  // The write is answered with a refusal: "missing" is NOT_FOUND before any write, "uncertain"
+  // is OpenShell's replay answer after the write committed but its admission record did not.
+  answered?: "missing" | "uncertain" | undefined;
   denyReads: boolean;
   workspaceId: string;
   workspaceReads: number;
@@ -501,6 +504,10 @@ export async function wire(t: TestContext) {
         callback({ code: grpc.status.ABORTED, details: "concurrent writer" });
         return;
       }
+      if (state.answered === "missing") {
+        callback({ code: grpc.status.NOT_FOUND, details: "provider not found" });
+        return;
+      }
       const apply = () => {
         assert.ok(state.provider);
         state.provider = {
@@ -518,6 +525,14 @@ export async function wire(t: TestContext) {
         return;
       }
       apply();
+      if (state.answered === "uncertain") {
+        callback({
+          code: grpc.status.FAILED_PRECONDITION,
+          details:
+            "request is admitted but has no confirmed replayable success; reconcile effects before starting a new request",
+        });
+        return;
+      }
       if (state.lost) {
         assert.ok(state.provider.credentials.GITHUB_TOKEN);
         callback({

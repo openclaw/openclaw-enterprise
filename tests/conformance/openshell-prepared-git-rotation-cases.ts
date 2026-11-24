@@ -311,7 +311,14 @@ export function registerPreparedGitRotationCases(): void {
     // The hold records the write durably before dispatch (the record keeps the Source fenced),
     // and settles it before release only when the answer proves the outcome. Each step notes
     // how many updates the Gateway had received when it ran.
-    type Outcome = "dropped-never" | "dropped-later" | "lost" | "conflict" | "unrecorded";
+    type Outcome =
+      | "dropped-never"
+      | "dropped-later"
+      | "lost"
+      | "conflict"
+      | "missing"
+      | "uncertain"
+      | "unrecorded";
     type End = "after-record" | "after-write";
     const held = async (outcome?: Outcome, end?: End) => {
       const { state, binding } = await wire(t);
@@ -322,6 +329,7 @@ export function registerPreparedGitRotationCases(): void {
       let open = true;
       state.conflict = outcome === "conflict";
       state.lost = outcome === "lost";
+      state.answered = outcome === "missing" || outcome === "uncertain" ? outcome : undefined;
       state.dropped =
         outcome === "dropped-never" ? "never" : outcome === "dropped-later" ? "later" : undefined;
       const next = token(outcome ?? end ?? "confirmed");
@@ -417,6 +425,26 @@ export function registerPreparedGitRotationCases(): void {
       ["release", 1],
     ]);
     assert.equal(refused.provider.credentials.GITHUB_TOKEN, refused.first.value);
+
+    // NOT_FOUND comes before any write: proven unapplied, so only this write's record is settled.
+    const missing = await held("missing");
+    assert.ok(unknown(missing.result));
+    assert.deepEqual(missing.steps, [
+      ["dispatching", 0],
+      ["unapplied", 1],
+      ["release", 1],
+    ]);
+    assert.equal(missing.provider.credentials.GITHUB_TOKEN, missing.first.value);
+
+    // FAILED_PRECONDITION proves nothing: OpenShell answers it when the write committed but the
+    // request's admission record did not. The record stays, and the Provider holds the new value.
+    const uncertain = await held("uncertain");
+    assert.ok(unknown(uncertain.result));
+    assert.deepEqual(uncertain.steps, [
+      ["dispatching", 0],
+      ["release", 1],
+    ]);
+    assert.equal(uncertain.provider.credentials.GITHUB_TOKEN, uncertain.next.value);
 
     // The hold ended after the record and before dispatch: nothing sent, settled unapplied.
     const before = await held(undefined, "after-record");
