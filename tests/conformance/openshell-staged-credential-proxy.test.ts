@@ -29,7 +29,7 @@ import {
 } from "../../packages/occ/src/errors.ts";
 
 type Wire = Record<string, unknown>;
-type Handler = (request: Wire) => Wire | undefined;
+type Handler = (request: Wire) => Wire | undefined | Promise<Wire | undefined>;
 type ConfigureInput = Parameters<OpenShellCredentialProxyDriver["configureDeployment"]>[1];
 type Metadata = {
   id: string;
@@ -152,6 +152,7 @@ async function fixture(t: TestContext) {
     additionalProfiles: new Map<string, Wire>(),
     additionalProviders: new Map<string, Provider>(),
     additionalProviderStatuses: new Map<string, Wire>(),
+    beforeProviderRead: undefined as ((name: string) => Promise<void>) | undefined,
     creates: [] as Wire[],
     updates: [] as Wire[],
     attaches: [] as Wire[],
@@ -249,11 +250,13 @@ async function fixture(t: TestContext) {
         },
       };
     },
-    GetProvider: (input) => {
+    GetProvider: async (input) => {
       if (state.attachMode === "detach-race" && state.attaches.length > 0) {
         state.detachOnNextSandboxRead = true;
       }
-      const provider = providerFor(String(input.name));
+      const name = String(input.name);
+      await state.beforeProviderRead?.(name);
+      const provider = providerFor(name);
       return provider && { provider };
     },
     ListProviders: (input) => {
@@ -636,9 +639,9 @@ async function fixture(t: TestContext) {
     Object.fromEntries(
       Object.entries(methods).map(([name, handler]) => [
         name,
-        (call: { request: Wire }, done: Grpc.sendUnaryData<Wire>) => {
+        async (call: { request: Wire }, done: Grpc.sendUnaryData<Wire>) => {
           try {
-            const reply = handler(call.request);
+            const reply = await handler(call.request);
             done(reply ? null : { code: grpc.status.NOT_FOUND }, reply);
           } catch (error) {
             done(error as Error);
@@ -1374,14 +1377,13 @@ test("native Proxy isolates model and Google Plugin delivery and rotates only th
   assert.equal(f.state.additionalProfiles.size, 0);
 });
 
-test("OpenShell Source retry updates each owned copy in workspace inventory", async (t) => {
-  const f = await fixture(t);
-  await f.configure();
+async function createAlternateProjection(
+  f: Awaited<ReturnType<typeof fixture>>,
+  signal: AbortSignal,
+) {
   const primary = f.state.provider!;
   const environment = "ALTERNATE_API_KEY";
   const name = openShellProjectedCredentialProviderName(binding.sourceRef.id, environment);
-  // Represent a retained unattached copy in the Gateway inventory. No Agent admission is
-  // implied for this copy, and only the attached Provider receives a serving receipt.
   await f.client.importProviderProfile(
     namespace.name,
     {
@@ -1403,9 +1405,9 @@ test("OpenShell Source retry updates each owned copy in workspace inventory", as
       inferenceCapable: false,
       annotations: primary.metadata.labels,
     },
-    t.signal,
+    signal,
   );
-  await f.client.createProvider(
+  const alternate = await f.client.createProvider(
     {
       workspace: namespace.name,
       name,
@@ -1414,8 +1416,17 @@ test("OpenShell Source retry updates each owned copy in workspace inventory", as
       credentials: { [environment]: "synthetic-material" },
       config: { oce_source_version: "source-v1" },
     },
-    t.signal,
+    signal,
   );
+  return alternate;
+}
+
+test("OpenShell Source retry updates each owned copy in workspace inventory", async (t) => {
+  const f = await fixture(t);
+  await f.configure();
+  const primary = f.state.provider!;
+  // Represent a retained unattached copy. Only the attached Provider receives a serving receipt.
+  const alternate = await createAlternateProjection(f, t.signal);
   f.observeServing();
   f.setResolvedCredential("synthetic-material-v2", "source-v2");
   await f.notify("source-v2");
@@ -1423,7 +1434,6 @@ test("OpenShell Source retry updates each owned copy in workspace inventory", as
   assert.ok(firstReceipt);
   const observedUpdates = f.state.statusReads.length;
   await f.notify("source-v2");
-  assert.equal(f.resolutions(), 3, "each Source push resolves once regardless of copy count");
   for (const updates of [f.state.updates.slice(0, 2), f.state.updates.slice(2)]) {
     assert.deepEqual(
       updates.map(({ provider: value }) => {
@@ -1436,7 +1446,11 @@ test("OpenShell Source retry updates each owned copy in workspace inventory", as
           { OPENAI_API_KEY: "synthetic-material-v2" },
           { oce_source_version: "source-v2" },
         ],
-        [name, { [environment]: "synthetic-material-v2" }, { oce_source_version: "source-v2" }],
+        [
+          alternate.name,
+          { ALTERNATE_API_KEY: "synthetic-material-v2" },
+          { oce_source_version: "source-v2" },
+        ],
       ],
     );
   }
@@ -1448,6 +1462,76 @@ test("OpenShell Source retry updates each owned copy in workspace inventory", as
         receipt_id && receipt_id !== firstReceipt && provider === primary.metadata.name,
     ),
   );
+});
+
+test("OpenShell Source delivery cannot restore an older version on a later Provider copy", async (t) => {
+  for (const version of ["source-v2", undefined]) {
+    await t.test(version ? "versioned notification" : "unversioned retry", async (t) => {
+      const f = await fixture(t);
+      await f.configure();
+      const primary = f.state.provider!;
+      const alternate = await createAlternateProjection(f, t.signal);
+      f.sandbox.spec.providers.push(alternate.name);
+      f.observeServing();
+      const alternateStatus = structuredClone(f.state.providerStatus!);
+      const receipt = record(alternateStatus.receipt);
+      receipt.provider = alternate.name;
+      Object.assign(record(receipt.desired), {
+        provider_id: alternate.id,
+        provider_resource_version: alternate.resourceVersion,
+      });
+      f.state.additionalProviderStatuses.set(alternate.name, alternateStatus);
+
+      // Pause the old delivery after its first copy is serving and before it reads the next
+      // Provider. The new delivery can then advance both Providers and their serving receipts.
+      const paused = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      f.state.beforeProviderRead = async (name) => {
+        if (name === alternate.name) {
+          f.state.beforeProviderRead = undefined;
+          paused.resolve();
+          await resume.promise;
+        }
+      };
+      f.setResolvedCredential("synthetic-material-v2", "source-v2");
+      const older = f.notify(version).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      try {
+        await Promise.race([
+          paused.promise,
+          older.then(() => assert.fail("Older delivery completed before the second copy read")),
+        ]);
+        assert.equal(primary.config.oce_source_version, "source-v2");
+        assert.equal(f.state.providerStatus?.state, "PROVIDER_READINESS_STATE_READY");
+        assert.equal(f.state.updates.length, 1);
+
+        f.setResolvedCredential("synthetic-material-v3", "source-v3");
+        await f.notify("source-v3");
+        const newerUpdates = f.state.updates.length;
+        assert.equal(newerUpdates, 3);
+
+        resume.resolve();
+        const olderOutcome = await older;
+        const copies = await Promise.all(
+          [primary.metadata.name, alternate.name].map((name) =>
+            f.client.getProvider(namespace.name, name, t.signal),
+          ),
+        );
+        assert.deepEqual(
+          copies.map((copy) => copy?.config.oce_source_version),
+          ["source-v3", "source-v3"],
+          "a delayed delivery must leave the newer version on both copies",
+        );
+        assert.equal(f.state.updates.length, newerUpdates);
+        assert.ok(olderOutcome instanceof DependencyUnavailableError);
+      } finally {
+        resume.resolve();
+        await older;
+      }
+    });
+  }
 });
 
 test("staged OpenShell Proxy rejects an unsupported TokenService before resolving or mutating the Gateway", async (t) => {
