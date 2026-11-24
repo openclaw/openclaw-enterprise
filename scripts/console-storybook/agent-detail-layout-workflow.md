@@ -24,6 +24,17 @@ Reopen **Edit Configuration**. In **Configuration JSON**, select a few character
 with Shift+Left. Switch browser tabs and return. After the access check, press
 Shift+Left again. The selection should extend one more character to the left.
 
+At desktop and 390-pixel widths, open **Pages / Agent detail / Channels access
+could not be checked on tab return** in its own preview tab. Open **Edit Slack**
+with the keyboard, then choose **Cancel** and confirm focus returns to **Edit
+Slack**. Switch to another browser tab and return. The fixture returns one
+HTTP 503 for the Agent permission check. Confirm **Channels** stays selected
+and receives focus. Read the access-check message on the Channels panel and
+check that the Slack card and **Deploy new version** describe why their actions
+are unavailable. Choose **Refresh** in the page header and check that **Edit
+Slack** is available again and the access-check message clears. Reload the
+preview to repeat.
+
 For retained Harness settings, open **Pages / Agent detail / Retained Harness
 history** (`retainedHarnessHistory`). Load older versions, select v1 and read the
 saved-settings warning,

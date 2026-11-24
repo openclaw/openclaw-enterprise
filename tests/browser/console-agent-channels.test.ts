@@ -14,6 +14,7 @@ import type {
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 import {
   accessBindingPostRequests,
   accessibleDescription,
@@ -24,6 +25,7 @@ import {
   expectNoText,
   fileBrowser,
   grantInstallationAdministration,
+  hasFocus,
   holdRequests,
   login,
   MEMBER_WRITE,
@@ -33,6 +35,7 @@ import {
   nonAuthWriteRequests,
   pathRequests,
   revealNativeConfiguration,
+  revokeAdministratorGrant,
   secretOptionLabel,
   selectSecret,
   setSlackSelection,
@@ -891,6 +894,134 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.equal(pageText.includes(slackAppSecretValue), false);
     assert.equal(pageText.includes(slackBotSecretValue), false);
   });
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    test(`A closed Channels draft distinguishes unavailable and denied access checks (${viewport.width} px)`, async (t) => {
+      const { fixture, namespace } = await readyNamespace(t, "Channel access check");
+      const { agent } = await createSlackAgent(fixture, namespace, {
+        name: "Channel access Agent",
+        slug: "channel-access",
+        secretBindings: await slackTokenBindings(fixture, namespace, "Channel access"),
+      });
+      const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+      await trackSettledFetches(page);
+      await openDraft(page, fixture, agent, "Channels");
+      const edit = page.getByRole("button", { name: "Edit Slack", exact: true });
+      const tab = page.getByRole("tab", { name: "Channels", exact: true });
+      const panel = page.getByRole("tabpanel", { name: "Channels", exact: true });
+      const draftEntry = page.locator("#revision-selector option[value=draft]");
+      await edit.waitFor();
+      await waitForIdleFetches(page);
+      const permissionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+      const permissionsUrl = fixture.origin + permissionsPath;
+      const requests = apiRequests(page, fixture.origin);
+      let unavailable = false;
+      await page.route(permissionsUrl, async (route) => {
+        if (!unavailable || route.request().method() !== "GET") {
+          await route.continue();
+          return;
+        }
+        unavailable = false;
+        await route.fulfill(
+          apiErrorResponse(503, "INTERNAL_ERROR", "Permission read unavailable."),
+        );
+      });
+      const recheck = async (status: number, configurationUpdate?: boolean) => {
+        const checked = responseTo(page, "GET", permissionsUrl);
+        await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+        const response = await checked;
+        assert.equal(response.status(), status, "permission check HTTP response");
+        if (configurationUpdate !== undefined) {
+          const body: unknown = await response.json();
+          assertRecord(body);
+          assertRecord(body.data);
+          assert.equal(body.data.configurationUpdate, configurationUpdate);
+        }
+        await waitForIdleFetches(page);
+        await nextFrames(page);
+      };
+
+      // Start away from the scroll limits so the tab can stay in the same part of the viewport
+      // even when the permission-gated checklist and harness controls above it disappear.
+      await tab.evaluate((control) => {
+        window.scrollBy({
+          top: control.getBoundingClientRect().top - window.innerHeight / 2,
+          behavior: "instant",
+        });
+      });
+      await edit.evaluate((control: HTMLButtonElement) => control.focus({ preventScroll: true }));
+      assert.equal(await hasFocus(edit), true);
+      const tabTop = () => tab.evaluate((control) => control.getBoundingClientRect().top);
+      const initialTop = await tabTop();
+      assert.ok(initialTop > 0 && initialTop < viewport.height, "Channels tab starts in view");
+      const expectAnchor = async () => {
+        const top = await tabTop();
+        assert.ok(
+          Math.abs(top - initialTop) <= 1,
+          `Channels tab moved from ${initialTop} to ${top}`,
+        );
+      };
+      const unconfirmed = /Could not check your edit access\. Select Refresh to try again\./;
+      const unconfirmedDraft = "Draft · Edit access unconfirmed";
+      const denial = /Your access does not include editing this Configuration/;
+      const expectUnconfirmed = async () => {
+        const copy = await panel.innerText();
+        assert.match(copy, unconfirmed);
+        assert.doesNotMatch(
+          copy,
+          /Your access does not include|read-only with your access|ask an Installation administrator/i,
+        );
+        assert.equal(await edit.count(), 0);
+        assert.equal(await draftEntry.textContent(), unconfirmedDraft);
+      };
+
+      unavailable = true;
+      await recheck(503);
+      await expectUnconfirmed();
+      await expectAnchor();
+      assert.equal(
+        await hasFocus(tab),
+        true,
+        "focus returns to the selected tab after Edit is removed",
+      );
+
+      await recheck(200, true);
+      await edit.waitFor();
+      assert.doesNotMatch(await panel.innerText(), unconfirmed);
+      assert.equal(await draftEntry.textContent(), "Draft · Editable Configuration");
+      await expectAnchor();
+      assert.equal(await hasFocus(tab), true);
+
+      // A genuine denial has the same disabled action as a failed check, but different copy.
+      await edit.evaluate((control: HTMLButtonElement) => control.focus({ preventScroll: true }));
+      assert.equal(await hasFocus(edit), true);
+      const restore = revokeAdministratorGrant(fixture, ["update", "configuration"]);
+      t.after(restore);
+      await recheck(200, false);
+      assert.match(await panel.innerText(), denial);
+      assert.equal(await edit.count(), 0);
+      assert.equal(await hasFocus(tab), true, "focus returns to the selected tab after denial");
+      unavailable = true;
+      await recheck(503);
+      await expectUnconfirmed();
+      await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+      await page.getByRole("tabpanel", { name: "Configuration", exact: true }).waitFor();
+      assert.equal(await draftEntry.textContent(), unconfirmedDraft);
+      await tab.click();
+      await panel.getByText(unconfirmed).waitFor();
+      await expectUnconfirmed();
+      await recheck(200, false);
+      assert.match(await panel.innerText(), denial);
+      assert.doesNotMatch(await panel.innerText(), unconfirmed);
+      assert.equal(await draftEntry.textContent(), "Draft · Read-only Configuration");
+      assert.equal(await edit.count(), 0);
+      assert.equal(pathRequests(requests, "GET", permissionsPath).length, 5);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+    });
+  }
 
   // A version snapshot cannot be edited, so its Slack card offers no setup step: a reader of a
   // v1 without Slack was told to provide the tokens (finding 2455). The Dedicated draft still

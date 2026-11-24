@@ -3382,6 +3382,15 @@ async function revalidateMountedAgent(current: Route) {
   const recoveryFocus = focused?.matches('#configuration-editor-feedback[role="status"]')
     ? watchFocus()
     : undefined;
+  // An opted-in panel can outlive its focused action. Capture its tab before inert.
+  const focusPanel = focused?.closest('[role="tabpanel"][data-restore-panel-focus]');
+  const focusPanelLabel = focusPanel?.getAttribute("aria-labelledby");
+  const panelFocus = focusPanelLabel ? watchFocus() : undefined;
+  if (panelFocus) {
+    window.addEventListener("blur", () => panelFocus.abort(), {
+      signal: AbortSignal.any([panelFocus.signal, lifetime.signal]),
+    });
+  }
   let editorFocus = deferredFocus;
   if (
     focused instanceof HTMLTextAreaElement &&
@@ -3408,6 +3417,18 @@ async function revalidateMountedAgent(current: Route) {
     if (!focused || !document.hasFocus() || document.activeElement !== document.body) {
       return;
     }
+    const restorePanel = !afterRetry && panelFocus;
+    if (
+      restorePanel &&
+      (restorePanel.signal.aborted ||
+        document.hidden ||
+        document.getSelection()?.isCollapsed === false ||
+        mountedViewState !== state ||
+        !isCurrent() ||
+        focusPanel?.getAttribute("aria-labelledby") !== focusPanelLabel)
+    ) {
+      return;
+    }
     const target = focused.isConnected
       ? focused
       : afterRetry && mountedRouteKey === key && focused.id
@@ -3416,11 +3437,14 @@ async function revalidateMountedAgent(current: Route) {
     if (!target?.closest(".content") || !target.checkVisibility()) {
       // A permission recheck can hide the focused control while this Agent view is inert.
       // If its panel is still visible, return to the tab that labels it.
-      const panel = target?.closest('[role="tabpanel"]');
+      const panel = target?.closest('[role="tabpanel"]') ?? (restorePanel ? focusPanel : null);
       if (panel && view.contains(panel) && panel.checkVisibility()) {
         const tab = document.getElementById(panel.getAttribute("aria-labelledby") ?? "");
-        if (tab?.checkVisibility()) {
-          tab.focus();
+        if (
+          tab?.checkVisibility() &&
+          (!restorePanel || tab.getAttribute("aria-selected") === "true")
+        ) {
+          tab.focus(restorePanel ? { preventScroll: true } : undefined);
           return;
         }
       }
@@ -3826,6 +3850,7 @@ async function revalidateMountedAgent(current: Route) {
       editorFocus?.cancel.abort();
     }
     recoveryFocus?.abort();
+    panelFocus?.abort();
   }
 }
 
