@@ -168,8 +168,8 @@ versions, and the Slack channel editor are described in
 
 ## Stop and resume an Agent
 
-Select **Stop Agent** or the Agent's list-row Stop icon, review its effect, and
-confirm. Stop requires exact Agent `operate`. It requests shutdown while
+Select **Stop Agent** or its row icon, review its effect, then confirm; Stop and
+Delete confirmations show the Agent name and ID. Stop requires exact Agent `operate`. It requests shutdown while
 retaining version history, credentials, gateway state, and workspace files.
 
 An accepted request means shutdown was queued; the list row shows **Stop
