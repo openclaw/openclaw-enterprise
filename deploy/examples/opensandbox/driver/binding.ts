@@ -85,7 +85,9 @@ export async function readBinding(context: SandboxNamespaceContext, name: string
     return verify(context, name, labels, record);
   } catch (error) {
     context.signal.throwIfAborted();
-    if (numericErrorStatus(error) !== 404) throw error;
+    if (numericErrorStatus(error) !== 404) {
+      throw error;
+    }
     return undefined;
   }
 }
@@ -110,7 +112,9 @@ export async function reserve(context: SandboxNamespaceContext, name: string, la
     return verify(context, name, labels, record);
   } catch (error) {
     const existing = await readBinding(context, name, labels);
-    if (!existing) throw error;
+    if (!existing) {
+      throw error;
+    }
     return existing;
   }
 }
@@ -132,10 +136,12 @@ export async function pin(
     (pod !== undefined &&
       binding.podUid !== undefined &&
       (binding.podUid !== pod.uid || binding.specHash !== pod.specHash))
-  )
+  ) {
     conflict();
-  if (binding.batchUid === batchUid && (podUid === undefined || binding.podUid === podUid))
+  }
+  if (binding.batchUid === batchUid && (podUid === undefined || binding.podUid === podUid)) {
     return binding;
+  }
   const identity = ref(context, name);
   const matches = (observed: Binding | undefined) =>
     observed?.uid === binding.uid &&
@@ -157,9 +163,13 @@ export async function pin(
     observed = verify(context, name, labels, result);
   } catch (error) {
     observed = await readBinding(context, name, labels);
-    if (!matches(observed)) throw error;
+    if (!matches(observed)) {
+      throw error;
+    }
   }
-  if (!observed || !matches(observed)) conflict();
+  if (!observed || !matches(observed)) {
+    conflict();
+  }
   return observed;
 }
 
@@ -182,7 +192,9 @@ export async function forget(
       },
     );
   } catch (error) {
-    if (await readBinding(context, name, labels)) throw error;
+    if (await readBinding(context, name, labels)) {
+      throw error;
+    }
     return;
   }
   if (await readBinding(context, name, labels)) {

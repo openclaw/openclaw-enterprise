@@ -268,9 +268,13 @@ class OpenSandboxDriver implements SandboxDriver {
   ): Promise<boolean> {
     const labels = this.labels(context);
     const name = resourceName(context.namespace.id, context.revision.agentId, context.revision.id);
-    if (context.podName !== name + "-0" || !context.podUid) return false;
+    if (context.podName !== name + "-0" || !context.podUid) {
+      return false;
+    }
     const binding = await readBinding(context, name, labels);
-    if (!binding?.batchUid || binding.podUid !== context.podUid) return false;
+    if (!binding?.batchUid || binding.podUid !== context.podUid) {
+      return false;
+    }
     const batch = await read<BatchSandbox>(context, batchRef(context.namespace.name, name));
     if (
       !batch ||
@@ -278,11 +282,13 @@ class OpenSandboxDriver implements SandboxDriver {
       this.verifyBatch(context, batch, labels) !== binding.batchUid ||
       specHash(batch) !== binding.specHash ||
       batch.metadata.annotations?.[BINDING] !== binding.uid
-    )
+    ) {
       return false;
+    }
     const pod = await this.ownedPod(context, batch);
-    if (!pod?.metadata || pod.metadata.deletionTimestamp || pod.metadata.uid !== context.podUid)
+    if (!pod?.metadata || pod.metadata.deletionTimestamp || pod.metadata.uid !== context.podUid) {
       return false;
+    }
     await checkEgress(context, batch, pod);
     context.signal.throwIfAborted();
     return true;
@@ -486,7 +492,7 @@ class OpenSandboxDriver implements SandboxDriver {
   ): Promise<void> {
     const deadline = Date.now() + 35_000;
     const ref = batchRef(context.namespace.name, name);
-    let binding = await readBinding(context, name, labels);
+    const binding = await readBinding(context, name, labels);
     if (listedBindingUid !== undefined && binding?.uid !== listedBindingUid) {
       immutableFailure(
         "OpenSandbox refused a replacement allocation record during Namespace cleanup.",
@@ -500,7 +506,9 @@ class OpenSandboxDriver implements SandboxDriver {
         );
       }
       await requireNoEgress(context, name);
-      if (binding) await forget(context, name, labels, binding);
+      if (binding) {
+        await forget(context, name, labels, binding);
+      }
       return;
     }
     const uid = this.verifyBatch(context, current, labels);
@@ -510,18 +518,19 @@ class OpenSandboxDriver implements SandboxDriver {
     if (
       !binding ||
       current.metadata.annotations?.[BINDING] !== binding.uid ||
-      (binding.batchUid !== undefined && binding.batchUid !== uid)
+      binding.batchUid !== uid
     ) {
       immutableFailure("OpenSandbox refused to delete a workload without its original allocation.");
     }
-    binding = await pin(context, name, labels, binding, uid);
+
     const child = await this.ownedPod(context, current);
     if (child && binding.podUid !== undefined && child.metadata?.uid !== binding.podUid) {
       immutableFailure("OpenSandbox refused to delete a replacement Harness Pod.");
     }
     const resourceVersion = current.metadata.resourceVersion;
-    if (!resourceVersion)
+    if (!resourceVersion) {
       immutableFailure("OpenSandbox requires the observed BatchSandbox resource version.");
+    }
     await removeEgress(context, current);
     let uncertainDelete: unknown;
     if (!current.metadata.deletionTimestamp) {

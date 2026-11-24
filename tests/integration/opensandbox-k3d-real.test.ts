@@ -969,11 +969,10 @@ test(
       await kube.applyManifest(batch);
       replacedUid = kubeUid(await kube.resource(sandboxResource, name, placement));
     });
-    try {
-      const cleanup = await hooks.deleteNamespace({ namespace: saved, signal });
+    const deleteNamespace = hooks.deleteNamespace;
+    async function assertReplacementRetained() {
       assert.ok(replacedUid);
       assert.notEqual(replacedUid, listedUid);
-      assert.equal(cleanup.namespaceDeleted, false);
       assert.equal(kubeUid(await kube.resource(sandboxResource, name, placement)), replacedUid);
       const retained = row(await kube.resource("configmap", name, placement));
       assert.equal(kubeUid(retained), reservation);
@@ -982,12 +981,20 @@ test(
         undefined,
         "Cleanup must refuse before pinning a replacement",
       );
+    }
+    try {
+      const cleanup = await deleteNamespace({ namespace: saved, signal });
+      assert.equal(cleanup.namespaceDeleted, false);
+      await assertReplacementRetained();
     } finally {
       swap.mock.restore();
     }
-    t.diagnostic(
-      "Namespace cleanup refused a same-name replacement and left its reservation intact.",
-    );
+    // On retry the list itself contains the replacement. Only the original
+    // reservation can authorize deletion, and it never recorded a controller UID.
+    const retry = await deleteNamespace({ namespace: saved, signal });
+    assert.equal(retry.namespaceDeleted, false);
+    await assertReplacementRetained();
+    t.diagnostic("Namespace cleanup preserved the replacement and its reservation across a retry.");
     assert.equal(kubeUid(await kube.resource(sandboxResource, foreignName, placement)), foreignUid);
   },
 );

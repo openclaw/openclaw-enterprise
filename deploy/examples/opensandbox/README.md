@@ -166,14 +166,21 @@ Run from the OCE repository root. Node reads the Gateway CA at startup.
 Require one pass and zero skips. Check the following results.
 
 - After the first create reply is lost, the Driver finds the original
-  `BatchSandbox`. Only its Pod can pass the ownership check.
+  `BatchSandbox`. Compute refuses to finish activation when the Ready Pod's
+  controller changes. The worker recovers after the original owner returns.
 - Codex refuses missing or incorrect transport credentials. The Agent
   replies through the local fixture. The Harness cannot connect to the
   test listener.
 - After a lost delete reply, replacement waits for the old Pod to disappear.
   The same workspace file survives replacement and a stop and redeploy.
 - Agent deletion removes the workspace claim and leaves an unrelated
-  `BatchSandbox` intact.
+  `BatchSandbox` intact. Repeated Namespace cleanup leaves a replacement
+  untouched if the allocation record lacks the original controller UID.
+
+If creation stops before the Driver records that UID, cleanup cannot establish
+ownership. Reconcile the original deployment so the Driver can verify the
+admitted template. If that is impossible, inspect the workload and allocation
+record before removing the disposable cluster. Never assign a UID by hand.
 
 On success or failure, press Ctrl+C in the fixture terminal. The fixture
 removes its settings and certificate files. Follow the cleanup steps for
