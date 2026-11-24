@@ -156,7 +156,6 @@ import type {
 import {
   assertHarnessAuthAvailable,
   assertRevisionAuthAvailable,
-  assertRevisionNumber,
   assertRevisionOwner,
   assertSameCredentialSourceFields,
   validCredentialSourceSnapshots,
@@ -4314,7 +4313,11 @@ export class PostgresPlatformState implements PlatformStateStore {
         // skew (finding 1195). The caller's createdAt is replaced, not stored.
         const compute = asRecord(revision.compute);
         const { networkProxyAdmission, ...storedCompute } = compute ?? {};
-        assertRevisionNumber(revision.revision);
+        if (revision.revision > Number.MAX_SAFE_INTEGER) {
+          throw new ScopeViolationError(
+            "The Agent revision number must be a positive safe integer.",
+          );
+        }
         const admitted = await client.query(
           `INSERT INTO occ.agent_revisions
            (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at, first_deployment_digest,

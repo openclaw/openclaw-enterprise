@@ -557,12 +557,6 @@ export function assertRevisionOwner(owner: Agent | undefined, revision: AgentRev
   }
 }
 
-export function assertRevisionNumber(revision: number): void {
-  if (!Number.isSafeInteger(revision) || revision <= 0) {
-    throw new ScopeViolationError("The Agent revision number must be a positive safe integer.");
-  }
-}
-
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   assertExecutionAdmission(revision);
   if (
@@ -3516,7 +3510,9 @@ function repositories(
       if (previous.some((existing) => existing.id === revision.id)) {
         throw new ResourceConflictError("The server generated an existing AgentRevision identity.");
       }
-      assertRevisionNumber(revision.revision);
+      if (!Number.isSafeInteger(revision.revision) || revision.revision <= 0) {
+        throw new ScopeViolationError("The Agent revision number must be a positive safe integer.");
+      }
       const {
         secretBindings: _providedSecretBindings,
         plugins: _providedPlugins,

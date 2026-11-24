@@ -65,9 +65,18 @@ async function verifyRevisionOrder(
       store.transact(({ revisions }) =>
         revisions.createRevision({ ...first, id: identifier("rev"), revision }),
       ),
-      (error: unknown) =>
-        error instanceof ScopeViolationError &&
-        error.message === "The Agent revision number must be a positive safe integer.",
+      (error: unknown) => {
+        if (error instanceof ScopeViolationError) {
+          return (
+            error.message === "The Agent revision number must be a positive safe integer." ||
+            (revision === 0 && error.message === postgresOwnershipViolation)
+          );
+        }
+        // PostgreSQL rejects a fraction when parsing the bigint parameter.
+        return (
+          revision === 1.5 && error instanceof Error && "code" in error && error.code === "22P02"
+        );
+      },
       `Invalid revision number ${revision}`,
     );
     await assertHistory();
