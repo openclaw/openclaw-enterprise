@@ -23,14 +23,12 @@ records that key's ID in `actorServiceKeyId` on the resource event.
 
 ### API requests
 
-When Control Plane audit is enabled, OCC records two events for a covered
-resource API request that reaches its handler after bootstrap. It saves
-`openclaw.api.request.admitted` before the handler starts and
-`openclaw.api.request.result` before sending the response. Admission means OCC
-accepted the request for processing. The handler still checks
-permission for the operation. A request rejected before the handler can have a
-result record by itself, for example a `400` for an invalid request or a `401`
-for missing credentials.
+After bootstrap, Control Plane audit records `openclaw.api.request.admitted`
+before a covered handler starts. The handler still checks permission.
+OCC records `openclaw.api.request.result` before sending a standard API
+response. An invalid or unauthenticated request can have only a result.
+[HTTP chat](../../reference/agent-http-chat.md#kubernetes-configuration-and-audit)
+queues admission and records a separate chat result for a relayed response.
 
 The result hook also covers the registered account, service-key, sign-in,
 recovery, and native administration routes. When a resource API request returns
@@ -128,8 +126,9 @@ without responses. Embedded OpenClaw can miss retries within a call.
 The Gateway queues events locally and sends them in the background.
 Chat continues if PostgreSQL cannot save a runtime event.
 
-The [Control Plane chat API](../../reference/agent-http-chat.md) must still
-save its own request record before it forwards a message to the Gateway.
+OCC must save required HTTP chat records in a
+[separate queue](../agent-http-chat.md#retry-delayed-http-chat-audit-records)
+before it forwards a message. A failed write to the audit log delays delivery.
 
 ### Recover delayed runtime events
 

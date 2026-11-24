@@ -20,6 +20,7 @@ import {
   type RunOptions,
 } from "./process.ts";
 import {
+  checkHttpChatDelivery,
   kubectl,
   modelEvents,
   podList,
@@ -556,26 +557,36 @@ function openHttpChat(stack: KubernetesAccess & Pick<LocalSetup, "api">, agent: 
   const nonce = `OCE_SMOKE_${randomUUID()}`;
   const text = `Reply with exactly this nonce and no other text: ${nonce}`;
 
-  async function send(inputs = [text]) {
+  function post(inputs: string[], expectedStatus: number) {
     const timeout = AbortSignal.timeout(3 * minute);
-    const result = await stack.api(
+    return stack.api(
       "POST",
       `/agents/${agent.id}/chat`,
       { user, messages: inputs.map((content) => ({ role: "user", content })) },
       {
         response: "chat",
+        expectedStatus,
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       },
     );
+  }
+  async function respond(inputs = [text]) {
+    const response = await post(inputs, 200);
+    const requestId = wireField(response, "requestId");
+    assert.ok(typeof requestId === "string" && requestId.length > 0);
+    const result = wireField(response, "body");
     const choices = wireField(result, "choices");
     assert.ok(Array.isArray(choices) && choices.length === 1);
     const reply = wireField(choices[0], "message");
     assertAssistantReply(reply, nonce, agent.label);
     const turnId = wireField(result, "id");
     assert.ok(typeof turnId === "string" && turnId.length > 0);
-    return turnId;
+    return { turnId, requestId };
   }
-  return { nonce, text, send };
+  async function send(inputs = [text]) {
+    return (await respond(inputs)).turnId;
+  }
+  return { nonce, text, send, respond, expectUnavailable: () => post([text], 503) };
 }
 
 async function httpMessageIds(stack: KubernetesAccess, gateway: GatewayPod, sessionId: string) {
@@ -673,7 +684,17 @@ export async function checkHttpTurnAudit(
   }
 
   // The first HTTP request creates the session. The next request reuses it.
-  const first = await readTurn(1, await chat.send());
+  const firstId = await checkHttpChatDelivery(
+    stack,
+    revisionId,
+    chat.respond,
+    chat.expectUnavailable,
+    countModelRequests,
+  );
+  log(
+    `${agent.label}: HTTP chat continued during audit delivery failure and all three records arrived once`,
+  );
+  const first = await readTurn(1, firstId);
   const sessionId = first.details.sessionId;
   await checkSessionStarted(reader, revisionId, sessionId);
   // Keep PostgreSQL rejecting the admission until the second HTTP reply arrives.

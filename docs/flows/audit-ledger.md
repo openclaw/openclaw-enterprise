@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: "2026-11-24"
-last_updated_session: "authoring-run/d108b4d9-d114-4611-befc-6fb2787baee3"
+last_updated_session: "authoring-run/e84c6230-3e81-429a-93ee-4459af104384"
 ---
 
 # Audit ledger flow
@@ -96,14 +96,11 @@ graph TD
 `apps/controller/src/index.ts:requestAuditHooks` and
 `apps/controller/src/http/agents.ts:getAgent`
 
-When Control Plane audit is enabled and the Installation exists, the API saves
-admission in PostgreSQL before running a covered handler.
-The event action is
-`openclaw.api.request.admitted`. If the write fails, the API prepares HTTP
-`503` without starting the handler. A route hook then tries to save
-`openclaw.api.request.result` before sending the selected HTTP response.
-This includes rejections from request validation and authentication before the
-handler starts.
+After bootstrap, Control Plane audit saves `openclaw.api.request.admitted`
+before the handler starts. Failure returns `503`. [HTTP chat](agent-http-chat.md)
+uses a PostgreSQL queue. A route hook records `openclaw.api.request.result`
+before sending a standard API response, including validation and authentication
+errors. Relayed chat responses use separate result records.
 
 The result hook also covers the registered account, service-key, sign-in,
 recovery, and native administration routes. Routes can record only a result
@@ -344,6 +341,8 @@ a hash. The link requires the original session and message IDs.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 10:21: Identify queued HTTP chat records. (authoring-run/e84c6230-3e81-429a-93ee-4459af104384 - de7a98fdbb33b5ed3ac59b2a8ca004b2aeb5f705)
 
 - 2026-11-24 09:37: Trace background delivery of Gateway turn records. (authoring-run/d108b4d9-d114-4611-befc-6fb2787baee3 - 3e0ed219b6022212dbe331dfe48c940e3d24a94e)
 

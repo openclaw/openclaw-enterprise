@@ -400,6 +400,7 @@ export async function composeProduction(
       await checkDatabaseReadiness();
       return { status: "ready" };
     });
+    app.addHook("onReady", async () => state.startHttpChatAuditDelivery());
     app.addHook("onClose", () => close(state));
     phaseCompleted("routes");
     return app;

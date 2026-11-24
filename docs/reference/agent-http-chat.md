@@ -98,11 +98,26 @@ Clients must inspect error events; the terminator alone does not prove success.
 Dedicated Codex streaming remains subject to the
 [current qualification limit](../testing/agent-http-chat.md#current-pinned-runtime-qualification-limit).
 
-Admission audit must succeed before forwarding. Terminal records identify the
-request, principal, authentication method, Agent, Namespace, revision, timing,
-streaming mode and result. They exclude prompts, responses, credentials and raw
-conversation labels. A terminal audit failure is reported separately because
-execution cannot be undone.
+OCC uses a PostgreSQL queue for HTTP chat audit records. The queue holds
+up to 4,096 records in total. Each record can use up to 8 KiB.
+
+| Record                                                                                                | When OCC queues it                                                                                          |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `openclaw.api.request.admitted`                                                                       | Before the handler starts, if Control Plane audit is on.                                                    |
+| `openclaw.agents.chat.admitted`                                                                       | After OCC checks permission and selects the revision, before forwarding. This applies with audit on or off. |
+| `openclaw.agents.chat.completed`, `openclaw.agents.chat.failed` or `openclaw.agents.chat.interrupted` | When the relay ends. This applies with audit on or off.                                                     |
+
+OCC forwards the request once PostgreSQL confirms all required admission
+records are in the queue. A failed write to `occ.audit_events` delays
+delivery of those records. Chat can continue. If the queue is full or OCC
+cannot confirm a required queue write, it returns `503` before forwarding.
+A PostgreSQL outage can also prevent permission and revision checks.
+
+Chat records identify the request, principal, authentication method, Agent,
+Namespace, revision, timing, streaming mode and result. They exclude prompts,
+responses, credentials and raw conversation labels. OCC logs a failure to
+queue the result. It cannot undo a turn. Permission denials and other API
+operations keep their existing audit rules.
 
 See the [operator procedure](../guides/agent-http-chat.md),
 [Compute contract](drivers/compute.md), [source flow](../flows/agent-http-chat.md)

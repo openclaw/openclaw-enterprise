@@ -127,6 +127,14 @@ and `before_turn_start`. The first HTTP message must create one session
 record. After the second message, the count must still be one. Creating an
 empty chat must produce one session record and zero turns.
 
+For HTTP chat, the test makes the audit log reject
+`openclaw.api.request.admitted`, `openclaw.agents.chat.admitted`
+and `openclaw.agents.chat.completed`.
+The user must receive a reply. After recovery, the audit log must contain
+each queued ID once. The model must receive no extra request.
+If the OCC queue rejects chat admission, the API must return HTTP 503
+and the model must receive no request.
+
 Before the second message, the test makes PostgreSQL refuse
 `openclaw.runtime.turn.admitted` for the revision. The user must receive
 a reply while the database refuses this record. After writes resume,

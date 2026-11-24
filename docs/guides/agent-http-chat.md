@@ -51,6 +51,52 @@ a new request with the same label and a message such as `Continue the task.`
 See the [HTTP chat contract](../reference/agent-http-chat.md) for limits, status
 codes, conversation boundaries and audit behavior.
 
+## Retry delayed HTTP chat audit records
+
+If chat succeeds but an HTTP chat record is missing from the audit log,
+check the OCC queue. A delivery retry never sends the chat request again.
+For a missing Gateway turn record, use the separate
+[Gateway recovery procedure](topics/audit-log.md#recover-delayed-runtime-events).
+
+Each OCC API replica checks the queue at startup and every 15 seconds.
+When OCC adds a record, it also starts delivery in the background.
+After a failure, the record stays in the queue for another attempt.
+After three consecutive failures, that replica pauses delivery for
+15 seconds. No user action is required.
+
+An authorized PostgreSQL operator can check the next 20 records with
+`psql`. Use the Installation database.
+
+```sql
+SELECT id, action, retry_at
+FROM occ.http_chat_audit_queue
+ORDER BY retry_at, id
+LIMIT 20;
+```
+
+Correct the cause of the failure. To make one record ready for the next
+check, enter its ID at the prompt.
+
+```sql
+\prompt 'Queued event ID: ' event_id
+UPDATE occ.http_chat_audit_queue
+SET retry_at = clock_timestamp()
+WHERE id = :'event_id'
+RETURNING id;
+```
+
+If the update returns no row, OCC may have delivered the record already.
+Check the same ID in the audit log.
+
+```sql
+SELECT id, action
+FROM occ.audit_events
+WHERE id = :'event_id';
+```
+
+This procedure changes only the retry time. Do not edit the event or
+send the message again to recover a record.
+
 ## Disable HTTP chat
 
 Set `gateway.http.endpoints.chatCompletions.enabled` to `false` in the Agent's

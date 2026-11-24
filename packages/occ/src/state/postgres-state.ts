@@ -1,6 +1,7 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
+  API_REQUEST_AUDIT_ACTIONS,
   assertExecutionAdmission,
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
@@ -1117,6 +1118,43 @@ function auditDetails(event: AuditEvent): Record<string, unknown> | undefined {
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
+function isHttpChatEvidence(event: AuditEvent): boolean {
+  if (event.kind === "api_request") {
+    return (
+      event.action === API_REQUEST_AUDIT_ACTIONS.admitted &&
+      event.details?.operationId === "chatWithAgent"
+    );
+  }
+  return (
+    event.kind === "mutation" &&
+    [
+      "openclaw.agents.chat.admitted",
+      "openclaw.agents.chat.completed",
+      "openclaw.agents.chat.interrupted",
+      "openclaw.agents.chat.failed",
+    ].includes(event.action)
+  );
+}
+
+function auditValues(event: AuditEvent) {
+  if (event.resource.namespaceId !== event.namespaceId) {
+    throw new ScopeViolationError("The audit event and resource scopes do not match.");
+  }
+  const details = auditDetails(event);
+  return [
+    event.id,
+    event.occurredAt,
+    event.kind,
+    event.actorId,
+    event.action,
+    event.namespaceId ?? null,
+    event.resource.kind,
+    event.resource.id,
+    event.outcome,
+    details === undefined ? null : JSON.stringify(details),
+  ];
+}
+
 function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditEvent> {
   const namespaceId = optionalText(row, "namespace_id");
   const resourceKind = text(row, "resource_kind");
@@ -1375,6 +1413,10 @@ type StoredGatewayRuntimeGrant = GatewayRuntimeAuditGrant & { readonly tokenDige
 
 export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
+  private chatAuditPoll: NodeJS.Timeout | undefined;
+  private chatAuditDelivery: Promise<void> | undefined;
+  private chatAuditDelayed = false;
+  private chatAuditResumeAt = 0;
   private readonly pool: PostgresPool;
   private readonly queueOptions: PostgresWorkQueueOptions;
   private readonly preparedTokenProof: NonNullable<
@@ -1392,21 +1434,138 @@ export class PostgresPlatformState implements PlatformStateStore {
     this.bootstrapNativeIAM = options.bootstrapNativeIAM;
     const auditWriteTimeoutMs = options.auditWriteTimeoutMs;
     this.auditSink = {
-      append: async (event) =>
-        this.execute(false, async (state, context) => {
-          if (auditWriteTimeoutMs !== undefined) {
-            // A local setting leaves other transactions on the pooled connection unaffected.
-            await context.client.query(
-              `SELECT pg_catalog.set_config(name,
+      append: async (event) => {
+        const queued = this.chatAuditPoll !== undefined && isHttpChatEvidence(event);
+        await this.execute(
+          false,
+          async (state, context) => {
+            if (queued) {
+              await this.boundAgentAuditTransaction(state);
+            }
+            if (auditWriteTimeoutMs !== undefined) {
+              // A local setting leaves other transactions on the pooled connection unaffected.
+              await context.client.query(
+                `SELECT pg_catalog.set_config(name,
                  CASE WHEN setting::integer = 0 THEN $1::text
                       ELSE LEAST(setting::integer, $1::integer)::text END, true)
                FROM pg_catalog.pg_settings WHERE name IN ('statement_timeout', 'lock_timeout')`,
-              [String(auditWriteTimeoutMs)],
-            );
-          }
-          await state.audit.append(event);
-        }),
+                [String(auditWriteTimeoutMs)],
+              );
+            }
+            if (queued) {
+              await this.enqueueHttpChatAudit(context, event);
+            } else {
+              await state.audit.append(event);
+            }
+          },
+          queued,
+        );
+        if (queued) {
+          this.wakeHttpChatAuditDelivery();
+        }
+      },
     };
+  }
+
+  /** The API owns this poll even if optional request auditing is off. Chat admission is mandatory. */
+  startHttpChatAuditDelivery(): void {
+    if (this.chatAuditPoll !== undefined) {
+      return;
+    }
+    this.chatAuditPoll = setInterval(() => this.wakeHttpChatAuditDelivery(), 15_000);
+    this.chatAuditPoll.unref();
+    this.wakeHttpChatAuditDelivery();
+  }
+
+  private async enqueueHttpChatAudit(context: TransactionContext, event: AuditEvent) {
+    await this.requireInstallation(context, event.installationId);
+    const inserted = await context.client.query(
+      `INSERT INTO occ.http_chat_audit_queue
+        (id, occurred_at, kind, actor_id, action, namespace_id, resource_kind, resource_id,
+         outcome, details, installation_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [...auditValues(event), event.installationId],
+    );
+    if (inserted.rowCount !== 1) {
+      throw new AuditAppendUnavailableError();
+    }
+  }
+
+  private warnHttpChatAuditDelay() {
+    if (!this.chatAuditDelayed) {
+      process.emitWarning("HTTP chat audit delivery is delayed. Queued records will be retried.");
+      this.chatAuditDelayed = true;
+    }
+  }
+
+  private wakeHttpChatAuditDelivery() {
+    if (
+      this.chatAuditPoll === undefined ||
+      this.chatAuditDelivery !== undefined ||
+      Date.now() < this.chatAuditResumeAt
+    ) {
+      return;
+    }
+    this.chatAuditDelivery = this.deliverHttpChatAudit()
+      .catch(() => this.warnHttpChatAuditDelay())
+      .finally(() => {
+        this.chatAuditDelivery = undefined;
+      });
+  }
+
+  private async deliverHttpChatAudit() {
+    let consecutiveFailures = 0;
+    // Replicas claim distinct records. A crash or rollback leaves the original record available.
+    while (this.chatAuditPoll !== undefined) {
+      let id: string | undefined;
+      try {
+        await this.transactReadCommitted(async (unit) => {
+          await this.boundAgentAuditTransaction(unit);
+          const selected = await this.queryInTransaction(
+            unit,
+            `SELECT * FROM occ.http_chat_audit_queue
+             WHERE retry_at <= now() ORDER BY retry_at, id LIMIT 1 FOR UPDATE SKIP LOCKED`,
+          );
+          const [row] = rows(selected.rows);
+          if (!row) {
+            return;
+          }
+          id = text(row, "id");
+          await unit.audit.append(auditFromRow(row, text(row, "installation_id")));
+          // The queue also refuses deletion unless the exact event is in the ledger.
+          await this.queryInTransaction(
+            unit,
+            "DELETE FROM occ.http_chat_audit_queue WHERE id = $1",
+            [id],
+          );
+        });
+        if (id === undefined) {
+          return;
+        }
+        this.chatAuditDelayed = false;
+        consecutiveFailures = 0;
+      } catch (error) {
+        if (id === undefined) {
+          throw error;
+        }
+        this.warnHttpChatAuditDelay();
+        // Defer this row after rollback so a rejected record cannot stall unrelated chats.
+        await this.transactReadCommitted(async (unit) => {
+          await this.boundAgentAuditTransaction(unit);
+          await this.queryInTransaction(
+            unit,
+            `UPDATE occ.http_chat_audit_queue SET retry_at = clock_timestamp() + interval '15 seconds'
+             WHERE id = $1 AND retry_at <= now()`,
+            [id],
+          );
+        });
+        // Avoid hammering a failed ledger when a large backlog is ready to retry.
+        if (++consecutiveFailures === 3) {
+          this.chatAuditResumeAt = Date.now() + 15_000;
+          return;
+        }
+      }
+    }
   }
 
   setBootstrapNativeIAM(state: PersistedNativeIAMState): void {
@@ -1717,6 +1876,9 @@ export class PostgresPlatformState implements PlatformStateStore {
   }
 
   async close(): Promise<void> {
+    clearInterval(this.chatAuditPoll);
+    this.chatAuditPoll = undefined;
+    await this.chatAuditDelivery;
     await this.pool.end();
   }
 
@@ -5752,22 +5914,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       audit: {
         append: async (event) => {
           await this.requireInstallation(context, event.installationId);
-          if (event.resource.namespaceId !== event.namespaceId) {
-            throw new ScopeViolationError("The audit event and resource scopes do not match.");
-          }
-          const details = auditDetails(event);
-          const values = [
-            event.id,
-            event.occurredAt,
-            event.kind,
-            event.actorId,
-            event.action,
-            event.namespaceId ?? null,
-            event.resource.kind,
-            event.resource.id,
-            event.outcome,
-            details === undefined ? null : JSON.stringify(details),
-          ];
+          const values = auditValues(event);
           let inserted;
           try {
             // Skip known IDs before the insert trigger checks capacity. A concurrent

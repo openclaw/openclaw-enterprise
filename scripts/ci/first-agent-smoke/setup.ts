@@ -29,7 +29,7 @@ export function createApi(origin: string, key: string) {
     method: string,
     path: string,
     body?: unknown,
-    options?: { response: "chat"; signal: AbortSignal },
+    options?: { response: "chat"; signal: AbortSignal; expectedStatus: number },
   ) => {
     const url = new URL(path, origin);
     assert.equal(
@@ -63,8 +63,8 @@ export function createApi(origin: string, key: string) {
     }
     // The chat route returns native Chat Completions JSON. Keep its body out of failure logs.
     if (options?.response === "chat") {
-      assert.equal(response.status, 200, `${method} ${path}: chat failed`);
-      return envelope;
+      assert.equal(response.status, options.expectedStatus, `${method} ${path}: chat failed`);
+      return { body: envelope, requestId: response.headers.get("x-request-id") };
     }
     if (!response.ok) {
       throw new Error(
@@ -517,6 +517,97 @@ export async function checkMessageDisclosure(
 
 const runtimeRows = `FROM occ.audit_events
   WHERE kind = 'runtime_activity' AND details->>'agentRevisionId' = :'revision_id'`;
+
+export async function checkHttpChatDelivery(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  send: () => Promise<{ requestId: string; turnId: string }>,
+  expectUnavailable: () => Promise<unknown>,
+  countModelRequests: () => Promise<number>,
+) {
+  const constraint = `smoke_http_${randomUUID().replaceAll("-", "")}`;
+  const agentAdmission =
+    "action = 'openclaw.agents.chat.admitted' AND details->>'revisionId' = :'revision_id'";
+  const query = (sql: string, requestId = "") =>
+    queryAudit(stack, { revision_id: revisionId, request_id: requestId }, sql);
+  const request = "details->'__occAuditMetadata'->>'requestId' = :'request_id'";
+  const records = (table: "audit_events" | "http_chat_audit_queue", requestId: string) =>
+    query(
+      `SELECT action, id FROM occ.${table}
+      WHERE ${request} AND action <> 'openclaw.api.request.result' ORDER BY action, id`,
+      requestId,
+    );
+
+  // Keep the ledger unavailable for both admission records and the relay result.
+  // The same request must still reach the Gateway and get a reply.
+  await query(`ALTER TABLE occ.audit_events ADD CONSTRAINT ${constraint} CHECK (NOT (
+    (action = 'openclaw.api.request.admitted' AND details->>'operationId' = 'chatWithAgent')
+    OR (${agentAdmission})
+    OR (action = 'openclaw.agents.chat.completed' AND details->>'revisionId' = :'revision_id')
+  )) NOT VALID`);
+  let reply;
+  let queued;
+  let requests;
+  try {
+    reply = await send();
+    requests = await countModelRequests();
+    const { requestId } = reply;
+    await waitFor(
+      "the deferred HTTP audit write",
+      async () => ({
+        done:
+          (await query(
+            `SELECT count(*) = 3 AND bool_or(retry_at > now())
+        FROM occ.http_chat_audit_queue WHERE ${request}`,
+            requestId,
+          )) === "t",
+      }),
+      minute,
+    );
+    queued = await records("http_chat_audit_queue", requestId);
+    assert.deepEqual(
+      queued.split("\n").map((row) => row.split("|")[0]),
+      [
+        "openclaw.agents.chat.admitted",
+        "openclaw.agents.chat.completed",
+        "openclaw.api.request.admitted",
+      ],
+    );
+    assert.equal(await records("audit_events", requestId), "");
+  } finally {
+    await queryAudit(stack, {}, `ALTER TABLE occ.audit_events DROP CONSTRAINT ${constraint}`, {
+      signal: undefined,
+    });
+  }
+  const { requestId } = reply;
+  await waitFor(
+    "HTTP chat audit delivery after recovery",
+    async () => ({
+      done: (await records("http_chat_audit_queue", requestId)) === "",
+    }),
+    minute,
+  );
+  assert.equal(await records("audit_events", requestId), queued, "retry changed the HTTP records");
+  assert.equal(await countModelRequests(), requests, "HTTP audit retry repeated the chat");
+
+  // If the queue itself cannot save the admission, the model must receive no request.
+  await query(`ALTER TABLE occ.http_chat_audit_queue ADD CONSTRAINT ${constraint}
+    CHECK (NOT (${agentAdmission})) NOT VALID`);
+  try {
+    await expectUnavailable();
+    assert.equal(await countModelRequests(), requests, "chat ran without a saved admission");
+  } finally {
+    await queryAudit(
+      stack,
+      {},
+      `ALTER TABLE occ.http_chat_audit_queue DROP CONSTRAINT ${constraint}`,
+      {
+        signal: undefined,
+      },
+    );
+  }
+  return reply.turnId;
+}
 
 export async function withRefusedTurnWrite<T>(
   stack: InstalledAuditStack & KubernetesAccess,

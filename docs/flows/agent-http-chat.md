@@ -1,7 +1,7 @@
 ---
 created: "2026-11-16"
-updated: "2026-11-17 02:02"
-last_updated_session: "authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a"
+updated: "2026-11-24 10:21"
+last_updated_session: "authoring-run/e84c6230-3e81-429a-93ee-4459af104384"
 ---
 
 # Agent HTTP chat flow
@@ -11,8 +11,8 @@ last_updated_session: "authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a"
 A human or service submits `POST /agents/:agentId/chat`. OCC authenticates,
 authorizes the stored Agent, pins its running revision, and relays one native
 HTTP completion through the Compute-owned private route. The Gateway and
-selected Harness own execution and history. This flow stops when the response
-completes or the relay closes; disconnect does not undo tool effects.
+selected Harness own execution and history. A disconnect does not undo tool
+effects. OCC can deliver queued audit records after the relay closes.
 
 ## Entry Points
 
@@ -29,7 +29,10 @@ The diagram follows the current source. Live runtime qualification is separate.
 ```mermaid
 graph TD
   A["<b>POST Agent chat</b><br/>Session or service key"] --> B["<b>OCC admission</b><br/>Authenticate and check CSRF"]
-  B --> C["<b>Controller</b><br/>Resolve stored ownership<br/>Authorize exact Agent"]
+  B -->|audit on| R["Queue API admission"]
+  R -->|write fails| V
+  R -->|saved| C
+  B -->|audit off| C["<b>Controller</b><br/>Resolve stored ownership<br/>Authorize exact Agent"]
   C --> D{"Compute capability?"}
   D -->|absent| U["Return 501"]
   D -->|present| E{"Running revision<br/>and matching owner?"}
@@ -37,19 +40,20 @@ graph TD
   E -->|yes| F["<b>Compute</b><br/>Resolve private endpoint"]
   F -->|unsupported| U
   F -->|disabled or unavailable| V
-  F -->|available| G["<b>OCC relay</b><br/>Scope conversation<br/>Append admission audit"]
-  G -->|audit succeeds| H["<b>Private proxy</b><br/>Set chat-only authority"]
+  F -->|available| G["<b>OCC relay</b><br/>Scope conversation<br/>Queue chat admission"]
+  G -->|write fails| V
+  G -->|saved| H["<b>Private proxy</b><br/>Set chat-only authority"]
   H --> I["<b>Gateway and Harness</b><br/>Run turn and emit response"]
   I --> J["<b>OCC relay</b><br/>Forward JSON or SSE<br/>Apply backpressure"]
   J --> K{"Response completed?"}
   K -->|yes| N["Recheck caller and revision"]
-  N -->|current| L["Audit terminal outcome"]
+  N -->|current| L["Queue chat result"]
   N -->|changed or unavailable| M
-  K -->|deadline, disconnect<br/>or failed recheck| M["Abort upstream<br/>Audit uncertain execution"]
+  K -->|deadline, disconnect<br/>or failed recheck| M["Abort upstream<br/>Queue uncertain outcome"]
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   classDef process fill:#E9F4F1,stroke:#83A99E,color:#29443D,stroke-width:1px
   class D,E,K gate
-  class B,C,F,G,H,I,J process
+  class B,C,F,G,H,I,J,R process
 ```
 
 ## Execution Trace
@@ -57,8 +61,10 @@ graph TD
 ### 1. Authenticate and select authority
 
 `apps/controller/src/index.ts:admit` and `resolveIdentity` use the existing
-session/CSRF or service-key verifier and selected IAM Driver. The HTTP route has
-no Namespace input. `packages/occ/src/index.ts:resolveAgentChat` finds stored
+session/CSRF or service-key verifier and selected IAM Driver. With Control
+Plane audit on, `requireRequestAuditAdmission` queues
+`openclaw.api.request.admitted` before the handler runs.
+The HTTP route has no Namespace input. `packages/occ/src/index.ts:resolveAgentChat` finds stored
 ownership once per check, enforces a service key's Namespace scope and authorizes `operate`.
 Denial audit uses the error's authoritative resource; the route does not copy
 stored ownership into request parameters.
@@ -84,8 +90,10 @@ retirement removes both resources. Core code does not construct Kubernetes paths
 `apps/controller/src/http/agent-chat.ts:relayAgentChat` rejects native routing
 headers, replaces the model target and hashes an explicit conversation label
 with stable principal and Agent identities. It constructs upstream headers
-without copying caller credentials. Required admission audit precedes the HTTP
-request. No retry or redirect follows.
+without copying caller credentials. With audit on or off, the relay queues
+`openclaw.agents.chat.admitted` through the State audit sink. If PostgreSQL
+cannot confirm a required queue write, OCC returns `503`.
+Otherwise, the relay sends the HTTP request once.
 
 ### 4. Bound the relay and record the result
 
@@ -97,12 +105,27 @@ Checks do not overlap, and terminal bytes stay withheld until the fresh check
 succeeds. A check started before body completion cannot authorize delivery.
 Failure, revision change, client disconnect or deadline aborts the upstream
 connection. One outer cleanup clears the timers and disconnect listeners, aborts
-the upstream and appends one terminal audit after admission. Before headers, OCC
-can return its error envelope; after headers,
-it closes the response. The final audit identifies the principal and revision
-without message content. An audit-write failure emits `http.audit_append_failed`.
+the upstream and queues one chat result. Before headers, OCC can return its
+error envelope. After headers, it closes the response. The result identifies
+the principal and revision without message content. If OCC cannot queue the
+result, it logs `http.audit_append_failed`.
+
+### 5. Deliver queued records
+
+`packages/occ/src/state/postgres-state.ts:PostgresPlatformState.enqueueHttpChatAudit`
+saves the event in `occ.http_chat_audit_queue`. The relay does not wait for
+the final write to `occ.audit_events`.
+
+`startHttpChatAuditDelivery` checks pending records at startup and every
+15 seconds. A new record also triggers delivery. `deliverHttpChatAudit`
+writes the record to the audit log and removes it from the queue in one
+transaction. After a failed delivery, OCC warns and schedules a retry
+after 15 seconds. It keeps the original ID and event in the queue.
+Other events can arrive first. A retry sends only the record.
 
 ## Debugging and Verification
+
+- For delayed records, follow [HTTP chat audit recovery](../guides/agent-http-chat.md#retry-delayed-http-chat-audit-records).
 
 - `node --test tests/integration/agent-http-chat.test.ts` checks Fastify and IAM
   admission only; it does not prove PostgreSQL or model execution.
@@ -124,6 +147,8 @@ without message content. An audit-write failure emits `http.audit_append_failed`
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-24 10:21: Trace HTTP chat admission, result and background audit delivery. (authoring-run/e84c6230-3e81-429a-93ee-4459af104384 - de7a98fdbb33b5ed3ac59b2a8ca004b2aeb5f705)
 
 - 2026-11-18 05:48: Note that the route proxy's `503` reaches a non-stream caller when a Gateway Pod is deleted. (fix-interrupted-turns-1118 - 8cbb31a68)
 

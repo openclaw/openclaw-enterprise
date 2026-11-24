@@ -1454,6 +1454,7 @@ test(
       [83, "preRevisionEgressInstallations"],
       [85, "preRuntimeAudit"],
       [86, "preAuditMessageRead"],
+      [87, "preHttpChatAuditQueue"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1730,6 +1731,7 @@ test(
       [83, "preRevisionEgressInstallations"],
       [85, "preRuntimeAudit"],
       [86, "preAuditMessageRead"],
+      [87, "preHttpChatAuditQueue"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2037,6 +2039,7 @@ test(
       [83, "preRevisionEgressInstallations"],
       [85, "preRuntimeAudit"],
       [86, "preAuditMessageRead"],
+      [87, "preHttpChatAuditQueue"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2227,6 +2230,7 @@ test(
       [83, "preRevisionEgressInstallations"],
       [85, "preRuntimeAudit"],
       [86, "preAuditMessageRead"],
+      [87, "preHttpChatAuditQueue"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

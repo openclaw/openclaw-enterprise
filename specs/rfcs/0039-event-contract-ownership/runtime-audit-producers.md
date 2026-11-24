@@ -53,7 +53,12 @@ Treat `openclaw.runtime.turn.admitted` as an observation. It means the
 Gateway was about to send work to the Agent. It proves neither permission
 nor execution. This proposal excludes it from the
 [required admission records](index.md#3-reuse-state-and-postgresql).
-OCC must still save its own required records before forwarding a chat request.
+For [HTTP chat](../0040-agent-chat-completions.md#iam-trusted-proxy-and-audit),
+OCC must commit its required admission records to a PostgreSQL queue
+before it forwards the message. A failed queue write stops the request.
+OCC sends queued records to the audit log in the background. A failed
+delivery leaves the original event in the queue. OCC must never run
+the turn again to recover a record.
 
 The Gateway queues runtime events on the Agent's persistent Gateway volume
 and sends them to OCC in the background. The turn can start without
