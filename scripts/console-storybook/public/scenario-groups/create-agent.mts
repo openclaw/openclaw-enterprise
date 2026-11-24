@@ -103,23 +103,19 @@ const oauthForm: StoryAction[] = [
 
 const startOAuthLogin: StoryAction[] = [...oauthForm, click("Sign in with OAuth")];
 
-const dedicatedOpenclawFields: StoryAction[] = [
+const dedicatedOpenclawForm: StoryAction[] = [
   ...form,
   { selector: "#agent-name", value: "Research assistant" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
   { selector: "#agent-harness", value: "openclaw" },
   { selector: ".launch-runtime summary", click: true },
   { selector: "#execution-mode", value: "dedicated" },
-];
-
-const dedicatedOpenclawForm: StoryAction[] = [
-  ...dedicatedOpenclawFields,
-  { selector: "#model-credential-storage", value: "source" },
   { selector: "#provider-api-key", value: "storybook-model-api-key" },
 ];
 
 const provisionableOpenclawForm: StoryAction[] = [
-  ...dedicatedOpenclawFields,
+  ...dedicatedOpenclawForm,
+  { selector: "#model-credential-storage", value: "secret" },
   { selector: "#provider-credential-secret", value: "sec_demo_model" },
 ];
 
@@ -239,7 +235,7 @@ const createWorkspaceFields: StoryAction[] = [
   { selector: ".launch-advanced summary", click: true },
   { selector: "#agent-name", value: "Workspace seed demo" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
-  { selector: "#provider-credential-secret", value: "sec_demo_model" },
+  { selector: "#provider-api-key", value: "storybook-model-api-key" },
   {
     selector: "#workspace-IDENTITY-md",
     value:
@@ -1549,7 +1545,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Repository-only Credential Proxy",
     path: create,
-    actions: provisionableOpenclawForm,
+    actions: dedicatedOpenclawForm,
     openclawExecutionModes: ["dedicated"],
     repositoryOptions: [
       {
@@ -1681,13 +1677,13 @@ export const createAgentProvisioningScenarios = {
       allowedProfiles: ["github-repository"],
     })),
     actions: [
-      ...provisionableForm.slice(0, -1),
+      ...managedStaticForm.slice(0, -1),
       { selector: 'input[data-repository-ref="application"]', click: true },
       { selector: 'input[data-repository-ref="tooling"]', click: true },
       { selector: "#provider-credential-secret", value: "sec_demo_model" },
     ],
     description:
-      "Selecting a GitHub repository keeps the model Secret picker and changes the action to Save Agent draft. Application allows only Read-only. Tooling starts at Contributor. Change tooling to Read-only, remove it and undo the removal to check that the narrower choice stays selected. The preview shows the form before saving. Saving and deployment require a supporting Installation.",
+      "Selecting a GitHub repository shows the model Secret picker and changes the action to Save Agent draft. Application allows only Read-only. Tooling starts at Contributor. Change tooling to Read-only, remove it and undo the removal to check that the narrower choice stays selected. The preview shows the form before saving. Saving and deployment require a supporting Installation.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",

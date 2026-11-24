@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-24
-last_updated_session: authoring-run/5f775e04-63f1-445c-81d4-1e5a43178401
+updated: 2026-11-23
+last_updated_session: authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e
 ---
 
 # Console Agent creation
@@ -157,9 +157,8 @@ with inline Configuration, optional repository access, and Secret references.
 When the Credential Gateway offers the selected login method, Console registers
 the model Secret and binds the returned Source ID in the draft or provisioning
 request. Namespace members can enroll from their Agent capabilities and save a draft.
-New forms default to **Namespace Secret** storage. If the user selects **Credential Source**,
-Console validates the Agent, then submits the OpenAI API key to TokenService through
-the Namespace's `credential-sources` collection.
+With **Credential Source** storage, Console validates the Agent, then submits the
+OpenAI API key to TokenService through the Namespace's `credential-sources` collection.
 Console clears the key and opens a draft that binds the returned static Source ID.
 
 The Installation capabilities do not show whether the Compute Driver supplies a Preset's
@@ -265,8 +264,6 @@ Switching methods hides that feedback without changing the lookup or saved choic
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-11-24 03:30: Default new Agent forms to Namespace Secret storage and require explicit Credential Source selection. (authoring-run/5f775e04-63f1-445c-81d4-1e5a43178401 - cb81eb801cdb0115c05206cd205b2f0388598bd2)
 
 - 2026-11-23 07:52: Trace direct static Source creation and draft save in Console. (authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e - e4a24549373e8e111a15ec6da6b753eca4449646)
 - 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)

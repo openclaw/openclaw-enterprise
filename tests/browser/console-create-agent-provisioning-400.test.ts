@@ -264,7 +264,6 @@ async function openModelSourceForm(
   await page.getByLabel("Agent name").fill("Source-backed " + harness);
   const material = "synthetic-source-model-key-" + harness;
   if (method === "api_key") {
-    await page.getByLabel("Credential storage", { exact: true }).selectOption("source");
     await page.getByLabel("API key", { exact: true }).fill(material);
   } else {
     await createModelCredentialSecret(page, material);
