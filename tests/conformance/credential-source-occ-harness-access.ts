@@ -444,8 +444,9 @@ export function registerHarnessAccessCases(): void {
       message: "Agent credential sources require a selected Sandbox Driver.",
     };
     assert.deepEqual(await outcome(administrator), refusal);
-    // Deploy rechecks exact Source authority before reporting the selected Sandbox capability.
-    // A caller without agent:deploy is refused before either check.
+    // Like the other capability refusals on deploy, the missing driver is an Installation
+    // property that precedes source grants: a deployer without operate on the source gets the
+    // same answer. A caller without agent:deploy still gets 403 before any of it.
     iamState.restrictions.push({
       id: "deny-source-operate",
       namespaceId: namespace.id,
@@ -464,14 +465,7 @@ export function registerHarnessAccessCases(): void {
       }),
       AuthorizationDeniedError,
     );
-    await assert.rejects(deploy(administrator), (error: unknown) => {
-      assert.ok(error instanceof AuthorizationDeniedError);
-      assert.deepEqual(error.authorization, {
-        action: "operate",
-        resource: { kind: "credential_source", namespaceId: namespace.id, id: source.id },
-      });
-      return true;
-    });
+    assert.deepEqual(await outcome(administrator), refusal);
     iamState.restrictions.pop();
     const denied = await outcome(editor);
     assert.deepEqual(

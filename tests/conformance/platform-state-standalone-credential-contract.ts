@@ -186,7 +186,11 @@ export async function verifyStandaloneCredentialStateContract(
         },
       });
     }),
-    { name: "ScopeViolationError", message: "The AgentRevision belongs to an unavailable Agent." },
+    storeRefusal(
+      "ScopeViolationError",
+      "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
+      "The AgentRevision belongs to an unavailable Agent.",
+    ),
   );
   // The Agent may own both ready sources, but standalone v8 admits only its model source.
   await assert.rejects(

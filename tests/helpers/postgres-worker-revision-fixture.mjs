@@ -692,7 +692,6 @@ export function createWorkerRevisionFixtures(
             unit,
             actorId,
             owner,
-            sandbox,
             undefined,
             candidate.harness,
             compute,

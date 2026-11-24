@@ -22,7 +22,6 @@ import {
   type PluginDriver,
   type PluginDeploymentDescription,
   type RevisionHarnessDescriptor,
-  type SandboxDriver,
   type SecretBindings,
   type SecretReference,
 } from "@openclaw-enterprise/contracts";
@@ -379,7 +378,6 @@ export function createAgentCredentialAccess({
     state: PlatformUnitOfWork,
     principalId: string,
     agent: Readonly<Agent>,
-    sandbox: SandboxDriver | undefined,
     driver: PluginDriver | undefined,
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
@@ -407,11 +405,6 @@ export function createAgentCredentialAccess({
     const { sources } = plugin;
     if (sources.length > MAX_AGENT_CREDENTIAL_SOURCES) {
       throw new ScopeViolationError("The Agent revision has too many credential sources.");
-    }
-    if (sources.length > 0 && sandbox === undefined) {
-      throw new ResourceStateConflictError(
-        "Agent credential sources require a selected Sandbox Driver.",
-      );
     }
     await validatePluginCredentialSources(
       driver,
