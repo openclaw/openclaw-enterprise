@@ -40,6 +40,7 @@ import {
   configurationPostRequests,
   createRepositoryLaunchFixture,
 } from "./console-agents-test-support.ts";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import {
   AGENT_SAVE_DENIED,
   REPOSITORY_ACCESS_CHANGED,
@@ -820,6 +821,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   });
   assert.equal(initial.status, 200);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   await login(
     page,
@@ -829,6 +831,29 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
   await page.locator("#repository-default-git-read").check();
 
+  const url = page.url();
+  const account = page.locator(".account-toggle, .topbar-avatar").and(page.getByRole("button"));
+  const menu = page.getByRole("menu", { name: "Account", exact: true });
+  const settings = menu.getByRole("menuitem", { name: "Settings", exact: true });
+  const chooseSettings = async () => {
+    await account.focus();
+    await page.keyboard.press("ArrowDown");
+    await settings.waitFor();
+    assert.equal(await settings.evaluate((item) => document.activeElement === item), true);
+    await page.keyboard.press("Enter");
+  };
+  const reload = page.getByRole("button", { name: "Reload draft", exact: true });
+  const assertSettingsHeldForRecovery = async (message: string) => {
+    const feedback = page.getByText(message, { exact: true });
+    await feedback.waitFor();
+    await chooseSettings();
+    assert.equal(page.url(), url);
+    assert.equal(await feedback.count(), 1, "Settings must preserve the save recovery message");
+    assert.equal(await feedback.getAttribute("data-tone"), "danger");
+    assert.equal(await feedback.evaluate((node) => document.activeElement === node), true);
+    await waitForEnabled(reload);
+  };
+
   // A changed saved baseline must be detected before this browser sends a PATCH.
   const concurrent = await fixture.request("PATCH", path, {
     body: { configurationId: agent.configurationId, repositoryAccess: access("git-write") },
@@ -837,11 +862,11 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   const save = page.getByRole("button", { name: "Save repository access" });
   const cancel = page.getByRole("button", { name: "Cancel", exact: true });
   await save.click();
-  await page.getByText(REPOSITORY_ACCESS_CHANGED).waitFor();
+  await assertSettingsHeldForRecovery(REPOSITORY_ACCESS_CHANGED);
   assert.equal(pathRequests(requests, "PATCH", path).length, 0);
   assert.equal(await save.isDisabled(), true);
   assert.equal(await cancel.isDisabled(), true);
-  await page.getByRole("button", { name: "Reload draft", exact: true }).click();
+  await reload.click();
   await page
     .getByText("Contributor · no issue management · Agent default", { exact: true })
     .waitFor();
@@ -862,6 +887,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   // to verify pending controls before proving that readback is required after loss.
   const committed = await holdRequests(t, page, `${fixture.origin}${path}`, {
     method: "PATCH",
+    once: true,
     afterServer: true,
     loseResponse: true,
     timeout: 0,
@@ -875,18 +901,15 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   );
   assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isDisabled(), true);
   committed.release();
-  await page
-    .getByText(
-      "Outcome unknown. The result could not be confirmed. Refresh and inspect the saved state before trying again.",
-    )
-    .waitFor();
+  await assertSettingsHeldForRecovery(
+    "Outcome unknown. The result could not be confirmed. Refresh and inspect the saved state before trying again.",
+  );
   assert.equal(await save.isDisabled(), true);
   assert.equal(await cancel.isDisabled(), true);
   const persisted: AgentReadWire = (await fixture.request("GET", path)).data;
   assert.ok("repositoryAccess" in persisted);
   assert.deepEqual(persisted.repositoryAccess, access("git-full"));
   assert.equal(pathRequests(requests, "PATCH", path).length, 2);
-  const reload = page.getByRole("button", { name: "Reload draft", exact: true });
   await reload.click();
   await reload.waitFor({ state: "hidden" });
   await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
@@ -894,6 +917,116 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   await waitForEnabled(cancel);
   await waitForEnabled(page.getByRole("tab", { name: "Channels", exact: true }));
   assert.equal(pathRequests(requests, "PATCH", path).length, 2);
+
+  // Hold the Save preflight before any mutation. Leaving now would discard an
+  // activated save even though the editor has already disabled its controls.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const readOnly = page.locator("#repository-default-git-read");
+  const repositories = page.getByRole("tab", { name: "Repositories", selected: true });
+  await readOnly.check();
+  await page.getByText("Read-only · Agent default", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  await chooseSettings();
+  assert.equal(page.url(), url);
+  const unsaved = page.getByText("Save or cancel repository changes before leaving this tab.", {
+    exact: true,
+  });
+  assert.equal(await unsaved.evaluate((node) => document.activeElement === node), true);
+  assert.equal(await readOnly.isChecked(), true);
+  const requestsBeforeSave = requests.length;
+  const savePatches = () => pathRequests(requests.slice(requestsBeforeSave), "PATCH", path);
+  const preflight = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    method: "GET",
+    once: true,
+    afterServer: true,
+  });
+  await save.click();
+  const baseline = await preflight.requested;
+  assert.ok(baseline);
+  assert.equal(baseline.status(), 200);
+  const baselineAgent: AgentResponse = await baseline.json();
+  assert.deepEqual(baselineAgent.data.repositoryAccess, access("git-full"));
+  assert.equal(await save.getAttribute("aria-busy"), "true");
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(savePatches().length, 0);
+
+  const historyLength = await page.evaluate(() => history.length);
+  const pending = page.getByRole("status").filter({
+    hasText: /^Wait for repository access save to finish before leaving the editor\.$/,
+  });
+  const assertSaveHeld = async () => {
+    assert.equal(page.url(), url, "navigation must preserve the repository editor during Save");
+    assert.equal(await page.evaluate(() => history.length), historyLength);
+    assert.equal(await repositories.isVisible(), true);
+    assert.equal(await readOnly.isChecked(), true);
+    assert.equal(await readOnly.isDisabled(), true);
+    assert.equal(await cancel.isDisabled(), true);
+    const feedback = await pending.evaluate((node) => {
+      const { top, bottom } = node.getBoundingClientRect();
+      return {
+        inViewport: top >= 0 && bottom <= globalThis.innerHeight,
+        focused: document.activeElement === node,
+      };
+    });
+    assert.equal(feedback.inViewport, true, "the wait message must be on screen after refusal");
+    assert.equal(feedback.focused, true, "focus must reach the wait message");
+    assert.equal(savePatches().length, 0);
+  };
+
+  await chooseSettings();
+  await assertSaveHeld();
+  assert.equal(await menu.isVisible(), false);
+  assert.equal(await account.getAttribute("aria-expanded"), "false");
+  assert.equal(await pending.evaluate((node) => node.matches(":focus-visible")), true);
+
+  // The phone drawer makes the page inert while open. Its link must reveal the same feedback.
+  const drawer = page.getByRole("button", { name: "Open navigation", exact: true });
+  await drawer.click();
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", {
+      name: "Agents",
+      exact: true,
+    })
+    .click();
+  assert.equal(await drawer.getAttribute("aria-expanded"), "false");
+  await assertSaveHeld();
+
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  await assertSaveHeld();
+
+  await account.focus();
+  const applied = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${path}` && response.request().method() === "PATCH",
+  );
+  preflight.release();
+  assert.equal((await applied).status(), 200);
+  await page.getByText("Repository access saved.", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await account.evaluate((toggle) => document.activeElement === toggle), true);
+  assert.equal(page.url(), url);
+  assert.equal(await repositories.isVisible(), true);
+  assert.equal(await readOnly.isChecked(), true);
+  assert.equal(await save.isDisabled(), true);
+  assert.deepEqual(
+    savePatches().map(({ body }) => body),
+    [{ configurationId: agent.configurationId, repositoryAccess: access("git-read") }],
+  );
+  const saved = await fixture.request("GET", path);
+  assert.equal(saved.status, 200);
+  const savedAgent: AgentReadWire = saved.data;
+  assert.ok("repositoryAccess" in savedAgent);
+  assert.deepEqual(savedAgent.repositoryAccess, access("git-read"));
+  assert.deepEqual(savedAgent.repositoryBindings, [
+    { repositoryRef: "application", profile: "git-read" },
+  ]);
+
+  await chooseSettings();
+  await page.getByRole("heading", { name: "Signed-in account", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/settings");
+  assert.equal(await page.evaluate(() => history.length), historyLength + 1);
+  assert.equal(savePatches().length, 1);
 });
 
 for (const includeInstallationAccess of [false, true]) {
