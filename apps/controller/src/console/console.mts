@@ -111,6 +111,7 @@ interface MountedView {
   administrationEnded: Set<() => void>;
   rechecked: Set<AgentRecheckHandler>;
   deferredConfigurationFocus?: { editor: HTMLTextAreaElement; cancel: AbortController };
+  deferredAgentSearch?: AgentSearchFocus;
   metaReads: Set<string>;
   resumeHandlers: Set<() => void>;
   revalidators: Set<() => Promise<unknown>>;
@@ -1156,12 +1157,17 @@ function captureAgentSearch(route: string) {
 
 type AgentSearchFocus = NonNullable<ReturnType<typeof captureAgentSearch>>;
 
+function matchingAgentSearch(view: HTMLElement, search: AgentSearchFocus) {
+  const input = view.querySelector<HTMLInputElement>(agentSearchSelector);
+  return input?.value === search.value && !input.disabled && input.checkVisibility() ? input : null;
+}
+
 function restoreAgentSearch(view: HTMLElement, search: AgentSearchFocus) {
-  if (!document.hasFocus() || document.activeElement !== document.body) {
+  if (document.hidden || !document.hasFocus() || document.activeElement !== document.body) {
     return;
   }
-  const input = view.querySelector<HTMLInputElement>(agentSearchSelector);
-  if (input?.value === search.value && !input.disabled && input.checkVisibility()) {
+  const input = matchingAgentSearch(view, search);
+  if (input) {
     input.focus();
     input.setSelectionRange(...search.range);
   }
@@ -1326,6 +1332,7 @@ function resetReads({
   if (mountedViewState) {
     mountedViewState.deferredConfigurationFocus?.cancel.abort();
     delete mountedViewState.deferredConfigurationFocus;
+    delete mountedViewState.deferredAgentSearch;
     mountedViewState.resumeDrafts = resumeDrafts;
     mountedViewState.active = null;
   }
@@ -1782,6 +1789,10 @@ async function loadPage({
     forgetRuntimeDenials(current.namespace, current.agentId);
     forgetAgentRevisionDenials(sessionOwnerKey(session), current.namespace, current.agentId);
   }
+  const deferredSearch =
+    resumingView && !document.hidden && document.activeElement === document.body
+      ? mountedViewState?.deferredAgentSearch
+      : undefined;
   const active = resetReads({
     retainView: knownPrivateState,
     // Namespaces rows and snapshot shortcuts mark themselves for return focus too.
@@ -1818,10 +1829,11 @@ async function loadPage({
       : null;
   let search =
     retrySearch ??
-    (listRoute && previousMountedRouteKey === listRoute && refocused
-      ? captureAgentSearch(listRoute)
+    (listRoute && previousMountedRouteKey === listRoute
+      ? (deferredSearch ?? (refocused && captureAgentSearch(listRoute)))
       : null);
   let searchForRetry: AgentSearchFocus | null = null;
+  let admittedSearch: AgentSearchFocus | null = null;
   let shell: LoadingShell | null =
     knownPrivateState && !openingAgent
       ? holdShownView({ busyCue: !resumingView, keepFocus: !resumingView })
@@ -1837,8 +1849,12 @@ async function loadPage({
   // A reader who moves away and back has still moved on. Exempt only our own heading transfer.
   let expectedHeading: HTMLElement | null = null;
   const onFocus = (event: FocusEvent) => {
-    if (event.target !== expectedHeading) {
+    if (event.target !== expectedHeading && event.target !== document.body) {
       search = null;
+      if (mountedViewState?.deferredAgentSearch) {
+        delete mountedViewState.deferredAgentSearch;
+        document.removeEventListener("focusin", onFocus, true);
+      }
     }
   };
   if (search) {
@@ -1849,7 +1865,6 @@ async function loadPage({
     search.route === listRoute &&
     search.route === routeKey(route()) &&
     search.owner === sessionOwnerKey(session) &&
-    document.hasFocus() &&
     document.activeElement !== null &&
     document.activeElement === (retrySearch ? heldHeading : document.body)
       ? search
@@ -2223,7 +2238,7 @@ async function loadPage({
         try {
           firstItems = current.feature === "namespaces" ? namespaces : await request(itemsPath);
         } catch (error) {
-          if (search && retryableAgentRecheck(error)) {
+          if (search && document.hasFocus() && retryableAgentRecheck(error)) {
             searchForRetry = pendingSearch();
           }
           throw error;
@@ -2341,7 +2356,7 @@ async function loadPage({
     // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
     // replacing the shell briefly leaves it on the body again.
     const restoreFocus = document.activeElement === document.body ? refocused : null;
-    const restoreSearch = retrySearch && pendingSearch();
+    admittedSearch = pendingSearch();
     // The Namespaces view is inert during the recheck. If Tab reached a shell control,
     // match that control when the shell is replaced, including the phone navigation toggle.
     const namespaceShellFocus =
@@ -2883,9 +2898,7 @@ async function loadPage({
       // a row's name or icon returns to the same control in the rebuilt row instead of falling
       // to the body (finding D814).
       const rebuiltView = shell.view;
-      restoreRefocus = restoreSearch
-        ? () => restoreAgentSearch(rebuiltView, restoreSearch)
-        : () => refocused?.restore(rebuiltView, { rebuilt: true });
+      restoreRefocus = () => refocused?.restore(rebuiltView, { rebuilt: true });
     } else if (current.feature === "namespaces") {
       renderNamespaces(
         {
@@ -3102,7 +3115,6 @@ async function loadPage({
       shell.view.querySelector(".state-panel")!.append(requestIdDisclosure(requestId));
     }
   } finally {
-    document.removeEventListener("focusin", onFocus, true);
     stopLoadingTimer();
     if (openingAgentLoad === active) {
       openingAgentLoad = null;
@@ -3110,6 +3122,20 @@ async function loadPage({
     if (lifetime.isCurrent(active) && shell) {
       shell.refresh!.disabled = false;
       shell.view.setAttribute("aria-busy", "false");
+      const mounted = mountedViewState;
+      if (
+        admittedSearch &&
+        search === admittedSearch &&
+        mounted?.active === active &&
+        mountedRouteKey === admittedSearch.route
+      ) {
+        if (document.hidden && matchingAgentSearch(shell.view, admittedSearch)) {
+          // Wait for the next foreground check instead of focusing the hidden page.
+          mounted.deferredAgentSearch = admittedSearch;
+        } else if (deferredSearch || retrySearch) {
+          restoreAgentSearch(shell.view, admittedSearch);
+        }
+      }
       restoreRefocus?.();
       if (focusAgentResult && document.activeElement === document.body) {
         const heading =
@@ -3168,6 +3194,9 @@ async function loadPage({
           preventScroll: true,
         });
       }
+    }
+    if (!mountedViewState?.deferredAgentSearch) {
+      document.removeEventListener("focusin", onFocus, true);
     }
   }
 }

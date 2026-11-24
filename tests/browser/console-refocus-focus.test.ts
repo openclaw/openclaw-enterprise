@@ -2339,6 +2339,110 @@ async function activate(foreground: BrowserWindow, background: BrowserWindow) {
   ]);
 }
 
+test("Agents list restores search after a hidden recheck unless focus moved", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Returning to search");
+  await fixture.createAgent(namespace.id, "Fleet Report", nativeValues("fleet-report"));
+  const { credentials } = await fixture.createNamespaceMember("reader", namespace.id, AGENT_READ);
+  const { page } = await openNativeTabBrowser(t, fixture);
+  await trackSettledFetches(page);
+  const listWindow = await windowFor(page);
+  const popup = page.waitForEvent("popup");
+  await page.evaluate(() => {
+    window.open("about:blank", "_blank", "popup,width=360,height=280");
+  });
+  const other = await windowFor(await popup);
+  assert.notEqual(listWindow.windowId, other.windowId, "use two native browser windows");
+  await activate(listWindow, other);
+
+  const path = `/console/agents?namespace=${namespace.id}`;
+  const apiPath = `/namespaces/${namespace.id}/agents`;
+  const api = fixture.origin + apiPath;
+  await login(page, fixture, path, credentials);
+  const view = page.locator(settledView);
+  const search = page.getByRole("searchbox", { name: "Search Agents", exact: true });
+  await view.getByRole("link", { name: "Fleet Report", exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+
+  const state = () =>
+    search.evaluate((node: HTMLInputElement) => ({
+      focused: document.activeElement === node,
+      value: node.value,
+      range: [node.selectionStart, node.selectionEnd],
+      direction: node.selectionDirection,
+    }));
+  const selection = { focused: true, value: "Fleet Rep", range: [6, 9], direction: "backward" };
+  const reads = () => requests.filter(({ method, path }) => method === "GET" && path === apiPath);
+  const returnToList = async () => {
+    const held = await holdRequests(t, page, api, { once: true, method: "GET", afterServer: true });
+    const response = responseTo(page, "GET", api);
+    await activate(listWindow, other);
+    assert.equal((await held.requested)?.status(), 200);
+    await page.locator(heldView).waitFor();
+    return async () => {
+      held.release();
+      assert.equal((await response).status(), 200);
+    };
+  };
+
+  for (const moveFocus of [false, true]) {
+    const before = reads().length;
+    // Replace the previous pass's edit before selecting the suffix again.
+    await search.press("ControlOrMeta+A");
+    await page.keyboard.insertText("Fleet Rep");
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await hasFocus(search), true);
+    await page.keyboard.press("End");
+    for (let press = 0; press < 3; press++) {
+      await page.keyboard.press("Shift+ArrowLeft");
+    }
+    assert.deepEqual(await state(), selection);
+
+    await activate(other, listWindow);
+    const finishFirst = await returnToList();
+
+    // Leave before the first genuine read reaches the Console. Its hidden completion may
+    // retain the selection, but the input must remain unfocused until a new admission.
+    await activate(other, listWindow);
+    await finishFirst();
+    await page.waitForFunction(
+      (selector) =>
+        document.hidden &&
+        !document.hasFocus() &&
+        globalThis.inFlightFetchCount?.() === 0 &&
+        !document.querySelector(selector),
+      heldView,
+      { polling: 25 },
+    );
+    assert.deepEqual(await state(), { ...selection, focused: false });
+
+    const finishSecond = await returnToList();
+    assert.equal(await hasFocus(search), false, "wait for the second list read");
+    if (moveFocus) {
+      // A newer focus choice still wins when the control later loses focus to the body.
+      const account = page.locator(".account-toggle");
+      await account.click();
+      await page.keyboard.press("Escape");
+      assert.equal(await hasFocus(account), true);
+      await account.evaluate((node: HTMLElement) => node.blur());
+      assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+    }
+    await finishSecond();
+    await view.waitFor();
+    await waitForIdleFetches(page);
+
+    assert.deepEqual(await state(), { ...selection, focused: !moveFocus });
+    if (!moveFocus) {
+      await page.keyboard.press("r");
+      assert.equal(await search.inputValue(), "Fleet r", "typing replaces the original selection");
+    }
+    assert.equal(page.url(), fixture.origin + path);
+    assert.equal(reads().length - before, 2);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+  }
+});
+
 async function selectedAgentId(page: Page) {
   return page.locator(".page-meta-id .resource-id").evaluate((id) => {
     const selection = document.getSelection();

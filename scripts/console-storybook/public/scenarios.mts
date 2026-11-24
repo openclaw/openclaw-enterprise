@@ -732,6 +732,8 @@ const authoredScenarios = {
       "Tab to Research assistant. Switch to another window, then return to start the list refresh.",
       "While the list refreshes, Tab to the Namespace selector. Wait for the list to return and check that the selector still has focus.",
       "Press Tab to continue from the selector, then Shift+Tab to return to it.",
+      "Reset the story. Type Research in Search Agents and press Shift+Left Arrow three times to select rch backwards. Switch away and back, then switch away again while the simulated list refresh is pending. Stay away for 6.5 seconds.",
+      "Return and wait for the next successful check. Search Agents has focus with rch still selected. Type X and check that the query becomes ReseaX. Repeat at desktop and phone widths.",
     ],
   } satisfies LocalScenario,
   agentsRowRefocusStopped: {

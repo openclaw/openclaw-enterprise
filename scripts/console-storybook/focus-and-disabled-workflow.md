@@ -154,6 +154,14 @@ Press Enter on the focused **Retry** button. Check that focus returns to
 Reset the story and repeat after moving to another control before returning to **Retry**. Focus
 must not return to **Search Agents** in that case. Repeat at phone width.
 
+In **Pages / Agents / Namespace focus during list refresh**, reset the story.
+Type `Research` in **Search Agents** and press Shift+Left Arrow three times to
+select `rch` backwards. Switch away and back, then switch away again while the
+simulated list refresh is pending. Stay away for 6.5 seconds. Return and wait
+for the next successful check. **Search Agents** has focus with `rch` still
+selected. Type `X` and check that the query becomes `ReseaX`. Repeat at desktop
+and phone widths.
+
 ## Agent collection access checks
 
 Open **Pages / Agents / Populated Namespace leaves the list** at desktop and
