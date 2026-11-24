@@ -68,13 +68,13 @@ Accept exactly one key and unique literal names. `issues:read` and `pull_request
 
 ### Per-Agent controls (separate follow-up)
 
-In **Create Agent → Per-repository access**, selected repositories default to Contributor where Write is permitted. Unselected repositories receive no grant. Save the draft, then customize exceptions in **Repositories → Manage permissions → Advanced**. Show exceptions beside the role before deployment.
+In **Create Agent → Per-repository access**, selected repositories default to Contributor where Write is permitted. Unselected repositories receive no grant. Save the draft, then customize exceptions in **Repositories → Manage permissions → Advanced**. Show exceptions beside the role before deployment. A saved opt-out persists if the Namespace later permits that action.
 
 For a running Agent, **Configuration → Edit repository permissions** opens the same editor. Preserve untouched grants and filters. Show whether the saved policy version matches the deployed revision, differs or is unknown. Deploy a new version to apply changes. An Agent first deployed without a repository policy needs a new Agent ID to adopt one.
 
 ### Request lifecycle
 
-Proposed flow on stock OpenShell. The Admin saves the grants. The Controller rechecks Namespace limits at deploy. The version check covers only the saved Agent policy.
+Proposed flow on stock OpenShell. The Admin saves the grants. The Controller rechecks Namespace limits at deploy. The version check covers only the Agent policy. Expanding Namespace permissions can enable new actions at deployment even if the Agent policy version stays the same.
 
 ```mermaid
 sequenceDiagram
@@ -105,11 +105,11 @@ sequenceDiagram
 
 ### APIs
 
-| Operation                                                                               | Change                                                                                                                                                                                                                                                                         |
-| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| GitHub `POST /repos/{owner}/{repo}/issues`                                              | Permit the existing endpoint. Verify an uncertain result before retrying.                                                                                                                                                                                                      |
-| [Catalog, create and deploy](https://github.com/openclaw/openclaw-enterprise/pull/7178) | Return optional `githubAccess`. Atomically save initial `repositoryNetworkPolicy` with the draft. For first deployment of a scoped draft, require the Console to send `expectedRepositoryPolicyVersion`. A mismatch returns 409 without a revision. Other clients may omit it. |
-| [Sandbox policy GET and PUT](https://github.com/openclaw/openclaw-enterprise/pull/7179) | GET returns optional `repositoryApiActionFilters` before Agent limits and the PR safeguard. Saved grants accept optional `apiActions`. PUT checks `expectedVersion`.                                                                                                           |
+| Operation                                                                               | Change                                                                                                                                                                                                                                                                                                                            |
+| --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GitHub `POST /repos/{owner}/{repo}/issues`                                              | Permit the existing endpoint. Verify an uncertain result before retrying.                                                                                                                                                                                                                                                         |
+| [Catalog, create and deploy](https://github.com/openclaw/openclaw-enterprise/pull/7178) | Return optional `githubAccess`. Atomically save initial `repositoryNetworkPolicy` with the draft. On a GitHub draft’s first deploy, the Console sets `expectedRepositoryPolicyVersion` to the reviewed version or `null` for no saved policy. A mismatch returns 409 without a revision. Other clients may omit the precondition. |
+| [Sandbox policy GET and PUT](https://github.com/openclaw/openclaw-enterprise/pull/7179) | GET returns optional `repositoryApiActionFilters` before Agent limits and the PR safeguard. Saved grants accept optional `apiActions`. PUT checks `expectedVersion`.                                                                                                                                                              |
 
 ### IAM
 
@@ -132,12 +132,12 @@ One grant and two optional filters replace REST versions and upgrade approvals. 
 Use the [installed workflow and evidence by criterion](../plans/20261123-repository-issue-creation.md#verification).
 
 - **AC-1 · G1.** With A Read, B Write and C bound without a grant, create and independently read back B’s issue. Deny A writes, C access and all PR creation.
-- **AC-2 · G1.** Unbind C, redeploy and verify both creations in B. Disable issue creation there. PRs, reads, push and another Contributor repository still work.
+- **AC-2 · G1.** Unbind C, redeploy and verify both creation routes through the same Agent and binding in B. Disable issue creation there. PRs, reads, push and another Contributor repository still work.
 - **AC-3 · G2.** Rotate, tighten and redeploy. Refuse stale renewal and forbidden routes. Verify retirement of the previous Sandbox.
 - **AC-4 · G2.** Inspect both sides of live parent links from B. Maintainers hold wider rollout if read-only A changes or denied C is exposed or changed.
 - **AC-5 · G2.** Reject invalid configuration. Verify PR-read-only, issue-create-only and Git-only filters independently.
 - **AC-6 · G2.** Without native enforcement, refuse restricted issuance and renewal. Unfiltered delivery still works.
-- **AC-7 · G2.** With Issues read, even an explicit allow cannot enable issue creation.
+- **AC-7 · G2.** Keep B at Write with Issues read and allow issue creation explicitly. The POST must stop before GitHub. Token permissions stay unchanged.
 - **AC-8 · G3.** Create, reopen, customize and deploy an Agent. Refuse stale review. Verify each opt-out independently at GitHub without changing a peer.
 
 ## Delivery and verification
