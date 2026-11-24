@@ -34,7 +34,8 @@ and who can stop affected workloads if access must be revoked immediately.
 | GitHub repository token              | The worker issues, renews, and retires the token. The repository sender uses it for approved requests.                         | A finite grant ends at its original deadline even after [token renewal](../../reference/repository-credentials.md#token-service-lifecycle). Standing approval can authorize a new session for the same running Agent. To end access, follow the [withdrawal procedure](../credential-proxy.md#withdraw-repository-access).               |
 | Backend-managed account credential   | The selected ServiceAccount Driver manages the upstream account, credential, and account-owned Secret.                         | Issuance is separate from creation. A second issuance conflicts; refresh and rotation are not implemented. See [service accounts](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                                                                                 |
 | Native OCC ServiceAccount credential | The operator owns the referenced source Secret.                                                                                | The API can replace a native `api_key` reference; that reference cannot select model authentication. See [native API-key references](../../reference/service-accounts.md#native-api-key-references).                                                                                                                                     |
-| Harness API key                      | The upstream provider issues the key; the selected Secret Driver stores it as an OCC Secret.                                   | Bind its exact same-Namespace reference through Agent `harnessAuth`. Update the source, explicitly deploy each consumer, verify model access, then revoke the old key upstream.                                                                                                                                                          |
+| Secret-backed Harness API key        | The upstream provider issues the key; the selected Secret Driver stores it as an OCC Secret.                                   | Bind its exact same-Namespace reference through Agent `harnessAuth`. Update the source, explicitly deploy each consumer, verify model access, then revoke the old key upstream.                                                                                                                                                          |
+| TokenService-managed model key       | TokenService holds the credential for a managed Source; Credential Proxy manages its delivery copy.                            | Update the Source, retry a failed delivery, and verify a model request. See [managed model key replacement](#replace-a-tokenservice-managed-model-key).                                                                                                                                                                                  |
 | Generated transport credentials      | The selected Compute Driver generates per-Agent transport material before the first version.                                   | Supported Agent creation or the first deployment creates missing transport Secrets. Neither rotates existing values. Replacing transport credentials requires a separate stopped-runtime procedure when supported. See [runtime credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials). |
 | OCC Secret bindings                  | The Secret Driver stores harness and channel values; Agent `harnessAuth` and Configurations bind them to authorized consumers. | Value updates preserve the reference. They do not restart consumers or remove delivered values. Channel Secrets are projected only to selected gateways after explicit deployment. See [update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).                                                          |
 | Private gateway-routing service key  | The operator manages the Envoy credential and OCC's mounted client key.                                                        | Use the separate [routing key rotation](workspace-routing.md#rotate-the-service-key-and-certificates) procedure; OCC reads the file for each operation. This is not an OCC API key.                                                                                                                                                      |
@@ -58,42 +59,63 @@ and verify that a protected request with the old session fails.
 ## Replace runtime values and verify consumption
 
 Obtain replacement API keys and channel credentials through the provider's
-supported process. For a Secret-backed Harness API key or Configuration channel
-Secret, use the [Secret update](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).
-For a TokenService-managed model key, use the [Credential Source update](../../reference/credential-sources/managed-static.md#update-a-source).
-The initial provisioning flow creates a separate transport credential bundle.
-It keeps an existing bundle in place.
+supported process. A stored status does not prove that the provider accepts
+the replacement.
+
+### Replace a TokenService-managed model key
+
+This development integration requires OCC TokenService and a compatible Credential
+Proxy delivery Driver. Check the [managed Source prerequisites](../../reference/credential-sources/managed-static.md#deploy-an-agent-with-the-source).
+
+1. Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId`
+   with `credential_source:update` and `{"secret":{"opaque":"<replacement>"}}`.
+   Omit `config` to preserve the provider preset. TokenService commits the new
+   credential and notifies the selected Credential Proxy.
+2. If the update reports a delivery failure, the replacement remains in custody.
+   [Retry credential delivery](../../reference/credential-sources.md#retry-credential-delivery)
+   from an active Agent that still uses the Source, without sending the secret
+   again. Confirm that the Source result is `succeeded`.
+3. Send a new model request through each affected running Agent using its existing
+   chat or supported endpoint. Verify a real response before revoking the old
+   upstream key. An active managed Proxy binding receives this update without
+   another Agent revision deployment. See [managed Source updates](../../reference/credential-sources/managed-static.md#update-a-source).
+
+### Replace a Secret-backed model key
 
 List all affected applications or Agents before restarting or deploying them.
 `occ secret get "$SECRET_ID" -o json` lists a Secret's consuming Agents in
 `consumers.agents`; a nonzero `consumers.unreadable` means some references are
 hidden from you (see [Find a Secret's consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers)).
 A running process keeps the environment variables it received, even after the
-source Secret changes. For a model API key, the supported sequence is:
+source Secret changes.
 
-1. Update the existing OCC Secret through its API, retaining the Secret reference.
+1. [Update the existing OCC Secret](../../reference/drivers/kubernetes-secret.md#update-and-redeploy), retaining its reference.
 2. Run `occ agent deploy "$AGENT_ID"` for each consuming Agent, even when its
    Configuration and `harnessAuth` reference are unchanged.
 3. Wait for OCC to select the new version, then perform a
-   [real model request](../operate/model-verification.md).
+   [real model request](../operate/model-verification.md). If the provider permits
+   overlap, revoke the old key after verification.
 
 With Kubernetes Compute, OCE preparation refreshes the Harness's DP credential
 projection from the CP source. Recreating its Pod or running `kubectl rollout restart` reads the existing
-projection and is not a substitute for this OCE deployment.
+projection and is not a substitute for this OCE deployment. Version history does
+not restore old source values.
 
-For a channel credential, explicitly deploy each consumer and exercise the
-affected channel workflow; a successful model turn does not prove channel authentication. For transport tokens, coordinate
-both endpoints and clients, and verify a fresh allowed connection and rejection
-of the old token. No automatic coordinated transport-token rotation is provided.
+### Replace channel or transport credentials
 
-Where the provider permits overlap, revoke the old upstream credential after
-successful replacement checks. A stored credential status does not show that
-the provider accepts the value. Dedicated Gateway restarts read current canonical
-channel values; Harness restarts read their existing runtime projection.
-Version history does not restore old source values.
+For a channel credential, [update its Configuration Secret](../../reference/drivers/kubernetes-secret.md#update-and-redeploy),
+explicitly deploy each consumer, and exercise the affected channel workflow. A
+successful model turn does not prove channel authentication. If the provider permits
+overlap, revoke the old credential after verification. Dedicated Gateway restarts
+read current canonical channel values. Initial provisioning creates a separate
+transport credential bundle and leaves an existing bundle in place. For transport
+tokens, coordinate both endpoints and clients, and verify a fresh allowed
+connection and rejection of the old token. No automatic coordinated
+transport-token rotation is provided.
 
-Backend-managed account credentials require separate handling: OCC cannot
-refresh, rotate, or manually replace an issued token. Monitor expiry and arrange
+### Replace a Backend-managed account credential
+
+OCC cannot refresh, rotate, or manually replace an issued token. Monitor expiry and arrange
 a separately issued replacement account before it expires. Bind that account
 and explicitly deploy each intended consumer. Account deletion performs upstream
 cleanup and is blocked by Agent drafts, selected versions, and pending deployments;
