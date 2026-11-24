@@ -744,7 +744,7 @@ fi
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 case "\${!#}" in
-  */observed-api-deployment.json|*/observed-worker-deployment.json|*/current-api-deployment.json|*/current-worker-deployment.json|*/quiescence-api-deployment.json|*/quiescence-worker-deployment.json|*/quiescence-pods.json|*/worker-stop-confirmed.json)
+  */before-workloads.json|*/observed-api-deployment.json|*/observed-worker-deployment.json|*/current-api-deployment.json|*/current-worker-deployment.json|*/quiescence-api-deployment.json|*/quiescence-worker-deployment.json|*/quiescence-pods.json|*/worker-stop-confirmed.json)
     PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
 esac
 if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
@@ -939,7 +939,7 @@ case "$*" in
     exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
 
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
-  *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
+  *'get deployments,statefulsets,pods,persistentvolumeclaims '*|*'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
   *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;
 esac
@@ -1239,7 +1239,16 @@ esac
   assert.match(completed.stdout, /native rollout output/u);
   assert.match(completed.stdout, /native Helm output/u);
   assert.match(completed.stderr, /Upgrade: Reconciling and deploying Agent revisions\./u);
-  assert.match(completed.stderr, /Upgrade: Checking Agent readiness and OpenClaw Doctor\./u);
+  assert.deepEqual(
+    completed.stderr
+      .split("\n")
+      .filter((line) => /^Upgrade: (Waiting for Agent|Starting OpenClaw Doctor)/u.test(line))
+      .map((line) => line.replace(timestampSuffix, "")),
+    [
+      "Upgrade: Waiting for Agent revisions and Pods to become ready.",
+      "Upgrade: Starting OpenClaw Doctor checks for Agent 1 of 1.",
+    ],
+  );
   assert.deepEqual(lastDispatchEntry(await readFile(readyEvidence + ".dispatch-state")), [
     "accept",
     "ns_test",

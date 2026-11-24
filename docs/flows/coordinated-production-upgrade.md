@@ -84,14 +84,14 @@ graph TD
 
 `internal/occcli/installation_upgrade.go:installationUpgradeCommand` calls
 `scripts/upgrade-production:main`. `report_status` compares local evidence.
-Plan checks profile, images and HEAD. `profile_input` opens profile and receipt
-through one directory descriptor. Operators authenticate receipts.
-`published_image_pair` checks GHCR packages, digests, source, tags and run
-attempts. Resume and migration apply use journal-bound digests. The adapter
-previews target and CA. Apply and resume recheck approval and bound inputs.
+Plan checks HEAD, profile and images. `profile_input` reads the profile and
+publication receipt via one directory descriptor. Operators authenticate receipts.
+`published_image_pair` checks GHCR packages, digests, source, tags and run attempts.
+Resume and migration apply use journal-bound digests. Preview shows target and CA.
+Apply and resume recheck approval and bound inputs.
 
-Both entrypoints reject active kubectl preferences. Exec plugins require an
-approved environment with preferences disabled. Snapshots reject `auth-provider`.
+Both entrypoints reject active kubectl preferences. Disable them beforehand
+in approved exec plugin environments. Private snapshots reject built-in `auth-provider`.
 Profiled recovery rechecks target, CA and parameters under lock.
 
 Before `scripts/upgrade-production-images:prepare_upgrade`, reject alternate Helm
@@ -111,13 +111,14 @@ Projections allow Slack directory proxy, curated Codex PluginDriver selection
 and one registration wrapper. Omit absent `agentNativeAdmin.sharedCookieDomain`
 from baseline. Immutable switches require string keys.
 
+Preparation rejects extra active Deployments or StatefulSets matching the drain selector.
+
 `read_restart_inventory` requires complete authorized inventory without nonterminal
-deployments. Running revisions need saved Harness objects and an accepted
-[restart assessment](../reference/repository-credentials/worker-replacement.md).
-Standalone preflight records original-worker requirements. Unknown assessments
-block rehearsal. Runtime upgrades record replacements and check draft images,
-sizes, baseline versions and Namespace readiness. They exclude stopped or
-deleting Agents and permit pending repository cleanup.
+deployments. Running revisions need saved Harnesses and accepted
+[restart assessments](../reference/repository-credentials/worker-replacement.md).
+Standalone preflight records original-worker requirements. Unknown assessments block rehearsal.
+Runtime upgrades record replacements and check draft images, sizes, baseline versions
+and Namespace readiness. They exclude stopped or deleting Agents and allow pending repository cleanup.
 
 `deploymentInventorySnapshot` rejects missing or mismatched work in one State
 snapshot. Credential withdrawal is separate. `findRevisionForBrowsing` returns
@@ -167,16 +168,14 @@ Kubernetes Compute uses the Pod service account and refuses single-cluster
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
 Images check Installation names and drafts when supported.
 
-For runtime replacements whose Harness uses a Credential Source, the API Job
-runs `checkHarnessDestinations`. With Kubernetes Compute, its read-only transaction
-matches revision, Configuration generation and Harness source. Compute resolves
-the draft with the selected revision's overrides. Every OpenAI source
-attached to the draft must authorize the destination.
+For runtime replacements whose Harness uses a Credential Source, the API Job runs
+`checkHarnessDestinations`. With Kubernetes Compute, its read-only transaction checks
+revision, Configuration generation and Harness source. Compute resolves the draft
+using selected revision overrides. Each attached OpenAI source must authorize the destination.
 
-A failed or incomplete destination check blocks shutdown. This includes
-exceeding 1 MiB (Installation plus gzipped drafts) when the check is required.
-Otherwise oversized drafts and unsupported draft checks defer to deployment
-with a warning. Deployment rechecks authorization.
+Failed or incomplete checks block shutdown. Required checks reject inputs over
+1 MiB (Installation plus gzipped drafts). Otherwise, preflight warns and defers
+oversized or unsupported draft checks to deployment, which rechecks authorization.
 
 Two-cluster Jobs check API Pod, proxy and optional log/Event access, and Worker
 Pod patch and Job get, create and delete access. Missing grants require the
@@ -373,6 +372,8 @@ IDs, and treats rename keys literally. Unsaved exact-name reuse requires no Agen
 - 2026-11-24 20:04: Trace retained model destination checks. (authoring-run/68864121-1934-4d2e-9b4e-a78f2edc790b - 81560a5b7d8da3383c8088fef29bef0a4c8565ef)
 
 - 2026-11-24 19:54: Clarify writer previews. (authoring-run/46f01900-6b22-479c-9e19-3ea5a6e7eaaa - 071f8b1ec12648ce2d755e86323cb958a3c005f5)
+
+- 2026-11-24 11:03: Detect extra writers. (authoring-run/65f2170e-577d-4f04-84c2-0403229d45f7 - acd247bba5b03788840efc5f0d1dda7b7fe0c63d)
 
 - 2026-11-24 03:54: Preserve writer stop evidence. (authoring-run/1c3ad59b-d58f-4d86-bdd9-767c3a9547d4 - 1d72f0a2f7ede08bd108be30e4a113ad5e611c5c)
 
