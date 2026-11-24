@@ -26,6 +26,7 @@ import type {
 import type { OpenShellProxyOptions } from "../drivers/egress-proxy/openshell.ts";
 import type { EgressAuthorityConfiguration } from "./egress-authority.ts";
 import {
+  ChartListenerMismatchError,
   chartListeners,
   InstallationFieldError,
   type InstallationFieldDetail,
@@ -51,7 +52,7 @@ import type {
 import { asRecord } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { createHash, X509Certificate } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   Backend,
@@ -697,6 +698,48 @@ function githubRepositoryAuthorityIdentity(
     .digest("hex");
 }
 
+function requireChartOpenShellClient(
+  configuration: OpenShellBackendDefinition["configuration"],
+  index: number,
+  mountDirectory: string | undefined,
+): void {
+  if (mountDirectory === undefined) {
+    return;
+  }
+  if (mountDirectory !== "/etc/openclaw/openshell") {
+    throw new ChartListenerMismatchError(
+      "OCC_CHART_OPENSHELL_CLIENT_DIRECTORY must be /etc/openclaw/openshell or unset.",
+      "",
+    );
+  }
+  const { auth, rootCertificatePath } = configuration;
+  const isManaged = (file: string) => {
+    const normalized = posix.normalize(file);
+    return normalized === mountDirectory || normalized.startsWith(`${mountDirectory}/`);
+  };
+  const requireMountedFile = (field: string, configured: string, filename: string) => {
+    const mounted = `${mountDirectory}/${filename}`;
+    if (configured !== mounted) {
+      throw new ChartListenerMismatchError(
+        `backend[${index}].configuration.${field} must be ${mounted}, where the chart mounts the file from Helm backend.openshell.clientSecretName.`,
+        `backend.${index}.configuration.${field}`,
+      );
+    }
+  };
+  // A client identity uses one matching pair. A separately mounted pair and gateway CA
+  // can each live outside the chart's Secret.
+  if (
+    auth?.mode === "mtls" &&
+    (isManaged(auth.certificatePath) || isManaged(auth.privateKeyPath))
+  ) {
+    requireMountedFile("auth.certificatePath", auth.certificatePath, "tls.crt");
+    requireMountedFile("auth.privateKeyPath", auth.privateKeyPath, "tls.key");
+  }
+  if (rootCertificatePath !== undefined && isManaged(rootCertificatePath)) {
+    requireMountedFile("rootCertificatePath", rootCertificatePath, "ca.crt");
+  }
+}
+
 function backendConfiguration(
   value: unknown,
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
@@ -704,6 +747,7 @@ function backendConfiguration(
   credentialGatewayId: string | undefined,
   credentialRefreshId: string | undefined,
   credentialProxyId: string | undefined,
+  openShellClientDirectory: string | undefined,
 ): readonly BackendDefinition[] {
   const backends = validateBackendDefinitions(value ?? []);
   if (serviceAccount !== undefined && !backends.some((backend) => backend.type === "chatgpt")) {
@@ -723,8 +767,9 @@ function backendConfiguration(
       "drivers.credential_gateway requires an owning backend entry with type openshell.",
     );
   }
-  for (const backend of backends) {
+  for (const [index, backend] of backends.entries()) {
     if (backend.type === "openshell") {
+      requireChartOpenShellClient(backend.configuration, index, openShellClientDirectory);
       // Sandbox membership is checked once the Sandbox selection is resolved.
       if (backend.drivers.credential_gateway !== credentialGatewayId) {
         throw new Error(
@@ -1135,6 +1180,7 @@ async function composeInstallationConfiguration(
     credentialGateway?.id,
     credentialRefresh?.id,
     proxySelection?.id ?? packageProxyId,
+    environment.OCC_CHART_OPENSHELL_CLIENT_DIRECTORY,
   );
   const openShellBackend = backends.find(
     (backend): backend is OpenShellBackendDefinition => backend.type === "openshell",

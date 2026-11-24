@@ -18,6 +18,10 @@ import {
   chartListeners,
   requireChartListener,
 } from "../../apps/controller/src/composition/installation-fields.ts";
+import {
+  loadInstallationConfiguration,
+  loadStartupConfigurationSnapshot,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import { openShellGitChartListener } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import { generateInstallationCheck } from "../../deploy/helm/src/generate-installation-check.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -483,6 +487,118 @@ test(
           "repository.openShell.authority.issuerPublicKeyPath must be /etc/openclaw/openshell-git/gateway-public.pem, where the chart mounts the file from Helm openshellGit.issuerPublicKeyConfigMapName.",
       },
     );
+  },
+);
+
+test(
+  "startup refuses OpenShell mTLS files that disagree with the chart's client mount",
+  tooling,
+  async (t) => {
+    const secretName = "openshell-client-fixture";
+    const expectedMount = "/etc/openclaw/openshell";
+    const values = { ...preparedGitHubValues, "backend.openshell.clientSecretName": secretName };
+    const objects = await parseProductionChart(
+      (await renderProductionChart(values, { isUpgrade: true })).stdout,
+    );
+    const job = objects.find(
+      ({ kind, metadata }) =>
+        kind === "Job" && metadata.labels["app.kubernetes.io/component"] === "initialization",
+    );
+    const [check] = job.spec.template.spec.initContainers;
+    const environment = Object.fromEntries(
+      check.env
+        .filter(({ name }) => name !== "OCC_CONFIG_PATH")
+        .map(({ name, value }) => [name, value]),
+    );
+    assert.equal(environment.OCC_CHART_OPENSHELL_CLIENT_DIRECTORY, expectedMount);
+    for (const role of ["api", "worker"]) {
+      const { spec } = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.name === `openclaw-enterprise-${role}`,
+      ).spec.template;
+      const container = spec.containers.find(({ name }) => name === role);
+      assert.equal(
+        container.env.find(({ name }) => name === "OCC_CHART_OPENSHELL_CLIENT_DIRECTORY")?.value,
+        environment.OCC_CHART_OPENSHELL_CLIENT_DIRECTORY,
+      );
+      const mount = container.volumeMounts.find(({ name }) => name === "openshell-client");
+      assert.equal(mount?.mountPath, expectedMount);
+      assert.equal(mount.readOnly, true);
+      const { secret } = spec.volumes.find(({ name }) => name === mount.name);
+      assert.equal(secret.secretName, secretName);
+      assert.deepEqual(secret.items.map(({ key, path }) => [key, path]).sort(), [
+        ["ca.crt", "ca.crt"],
+        ["tls.crt", "tls.crt"],
+        ["tls.key", "tls.key"],
+      ]);
+    }
+
+    const configuration = credentialProxyInstallation();
+    configuration.drivers.credential_proxy.configuration.authority.host = "0.0.0.0";
+    const backend = configuration.backend[0].configuration;
+    const auth = {
+      mode: "mtls",
+      certificatePath: `${expectedMount}/tls.crt`,
+      privateKeyPath: `${expectedMount}/tls.key`,
+    };
+    backend.auth = auth;
+    backend.rootCertificatePath = "/var/run/custom-gateway-ca/root.crt";
+    const accepted = await runCheck(t, configuration, {}, () => environment);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(accepted.stdout, "installation-startup-ready\n");
+
+    backend.auth = { ...auth, certificatePath: "/var/run/fixture-private/unmounted-client.crt" };
+    const refused = await runCheck(t, configuration, {}, () => environment);
+    assert.equal(refused.status, 1);
+    assert.equal(
+      refused.stderr,
+      "installation-check: API and worker startup would refuse the Installation (CHART_LISTENER_MISMATCH): " +
+        `backend[0].configuration.auth.certificatePath must be ${expectedMount}/tls.crt, where the chart mounts the file from Helm backend.openshell.clientSecretName.\n`,
+    );
+
+    const directory = await temporaryDirectory(t, "occ-openshell-client-startup-");
+    const path = join(directory, "installation.yaml");
+    const load = async (chartEnvironment = environment) => {
+      const options = {
+        mode: "production",
+        environment: { ...chartEnvironment, OCC_CONFIG_PATH: path },
+      };
+      await writeFile(path, JSON.stringify(configuration), "utf8");
+      return loadInstallationConfiguration({
+        ...options,
+        startupConfiguration: await loadStartupConfigurationSnapshot(options),
+      });
+    };
+    await assert.rejects(
+      load({ ...environment, OCC_CHART_OPENSHELL_CLIENT_DIRECTORY: "/fixture-private/" }),
+      {
+        code: "CHART_LISTENER_MISMATCH",
+        message: "OCC_CHART_OPENSHELL_CLIENT_DIRECTORY must be /etc/openclaw/openshell or unset.",
+      },
+    );
+    await load({});
+
+    backend.auth = { ...auth, privateKeyPath: "/var/run/fixture-private/unmounted-client.key" };
+    await assert.rejects(load(), {
+      code: "CHART_LISTENER_MISMATCH",
+      path: "/backend/0/configuration/auth/privateKeyPath",
+    });
+
+    backend.auth = {
+      mode: "mtls",
+      certificatePath: "/etc/openclaw/openshell-external/client.crt",
+      privateKeyPath: "/etc/openclaw/openshell-external/client.key",
+    };
+    backend.rootCertificatePath = `${expectedMount}/ca.crt`;
+    await load();
+
+    backend.auth = { mode: "bearerTokenFile", path: "/var/run/external/token" };
+    await load();
+    backend.rootCertificatePath = "/etc/openclaw/./openshell/ca.crt";
+    await assert.rejects(load(), {
+      code: "CHART_LISTENER_MISMATCH",
+      path: "/backend/0/configuration/rootCertificatePath",
+    });
   },
 );
 
