@@ -2,8 +2,8 @@
 
 Open `/console/` on your OCC address to manage Agents, Namespace Secrets, and supported Slack settings,
 workspace files, and credentials. Authorized operators can also open an Agent's
-[native admin UI](#open-the-native-admin-ui). The console has no rollback, live
-runtime health, or browser chat through OCE.
+[native admin UI](#open-the-native-admin-ui). The Console cannot roll back deployments
+or report live runtime health.
 
 See [Create and deploy Agents](console/create-and-deploy.md) or
 [Understand Agent detail](../guides/console/agent-details.md). Operator setup and
@@ -15,14 +15,17 @@ If the Console says it could not load, click **Reload page** to try the same
 address again. If it stays on the loading screen without that button, use your
 browser's Reload command. The Console does not automatically reload the page.
 
-Enter your provisioned account email and password, then select **Sign in**. Public
-signup, single sign-on, and self-service password recovery are unavailable; ask
-your administrator for an account or password reset. A wrong email or password
-always gets the same message. Other sign-in failures say what to do: wait the
-time shown after too many attempts, try again shortly when sign-in is unavailable,
-or open the console from its configured address when the API refuses the
-browser origin. For your own
-Installation, see the
+For [external sign-in](authentication/external-sign-in.md), select **Continue with Google**
+or your OpenID Connect provider’s **Continue with** button.
+[OpenID Connect enrollment](authentication/team-enrollment.md) can create accounts if enabled.
+
+If passwords are allowed, enter your email and password and select **Sign in**.
+In recovery-only mode, only the designated account can use a password.
+If the form is hidden, select **Recovery sign-in** first.
+
+Public signup and self-service password resets are unavailable. Ask your administrator for help.
+Wrong credentials return identical errors. Respect retry delays. Retry later if sign-in
+is unavailable. For origin errors, use the configured Console address. See the
 [quickstart](../guides/quickstart.md#open-the-platform-console) or
 [deployment guide](../guides/deploy.md#open-the-platform-console).
 
