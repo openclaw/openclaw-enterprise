@@ -19176,60 +19176,38 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
     await this.request(
       async () => {
-        switch (desired.kind) {
+        const kind = desired.kind;
+        const patchArgs = () => ({
+          ...request,
+          namespace: required(namespace.name, `${kind} namespace`),
+        });
+        switch (kind) {
           case "Namespace":
             await clients.core.patchNamespace(request, this.patchOptions);
             return;
           case "ConfigMap":
-            await clients.core.patchNamespacedConfigMap(
-              { ...request, namespace: required(namespace.name, "ConfigMap namespace") },
-              this.patchOptions,
-            );
+            await clients.core.patchNamespacedConfigMap(patchArgs(), this.patchOptions);
             return;
           case "ServiceAccount":
-            await clients.core.patchNamespacedServiceAccount(
-              { ...request, namespace: required(namespace.name, "ServiceAccount namespace") },
-              this.patchOptions,
-            );
+            await clients.core.patchNamespacedServiceAccount(patchArgs(), this.patchOptions);
             return;
           case "Service":
-            await clients.core.patchNamespacedService(
-              { ...request, namespace: required(namespace.name, "Service namespace") },
-              this.patchOptions,
-            );
+            await clients.core.patchNamespacedService(patchArgs(), this.patchOptions);
             return;
           case "ResourceQuota":
-            await clients.core.patchNamespacedResourceQuota(
-              { ...request, namespace: required(namespace.name, "ResourceQuota namespace") },
-              this.patchOptions,
-            );
+            await clients.core.patchNamespacedResourceQuota(patchArgs(), this.patchOptions);
             return;
           case "LimitRange":
-            await clients.core.patchNamespacedLimitRange(
-              { ...request, namespace: required(namespace.name, "LimitRange namespace") },
-              this.patchOptions,
-            );
+            await clients.core.patchNamespacedLimitRange(patchArgs(), this.patchOptions);
             return;
           case "PersistentVolumeClaim":
-            await clients.core.patchNamespacedPersistentVolumeClaim(
-              {
-                ...request,
-                namespace: required(namespace.name, "PersistentVolumeClaim namespace"),
-              },
-              this.patchOptions,
-            );
+            await clients.core.patchNamespacedPersistentVolumeClaim(patchArgs(), this.patchOptions);
             return;
           case "Deployment":
-            await clients.apps.patchNamespacedDeployment(
-              { ...request, namespace: required(namespace.name, "Deployment namespace") },
-              this.patchOptions,
-            );
+            await clients.apps.patchNamespacedDeployment(patchArgs(), this.patchOptions);
             return;
           case "NetworkPolicy":
-            await clients.networking.patchNamespacedNetworkPolicy(
-              { ...request, namespace: required(namespace.name, "NetworkPolicy namespace") },
-              this.patchOptions,
-            );
+            await clients.networking.patchNamespacedNetworkPolicy(patchArgs(), this.patchOptions);
             return;
           case "HTTPRoute":
           case "SecurityPolicy":
@@ -19243,7 +19221,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             );
             return;
           default: {
-            const unsupported: never = desired.kind;
+            void (kind satisfies never);
+            const unsupported = desired.kind;
             throw new ConfigurationFailure(
               `Unsupported managed Kubernetes resource ${unsupported}.`,
             );
@@ -19280,64 +19259,35 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     try {
       const value = asRecord(
         await this.request(async () => {
+          const readArgs = () => ({
+            name,
+            namespace: required(namespace.name, `${kind} namespace`),
+          });
           switch (kind) {
             case "Namespace":
               return clients.core.readNamespace({ name });
             case "Pod":
-              return clients.core.readNamespacedPod({
-                name,
-                namespace: required(namespace.name, "Pod namespace"),
-              });
+              return clients.core.readNamespacedPod(readArgs());
             case "ConfigMap":
-              return clients.core.readNamespacedConfigMap({
-                name,
-                namespace: required(namespace.name, "ConfigMap namespace"),
-              });
+              return clients.core.readNamespacedConfigMap(readArgs());
             case "Secret":
-              return clients.core.readNamespacedSecret({
-                name,
-                namespace: required(namespace.name, "Secret namespace"),
-              });
+              return clients.core.readNamespacedSecret(readArgs());
             case "ServiceAccount":
-              return clients.core.readNamespacedServiceAccount({
-                name,
-                namespace: required(namespace.name, "ServiceAccount namespace"),
-              });
+              return clients.core.readNamespacedServiceAccount(readArgs());
             case "Service":
-              return clients.core.readNamespacedService({
-                name,
-                namespace: required(namespace.name, "Service namespace"),
-              });
+              return clients.core.readNamespacedService(readArgs());
             case "ResourceQuota":
-              return clients.core.readNamespacedResourceQuota({
-                name,
-                namespace: required(namespace.name, "ResourceQuota namespace"),
-              });
+              return clients.core.readNamespacedResourceQuota(readArgs());
             case "LimitRange":
-              return clients.core.readNamespacedLimitRange({
-                name,
-                namespace: required(namespace.name, "LimitRange namespace"),
-              });
+              return clients.core.readNamespacedLimitRange(readArgs());
             case "PersistentVolumeClaim":
-              return clients.core.readNamespacedPersistentVolumeClaim({
-                name,
-                namespace: required(namespace.name, "PersistentVolumeClaim namespace"),
-              });
+              return clients.core.readNamespacedPersistentVolumeClaim(readArgs());
             case "Deployment":
-              return clients.apps.readNamespacedDeployment({
-                name,
-                namespace: required(namespace.name, "Deployment namespace"),
-              });
+              return clients.apps.readNamespacedDeployment(readArgs());
             case "Job":
-              return clients.batch.readNamespacedJob({
-                name,
-                namespace: required(namespace.name, "Job namespace"),
-              });
+              return clients.batch.readNamespacedJob(readArgs());
             case "NetworkPolicy":
-              return clients.networking.readNamespacedNetworkPolicy({
-                name,
-                namespace: required(namespace.name, "NetworkPolicy namespace"),
-              });
+              return clients.networking.readNamespacedNetworkPolicy(readArgs());
             case "HTTPRoute":
             case "SecurityPolicy":
               return clients.objects.read({

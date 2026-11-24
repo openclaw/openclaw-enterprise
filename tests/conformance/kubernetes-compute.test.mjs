@@ -5748,10 +5748,12 @@ test("provider Harness public trust rejects invalid material and composes with e
     const writes = [];
     driver.apiClients = Promise.resolve({
       core: {
-        async readNamespacedConfigMap() {
+        async readNamespacedConfigMap({ namespace }) {
+          assert.equal(namespace, target.name);
           throw Object.assign(new Error("not found"), { statusCode: 404 });
         },
-        async patchNamespacedConfigMap({ body }) {
+        async patchNamespacedConfigMap({ body, namespace }) {
+          assert.equal(namespace, target.name);
           writes.push(body);
         },
       },
