@@ -96,8 +96,10 @@ repositories remain denied. See [Known limits](#known-limits) for indirect effec
 #### API limits
 
 Omit `apiLimits` for the Contributor defaults in the table above. To narrow
-direct REST access, set `apiLimits` on the selected native Namespace
-registration for the repository. Git access stays the same.
+direct REST access for all Agents, set `apiLimits` on the native repository's
+Namespace registration. To limit one Agent, set `apiLimits` on its
+[saved grant](../sandbox-policies.md#repository-network-policy) and redeploy.
+Both limits apply. Git access stays the same.
 
 Each resource, `issues` or `pull_requests`, accepts `none` (no routes), `read`
 (list and detail) or `write` (read and create). A limit cannot add permissions,
@@ -118,6 +120,18 @@ an empty object, unknown keys and invalid values.
 Any explicit limit requires a saved repository network policy and native
 enforcement, even without API permissions. If either is missing, OCE refuses
 credential delivery and renewal. Withdrawal and Stop remain available.
+
+#### Preview Namespace limits
+
+Choose an example grant to preview direct requests. Open **Advanced** to
+generate limits for every Agent that uses the registration. The preview does
+not read or save your policy.
+
+<div data-repository-limits></div>
+
+To change one Agent, edit its [saved grant](../sandbox-policies.md#repository-network-policy)
+and deploy. Review the [indirect effects](#known-limits). For example, issue
+reads can return pull requests even if you block direct pull request access.
 
 #### Issue creation
 

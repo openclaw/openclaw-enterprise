@@ -2955,7 +2955,7 @@ export const nativeBrowserHandles = occSchema.table(
   ],
 );
 
-/** One native Git Provider copy of a repository token Source per Agent revision (0093). */
+/** One native Git Provider copy of a repository token Source per Agent revision (0094). */
 export const repositorySourceCopies = occSchema.table(
   "repository_source_copies",
   {
@@ -2977,7 +2977,7 @@ export const repositorySourceCopies = occSchema.table(
     retirementBlocked: text("retirement_blocked"),
     retirementAttemptedAt: timestamp("retirement_attempted_at", { withTimezone: true }),
     retiredAt: timestamp("retired_at", { withTimezone: true }),
-    // 0094: the version a replacement committed while this copy was unretired.
+    // 0095: the version a replacement committed while this copy was unretired.
     expectedSourceVersion: text("expected_source_version"),
     expectedAt: timestamp("expected_at", { withTimezone: true }),
   },

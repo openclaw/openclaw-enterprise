@@ -683,11 +683,6 @@ async function installOpenShellGit(
           ...(nativeGit && { nativeGit: "v1" }),
           ...(optedIn &&
             rest === "issue-controls" &&
-            scope.repository === "fixture/b" && {
-              apiLimits: { issues: "read" },
-            }),
-          ...(optedIn &&
-            rest === "issue-controls" &&
             scope.repository === "fixture/c" && {
               apiLimits: { default: "none" },
             }),
