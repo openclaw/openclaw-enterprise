@@ -121,7 +121,7 @@ Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` wit
 
 ### When to revoke the old token
 
-Revoke the replaced token at GitHub only after every running revision that uses the Source has its new value. Send `GET /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking` for each Agent bound to the Source. When every entry in `repositoryCredential.deliveries` is `confirmed` and its `confirmedSourceVersion` equals `committedSourceVersion`, the Sandbox has activated the replacement. Until then a revision can still use the old token, and revoking it breaks that revision's Git access. An `unreconciled` entry clears only when its Agent is stopped or redeployed. Reading deliveries requires `credential_source:read` on the Source ([policy read](../sandbox-policies/repository-credential.md)).
+Revoke the replaced token at GitHub only after every running revision that uses the Source has its new value. Send `GET /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking` for each Agent bound to the Source. When every entry in `repositoryCredential.deliveries` of every such Agent is `confirmed`, each Sandbox has activated the replacement. Until then a revision can still use the old token, and revoking it breaks that revision's Git access. An `unreconciled` entry clears only when its Agent is stopped or redeployed. Reading deliveries requires `credential_source:read` on the Source ([policy read](../sandbox-policies/repository-credential.md)).
 
 ## Delete a source
 

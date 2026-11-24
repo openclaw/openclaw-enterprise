@@ -116,7 +116,7 @@ const RepositoryCredentialViewSchema = Type.Union(
       {
         additionalProperties: false,
         description:
-          "The caller lacks credential_source read on the selected Source. The saved grants stay visible and can be cleared.",
+          "The caller lacks credential_source read on the selected Source, or the authorization check could not be made. The saved grants stay visible and can be cleared.",
       },
     ),
     Type.Object(
@@ -145,7 +145,7 @@ const RepositoryCredentialViewSchema = Type.Union(
         effectiveRepositoryNetworkPolicy: Type.Optional(
           Type.Array(RepositoryNetworkGrantSchema, {
             description:
-              "The saved grants within the Installation ceiling, the registration's permissions and the Source ceiling. Absent when state is unavailable.",
+              "The saved grants narrowed to the Namespace ceiling, the registry's selected access and the Source ceiling. Absent when state is unavailable.",
             maxItems: maxRepositoryNetworkGrants,
           }),
         ),

@@ -259,7 +259,10 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         version = stored.version;
         if (isRepositoryTokenSource(found)) {
           // Each unretired copy now expects this version; its delivery reads pending until the
-          // Worker confirms the target Sandbox activated this same version.
+          // Worker confirms the target Sandbox activated this same version. The stamp follows
+          // the custody write so that no copy-row lock is held across the Secret store call. If
+          // the stamp fails, the transaction rolls back and the PATCH fails, but the store keeps
+          // the new value: the copies keep their previous stamp until the retried PATCH.
           await credentialSources.stampRepositorySourceCopies(ref.namespaceId, ref.id, version);
         }
       } else if (update.lifecycleConfig) {

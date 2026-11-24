@@ -5,10 +5,10 @@
 When the Agent has repository bindings, GET also returns `repositoryCredential`. It is absent when the Agent has no bindings or the bindings do not resolve.
 
 - `{ "kind": "github_app" }`: the registry selects the GitHub App path.
-- `{ "kind": "credential_source", "readable": false }`: a [repository token Source](../credential-sources/managed-static.md#register-a-github-repository-token) is selected, and the caller lacks `credential_source:read` on it. The caller learns nothing else about the Source. The saved list, its version and the ceiling stay readable, and the caller can still clear the list and stop the Agent.
+- `{ "kind": "credential_source", "readable": false }`: a [repository token Source](../credential-sources/managed-static.md#register-a-github-repository-token) is selected, and the caller lacks `credential_source:read` on it, or the authorization check could not be made. The caller learns nothing else about the Source. The saved list, its version and the ceiling stay readable, and the caller can still clear the list and stop the Agent.
 - Otherwise the Source's `id`, `name`, `state` and repository `ceiling`, plus `effectiveRepositoryNetworkPolicy`: the saved grants narrowed to the Namespace ceiling, the registry's selected access and the Source ceiling. A Source that is missing, in another Namespace or owned by another TokenService reads `unavailable` with no ceiling.
 
-`deliveries` lists one entry per revision of this Agent whose Sandbox may still hold the Source. GET reads them from platform state and never asks TokenService for the value or version.
+`deliveries` lists one entry per revision of this Agent whose Sandbox may still hold the Source. GET reads them from platform state and never asks TokenService for the value or version. The read follows the registry's current selection: after a registry change, a running revision's copy of the previously selected Source appears in no policy read.
 
 | `state`        | Meaning                                                                                                                                           |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |

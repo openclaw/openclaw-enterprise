@@ -1838,9 +1838,9 @@ test("first repository policy save requires affirmative admission of the exact d
       const after = await f.request("GET", edit.policyPath);
       assert.equal(after.status, 200, JSON.stringify(after));
       assert.equal(JSON.stringify(after).includes(sentinel), false);
-      // Bindings that do not resolve select no credential, so the read names none.
       const { repositoryCredential, ...unresolved } = before.data;
       assert.deepEqual(repositoryCredential, { kind: "github_app" });
+      // Bindings that do not resolve select no credential, so the read names none.
       assert.deepEqual(after.data, {
         ...unresolved,
         repositoryNetworkPolicyCeiling: [],
