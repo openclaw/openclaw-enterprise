@@ -915,7 +915,9 @@ describe("Agent channels", { concurrency: 3 }, () => {
       const draftEntry = page.locator("#revision-selector option[value=draft]");
       await edit.waitFor();
       await waitForIdleFetches(page);
-      const permissionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+      const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+      const agentUrl = fixture.origin + agentPath;
+      const permissionsPath = `${agentPath}/permissions`;
       const permissionsUrl = fixture.origin + permissionsPath;
       const requests = apiRequests(page, fixture.origin);
       const unavailableResponse = apiErrorResponse(
@@ -1033,14 +1035,29 @@ describe("Agent channels", { concurrency: 3 }, () => {
       assert.equal(await edit.count(), 0);
       assert.equal(pathRequests(requests, "GET", permissionsPath).length, 5);
 
-      // Refresh must wait for a current answer, even when the account really has edit access.
       restore();
+      const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+      // An Agent read can fail before Refresh reaches permissions. Retry still needs confirmation.
+      await page.route(
+        agentUrl,
+        (route) =>
+          route.fulfill(apiErrorResponse(503, "INTERNAL_ERROR", "Agent read unavailable.")),
+        { times: 1 },
+      );
+      const failedAgentRead = responseTo(page, "GET", agentUrl);
+      await refresh.click();
+      assert.equal((await failedAgentRead).status(), 503);
+      const retry = page.getByRole("button", { name: "Retry", exact: true });
+      await retry.waitFor();
+      assert.equal(pathRequests(requests, "GET", permissionsPath).length, 5);
+      const recoveredAgentRead = responseTo(page, "GET", agentUrl);
       unavailable = true;
-      await recheck(503);
+      await checkPermissions(() => retry.click(), 503);
+      assert.equal((await recoveredAgentRead).status(), 200);
       await expectUnconfirmed();
       assert.equal(pathRequests(requests, "GET", permissionsPath).length, 6);
 
-      const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+      // Refresh must wait for a current answer, even when the account really has edit access.
       const failedRefresh = await holdRequests(t, page, permissionsUrl, {
         once: true,
         method: "GET",

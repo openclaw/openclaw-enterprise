@@ -1714,7 +1714,7 @@ async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
   fromRefresh = false,
-  confirmAgentPermissions = reuseView && !fromNavigation,
+  confirmAgentPermissions: confirmOnLoad = reuseView && !fromNavigation,
   // Set only by Back and Forward (popstate).
   restoreHistory = null,
   openingAgent = false,
@@ -1739,6 +1739,17 @@ async function loadPage({
   const resumingView = reuseView && !fromNavigation;
   const linkedSecretId = takeLinkedSecret(fromNavigation);
   const current = route();
+  // A Retry must keep confirming draft Channels access even if Refresh fails before reading the
+  // Agent. Resolve an implicit revision from the mounted route until the fresh Agent is read.
+  const confirmForAgent = (agent: AgentRead | null | undefined) =>
+    confirmOnLoad ||
+    (fromRefresh &&
+      Boolean(current.agentId) &&
+      current.url.searchParams.get("tab") === "channels" &&
+      (current.url.searchParams.get("revision") ?? agent?.activeRevisionId ?? "draft") === "draft");
+  let confirmAgentPermissions = confirmForAgent(
+    mountedRouteKey === routeKey(current) ? mountedAgent : null,
+  );
   const privatePage = hasKey(pages, current.feature) ? current.feature : null;
   const nativeIntent = takeNativeFragment(current);
   if (fromNavigation && nativeIntent === null) {
@@ -2246,6 +2257,7 @@ async function loadPage({
     if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (agentPath !== null) {
         firstAgent = (await request(agentPath)) as AgentRead;
+        confirmAgentPermissions = confirmForAgent(firstAgent);
       } else if (itemsPath !== null) {
         if (current.feature === "backends") {
           // Backends need Installation administration, like the probe. A caller this load knows
@@ -2281,15 +2293,7 @@ async function loadPage({
         replaceUrl(pageUrl(current.target, selectedNamespace));
       }
     }
-    // Draft Channels directs readers to Refresh when the permission check is unavailable.
-    const refreshingChannelsDraft =
-      fromRefresh &&
-      firstAgent !== null &&
-      current.url.searchParams.get("tab") === "channels" &&
-      (current.url.searchParams.get("revision") ?? firstAgent.activeRevisionId ?? "draft") ===
-        "draft";
-    const confirmDetailPermissions =
-      agentPermissionsPath !== null && (confirmAgentPermissions || refreshingChannelsDraft);
+    const confirmDetailPermissions = agentPermissionsPath !== null && confirmAgentPermissions;
     if (permissionsRead) {
       firstPermissions = await permissionsRead;
       if (!lifetime.isCurrent(active)) {
