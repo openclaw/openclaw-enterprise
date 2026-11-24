@@ -607,7 +607,9 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
           (admitted) =>
             mutationEvent(
               { kind: "agent_revision", id: admitted.revision.id, namespaceId },
-              undefined,
+              admitted.repositoryCredentialSourceId === undefined
+                ? undefined
+                : { repositoryCredentialSourceId: admitted.repositoryCredentialSourceId },
               admitted.authorization,
             ),
         );
@@ -664,7 +666,9 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
           (admitted) =>
             mutationEvent(
               { kind: "agent_revision", id: admitted.revision.id, namespaceId },
-              undefined,
+              admitted.repositoryCredentialSourceId === undefined
+                ? undefined
+                : { repositoryCredentialSourceId: admitted.repositoryCredentialSourceId },
               admitted.authorization,
             ),
         );

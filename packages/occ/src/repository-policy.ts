@@ -719,6 +719,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       resolution: resolved.resolution,
       nativeGit: resolved.resolution.nativeGit,
       requiresNetworkPolicy: resolved.resolution.requiresNetworkPolicy,
+      credentialSource: resolved.resolution.credentialSource,
     };
   }
 
@@ -1006,7 +1007,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         dependencies.selectedProxyOwner() === owner &&
         dependencies.configurationDriver() === configuration &&
         dependencies.credentialSourceOwner(source).driver === sourceDriver;
-      return validate(
+      const edit = validate(
         topology.placement,
         harness,
         source,
@@ -1016,15 +1017,34 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         version,
         ownersCurrent,
       );
+      const { credentialSource } = repository.resolution;
+      return credentialSource === undefined ? edit : { ...edit, credentialSource };
     } catch {
       // Driver refusals can contain protected configuration and binding details.
       return undefined;
     }
   }
 
+  /** Fails closed: an owner that cannot answer keeps the Source in place. */
+  function repositoryRegistryNamesSource(namespaceId: string, sourceId: string): boolean {
+    const admission = installationRepositoryAdmission;
+    if (admission === undefined) {
+      return false;
+    }
+    try {
+      const names = admission.policy.namesCredentialSource;
+      return typeof names !== "function"
+        ? false
+        : Reflect.apply(names, admission.policy, [{ namespaceId, sourceId }]) !== false;
+    } catch {
+      return true;
+    }
+  }
+
   return {
     namespaceRepositoryNetworkPolicyCeiling,
     qualifyRepositoryEdit,
+    repositoryRegistryNamesSource,
     repositoryNetworkPolicyCeiling: dependencies.repositoryNetworkPolicyCeiling,
     repositoryGrantAuthority: readGrantAuthority,
     bindInstallation,

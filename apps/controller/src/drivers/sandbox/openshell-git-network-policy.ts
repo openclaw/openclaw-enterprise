@@ -12,8 +12,28 @@ import {
 } from "./openshell-gateway-client.ts";
 
 export type OpenShellGitNetworkTarget =
-  | { readonly repository: string; readonly installationId?: never }
-  | { readonly repository?: never; readonly installationId: string };
+  | {
+      readonly repository: string;
+      readonly installationId?: never;
+      readonly credentialSource?: never;
+    }
+  | {
+      readonly repository?: never;
+      readonly installationId: string;
+      readonly credentialSource?: never;
+    }
+  /** A TokenService Source: native Git only, so its Provider never carries endpoints. */
+  | {
+      readonly repository?: never;
+      readonly installationId?: never;
+      readonly credentialSource: string;
+    };
+
+/** The Provider a bound rule names, by the credential it binds; the name is derived, never chosen. */
+const boundGitProviderPattern = Object.freeze({
+  installation: /^oce-github-installation-[a-f0-9]{32}$/,
+  source: /^oce-github-token-[a-f0-9]{32}$/,
+});
 
 const binaries = Object.freeze([
   "/usr/bin/git",
@@ -57,6 +77,9 @@ export function openShellGitEndpoints(
   api: URL,
   target: OpenShellGitNetworkTarget,
 ): readonly OpenShellProviderProfileEndpoint[] {
+  if (target.credentialSource !== undefined) {
+    return [];
+  }
   return target.installationId
     ? [
         {
@@ -205,15 +228,30 @@ function scopedApiEndpoints(
   return endpoints;
 }
 
-/** The Sandbox owns the grants. The attached Provider supplies only the credential. */
+/**
+ * The Sandbox owns the grants. The attached Provider supplies only the credential. Only a caller
+ * that binds a TokenService Source accepts a Source Provider; every other caller, an installation.
+ */
 export function compileOpenShellBoundGitRule(
   grants: readonly RepositoryNetworkGrant[],
   provider: string,
   binaries: readonly string[],
   scopedRest?: readonly OpenShellScopedRestGrant[],
+  credential: keyof typeof boundGitProviderPattern = "installation",
 ) {
-  if (typeof provider !== "string" || !/^oce-github-installation-[a-f0-9]{32}$/.test(provider)) {
-    throw new Error("Expected an installation Git Provider.");
+  if (
+    typeof provider !== "string" ||
+    !Object.hasOwn(boundGitProviderPattern, credential) ||
+    !boundGitProviderPattern[credential].test(provider)
+  ) {
+    throw new Error(
+      credential === "source"
+        ? "Expected a Source Git Provider."
+        : "Expected an installation Git Provider.",
+    );
+  }
+  if (credential === "source" && scopedRest !== undefined) {
+    throw new Error("A Source Provider is Git-only.");
   }
   if (!Array.isArray(binaries) || binaries.length === 0) {
     throw new Error("Expected exact Git transport binary paths.");

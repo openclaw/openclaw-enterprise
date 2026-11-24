@@ -973,6 +973,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       }
     }
     await deleteRetiredGitProviders(client, workspace, revision.id, context.signal);
+    await this.openShellGit!.retireSourceCopy(revision.id, client, workspace, context.signal);
     this.openShellGit!.releaseWithdrawn(revision.id);
   }
 

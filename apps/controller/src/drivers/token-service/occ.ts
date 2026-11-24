@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { isName, SecretValue } from "@openclaw-enterprise/contracts";
+import { isName, isRepositoryTokenSource, SecretValue } from "@openclaw-enterprise/contracts";
 import type {
   AccessBinding,
   CredentialRefreshStatus,
@@ -21,6 +21,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   ResourceStateConflictError,
+  RepositorySourceWriteUnreconciledError,
   CredentialDeliveryFailedError,
   ScopeViolationError,
   TokenServiceSourceInputError,
@@ -30,8 +31,11 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import { withoutMutationDeadline } from "../../admission/mutation-deadline.ts";
 import { withComputeAbortSignal } from "../compute/operation-context.ts";
+import { isOpenShellGitCredential } from "../egress-proxy/openshell-prepared-git-provider.ts";
 
 const maxSecretValueBytes: number = Reflect.get(SecretValue, "maxLength");
+/** Sees rows committed during a lock wait, whatever the connection default isolation. */
+const READ_COMMITTED = { readCommitted: true } as const;
 
 function checkLifecycle(config: SourceLifecycleConfig): void {
   if (config.type !== "static" || Object.keys(config.settings).length !== 0) {
@@ -63,6 +67,19 @@ function encodeCredential(secret: SourceRegistrationInput["secret"]): {
     );
   }
   return { stored: encoded, version };
+}
+
+// A repository token is held only for the native Git Provider. Refuse what it cannot install
+// before custody, so a replacement never displaces a usable value with an unusable one.
+function checkRepositoryTokenMaterial(
+  source: { readonly config: Readonly<Record<string, string>> },
+  secret: SourceRegistrationInput["secret"],
+): void {
+  if (isRepositoryTokenSource(source) && !Object.values(secret).every(isOpenShellGitCredential)) {
+    throw new TokenServiceSourceInputError(
+      "The native Git Provider cannot install this credential.",
+    );
+  }
 }
 
 function decodeCredential(value: string): ResolvedCredential {
@@ -166,6 +183,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       throw new ScopeViolationError("The credential source identity is invalid.");
     }
     checkLifecycle(input.lifecycleConfig);
+    checkRepositoryTokenMaterial(input, input.secret);
     const stored = encodeCredential(input.secret);
     const id = `cs_${randomUUID()}`;
     const ref: CredentialSourceReference = {
@@ -209,6 +227,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       checkLifecycle(update.lifecycleConfig);
     }
     let version: string | undefined;
+    // Read committed whatever the connection default, so the copies read below sees a write the
+    // Worker recorded while this transaction waited on the Source row.
     const updated = await this.state.transact(async ({ namespaces, credentialSources }) => {
       const namespace = await namespaces.lockNamespace(ref.namespaceId);
       if (namespace?.status !== "ready") {
@@ -221,6 +241,17 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         throw new ResourceStateConflictError("The credential source is unavailable.");
       }
       if (update.secret) {
+        checkRepositoryTokenMaterial(found, update.secret);
+        // Read under the Source row this transaction holds exclusively. The Worker records a
+        // Provider write of the value before it sends it, and settles a confirmed one, while it
+        // holds the same row shared; so a write recorded after this read cannot exist, and an
+        // ordinary write in flight is settled before this transaction gets the row.
+        const unreconciled = (
+          await credentialSources.findUnretiredRepositorySourceCopies(ref.namespaceId, ref.id)
+        ).filter(({ unreconciledWrite }) => unreconciledWrite);
+        if (unreconciled.length > 0) {
+          throw new RepositorySourceWriteUnreconciledError(unreconciled);
+        }
         const stored = encodeCredential(update.secret);
         await withComputeAbortSignal(signal, () =>
           this.store.update(this.storageRef(ref), stored.stored),
@@ -233,8 +264,10 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       }
       signal.throwIfAborted();
       return found;
-    });
-    if (version && this.credentialProxy) {
+    }, READ_COMMITTED);
+    // A repository token never has a model Provider copy, so there is nothing to deliver: a
+    // committed Git-only replacement does not depend on the model delivery Gateway.
+    if (version && this.credentialProxy && !isRepositoryTokenSource(updated)) {
       if (!this.credentialProxy.notifyCredentialUpdated) {
         throw new CredentialDeliveryFailedError();
       }

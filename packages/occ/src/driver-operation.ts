@@ -3,6 +3,7 @@ import {
   CredentialDeliveryFailedError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RepositorySourceWriteUnreconciledError,
   ScopeViolationError,
   TokenServiceSourceInputError,
 } from "./errors.ts";
@@ -21,6 +22,10 @@ export async function driverOperation<T>(
       }
       if (error instanceof TokenServiceSourceInputError) {
         throw new TokenServiceSourceInputError("The TokenService rejected the source input.");
+      }
+      if (error instanceof RepositorySourceWriteUnreconciledError) {
+        // Built by OCC's own record: Agent and revision IDs only, never material.
+        throw new RepositorySourceWriteUnreconciledError(error.copies);
       }
       if (error instanceof ResourceStateConflictError) {
         throw new ResourceStateConflictError(

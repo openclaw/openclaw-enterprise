@@ -56,6 +56,7 @@ import {
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
 import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
+import { withWriteHold } from "../../apps/controller/src/drivers/repo/access/material-hold.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { deferred } from "../helpers/deferred.ts";
 import {
@@ -71,6 +72,8 @@ import type {
   OpenShellGitRouteStore,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { protocol } from "./postgres-transaction-protocol-fixture.ts";
+import { createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
+import { captureLogs } from "../integration/common-logging-output.ts";
 
 // These are fixture-to-production port assertions, not alternative runtime implementations.
 type Fixture = ReturnType<typeof bootstrappingOpenShellGitRuntimeFixture>;
@@ -111,6 +114,8 @@ async function selectedV5(
   native = false,
   deadlineWallMs?: number,
   rest?: ScopedRest,
+  /** A repository token Source the registration names in place of the App. */
+  source?: string,
 ) {
   const repository = registry.repositories[0]!;
   const repositories = [
@@ -142,6 +147,7 @@ async function selectedV5(
               namespaceId: "namespace-a",
               profiles: ["github-repository"],
               nativeGit: "v1",
+              ...(source && { credentialSource: source }),
               permissions: {
                 metadata: "read",
                 contents: "write",
@@ -240,6 +246,7 @@ async function selectedV5(
     { repository: repositories[1]!.repository, access: "write" },
     ...(rest?.outside === "read" ? [{ repository: "example/outside", access: "read" }] : []),
   ] as const;
+  const lentVersion = { value: "version-1" };
   const grants = ceiling.map((grant) => {
     const apiLimits = rest?.agentLimits?.[grant.repository];
     return apiLimits ? { ...grant, apiLimits } : grant;
@@ -252,7 +259,9 @@ async function selectedV5(
         ...f.owner.material,
         grantId: bindings[0]!.grant.grantId,
         scope: "github-repository",
-        installationId: selectedRegistry.githubInstallationId,
+        ...(source
+          ? { credentialSource: source, credentialSourceVersion: lentVersion.value }
+          : { installationId: selectedRegistry.githubInstallationId }),
         repositories: repositories.map(({ repository, repositoryId }) => ({
           repository,
           repositoryId,
@@ -337,13 +346,20 @@ async function selectedV5(
     prepare,
     replacement,
     noCredentials,
+    lentVersion,
   };
 }
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, rest?: ScopedRest) {
-  const selected = await selectedV5(t, native, deadlineWallMs, rest);
+async function heldGit(
+  t: TestContext,
+  native = false,
+  deadlineWallMs?: number,
+  rest?: ScopedRest,
+  source?: string,
+) {
+  const selected = await selectedV5(t, native, deadlineWallMs, rest, source);
   const { f, store, revision, executionId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
   const prepared = await prepare();
@@ -4608,6 +4624,380 @@ test("native Git cannot opt a ref or draft limited registration into repository-
   ]) {
     assert.throws(() => validate(restriction), /invalid-repository-registry/);
   }
+});
+
+test("native Git rotates a lent Source in place, confirms each version's delivery, and lends nothing after Stop", async (t) => {
+  const { f, store, revision, reconcile, activity, prepared, entry, lentVersion } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  lentSourceHolds(f);
+  // The copy the deploy recorded; each write adds the Provider name and the Source version.
+  store.copies.set(revision.id, {
+    revisionId: revision.id,
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    credentialSourceId: "cs_fixture_token",
+    namespaceName: f.sandbox.workspace,
+    retired: false,
+    idle: false,
+  });
+  const installed = () => {
+    const copy = store.copies.get(revision.id);
+    return [copy?.provider, copy?.sourceVersion];
+  };
+  assert.match(prepared.provider, /^oce-github-token-[a-f0-9]{32}$/);
+  const confirmed = () =>
+    f.events
+      .filter(({ event }) => event === "worker.openshell-git-delivery-confirmed")
+      .map(({ credentialSourceId, credentialSourceVersion, revisionId }) => [
+        credentialSourceId,
+        credentialSourceVersion,
+        revisionId,
+      ]);
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.deepEqual(confirmed(), [["cs_fixture_token", "version-1", revision.id]]);
+  assert.deepEqual(installed(), [prepared.provider, "version-1"]);
+  await reconcile();
+  assert.equal(confirmed().length, 1, "confirmed once per version, not per pass");
+
+  // Replacement: the next loan is new material, rotated into the same Provider, no redeploy.
+  const { providerId } = entry.binding;
+  lentVersion.value = "version-2";
+  f.owner.material = {
+    ...f.owner.material,
+    value: ["github", "pat", "fixture_replacement"].join("_"),
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+  };
+  await reconcile();
+  assert.equal(activity.updates, 2);
+  assert.equal(entry.binding.provider, prepared.provider);
+  assert.equal(entry.binding.providerId, providerId);
+  assert.deepEqual(confirmed(), [
+    ["cs_fixture_token", "version-1", revision.id],
+    ["cs_fixture_token", "version-2", revision.id],
+  ]);
+  assert.deepEqual(installed(), [prepared.provider, "version-2"]);
+  assert.equal(JSON.stringify(f.events).includes(f.owner.material.value), false);
+
+  // Stop withdraws the route: nothing is read or renewed for it again.
+  f.runtime.withdraw(revision.id);
+  const reads = f.calls.material;
+  lentVersion.value = "version-3";
+  f.owner.material = {
+    ...f.owner.material,
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+  };
+  await reconcile();
+  assert.equal(f.calls.material, reads);
+  assert.equal(activity.updates, 2);
+  assert.equal(confirmed().length, 2);
+
+  // Stop's cleanup reads the copy back against the Provider the Provider code wrote: kept while
+  // the Sandbox attaches it, retired once the Gateway lists it no more.
+  const written = await f.client.getProvider(f.sandbox.workspace, prepared.provider);
+  assert.ok(written);
+  const gateway = { attached: true, deleted: false };
+  const client = Object.assign(Object.create(f.client) as typeof f.client, {
+    getWorkspace: async () => ({ id: "workspace-id", name: f.sandbox.workspace }),
+    listProviders: async () => (gateway.deleted ? [] : [written]),
+    deleteProvider: async (_workspace: string, name: string) => {
+      assert.equal(name, prepared.provider);
+      if (gateway.attached) {
+        throw Object.assign(new Error("provider is attached to a sandbox"), { code: 9 });
+      }
+      gateway.deleted = true;
+    },
+    getProviderProfile: async () => undefined,
+    listProviderProfiles: async () => [],
+    deleteProviderProfile: async () => {},
+  });
+  const retire = () =>
+    f.runtime.retireSourceCopy(
+      revision.id,
+      client as unknown as RuntimeClient,
+      f.sandbox.workspace,
+      t.signal,
+    );
+  assert.equal(await retire(), "provider_present");
+  assert.equal(store.copies.get(revision.id)?.retired, false);
+  gateway.attached = false;
+  assert.equal(await retire(), "retired");
+  assert.equal(gateway.deleted, true);
+  assert.equal(store.copies.get(revision.id)?.retired, true);
+});
+
+/**
+ * Gives every material read of a lent Source its own row hold, as the Source custody does:
+ * `confirm` stands for the round trip on the holding session.
+ */
+function lentSourceHolds(f: Awaited<ReturnType<typeof heldGit>>["f"]) {
+  const holds: { open: boolean; confirms: number; releases: number }[] = [];
+  const session = {
+    /** Whether the database still holds the row when the Worker asks. */
+    alive: true,
+    /** Runs after a confirmed round trip, before the runtime's next step. */
+    afterConfirm: (_hold: { open: boolean }) => {},
+    /** Runs after each held read, before the runtime sees the material. */
+    afterRead: () => {},
+  };
+  const read = f.owner.readOpenShellMaterial.bind(f.owner);
+  f.owner.readOpenShellMaterial = (async (...args: Parameters<typeof read>) => {
+    const material = await read(...args);
+    if (!material || "absent" in material) {
+      return material;
+    }
+    const hold = { open: true, confirms: 0, releases: 0 };
+    holds.push(hold);
+    session.afterRead();
+    return withWriteHold(
+      { ...material },
+      {
+        held: () => hold.open,
+        async confirm() {
+          hold.confirms += 1;
+          if (!hold.open || !session.alive) {
+            hold.open = false;
+            return false;
+          }
+          session.afterConfirm(hold);
+          return true;
+        },
+        async release() {
+          hold.releases += 1;
+          hold.open = false;
+        },
+      },
+    );
+  }) as typeof read;
+  return {
+    holds,
+    session,
+    allReleased: () => holds.every(({ open, releases }) => !open && releases > 0),
+  };
+}
+
+test("a native Source Provider cannot bind an App REST grant", () => {
+  const repository = "example/application";
+  const grants = [{ repository, access: "read" }] as const;
+  const binaries = ["/usr/bin/git"];
+  const rest = [{ repository, version: "v1", readIssues: true }] as const;
+  const app = "oce-github-installation-" + "a".repeat(32);
+  const source = "oce-github-token-" + "a".repeat(32);
+  const hosts = (rule: ReturnType<typeof compileOpenShellBoundGitRule>) =>
+    rule.endpoints.map(({ host }) => host);
+  assert.deepEqual(hosts(compileOpenShellBoundGitRule(grants, app, binaries, rest)), [
+    "github.com",
+    "api.github.com",
+  ]);
+  assert.deepEqual(
+    hosts(compileOpenShellBoundGitRule(grants, source, binaries, undefined, "source")),
+    ["github.com"],
+  );
+  assert.throws(
+    () => compileOpenShellBoundGitRule(grants, source, binaries, rest, "source"),
+    /Git-only/,
+  );
+});
+
+test("native Git refuses Source material without the custody hold", async (t) => {
+  const { f, revision, reconcile, activity } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  await reconcile();
+  assert.equal(activity.updates, 0);
+  assert.notEqual(f.runtime.route(revision.id).state, "installed");
+
+  lentSourceHolds(f);
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+});
+
+test("native Git blocks without replay when Source custody ends during the Provider write", async (t) => {
+  const { f, revision, reconcile, activity, client } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  const { session, allReleased } = lentSourceHolds(f);
+  const update = client.updateProviderCredentialsConditionally!.bind(client);
+  client.updateProviderCredentialsConditionally = async (...args) => {
+    // The Gateway accepts the write, but PostgreSQL has dropped the holding session.
+    // The local deadline and synchronous guard still look valid.
+    const result = await update(...args);
+    session.alive = false;
+    return result;
+  };
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.ok(allReleased());
+  assert.deepEqual(f.runtime.route(revision.id), { state: "blocked", reason: "write_unknown" });
+
+  session.alive = true;
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(
+    f.events.some(({ event }) => event === "worker.openshell-git-delivery-confirmed"),
+    false,
+  );
+});
+
+test("native Git writes a lent Source only after the holding session confirms its hold", async (t) => {
+  const { f, revision, reconcile, activity } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  const { holds, session, allReleased } = lentSourceHolds(f);
+  // The database ended the hold while the Worker was frozen; locally it still looks held.
+  session.alive = false;
+  await reconcile();
+  assert.equal(activity.updates, 0, "nothing is written under a hold the database ended");
+  assert.ok(
+    holds.some(({ confirms }) => confirms > 0),
+    "the session is asked before the write",
+  );
+  assert.ok(allReleased());
+  assert.notEqual(f.runtime.route(revision.id).state, "installed");
+
+  session.alive = true;
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+});
+
+test("native Git dispatches a lent Source only while its hold holds, and settles the hold after the write", async (t) => {
+  const { f, revision, reconcile, activity } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  const { holds, session, allReleased } = lentSourceHolds(f);
+  // The hold limit passes between the session's answer and the dispatch.
+  session.afterConfirm = (hold) => {
+    hold.open = false;
+  };
+  await reconcile();
+  assert.equal(activity.updates, 0, "an ended hold dispatches nothing");
+  assert.ok(holds.some(({ confirms }) => confirms > 0));
+  assert.ok(allReleased());
+
+  session.afterConfirm = () => {};
+  await reconcile();
+  assert.equal(activity.updates, 1);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.ok(allReleased(), "the Provider settles the hold once its write returned");
+  assert.equal(holds.at(-1)?.releases, 1);
+});
+
+test("native Git releases a lent Source's hold on every path that writes nothing", async (t) => {
+  const { f, reconcile, activity, setExclusiveGitRecipient } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    "cs_fixture_token",
+  );
+  const { holds, session, allReleased } = lentSourceHolds(f);
+  // The Sandbox stops having the Provider to itself after the read inside the rotation.
+  const rotations = f.calls.rotate;
+  session.afterRead = () => {
+    if (f.calls.rotate > rotations) {
+      setExclusiveGitRecipient(false);
+    }
+  };
+  await reconcile();
+  assert.equal(activity.updates, 0);
+  assert.equal(f.calls.rotate, rotations + 1, "the pass read under a hold inside the rotation");
+  assert.ok(allReleased(), "a recipient refusal releases the hold");
+  session.afterRead = () => {};
+  setExclusiveGitRecipient(true);
+
+  // Another Worker takes the route between the held read and the last fence check.
+  const fenced = f.runtime["fenced"].bind(f.runtime);
+  f.runtime["fenced"] = (async (...args: Parameters<typeof fenced>) => {
+    if (holds.at(-1)?.open) {
+      throw new Error("the route moved to another Worker");
+    }
+    return fenced(...args);
+  }) as typeof fenced;
+  const before = holds.length;
+  await reconcile();
+  assert.equal(activity.updates, 0);
+  assert.ok(holds.length > before);
+  assert.ok(allReleased(), "a failed fence check releases the hold");
+});
+
+test("native Git confirms a lent Source's delivery once per Source version, not at each renewal", async (t) => {
+  const credentialSourceId = `cs_${randomUUID()}`;
+  const { f, revision, reconcile, activity, lentVersion } = await heldGit(
+    t,
+    true,
+    undefined,
+    undefined,
+    credentialSourceId,
+  );
+  lentSourceHolds(f);
+  // TokenService's custody version is a random UUID; the Worker log keeps it in that shape only.
+  lentVersion.value = randomUUID();
+  const firstVersion = lentVersion.value;
+  const output = captureLogs("occ-worker");
+  const log = createWorkerLogEmitter(output.logger);
+  const confirmed = () => {
+    output.lines.length = 0;
+    for (const event of f.events) {
+      log(event);
+    }
+    return output.lines
+      .filter(({ event }) => event === "worker.openshell-git-delivery-confirmed")
+      .map((line) => [line.credentialSourceId, line.credentialSourceVersion, line.revisionId]);
+  };
+  await reconcile();
+  assert.deepEqual(confirmed(), [[credentialSourceId, firstVersion, revision.id]]);
+  // The 7.5-minute renewal is new material with the same Source version.
+  f.owner.material = {
+    ...f.owner.material,
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+  };
+  await reconcile();
+  assert.equal(activity.updates, 2, "the renewal is rotated in");
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+  assert.deepEqual(
+    confirmed(),
+    [[credentialSourceId, firstVersion, revision.id]],
+    "a renewal is not a new delivery",
+  );
+  // A replacement is: its version is logged, in the shape an operator waits for.
+  lentVersion.value = randomUUID();
+  f.owner.material = {
+    ...f.owner.material,
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+  };
+  await reconcile();
+  assert.deepEqual(confirmed(), [
+    [credentialSourceId, firstVersion, revision.id],
+    [credentialSourceId, lentVersion.value, revision.id],
+  ]);
 });
 
 test("native Git refuses obsolete or standalone admissions before Provider work", async (t) => {

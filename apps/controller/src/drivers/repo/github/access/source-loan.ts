@@ -1,0 +1,405 @@
+import { createHash } from "node:crypto";
+import { readSourceRepositoryCeiling } from "@openclaw-enterprise/contracts";
+import { classifyGitHubToken } from "./static-token.ts";
+import type { GitHubTokenClass } from "./types.ts";
+import type { GitHubRepositorySourceGrant } from "./repository-grant.ts";
+import type {
+  CurrentTokenVersion,
+  InstalledTokenVersion,
+  TokenMaterialReader,
+} from "../../../../backends/token-service/material.ts";
+import { withWriteHold, type MaterialWriteHold } from "../../access/material-hold.ts";
+
+/** The longest one loan of a Source's value lasts: the provisional revocation bound. */
+export const repositorySourceLoanMaximumMs = 900_000;
+/** A loan made in window k ends with window k+1, so it is renewed 7.5 to 15 minutes ahead. */
+const loanWindowMs = repositorySourceLoanMaximumMs / 2;
+
+export type RepositorySourceRef = Readonly<{ namespaceId: string; sourceId: string }>;
+
+/** The Source's catalog row as the lock read it. Metadata only, never the value. */
+export interface LockedRepositorySource {
+  readonly state: string;
+  /** A TokenService Source of this Installation's selected TokenService instance. */
+  readonly owned: boolean;
+  readonly preset: string | undefined;
+  /** The encoded Source ceiling, as stored in the Source config. */
+  readonly repositories: string | undefined;
+  /** The owning TokenService instance and its Installation, for the custody read. */
+  readonly custody?: Readonly<{ installationId: string; tokenServiceInstanceId: string }>;
+}
+
+/**
+ * The transaction a loan is read in. It holds rows that replacement and retirement lock before
+ * the Source row (the Namespace), so the custody gives it the hold's database-side limit.
+ */
+export interface SourceLoanCaller {
+  /** PostgreSQL ends the transaction once it has been idle this long. */
+  limitIdle(ms: number): Promise<void>;
+}
+
+/** The record of one Provider write on the revision's copy (see `RepositorySourceCustody.write`). */
+export interface RepositorySourceWriteFence {
+  /** Records the write before dispatch. False (or a throw) means nothing may be sent. */
+  dispatching(): Promise<boolean>;
+  /** Settles the record. A rejection leaves it, so the Source stays fenced. */
+  settled(outcome: "applied" | "unapplied"): Promise<void>;
+}
+
+/**
+ * A Provider write whose record failed (nothing was sent) or whose settle failed (the record
+ * stays, so the Source refuses replacement and deletion until it is reconciled). Names the Agent,
+ * revision, Source and its custody version; never the value, a digest or the Provider name.
+ */
+export interface RepositorySourceWriteFenceFailure {
+  readonly code: "REPOSITORY_SOURCE_WRITE_UNRECORDED" | "REPOSITORY_SOURCE_WRITE_UNSETTLED";
+  readonly agentId: string;
+  readonly revisionId: string;
+  readonly sourceId: string;
+  readonly sourceVersion: string;
+}
+
+export interface RepositorySourceCustody {
+  /**
+   * Takes a shared lock on the Source's catalog row with a bounded wait and reads it. Replacement
+   * and retirement take the row exclusively, so they wait until the hold is released.
+   * The caller's transaction is limited first, as the hold is.
+   * Undefined when the lock could not be taken in time; any other failure throws.
+   */
+  lock(
+    ref: RepositorySourceRef,
+    caller?: SourceLoanCaller,
+  ): Promise<
+    | {
+        readonly source: LockedRepositorySource | undefined;
+        readonly hold: MaterialWriteHold;
+        /**
+         * Whether an unretired installed-copy record names this revision's copy of the Source,
+         * read on the holding session. DELETE takes the row exclusively before it reads the
+         * copies, so it cannot pass between this read and the Provider write.
+         */
+        readonly recorded: (revisionId: string) => Promise<boolean>;
+        /**
+         * The fence of a Provider write of `version` for the revision: `dispatching` records it
+         * on the copy as a write whose outcome is unknown, committed before dispatch; `settled`
+         * clears it once the outcome is known. Replacement and retirement refuse while it stands.
+         */
+        readonly write: (revisionId: string, version: string) => RepositorySourceWriteFence;
+      }
+    | undefined
+  >;
+  /** The value and its custody version, read from TokenService under the hold. */
+  resolve(
+    ref: RepositorySourceRef,
+    source: LockedRepositorySource,
+  ): Promise<{ readonly credential: string; readonly version: string }>;
+  /** Whether the revision's Agent principal holds `credential_source:operate` on the Source. */
+  operate(
+    session: Readonly<{ namespaceId: string; agentId: string }>,
+    ref: RepositorySourceRef,
+  ): Promise<boolean>;
+  /**
+   * The access the revision was deployed with, per repository: its saved repository network
+   * policy grants. Undefined when the revision or its saved policy cannot be found.
+   */
+  admitted(
+    session: Readonly<{ namespaceId: string; agentId: string; revisionId: string }>,
+  ): Promise<readonly Readonly<{ repository: string; access: "read" | "write" }>[] | undefined>;
+}
+
+const reasons = {
+  source_locked: "could not be locked within the bounded wait",
+  source_lock_failed: "could not be locked: the database did not answer",
+  source_unavailable: "is missing or not ready",
+  source_not_owned: "is not a Source of this Installation's TokenService",
+  source_preset_refused: "is not a github Source",
+  source_ceiling_exceeded: "no longer covers every repository the revision's saved policy grants",
+  source_access_exceeded: "no longer allows the access the revision was deployed with",
+  operate_denied: "is not operable by the Agent principal",
+  token_class_refused: "holds a token other than a fine-grained token",
+  source_unreadable: "could not be read",
+  source_copy_unrecorded: "has no recorded installed copy for this revision; redeploy the Agent",
+} as const;
+export type RepositorySourceRefusalReason = keyof typeof reasons;
+
+/** A refused loan. Names the Source, its version and a fixed reason; never the value or a digest. */
+export class RepositorySourceLoanRefusal extends Error {
+  override readonly name = "RepositorySourceLoanRefusal";
+  readonly code = "REPOSITORY_SOURCE_LOAN_REFUSED";
+  readonly sourceId: string;
+  readonly reason: RepositorySourceRefusalReason;
+  /** The refused custody version, when the value was read; never derived from the value. */
+  readonly sourceVersion: string | undefined;
+  /** Only the class read from the documented prefix. */
+  readonly tokenClass: GitHubTokenClass | undefined;
+  constructor(
+    sourceId: string,
+    reason: RepositorySourceRefusalReason,
+    sourceVersion?: string,
+    tokenClass?: GitHubTokenClass,
+  ) {
+    super(`Repository token Source ${sourceId} ${reasons[reason]}.`);
+    this.sourceId = sourceId;
+    this.reason = reason;
+    this.sourceVersion = sourceVersion;
+    this.tokenClass = tokenClass;
+  }
+}
+
+/** A version-4-shaped UUID from loan metadata (source, window, custody version), never the value. */
+function loanUuid(...parts: readonly string[]): string {
+  const hex = createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+  const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+type LentSource = {
+  readonly key: { readonly source: { readonly id: string } };
+  readonly session: Readonly<{ namespaceId: string; agentId: string; revisionId: string }>;
+  readonly grant: Pick<GitHubRepositorySourceGrant, "credentialSource">;
+};
+
+/**
+ * The native material reader for a TokenService Source, in place of App token rows: no copy of
+ * the value is kept in the database and no migration is needed. At each loan it rechecks the
+ * Source's state, owner, preset and ceiling (against the revision's saved grants),
+ * the Agent principal's `operate`, the revision's unretired installed-copy record and the token class,
+ * then lends the value for at most 15 minutes. Ids derive from the source key, the loan window
+ * and the custody version, so a replaced value is new material and the runtime rotates it in.
+ * `readWarm` returns its material with the row hold, which the Provider write releases.
+ */
+export function createRepositorySourceMaterialReader<
+  Transaction extends SourceLoanCaller | undefined,
+  Source extends LentSource,
+>(
+  custody: RepositorySourceCustody,
+  options: {
+    readonly clock?: { now(): number };
+    /** Told once per revision, Source version and reason; a waiting route reads at every pass. */
+    readonly refused?: (refusal: RepositorySourceLoanRefusal) => void;
+    /** Told each time a lent write's record or settle fails. */
+    readonly fenceFailed?: (failure: RepositorySourceWriteFenceFailure) => void;
+  } = {},
+): TokenMaterialReader<Transaction, Source> {
+  const clock = options.clock ?? Date;
+  // Keyed by revision and Source: one revision's success must not repeat another's refusal.
+  const reported = new Map<string, string>();
+  const revisionKey = (source: Source) =>
+    JSON.stringify([source.key.source.id, source.grant.credentialSource.sourceId]);
+  const identity = (source: Source, window: number, version: string) => ({
+    preparationAttemptId: loanUuid("repository-source-loan", source.key.source.id, String(window)),
+    materialVersion: loanUuid(
+      "repository-source-material",
+      source.key.source.id,
+      String(window),
+      version,
+    ),
+    usableUntil: (window + 2) * loanWindowMs,
+  });
+  const refuse = (error: unknown, source: Source) => {
+    const refusal =
+      error instanceof RepositorySourceLoanRefusal
+        ? error
+        : new RepositorySourceLoanRefusal(
+            source.grant.credentialSource.sourceId,
+            "source_unreadable",
+          );
+    const key = `${refusal.sourceVersion ?? "-"} ${refusal.reason}`;
+    if (reported.get(revisionKey(source)) !== key) {
+      reported.set(revisionKey(source), key);
+      options.refused?.(refusal);
+    }
+  };
+  /** Every loan-time check; holds the row until the caller releases the returned hold. */
+  async function check(tx: Transaction, source: Source) {
+    const ref = source.grant.credentialSource;
+    const { sourceId } = ref;
+    let locked: Awaited<ReturnType<RepositorySourceCustody["lock"]>>;
+    try {
+      locked = await custody.lock(ref, tx);
+    } catch {
+      throw new RepositorySourceLoanRefusal(sourceId, "source_lock_failed");
+    }
+    if (!locked) {
+      // A replacement or retirement holds the row; the next refresh tries again.
+      throw new RepositorySourceLoanRefusal(sourceId, "source_locked");
+    }
+    try {
+      const row = locked.source;
+      if (row?.state !== "ready") {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_unavailable");
+      }
+      if (!row.owned) {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_not_owned");
+      }
+      if (row.preset !== "github") {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_preset_refused");
+      }
+      let ceiling: ReadonlyMap<string, "read" | "write">;
+      try {
+        ceiling = new Map(
+          readSourceRepositoryCeiling(row.repositories ?? "").map(({ repository, access }) => [
+            repository,
+            access,
+          ]),
+        );
+      } catch {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_ceiling_exceeded");
+      }
+      // Save and deploy admitted the saved grants within the ceiling, and the network policy
+      // enforces only those grants: a bound repository without a saved grant is never reachable,
+      // so the loan compares the saved grants, not every bound repository. The ceiling may have
+      // been lowered since deploy (its change is refused only while the API server's registry
+      // names the Source), so each loan compares them again.
+      const admitted = await custody.admitted(source.session);
+      if (!admitted?.length) {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_access_exceeded");
+      }
+      if (admitted.some(({ repository }) => !ceiling.has(repository))) {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_ceiling_exceeded");
+      }
+      if (
+        admitted.some(
+          ({ repository, access }) => access !== "read" && ceiling.get(repository) === "read",
+        )
+      ) {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_access_exceeded");
+      }
+      // The loan's lifetime is anchored here, before the authority check, so no write of it,
+      // however late it lands, carries access past 15 minutes after that check.
+      const checkedAt = clock.now();
+      if (!(await custody.operate(source.session, ref))) {
+        throw new RepositorySourceLoanRefusal(sourceId, "operate_denied");
+      }
+      // DELETE refuses while a copy is unretired: a copy without its record would let the
+      // Source be deleted while a Provider holds its value, so nothing is lent for it.
+      let recorded: boolean;
+      try {
+        recorded = await locked.recorded(source.session.revisionId);
+      } catch {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_lock_failed");
+      }
+      if (!recorded) {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_copy_unrecorded");
+      }
+      let resolved: Awaited<ReturnType<RepositorySourceCustody["resolve"]>>;
+      try {
+        resolved = await custody.resolve(ref, row);
+      } catch {
+        throw new RepositorySourceLoanRefusal(sourceId, "source_unreadable");
+      }
+      const bytes = Buffer.from(resolved.credential, "utf8");
+      try {
+        const tokenClass = classifyGitHubToken(bytes);
+        if (tokenClass !== "fine-grained") {
+          throw new RepositorySourceLoanRefusal(
+            sourceId,
+            "token_class_refused",
+            resolved.version,
+            tokenClass,
+          );
+        }
+      } finally {
+        bytes.fill(0);
+      }
+      reported.delete(revisionKey(source));
+      // The Provider write records itself on the revision's copy before it is dispatched.
+      const fence = locked.write(source.session.revisionId, resolved.version);
+      const failed = (code: RepositorySourceWriteFenceFailure["code"]) =>
+        options.fenceFailed?.({
+          code,
+          agentId: source.session.agentId,
+          revisionId: source.session.revisionId,
+          sourceId,
+          sourceVersion: resolved.version,
+        });
+      const hold: MaterialWriteHold = {
+        ...locked.hold,
+        async dispatching() {
+          let recorded: boolean;
+          try {
+            recorded = await fence.dispatching();
+          } catch {
+            recorded = false;
+          }
+          // A hold that already ended records nothing by design; only a failed record is told.
+          if (!recorded && locked.hold.held()) {
+            failed("REPOSITORY_SOURCE_WRITE_UNRECORDED");
+          }
+          return recorded;
+        },
+        async settled(outcome) {
+          try {
+            await fence.settled(outcome);
+          } catch {
+            failed("REPOSITORY_SOURCE_WRITE_UNSETTLED");
+          }
+        },
+      };
+      return { resolved, hold, checkedAt };
+    } catch (error) {
+      await locked.hold.release();
+      throw error;
+    }
+  }
+  return Object.freeze({
+    async readWarm(tx: Transaction, source: Source) {
+      let checked: Awaited<ReturnType<typeof check>>;
+      try {
+        checked = await check(tx, source);
+      } catch (error) {
+        refuse(error, source);
+        return undefined;
+      }
+      const window = Math.floor(checked.checkedAt / loanWindowMs);
+      const current = identity(source, window, checked.resolved.version);
+      let value: string | undefined = checked.resolved.credential;
+      return withWriteHold(
+        {
+          ...current,
+          sourceVersion: checked.resolved.version,
+          open() {
+            if (value === undefined) {
+              throw new Error("Source loan material was already opened.");
+            }
+            const bytes = Buffer.from(value, "utf8");
+            value = undefined;
+            return bytes;
+          },
+        },
+        checked.hold,
+      );
+    },
+    async current(
+      tx: Transaction,
+      source: Source,
+      installed: InstalledTokenVersion,
+    ): Promise<(CurrentTokenVersion & { readonly open?: never }) | undefined> {
+      if (!installed?.preparationAttemptId || !installed.materialVersion) {
+        return undefined;
+      }
+      let checked: Awaited<ReturnType<typeof check>>;
+      try {
+        checked = await check(tx, source);
+      } catch (error) {
+        refuse(error, source);
+        return undefined;
+      }
+      await checked.hold.release();
+      const now = clock.now();
+      const window = Math.floor(now / loanWindowMs);
+      // The installed loan stays current until it ends, unless the Source was replaced.
+      for (const candidate of [window, window - 1]) {
+        const version = identity(source, candidate, checked.resolved.version);
+        if (
+          version.preparationAttemptId === installed.preparationAttemptId &&
+          version.materialVersion === installed.materialVersion &&
+          version.usableUntil > now
+        ) {
+          return Object.freeze(version);
+        }
+      }
+      return undefined;
+    },
+  });
+}

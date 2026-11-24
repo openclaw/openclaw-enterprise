@@ -172,6 +172,7 @@ repositoryCredentials:
   registryKey: registry.json
   serviceConfigSecretName: ""
   serviceConfigKey: config.json
+  # Protected Git whose registry has no GitHub App (only token Source registrations) leaves it empty.
   appKeySecretName: ""
   appKeyKey: private-key.pem
   # Prepared Git: only the worker mounts the App key and this 32-byte custody.key.

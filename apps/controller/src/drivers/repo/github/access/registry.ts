@@ -3,6 +3,7 @@ import {
   isGitHubRepositoryPermissions,
   parseGitHubNumericId,
   type GitHubRepositoryGrant,
+  type GitHubRepositorySourceGrant,
 } from "./repository-grant.ts";
 import {
   limitRepositoryApi,
@@ -56,6 +57,9 @@ export interface GitHubRepositoryRegistration {
     /** Operator opt-out of the one-draft-per-grant limit on the OpenShell Git route
      * (finding 2147). Absent means one draft per grant. */
     draftPullLimit?: "none";
+    /** A same-Namespace TokenService Source that holds this registration's Git credential in
+     * place of the GitHub App. Allowed only for native Git with Git permissions. */
+    credentialSource?: string;
   }>[];
 }
 
@@ -73,8 +77,9 @@ export interface GitHubRepositoryRegistry {
   readonly version: 1;
   readonly backendId: string;
   readonly providerInstanceId: string;
-  readonly appId: string;
-  readonly githubInstallationId: string;
+  /** Present together. A registry without the App holds only Source-backed registrations. */
+  readonly appId?: string;
+  readonly githubInstallationId?: string;
   readonly maximumDurationSeconds: number;
   readonly allowStandingApprovals?: true;
   readonly repositories: readonly GitHubRepositoryRegistration[];
@@ -82,6 +87,28 @@ export interface GitHubRepositoryRegistry {
 }
 
 const selectorPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const credentialSourcePattern = /^cs_[A-Za-z0-9._-]{1,125}$/;
+// The network policy enforces Git paths only, so a Source-backed registration grants nothing else.
+const sourceRegistrationPermissions = new Set(["metadata", "contents"]);
+
+export class GitHubAppRegistryRequiredError extends Error {
+  constructor() {
+    super("github-app-registry-required");
+    this.name = "GitHubAppRegistryRequiredError";
+  }
+}
+
+/** The App identity for App issuance; a registry without the App has none to issue from. */
+export function requireGitHubApp(registry: GitHubRepositoryRegistry): {
+  readonly appId: string;
+  readonly installationId: string;
+} {
+  if (registry.appId === undefined || registry.githubInstallationId === undefined) {
+    throw new GitHubAppRegistryRequiredError();
+  }
+  return { appId: registry.appId, installationId: registry.githubInstallationId };
+}
+
 const backendPattern = /^(?!\s)(?!.*\s$).{1,200}$/;
 const repositoryPattern = createRepositorySlugPattern();
 
@@ -198,6 +225,15 @@ export function validateGitHubRepositoryRegistry(
   if (Object.hasOwn(root, "allowStandingApprovals") && root.allowStandingApprovals !== true) {
     return invalid();
   }
+  const app = Object.hasOwn(root, "appId") || Object.hasOwn(root, "githubInstallationId");
+  // Standing approvals and Installation access are App authority; a registry without the App
+  // cannot hold them.
+  if (
+    !app &&
+    (Object.hasOwn(root, "allowStandingApprovals") || Object.hasOwn(root, "installationAccess"))
+  ) {
+    return invalid();
+  }
   const installationAccess = Object.hasOwn(root, "installationAccess")
     ? validateInstallationAccess(root.installationAccess)
     : undefined;
@@ -217,6 +253,7 @@ export function validateGitHubRepositoryRegistry(
         "transport",
         "pullRequestBase",
         "draftPullLimit",
+        "credentialSource",
       ]);
       const profiles = array(policy.profiles, 4).map(profile).sort();
       unique(profiles);
@@ -296,6 +333,21 @@ export function validateGitHubRepositoryRegistry(
       ) {
         return invalid();
       }
+      const source = Object.hasOwn(policy, "credentialSource")
+        ? text(policy.credentialSource, credentialSourcePattern)
+        : undefined;
+      // A Source credential is scoped only by the network policy, so every option it cannot
+      // enforce is refused. Without the App, every registration needs its Source.
+      if (
+        source !== undefined
+          ? !selected ||
+            policy.nativeGit !== "v1" ||
+            Object.hasOwn(policy, "apiLimits") ||
+            Object.keys(permissions ?? {}).some((key) => !sourceRegistrationPermissions.has(key))
+          : !app
+      ) {
+        return invalid();
+      }
       namespaceRows += 1;
       return Object.freeze({
         namespaceId: text(policy.namespaceId),
@@ -308,6 +360,7 @@ export function validateGitHubRepositoryRegistry(
         ...(transport === undefined ? {} : { transport }),
         ...(base === undefined ? {} : { pullRequestBase: base }),
         ...(draftPullLimit === "none" ? { draftPullLimit: "none" as const } : {}),
+        ...(source !== undefined && { credentialSource: source }),
       });
     });
     unique(namespaces.map((policy) => policy.namespaceId));
@@ -337,8 +390,10 @@ export function validateGitHubRepositoryRegistry(
     version: 1,
     backendId,
     providerInstanceId: text(root.providerInstanceId),
-    appId: numericId(root.appId),
-    githubInstallationId: numericId(root.githubInstallationId),
+    ...(app && {
+      appId: numericId(root.appId),
+      githubInstallationId: numericId(root.githubInstallationId),
+    }),
     maximumDurationSeconds,
     ...(root.allowStandingApprovals === true ? { allowStandingApprovals: true as const } : {}),
     repositories: Object.freeze(repositories),
@@ -530,6 +585,8 @@ export function resolveGitHubRepositoryBinding(
     // Bind restrictions even if they currently permit no routes.
     ...(policy.apiLimits && { apiLimits: policy.apiLimits }),
     ...(policy.nativeGit === "v1" && { nativeGit: "v1" as const }),
+    // App grants keep their exact digest input; a changed Source is a changed grant.
+    ...(policy.credentialSource !== undefined && { credentialSource: policy.credentialSource }),
     capabilityPolicy:
       policy.transport === "git-only"
         ? gitOnlyCapabilityPolicy
@@ -599,10 +656,11 @@ function standingApprovalScope(
   ) {
     return;
   }
+  const { appId, installationId } = requireGitHubApp(registry);
   if (installation) {
     return Object.freeze({
-      appId: registry.appId,
-      installationId: registry.githubInstallationId,
+      appId,
+      installationId,
       providerInstanceId: registry.providerInstanceId,
       ...installationGrantPolicy,
       profile: githubInstallationProfile,
@@ -615,8 +673,8 @@ function standingApprovalScope(
     return;
   }
   return Object.freeze({
-    appId: registry.appId,
-    installationId: registry.githubInstallationId,
+    appId,
+    installationId,
     providerInstanceId: registry.providerInstanceId,
     repositorySelection: "repository",
     repositoryId: repository.repositoryId,
@@ -675,6 +733,22 @@ export function createGitHubRepositoryDeliveryResolver(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
       }
+      if (scope.credential.kind === "credential_source") {
+        // A Source is lent to its own endpointless Provider; it has no route but native Git.
+        if (!nativeGit) {
+          throw new Error("A repository token Source requires native Git with a network policy.");
+        }
+        return Object.freeze({
+          binding: state.bindings[0]!,
+          delivery: Object.freeze({
+            scope: "github-repository" as const,
+            credentialSource: scope.credential.sourceId,
+            repositories: scope.repositories,
+            permissions: scope.permissions,
+            nativeGit: "v1" as const,
+          }),
+        });
+      }
       // The credential covers every bound repository, and a pull request can name any of them
       // in the target's fork network as its head. Creation therefore needs a saved grant on each.
       const granted = new Set(savedPolicy?.grants.map(({ repository }) => repository));
@@ -685,7 +759,7 @@ export function createGitHubRepositoryDeliveryResolver(
         binding: state.bindings[0]!,
         delivery: Object.freeze({
           scope: "github-repository" as const,
-          installationId: registry.githubInstallationId,
+          installationId: requireGitHubApp(registry).installationId,
           repositories: scope.repositories,
           permissions: scope.permissions,
           ...(nativeGit && { nativeGit: "v1" as const }),
@@ -706,7 +780,7 @@ export function createGitHubRepositoryDeliveryResolver(
     if (binding.profile === githubInstallationProfile) {
       return Object.freeze({
         binding: resolved,
-        delivery: Object.freeze({ installationId: registry.githubInstallationId }),
+        delivery: Object.freeze({ installationId: requireGitHubApp(registry).installationId }),
       });
     }
     const repository = registry.repositories.find((r) => r.repositoryRef === binding.repositoryRef);
@@ -738,18 +812,33 @@ export function resolveSelectedRepositoryGrant(
   namespaceId: string,
   revisionId: string,
   bindings: readonly AdmittedRepositoryBinding[],
-): GitHubRepositoryGrant {
+): GitHubRepositoryGrant | GitHubRepositorySourceGrant {
   const scope = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
+  if (scope.credential.kind === "credential_source") {
+    // Lent from the Source at each loan; the App never issues it.
+    return Object.freeze({
+      id: bindings[0]!.grant.grantId,
+      isolationId: revisionId,
+      credentialSource: Object.freeze({ namespaceId, sourceId: scope.credential.sourceId }),
+      profile: "github-repository",
+      repositories: scope.repositories,
+      permissions: scope.permissions,
+    });
+  }
   return Object.freeze({
     id: bindings[0]!.grant.grantId,
     isolationId: revisionId,
-    appId: registry.appId,
-    installationId: registry.githubInstallationId,
+    ...requireGitHubApp(registry),
     profile: "github-repository",
     repositories: scope.repositories,
     permissions: scope.permissions,
   });
 }
+
+/** The one credential a selected repository set resolves to. */
+export type SelectedRepositoryCredential =
+  | { readonly kind: "github_app" }
+  | { readonly kind: "credential_source"; readonly sourceId: string };
 
 /** Resolve every admitted member; neither registry inventory nor installation membership grants access. */
 export function resolveSelectedRepositoryScope(
@@ -782,6 +871,11 @@ export function resolveSelectedRepositoryScope(
   ) {
     throw new Error("selected-repository-permissions-differ");
   }
+  // One Provider binds every repository of a revision, so all must share one credential.
+  const sources = new Set(selected.map(({ policy }) => policy.credentialSource));
+  if (sources.size > 1) {
+    throw new Error("selected-repository-credentials-differ");
+  }
   const scopedRest: RepositoryGitRestAuthority[number][] = selected.flatMap(({ repo, policy }) => {
     const rest = scopedRestPermissions(policy);
     return rest ? [Object.freeze({ repository: repo.repository, ...rest })] : [];
@@ -792,8 +886,14 @@ export function resolveSelectedRepositoryScope(
       Object.freeze({ repositoryId: repo.repositoryId, repository: repo.repository }),
     )
     .sort((a, b) => Number(a.repositoryId) - Number(b.repositoryId));
+  const [sourceId] = sources;
   return Object.freeze({
     repositories: Object.freeze(repositories),
+    credential: Object.freeze(
+      sourceId === undefined
+        ? ({ kind: "github_app" } as const)
+        : ({ kind: "credential_source", sourceId } as const),
+    ) as SelectedRepositoryCredential,
     permissions,
     requiresNetworkPolicy: selected.some(({ policy }) => policy.apiLimits !== undefined),
     ...(nativeGitModes.size > 1 && { mixedNativeGit: true }),

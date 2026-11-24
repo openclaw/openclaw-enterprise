@@ -1,3 +1,4 @@
+import type { MaterialWriteHold } from "../repo/access/material-hold.ts";
 import {
   openShellGitEndpoints,
   type OpenShellGitNetworkTarget,
@@ -13,7 +14,10 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "@openclaw-enterprise/occ";
-import { openShellInstallationGitProviderPrefix } from "./openshell-repository-git-evidence.ts";
+import {
+  openShellInstallationGitProviderPrefix,
+  openShellSourceGitProviderPrefix,
+} from "./openshell-repository-git-evidence.ts";
 import {
   openShellExpectedProviderRule,
   verifyOpenShellRepositoryPolicy,
@@ -21,6 +25,7 @@ import {
   type OpenShellGitSandboxVerifier,
 } from "./openshell-repository-policy-readback.ts";
 import { isGitHubWireCredential } from "../repo/github/access/wire-credential.ts";
+import { repositorySourceLoanMaximumMs } from "../repo/github/access/source-loan.ts";
 import {
   OpenShellGatewayDispatchRefusedError,
   openShellProfileEndpoint,
@@ -29,6 +34,27 @@ import {
   type OpenShellProviderResponse,
   type OpenShellSandboxProviderStatus,
 } from "../sandbox/openshell-gateway-client.ts";
+import {
+  OpenShellGatewayUnavailableError,
+  statusCode,
+} from "../sandbox/openshell-gateway-errors.ts";
+
+/**
+ * Whether the Gateway answered a conditional UpdateProvider in a way that proves it was not
+ * applied. At the pinned OpenShell, update_provider refuses a missing Provider (NOT_FOUND) before
+ * it writes, and a write that lost its resource version condition answers ABORTED ("provider was
+ * modified concurrently"), which the client wraps without its details. FAILED_PRECONDITION proves
+ * nothing: the request replay layer also answers it (REQUEST_OUTCOME_UNCERTAIN) when it cannot
+ * record its admission after the handler has committed the write. A transport failure, a
+ * deadline or a cancellation proves nothing either.
+ */
+function writeUnapplied(error: unknown): boolean {
+  if (statusCode(error) === 5) {
+    return true;
+  }
+  const answered = (error as { grpcStatus?: unknown } | null)?.grpcStatus;
+  return !(error instanceof OpenShellGatewayUnavailableError) && answered === 10;
+}
 
 export {
   openShellExpectedProviderRule,
@@ -145,6 +171,14 @@ function refuse(): never {
 }
 
 /**
+ * Whether this Provider can install the value as its bearer credential: GitHub wire syntax within
+ * the wire limit, with no text OpenShell would read as a placeholder to resolve.
+ */
+export function isOpenShellGitCredential(value: unknown): value is string {
+  return isGitHubWireCredential(value) && !value.includes("openshell:resolve:");
+}
+
+/**
  * How long a provider write may run once it is sent. The caller's signal bounds the reads
  * before it and decides whether the write starts; it never abandons a write in flight, which
  * would leave its outcome unknown and close the route for good (finding 2211). The gateway
@@ -227,13 +261,19 @@ export class OpenShellPreparedGitProvider {
       !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(scope.sandbox) ||
       !scope.workspaceId ||
       !scope.executionId ||
-      (scope.installationId !== undefined
-        ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
+      (scope.credentialSource !== undefined
+        ? !/^cs_[A-Za-z0-9._-]{1,125}$/.test(scope.credentialSource) ||
+          scope.installationId !== undefined ||
           scope.repository !== undefined ||
           scope.apiOrigin !== "https://api.github.com" ||
           scope.gitOrigin !== "https://github.com"
-        : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
-          scope.repository.split("/").some((part) => part === "." || part === "..")) ||
+        : scope.installationId !== undefined
+          ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
+            scope.repository !== undefined ||
+            scope.apiOrigin !== "https://api.github.com" ||
+            scope.gitOrigin !== "https://github.com"
+          : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
+            scope.repository.split("/").some((part) => part === "." || part === "..")) ||
       scope.binaries.length === 0 ||
       scope.binaries.some(
         (path) => !/^\/[A-Za-z0-9_./-]+$/.test(path) || path.split("/").includes(".."),
@@ -241,9 +281,12 @@ export class OpenShellPreparedGitProvider {
     ) {
       refuse();
     }
+    // Native Git binds an installation or a Source Provider; a Source has no other route.
     if (
-      scope.nativeGit !== undefined &&
-      (scope.nativeGit !== "v1" || scope.installationId === undefined)
+      (scope.nativeGit !== undefined &&
+        (scope.nativeGit !== "v1" ||
+          (scope.installationId === undefined && scope.credentialSource === undefined))) ||
+      (scope.credentialSource !== undefined && scope.nativeGit !== "v1")
     ) {
       refuse();
     }
@@ -267,7 +310,11 @@ export class OpenShellPreparedGitProvider {
           scope.workspaceId,
           scope.sandbox,
           scope.executionId,
-          scope.installationId ? ["github-installation", scope.installationId] : scope.repository,
+          scope.credentialSource !== undefined
+            ? ["github-token-source", scope.credentialSource]
+            : scope.installationId
+              ? ["github-installation", scope.installationId]
+              : scope.repository,
           git.origin,
           api.origin,
           scope.binaries,
@@ -280,9 +327,12 @@ export class OpenShellPreparedGitProvider {
       )
       .digest("hex")
       .slice(0, 48);
-    const prefix = scope.installationId
-      ? openShellInstallationGitProviderPrefix
-      : REPOSITORY_PROVIDER_PREFIX;
+    const prefix =
+      scope.credentialSource !== undefined
+        ? openShellSourceGitProviderPrefix
+        : scope.installationId
+          ? openShellInstallationGitProviderPrefix
+          : REPOSITORY_PROVIDER_PREFIX;
     this.provider = prefix + this.fingerprint.slice(0, 32);
     this.profile = {
       id: this.provider,
@@ -311,11 +361,12 @@ export class OpenShellPreparedGitProvider {
     const expires = Date.parse(token.expiresAt);
     const remaining = expires - Date.now();
     if (
-      !isGitHubWireCredential(token.value) ||
-      token.value.includes("openshell:resolve:") ||
+      !isOpenShellGitCredential(token.value) ||
       !Number.isFinite(expires) ||
       remaining <= 0 ||
-      remaining > 3_600_000 ||
+      // A Source's loan is the revocation bound, so it is shorter than an App token's hour.
+      remaining >
+        (this.scope.credentialSource !== undefined ? repositorySourceLoanMaximumMs : 3_600_000) ||
       new Date(expires).toISOString().replace(".000Z", "Z") !==
         token.expiresAt.replace(".000Z", "Z")
     ) {
@@ -678,6 +729,7 @@ export class OpenShellPreparedGitProvider {
         this.provider,
         this.scope.binaries,
         this.scope.scopedRest,
+        this.scope.credentialSource === undefined ? "installation" : "source",
       )
     );
   }
@@ -972,11 +1024,26 @@ export class OpenShellPreparedGitProvider {
 
   async rotate(
     previous: OpenShellPreparedGitBinding,
-    release: () => Promise<(OpenShellPreparedGitToken & { isCurrent?: () => boolean }) | undefined>,
+    release: () => Promise<
+      | (OpenShellPreparedGitToken & {
+          isCurrent?: () => boolean;
+          hold?: MaterialWriteHold;
+        })
+      | undefined
+    >,
     signal: AbortSignal,
   ): Promise<OpenShellPreparedGitBinding | undefined> {
     previous = Object.freeze({ ...previous });
     let phase: "reading" | "release" | "writing" = "reading";
+    let hold: MaterialWriteHold | undefined;
+    // Set once the hold durably recorded this write as possibly applied; only then is it settled.
+    let recorded = false;
+    const unapplied = async () => {
+      if (recorded) {
+        recorded = false;
+        await hold?.settled?.("unapplied");
+      }
+    };
     try {
       if (!this.owns(previous) || !this.client.updateProviderCredentialsConditionally) {
         refuse();
@@ -1003,12 +1070,27 @@ export class OpenShellPreparedGitProvider {
       }
       phase = "release";
       const token = await release();
+      hold = token?.hold;
       phase = "reading";
       if (!token || signal.aborted) {
         return;
       }
       this.token(token);
+      if (hold?.dispatching) {
+        // Recorded before dispatch and committed apart from the hold, so a write whose answer is
+        // lost keeps its owner fenced after the hold ends, also across a restart. The confirm
+        // below then proves the hold stood across that commit. Unrecorded, nothing is sent.
+        recorded = await hold.dispatching().catch(() => false);
+        if (!recorded) {
+          return;
+        }
+      }
+      if (hold && !(await hold.confirm())) {
+        await unapplied();
+        return;
+      }
       if (token.isCurrent && !token.isCurrent()) {
+        await unapplied();
         return;
       }
       phase = "writing";
@@ -1028,6 +1110,9 @@ export class OpenShellPreparedGitProvider {
         token.isCurrent,
       );
       if (
+        // PostgreSQL may have ended the session while the Gateway was writing. The update
+        // may have taken effect, but its ordering against replacement is now unknown.
+        (hold && !(await hold.confirm())) ||
         updated.id !== previous.providerId ||
         updated.resourceVersion === previous.resourceVersion
       ) {
@@ -1059,12 +1144,23 @@ export class OpenShellPreparedGitProvider {
         delete this.refreshReceipt;
         this.receipt = { version: updated.resourceVersion, id };
       }
-      return this.binding(updated, previous.profileVersion, token.expiresAt);
+      const binding = this.binding(updated, previous.profileVersion, token.expiresAt);
+      if (recorded) {
+        // Settled while the hold still stands: a replacement waiting on the row reads it settled.
+        recorded = false;
+        await hold?.settled?.("applied");
+      }
+      return binding;
     } catch (error) {
       // Refused before the write for a read the gateway did not answer, the rotation is
       // observed again later; an unknown write is never retried (finding 2136).
       if (error instanceof OpenShellGatewayDispatchRefusedError) {
+        await unapplied();
         return;
+      }
+      if (phase === "writing" && writeUnapplied(error)) {
+        // The route still treats it as unknown; only the owner's fence is lifted.
+        await unapplied();
       }
       if (phase === "release") {
         throw error; // The local authority failed before this writer could send anything.
@@ -1073,6 +1169,8 @@ export class OpenShellPreparedGitProvider {
         phase === "writing" ? "unknown" : "refused",
         phase === "writing" ? undefined : readFailure(error, signal),
       );
+    } finally {
+      await hold?.release();
     }
   }
 }
@@ -1084,7 +1182,8 @@ function preparedGitName(name: string, owner: string | undefined): boolean {
     owner !== undefined &&
     /^[0-9a-f]{48}$/.test(owner) &&
     (name === REPOSITORY_PROVIDER_PREFIX + hash ||
-      name === openShellInstallationGitProviderPrefix + hash)
+      name === openShellInstallationGitProviderPrefix + hash ||
+      name === openShellSourceGitProviderPrefix + hash)
   );
 }
 
@@ -1103,7 +1202,14 @@ export function preparedGitProviderForRevision(
 
 /** Also finds artifacts left after a lost create/delete reply, without resolving live policy. */
 export async function deleteRetiredGitProviders(
-  client: OpenShellGatewayClient,
+  client: Pick<
+    OpenShellGatewayClient,
+    | "listProviders"
+    | "deleteProvider"
+    | "getProviderProfile"
+    | "listProviderProfiles"
+    | "deleteProviderProfile"
+  >,
   workspace: string,
   revisionId: string,
   signal: AbortSignal,

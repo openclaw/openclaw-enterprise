@@ -17,7 +17,7 @@ import {
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   inferenceKeyDestination,
-  isSourceProviderPresetId,
+  isModelSourcePresetId,
   modelProviderRequestApproved,
   sandboxNetworkGrantsWithinCeiling,
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
@@ -200,7 +200,7 @@ export interface DeploymentAdmissionDependencies {
   ) => ModelPolicyAgent;
   readonly credentialAccess: Pick<
     AgentCredentialAccess,
-    "grantDeployedAgentSources" | "admitCredentialSources"
+    "grantDeployedAgentSources" | "admitCredentialSources" | "admitRepositoryCredentialSource"
   >;
   readonly secretDriver: () => SecretDriver;
   readonly ownedSecretDriver: (
@@ -257,7 +257,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       throw new ScopeViolationError("The Harness credential source is unavailable.");
     }
     const presetId = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
-    if (!isSourceProviderPresetId(presetId)) {
+    if (!isModelSourcePresetId(presetId)) {
       throw new ResourceStateConflictError(
         "The Harness credential source has no permitted model provider preset.",
       );
@@ -935,6 +935,25 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           Date.parse(createdAt),
         );
       const admittedRepository = admitRepository();
+      const repositorySourceId = admittedRepository?.credentialSource;
+      let repositorySource: { readonly tokenServiceInstanceId: string } | undefined;
+      if (repositorySourceId !== undefined) {
+        // A Source credential is scoped only by the saved network policy: without one there is
+        // nothing to enforce, and the App's online path must never serve it.
+        if (!policy?.repositoryNetworkPolicy?.length) {
+          throw new ResourceStateConflictError(
+            "The repository registration selects a credential source, which needs a saved repository network policy with at least one grant. Save the Agent's repository grants before deploying.",
+            [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+          );
+        }
+        repositorySource = await dependencies.credentialAccess.admitRepositoryCredentialSource(
+          state,
+          principalId,
+          lockedAgent,
+          repositorySourceId,
+          policy.repositoryNetworkPolicy,
+        );
+      }
       const resolvedRepositoryCredentials = admittedRepository?.credentials;
       if (resolvedRepositoryCredentials !== undefined) {
         validateRepositoryBrokerNetworkProxy(revisionHarness, admittedConfiguration, sandbox);
@@ -1190,6 +1209,17 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       }
       assertProvidersCurrent();
       const revision = await state.revisions.createRevision(candidate, first?.digest);
+      if (repositorySourceId !== undefined && repositorySource !== undefined) {
+        // Recorded before the deployment is queued, under the Source row lock the admission took:
+        // Source deletion then sees this pending deployment as a copy it must wait for.
+        await state.credentialSources.recordRepositorySourceCopy({
+          namespaceId: namespace.id,
+          credentialSourceId: repositorySourceId,
+          tokenServiceInstanceId: repositorySource.tokenServiceInstanceId,
+          agentId: lockedAgent.id,
+          revisionId: revision.id,
+        });
+      }
       if (
         lockedAgent.activeRevisionId &&
         (lockedAgent.desiredRuntimeState === "stopped" ||
@@ -1230,7 +1260,13 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         resourceId: revision.id,
         actorId: principalId,
       });
-      const result = Object.freeze({ revision, authorization });
+      const result = Object.freeze({
+        revision,
+        authorization,
+        ...(repositorySourceId !== undefined && {
+          repositoryCredentialSourceId: repositorySourceId,
+        }),
+      });
       if (auditEvent) {
         await state.audit.append(auditEvent(result));
       }

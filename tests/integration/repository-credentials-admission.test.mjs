@@ -6,6 +6,7 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -286,6 +287,8 @@ async function fixture(
     installationAccess = false,
     repositoryAdmission,
     configureRegistry,
+    tokenService = false,
+    prepareRegistry,
   } = {},
 ) {
   const installation = {
@@ -315,6 +318,7 @@ async function fixture(
     },
   });
   const secretDriver = createTestSecretDriver();
+  const tokenServiceStore = randomUUID();
   const backends = repositories
     ? [
         {
@@ -353,6 +357,22 @@ async function fixture(
       controller.registerDriver(repository);
       controller.selectDriver(repository.capability, repository.id);
     }
+    if (tokenService) {
+      // The real OCC TokenService over the test Secret Driver's Installation-private store.
+      const instanceId = await controller.activateTokenServiceInstance(
+        "occ-token-service",
+        tokenServiceStore,
+      );
+      const owner = new OCCTokenServiceDriver(
+        "occ-token-service",
+        installation.id,
+        secretDriver.installationSecrets,
+        instanceId,
+        state,
+      );
+      controller.registerDriver(owner);
+      controller.selectDriver("token_service", owner.id);
+    }
     if (registry !== undefined || !repositories) {
       await controller.validateBackendConfiguration();
     }
@@ -390,8 +410,12 @@ async function fixture(
   assert.equal(configurationResponse.status, 201, JSON.stringify(configurationResponse));
   const configuration = configurationResponse.data;
   const defaultRegistry = registryFor(namespace.id, extraRepositories, installationAccess);
+  // A registry names a Source by its ID, so a test can create the Source before the registry.
+  const prepared = await prepareRegistry?.({ request: initial.request, namespace, state });
   const registry =
-    configureRegistry === undefined ? defaultRegistry : configureRegistry(defaultRegistry);
+    configureRegistry === undefined
+      ? defaultRegistry
+      : configureRegistry(defaultRegistry, prepared);
   const composed = repositories ? await compose(registry) : initial;
   const collection = `/namespaces/${namespace.id}/agents`;
 
@@ -1453,6 +1477,8 @@ async function protectedOpenShellComposition(
     repositoryNetworkPolicyCeiling,
     repositoryAdmission = repositoryNetworkPolicyCeiling === undefined ? undefined : "selected",
     configureRegistry,
+    tokenService = false,
+    prepareRegistry,
   } = {},
 ) {
   class ProtectedGitComputeDriver extends OpenShellGitComputeDriver {
@@ -1491,6 +1517,8 @@ async function protectedOpenShellComposition(
     installationAccess,
     repositoryAdmission,
     configureRegistry,
+    tokenService,
+    prepareRegistry,
   });
   let sandbox = repositorySandbox(
     f.registry,

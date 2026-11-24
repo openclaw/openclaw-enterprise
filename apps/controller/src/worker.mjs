@@ -17,6 +17,7 @@ import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
 import { closeWorkerComposition } from "./worker/shutdown.ts";
+import { startWorkerRepositorySourceCustody } from "./worker/repository-source-custody.ts";
 import { workerEnvironmentSettings } from "./worker/timer-settings.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
@@ -108,6 +109,7 @@ let repositoryGitTransport;
 let preparedRepositoryGit;
 let preparedGitHub;
 let protectedDriver;
+let sourceLockPool;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -206,12 +208,23 @@ try {
   }
   if (repositoryOwner && drivers.preparedRepositoryGit) {
     const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
+    // Registrations that name a TokenService Source are lent from its custody.
+    const source = await startWorkerRepositorySourceCustody({
+      registry: drivers.repositoryRegistry,
+      tokenService: drivers.installation.drivers.token_service,
+      secrets: drivers.secretDriver.installationSecrets,
+      createLockPool: () => createPostgresPool(databaseUrl, { ...databasePoolOptions, max: 4 }),
+      createState: () => new PostgresPlatformState(pool),
+      createIAMDriver: (state) => drivers.createIAMDriver(state),
+    });
+    sourceLockPool = source?.lockPool;
     preparedRepositoryGit = await startPreparedGitHubGitOwner({
       ...repositoryOwner,
       ...owner,
       ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
       pool,
       registry: drivers.repositoryRegistry,
+      ...(source && { repositorySourceCustody: source.custody }),
       ...repositoryGitAuthority(drivers),
       report: (code, context, severity = "error") =>
         emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
@@ -286,6 +299,7 @@ try {
         readinessPath,
         repositoryGitTransport,
         preparedRepositoryGit,
+        sourceLockPool,
         receiptServer,
         closeMetrics,
         preparedGitHub,
@@ -303,6 +317,7 @@ try {
   await preparedGitHub?.close().catch(() => {});
   await repositoryGitTransport?.close().catch(() => {});
   await preparedRepositoryGit?.close().catch(() => {});
+  await sourceLockPool?.end().catch(() => {});
   await receiptServer?.close().catch(() => {});
   await closeMetrics().catch(() => {});
   if (readinessPath !== undefined) {

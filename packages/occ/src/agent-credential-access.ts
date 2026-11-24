@@ -1,8 +1,16 @@
 import type { CredentialSourceDrivers } from "./credential-source-drivers.ts";
 import { validatePluginCredentialSources } from "./agent-plugin-validation.ts";
 import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
+import { assertSourceRepositoryGrants } from "./repository-network-policy.ts";
 import {
+  GITHUB_SOURCE_PRESET_ID,
+  readSourceRepositoryCeiling,
+  SOURCE_REPOSITORIES_CONFIG_KEY,
+  type RepositoryNetworkGrant,
+  type RepositoryNetworkPolicyCeiling,
+  isModelSourcePresetId,
   MAX_AGENT_CREDENTIAL_SOURCES,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   isSecretHarnessAuth,
   type AccessBinding,
   type Agent,
@@ -180,6 +188,12 @@ export function createAgentCredentialAccess({
       }
       if (isManagedTokenServiceSource(source)) {
         requireTokenServiceOwner(source.tokenServiceInstanceId);
+        const preset = source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY];
+        if (preset !== undefined && !isModelSourcePresetId(preset)) {
+          throw new ResourceStateConflictError(
+            "This credential source holds a repository token, not a model credential; an Agent cannot list it or use it for its Harness.",
+          );
+        }
         if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
           throw new ResourceStateConflictError(
             "This TokenService source must authenticate the selected Agent Harness.",
@@ -266,6 +280,52 @@ export function createAgentCredentialAccess({
       }
     }
     return immutableCopy(snapshots);
+  }
+
+  /**
+   * The repository registration selects this Source for the Agent's Git credential. The caller and
+   * the Agent principal need `operate` on it, as for a model Source, and the saved grants must fit
+   * its ceiling. Policy save and deploy both call this under the Namespace lock.
+   */
+  async function admitRepositoryCredentialSource(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sourceId: string,
+    grants: readonly RepositoryNetworkGrant[] | undefined,
+  ): Promise<{ readonly tokenServiceInstanceId: string }> {
+    const ref = {
+      kind: "credential_source",
+      namespaceId: agent.namespaceId,
+      id: sourceId,
+    } as const;
+    // Authorize before the lookup, so a caller without the grant learns nothing about the Source.
+    await authorizeSourceOperate(principalId, agent.namespaceId, sourceId);
+    const source = await state.credentialSources.lockCredentialSource(agent.namespaceId, sourceId);
+    let ceiling: RepositoryNetworkPolicyCeiling | undefined;
+    let tokenServiceInstanceId: string | undefined;
+    if (
+      isManagedTokenServiceSource(source) &&
+      source.state === "ready" &&
+      source.namespaceId === agent.namespaceId &&
+      source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === GITHUB_SOURCE_PRESET_ID
+    ) {
+      try {
+        requireTokenServiceOwner(source.tokenServiceInstanceId);
+        ceiling = readSourceRepositoryCeiling(source.config[SOURCE_REPOSITORIES_CONFIG_KEY] ?? "");
+        tokenServiceInstanceId = source.tokenServiceInstanceId;
+      } catch {
+        ceiling = undefined;
+      }
+    }
+    if (ceiling === undefined || tokenServiceInstanceId === undefined) {
+      throw new ResourceStateConflictError(
+        "The repository registration selects a credential source that is not a ready github source of this Namespace and its TokenService. Ask an operator to check the source and the repository registry.",
+      );
+    }
+    await authority.authorizeAgentPrincipal(principalId, agent, "operate", ref);
+    assertSourceRepositoryGrants(grants, ceiling);
+    return { tokenServiceInstanceId };
   }
 
   /** Returns the AccessBindings it created; existing exact grants are kept. */
@@ -419,6 +479,7 @@ export function createAgentCredentialAccess({
     authorizeBoundCredentialSources,
     authorizeAgentCredentialSources,
     admitCredentialSources,
+    admitRepositoryCredentialSource,
     ensureAgentOperateGrants,
     grantDeployedAgentSources,
   };

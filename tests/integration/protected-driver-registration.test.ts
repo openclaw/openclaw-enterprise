@@ -820,7 +820,8 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     },
     "online-request",
   );
-  assert.equal(pool.connect.mock.callCount(), 0);
+  // Binding has read the recorded Source copies once, on the original pool.
+  assert.equal(pool.connect.mock.callCount(), 1);
   assert.equal(
     await capabilities.sandbox.repositoryAccess.repositoryWorkerRestartDisposition!({
       ...standing,
@@ -828,7 +829,7 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     }),
     "unknown",
   );
-  assert.equal(pool.connect.mock.callCount(), 1);
+  assert.equal(pool.connect.mock.callCount(), 2);
   assert.equal(secondPool.connect.mock.callCount(), 0);
   await active.close();
   await assert.rejects(

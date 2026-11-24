@@ -3699,6 +3699,32 @@ test(
     ]) {
       await assert.rejects(render({ ...selected, ...override }), diagnostic);
     }
+    // Without a GitHub App the registry holds only Source-backed registrations: the worker gets
+    // its custody key and no App key. The worker itself refuses an App registration without one.
+    const appLess = { "repositoryCredentials.appKeySecretName": "" };
+    for (const values of [
+      { ...selected, ...appLess },
+      {
+        ...protectedRepositoryValues,
+        ...appLess,
+        "repositoryCredentials.delivery": "credential-proxy",
+      },
+    ]) {
+      const pod = findResource(
+        await renderObjects(values),
+        "Deployment",
+        "openclaw-enterprise-worker",
+      ).spec.template.spec;
+      assert.deepEqual(
+        pod.volumes.find(({ name }) => name === "prepared-repository-owner").projected.sources,
+        [{ secret: { name: "git-custody", items: [{ key: "custody.key", path: "custody.key" }] } }],
+      );
+    }
+    // The repository broker serves only App registrations, so it still requires the key.
+    await assert.rejects(
+      render({ ...repositoryCredentialValues, ...appLess }),
+      /repositoryCredentials.appKeySecretName is required when enabled/,
+    );
   },
 );
 

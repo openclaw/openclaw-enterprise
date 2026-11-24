@@ -416,6 +416,27 @@ Retains nonsecret admission fences and broker-confirmed terminal evidence for an
 - `revoked`
 - `expired`
 
+### `repository_source_copies`
+
+Records one native Git Provider copy of a [repository token Source](../repository-credentials/repository-token-source.md) per Agent revision, from deploy until the Worker confirms the Provider retired.
+
+- `revision_id`
+- `namespace_id`
+- `credential_source_id`
+- `token_service_instance_id`
+- `agent_id`
+- `recorded_at`
+- `provider_name`
+- `source_version`
+- `installed_at`
+- `confirmed_source_version`
+- `confirmed_at`
+- `unknown_write_version`
+- `unknown_write_at`
+- `retirement_blocked`
+- `retirement_attempted_at`
+- `retired_at`
+
 ## Identity and access
 
 ### `iam_identities`

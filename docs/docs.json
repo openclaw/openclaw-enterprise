@@ -582,6 +582,10 @@
                         "label": "Access Levels"
                       },
                       {
+                        "page": "reference/repository-credentials/repository-token-source",
+                        "label": "Repository Token Source"
+                      },
+                      {
                         "page": "reference/repository-credentials/push-ref-guardrail",
                         "label": "Push Guardrail"
                       },

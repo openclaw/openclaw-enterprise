@@ -112,6 +112,7 @@ type ProtectedWorkerInput = Omit<ProxyInstallation, "backend" | "drivers"> & {
       configuration:
         ProxyInstallation["drivers"]["credential_proxy"]["configuration"] | Record<string, never>;
     };
+    token_service?: { id: "occ"; configuration: Record<string, never> };
   };
   repository?: Omit<RepositoryOptionsInput, "nativeSender"> & {
     openShell: OpenShellGitRuntimeConfiguration;
@@ -968,27 +969,19 @@ export async function checkProtectedRepositoryWorker(
   const { nativeSender: _native, ...protectedRepository } = repository.repository;
   const directory = dirname(protectedRepository.preparedGitHub.custodyKeyPath);
   const issuerPublicKeyPath = join(directory, "gateway-public.pem");
-  // The worker binds the Git authority on this port seconds after its configuration names it,
-  // once its boot gets a slot. Hold the port until the worker exits, so a test file running in
-  // parallel cannot take it (finding 3024's race).
-  const authority = await reservePort();
-  t.after(() => authority.release());
-  configuration.repository = {
-    ...protectedRepository,
-    openShell: {
-      registrationName: "oce-prepared-git",
-      authority: {
-        host: "127.0.0.1",
-        port: authority.port,
-        certificatePath: certFile,
-        privateKeyPath: keyFile,
-        issuerPublicKeyPath,
-        issuer: "openshell-gateway:openshell-gateway",
-        audience: "oce-prepared-git",
-        keyId: "current",
-      },
+  const openShell = (port: number) => ({
+    registrationName: "oce-prepared-git",
+    authority: {
+      host: "127.0.0.1",
+      port,
+      certificatePath: certFile,
+      privateKeyPath: keyFile,
+      issuerPublicKeyPath,
+      issuer: "openshell-gateway:openshell-gateway",
+      audience: "oce-prepared-git",
+      keyId: "current",
     },
-  };
+  });
   const pkcs8 = { type: "pkcs8", format: "pem" } as const;
   await Promise.all([
     writeFile(protectedRepository.preparedGitHub.custodyKeyPath, randomBytes(32), { mode: 0o600 }),
@@ -1002,25 +995,82 @@ export async function checkProtectedRepositoryWorker(
       generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }),
     ),
   ]);
-  const worker = await boot(
-    "apps/controller/src/worker.mjs",
-    {
-      PATH: process.env.PATH,
-      NODE_ENV: "production",
-      OCC_CONFIG_PATH: await fixture(t, configuration),
-      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-    },
-    undefined,
-    reservedPortArgs(authority),
-  );
-  assert.equal(worker.status, 1, worker.stderr);
-  // The bundled sender reads the authority's online port, which the owner does not have: handing
-  // over the owner fails the bind (WORKER_STARTUP_FAILED) before the database is reached.
-  assert.equal(
-    startupDiagnostic(worker.stderr, "worker.startup-error").code,
-    "PERSISTENCE_UNAVAILABLE",
-    worker.stderr,
-  );
+  // A Source-backed registration: native Git only, its credential lent from a TokenService Source.
+  const sourceRegistration = {
+    namespaceId: namespace.namespaceId,
+    profiles: ["github-repository"],
+    permissions: { metadata: "read", contents: "write" },
+    nativeGit: "v1",
+    credentialSource: "cs_repository_token",
+  } satisfies GitHubRepositoryRegistration["namespaces"][number];
+  const { appId: _appId, githubInstallationId: _installationId, ...appLess } = registry;
+  const sourceRepository = {
+    repositoryRef: "token",
+    repositoryId: "34568",
+    repository: "example/token",
+    namespaces: [sourceRegistration],
+  };
+  const absentKey = join(directory, "absent-app-key.pem");
+  const keyRefused = ["PREPARED_GITHUB_APP_KEY_INVALID", "app_key_unreadable"];
+  // Each case boots the real worker. Only an App registration needs the App key: without it the
+  // worker refuses at the same place and with the same reason as an unreadable key. A registry
+  // without the App starts with no key, past the owner and the bound transport.
+  for (const [name, content, privateKeyPath, expected] of [
+    ["App registration with its key", registry, undefined, ["PERSISTENCE_UNAVAILABLE", undefined]],
+    ["App registration without a key", registry, absentKey, keyRefused],
+    [
+      "Source registrations without the App or a key",
+      {
+        ...appLess,
+        repositories: [{ ...registration, namespaces: [sourceRegistration] }, sourceRepository],
+      },
+      absentKey,
+      ["PERSISTENCE_UNAVAILABLE", undefined],
+    ],
+    [
+      "App and Source registrations without a key",
+      { ...registry, repositories: [registration, sourceRepository] },
+      absentKey,
+      keyRefused,
+    ],
+  ] as const) {
+    await writeFile(registrySource, JSON.stringify(content));
+    // The worker binds the Git authority on this port seconds after its configuration names it,
+    // once its boot gets a slot. Hold the port until the worker exits, so a test file running in
+    // parallel cannot take it (finding 3024's race).
+    const authority = await reservePort();
+    t.after(() => authority.release());
+    configuration.repository = {
+      ...protectedRepository,
+      preparedGitHub: {
+        ...protectedRepository.preparedGitHub,
+        privateKeyPath: privateKeyPath ?? protectedRepository.preparedGitHub.privateKeyPath,
+      },
+      openShell: openShell(authority.port),
+    };
+    // A Source registration's custody is read through the OCC TokenService.
+    if (content !== registry) {
+      configuration.drivers.token_service = { id: "occ", configuration: {} };
+    }
+    const worker = await boot(
+      "apps/controller/src/worker.mjs",
+      {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        OCC_CONFIG_PATH: await fixture(t, configuration),
+        OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+      },
+      undefined,
+      reservedPortArgs(authority),
+    );
+    await authority.release();
+    assert.equal(worker.status, 1, `${name}: ${worker.stderr}`);
+    // The bundled sender reads the authority's online port, which the owner does not have: handing
+    // over the owner fails the bind (WORKER_STARTUP_FAILED) before the database is reached.
+    const diagnostic = startupDiagnostic(worker.stderr, "worker.startup-error");
+    assert.deepEqual([diagnostic.code, diagnostic.reason], expected, `${name}: ${worker.stderr}`);
+    assert.ok(!worker.stderr.includes("-----BEGIN"), name);
+  }
 }
 
 export async function checkNativeRepositoryStartup(

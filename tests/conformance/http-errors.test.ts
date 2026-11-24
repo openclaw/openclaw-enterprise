@@ -57,6 +57,8 @@ import {
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   ResourceConflictError,
+  RepositorySourceCopiesUnretiredError,
+  RepositorySourceWriteUnreconciledError,
   ResourceStateConflictError,
   RetryLaterError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -140,6 +142,14 @@ type ErrorCase = readonly [
 // Many OCC errors subclass ScopeViolationError, ResourceConflictError or
 // AuthorizationDeniedError, so each row also guards the order of the checks in
 // requestFailure: a subclass must keep its own status and text, not its parent's.
+/** Unretired copies as Source deletion reads them; full-length Agent and revision IDs. */
+function unretiredCopies(count: number) {
+  return Array.from({ length: count }, () => ({
+    agentId: "agt_00000000-0000-4000-8000-000000000001",
+    revisionId: "rev_00000000-0000-4000-8000-000000000002",
+  }));
+}
+
 const cases = [
   // 409: conflicts the user can act on.
   [
@@ -240,6 +250,69 @@ const cases = [
       status: 409,
       code: "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
       message: CREDENTIAL_GATEWAY_NOT_CONFIGURED,
+    },
+  ],
+  [
+    "unretired Source copies, the largest count, none readable",
+    new RepositorySourceCopiesUnretiredError(unretiredCopies(99_999)),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "99999 native Git copies of this credential source are not confirmed retired (unretired_repository_source_copy). Stop or redeploy without the source each Agent that uses it; the Worker rechecks each copy every few minutes.",
+    },
+  ],
+  [
+    "unretired Source copies, the largest count, the first readable one named with its reason",
+    new RepositorySourceCopiesUnretiredError(unretiredCopies(99_999), {
+      ...unretiredCopies(1)[0]!,
+      retirementBlocked: "gateway_unavailable",
+    }),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "99999 Source copies unretired (unretired_repository_source_copy): agt_00000000-0000-4000-8000-000000000001/rev_00000000-0000-4000-8000-000000000002 (gateway_unavailable) +99998. Stop or redeploy its Agents without it; the Worker retries every few minutes.",
+    },
+  ],
+  [
+    "one unretired Source copy, named, never installed",
+    new RepositorySourceCopiesUnretiredError(unretiredCopies(1), unretiredCopies(1)[0]),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "1 Source copy unretired (unretired_repository_source_copy): agt_00000000-0000-4000-8000-000000000001/rev_00000000-0000-4000-8000-000000000002. Stop or redeploy its Agent without it; the Worker retries every few minutes.",
+    },
+  ],
+  [
+    "unreconciled Source writes, the largest count, the first readable one named",
+    new RepositorySourceWriteUnreconciledError(unretiredCopies(99_999), unretiredCopies(1)[0]),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "99999 Provider writes are unreconciled (unreconciled_repository_source_write): agt_00000000-0000-4000-8000-000000000001/rev_00000000-0000-4000-8000-000000000002 +99998. Stop or redeploy their Agents; the Worker then confirms the Provider retired.",
+    },
+  ],
+  [
+    "one unreconciled Source write, named",
+    new RepositorySourceWriteUnreconciledError(unretiredCopies(1), unretiredCopies(1)[0]),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "1 Provider write is unreconciled (unreconciled_repository_source_write): agt_00000000-0000-4000-8000-000000000001/rev_00000000-0000-4000-8000-000000000002. Stop or redeploy its Agent; the Worker then confirms the Provider retired.",
+    },
+  ],
+  [
+    "unreconciled Source writes, the largest count, none readable",
+    new RepositorySourceWriteUnreconciledError(unretiredCopies(99_999)),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "99999 native Git Provider writes of this credential source have an unknown outcome (unreconciled_repository_source_write). Stop or redeploy each Agent that uses it; the Worker then confirms its Provider retired.",
     },
   ],
   [
