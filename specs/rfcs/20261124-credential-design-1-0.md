@@ -1,10 +1,17 @@
 ---
-rfc: index.md
+status: Proposed
+implementation_status: Not implemented
+author: stevenlee-oai
 ---
 
-# Proposed amendment: Credential client registration and custody
+# Credential Design 1.0
 
-This Credential Design 1.0 amendment proposes the client administration contract for [OAuth client selection](oauth-client-associations.md) and [GitHub App installation Sources](github-app-template-policy.md). It requires human review before Driver or privileged UI implementation.
+- **ID:** RFC-20261124-credential-design-1-0
+- **Created:** 2026-11-24
+- **Last updated:** 2026-11-24
+- **RFC PR:** [#7223](https://github.com/openclaw/openclaw-enterprise/pull/7223)
+
+This proposal covers client registration and custody for Credential Design 1.0. It builds on [OAuth client selection](0023-egress-proxy-credential-lifecycle/oauth-client-associations.md) and [GitHub App installation Sources](0023-egress-proxy-credential-lifecycle/github-app-template-policy.md).
 
 ## Decision
 
