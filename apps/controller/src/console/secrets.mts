@@ -619,6 +619,22 @@ export function renderSecrets(
     const { value, reveal, multiline } = secretValueControl("secret-value", {
       "aria-describedby": valueNoticeId,
     });
+    // Native focus can reveal the caret while clipping the lower part of a multiline field.
+    const scrollValueIntoView = () => value.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (value instanceof HTMLTextAreaElement) {
+      value.addEventListener("keyup", (event) => {
+        if (
+          event.isTrusted &&
+          event.key === "Tab" &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          document.activeElement === value
+        ) {
+          scrollValueIntoView();
+        }
+      });
+    }
     const valueField = field({
       label: "Value",
       control: value,
@@ -655,6 +671,9 @@ export function renderSecrets(
     current.body.append(form);
     current.actions.append(submit);
     (replacing ? value : name).focus();
+    if (replacing && value instanceof HTMLTextAreaElement) {
+      scrollValueIntoView();
+    }
     let canSubmit = true;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();

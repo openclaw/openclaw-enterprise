@@ -638,10 +638,31 @@ exec "$0.fixture" "$@"
       phase: "Succeeded",
       log: '{"event":"migration.checked","history":"providerCompleted"}\n',
     };
+    const unsupported =
+      '{"event":"migration.failed","code":"MIGRATION_HISTORY_UNSUPPORTED","message":"private detail"}\n';
     for (const [scenario, guarded, refusal] of [
       [
         "unsupported option",
         { phase: "Failed", log: '{"event":"migration.failed","code":"MIGRATION_FAILED"}\n' },
+        /failed the guarded database migration check/,
+      ],
+      [
+        "unsupported history",
+        { phase: "Failed", log: "diagnostic\n" + unsupported },
+        /does not support the installed database history \(MIGRATION_HISTORY_UNSUPPORTED\).*Preserve the database and select an image verified against this history/,
+      ],
+      [
+        "conflicting guarded receipt",
+        {
+          phase: "Failed",
+          log:
+            '{"event":"migration.checked-for-installation","history":"completed"}\n' + unsupported,
+        },
+        /failed the guarded database migration check/,
+      ],
+      [
+        "conflicting ordinary receipt",
+        { phase: "Failed", log: ordinary.log + unsupported },
         /failed the guarded database migration check/,
       ],
       [
@@ -671,7 +692,13 @@ exec "$0.fixture" "$@"
           );
           assert.match(stdout, /Migration check passed/);
         }
-        await assert.rejects(f.run(), { code: 1, stderr: refusal });
+        await assert.rejects(f.run(), (error: unknown) => {
+          assert.ok(error instanceof Error && "code" in error && "stderr" in error);
+          assert.equal(error.code, 1);
+          assert.match(String(error.stderr), refusal);
+          assert.doesNotMatch(String(error.stderr), /private detail/);
+          return true;
+        });
         await assertStoppedBeforeWriters(f, [], originalSecrets);
         const observed = await f.state();
         assert.equal(observed.helmSubmissions ?? 0, 0);
@@ -1318,6 +1345,34 @@ exec "$0.fixture" "$@"
         assert.deepEqual(acceptedFiles.at(-1), originalFiles.at(-1));
       },
     );
+
+    await t.test("busy migration names the lock while keeping the original Job", async (t) => {
+      const { f, statePath, stopped, attempt, assertHeld } = await prepare(t);
+      const marker = "private-job-marker";
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          ...stopped,
+          preflightResults: {
+            "--apply-for-installation": {
+              phase: "Failed",
+              log: marker + '\n{"event":"migration.failed","code":"MIGRATION_DATABASE_BUSY"}\n',
+            },
+          },
+        }),
+      );
+      await assert.rejects(attempt(), (error: Error & { stderr?: string }) => {
+        const message = error.stderr ?? "";
+        assert.match(message, /MIGRATION_DATABASE_BUSY/);
+        assert.match(message, /migration-deploy-apply\/preflight-migration\.log/);
+        assert.match(message, /Do not replay the Job/);
+        assert.equal(message.includes(marker), false);
+        return true;
+      });
+      assert.equal(field((await readMigrationStages(f)).apply, "state"), "creating");
+      await assert.rejects(attempt(), /evidence directory is locked/);
+      await assertHeld(1);
+    });
 
     await t.test("an older candidate rejecting guarded apply never advances", async (t) => {
       const { f, statePath, stopped, attempt, assertHeld } = await prepare(t);
