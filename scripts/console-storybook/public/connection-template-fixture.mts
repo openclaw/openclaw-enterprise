@@ -11,7 +11,8 @@ export function createConnectionTemplateFixture(
   nextId: (prefix: string) => string,
 ) {
   const issuer = "https://identity.example.com";
-  const populated = mode === "ready" || mode === "plugin-consent";
+  const populated =
+    mode === "ready" || mode === "plugin-consent" || mode === "github-app-verification-failed";
   const templateId = "ctp_00000000-0000-4000-8000-000000000004";
   const templates: Record<string, unknown>[] = populated
     ? [
@@ -203,6 +204,9 @@ export function createConnectionTemplateFixture(
           : response(observed);
       }
       if (path === "/oauth-clients" && method === "POST") {
+        if (mode === "github-app-verification-failed" && body.kind === "github-app") {
+          return error(404, "NOT_FOUND", "The requested platform resource was not found.");
+        }
         const client =
           body.kind === "github-app"
             ? {

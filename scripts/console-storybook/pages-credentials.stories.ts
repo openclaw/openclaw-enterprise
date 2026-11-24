@@ -31,5 +31,6 @@ export const RegisterOAuthClient = story("credentialsRegisterOAuthClient");
 export const RegisterGoogleOAuthClient = story("credentialsRegisterGoogleClient");
 export const RegisterMcpOAuthClient = story("credentialsRegisterFromMcp");
 export const RegisterGitHubApp = story("credentialsRegisterGitHubApp");
+export const GitHubAppVerificationFailed = story("credentialsGitHubAppVerificationFailed");
 export const RotateGitHubAppKey = story("credentialsRotateGitHubApp");
 export const MemberAccess = story("credentialsMemberAccess");

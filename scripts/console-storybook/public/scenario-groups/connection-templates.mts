@@ -141,6 +141,22 @@ export const connectionTemplateScenarios = {
     description:
       "The App ID is immutable and the private key file contents are write-only. GitHub App registrations are Installation-wide.",
   },
+  credentialsGitHubAppVerificationFailed: {
+    group: "Pages/Credentials",
+    name: "GitHub App verification failed",
+    path: "/console/credentials/oauth-clients",
+    oauthCatalog: "github-app-verification-failed",
+    actions: [
+      click("Register client"),
+      { selector: "#credential-client-kind", value: "github-app" },
+    ],
+    description:
+      "The simulated verifier refuses registration and leaves the form open for correction.",
+    steps: [
+      "Enter a sample client name and App ID. Select an inert .pem file and choose Register client.",
+      "Read the verification message. The form stays open and clears the file before retry.",
+    ],
+  },
   credentialsRotateGitHubApp: {
     group: "Pages/Credentials",
     name: "Rotate GitHub App key",
@@ -239,7 +255,7 @@ export const connectionTemplateScenarios = {
       | "/console/credentials/oauth-clients";
     actions?: StoryAction[];
     emptyNamespaces?: true;
-    oauthCatalog?: "ready" | "error" | "unconfirmed-save";
+    oauthCatalog?: "ready" | "error" | "unconfirmed-save" | "github-app-verification-failed";
     readOnlyPermissionSummary?: true;
     description: string;
     steps?: readonly string[];

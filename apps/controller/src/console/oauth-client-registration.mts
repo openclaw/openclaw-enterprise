@@ -328,7 +328,10 @@ export function openCredentialClientRegistration(
       const code = requestFailure(cause).status;
       uncertain = code === undefined || code >= 500 || code === 408;
       if (dialog.open) {
-        status.textContent = oauthFailure(cause, "client registration");
+        status.textContent =
+          github && code === 404
+            ? "GitHub App verification failed. Check the App ID and matching private key, and OCC connectivity to GitHub."
+            : oauthFailure(cause, "client registration");
       }
     } finally {
       secret.value = "";

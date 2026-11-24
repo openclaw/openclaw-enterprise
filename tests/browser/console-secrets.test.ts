@@ -517,8 +517,27 @@ test("an administrator registers and rotates a verified GitHub App signing key",
   await form.getByLabel("Client type").selectOption("github-app");
   await form.getByText("GitHub App clients are available Installation-wide.").waitFor();
   await form.getByLabel("Client name").fill("Repository App");
-  await form.getByLabel("GitHub App ID").fill(fixtureAppId);
+  await form.getByLabel("GitHub App ID").fill(String(Number(fixtureAppId) + 1));
   const privateKey = github.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  await form.getByLabel("Private key file").setInputFiles({
+    name: "app.pem",
+    mimeType: "application/x-pem-file",
+    buffer: Buffer.from(privateKey),
+  });
+  // A real signing-key verification refusal leaves the form retryable without a catalog refresh.
+  const refused = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  const submit = form.getByRole("button", { name: "Register client" });
+  await submit.click();
+  assert.equal((await refused).status(), 404);
+  await form
+    .getByText(
+      "GitHub App verification failed. Check the App ID and matching private key, and OCC connectivity to GitHub.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await submit.isEnabled(), true);
+  assert.equal(await form.getByRole("button", { name: /Refresh/i }).count(), 0);
+  await form.getByLabel("GitHub App ID").fill(fixtureAppId);
   await form.getByLabel("Private key file").setInputFiles({
     name: "app.pem",
     mimeType: "application/x-pem-file",
