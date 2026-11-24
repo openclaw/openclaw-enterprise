@@ -40,9 +40,7 @@ def digest(directory, name, optional=False):
         return hashlib.sha256(source.read()).hexdigest()
 
 
-def validate_compatibility(path, released, candidate):
-    with open(path, encoding="utf-8") as source:
-        receipt = json.load(source)
+def compatibility_result(receipt):
     file_path = "tests/integration/postgres-migration-compatibility.test.mjs"
     required_cases = (
         "Released controller remains usable across candidate database writes",
@@ -99,15 +97,122 @@ def validate_compatibility(path, released, candidate):
         if (len(selected) != 1 or selected[0].get("status") != "passed" or
                 selected[0].get("file") != file_path):
             raise ValueError("selected compatibility case did not pass")
+    return result
+
+
+def check_compatibility_image(result, role, reference):
     # The runner records the reference suffix, not a platform manifest or config ID.
-    for role, reference in (("releasedController", released), ("candidateController", candidate)):
-        expected = reference.rsplit("@", 1)[-1]
-        if (not re.fullmatch(r"sha256:[a-f0-9]{64}", expected) or
-                result.get("imageDigests", {}).get(role) != expected):
-            raise ValueError("compatibility image selection does not match")
+    expected = reference.rsplit("@", 1)[-1]
+    if (not re.fullmatch(r"sha256:[a-f0-9]{64}", expected) or
+            result.get("imageDigests", {}).get(role) != expected):
+        raise ValueError("compatibility image selection does not match")
+
+
+def validate_compatibility_preview(content, candidate):
+    result = compatibility_result(json.loads(content.decode("utf-8")))
+    check_compatibility_image(result, "candidateController", candidate)
+    released = result.get("imageDigests", {}).get("releasedController", "")
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", released):
+        raise ValueError("invalid reported released controller digest")
+
+
+def validate_compatibility(path, released, candidate):
+    with open(path, encoding="utf-8") as source:
+        result = compatibility_result(json.load(source))
+    check_compatibility_image(result, "releasedController", released)
+    check_compatibility_image(result, "candidateController", candidate)
+    measurements = result.get("measurements")
+    if isinstance(measurements, list) and any(
+        isinstance(item, dict) and item.get("kind") == "released-controller-history" and
+        item.get("status") == "unsupported" for item in measurements
+    ):
+        try:
+            os.write(
+                2, b"warning: The released controller rejected the candidate migration history. "
+                   b"Qualify another recovery controller before maintenance.\n"
+            )
+        except OSError:
+            # An unavailable diagnostic stream must not change validation.
+            pass
+
+
+def unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def reject_json_constant(_):
+    raise ValueError("invalid JSON constant")
+
+
+def check_recovery_lifecycle(lifecycle):
+    if (not isinstance(lifecycle, dict) or lifecycle.get("status") != "passed" or
+            lifecycle.get("interrupted", "missing") is not None):
+        return False
+    phases = lifecycle.get("phases")
+    if not isinstance(phases, dict):
+        return False
+    for name in ("prepare", "run", "cleanup"):
+        phase = phases.get(name)
+        if (not isinstance(phase, dict) or phase.get("status") != "passed" or
+                type(phase.get("exitCode")) is not int or phase["exitCode"] != 0 or
+                phase.get("signal", "missing") is not None or phase.get("terminal") is not True or
+                "error" in phase or "reason" in phase):
+            return False
+    return True
+
+
+def recovery_history(arguments):
+    if len(arguments) != 4:
+        sys.exit("Usage: python3 scripts/upgrade-evidence.py recovery-history "
+                 "REPORT RECOVERY_DIGEST CANDIDATE_DIGEST RUNNER_SHA")
+    path, recovery, candidate, runner = arguments
+    if (recovery == candidate or
+            not all(re.fullmatch(r"sha256:[a-f0-9]{64}", value) for value in (recovery, candidate)) or
+            not re.fullmatch(r"[a-f0-9]{40}", runner)):
+        sys.exit("Supply two distinct lowercase sha256 digests and the full lowercase runner SHA.")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, encoding="utf-8") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise ValueError("expected a regular report file")
+            report = json.load(source, object_pairs_hook=unique_json_object,
+                               parse_constant=reject_json_constant)
+    except (OSError, ValueError, RecursionError):
+        sys.exit("Supply a readable regular PostgreSQL report with valid, unambiguous JSON.")
+
+    try:
+        result = compatibility_result(report)
+        if report["sourceSha"] != runner:
+            raise ValueError("runner SHA does not match")
+        check_compatibility_image(result, "releasedController", recovery)
+        check_compatibility_image(result, "candidateController", candidate)
+    except (AttributeError, TypeError, ValueError):
+        sys.exit("Supply a passing PostgreSQL compatibility report for the selected digests and runner SHA.")
+
+    if not check_recovery_lifecycle(report.get("lifecycle")):
+        sys.exit("Use a completed PostgreSQL runner report with successful prepare, run, and cleanup phases.")
+    measurements = result.get("measurements")
+    if not isinstance(measurements, list):
+        measurements = []
+    history = [item.get("status") for item in measurements
+               if isinstance(item, dict) and item.get("kind") == "released-controller-history"]
+    if history == ["unsupported"]:
+        sys.exit("The recovery controller migrator refused the upgraded history. "
+                 "Qualify a different recovery controller.")
+    if history != ["current"]:
+        sys.exit("Rerun compatibility with a runner that records exactly one current migration history measurement.")
+    print("Reported recovery controller history is current for the selected compatibility pair.")
 
 
 def main():
+    if sys.argv[1:2] == ["recovery-history"]:
+        recovery_history(sys.argv[2:])
+        return
     if len(sys.argv) == 5 and sys.argv[1] == "compatibility":
         validate_compatibility(*sys.argv[2:])
         return

@@ -5,6 +5,7 @@ import type {
 } from "./agent-reads.ts";
 import type {
   Agent,
+  AgentNetworkProxy,
   AgentCredentialSourceBinding,
   AgentDesiredRuntimeState,
   AgentRevision,
@@ -35,6 +36,7 @@ export interface WorkspaceSetupRepository extends WorkspaceSetupReadRepository {
 }
 
 export interface SandboxPolicyReadRepository {
+  readonly supportsRepositoryNetworkPolicy?: true;
   find(namespaceId: string, agentId: string): Promise<Readonly<SandboxPolicy> | undefined>;
 }
 
@@ -79,6 +81,7 @@ export interface AgentRepository extends AgentReadRepository {
     credentialSources?: readonly AgentCredentialSourceBinding[],
     gatewayManagedMode?: boolean,
     pluginDriver?: PluginDriverIdentity | null,
+    networkProxy?: AgentNetworkProxy | null,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,

@@ -584,8 +584,11 @@ test("startup composes both OpenShell members from one Backend for static source
   ] satisfies [string, Partial<CredentialSource>][]) {
     await t.test(`changed live ${name} refuses without public fallback`, async () => {
       assert.equal(revision.harnessAuth.method, "credential_source");
-      if (revision.harnessAuth.method !== "credential_source") {
-        throw new Error("missing Harness source");
+      if (
+        revision.harnessAuth.method !== "credential_source" ||
+        revision.harnessAuth.credentialGatewayId === undefined
+      ) {
+        throw new Error("missing Harness Gateway source");
       }
       const before = calls.length;
       await assert.rejects(

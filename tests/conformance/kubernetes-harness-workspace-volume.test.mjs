@@ -22,35 +22,26 @@ const setup = {
 
 function render(loginMode, node, initialSetup, environment = {}, scratch) {
   const driver = createTestKubernetesComputeDriver("harness-workspace", { channelRuntime: true });
-  const deployment = driver.deployment(
-    "test-agent",
-    owner,
-    { name: "test", plane: "control" },
-    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
-    "agent",
-    "agent",
+  const deployment = driver.deployment({
+    name: "test-agent",
+    ownership: owner,
+    namespace: { name: "test", plane: "control" },
+    images: { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
+    serviceAccountName: "agent",
+    role: "agent",
     environment,
-    "info",
-    undefined,
-    false,
-    undefined,
-    { loginMode, environment: [] },
-    [],
-    [],
-    undefined,
-    [],
-    initialSetup ? setup : undefined,
-    undefined,
-    undefined,
-    undefined,
-    {
+    loggingLevel: "info",
+    harnessAuth: { loginMode, environment: [] },
+    enabledChannels: [],
+    workspaceSetup: initialSetup ? setup : undefined,
+    codexLaunch: {
       providerOwned: scratch !== undefined,
       protected: false,
       withNode: node === "setup-file",
       workspaceSetup: initialSetup,
     },
     scratch,
-  );
+  });
   const revision = { agentId: owner.agentId, configuration: { agents: { defaults: {} } } };
   if (node === "setup-file") {
     driver.addWorkspaceNode(deployment, nodeName, undefined, revision, true);

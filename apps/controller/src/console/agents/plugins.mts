@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentPluginCredentialSlot,
   AgentRevision,
   Configuration,
   InstallationCapabilities,
@@ -16,6 +17,7 @@ import {
   focusSaveOutcome,
   jsonObjectDiagnostic,
   revealStatus,
+  setHidden,
   setUnavailable,
   statusBlock,
   validateFields,
@@ -40,7 +42,40 @@ type PluginCapabilities = NonNullable<
   InstallationCapabilities["pluginCatalogs"]
 >[number]["pluginPolicies"] & {
   discoveryCredential: NonNullable<PluginDriver["discoveryCredential"]>;
+  credentialSlots?: readonly AgentPluginCredentialSlot[];
 };
+
+// The saved-Agent GET can change source eligibility without changing the Driver or its policy.
+function recheckedCredentialSlots(original: PluginCapabilities["credentialSlots"], fresh: unknown) {
+  if (!original || !Array.isArray(fresh) || fresh.length !== original.length) {
+    return;
+  }
+  const slots: AgentPluginCredentialSlot[] = [];
+  for (const [index, originalSlot] of original.entries()) {
+    const { sources: _originalSources, ...binding } = originalSlot;
+    const { sources, ...freshBinding } = responseFields(fresh[index]);
+    if (!sameValue(binding, freshBinding) || !Array.isArray(sources)) {
+      return;
+    }
+    const choices = new Map<string, string>();
+    for (const source of sources) {
+      const { id, name } = responseFields(source);
+      if (
+        typeof id !== "string" ||
+        !id ||
+        id.trim() !== id ||
+        typeof name !== "string" ||
+        !name.trim() ||
+        choices.has(id)
+      ) {
+        return;
+      }
+      choices.set(id, name);
+    }
+    slots.push({ ...binding, sources: [...choices].map(([id, name]) => ({ id, name })) });
+  }
+  return slots;
+}
 
 interface PluginDraft {
   dirty: boolean;
@@ -100,8 +135,7 @@ const PLUGIN_WARNING_EXPLANATIONS = Object.freeze({
     "was disabled for this startup because it could not be installed. Check the Agent's runtime logs.",
 });
 
-// The saved Agent default approvers as text: a version's snapshot and a reader's view of the
-// draft, which has no field to edit them (finding 2447).
+// Agent default approvers as text when the editor is unavailable or the view is read-only.
 function approverSummary(
   approvers: PluginApprovers | undefined,
   notes: { inherited: string; empty: string; listed: string },
@@ -185,6 +219,8 @@ export function renderAgentPlugins(
   const initialText = retained?.initialText ?? JSON.stringify(agent.plugins ?? {}, null, 2);
   const initialApprovers = retained ? retained.initialApprovers : agent.pluginApprovers;
   let pluginApprovers = retained ? retained.pluginApprovers : structuredClone(initialApprovers);
+  const approversChanged = () =>
+    JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
   const baseline = retained?.baseline ?? {
     configurationId: agent.configurationId,
     plugins: agent.plugins ?? {},
@@ -203,6 +239,7 @@ export function renderAgentPlugins(
   input.value = retained?.text ?? initialText;
   let catalogCredential: PluginCapabilities["discoveryCredential"] | null = null;
   let catalogCapabilityChecked = false;
+  let initialCapabilities: PluginCapabilities | undefined;
   // The failed capabilities read's reason, shown once under the policy controls.
   let catalogCapabilityError: "missing" | "unreadable" | undefined;
   const hasBoundCredential =
@@ -234,6 +271,7 @@ export function renderAgentPlugins(
           (catalogCredential === "none" ||
             (catalogCredential === "required" && hasBoundCredential))),
     canPrefetch: () => openClawDriver || hasBoundCredential,
+    applyRecheckedCapabilities,
     isPending: () => pending,
     unavailableMessage: () =>
       // A caller who may not update the Agent is not told to edit its selections (finding 2436).
@@ -289,6 +327,7 @@ export function renderAgentPlugins(
     defaultApprovers,
     discovery.fields.section.querySelector(".plugin-json"),
   );
+  const pendingApprovers = element("div", { hidden: true });
   const feedback = element("p", { className: "hint", role: "status" });
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
   const save = button("Save plugin selections", () => void savePlugins(), {
@@ -329,6 +368,7 @@ export function renderAgentPlugins(
       ? [statusBlock("warning", null, API_KEY_PLUGIN_MESSAGE, [], { role: null })]
       : []),
     discovery.fields.section,
+    pendingApprovers,
     capabilitiesStatus,
     element("div", { className: "form-actions" }, save, discard, reload),
     feedback,
@@ -336,9 +376,7 @@ export function renderAgentPlugins(
   );
 
   context.drafts.track("plugins", (): PluginDraft | undefined => {
-    const dirty =
-      input.value !== initialText ||
-      JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
+    const dirty = input.value !== initialText || approversChanged();
     return dirty || pending || outcomeUnknown || reloadRequired
       ? {
           dirty,
@@ -355,10 +393,26 @@ export function renderAgentPlugins(
 
   let saveUnavailable = true;
   let discardUnavailable = true;
+  function renderPendingApprovers() {
+    const hidden = !catalogCapabilityChecked || !defaultApprovers.hidden || !approversChanged();
+    if (pendingApprovers.hidden === hidden) {
+      return;
+    }
+    pendingApprovers.hidden = hidden;
+    pendingApprovers.replaceChildren(
+      ...(hidden
+        ? []
+        : approverSummary(pluginApprovers, {
+            inherited: "Existing OpenClaw approval routing is still selected in your draft.",
+            empty: "No Slack approvers. This choice is still in your draft.",
+            listed: "These approvers are still in your draft.",
+          })),
+    );
+  }
+
   function updateState() {
-    const dirty =
-      input.value !== initialText ||
-      JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
+    const dirty = input.value !== initialText || approversChanged();
+    renderPendingApprovers();
     onState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
     saveUnavailable = updateDenied || !dirty || pending || outcomeUnknown || reloadRequired;
     discardUnavailable = !dirty || pending || outcomeUnknown || reloadRequired;
@@ -531,11 +585,30 @@ export function renderAgentPlugins(
     feedback.textContent = savedNotice;
     describeControls();
   }
+  function applyRecheckedCapabilities(response: unknown) {
+    if (!initialCapabilities) {
+      return false;
+    }
+    const { credentialSlots: original, ...policy } = initialCapabilities;
+    const { credentialSlots: fresh, ...freshPolicy } = responseFields(response);
+    // Source choices can be unusable even when the approval policy is confirmed.
+    const policyConfirmed = sameValue(policy, freshPolicy);
+    setHidden(defaultApprovers, !policyConfirmed || policy.approvers?.agent !== true);
+    renderPendingApprovers();
+    const credentialSlots = policyConfirmed && recheckedCredentialSlots(original, fresh);
+    if (!credentialSlots) {
+      return false;
+    }
+    discovery.fields.setCapabilities({ ...policy, credentialSlots });
+    return true;
+  }
+
   function readCapabilities() {
     void context.request(`${path}/plugins/capabilities`).then(
       (response) => {
         if (context.isCurrent()) {
           const capabilities = response as PluginCapabilities;
+          initialCapabilities = capabilities;
           catalogCredential = capabilities.discoveryCredential;
           openClawDriver = capabilities.driver?.implementation === "occ/openclaw-plugin";
           catalogCapabilityChecked = true;
@@ -545,6 +618,7 @@ export function renderAgentPlugins(
           if (!defaultApprovers.hidden) {
             defaultApprovers.refreshNames();
           }
+          renderPendingApprovers();
         }
       },
       (cause: unknown) => {
@@ -563,6 +637,7 @@ export function renderAgentPlugins(
           if (status === 501 && initialApprovers?.length) {
             defaultApprovers.hidden = false;
           }
+          renderPendingApprovers();
           // A refusal names the grant this read checks, an outage who to ask (finding 2538).
           capabilitiesStatus.textContent = `${readFailure(
             "Plugin policy controls",

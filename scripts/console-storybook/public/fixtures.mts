@@ -8,6 +8,7 @@ import type {
   SecretMetadata,
   AgentRuntimeContainerStatus,
   AgentRuntimePodStatus,
+  AgentRuntimeHarnessStatus,
   AgentRuntimeEvent,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
@@ -73,6 +74,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     nativeAdminReason?: "not-enabled" | "configuration" | "compute";
     nativeAdminUrl?: string;
     harness?: unknown;
+    harnessAfterFirstRead?: AgentRuntimeHarnessStatus;
     runtimeImages?: unknown;
     runtimePod?: string;
     diagnosticsState?: string;
@@ -93,6 +95,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     expiredSession?: boolean;
     pendingGoogleAttempt?: boolean;
     emptyNamespaces?: boolean;
+    additionalNamespaceNames?: readonly string[];
     emptyBackends?: boolean;
     harnessGrantMissing?: boolean;
     oidcEnabled?: boolean;
@@ -195,6 +198,7 @@ const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_dem
 export function installFixture(scenario: FixtureScenario, evidence: FixtureEvidence) {
   const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
+  let harnessStatusReads = 0;
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
   if (scenario.pendingOidcAttempt) {
@@ -252,6 +256,9 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             createdAt,
           },
         ];
+  for (const name of scenario.additionalNamespaceNames ?? []) {
+    namespaces.push({ id: nextId("ns"), name, status: "ready", createdAt });
+  }
   if (scenario.navigationAgentLookupMismatch) {
     namespaces.push({
       id: lookupSiblingNamespaceId,
@@ -629,8 +636,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             delete: !scenario.namespaceDeleteDenied && !scenario.namespaceDeleteRestricted,
             agents: { create: true },
             secrets: { create: true },
-            // A member refused delete is no Installation administrator; an administrator is
-            // refused it only by a Restriction.
+            // The fixtures model a member or administrator with an advisory delete refusal.
             installation: {
               administer: !scenario.observabilityDenied && !scenario.namespaceDeleteDenied,
             },
@@ -693,6 +699,9 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             allowedProfiles: ["git-read"],
           },
         ];
+        if (scenario.repositoryDescriptionsPending === false) {
+          return response(options);
+        }
         const requestedDescriptions = new Set(
           url.searchParams.get("descriptionRefs")?.split(",") ?? [],
         );
@@ -934,13 +943,17 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         if (suffix === "/harness-status" && method === "GET") {
           // A scenario's harness answers for the current version, as OCC reads it.
+          const harness =
+            harnessStatusReads++ > 0
+              ? (scenario.harnessAfterFirstRead ?? scenario.harness)
+              : scenario.harness;
           return response(
-            scenario.harness === undefined || !saved.activeRevisionId
+            harness === undefined || !saved.activeRevisionId
               ? { status: "unobserved" }
               : {
                   status: "observed",
                   revisionId: saved.activeRevisionId,
-                  harness: scenario.harness,
+                  harness,
                 },
           );
         }
@@ -1115,7 +1128,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             // "replaced" only the version selected for service still runs.
             pods.length = 0;
           }
-          if (scenario.runtimePod === "rollover") {
+          if (
+            scenario.runtimePod === "rollover" ||
+            (scenario.runtimePod === "scaleDown" && podRolloverStatusReads === 0)
+          ) {
             const retiring = podRolloverStatusReads++ === 0;
             pods.push({
               ...pod,

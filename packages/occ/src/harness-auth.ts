@@ -1,3 +1,6 @@
+import type { CredentialSourceDrivers } from "./credential-source-drivers.ts";
+import type { AgentCredentialAccess } from "./agent-credential-access.ts";
+import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
 import {
   isSecretHarnessAuth,
   normalizeHarnessAuthBinding,
@@ -5,8 +8,6 @@ import {
   type BackendDefinition,
   type BackendRef,
   type ComputeDriver,
-  type CredentialGatewayDriver,
-  type CredentialSource,
   type CredentialSourceType,
   type HarnessAuthBinding,
   type HarnessAuthSnapshot,
@@ -21,6 +22,7 @@ import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { validateServiceAccountBackendBinding } from "./backends.ts";
 import { resolveConfiguredHarnessId } from "./configured-harness.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
+import type { InstalledDriver } from "./installed-driver.ts";
 import {
   ConfigurationHarnessError,
   DependencyUnavailableError,
@@ -36,34 +38,22 @@ import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { exactServiceAccount } from "./service-account-operations.ts";
 
-type ManagedSource = CredentialSource & {
-  readonly ownerCapability: "token_service";
-  readonly tokenServiceInstanceId: string;
-};
-
 interface HarnessAuthDependencies {
   readonly authority: Pick<ControllerAuthority, "authorize" | "authorizeAgentPrincipal">;
-  readonly authorizeBoundCredentialSources: (
-    principalId: string,
-    namespaceId: string,
-    sources: readonly { readonly sourceId: string }[],
-  ) => Promise<void>;
+  readonly authorizeBoundCredentialSources: AgentCredentialAccess["authorizeBoundCredentialSources"];
   readonly backends: ReadonlyMap<string, BackendDefinition>;
   readonly secrets: Pick<SecretOperations, "ownedSecretDriver" | "secretDriver">;
-  readonly isManagedTokenServiceSource: (
-    source: Readonly<CredentialSource> | undefined,
-  ) => source is Readonly<ManagedSource>;
   readonly hasCredentialGateway: () => boolean;
-  readonly assertCredentialGatewaySelected: () => void;
+  readonly hasCredentialProxyDelivery: () => boolean;
+  readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
+  readonly sourceDrivers: Pick<
+    CredentialSourceDrivers,
+    | "assertCredentialGatewaySelected"
+    | "ownedCredentialGatewayDriver"
+    | "credentialGatewayDriver"
+    | "credentialSourceType"
+  >;
   readonly ownedTokenServiceDriver: (instanceId: string) => unknown;
-  readonly ownedCredentialGatewayDriver: (
-    source: Readonly<CredentialSource>,
-  ) => CredentialGatewayDriver;
-  readonly credentialGatewayDriver: (expectedId: string) => CredentialGatewayDriver;
-  readonly credentialSourceType: (
-    driver: CredentialGatewayDriver,
-    type: string,
-  ) => Promise<CredentialSourceType>;
   readonly serviceAccounts: Pick<
     ServiceAccountOperations,
     "hasServiceAccountDriver" | "serviceAccountDriverId"
@@ -147,18 +137,18 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
         namespaceId,
         binding.sourceId,
       );
-      if (!dependencies.isManagedTokenServiceSource(source)) {
-        dependencies.assertCredentialGatewaySelected();
+      if (!isManagedTokenServiceSource(source)) {
+        dependencies.sourceDrivers.assertCredentialGatewaySelected();
       }
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError(
           "The Harness credential source is unavailable in the exact Namespace.",
         );
       }
-      if (dependencies.isManagedTokenServiceSource(source)) {
+      if (isManagedTokenServiceSource(source)) {
         dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
       } else {
-        dependencies.ownedCredentialGatewayDriver(source);
+        dependencies.sourceDrivers.ownedCredentialGatewayDriver(source);
       }
     } else {
       if (binding.source.namespaceId !== namespaceId) {
@@ -256,7 +246,7 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
     state: PlatformUnitOfWork,
     namespaceId: string,
     binding: Extract<HarnessAuthBinding, { readonly method: "credential_source" }>,
-  ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType]> {
+  ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType?]> {
     const source = await state.credentialSources.lockCredentialSource(
       namespaceId,
       binding.sourceId,
@@ -264,14 +254,24 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
     if (source === undefined || source.state !== "ready") {
       throw new ScopeViolationError("The Harness credential source is unavailable.");
     }
-    if (dependencies.isManagedTokenServiceSource(source)) {
-      // TODO: Replace this refusal when revision delivery can freeze and dispatch this owner.
-      throw new ResourceStateConflictError(
-        "Agent revision delivery for this TokenService source is not available. To deploy, select supported Harness authentication and remove this staged source from the Agent's credential sources.",
-      );
+    if (isManagedTokenServiceSource(source)) {
+      dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      if (source.type !== "static") {
+        throw new ResourceStateConflictError(
+          "This TokenService source cannot authenticate a staged model deployment.",
+        );
+      }
+      return immutableCopy([
+        {
+          method: "credential_source" as const,
+          sourceId: source.id,
+          sourceType: source.type,
+          tokenServiceInstanceId: source.tokenServiceInstanceId,
+        },
+      ] as const);
     }
-    const gateway = dependencies.ownedCredentialGatewayDriver(source);
-    const type = await dependencies.credentialSourceType(gateway, source.type);
+    const gateway = dependencies.sourceDrivers.ownedCredentialGatewayDriver(source);
+    const type = await dependencies.sourceDrivers.credentialSourceType(gateway, source.type);
     if (type.harnessAuth === undefined) {
       throw new ResourceStateConflictError(
         "The credential source type cannot authenticate a Harness.",
@@ -386,7 +386,20 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
   ): void {
     if (auth.method === "credential_source") {
       requireCredentialSourceSandbox(sandbox);
-      dependencies.credentialGatewayDriver(auth.credentialGatewayId);
+      if (auth.tokenServiceInstanceId !== undefined) {
+        if (!dependencies.hasCredentialProxyDelivery()) {
+          throw new ResourceStateConflictError(
+            "A staged credential deployment requires a selected Credential Proxy.",
+          );
+        }
+        if (dependencies.selectedCredentialDeliveryOwner().require("sandbox") !== sandbox) {
+          throw new ResourceStateConflictError(
+            "A staged credential deployment requires its selected Sandbox owner.",
+          );
+        }
+      } else {
+        dependencies.sourceDrivers.credentialGatewayDriver(auth.credentialGatewayId);
+      }
     }
   }
 

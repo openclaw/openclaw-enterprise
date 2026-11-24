@@ -546,6 +546,9 @@ function shouldRemoveInheritedEnv(name: string) {
     name === "NODE_TEST_CONTEXT" ||
     name === "NODE_TEST_WORKER_ID" ||
     name === "OPENCLAW_CI_COMPLETE_PHASE" ||
+    name === "OCC_MIGRATION_HISTORY_DATABASE_URL" ||
+    name === "OCC_MIGRATION_HISTORY_CONTAINER" ||
+    name === "OCC_MIGRATION_HISTORY_DATABASE_PREFIX" ||
     name.startsWith("OCC_TEST_") ||
     name.startsWith("OCC_PROBE_") ||
     name.endsWith("_KEEP") ||

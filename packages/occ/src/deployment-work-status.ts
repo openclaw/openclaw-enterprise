@@ -75,6 +75,10 @@ export function deploymentProgressForWork(
       code = attempt.code;
       message = "Waiting for harness credential initialization to finish.";
       break;
+    case "CREDENTIAL_ACTIVATION_PENDING":
+      code = attempt.code;
+      message = "Waiting for this Agent revision's credential activation to complete.";
+      break;
     case "REPOSITORY_GIT_ROUTE_PENDING":
       // Fixed copy: never the repository, grant or the gateway's answer (finding 1045).
       code = attempt.code;
@@ -388,6 +392,10 @@ function deploymentErrorMessage(code: string, agentId: string): string {
       return "The Sandbox Driver does not support this revision's Harness settings, such as plugins, network policy additions or ServiceAccount credentials. Change them, or ask an Installation administrator for a Driver that supports them, then deploy again.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
       return "The Sandbox gateway refused the controller's identity, or the Workspace is gone, so cleanup is unconfirmed. Check the identity's token file and Workspace role and the gateway's signing-key refresh, then deploy, stop, delete or withdraw again.";
+    case "SANDBOX_WORKLOAD_IMMUTABLE":
+      return "The requested workload differs from the retained Sandbox’s immutable settings. Ask an administrator to restore its original resource requests, limits and other workload settings, then deploy again.";
+    case "SANDBOX_RECREATION_REQUIRED":
+      return "The retained Sandbox uses an unsupported workload configuration. Preserve its files, create a replacement Agent and restore the files before deleting the original Agent.";
     case "SANDBOX_POD_LABELS_NOT_PERMITTED":
       return "The Sandbox gateway refuses this revision's Harness Pod labels. Ask an admin to allow them in the gateway configuration, then deploy again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
@@ -436,6 +444,10 @@ function deploymentErrorMessage(code: string, agentId: string): string {
       return "The repository credential Driver reported a session in a form the controller rejects, so it stopped the deployment. Check this version's logs, then deploy a new version; if it fails again, ask an operator to check the repository credential Driver.";
     case "INVALID_REPOSITORY_ATTEMPT_OWNER":
       return "A repository session stored for this version does not match the repository access it binds, so the controller stopped the deployment. Its runtime logs cannot show why: ask an Installation administrator to check the controller worker log.";
+    case "REPOSITORY_POLICY_HISTORY_INCOMPATIBLE":
+      return "This Agent has deployment history without a repository network policy. Save the policy for a new Agent before its first deployment.";
+    case "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED":
+      return "The selected execution placement cannot enforce this version's repository network policy. Ask an Installation administrator for a placement that supports the policy, then deploy again.";
     case "REPOSITORY_PROXY_ADMISSION_MISMATCH":
       return "This version's repository access no longer matches the Credential Proxy delivery it was admitted with. Deploy again to admit a version with the current repository access.";
     case "REPOSITORY_PREPARED_ADMISSION_UNAVAILABLE":

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import type { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   admitLoggingConfiguration,
   type AgentRevision,
@@ -9,16 +8,9 @@ import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { apiKeyAuth } from "../helpers/kubernetes-routed-scenarios.mjs";
-import type { createDedicatedDeployKubernetesFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
+import type { DedicatedDeployFixture } from "./kubernetes-dedicated-deploy-fixture.ts";
 import { renderedRecord } from "./kubernetes-workspace-node-delivery-cases.ts";
 
-type DeployTransport = ReturnType<typeof createDedicatedDeployKubernetesFixture>;
-type EndpointPreparationFixture = Pick<DeployTransport, "objects" | "read"> & {
-  revision: Omit<AgentRevision, "configuration"> & {
-    configuration: AgentRevision["configuration"];
-  };
-  prepare: () => ReturnType<KubernetesComputeDriver["prepareRevision"]>;
-};
 type EndpointPreparationFixtureFactory = (options: {
   modelEndpoint: string;
   standaloneWebSearch?: boolean | undefined;
@@ -31,9 +23,11 @@ type EndpointPreparationFixtureFactory = (options: {
       }
     >;
   };
-}) => EndpointPreparationFixture;
+}) => Pick<DedicatedDeployFixture, "objects" | "read" | "prepare"> & {
+  revision: { configuration: AgentRevision["configuration"] };
+};
 
-function writtenConfigMap(objects: DeployTransport["objects"], field: string) {
+function writtenConfigMap(objects: DedicatedDeployFixture["objects"], field: string) {
   for (const object of objects.values()) {
     if (object.kind === "ConfigMap") {
       const data = asRecord(object.data);
@@ -58,7 +52,7 @@ function codexBridgePlugins(model: string) {
   return plugins;
 }
 
-function renderedAgentSettings(objects: DeployTransport["objects"]) {
+function renderedAgentSettings(objects: DedicatedDeployFixture["objects"]) {
   const { document } = writtenConfigMap(objects, "openclaw.json");
   const agents = renderedRecord(document.agents, "rendered agents");
   const defaults = renderedRecord(agents.defaults, "rendered agent defaults");
@@ -95,6 +89,7 @@ export async function checkExplicitCodexProviderProjection(
     const plain = `${sourceProvider}/plain-model`;
     const child = `${sourceProvider}/vendor/organization/child`;
     const childFallback = `${sourceProvider}/codex/child-fallback`;
+    const manual = `${sourceProvider}/vendor/manual-model`;
     const childSelection = { primary: child, fallbacks: [childFallback, "primary"] };
     const settings = {
       model: { primary, fallbacks: [fallback, plain] },
@@ -102,8 +97,10 @@ export async function checkExplicitCodexProviderProjection(
         [primary]: { agentRuntime: { id: "codex" }, alias: "primary" },
         [fallback]: { agentRuntime: { id: "codex" }, alias: sourceProvider },
         [plain]: { agentRuntime: { id: "codex" } },
+        [manual]: { agentRuntime: { id: "codex" } },
         [`${sourceProvider}/*`]: { agentRuntime: { id: "codex" } },
       },
+      modelPolicy: { allow: [primary, fallback, plain, manual] },
     };
     fixture.revision.configuration = admitLoggingConfiguration(
       {
@@ -126,7 +123,10 @@ export async function checkExplicitCodexProviderProjection(
                 model: sourceProvider === "codex" ? structuredClone(childSelection) : child,
               },
             },
-            alias: { subagents: { model: "primary" } },
+            alias: {
+              subagents: { model: "primary" },
+              modelPolicy: { allow: [primary] },
+            },
             providerAlias: { subagents: { model: sourceProvider } },
             inherited: {},
           },
@@ -142,6 +142,7 @@ export async function checkExplicitCodexProviderProjection(
                 // Full OCE catalog refs must not strip the native "codex/" namespace.
                 { id: fallback, name: "Fallback model" },
                 { id: "plain-model", name: "Plain model" },
+                { id: "vendor/manual-model", name: "Manual model" },
               ],
             },
           },
@@ -179,6 +180,9 @@ export async function checkExplicitCodexProviderProjection(
     const alias = renderedRecord(entries.alias, "alias agent entry");
     const providerAlias = renderedRecord(entries.providerAlias, "provider alias agent entry");
     assert.equal(renderedRecord(alias.subagents, "alias subagents").model, "primary");
+    assert.deepEqual(alias.modelPolicy, {
+      allow: [`${qualified}vendor/organization/model`],
+    });
     assert.equal(
       renderedRecord(providerAlias.subagents, "provider alias subagents").model,
       sourceProvider,
@@ -190,6 +194,7 @@ export async function checkExplicitCodexProviderProjection(
         `${qualified}vendor/organization/model`,
         `${qualified}codex/native`,
         `${qualified}plain-model`,
+        `${qualified}vendor/manual-model`,
         `${qualified}*`,
       ]);
       assert.equal(
@@ -198,6 +203,14 @@ export async function checkExplicitCodexProviderProjection(
         "primary",
       );
     }
+    assert.deepEqual(defaults.modelPolicy, {
+      allow: [
+        `${qualified}vendor/organization/model`,
+        `${qualified}codex/native`,
+        `${qualified}plain-model`,
+        `${qualified}vendor/manual-model`,
+      ],
+    });
     const models = renderedRecord(document.models, "rendered model settings");
     const providers = renderedRecord(models.providers, "rendered model providers");
     assert.deepEqual(
@@ -210,6 +223,7 @@ export async function checkExplicitCodexProviderProjection(
         },
         { id: "openai-compatible/codex/native", name: "Fallback model" },
         { id: "openai-compatible/plain-model", name: "Plain model" },
+        { id: "openai-compatible/vendor/manual-model", name: "Manual model" },
         {
           id: "openai-compatible/vendor/organization/child",
           name: "vendor/organization/child",

@@ -127,11 +127,11 @@ The helper matches the manifest before opening the authenticated listener.
 The provider receives only the verifier; Compute withholds the private status
 revision, port, container name and Pod UID.
 
-The Harness waits before its first model probe. Compute awaits installation commit, rechecks evidence
-and calls the Sandbox Driver. The Driver verifies the Sandbox and service and reads
-the execution/plan challenge. Compute signs the fresh process nonce and current
-installation with its control-plane key. The listener closes before Codex starts.
-Restart invalidates the old release. After 180 seconds startup fails closed and remains held.
+Before probing the model, Compute verifies the committed installation. The Sandbox Driver checks
+the service and challenge. Compute signs the nonce and installation. The Git Worker rechecks
+ownership and installation before POST. Failed signing permits retry. Lost acknowledgments
+block release. Withdrawal committed after the final ownership read can cross the POST.
+The listener closes before Codex starts. Restart invalidates release. Startup times out after 180 seconds.
 Reconciliation can repeat readiness checks without resolving material or retrying
 business requests. Active revisions require queued work; default Kubernetes has
 no periodic maintenance for [Harness-only restarts](../reference/credential-sources/protected-inference.md#installation-configuration).

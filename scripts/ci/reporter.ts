@@ -63,7 +63,11 @@ const postTestAsyncActivityPrefix =
 
 // The proof runs in a separate controller process. Both its test and the CI
 // reporter use this closed vocabulary; neither publishes arbitrary stage text.
-export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: unknown) {
+export function nativeFirstAgentProofDiagnostic(
+  failureStage: unknown,
+  worker: unknown,
+  modelPhase?: unknown,
+) {
   const stages = [
     "startup",
     "connect",
@@ -88,6 +92,9 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
   const diagnostic = {
     kind: "native-first-agent-proof" as const,
     failureStage,
+    ...(failureStage === "model-outcome" && (modelPhase === "initial" || modelPhase === "resumed")
+      ? ({ modelPhase } as const)
+      : {}),
   };
   if (!isRecord(worker)) {
     return diagnostic;

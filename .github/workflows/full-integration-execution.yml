@@ -588,7 +588,7 @@ jobs:
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: logging-collector
-          profile: images
+          profile: baseline
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
           job-timeout-minutes: 30

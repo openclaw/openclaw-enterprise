@@ -1,14 +1,14 @@
 ---
 created: "2026-11-20"
-updated: 2026-11-21
-last_updated_session: authoring-run/7d36e4b0-9d69-4099-8f8b-50144697a78a
+updated: 2026-11-22
+last_updated_session: authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc
 ---
 
 # Managed static credential source custody flow
 
 ## Overview
 
-A caller enrolls a credential through the authenticated Namespace Source API. The selected TokenService creates and owns the CredentialSource and its credential. OpenClaw Control Plane (OCC) authorizes requests and governs IAM, Agent bindings, destination policy, and audit. This flow ends at Source retirement; managed Agent runtime delivery remains unavailable.
+A caller enrolls a credential through the authenticated Namespace Source API. The selected TokenService creates and owns the CredentialSource and its credential. OpenClaw Control Plane (OCC) authorizes requests and governs IAM, Agent bindings, destination policy, and audit. This flow covers Source custody; the [credential lifecycle flow](credential-source-lifecycle.md#3-bind-and-admit-an-agent-revision) owns staged Agent admission and delivery.
 
 ## Entry Points
 
@@ -22,7 +22,11 @@ A caller enrolls a credential through the authenticated Namespace Source API. Th
 ## Flow
 
 ```mermaid
-graph TD
+---
+config:
+  htmlLabels: true
+---
+flowchart TB
   A["<b>Source API</b><br/>Write-only credential"] --> B["<b>OCC</b><br/>Authorize and audit request"]
   B --> C["<b>TokenService</b><br/>Create Source and credential"]
   C -->|commit ready Source| D["<b>OCC</b><br/>Grant creator and audit separately"]
@@ -30,10 +34,15 @@ graph TD
   D --> F["<b>Source API</b><br/>Sanitized metadata"]
   D -->|completion fails| E
   F -->|GET, list, policy PATCH| J["<b>OCC</b><br/>Read metadata or update unbound policy"]
-  F -->|credential PATCH| G["<b>TokenService</b><br/>Update credential"]
+  F -->|credential PATCH| G["<b>TokenService</b><br/>Commit new credential"]
+  G -->|after commit, if selected| L["<b>Credential Proxy</b><br/>Handle Source update"]
+  L -->|delivery fails| M["<b>Delivery failure</b><br/>New credential remains"]
   F -->|DELETE, unreferenced| K["<b>OCC</b><br/>Commit deleting and intent"]
-  K --> H["<b>TokenService</b><br/>Remove Source and material"]
-  H -->|uncertain removal| I["<b>Source deleting</b><br/>Authorized retry"]
+  K -->|Proxy selected| N["<b>Credential Proxy</b><br/>Retire delivery copy"]
+  K -->|no Proxy selected| H
+  N -->|success| H["<b>TokenService</b><br/>Remove Source and material"]
+  N -->|failure, custody remains| I["<b>Retirement unconfirmed</b><br/>Retry if Source remains"]
+  H -->|uncertain removal| I
 ```
 
 ## Execution Trace
@@ -42,7 +51,7 @@ graph TD
 
 `apps/controller/src/composition/token-service.ts:installTokenServiceDriver`
 
-Startup binds the selected TokenService instance to the Secret Driver's Installation-private store and the canonical PostgreSQL Source catalog. A Source pins the instance that created it. Changing Driver selection does not transfer custody.
+Startup binds the selected TokenService instance to the Secret Driver's Installation-private store and the PostgreSQL Source catalog. API composition takes the `credential_proxy_delivery` capability from the validated registration with `require`, so it can bind update notifications before Sandbox selection. Worker installs TokenService for Source resolution and does not bind the native Proxy’s Source placement resolver. A Source pins the TokenService instance that created it. Changing Driver selection does not transfer custody.
 
 ### 2. Create the Source
 
@@ -54,25 +63,27 @@ An uncertain private-store write can leave material without a Source record. A f
 
 ### 3. Read or update the Source
 
-`packages/occ/src/credential-source-operations.ts:readCredentialSource`, `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`
+`packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`, `apps/controller/src/drivers/token-service/occ.ts:updateSource`
 
-After exact IAM authorization, OCC reads Source metadata directly from the shared PostgreSQL catalog. Namespace listing filters catalog records by exact Source read authority. These reads work when TokenService is unavailable; they do not resolve credentials or prove live credential readiness. Any request for a usable credential goes through TokenService. OCC separately validates `config.provider_preset`; a Source without an approved preset supplies no destination authority. An effective preset change requires an unbound Source and a separate request from credential replacement. OCC commits policy-only changes with the unbound check and audit in its own transaction. For a credential change it commits intent, releases its locks, calls TokenService, and then records completion. A later OCC failure does not undo a committed credential change. Driver failures are sanitized before responses, logs, or audit.
+After exact IAM authorization, OCC reads Source metadata directly from the shared PostgreSQL catalog. Namespace listing filters catalog records by exact Source read authority. These reads work when TokenService is unavailable; they do not resolve credentials or prove live credential readiness. Any request for a usable credential goes through TokenService. OCC separately validates `config.provider_preset`; a Source without an approved preset supplies no destination authority. An effective preset change requires an unbound Source and a separate request from credential replacement. OCC commits policy-only changes with the unbound check and audit in its own transaction.
+
+For a credential change, OCC commits intent and releases its locks before it calls TokenService, including when an active staged Agent revision uses the Source. TokenService commits the new credential, then notifies the selected Credential Proxy with the exact Source reference and version. The notification contains no credential. The Proxy can resolve that Source through the same TokenService instance when it needs the value. The native Proxy updates an existing Provider; if no Provider exists, it returns without resolving or creating one. OCC records completion after the owner returns. If delivery fails, OCC audits the committed Source update and the `CREDENTIAL_DELIVERY_FAILED` outcome separately. The new credential remains in custody. Driver failures are sanitized before responses, logs, or audit.
 
 ### 4. Retire the Source
 
 `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`, `apps/controller/src/drivers/token-service/occ.ts:removeSource`
 
-OCC authorizes exact DELETE, refuses blocking references, and commits `deleting` and retirement intent. It releases its locks before calling TokenService once. TokenService locks the Namespace and Source in its own transaction, rechecks references, erases private material, and deletes the Source and its IAM bindings. TokenService returns the actual removed AccessBindings, and OCC records them in completion audit separately. An uncertain removal can leave `deleting` for retry. If TokenService commits before completion audit fails, the Source and its exact IAM bindings are gone. A retry can return `403` if the caller lost delete authority, or `404` if still authorized. Retirement intent remains.
+OCC authorizes exact DELETE, refuses blocking references, and commits `deleting` and retirement intent. It releases its locks before Driver calls. If a Proxy is selected, OCC asks it to retire the owned delivery copy and profile first. If that call fails, the Source stays `deleting` and TokenService keeps custody for a retry. After retirement succeeds, or when no Proxy is selected, TokenService locks the Namespace and Source in its own transaction, rechecks references, erases private material, and deletes the Source and its IAM bindings. TokenService returns the actual removed AccessBindings, and OCC records them in completion audit separately. An uncertain removal can leave `deleting` for retry. If TokenService commits before completion audit fails, the Source and its exact IAM bindings are gone. A retry can return `403` if the caller lost delete authority, or `404` if still authorized. Retirement intent remains.
 
 ### 5. Stop at the Agent delivery boundary
 
 `packages/occ/src/agent-credential-access.ts:authorizeAgentCredentialSources`
 
-An authorized Agent draft can bind a ready same-Namespace Source by ID without resolving credentials. Managed deployment refuses before saving a revision or queuing work. Source creation and draft binding do not establish runtime credential delivery or a model turn.
+An authorized Agent draft can bind a ready same-Namespace Source by ID without resolving credentials. Admission can freeze its approved model route in a revision. During deployment, the Worker provisions an idle Sandbox, the Proxy attaches the Provider, and the Sandbox applies the admitted credential policy before the Harness starts. Source creation and draft binding do not establish runtime credential delivery or a model turn. The [credential lifecycle flow](credential-source-lifecycle.md#4-resolve-the-source-at-dispatch) owns deployment details.
 
 ## Debugging and Verification
 
-Run `node --test tests/integration/postgres-staged-agent-credential-binding.test.ts` with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment). It exercises real Fastify routes, PostgreSQL application-role persistence, Native IAM, concrete TokenService custody, sanitized reads, updates, denial audit, retirement, and Agent draft binding. The Secret Driver's Kubernetes API transport is simulated; this does not establish live Kubernetes storage, runtime delivery, or model execution.
+Run `node --test tests/integration/postgres-staged-agent-credential-binding.test.ts` with the [PostgreSQL test environment](../testing/postgresql.md#postgresql-test-environment). It exercises real Fastify routes, PostgreSQL application-role persistence, Native IAM, concrete TokenService custody, sanitized reads, updates, denial audit, retirement, and Agent draft binding. Source DELETE coverage uses the selected OpenShell Proxy and production gRPC client against a controlled loopback service. The Secret Driver's Kubernetes API transport is also controlled. This does not establish live Kubernetes storage, native OpenShell deletion, runtime delivery, or model execution.
 
 ## Related docs
 
@@ -86,6 +97,12 @@ Run `node --test tests/integration/postgres-staged-agent-credential-binding.test
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 12:28: Retire the selected Proxy delivery copy before TokenService removes Source custody. (authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc - 802c9adb9)
+
+- 2026-11-22 12:16: Combine staged deployment with Source updates through the selected native Proxy. (authoring-run/c68f6f42-f163-4903-80e4-815e23cd470d - 403ad1bbacb79d2c504026c696a343d29bfa948a)
+
+- 2026-11-21 21:55: Link staged Agent admission to its lifecycle owner. (01a1ec21-b384-7472-887f-945ae0ab16fc - 91de87598)
 
 - 2026-11-21 21:33: Authorize Source creation in the manager and clarify DELETE retry authority. (authoring-run/7d36e4b0-9d69-4099-8f8b-50144697a78a - 930293d2b18205276dcd78aec52414e0c9fdc616)
 

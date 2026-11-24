@@ -25,8 +25,9 @@ import {
   createRestricted,
   INSTALLATION_ADMINISTER_DENIED,
   NAMESPACE_CREATE_DENIED,
+  namespaceDeleteDenied,
 } from "../helpers/refusal-access.ts";
-import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { grantConfiguredNamespaceRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 type Body = Record<string, unknown> | undefined;
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
@@ -39,7 +40,7 @@ async function memberSession(fixture: Fixture, label: string, namespaceId: strin
 }
 
 // The production Fastify app with the Native IAM Driver and a live policy (finding 2534). A
-// caller's own 403 names the grant its request checked and who grants it. It never names an ID
+// caller's own 403 names the grant its request checked and gives a next step. It never names an ID
 // the request did not carry, never tells a Restriction from a missing grant, and reads the same
 // for an unknown resource as for one the caller cannot read.
 test("a caller's own denial names the missing grant without disclosing what the caller cannot see", async (t) => {
@@ -102,7 +103,7 @@ test("a caller's own denial names the missing grant without disclosing what the 
     );
   }
 
-  // A create needs the collection grant, which Namespace Roles cannot give.
+  // A create refusal names the permission and any Namespace supplied by the request.
   assert.equal(
     (
       await refusal("POST", `/namespaces/${namespace.id}/secrets`, {
@@ -116,6 +117,11 @@ test("a caller's own denial names the missing grant without disclosing what the 
     (await refusal("POST", "/namespaces", { name: "Refused Namespace" })).message,
     NAMESPACE_CREATE_DENIED,
   );
+  assert.deepEqual(await refusal("DELETE", `/namespaces/${namespace.id}`), {
+    code: "FORBIDDEN",
+    message: namespaceDeleteDenied(namespace.id),
+  });
+
   // Installation administration, from the route's own check and from the controller's.
   assert.equal((await refusal("GET", "/backends")).message, INSTALLATION_ADMINISTER_DENIED);
   assert.equal(
@@ -548,11 +554,8 @@ test("an Agent update's denial on the current Harness authentication says every 
   }
 });
 
-// A deny Restriction overrides every grant, administration included, and administration cannot
-// lift it. An Installation administrator it refuses is told so, as the console says (finding
-// D769): her own Namespace permission answer already shows administration without Agent create,
-// which only a Restriction causes. A member refused the same create keeps the plain text, which
-// never tells a Restriction from a missing grant.
+// An evidence-backed Restriction reason can go to the caller who administers the Installation.
+// The member's ordinary denial stays identical whether or not a Restriction applies.
 test("a create a Restriction denies names it only to an Installation administrator", async (t) => {
   const auditSink = new InMemoryAuditSink();
   const fixture = await createConsoleAppFixture(t, { auditSink });
@@ -570,13 +573,15 @@ test("a create a Restriction denies names it only to an Installation administrat
   const member = await memberSession(fixture, "restricted-member", namespace.id, [
     ["read", "namespace"],
   ]);
-  const restriction = restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   const path = `/namespaces/${namespace.id}/agents`;
   const body = {
     name: "Refused Agent",
     configurationId: configuration.id,
     harnessAuth: { method: "api_key", source: secret.ref },
   };
+  const withoutRestriction = await fixture.request("POST", path, { session: member, body });
+  assertApiError(withoutRestriction, 403, "FORBIDDEN", "member without a grant or Restriction");
+  const restriction = restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   const firstEvent = auditSink.events.length;
 
   const administrator = await fixture.request("POST", path, { body });
@@ -584,6 +589,7 @@ test("a create a Restriction denies names it only to an Installation administrat
   assert.equal(administrator.body.error.message, createRestricted("Agent", namespace.id));
   const refused = await fixture.request("POST", path, { session: member, body });
   assertApiError(refused, 403, "FORBIDDEN", "member");
+  assert.deepEqual(refused.body.error, withoutRestriction.body.error);
   assert.equal(refused.body.error.message, createDenied("Agent", namespace.id));
   // Checking administration is not audited: each refused create records its one denial.
   assert.deepEqual(
@@ -603,4 +609,61 @@ test("a create a Restriction denies names it only to an Installation administrat
   // Without the Restriction the administrator creates the Agent: the text followed the rule.
   liftRestriction(fixture.policy, restriction);
   assert.equal((await fixture.request("POST", path, { body })).status, 201);
+});
+
+test("a permitted Namespace member can still create a Secret and delete an empty Namespace", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const writable = await fixture.createNamespace("Granted creation", { ready: true });
+  const empty = await fixture.createNamespace("Granted deletion", { ready: true });
+  const member = await fixture.createAccountWithPolicy("granted-member", ({ id }) => {
+    grantConfiguredNamespaceRole(fixture.policy, id, {
+      name: "secret-creator",
+      namespaceId: writable.id,
+      permissions: { namespace: ["read"], secret: ["create"] },
+    });
+    grantConfiguredNamespaceRole(fixture.policy, id, {
+      name: "namespace-deleter",
+      namespaceId: empty.id,
+      permissions: { namespace: ["read", "delete"] },
+    });
+  });
+  const session = await fixture.signIn(member.credentials);
+  assert.equal((await fixture.request("GET", "/installation", { session })).status, 403);
+  for (const [namespaceId, canCreateSecret, canDeleteNamespace] of [
+    [writable.id, true, false],
+    [empty.id, false, true],
+  ] as const) {
+    const permissions = await fixture.request("GET", `/namespaces/${namespaceId}/permissions`, {
+      session,
+    });
+    assert.equal(permissions.status, 200);
+    assert.deepEqual(permissions.data, {
+      agents: { create: false },
+      secrets: { create: canCreateSecret },
+      installation: { administer: false },
+      delete: canDeleteNamespace,
+    });
+  }
+  const secret = { name: "Shared model", value: "synthetic-value" };
+  const deniedSecret = await fixture.request("POST", `/namespaces/${empty.id}/secrets`, {
+    session,
+    body: secret,
+  });
+  assertApiError(deniedSecret, 403, "FORBIDDEN", "create a Secret outside the bound Namespace");
+  const deniedDelete = await fixture.request("DELETE", `/namespaces/${writable.id}`, { session });
+  assertApiError(deniedDelete, 403, "FORBIDDEN", "delete outside the bound Namespace");
+  assert.equal(
+    (
+      await fixture.request("POST", `/namespaces/${writable.id}/secrets`, {
+        session,
+        body: secret,
+      })
+    ).status,
+    201,
+  );
+  assert.equal(
+    (await fixture.request("DELETE", `/namespaces/${empty.id}`, { session })).status,
+    202,
+  );
 });

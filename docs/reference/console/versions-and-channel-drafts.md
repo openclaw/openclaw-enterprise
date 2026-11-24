@@ -86,7 +86,10 @@ it or it was deleted, with the ID in the tooltip. **No Secret
 bound** means no binding. Values are never read, and metadata does not prove
 credential validity.
 
-AgentRevision snapshots cannot be edited, rolled back, or redeployed. **Open draft** and **Edit current Configuration** open the saved draft without
+AgentRevision snapshots cannot be edited, rolled back, or redeployed.
+**Draft credentials** and **Draft repositories** link to the saved draft when the Console
+confirms Configuration `read` and has no outstanding read error or remembered denial.
+**Open draft** and **Edit current Configuration** open the saved draft without
 changing the viewed snapshot; **Deploy new version** admits it as another
 immutable version. Admission, recorded activation, and `activeRevisionId` are
 separate facts, and startup evidence does not establish live gateway health; see the

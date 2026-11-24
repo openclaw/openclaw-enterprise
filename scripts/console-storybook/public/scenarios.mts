@@ -47,6 +47,7 @@ import {
   calendarPlugin,
   pluginCapabilities,
   pluginDetailIdentityRefusal,
+  pluginDiscoveryAgentDeleting,
   pluginDiscoveryConflict,
   pluginSetup,
 } from "./plugin-scenario-data.mts";
@@ -65,6 +66,12 @@ type AuthoredRule = Omit<FixtureRule, "data"> &
   (
     | { data?: never }
     | { suffix: "/native-admin"; data: { status: "unavailable" } }
+    | {
+        suffix: "/plugins/capabilities";
+        data: NonNullable<PluginFieldsOptions["capabilities"]> & {
+          discoveryCredential: "none" | "required";
+        };
+      }
     | {
         suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions";
         data: PermissionSnapshot;
@@ -275,6 +282,8 @@ const agentDetailScenarios = createAgentDetailScenarios({
   currentVersion,
   candidateVersion,
 });
+
+const slackMcpTools = agentDetailScenarios.configuration.slackMcpTools;
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
 const authoredScenarios = {
@@ -566,14 +575,14 @@ const authoredScenarios = {
     emptyAgents: true,
     readOnlyPermissionSummary: true,
     description:
-      "A member without Agent create sees no Agents. The heading says none are shared with them, not that the Namespace has none, and nothing invites creating.",
+      "A member without Agent create sees no readable Agents. Create Agent is disabled and asks the member to have an Installation administrator check their access.",
   } satisfies LocalScenario,
   agentsCreateBlockedByRestriction: {
     group: "Pages/Agents",
     name: "Create blocked by a Restriction",
     agentCreateRestricted: true,
     description:
-      "An Installation administrator in a Namespace whose deny Restriction blocks Agent create. Create Agent is disabled, and the note names the Restriction and who can lift it, not an administrator to ask.",
+      "A simulated Restriction blocks Agent create for an Installation administrator. The advisory note names Agent create in this Namespace and asks them to check their access and whether an IAM Restriction applies.",
     steps: [
       "Check that Create Agent is disabled and that a screen reader names the note as its description.",
     ],
@@ -723,6 +732,10 @@ const authoredScenarios = {
       "Tab to Research assistant. Switch to another window, then return to start the list refresh.",
       "While the list refreshes, Tab to the Namespace selector. Wait for the list to return and check that the selector still has focus.",
       "Press Tab to continue from the selector, then Shift+Tab to return to it.",
+      "Reset the story. Type Research in Search Agents and press Shift+Left Arrow three times to select rch backwards. Switch away and back, then switch away again while the simulated list refresh is pending. Stay away for 6.5 seconds.",
+      "Return and wait for the next successful check. Search Agents has focus with rch still selected. Type X and check that the query becomes ReseaX. Repeat at desktop and phone widths.",
+      "Reset the story. Type Research in Search Agents, select rch backwards, then switch windows and return. Stay in the foreground while the delayed healthy check is pending.",
+      "Tab to the Namespace selector, then click the plain Namespace · Research line below the Agents heading. When the check finishes, type X without clicking or tabbing. Search Agents must not regain focus, and the query must remain Research. Repeat at desktop and phone widths.",
     ],
   } satisfies LocalScenario,
   agentsRowRefocusStopped: {
@@ -744,6 +757,7 @@ const authoredScenarios = {
     description:
       "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
     steps: [
+      "Narrow the desktop view until Actions is off screen. Scroll the table sideways to reach it. The sidebar and page heading stay in place.",
       "Tab to a row's Stop and Delete icons. Each takes focus and looks unavailable, its description is the row's whole reason without the short grant line, and Enter, Space or a click opens no confirmation.",
       "Find Needs operate and delete under each row's icons. Hover it for the whole reason, which names an Installation administrator as who grants them. The icons do not open a confirmation.",
       "Open an Agent: its detail page explains the same restrictions.",
@@ -781,8 +795,33 @@ const authoredScenarios = {
   agentsSearch: {
     group: "Pages/Agents",
     name: "No search matches",
-    actions: [{ selector: 'input[type="search"]', value: "no-such-agent" }],
-    description: "Search returns no matches without changing the Namespace.",
+    actions: [{ selector: 'input[type="search"]', value: "no-such-agent", focus: true }],
+    description: "Clear a search, browse Agent names and open a match with the keyboard.",
+    steps: [
+      "Press Enter. Stay on No matching Agents. Press Escape to restore the list.",
+      "Press Down twice to focus the second name, then Up to focus the first. Escape returns to search.",
+      "Type Research and press Enter to open Research assistant. Use browser Back. The query remains and the focused Agent name is visible.",
+    ],
+  } satisfies LocalScenario,
+  agentsSearchRetry: {
+    group: "Pages/Agents",
+    name: "Resume a search after Retry",
+    rules: [
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        skip: 1,
+        once: true,
+        status: 503,
+      },
+    ],
+    description: "The first Agents list refresh after returning to the tab fails once.",
+    steps: [
+      "Open the preview in its own tab and wait for the Agents list. Type Research in Search Agents, then press Shift+Left three times to select rch.",
+      "Switch to another browser tab and return. When Request unavailable appears, confirm Retry has focus.",
+      "Press Enter. Check that Search Agents has focus, Research assistant is visible, and Research still has its final three letters selected.",
+      "Type X without moving focus. Check that the query becomes ReseaX and the list shows No matching Agents.",
+    ],
   } satisfies LocalScenario,
   noNamespaces: {
     group: "Pages/Agents",
@@ -833,7 +872,7 @@ const authoredScenarios = {
     emptyAgents: true,
     readOnlyPermissionSummary: true,
     description:
-      "A caller who cannot create Agents in an empty Namespace is told shared Agents appear here, not invited to create one.",
+      "When the caller cannot create Agents and sees no readable Agents, the page explains which Agents appear here.",
   } satisfies LocalScenario,
   agentsNamespaceProvisioning: {
     group: "Pages/Agents",
@@ -1009,6 +1048,43 @@ const authoredScenarios = {
   ...credentialsOAuthScenarios({ draft }),
   ...createAgentOutcomeScenarios,
   ...agentDetailScenarios.configuration,
+  slackMcpTools: {
+    ...slackMcpTools,
+    steps: [
+      "Open Slack, select Slack search connection (simulated), and choose Load tools for Slack.",
+      "After the refusal, verify the request ID and Recheck access. Activate Recheck access with the keyboard. Verify it disappears and Load plugins receives focus.",
+      "Choose Load plugins, reopen Slack, and choose Load tools for Slack. Check that slack_search_public appears.",
+      "Choose Done and expand Plugin selections JSON to confirm the selected account remains in the draft.",
+    ],
+  } satisfies LocalScenario,
+  slackMcpAccountRecovery: {
+    ...slackMcpTools,
+    name: "Recover a Slack account after access is restored",
+    description: "Recover a managed Slack account that is temporarily ineligible for discovery.",
+    rules: [
+      ...slackMcpTools.rules,
+      {
+        suffix: "/plugins/capabilities",
+        method: "GET",
+        skip: 1,
+        once: true,
+        data: {
+          ...slackMcpTools.pluginCapabilities,
+          discoveryCredential: slackMcpTools.pluginDiscoveryCredential,
+          credentialSlots: slackMcpTools.pluginCapabilities.credentialSlots.map((slot) => ({
+            ...slot,
+            sources: [],
+          })),
+        },
+      },
+    ],
+    steps: [
+      "Open Slack, select Slack search connection (simulated), and choose Load tools for Slack.",
+      "After the permission error, choose Recheck access, then Load plugins. Reopen Slack and check that no account is eligible.",
+      "Activate Recheck accounts with the keyboard. Verify Load plugins receives focus and the catalog is empty.",
+      "Choose Load plugins, reopen Slack, and choose Load tools for Slack. Check that slack_search_public appears.",
+    ],
+  } satisfies LocalScenario,
   pluginsDetailIdentityRefused: {
     ...agentDetailScenarios.configuration.pluginsDraft,
     name: "Plugin details for a different plugin",
@@ -1054,6 +1130,20 @@ const authoredScenarios = {
       "Choose Done. Check that Plugin selections JSON contains only the unsaved Project tracker selection and that Save plugin selections is still available.",
     ],
     gap: "The saved Agent and tool details are simulated.",
+  } satisfies LocalScenario,
+  pluginsAgentDeleting: {
+    ...agentDetailScenarios.configuration.pluginsDraft,
+    name: "Plugin discovery during Agent deletion",
+    agentPlugins: {},
+    actions: pluginDiscoveryConflict.actions,
+    rules: [pluginDiscoveryAgentDeleting],
+    description: "A catalog refresh finds that the saved Agent is being deleted.",
+    steps: [
+      "Wait for List events and enabled Add Calendar. Choose Load plugins to simulate the deletion refusal.",
+      "Check that Calendar and its tools disappear. In Available and Configured, read the deletion message and request ID. Load plugins is disabled, and Recheck access is absent.",
+      "Choose Done. Check that Plugin selections JSON still contains the unsaved Project tracker selection.",
+    ],
+    gap: "The saved Agent and deletion response are simulated.",
   } satisfies LocalScenario,
   ...pluginApproverScenarios(draft),
   ...agentDetailScenarios.versions,
@@ -1160,7 +1250,8 @@ const authoredScenarios = {
       "The list shows the newest visible failure beside the current version, without asserting serving health. The failure keeps to one line, so the row keeps its height when the read lands; its title and the Agent page give the whole text.",
     steps: [
       'Current version reads "v6", not an ID, and the latest deployment reads "v7 · Failed": the words the Agent page uses.',
-      "Hover the one-line failure to read its whole text.",
+      "Compare the current version with the failed deployment. The failure reason uses the error color. Hover it to read the full message.",
+      "Tab between the Agent and version links. Check the highlight follows the row and the focused link has its own outline.",
       "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
     ],
   } satisfies LocalScenario,
