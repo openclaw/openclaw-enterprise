@@ -4,18 +4,21 @@ Publish a versioned OpenClaw Control Plane (OCC) Helm chart and matching image
 tags through **Enterprise Containers**. Complete [release configuration](configuration.md)
 once. The receipt records the immutable chart and image digests.
 
-## Choose one release version
+## Publish
+
+### Choose one release version
 
 Set root `package.json` and both `version` and `appVersion` in
 `deploy/helm/openclaw-enterprise/Chart.yaml` to the same SemVer version.
-Advance it for every chart release, including image changes. Image-only
+Chart publication accepts a prerelease suffix; [CLI publication](cli-publication.md#publish)
+requires a plain `X.Y.Z` version. Advance the version for every chart release,
+including image changes. Image-only
 publication does not require a new chart version. Merge the reviewed change to
 `main` and wait for its exact push CI to succeed.
 
-## Publish
+### Run publication
 
-1. [Choose and merge the release version](#choose-one-release-version), then
-   [select the source and CI run](containers.md#prepare-and-publish).
+1. [Select the source and CI run](containers.md#prepare-and-publish).
 2. Dispatch [Enterprise Containers](../../.github/workflows/container-publish.yml)
    on `main` with `source_sha`, `ci_run_id`, `publish: true`, and
    `publish_chart: true`. Choose `image_tag` deliberately: blank updates

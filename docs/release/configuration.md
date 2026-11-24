@@ -4,9 +4,10 @@
 
 Configure access once before you publish images, a Helm chart, or the OCC CLI.
 Repository writers can dispatch the release workflows. Protect `main`, require
-`CI Required`, and review workflow changes. Each publication needs the entire
-successful push CI run for its exact source commit, including First Agent Smoke.
-There is no second-person approval or approval-comment requirement.
+`CI Required`, and review workflow changes. Each publication requires a
+successful conclusion for the entire `main` push CI workflow and a successful
+`CI Required` job for its exact source commit. First Agent Smoke must succeed
+when selected. There is no second-person approval or approval-comment requirement.
 
 Create a separate `container-publish` environment with no required reviewers or
 wait timer, administrator bypass disabled, and exactly one deployment rule:

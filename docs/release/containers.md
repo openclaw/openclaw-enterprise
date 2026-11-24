@@ -3,21 +3,14 @@
 Use **Enterprise Containers** to prepare or publish controller and runtime
 images for Linux amd64 and arm64.
 
-1. Select the reviewed current `main` SHA and its successful exact push CI run.
-2. Choose no-push preparation (`publish: false`) or publication
-   (`publish: true`). **A blank `image_tag` updates `latest` for both images
-   when publishing.** Use a dedicated alias if that is not intended.
-3. Check the [base image and runners](configuration.md#build-settings), then
-   [run the workflow](#prepare-and-publish). For publication, also complete
-   [publication configuration](configuration.md#publication-configuration). If publication stops, use
-   [recovery](#recover-a-partial-publication).
-4. For preparation, require both sealed OCI artifacts. For publication, verify
-   both digest references and retain the publication receipt.
-
 ## Prepare and publish
 
-1. Wait for every job in the exact `main` push CI run to succeed; PR checks are
-   insufficient. With Node 24 and `gh`, find the inputs:
+1. Check the [base image and runners](configuration.md#build-settings). For
+   publication, also complete [publication configuration](configuration.md#publication-configuration).
+   Select the reviewed current `main` SHA. Require the entire push CI workflow
+   conclusion and its `CI Required` job to be successful for that commit.
+   First Agent Smoke must succeed when selected. PR checks are insufficient.
+   With Node 24 and `gh`, find the inputs:
 
    ```sh
    node scripts/ci/container-source.ts "$REVIEWED_SHA"
@@ -25,16 +18,18 @@ images for Linux amd64 and arm64.
 
    The command prints `source_sha` and `ci_run_id` as JSON.
 
-2. Dispatch [Enterprise Containers](../../.github/workflows/container-publish.yml)
-   on `main` with those inputs. If `main` moved, review the new commit and use
-   its own CI run. Set `publish: false` for preparation or `true` to publish.
-   For a chart release, also set `publish_chart: true` and follow the
-   [Helm chart steps](chart-publication.md#publish).
-3. For publication, choose `image_tag`: blank means mutable `latest`; a custom
-   alias is also mutable and can replace an existing tag. An alias is at most
-   128 ASCII letters, digits, underscores, periods, or hyphens and starts with
-   a letter, digit, or underscore. The case-insensitive prefixes `sha-` and
-   `bootstrap-`, and SemVer release tags, are reserved.
+2. Choose no-push preparation (`publish: false`) or publication
+   (`publish: true`). **For publication, a blank `image_tag` updates mutable
+   `latest` for both images.** A custom alias is also mutable and can replace
+   an existing tag. An alias is at most 128 ASCII letters, digits, underscores,
+   periods, or hyphens and starts with a letter, digit, or underscore. The
+   case-insensitive prefixes `sha-` and `bootstrap-`, and SemVer release tags,
+   are reserved. For a chart release, also set `publish_chart: true` and follow
+   the [Helm chart steps](chart-publication.md#publish).
+3. Dispatch [Enterprise Containers](../../.github/workflows/container-publish.yml)
+   on `main` with the selected inputs. If `main` moved, review the new commit
+   and use its own CI run. If publication stops, inspect both remote digests and
+   use [recovery](#recover-a-partial-publication).
 4. For no-push preparation, require successful validation, native preparation,
    runtime smoke, and both assembly jobs. Retain the sealed
    `container-<controller|runtime>-<run-id>-<attempt>` artifacts; there is no

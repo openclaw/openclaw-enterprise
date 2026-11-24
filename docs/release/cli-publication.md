@@ -5,7 +5,8 @@ Complete [release configuration](configuration.md) once.
 
 ## Publish
 
-1. Set root `package.json` to a strict `X.Y.Z` version and set the chart's
+1. Set root `package.json` to a strict `X.Y.Z` version without leading zeros,
+   prerelease suffixes, or build metadata. Set the chart's
    `version` and `appVersion` to the same value. Merge the version and release
    code to `main`. Wait for its entire exact push CI run to succeed.
 2. Dispatch [Release OCC CLI](../../.github/workflows/cli-release.yml) on
