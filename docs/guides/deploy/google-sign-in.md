@@ -1,18 +1,17 @@
 # Enable Google sign-in
 
-Google sign-in can run alone or alongside [generic OIDC](oidc-sign-in.md). Email and
-password stay the default. An Installation administrator attaches a person's Google
-identity to an existing OpenClaw Enterprise (OCE) account; that person can then sign in
-with Google or with the account password. Google sign-in creates no account, performs
-no signup, and never matches accounts by email address.
+Google sign-in can run alone or alongside [generic OIDC](oidc-sign-in.md). An
+Installation administrator attaches a Google identity to an existing OpenClaw
+Enterprise (OCE) account. Google sign-in never creates an account or matches
+accounts by email. Password sign-in is available by default. With
+`auth.passwordSignIn: recovery-only`, only the designated recovery account
+can sign in with a password.
 
 Google uses the same guarded
 [single-controller profile](../../reference/authentication/external-sign-in.md#external-sign-in-profile)
 as OIDC: the exact `Origin` checks, PKCE (`S256`), one-use state, the host-only
 `__Host-` browser-binding cookie, the keyed admission limiter, the eight-hour session
-rules, and the `attemptId`, login receipt, and one-use result exchange. Password
-fallback, account disablement, detach, and the recovery account work unchanged. You can
-enable Google alone or together with OIDC.
+rules, and the `attemptId`, login receipt, and one-use result exchange. The same account disablement and recovery rules apply.
 
 ## Requirements
 
@@ -116,13 +115,14 @@ Google needs no new activation, but still use one serving controller and stopped
 writers for the upgrade.
 
 `GET /api/auth/providers` then returns `google: true`, and the Console shows
-**Continue with Google**. Once every ordinary account has an identity,
-[recovery-only password sign-in](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in)
-leaves passwords to the recovery account. Activation is one-way: keep at least one provider configured,
-or startup refuses. To return to password-only sign-in, follow
-[sign-in maintenance](auth-maintenance.md#deactivate-external-sign-in), then set
-`auth.google.enabled: false` as well; without Helm also remove the
-`OCC_AUTH_GOOGLE_*` variables.
+**Continue with Google**. Before you enable
+[recovery-only password sign-in](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in),
+have each enabled user other than the recovery administrator verify a fresh
+sign-in with an attached provider.
+
+While the guarded profile is active, the API requires Google or OIDC at
+startup. To return to password-only sign-in, follow
+[Deactivate external sign-in](auth-maintenance.md#deactivate-external-sign-in).
 
 ## Find a person's Google subject
 
@@ -158,12 +158,20 @@ jq -n --arg subject '<google sub>' --argjson version "$VERSION" \
 
 The subject is 1–255 printable ASCII characters without spaces. The call returns `409`
 when Google is not configured, the version is stale, the account is disabled, or another
-account holds the subject ("The external identity is already assigned."). Attachment
-advances the account version and ends the account's existing sessions. The account read then lists a method whose `providerId` starts with
-`google:`. Detach it with
-`POST /api/auth/accounts/:userId/methods/:methodId/detach`, as for OIDC. Detaching ends
-every session of the account, password sessions included; the password keeps working for
-new sign-ins.
+account holds the subject ("The external identity is already assigned."). A new attachment
+advances the account version and ends existing sessions. The account read
+lists a method whose `providerId` starts with `google:`.
+
+Before detaching a Google identity, have the person verify a fresh sign-in
+to the same account with a method they will keep. Under `recovery-only`,
+anyone other than the recovery administrator needs another working external
+identity. It can use the same Google provider. If you plan to disable Google,
+verify sign-in without Google.
+
+Use the current account version and method ID with
+`POST /api/auth/accounts/:userId/methods/:methodId/detach`. Detaching ends
+every session for that account, including password sessions. The password
+sign-in policy still applies.
 
 ## Rotation and outages
 
@@ -175,7 +183,7 @@ Rotating only the client secret keeps attachments and invalidates pending sign-i
 attempts. Rotating `OCC_AUTH_SECRET` also fails attempts in flight.
 
 A Google outage, blocked egress, or rejected ID token fails that sign-in closed and
-returns the browser to `/console/?authError=google`; password sign-in is unaffected. An
+returns the browser to `/console/?authError=google`. The password sign-in policy still applies. An
 outage adds `authReason=provider-unavailable`, and the Console says Google sign-in is
 unavailable right now.
 Google start and callback share the OIDC admission budget, so enabling both does not

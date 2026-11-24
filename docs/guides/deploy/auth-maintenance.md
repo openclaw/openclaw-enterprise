@@ -47,6 +47,10 @@ JSON line to stdout for exit codes `0`, `2`, and `3`. Diagnostics go to stderr.
 
 ## Stop every writer
 
+For `deactivate`, read the [deactivation prerequisites](#deactivate-external-sign-in)
+before stopping the API. Close ingress and pause anything that could restart
+the Deployments.
+
 `--writers-stopped` is checked, not trusted. Inside its transaction the command
 takes the activation lock and refuses while any other client is connected to
 the database, then checks again before committing; `activate` runs the same
@@ -61,9 +65,6 @@ kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
   --namespace openclaw-system wait --for=delete pod \
   -l 'app.kubernetes.io/component in (api,worker)' --timeout=5m
 ```
-
-Close ingress first so users see a maintenance response rather than errors, and
-pause anything that would scale the Deployments back up.
 
 ## Close ingress and use restricted access
 
@@ -103,6 +104,11 @@ migration key; the example uses the chart defaults `occ-database` and
 `migration-url`. Match `database.caKey`, `database.caMountPath`, and any
 `controlPlane.nodeSelector` to your installed values. Without a database CA,
 remove `volumes` and `volumeMounts`.
+
+For `reset-recovery-password`, mount the new password from a Secret read-only
+in the maintenance Pod. Pass the mounted path with `--password-file`. Keep the
+password out of arguments, output and audit. Keep the Secret until you verify
+sign-in with the new password.
 
 Create one Job for the selected operation. `create` refuses an existing Job;
 finish inspecting and removing the previous maintenance Job before another run.
@@ -200,20 +206,36 @@ whether a change committed.
 )
 ```
 
-If cleanup fails, complete it before another operation or resuming writers. If
-the result was uncertain, run `status` in a new Job before deciding whether to
-retry a change. Confirm the intended database state before resuming writers.
+Keep ingress closed and writers stopped until cleanup is complete. After a
+change or an uncertain result, run `status` in a fresh Job and clean it up.
+Confirm the intended Installation and database state.
 
-For `reset-recovery-password`, put the new password in a Secret, mount it
-read-only in the Pod, and pass the mounted path with `--password-file`. Delete
-the Secret after verifying sign-in. The password never appears in arguments,
-output, or audit.
+- **Password reset.** Check `profile: guarded` and `designation.userId`.
+  Neither the designation nor the session count confirms the reset. If the
+  outcome is uncertain, ask an [authorized database reader](../topics/audit-log.md#access-and-limitations)
+  to check `occ.audit_events` for a successful
+  `authentication.recovery.password-reset`. Match the Installation,
+  `details.userId`, `maintenance:<database role>` and attempt time. This event
+  commits with the reset. An older match or a missing event cannot settle this
+  attempt. If you cannot establish the outcome, leave ingress
+  closed and writers stopped. Do not repeat the reset.
+- **Deactivation.** Continue with [the configuration changes below](#deactivate-external-sign-in)
+  before restarting. A configured provider can reactivate the guarded profile.
 
-After a change, run `status`, scale the worker and API back to one replica,
-verify sign-in through [restricted access](#close-ingress-and-use-restricted-access),
-and reopen ingress.
+For a confirmed change other than deactivation, restore the API and
+worker replica counts. Verify a fresh sign-in through
+[restricted access](#close-ingress-and-use-restricted-access). After a reset,
+use the new password and check the recovery account ID before deleting the
+password Secret. Reopen ingress only after verification succeeds.
 
 ## Deactivate external sign-in
+
+Before stopping the API, use restricted access to confirm that the recovery administrator can sign in
+with a password. Review disabled accounts. If you use `host-only-exchange`,
+password-only sign-in requires switching to
+[shared cookies](../../reference/agent-native-admin.md#shared-session-boundary).
+Every host that receives the cookie must be a trusted OCE ingress endpoint.
+Do not deactivate if you cannot meet that requirement.
 
 Deactivation returns the Installation to the legacy password profile and
 requires the API to be stopped. In one transaction it removes the recovery
@@ -222,17 +244,28 @@ every session. Linked Google and OIDC identities stay in the database but
 are unused, so `status` still counts them under `externalMethods`.
 
 The legacy profile ignores account disablement, so `deactivate` refuses while any
-account is disabled and lists their IDs. `--purge-disabled` removes those
-accounts' passwords instead, so they still cannot sign in. Deactivation also
-removes the database fence on unbound sessions, so the older image and plain
-password sign-in work again.
+account is disabled and lists their IDs. Use `--purge-disabled` only if you are
+authorized to erase those accounts’ passwords. They cannot then sign in. Deactivation also removes the
+database fence on unbound sessions.
 
-Then, in the protected values, set `auth.google.enabled` and `auth.oidc.enabled` to `false`, remove `auth.oidc.enrollment`, clear both `auth.oidc.caSecretName` and
-`auth.oidc.caSecretKey`, remove `auth.recoveryUserId`, and reset
-`auth.passwordSignIn` to `all`. Run `helm upgrade`, which also restores the
-replicas. Without Helm, remove every `OCC_AUTH_GOOGLE_*` and `OCC_AUTH_OIDC_*` variable,
-`OCC_AUTH_RECOVERY_USER_ID`, and `OCC_AUTH_PASSWORD_SIGN_IN` from the API environment before scaling it up. If any
-provider is still configured, startup activates the profile again.
+Confirm that `status` reports `profile: legacy`. Keep ingress closed and
+writers stopped while you prepare the new configuration.
+
+- **Helm.** In the protected values, set `auth.google.enabled` and
+  `auth.oidc.enabled` to `false` and `auth.google.allowedDomains` to `[]`.
+  Remove `auth.oidc.enrollment`. Clear `auth.oidc.caSecretName`,
+  `auth.oidc.caSecretKey` and `auth.recoveryUserId`. Set `auth.passwordSignIn`
+  to `all` and `agentNativeAdmin.sessionMode` to `shared-cookie`.
+  Run `helm upgrade` with the updated values to restore the configured replicas.
+- **Without Helm.** Remove every `OCC_AUTH_GOOGLE_*` and `OCC_AUTH_OIDC_*`
+  variable, `OCC_AUTH_RECOVERY_USER_ID`, `OCC_AUTH_PASSWORD_SIGN_IN` and
+  `OCC_AGENT_NATIVE_ADMIN_SESSION_MODE` from the API environment. Remove
+  OIDC-only CA trust while preserving Gateway trust. Then restore the writers.
+
+Through [restricted access](#close-ingress-and-use-restricted-access), check
+`GET /api/auth/providers`. Expect `google: false`, `oidc: false`,
+`password: true` and `sessionBinding: false` in `data`. Confirm a fresh
+password sign-in to the intended administrator account before reopening ingress.
 
 Activating again later, at startup or with `activate`, enrolls every account
 that has its Principal and exactly one password, as an enabled account; earlier
