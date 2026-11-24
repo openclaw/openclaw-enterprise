@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-22
+last_updated_session: authoring-run/3af918e3-ad57-434f-9d89-62efe847bb3b
 ---
 
 # Production TUI Flow
@@ -18,7 +18,7 @@ operations, dedicated Codex Agents, Slack channels, or a host-installed TUI.
 ## Entry Points
 
 - Trigger: authenticated production API calls followed by
-  `kubectl exec -it <gateway-pod> -c gateway -- node /app/openclaw.mjs tui`.
+  the [production TUI attachment procedure](../guides/deploy/production-tui.md).
 - Source: `apps/controller/src/index.ts:createFastifyApp`,
   `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`,
   and `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`.
@@ -219,6 +219,7 @@ ConfigMap-mounted gateway is Running and Ready.
 
 ## Changelog
 
+- 2026-11-22 19:36: Link the production TUI operator procedure. (authoring-run/3af918e3-ad57-434f-9d89-62efe847bb3b - 0e314b4d4baca1cdc90e98d1c2265a453d5a37d0)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-16 09:42: Use retained precreated credentials at the authenticated startup handoff. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 

@@ -55,10 +55,13 @@ for implementation ownership.
 
 ## Delegate per-Agent additions
 
-Pass a separate ceiling file when operators want authorized users to request
-per-Agent grants later:
+For a fresh launch with a ceiling, pass a separate file so authorized users can
+request per-Agent grants later.
 
 ```sh
+OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes \
+OCC_DEVELOPMENT_CONTROL_PLANE=compose \
+OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell \
 ./scripts/dev-up --sandbox-network-policy-ceiling-file ./ceiling.yaml
 ```
 

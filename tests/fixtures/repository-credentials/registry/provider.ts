@@ -103,6 +103,9 @@ export async function startRegistryProviderFixtures(
       repositoryId: entry.repositoryId,
       description: entry.description,
       beforeMetadataResponse: entry.beforeMetadataResponse,
+      ...(entry.transport === "git-and-draft-pr" && {
+        additionalPermissions: [{ metadata: "read", contents: "write", pull_requests: "write" }],
+      }),
     };
     const github = await startGitHubFixture(resources, githubOptions);
     const git = await startGitSmartHttpFixture(resources, {
@@ -112,19 +115,24 @@ export async function startRegistryProviderFixtures(
     });
     repositories.push({ ...entry, github, git });
   }
-  const apiOrigin = await startProviderTransport(resources, {
-    tls,
-    async select(pathname) {
-      const repository = repositories.find((entry) => {
-        const prefix = `/repos/${entry.repository}`;
-        return pathname === prefix || pathname.startsWith(`${prefix}/`);
-      });
-      if (repository) {
-        return { origin: repository.github.origin };
-      }
-      return undefined;
-    },
-  });
+  // Prepared draft sends bind the same origin that issues and revokes the token.
+  const draft = repositories.length === 1 ? repositories[0] : undefined;
+  const apiOrigin =
+    draft?.transport === "git-and-draft-pr"
+      ? draft.github.origin
+      : await startProviderTransport(resources, {
+          tls,
+          async select(pathname) {
+            const repository = repositories.find((entry) => {
+              const prefix = `/repos/${entry.repository}`;
+              return pathname === prefix || pathname.startsWith(`${prefix}/`);
+            });
+            if (repository) {
+              return { origin: repository.github.origin };
+            }
+            return undefined;
+          },
+        });
   const gitOrigin = await startProviderTransport(resources, {
     tls,
     select(pathname) {

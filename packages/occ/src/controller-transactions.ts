@@ -7,12 +7,16 @@ import {
   ScopeViolationError,
 } from "./errors.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
-import type { PlatformStateStore } from "./ports/platform-state-store.ts";
+import type {
+  PlatformStateStore,
+  PlatformTransactionOptions,
+} from "./ports/platform-state-store.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 
 interface TransactionScope {
   readonly state: PlatformUnitOfWork;
   readonly rollbacks: (() => Promise<void>)[];
+  readonly readCommitted: boolean;
 }
 
 interface ControllerTransactionDependencies {
@@ -26,24 +30,38 @@ export function createControllerTransactions({
 }: ControllerTransactionDependencies) {
   const transaction = new AsyncLocalStorage<TransactionScope>();
 
-  async function transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+  async function transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: PlatformTransactionOptions,
+  ): Promise<T> {
+    const readCommitted = options?.readCommitted === true;
     const active = transaction.getStore();
     if (active) {
+      // A nested caller cannot change the isolation of a transaction that already started.
+      if (readCommitted && !active.readCommitted) {
+        throw new ResourceConflictError(
+          "The outer controller transaction must use Read Committed.",
+        );
+      }
       return work(active.state);
     }
 
     const rollbacks: (() => Promise<void>)[] = [];
     try {
-      return await platformState.transact(async (state) =>
-        transaction.run({ state, rollbacks }, async () => {
-          const existing = await state.installations.getInstallation();
-          if (!existing) {
-            await state.installations.createInstallation(installation);
-          } else if (existing.id !== installation.id) {
-            throw new ScopeViolationError("The controller state belongs to another Installation.");
-          }
-          return work(state);
-        }),
+      return await platformState.transact(
+        async (state) =>
+          transaction.run({ state, rollbacks, readCommitted }, async () => {
+            const existing = await state.installations.getInstallation();
+            if (!existing) {
+              await state.installations.createInstallation(installation);
+            } else if (existing.id !== installation.id) {
+              throw new ScopeViolationError(
+                "The controller state belongs to another Installation.",
+              );
+            }
+            return work(state);
+          }),
+        options,
       );
     } catch (error) {
       if (error instanceof PostgresCommitOutcomeUnknownError) {

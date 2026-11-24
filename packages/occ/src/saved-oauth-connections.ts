@@ -1,3 +1,4 @@
+import { iamPolicyOperation } from "./iam-policy-operations.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -123,7 +124,6 @@ interface SavedConnectionDependencies
   readonly iamPolicyDriver: (
     method: "createNamespaceAccessBinding" | "createNamespaceRole",
   ) => IAMDriver;
-  readonly iamPolicyOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly connectionTokenIssuer: () => Pick<
     OAuthRefreshTokenIssuer,
     "status" | "maintain" | "retire"
@@ -159,7 +159,8 @@ export function createSavedConnections(deps: SavedConnectionDependencies) {
       const templates = await state.connectionTemplates.listConnectionTemplates();
       return templates.filter(
         (template) =>
-          template.current.oauthClientId !== undefined &&
+          (template.current.mode === "static_bearer" ||
+            template.current.oauthClientId !== undefined) &&
           (template.namespaceId === undefined || template.namespaceId === namespaceId),
       );
     });
@@ -193,6 +194,9 @@ export function createSavedConnections(deps: SavedConnectionDependencies) {
         throw new ScopeViolationError("The connection template does not exist.");
       }
       const version = template.current;
+      if (version.mode === "static_bearer") {
+        throw new ResourceStateConflictError("A static template cannot start an OAuth connection.");
+      }
       const selectedScopes = connectionConsentScopes(version, input.selectedScopes);
       const client = await connectionClientForVersion(state, namespaceId, version);
       const createdAt = deps.timestamp();
@@ -653,7 +657,11 @@ export function createSavedConnections(deps: SavedConnectionDependencies) {
     const template = await state.connectionTemplates.findConnectionTemplate(
       account.connectionTemplateId,
     );
-    if (!template || template.current.issuer !== account.issuer) {
+    if (
+      !template ||
+      template.current.mode === "static_bearer" ||
+      template.current.issuer !== account.issuer
+    ) {
       return [];
     }
     if (template.current.mode === "manual") {
@@ -692,7 +700,7 @@ export function createSavedConnections(deps: SavedConnectionDependencies) {
     const role = await state.iamPolicy.getRole(namespaceId, roleId);
     if (role === undefined) {
       const roleDriver = deps.iamPolicyDriver("createNamespaceRole");
-      await deps.iamPolicyOperation(() =>
+      await iamPolicyOperation(() =>
         roleDriver.createNamespaceRole!(
           { policy: state.iamPolicy },
           { id: roleId, namespaceId, name: "Connected account owner", permissions },
@@ -709,7 +717,7 @@ export function createSavedConnections(deps: SavedConnectionDependencies) {
         "The connected account owner Role requires exactly credential source read and operate.",
       );
     }
-    await deps.iamPolicyOperation(() =>
+    await iamPolicyOperation(() =>
       driver.createNamespaceAccessBinding!(
         { policy: state.iamPolicy },
         {

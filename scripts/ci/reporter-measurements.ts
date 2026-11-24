@@ -15,6 +15,13 @@ const openShellFixtureTeardownKind = "openshell-fixture-teardown";
 const openShellGatewayTurnFailureKind = "openshell-gateway-turn-failure";
 const openShellNativePolicyCheckKind = "openshell-native-policy-check";
 const openShellInitialTurnoverKind = "openshell-initial-turnover";
+const productionMigrationStages = new Set([
+  "fixture-bootstrap",
+  "cli-rebuild",
+  "initial-apply-writer-pause",
+  "migration-apply-verify",
+  "attested-resume",
+]);
 const nativePolicyPrimaryChecks = new Set([
   "agent.get",
   "agent.status-200",
@@ -194,6 +201,19 @@ export function parseMeasurementDiagnostic(message: string): object | null | und
 function safeMeasurement(value: unknown): object | undefined {
   if (!isRecord(value)) {
     return undefined;
+  }
+  if (value.kind === "production-migration-phase") {
+    return safeStageMeasurement(
+      value,
+      value.outcome === "passed" && isAllowed(value.stage, productionMigrationStages),
+      2_400_000,
+    );
+  }
+  if (value.kind === "released-controller-history") {
+    const { kind, status } = value;
+    return isChoice(status, ["current", "unsupported", "unconfirmed"])
+      ? { kind, status }
+      : undefined;
   }
   if (value.kind === "keycloak-enrollment-interrupted") {
     const { kind, row, operation } = value;

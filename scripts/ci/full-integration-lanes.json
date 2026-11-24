@@ -86,7 +86,7 @@
   {
     "lane": "logging-collector",
     "title": "Logging Collector",
-    "profile": "images",
+    "profile": "baseline",
     "timeout": 30
   },
   {

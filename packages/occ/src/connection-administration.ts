@@ -3,10 +3,13 @@ import {
   connectionValuesChanged,
   ConnectionTemplateValidationError,
   normalizeConnectionDestinations,
+  normalizeStaticKeyDestinations,
   validateConnectionTemplateAuthorization,
   type AuditEvent,
   type ConnectionTemplate,
   type ConnectionTemplateValues,
+  type ConnectionTemplateSettings,
+  type StaticKeyTemplateValues,
   type McpAuthorizationMetadata,
   type OAuthClient,
   type SecretDriver,
@@ -30,22 +33,24 @@ interface ApprovedTemplateSettings {
   readonly authorizationParameters?: Readonly<Record<string, string>>;
   readonly oauthClientId?: string;
 }
-type TemplateInput = ApprovedTemplateSettings &
-  (
-    | {
-        readonly mode: "manual";
-        readonly issuer: string;
-        readonly authorizationUrl: string;
-        readonly tokenUrl: string;
-        readonly revocationUrl?: string;
-        readonly destinations: readonly {
-          readonly host: string;
-          readonly port?: number;
-          readonly path?: string;
-        }[];
-      }
-    | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
-  );
+type TemplateInput =
+  | StaticKeyTemplateValues
+  | (ApprovedTemplateSettings &
+      (
+        | {
+            readonly mode: "manual";
+            readonly issuer: string;
+            readonly authorizationUrl: string;
+            readonly tokenUrl: string;
+            readonly revocationUrl?: string;
+            readonly destinations: readonly {
+              readonly host: string;
+              readonly port?: number;
+              readonly path?: string;
+            }[];
+          }
+        | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
+      ));
 export type CreateConnectionTemplateInput = TemplateInput & {
   readonly namespaceId?: string;
   readonly displayName: string;
@@ -74,7 +79,10 @@ function templateAcceptsAuthMethod(
 async function effectiveConnectionTemplate(
   input: TemplateInput,
   discover: DiscoverMcp,
-): Promise<ConnectionTemplateValues> {
+): Promise<ConnectionTemplateSettings> {
+  if (input.mode === "static_bearer") {
+    return { mode: input.mode, destinations: normalizeStaticKeyDestinations(input.destinations) };
+  }
   const settings = {
     scopes: [...input.scopes],
     authorizationParameters: input.authorizationParameters ?? {},
@@ -142,10 +150,10 @@ async function effectiveConnectionTemplate(
 
 async function assertTemplateClient(
   state: PlatformUnitOfWork,
-  values: ConnectionTemplateValues,
+  values: ConnectionTemplateSettings,
   namespaceId?: string,
 ) {
-  if (!values.oauthClientId) {
+  if (values.mode === "static_bearer" || !values.oauthClientId) {
     return;
   }
   const client = await state.connectionTemplates.findOAuthClient(values.oauthClientId);
@@ -276,8 +284,16 @@ export function createConnectionAdministration({
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    // Resolve the exact authorized target before any administrator-selected outbound discovery.
-    await getConnectionTemplate(principalId, id);
+    // Resolve the exact authorized target and immutable authentication method before discovery.
+    const template = await getConnectionTemplate(principalId, id);
+    if (
+      "mode" in input &&
+      (template.current.mode === "static_bearer") !== (input.mode === "static_bearer")
+    ) {
+      throw new ResourceStateConflictError(
+        "Create a new connection template to change its authentication method.",
+      );
+    }
     const values = "mode" in input ? await effectiveConnectionTemplate(input, discover) : undefined;
     return transact(async (state) => {
       await authorizeAdministration(principalId);
@@ -344,6 +360,10 @@ export function createConnectionAdministration({
   ) {
     requireIndependentMutation("OAuth client registration");
     const template = await getConnectionTemplate(principalId, input.connectionTemplateId);
+    const version = template.current;
+    if (version.mode === "static_bearer") {
+      throw new ResourceStateConflictError("A static template cannot register an OAuth client.");
+    }
     const assertSelectedVersion = (version: number | undefined) => {
       if (version !== input.connectionTemplateVersion) {
         throw new ResourceStateConflictError(
@@ -351,7 +371,7 @@ export function createConnectionAdministration({
         );
       }
     };
-    assertSelectedVersion(template.current.version);
+    assertSelectedVersion(version.version);
     const { clientSecret, tokenEndpointAuthMethod } = input;
     if (
       tokenEndpointAuthMethod === "none"
@@ -363,7 +383,7 @@ export function createConnectionAdministration({
         "Provide a secret only for a confidential OAuth client.",
       );
     }
-    const { issuer, tokenUrl, revocationUrl, observed } = template.current;
+    const { issuer, tokenUrl, revocationUrl, observed } = version;
     if (!templateAcceptsAuthMethod(observed, tokenEndpointAuthMethod)) {
       throw new ConnectionTemplateValidationError(
         "tokenEndpointAuthMethod",
@@ -389,13 +409,13 @@ export function createConnectionAdministration({
       assertSelectedVersion(current?.current.version);
     };
     const publish = async (state: PlatformUnitOfWork) => {
-      const selected = !template.current.oauthClientId;
+      const selected = !version.oauthClientId;
       if (selected) {
         // Select the first registration. Another registration never replaces a chosen client.
         const updated = await state.connectionTemplates.updateConnectionTemplate(template.id, {
           version: {
-            ...template.current,
-            version: template.current.version + 1,
+            ...version,
+            version: version.version + 1,
             oauthClientId: client.id,
             createdAt: timestamp(),
           },
@@ -411,7 +431,7 @@ export function createConnectionAdministration({
           details: {
             ...event.details,
             connectionTemplateId: template.id,
-            connectionTemplateVersion: template.current.version,
+            connectionTemplateVersion: version.version,
             selected,
           },
         });

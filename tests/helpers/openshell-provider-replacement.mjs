@@ -16,11 +16,16 @@ import { protectedText } from "./qa-secrets.ts";
 import { validateExplicitK3dLoopbackContext } from "./kubernetes-real.ts";
 import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
 
-/** Real API/worker workflow with run-owned resources in a selected managed installation. */
-export async function verifyOpenShellProviderReplacement(context, { gitReplacement = false } = {}) {
-  const path = process.env.OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE;
-  assert.ok(path, "Select the prepared managed installation input file");
-  const input = JSON.parse(await readFile(path, "utf8"));
+async function readInput(path) {
+  assert.ok(path, "Select the prepared installation input file");
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
+async function prepareInstallation(
+  context,
+  input,
+  { selection, cloneSources = false, gitReplacement = false },
+) {
   // Validate file-supplied path segments before reading credentials or contacting the cluster.
   assert.ok(
     typeof input.namespaceId === "string" &&
@@ -49,10 +54,6 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
     }
     assert.notEqual(input.git.url, input.git.additionalUrl);
   }
-  const selection = {
-    kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-    kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-  };
   const fixture = createOpenShellKubernetesFixture(selection);
   if (input.existingCluster) {
     // Existing-cluster runs require operator approval and pin both the endpoint
@@ -170,6 +171,8 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
       undefined,
       "Use a model source registered before enabling the Git Proxy",
     );
+  }
+  if (!cloneSources) {
     sources.push(seed);
   } else {
     // Clone references to an authorized existing Secret, never its value. Distinct
@@ -198,14 +201,6 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
     });
     return revision;
   };
-  const sandbox = (agent) =>
-    gateway.getSandbox(
-      {
-        workspace,
-        name: `oc-${createHash("sha256").update(agent.id).digest("hex").slice(0, 16)}`,
-      },
-      signal(),
-    );
   const turn = async (agent, revision) => {
     const pods = await fixture.resources("pods", input.gatewayNamespace);
     const pod = pods.find(
@@ -253,23 +248,14 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
     });
     assert.ok(result.assistant.includes(nonce), "The real model turn must return its nonce");
   };
-  for (let index = 0; index < 2; index++) {
+  const createAgent = async (repositoryBindings) => {
     const agent = await api("POST", `${base}/agents`, {
       name: `provider-replacement-${randomUUID()}`,
       configurationId: input.configurationId,
       executionMode: "dedicated",
       harnessAuth: { method: "credential_source", sourceId: sources[0].id },
       credentialSources: [{ sourceId: sources[0].id }],
-      ...(gitReplacement && index === 1
-        ? {
-            repositoryBindings: [
-              {
-                repositoryRef: input.git.repositoryRef,
-                profile: input.git.profile ?? "github-repository",
-              },
-            ],
-          }
-        : {}),
+      ...(repositoryBindings ? { repositoryBindings } : {}),
     });
     agents.push(agent);
     await api("POST", `${base}/agents/${agent.id}/runtime-credentials`, {});
@@ -284,7 +270,197 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
         }),
       );
     }
+    return agent;
+  };
+  return {
+    api,
+    base,
+    fixture,
+    gateway,
+    workspace,
+    signal,
+    wait,
+    sources,
+    deploy,
+    turn,
+    createAgent,
+  };
+}
+
+export async function verifyOpenShellTemplateResources(context, inputFile, workspaceMode) {
+  const input = await readInput(inputFile);
+  assert.equal(input.disposable, true, "Resource proof requires a disposable installation");
+  assert.equal(input.existingCluster, undefined);
+  assert.ok(["operator", "managed"].includes(workspaceMode));
+  assert.ok(input.expectedResources, "Supply independently expected Agent container resources");
+  if (workspaceMode === "operator") {
+    assert.ok(input.expectedMounts?.length, "Select the approved operator mounts");
+    for (const mount of input.expectedMounts) {
+      assert.ok(mount.mountPath?.startsWith("/sandbox/"));
+      assert.ok(mount.subPath, "Select the approved PVC subpath, not just its mount path");
+    }
   }
+
+  const { kubeconfigPath, kubernetesContext, harnessNamespace } = input;
+  assert.ok(
+    kubeconfigPath && kubernetesContext,
+    "Select this installation's kubeconfig and context",
+  );
+  assert.match(harnessNamespace, /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/);
+  const { fixture, gateway, workspace, signal, deploy, turn, createAgent } =
+    await prepareInstallation(context, input, { selection: { kubeconfigPath, kubernetesContext } });
+  const agent = await createAgent();
+  const revision = await deploy(agent);
+  const pods = await fixture.resources("pods", harnessNamespace);
+  const candidates = pods.filter(
+    (entry) =>
+      !entry.metadata.deletionTimestamp &&
+      entry.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
+      entry.spec.containers.some((container) => container.name === "agent"),
+  );
+  assert.equal(candidates.length, 1, "OpenShell must create one real Agent Pod");
+  const [pod] = candidates;
+  const owner = pod.metadata.ownerReferences?.find(
+    (ref) => ref.controller && ref.kind === "Sandbox",
+  );
+  assert.ok(owner?.uid);
+  const { metadata } = JSON.parse(
+    await fixture.kubectl(
+      "get",
+      "sandboxes.agents.x-k8s.io",
+      owner.name,
+      "--namespace",
+      harnessNamespace,
+      "-o",
+      "json",
+    ),
+  );
+  assert.equal(metadata.uid, owner.uid);
+  const name = metadata.annotations?.["openshell.ai/sandbox-name"];
+  assert.ok(name);
+  const current = await gateway.getSandbox({ workspace, name }, signal());
+  assert.ok(current?.id);
+  assert.equal(current.id, pod.metadata.annotations?.["openshell.ai/sandbox-id"]);
+  assert.equal(current.annotations["openclaw.dev/revision-id"], revision.id);
+  assert.ok(current.spec.template.resources, "OpenShell must retain template sizing");
+  const container = pod.spec.containers.find((entry) => entry.name === "agent");
+  assert.deepEqual(container.resources, input.expectedResources);
+  assert.equal(container.resources.requests["ephemeral-storage"], "256Mi");
+  assert.equal(container.resources.limits["ephemeral-storage"], "1Gi");
+  if (workspaceMode === "managed") {
+    assert.equal(current.spec.template.driver_config, undefined);
+    // A negative control distinguishes disabled caller config from merely omitting
+    // it in a permissive installation. Cleanup removes an unexpectedly accepted probe.
+    const probeName = `rp-${randomUUID().slice(0, 12)}`;
+    const probeId = randomUUID();
+    try {
+      await assert.rejects(
+        gateway.createSandbox(
+          {
+            name: probeName,
+            workspace,
+            requestId: randomUUID(),
+            labels: {},
+            annotations: { "openclaw.dev/probe-id": probeId },
+            serviceExposures: [],
+            spec: {
+              command: ["/bin/true"],
+              policy: current.spec.policy,
+              template: {
+                image: current.spec.template.image,
+                driver_config: {
+                  fields: {
+                    kubernetes: {
+                      structValue: {
+                        fields: { pod: { structValue: { fields: {} } } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          signal(),
+        ),
+        (error) => error.requestDiagnostic?.validationCategory === "CALLER_DRIVER_CONFIG_DISABLED",
+      );
+    } finally {
+      const probe = await gateway.getSandbox({ workspace, name: probeName }, signal());
+      if (probe) {
+        assert.equal(probe.annotations["openclaw.dev/probe-id"], probeId);
+        await gateway.deleteSandbox({ workspace, name: probeName }, signal());
+      }
+    }
+  } else {
+    assert.ok(current.spec.template.driver_config);
+    for (const expected of input.expectedMounts) {
+      assert.ok(
+        container.volumeMounts.some((mount) =>
+          Object.entries(expected).every(([key, value]) => mount[key] === value),
+        ),
+        "Operator mount must survive resource serialization",
+      );
+    }
+  }
+  const nonce = randomUUID();
+  const workspacePath = current.spec.environment.OPENCLAW_WORKSPACE_DIR;
+  assert.ok(workspacePath?.startsWith("/sandbox/"));
+  assert.equal(
+    await gateway.execSandbox(
+      {
+        workspace,
+        sandbox: current.name,
+        command: [
+          "/bin/sh",
+          "-ec",
+          'printf %s "$2" > "$1"; test "$(cat "$1")" = "$2"; rm "$1"',
+          "resources-proof",
+          `${workspacePath}/resources-${nonce}`,
+          nonce,
+        ],
+        stdin: "",
+        timeoutSeconds: 25,
+      },
+      signal(),
+    ),
+    0,
+    "The deployed Harness must retain workspace access",
+  );
+  await turn(agent, revision);
+  return {
+    workspaceMode,
+    agentId: agent.id,
+    revisionId: revision.id,
+    podUid: pod.metadata.uid,
+    resources: container.resources,
+  };
+}
+
+export async function verifyOpenShellProviderReplacement(context, { gitReplacement = false } = {}) {
+  const input = await readInput(process.env.OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE);
+  const selection = {
+    kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
+    kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
+  };
+  const { api, base, gateway, workspace, signal, wait, sources, deploy, turn, createAgent } =
+    await prepareInstallation(context, input, {
+      selection,
+      cloneSources: !gitReplacement,
+      gitReplacement,
+    });
+  const peerRepositories = gitReplacement
+    ? [
+        {
+          repositoryRef: input.git.repositoryRef,
+          profile: input.git.profile ?? "github-repository",
+        },
+      ]
+    : undefined;
+  const agents = [await createAgent(), await createAgent(peerRepositories)];
+  const sandbox = (agent) => {
+    const name = `oc-${createHash("sha256").update(agent.id).digest("hex").slice(0, 16)}`;
+    return gateway.getSandbox({ workspace, name }, signal());
+  };
   if (gitReplacement) {
     // Read-only Git against explicitly selected repositories. Exercise the regular
     // API/worker revision lifecycle; no token is read or installed by the test.

@@ -79,7 +79,7 @@ ownership. It also checks the owning ready Namespace, stable Agent service
 principal, and approved Harness, version, mode, and Compute implementation.
 These checks use the immutable version, not a later Agent draft. Revoked source
 access fails permanently with `AUTHORIZATION_DENIED`, records attributable
-deployment-denial audit evidence, and prevents Compute calls and activation.
+deployment-denial audit evidence, and blocks activation.
 The [harness credential flow](../../flows/native-service-account-credential-delivery.md)
 owns the complete source-resolution sequence. Production accepts dedicated
 Codex and embedded OpenClaw. Dedicated Codex prepares the workload for its
@@ -300,8 +300,9 @@ do not change Namespace status through this recovery path.
   path with pinned Harness and Compute metadata, then processed asynchronously.
 - Work is isolated by `namespaceId`. Namespace lifecycle operations serialize
   per Namespace, while the underlying queue preserves independent Agent lanes.
-- Current IAM policy is reloaded before each effect. Revoked access fails
-  permanently without calling Compute; temporary dependency failures retry.
+- Current IAM policy is reloaded before each effect. Denial can require
+  Compute to stop a serving candidate before permanent failure. Temporary
+  dependency failures retry.
 - Expiring claim leases recover interrupted work. A stale worker cannot commit
   Namespace changes, version activation, audit evidence, or completion after
   losing its claim.

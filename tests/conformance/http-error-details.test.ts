@@ -300,14 +300,12 @@ test("a caller denial names each checked grant without disclosing a Restriction 
         /restriction-1|binding-1|role-1|prn_caller|matching|binding grants/,
         label,
       );
-      // Only Roles from the Installation configuration hold create, and only OCC binds them, so
-      // a create denial never asks for a grant (finding 2581).
-      if (action === "create" && kind !== "installation") {
-        assert.match(
-          restricted,
-          /Only an Installation administrator can create .+: ask one to create it\.$/,
-          label,
-        );
+      // Collection create and Namespace delete give advice independent of the caller’s role.
+      if (
+        (action === "create" && kind !== "installation") ||
+        (action === "delete" && kind === "namespace")
+      ) {
+        assert.match(restricted, /Review this permission with whoever manages IAM\.$/, label);
         assert.doesNotMatch(restricted, /grant/, label);
       }
       // An exact resource is named only when the request carried its ID; a create names the

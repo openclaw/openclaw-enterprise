@@ -327,6 +327,7 @@ test(
       if (context.harnessAuth.method !== "credential_source") {
         assert.fail("source required");
       }
+      assert.ok(context.harnessAuth.source);
       assert.equal(context.harnessAuth.source.id, f.source.id);
       assert.equal(context.harnessAuth.source.config.authorized_base_url, f.modelProvider.baseUrl);
       assert.equal(f.secretReads, secretReads);

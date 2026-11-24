@@ -91,6 +91,8 @@ export interface DeploymentStatusResult {
 }
 
 export interface ControllerWorkAttempt {
+  /** The deployment's first claim ended in admission, before runtime dispatch. */
+  readonly candidateNotStarted?: true;
   readonly at: Date;
   readonly code: string;
   /** The refusal a `REFUSED_CANDIDATE_STOP_PENDING` deferral waits to publish. */

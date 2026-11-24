@@ -218,6 +218,15 @@ export const pluginDiscoveryConflict = {
   detailsRule: { ...savedPluginDiscoveryConflict, path: `${savedPluginCatalogPath}/details` },
 };
 
+export const pluginDiscoveryAgentDeleting = {
+  method: "POST",
+  path: savedPluginCatalogPath,
+  skip: 1,
+  status: 409,
+  code: "AGENT_DELETING",
+  message: "The requested Agent is being deleted.",
+};
+
 export const pluginDetailIdentityRefusal = {
   pages: {
     initial: {

@@ -377,6 +377,20 @@ const pr = (base: string, head: string) => ({
 const untrustedSelector = (marker: string, output: string) =>
   `import { writeFileSync, appendFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'ran');\nappendFileSync(process.argv[3], '${output}');\n`;
 
+// A trusted older selector can verify full but cannot authorize any narrower mode.
+const legacyFullSelector = `import { appendFileSync } from "node:fs";
+const [option, value, ...rest] = process.argv.slice(2);
+if (option === "--github-output") {
+  const reason = process.env.GITHUB_EVENT_NAME === "push" ? "non_pr_event" : "ineligible_change";
+  appendFileSync(value, "mode=full\\nreason=" + reason + "\\n");
+} else if (option !== "--verify-mode") {
+  throw new Error("Unexpected selector command");
+} else if (value !== "full") {
+  console.log("Cannot verify:", value, ...rest);
+  process.exitCode = 23;
+}
+`;
+
 function repository(repo: string) {
   const git = (...args: string[]) => command(repo, "git", args);
   const put = (path: string, content: string | Buffer = "text\n") => {
@@ -1714,12 +1728,7 @@ test("main push cannot execute its new policy or narrow with an old policy", asy
   assert.notEqual((await transitionCheckout.run("verify", "tests", mainPushEnvironment)).status, 0);
   assert.equal(existsSync(transitionMarker), false);
 
-  const old = await fixture(t, docsChange, {
-    "scripts/ci/impact.ts": `import { appendFileSync } from "node:fs";
-if (process.argv[2] === "--github-output") appendFileSync(process.argv[3], "mode=full\\nreason=non_pr_event\\n");
-else if (process.argv[3] !== "full") process.exit(1);
-`,
-  });
+  const old = await fixture(t, docsChange, { "scripts/ci/impact.ts": legacyFullSelector });
   mainPushEvent(old);
   await (await shallowBootstrap(old)).expectReason("non_pr_event", mainPushEnvironment);
 });
@@ -2764,19 +2773,9 @@ test("legacy base output and selector failures remain honest", async (t) => {
 
 test("impact summary accepts only fixed, consistent literals", async (t) => {
   await settle([
-    ...[
-      "",
-      "unknown",
-      "docs_only\n## injected",
-      "$(touch injected)",
-      "ineligible_change",
-      "bootstrap_non_pr_event",
-      "bootstrap_event_unavailable",
-      "bootstrap_invalid_identity",
-      "bootstrap_checkout_mismatch",
-      "bootstrap_git_inspection_failed",
-      "bootstrap_policy_unavailable",
-    ].map((reason) => assertSummary(t, "success", "docs", reason, "docs", "unavailable")),
+    ...["", "unknown", "docs_only\n## injected", "$(touch injected)"].map((reason) =>
+      assertSummary(t, "success", "docs", reason, "docs", "unavailable"),
+    ),
     ...["", "unknown", "docs\n## injected", "$(touch injected)"].map((mode) =>
       assertSummary(t, "success", mode, "docs_only", "unavailable", "unavailable"),
     ),
@@ -2864,7 +2863,7 @@ test("summary accepts only mode and reason pairings", async (t) => {
       "bootstrap_git_inspection_failed",
       "bootstrap_policy_unavailable",
     ].flatMap((reason) => [
-      assertSummary(t, "success", "full", reason, "full", reason),
+      assertFullSummary(t, reason, /SECRET|change\.md|injected/),
       assertSummary(t, "success", "docs", reason, "docs", "unavailable"),
     ]),
     ...["docs_only", "unknown", "invalid_event\n## leak", "$(touch injected)", ""].map((reason) =>
@@ -2927,7 +2926,7 @@ test("real Git empty, type-change and non-UTF-8 diffs have accurate conservative
 
 test("identity failures remain distinct from malformed JSON and failed jq", async (t) => {
   const [f, shallow] = await policyFixture(t, ({ put }) => put("docs/SECRET-change.md"));
-  const check = (
+  const checkReasons = (
     selectorReason: string,
     bootstrapReason: string,
     overrides: NodeJS.ProcessEnv = {},
@@ -2935,35 +2934,21 @@ test("identity failures remain distinct from malformed JSON and failed jq", asyn
     settle([
       f.expectReason(selectorReason, overrides),
       shallow.expectReason(bootstrapReason, overrides),
-      ...[selectorReason, bootstrapReason].flatMap((reason) => [
-        assertFullSummary(t, reason, /SECRET|change\.md|injected/),
-        assertSummary(t, "success", "docs", reason, "docs", "unavailable"),
-      ]),
     ]);
-  await check("invalid_identity", "bootstrap_invalid_identity", {
+  await checkReasons("invalid_identity", "bootstrap_invalid_identity", {
     GITHUB_SHA: "invalid;$(touch injected)",
   });
   for (const key of ["base", "head"] as const) {
     const event = structuredClone(f.event);
     event.pull_request[key].sha = "invalid";
     f.writeEvent(event);
-    await check("invalid_identity", "bootstrap_invalid_identity");
+    await checkReasons("invalid_identity", "bootstrap_invalid_identity");
   }
   f.writeEvent("{");
-  await check("invalid_event", "bootstrap_event_unavailable");
+  await checkReasons("invalid_event", "bootstrap_event_unavailable");
   f.writeEvent();
   const overrides = shim(join(f.dir, "identity-jq-shim"), "jq", "#!/bin/sh\nexit 127\n");
-  await settle([
-    shallow.expectReason("bootstrap_event_unavailable", overrides),
-    assertSummary(
-      t,
-      "success",
-      "full",
-      "bootstrap_event_unavailable",
-      "full",
-      "bootstrap_event_unavailable",
-    ),
-  ]);
+  await shallow.expectReason("bootstrap_event_unavailable", overrides);
   assert.equal(existsSync(join(shallow.checkout, "injected")), false);
 });
 
@@ -3195,13 +3180,35 @@ test("test graph advisory reports indexed lane consumers and retains fallback", 
 test("main test advisory reports only a verified single modification and leaves selection full", async (t) => {
   const path = "tests/integration/postgres-a.test.mjs";
   const broad: string[] = [];
-  const narrow = ["postgres"];
+  const narrow = ["postgres", "postgres-application"];
   const extraLane = present(suiteFiles()["scripts/ci/test-suites.json"]).replaceAll(
     "postgres",
     "unknown-lane",
   );
+  // Keep these edits bound to the maintained index and lane manifests. The
+  // worker shutdown case also needs the TypeScript checks lane.
+  const indexPath = "scripts/ci/test-suites.json";
+  const registered: Files = { [indexPath]: read(indexPath) };
+  for (const target of Object.values(indexData(read(indexPath)).lanes)) {
+    const manifest = join("scripts/ci", target);
+    registered[manifest] = read(manifest);
+  }
+  const registeredEdit = (stem: string, extension: string): [Change, Files] => {
+    const file = `tests/integration/${stem}.test.${extension}`;
+    return [editTest(file), { ...registered, [file]: "// original\n" }];
+  };
   const cases: [Change, Files, string[], boolean?][] = [
+    [
+      ...registeredEdit("postgres-worker-process-shutdown", "ts"),
+      ["checks-baseline-2", "postgres-application", "postgres-platform"],
+    ],
     [editTest(path), {}, narrow],
+    [
+      ...registeredEdit("postgres-external-session-provider", "mjs"),
+      ["postgres-application", "postgres-auth"],
+    ],
+    [...registeredEdit("postgres-worker-agent-revision-health", "mjs"), ["postgres-application"]],
+    [...registeredEdit("production-kubernetes-packaging", "mjs"), ["images-packaging"]],
     [postgresEdit(({ put }) => put("docs/change.md")), {}, broad],
     [postgresEdit(editTest("tests/integration/postgres-b.test.mjs")), {}, broad],
     [({ repo }) => chmodSync(join(repo, path), 0o755), {}, broad],
@@ -3238,6 +3245,7 @@ test("main test advisory reports only a verified single modification and leaves 
       lanes: string[],
       event: Record<string, string | boolean | null> = {},
       environment: NodeJS.ProcessEnv = {},
+      rows = matrix.matrix,
     ) => {
       mainPushEvent(f, event);
       const env = { ...mainPushEnvironment, ...environment };
@@ -3247,13 +3255,13 @@ test("main test advisory reports only a verified single modification and leaves 
         ...env,
         SELECTION: "success-full-" + present(selected.split("reason=")[1]).trim(),
         MATRIX_OUTCOME: "success",
-        MATRIX: JSON.stringify(matrix.matrix),
+        MATRIX: JSON.stringify(rows),
         IMAGES: JSON.stringify(matrix.images),
       });
       const prediction = {
         prediction: lanes.length ? "one_modified_test" : "broad",
         lanes,
-        ...(bound && selected === "mode=full\nreason=ineligible_change\n"
+        ...(bound && rows === matrix.matrix && selected === "mode=full\nreason=ineligible_change\n"
           ? { before: f.base, after: f.tested }
           : {}),
       };
@@ -3264,9 +3272,18 @@ test("main test advisory reports only a verified single modification and leaves 
       );
       assert.equal(result.output, "");
     };
+    if (i === 0) {
+      await checkout.expectTests(["checks-baseline-2", "postgres-platform"]);
+    }
     await check(expected);
     if (i === 0) {
       await checkout.expect("full", mainPushEnvironment, "ineligible_change");
+      await check(
+        broad,
+        {},
+        {},
+        matrix.matrix?.filter((row) => row.lane !== "postgres-application"),
+      );
       for (const event of [
         { forced: true },
         { deleted: true },
@@ -3477,6 +3494,36 @@ test("manifest changes beyond the changed test files select full", async (t) => 
   );
 });
 
+test("a computed import of a changed test requires full pull request coverage", async (t) => {
+  const producer = "tests/integration/postgres-a.test.mjs";
+  const reader = "tests/browser/consumer.test.mjs";
+  // The browser test assembles the filename at runtime, so a literal reference search misses it.
+  const [f, shallow] = await suiteFixture(
+    t,
+    ({ put }) => put(producer, "export const value = 2;\n"),
+    {
+      [producer]: "export const value = 1;\n",
+      [reader]: `import assert from "node:assert/strict";
+const { value } = await import("../integration/" + ["postgres", "a.test.mjs"].join("-"));
+assert.equal(value, 1);
+`,
+      "scripts/ci/test-suites.json": present(
+        suiteFiles()["scripts/ci/test-suites.json"],
+      ).replaceAll("k3d-fixture-state", "checks-browser"),
+      "scripts/ci/test-suites/checks-browser.json": laneManifest([reader]),
+    },
+  );
+  await f.git("checkout", "-q", "--detach", f.base);
+  assert.equal((await run(process.execPath, [reader], { cwd: f.repo })).status, 0);
+  assert.equal((await run(process.execPath, [producer], { cwd: shallow.checkout })).status, 0);
+  const failure = await run(process.execPath, [reader], { cwd: shallow.checkout });
+  assert.equal(failure.status, 1);
+  assert.match(failure.stderr, /2 !== 1/);
+  await shallow.expectReason("referenced_test");
+  const narrow = await shallow.run("verify", "tests", { EXPECTED_LANES: '["postgres"]' });
+  assert.notEqual(narrow.status, 0);
+});
+
 test("unmapped, non-CI, referenced or irregular test files select full", async (t) => {
   const index = indexData(present(suiteFiles()["scripts/ci/test-suites.json"]));
   index.groups.ci = ["postgres"];
@@ -3494,6 +3541,19 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
     ],
     // Another file reads, copies or runs it; Markdown mentions do not count.
     referenced_test: [
+      // Removing the last export still affects consumers of the old interface.
+      [editA, { "tests/integration/postgres-a.test.mjs": "export const value = 1;\n" }],
+      [
+        ({ git }) => git("rm", "-q", "tests/integration/postgres-a.test.mjs"),
+        { "tests/integration/postgres-a.test.mjs": "export const value = 1;\n" },
+      ],
+      [
+        ({ put }) => {
+          const path = "tests/integration/postgres-c.test.ts";
+          put(path, "export type Case = string;\n");
+          put("scripts/ci/test-suites/postgres.json", laneManifest([...suiteLanes.postgres, path]));
+        },
+      ],
       [
         editTest("tests/integration/postgres-b.test.mjs"),
         { "scripts/ci/prepare.ts": 'if (file.endsWith("postgres-b.test.mjs")) {}\n' },
@@ -3555,20 +3615,25 @@ test("the pull request's own selector never decides test-only mode", async (t) =
   const [shallow, legacy, fallback] = await each(
     [
       [postgresEdit(({ put }) => put("scripts/ci/impact.ts", untrusted)), suiteFiles()],
-      // A base policy that only knows documentation selects full for tests.
-      [editA, suiteFiles(untrusted.replace("mode=tests", "mode=bogus"))],
+      [editA, suiteFiles(legacyFullSelector)],
       // Without a base policy the bootstrap falls back to full.
       [editA, missing],
     ] satisfies ChangeCase[],
     async ([change, initial]) => shallowBootstrap(await fixture(t, change, initial)),
   );
   await present(shallow).expect("full", {}, "ineligible_change");
-  // Checked before the legacy base policy below runs, since it writes the same marker.
   assert.equal(existsSync(marker), false);
-  const verify = await present(legacy).run("verify", "tests", {
-    EXPECTED_LANES: '["checks-baseline-1"]',
-  });
-  assert.notEqual(verify.status, 0);
+
+  const trusted = present(legacy);
+  assert.equal(await trusted.select(), "mode=full\nreason=ineligible_change\n");
+  const full = await trusted.run("verify", "full");
+  assert.equal(full.status, 0, full.stderr);
+
+  // Require the selector's refusal of this request, not just a failed workflow step.
+  const lanes = '["checks-baseline-1"]';
+  const refused = await trusted.run("verify", "tests", { EXPECTED_LANES: lanes });
+  assert.equal(refused.status, 23, refused.stderr);
+  assert.equal(refused.stdout.trim(), `Cannot verify: tests --lanes ${lanes}`);
   await present(fallback).expect("full", {}, "bootstrap_policy_unavailable");
 });
 

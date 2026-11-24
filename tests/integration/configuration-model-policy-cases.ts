@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import test from "node:test";
 import type { ControllerApp } from "../../apps/controller/src/index.ts";
 import type {
@@ -5,6 +6,7 @@ import type {
   ConfigurationDriver,
   OpenClawConfigurationDocument,
 } from "../../packages/contracts/src/index.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   catalogRowUnselected,
   codexRuntimeOffProvider,
@@ -56,11 +58,11 @@ type IncompleteDraft = [name: string, values: OpenClawConfigurationDocument, dep
 interface ModelPolicyFixtures {
   runtimeDefaults: RuntimeDefaults;
   runtimeSelected: OpenClawConfigurationDocument;
-  kubernetesRuleFixture(computeId: string, rule: string): Promise<ModelPolicyContext>;
+  kubernetesRuleFixture(computeId: string, ...rules: string[]): Promise<ModelPolicyContext>;
   storedRowAgent(
     context: ModelPolicyContext,
     values: OpenClawConfigurationDocument,
-    options: { name: string; secretName: string },
+    options: { name: string; secretName: string; executionMode?: "dedicated" },
   ): Promise<ModelPolicyAgent>;
   setting(path: string, requirement: string): string;
   refusedAtSaveAndDeploy(
@@ -104,6 +106,117 @@ export function registerConfigurationModelPolicyCases(fixtures: ModelPolicyFixtu
     assertRefused,
     writePastOcc,
   } = fixtures;
+
+  test("Configuration admits an exact selectable Codex catalog row without a fallback", async () => {
+    const context = await kubernetesRuleFixture(
+      "compute-selectable-codex-catalog",
+      "validateConfiguration",
+      "validateHarnessAuth",
+      "validateGatewaySettings",
+    );
+    const baseline = createHarnessConfiguration("codex", "test-primary");
+    const primary = "codex/test-primary";
+    const child = "codex/test-child";
+    const manual = "codex/vendor/test-manual";
+    const runtime = { agentRuntime: { id: "codex" } };
+    const defaults = {
+      model: primary,
+      subagents: { model: child },
+      models: { [primary]: runtime, [child]: runtime, [manual]: runtime },
+      modelPolicy: { allow: [primary, child, manual] },
+    };
+    const withCatalog = (
+      id: string,
+      settings = defaults,
+      provider = "codex",
+      rowRuntime?: string,
+    ): OpenClawConfigurationDocument => ({
+      ...baseline,
+      agents: { defaults: settings },
+      models: {
+        providers: {
+          ...baseline.models.providers,
+          [provider]: {
+            models: [
+              ...(provider === "codex" ? [{ id: primary, name: "Primary" }] : []),
+              {
+                id,
+                name: "Manual",
+                ...(rowRuntime ? { agentRuntime: { id: rowRuntime } } : {}),
+              },
+            ],
+          },
+        },
+      },
+    });
+    const agent = await storedRowAgent(context, baseline, {
+      name: "Selectable catalog consumer",
+      secretName: "selectable-catalog-key",
+      executionMode: "dedicated",
+    });
+    const withNested = (ref: string) => ({
+      ...defaults,
+      models: { ...defaults.models, [`codex/${ref}`]: runtime },
+      modelPolicy: { allow: [...defaults.modelPolicy.allow, `codex/${ref}`] },
+    });
+    // A full reference for the primary remains valid even if another policy uses
+    // that spelling as its native ID.
+    const values = withCatalog("vendor/test-manual", withNested(primary));
+    const saved = await updateSaved(context, agent.item, values);
+    const selected = { ...agent, created: saved, valid: values };
+
+    for (const [invalid, provider] of [
+      // For alternatives, a full reference can also match a nested native ID,
+      // even one used only for delegated work.
+      [withCatalog(manual, { ...defaults, subagents: { model: `codex/${manual}` } }), "codex"],
+      [withCatalog(manual, withNested(manual)), "codex"],
+      [
+        withCatalog("test-undeclared", {
+          ...defaults,
+          modelPolicy: { allow: [primary, child, "codex/test-undeclared"] },
+        }),
+        "codex",
+      ],
+      [
+        withCatalog("vendor/test-manual", {
+          ...defaults,
+          modelPolicy: { allow: [primary, child] },
+        }),
+        "codex",
+      ],
+      [
+        withCatalog("vendor/test-manual", {
+          ...defaults,
+          modelPolicy: { allow: [primary, child, "codex/vendor/*"] },
+        }),
+        "codex",
+      ],
+      [withCatalog("vendor/test-manual", defaults, "openai"), "openai"],
+    ] as const) {
+      await refusedAtSaveAndDeploy(
+        context,
+        selected,
+        invalid,
+        provider === "codex"
+          ? "Configuration setting models.providers.codex.models accepts primaries and fallbacks. Alternatives omit the provider prefix. Set both models' agentRuntime.id to codex in agents.defaults.models. List exact refs in agents.defaults.modelPolicy.allow if set."
+          : catalogRowUnselected("models.providers.openai"),
+      );
+    }
+    await refusedAtSaveAndDeploy(
+      context,
+      selected,
+      withCatalog("vendor/test-manual", defaults, "codex", "openclaw"),
+      runtimePoliciesConflict(
+        'agents.defaults.models["codex/vendor/test-manual"]',
+        "codex",
+        "models.providers.codex.models[1]",
+        "openclaw",
+        keepRuntime("codex", "openclaw"),
+      ),
+    );
+    const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+    assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  });
 
   test("Configuration save refuses a model policy whose settings conflict, with deployment's text and order", async (t) => {
     // Finding 3020. Every deployment resolves the Harness from the model policy first and refuses

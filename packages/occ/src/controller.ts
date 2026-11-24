@@ -1,3 +1,4 @@
+import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
 import {
   createControllerComposition,
   type ControllerComposition,
@@ -6,6 +7,11 @@ import {
   type ReconciliationOperation,
 } from "./controller-composition.ts";
 import { type NamespaceLifecycleEvidence } from "./namespace-lifecycle.ts";
+import type {
+  AgentCredentialPushAudit,
+  AgentCredentialPushResult,
+  PushAgentCredentialsInput,
+} from "./agent-credential-retry.ts";
 import { type CreateNamespaceInput } from "./namespace-operations.ts";
 import {
   type CreateConnectionTemplateInput,
@@ -143,6 +149,7 @@ import {
   type AuthorizationSnapshot as DeployAgentAuthorization,
 } from "./controller-authority.ts";
 
+import type { ControllerTransactions } from "./controller-transactions.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { DeploymentStatusResult } from "./controller-work.ts";
 import { type ProvisionAgentInput, type ProvisionAgentResult } from "./agent-provisioning.ts";
@@ -1569,12 +1576,14 @@ export class OpenClawController {
     namespaceId: string,
     agentId: string,
     facet: SandboxFacet,
+    resolveHarness?: HarnessResolver,
   ) {
     return this.composition.sandboxPolicyOperations.getAgentSandboxPolicy(
       principalId,
       namespaceId,
       agentId,
       facet,
+      resolveHarness,
     );
   }
 
@@ -1602,6 +1611,8 @@ export class OpenClawController {
     facet: SandboxFacet,
     expectedVersion: number,
     additions: readonly SandboxNetworkGrant[],
+    repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
+    resolveHarness?: HarnessResolver,
   ): Promise<Readonly<SandboxPolicy>> {
     return this.composition.sandboxPolicyOperations.updateAgentSandboxPolicy(
       principalId,
@@ -1610,6 +1621,8 @@ export class OpenClawController {
       facet,
       expectedVersion,
       additions,
+      repositoryNetworkPolicy,
+      resolveHarness,
     );
   }
 
@@ -1780,6 +1793,14 @@ export class OpenClawController {
     );
   }
 
+  async pushAgentCredentials(
+    principalId: string,
+    input: PushAgentCredentialsInput,
+    audit: AgentCredentialPushAudit,
+  ): Promise<readonly AgentCredentialPushResult[]> {
+    return this.composition.agentCredentialRetry.pushAgentCredentials(principalId, input, audit);
+  }
+
   async withdrawAgentCredentialSource(
     principalId: string,
     input: AgentCredentialSourceInput,
@@ -1853,8 +1874,11 @@ export class OpenClawController {
   }
 
   /** Stage resources, reconciliation intents, and audit evidence as one unit. */
-  async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.composition.transactions.transact(work);
+  async transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: Parameters<ControllerTransactions["transact"]>[1],
+  ): Promise<T> {
+    return this.composition.transactions.transact(work, options);
   }
 
   /** Compensate a Driver side effect if the owning resource transaction fails. */

@@ -19,7 +19,7 @@ import {
   TokenServiceSourceInputError,
   type UpdateManagedCredentialSourceInput,
 } from "../../packages/occ/src/index.ts";
-import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
+import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, testPool } from "../helpers/postgres-database.mjs";

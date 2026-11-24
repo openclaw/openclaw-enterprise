@@ -407,6 +407,9 @@ case "${profile}" in
     install_yq
     need_command jq
     ;;
+  docker-only)
+    require_docker
+    ;;
   images)
     require_docker
     install_helm

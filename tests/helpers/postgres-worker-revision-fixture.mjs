@@ -33,6 +33,7 @@ import { freezeAgentRevision } from "../../packages/contracts/src/index.ts";
  * @typedef {{
  *   harness?: RevisionHarnessDescriptor,
  *   sandboxDriverId?: string,
+ *   sandboxPolicy?: AgentRevision["sandboxPolicy"],
  *   protectedRepositoryDriver?: { require(capability: "sandbox"): { id: string } },
  *   repositoryCredentials?: RepositoryRevisionState,
  *   actorId?: string,
@@ -602,6 +603,7 @@ export function createWorkerRevisionFixtures(
       {
         harness,
         sandboxDriverId,
+        sandboxPolicy,
         protectedRepositoryDriver,
         repositoryCredentials,
         actorId = actor.id,
@@ -672,6 +674,7 @@ export function createWorkerRevisionFixtures(
         harness: { ...approvedHarness, overrides: {}, configuration: {} },
         compute: { ...admittedCompute },
         ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
+        ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
         ...(plugins === undefined ? {} : { plugins }),
         harnessAuth,
         ...(credentialSources.length === 0 ? {} : { credentialSources }),
