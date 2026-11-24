@@ -586,6 +586,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           principalId,
           namespace.id,
           agent.id,
+          input.expectedRepositoryPolicyVersion,
         );
         if (!preview) {
           await dependencies.provisioningWorker.guardAgentProvisioning(
@@ -680,6 +681,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         principalId,
         namespace.id,
         lockedAgent.id,
+        input.expectedRepositoryPolicyVersion,
       );
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
@@ -988,6 +990,16 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
             )
           : undefined;
       const egressPlan = proxyAdmission?.plan;
+      if (
+        (admittedRepository?.requiresNetworkPolicy ||
+          policy?.repositoryNetworkPolicy?.some((grant) => grant.apiLimits)) &&
+        (!policy?.repositoryNetworkPolicy ||
+          egressPlan?.repositoryGitAuthorization !== "network-policy")
+      ) {
+        throw new ResourceStateConflictError(
+          "Repository restrictions require a saved native repository network policy.",
+        );
+      }
       const executionAdmission: ExecutionAdmission =
         credentialDeployment === undefined
           ? executionAdmissionFor(egressPlan)
@@ -1020,7 +1032,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           ? bindProtectedRepositoryPolicySandbox(compute, sandbox)
           : undefined;
       if (protectedSandbox) {
-        assertSelectedRepositoryGrants(repositoryGrants, admittedRepository?.selectedGrants);
+        assertSelectedRepositoryGrants(repositoryGrants, admittedRepository?.resolution);
       }
       const sandboxSnapshot = await dependencies.sandboxPolicy.admitDeploymentSnapshot(
         policy,
@@ -1118,7 +1130,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         }
         if (protectedSandbox && admittedRepository) {
           const current = admitRepository();
-          assertSelectedRepositoryGrants(repositoryGrants, current?.selectedGrants);
+          assertSelectedRepositoryGrants(repositoryGrants, current?.resolution);
           if (!isDeepStrictEqual(current?.credentials, admittedRepository.credentials)) {
             throw new ResourceStateConflictError(
               "The selected repository credentials changed during deployment.",
