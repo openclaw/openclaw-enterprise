@@ -28,6 +28,7 @@ import {
   grantMember,
   hasFocus,
   holdRequests,
+  inViewport,
   login,
   loginThroughForm,
   nativeValues,
@@ -764,34 +765,132 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   assert.equal(await observations.getByText(DIAGNOSTICS_RUNTIME_UNAVAILABLE).count(), 0);
 });
 
-test("Agent detail returns to the Agents list once background deletion finishes", async (t) => {
+test("A missing deletion status returns to the Agents list with a notice and drops a queued repeat", async (t) => {
+  const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Delete finish", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Finish Candidate", nativeValues("go"));
+  const namespace = await fixture.createNamespace("Deletion status", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Retiring Agent", nativeValues("go"));
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const agentUrl = fixture.origin + agentPath;
   const { page } = await newPage(t, fixture);
-  let gone = false;
-  await page.route(`${fixture.origin}${agentPath}`, async (route, request) => {
-    if (gone && request.method() === "GET") {
-      await route.fulfill(apiErrorResponse(404, "NOT_FOUND", "Agent not found."));
-      return;
-    }
-    await route.continue();
-  });
+  await page.clock.install();
+  const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Finish Candidate" }).waitFor();
+  await page.getByRole("heading", { name: "Retiring Agent" }).waitFor();
 
   await page.getByRole("button", { name: "Delete Agent" }).click();
-  const dialog = page.getByRole("dialog", { name: "Delete Finish Candidate?" });
+  const dialog = page.getByRole("dialog", { name: "Delete Retiring Agent?" });
   await expectConfirmationAgentId(dialog, agent.id);
+  const accepted = responseTo(page, "DELETE", agentUrl);
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
+  assert.equal((await accepted).status(), 202);
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
-  // The background cleanup finishes; no reader action follows.
-  gone = true;
-  await page.waitForURL((current) => current.pathname === "/console/agents", { timeout: 10_000 });
-  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  // A missing status response may arrive while a repeat waits for the quiet poll to finish.
+  const missingStatus = await holdRequests(t, page, agentUrl, {
+    method: "GET",
+    once: true,
+    fulfill: apiErrorResponse(404, "NOT_FOUND", "Agent not found."),
+  });
+  await Promise.all([missingStatus.requested, page.clock.runFor(DELETION_POLL_MS)]);
+  await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  const repeat = page.getByRole("dialog", { name: "Request deletion again for Retiring Agent?" });
+  await repeat.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  assert.equal(await repeat.getByRole("button", { name: "Deleting…" }).isDisabled(), true);
+  const statusResponse = responseTo(page, "GET", agentUrl);
+  missingStatus.release();
+  assert.equal((await statusResponse).status(), 404);
+
+  await page.waitForURL(
+    (current) =>
+      current.pathname === "/console/agents" &&
+      current.searchParams.get("namespace") === namespace.id,
+  );
+  const text =
+    "Deletion requested. The Agent’s status is no longer available, so cleanup is unconfirmed.";
+  const notice = page.getByRole("status").and(page.getByText(text, { exact: true }));
+  await notice.waitFor();
+  assert.equal(await notice.getAttribute("data-tone"), "info");
+  // The list still has the Agent because only the browser's status read reported it missing.
+  const row = page.getByRole("row").filter({ hasText: "Retiring Agent" });
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await repeat.isVisible(), false);
+  const statusReads = () =>
+    requests.filter(({ method, path }) => method === "GET" && path === agentPath).length;
+  const readsAtLanding = statusReads();
+  await page.clock.runFor(DELETION_POLL_MS * 2);
+  assert.equal(statusReads(), readsAtLanding, "the detail poll stopped");
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(await page.getByText(text, { exact: true }).count(), 0);
+  await page.goBack();
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await page.getByText(text, { exact: true }).count(), 0);
+});
+
+test("A missing deletion status brings the notice into view on return to a scrolled phone list", async (t) => {
+  const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deletion status", { ready: true });
+  for (let number = 1; number <= 6; number++) {
+    await fixture.createAgent(
+      namespace.id,
+      `Draft Agent ${number}`,
+      nativeValues(`draft-${number}`),
+    );
+  }
+  const agent = await fixture.createAgent(namespace.id, "Retiring Agent", nativeValues("retire"));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const agentUrl = fixture.origin + agentPath;
+  // A deletion accepted outside this browser leaves the previously opened list reusable.
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 664 } },
+  });
+  await page.clock.install();
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, listUrl(namespace.id));
+  const listHeading = page.getByRole("heading", { name: "Agents", exact: true });
+  const row = page.getByRole("row").filter({ hasText: agent.name });
+  const link = row.getByRole("link", { name: agent.name, exact: true });
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await inViewport(link), false, "the Agent starts below the fold");
+  await link.scrollIntoViewIfNeeded();
+  assert.equal(await inViewport(listHeading), false, "the list is scrolled past its heading");
+  await link.click();
+  await page.getByRole("heading", { name: agent.name, exact: true }).waitFor();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+
+  // Only the detail poll misses. The revalidated list still includes the deleting Agent.
+  const missingStatus = await holdRequests(t, page, agentUrl, {
+    method: "GET",
+    once: true,
+    fulfill: apiErrorResponse(404, "NOT_FOUND", "Agent not found."),
+  });
+  await Promise.all([missingStatus.requested, page.clock.runFor(DELETION_POLL_MS)]);
+  const statusResponse = responseTo(page, "GET", agentUrl);
+  missingStatus.release();
+  assert.equal((await statusResponse).status(), 404);
+  await page.waitForURL(
+    (current) =>
+      current.pathname === "/console/agents" &&
+      current.searchParams.get("namespace") === namespace.id,
+  );
+  const notice = page.getByRole("status").filter({ hasText: "cleanup is unconfirmed" });
+  await notice.waitFor();
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(
+    await inViewport(notice),
+    true,
+    "the returned list shows the notice without scrolling",
+  );
+  assert.equal(await inViewport(listHeading), true);
+  assert.equal(await hasFocus(listHeading), true);
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 0);
 });
 
 test("Agent detail hides sharing instead of showing an error to non-administrators", async (t) => {

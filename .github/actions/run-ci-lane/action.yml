@@ -432,7 +432,13 @@ runs:
         if [[ -n "$CI_SELECTED_TEST_FILE" ]]; then
           selection=(--file "$CI_SELECTED_TEST_FILE")
         fi
-        if [[ "${{ inputs.lane }}" == k3d-fixture-configuration ]]; then
+        if [[ "${{ inputs.lane }}" == checks-baseline-1 && -z "$CI_SELECTED_TEST_FILE" ]]; then
+          # These three dev-up files run in separate processes and use the same CLI.
+          dev_up_cli_dir=$(mktemp -d "$RUNNER_TEMP/oce-dev-up-cli.XXXXXX")
+          trap 'rm -rf -- "$dev_up_cli_dir"' EXIT
+          go build -o "$dev_up_cli_dir/occ" ./cmd/occ
+          export OCC_TEST_DEV_UP_CLI="$dev_up_cli_dir/occ"
+        elif [[ "${{ inputs.lane }}" == k3d-fixture-configuration ]]; then
           # Hosted runners have been lost mid-lane (suspected memory pressure); a
           # lost runner skips every later step, so the sampler also logs live.
           bash scripts/ci/memory-sampler.sh "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" &

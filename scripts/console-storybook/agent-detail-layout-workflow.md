@@ -228,6 +228,13 @@ Open **Pages / Agent detail / Danger zone on Configuration** on desktop and phon
 Switch from Workspace files to Configuration to see stop status and deletion controls.
 Switch back to verify the entire card disappears.
 
+Open **Components / Deletion / Status unavailable after deletion request** on
+desktop and at 390 px. Wait for the status check to return you to **Agents** in
+the same Namespace. Check that an information notice above the list says deletion
+was requested and cleanup could not be confirmed. The row still shows **Deleting**.
+Open **Namespaces**, then return to **Agents** and check that the notice has cleared.
+Use **Reset story** to repeat the simulated status response.
+
 11. Open **Components / Stop Agent / First Deployment Failed**. The Agent has no
     selected version and its latest readable deployment failed. Check that **Stop
     Agent** remains enabled: a newer queued deployment can be unreadable. Open the
