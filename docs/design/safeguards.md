@@ -9,8 +9,9 @@ current behavior from remaining design work.
 Secret storage, exact binding authorization, delivery for one Agent revision, and
 transactional mutation audit are implemented. With Kubernetes, canonical Secrets
 live in the tenant storage namespace; the worker materializes admitted
-runtime Secrets for the exact consumer. Model credentials still reach the executing Harness.
-Brokered model access, OAG audit, universal pre-execution policy enforcement, and
+runtime Secrets for the exact consumer of direct delivery. Managed Proxy
+delivery keeps the real model credential outside the Harness. General model
+mediation, OAG audit, universal pre-execution policy enforcement, and
 mutually authenticated workload transport remain broader design requirements.
 See [Secret storage](../reference/drivers/secret.md),
 [runtime isolation](../reference/security/runtime-isolation.md), and
@@ -41,27 +42,15 @@ retain references, not historical values. Admission checks current authorization
 Kubernetes process restarts do not reauthorize delivered env values. Immediate
 loss of access requires stopping the workload or revoking the upstream credential.
 
-Source identity and delivery mode are separate. The optional
-`credential_gateway` capability keeps a model credential outside the Harness: a
-Namespace-scoped `CredentialSource` registers an OCC Secret with the selected
-`CredentialGatewayDriver`, and its paired Sandbox applies the credential to
-outbound requests while the workload holds only a placeholder. OCC reads the
-Secret once, at registration, and never stores the value. The current
-implementation is OpenShell provider substitution for dedicated Codex with an
-OpenAI API key; while a Credential Gateway is selected, Secret-backed model
-delivery is rejected rather than used as a fallback. The guarantee relies on
-the gateway's own membership controls and on enforced Sandbox NetworkPolicy.
-Update, rotation, per-Agent withdrawal, and other source types are deferred.
-Environment-delivery guarantees do not describe this path. The project-root `ref/design.md` remains
-the external broker-target owner handoff outside this implementation worktree.
+Managed Credential Sources store material through the selected TokenService.
+The Credential Proxy configures injection and provides a placeholder to the
+Harness. The paired Sandbox enforces network access and containment. See
+[Credential Sources](../reference/credential-sources.md#implementation-status)
+for managed delivery, updates, withdrawal, and existing Gateway delivery paths.
 
-Production execution retains scoped direct-credential delivery, because the
-Credential Gateway path is limited to the experimental local OpenShell Sandbox
-workflow. The Agent's `harnessAuth`
-API-key binding references an OCC Secret in its exact Namespace. The Secret
-Driver owns storage; Kubernetes projects the source only into dedicated Codex
-or the combined embedded OpenClaw gateway/Harness. Each consumer requires its
-own admission and dispatch authorization; the dedicated gateway gets no key.
+Direct model authentication delivers the exact admitted credential to the
+dedicated Harness or the embedded OpenClaw gateway and Harness. The separate
+dedicated gateway receives no model credential.
 
 For a provider-managed account, API-side Kubernetes Compute stores the issued
 access token and pinned provider workspace in one account-owned Secret in the
@@ -89,12 +78,11 @@ A trusted dedicated gateway may receive its existing Agent-scoped gateway and
 Channel credentials and Secrets explicitly bound by its approved Configuration.
 Its [identity boundary](access.md#runtime-trust-across-targets) excludes dedicated
 Harness identity and model credentials as well as broad controller credentials.
-Direct model-credential delivery to the tenant data-plane Harness is a temporary
-implementation exception. Target model-credential mediation keeps real upstream
-credentials outside Harness execution; the Harness receives only scoped substitutes.
-Each target must restrict workload-write authority to the resources required
-for the deployment, since that authority can indirectly expose Secrets there. Cross-target materialization does not establish brokered
-model access or workload-bound transport authentication; those guarantees remain deferred.
+The managed Proxy path keeps upstream credentials outside Harness execution
+and supplies scoped placeholders. Each target must restrict workload-write
+authority to the resources required for the deployment, since that authority
+can indirectly expose Secrets there. Workload-bound transport authentication
+remains a design requirement.
 
 ## Failure behavior
 

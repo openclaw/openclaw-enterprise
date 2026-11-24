@@ -58,11 +58,11 @@ and verify that a protected request with the old session fails.
 ## Replace runtime values and verify consumption
 
 Obtain replacement API keys and channel credentials through the provider's
-supported process. For a harness API key or Configuration channel Secret, use its
-[supported value update](../../reference/drivers/kubernetes-secret.md#update-and-redeploy)
-instead of editing its backing object directly. Generated transport credentials
-are separate from channel Secrets; the current initial provisioning flow does not
-rotate an existing generated bundle.
+supported process. For a Secret-backed Harness API key or Configuration channel
+Secret, use the [Secret update](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).
+For a TokenService-managed model key, use the [Credential Source update](../../reference/credential-sources/managed-static.md#update-a-source).
+The initial provisioning flow creates a separate transport credential bundle.
+It keeps an existing bundle in place.
 
 List all affected applications or Agents before restarting or deploying them.
 `occ secret get "$SECRET_ID" -o json` lists a Secret's consuming Agents in
