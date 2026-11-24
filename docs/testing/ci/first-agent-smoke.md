@@ -70,7 +70,8 @@ node scripts/ci/first-agent-smoke.ts run
 The second command builds images; `run` requires those build results. Do not
 substitute a production cluster for the script's disposable installation.
 
-Image build commands have a 40-minute budget. The protected prepared-Git job
+Docker Bake and the separate controller and runtime image builds each have a
+40-minute command limit. The protected prepared-Git job
 allows 120 minutes for image builds and its installed proof; the ordinary
 artifact-backed smoke job allows 40 minutes. These are cancellation limits,
 not expected durations.

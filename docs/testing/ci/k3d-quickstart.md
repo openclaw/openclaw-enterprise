@@ -54,7 +54,7 @@ Configure these inputs at the **repository** level:
 | Secret `OCE_QUICKSTART_CODEX_PAT`        | Codex service account with the selected model and an authorized Linear connection |
 | Secret `OCE_TEST_GITHUB_APP_PRIVATE_KEY` | RSA key for the App installed on the test repository                              |
 | Variable `OCE_QUICKSTART_MODEL`          | Model available to the service account                                            |
-| Variable `OCC_TEST_LINEAR_TEAM_ID`       | ID of a team the connected account can read                                       |
+| Variable `OCC_TEST_LINEAR_TEAM_ID`       | UUID of the team with key `OCE`. The connected account must be able to read it.   |
 
 Dispatch the [k3d quickstart workflow](../../../.github/workflows/k3d-quickstart-e2e.yml) on `main`:
 
