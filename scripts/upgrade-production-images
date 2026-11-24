@@ -1670,7 +1670,15 @@ run_preflight_jobs() {
               "$evidence_dir/preflight-api.log") || draft_refusals=
           fi
           if [[ "$component" == migration && -n "${guarded_migration_id:-}" ]]; then
-            message="the selected controller image failed the guarded database migration check for the expected Installation. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No ${writer_qualifier}OCC writer was stopped. Confirm that the image supports --check-for-installation and reconcile the migrator connection or database history before retrying."
+            if [[ "$phase" == Failed && "$logs_status" == 0 ]] && jq -Rse '
+              [split("\n")[] | fromjson? | objects |
+                select(.event | strings | startswith("migration.")) | [.event, .code]]
+                == [["migration.failed", "MIGRATION_HISTORY_UNSUPPORTED"]]
+            ' "$evidence_dir/preflight-migration.log" >/dev/null 2>&1; then
+              message="the selected controller image does not support the installed database history (MIGRATION_HISTORY_UNSUPPORTED). No ${writer_qualifier}OCC writer was stopped. Preserve the database and select an image verified against this history. See preflight-migration.log and preflight-migration-status.json in $evidence_dir."
+            else
+              message="the selected controller image failed the guarded database migration check for the expected Installation. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No ${writer_qualifier}OCC writer was stopped. Confirm that the image supports --check-for-installation and reconcile the migrator connection or database history before retrying."
+            fi
           elif [[ "$component" == migration ]]; then
             message="the selected controller image could not confirm database migration compatibility. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No additional OCC writer was stopped; reconcile the database history, migrator access, or database connectivity before retrying."
           elif [[ -n "$draft_refusals" ]]; then
@@ -2436,7 +2444,15 @@ run_migration_stage() {
     if [[ "$stage" == verify ]]; then
       [[ "$history" == completed ]] || history=verificationFailed
     elif [[ -z "$history" ]]; then
-      die "the apply Job did not succeed with a valid migration result. Preserve its evidence, reconcile the database outcome, and keep writers stopped."
+      local reason="the apply Job did not succeed with a valid migration result."
+      # Report a recognized failure without copying arbitrary Job output to the terminal.
+      if [[ "$terminal_phase" == Failed ]] && jq -Rse '
+        [split("\n")[] | fromjson? | objects | select(.event == "migration.failed") | .code]
+          == ["MIGRATION_DATABASE_BUSY"]
+      ' "$evidence_dir/preflight-migration.log" >/dev/null 2>&1; then
+        reason="the apply Job reported a conflicting database lock (MIGRATION_DATABASE_BUSY). Check outstanding transactions."
+      fi
+      die "$reason Keep writers stopped. Inspect migration-deploy-apply/preflight-migration.log in the upgrade evidence directory. Reconcile the original Job and database history. Do not replay the Job."
     fi
     migration_stage_state migration-settled "$upgrade_evidence_dir" "$attempt" "$history"
     record=$(migration_stage_state migration-status "$upgrade_evidence_dir" |
