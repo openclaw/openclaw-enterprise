@@ -63,29 +63,34 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
 OCE discovers available tools using the selected account. On a dedicated OpenClaw
-Agent, select an attached credential for that slot and the upstream tool names
+Agent, select a credential for that slot and the upstream tool names
 the Agent may call. The worker advertises those tools; the Sandbox enforces the
 selection for both worker and script calls. See
 [Get started with managed OpenClaw plugins](openclaw-plugins.md) for a complete
 walkthrough.
 [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
 
-The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
-Drivers. Configure `/usr/local/bin/node` in `toolBinaries`, then register a
-`bearer-token` source with the package's MCP host, port, path and placeholder name.
-Reference the saved access token as its `token` Secret and set `protocol: mcp`.
-Attach the source to the Agent draft and grant the operator and Agent service
-principal `credential_source:operate` on it.
+To connect an account from a Connection Template, select TokenService and the
+native OpenShell Credential Proxy. OCC includes the selected Source when it
+saves the Plugin selection. The operator and Agent service principal need
+`credential_source:operate` on the Source.
+
+On an Installation using the Credential Gateway path, configure `/usr/local/bin/node`
+in `toolBinaries`. Register a `bearer-token` Source with the MCP host, port, path,
+placeholder name, and `protocol: mcp`. Reference the saved access token as its
+`token` Secret and attach the Source to the Agent draft.
 [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
 · [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
 
 For **Load tools**, verify that the OCE API can resolve and reach the MCP endpoint.
 The chart gives the API unrestricted egress; Agent tool calls still use the Sandbox policy.
 
-Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
-Choose the tools to enable, then save and deploy. Loading tools again refreshes
-the inventory. Additional tools require selection and deployment before the Agent
-can use them. An empty selection leaves the worker server disabled.
+Open **Plugins** and add the plugin. Choose an existing account or use **Connect account**
+to authorize one from an approved Connection Template. On a saved Agent, connecting a different
+account replaces the current account. Select **Load tools** to see the
+inventory. Choose the tools to enable, then save and deploy. Loading tools again
+refreshes the inventory and preserves your selection. An empty selection leaves
+the worker server disabled.
 For an enabled tool, open **Tool policy** and set **Require approval for** to
 **Every action** to require human approval for each native call. Select
 **No additional approval** to run without a prompt. The request names the server and tool;

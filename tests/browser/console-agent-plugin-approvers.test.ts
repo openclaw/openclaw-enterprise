@@ -1113,6 +1113,29 @@ async function loadManagedTools(ui: ManagedAccessBrowser, sourceId: string) {
   await ui.tool.waitFor();
 }
 
+test("Loading managed MCP tools leaves access empty until a tool is explicitly selected", async (t) => {
+  const ui = await managedAccessBrowser(t);
+  await loadManagedTools(ui, ui.sourceId);
+  // Discovery lists tools; it does not grant the Agent access to newly advertised tools.
+  await ui.checkDraft();
+  await ui.tool.click();
+  const enabled = ui.dialog.getByLabel(`${managedTool} enabled override`, { exact: true });
+  assert.equal(await enabled.isChecked(), false);
+  await enabled.check();
+  const selected = record(record(JSON.parse(await ui.input.inputValue()))[slackPluginId]);
+  assert.deepEqual(record(selected.driverPolicy).toolNames, ["slack_search_public"]);
+
+  await ui.button("Done").click();
+  const saved = responseTo(ui.page, "PATCH", new URL(ui.path, ui.fixture.origin).href);
+  await ui.page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  const persisted = responseData(await ui.fixture.request("GET", ui.path));
+  assert.deepEqual(
+    record(record(record(persisted.plugins)[slackPluginId]).driverPolicy).toolNames,
+    ["slack_search_public"],
+  );
+});
+
 async function refuseManaged(ui: ManagedAccessBrowser) {
   const response = await discoveryResponse(ui.page, ui.detailsUrl, () => ui.loadTools.click(), 403);
   assert.deepEqual(response.request().postDataJSON(), managedDetailsBody(ui.sourceId));

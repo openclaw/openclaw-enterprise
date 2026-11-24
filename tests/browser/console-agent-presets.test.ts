@@ -23,6 +23,7 @@ import {
   type Preset,
   type PresetTemplate,
   type PresetVariable,
+  type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import type { CreateAgentBody, CreateSecretBody } from "../../packages/contracts/src/api/common.ts";
 import type {
@@ -49,6 +50,8 @@ import {
 } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { consoleStorage } from "../helpers/console-storage.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   apiRequests,
   consoleViewports,
@@ -959,6 +962,24 @@ test("Create Agent browses the Codex catalog and discards its selections when sw
   const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
   fixture.controller.installPluginDrivers([new OCCPluginDriver(), driver]);
   const namespace = await fixture.createNamespace("Curated plugin browsing", { ready: true });
+  const sandbox: SandboxDriver = {
+    id: "sandbox-plugin-presets",
+    capability: "sandbox",
+    implementation: "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {
+      throw new Error("The catalog fixture does not deploy a Harness.");
+    },
+    async cleanup() {},
+  };
+  const compute = createTestKubernetesComputeDriver("compute-plugin-presets", {
+    sandboxDriver: sandbox,
+  });
+  for (const selected of [sandbox, compute]) {
+    fixture.controller.registerDriver(selected);
+    fixture.controller.selectDriver(selected.capability, selected.id);
+  }
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
@@ -996,15 +1017,15 @@ test("Create Agent browses the Codex catalog and discards its selections when sw
   );
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  assert.equal(await page.getByLabel("Execution mode", { exact: true }).inputValue(), "dedicated");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
-  await dialog
-    .getByText("To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent", {
-      exact: false,
-    })
-    .waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {});
   assert.equal(await linear.count(), 0);
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
+  await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {
+    "occ-plugin:google@1.0.0": { enabled: true },
+  });
 });
 
 test("Create Agent clears approvers when the selected Harness has no plugin catalog", async (t) => {
@@ -3944,6 +3965,8 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
     await route.continue();
   });
   const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
+  const catalogRequestsBeforeSubmit = pathRequests(requests, "POST", catalogPath).length;
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -3953,8 +3976,7 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   await within(submitStarted.promise, "the held create request");
   // A prefetch due during submission must resume after the real duplicate-name rejection.
   await page.clock.runFor(300);
-  const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
-  assert.equal(pathRequests(requests, "POST", catalogPath).length, 0);
+  assert.equal(pathRequests(requests, "POST", catalogPath).length, catalogRequestsBeforeSubmit);
   submitRelease.resolve();
   assert.equal((await conflict).status(), 409);
   await page.getByText(AGENT_NAME_CONFLICT).waitFor();

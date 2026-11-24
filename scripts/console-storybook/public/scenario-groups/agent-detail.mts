@@ -1493,7 +1493,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
           "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
-          "After loading tools, both tools start enabled. Open Tool policy for slack_send_message and set Require approval for to Every action. Unsupported approval modes, reviewer selection, and plugin defaults are disabled.",
+          "After loading tools, both tools start disabled. Enable slack_send_message, then open Tool policy and set Require approval for to Every action. Unsupported approval modes, reviewer selection, and plugin defaults are disabled.",
           "Choose Done and Save plugin selections. Open the picker: saved tools and approval choices remain visible as Unavailable until discovery succeeds. Load tools again to confirm the choices.",
           "Disable slack_send_message to remove its approval override, or turn off Enable plugin to clear its managed account and tool policies before saving.",
         ],
@@ -1530,7 +1530,7 @@ export function createAgentDetailScenarios({
           "The caller cannot select the Source, but the saved Agent retains its verified bound grant. The current account is read-only and Load tools can use the Agent's grant.",
         steps: [
           "Check that Current account (Agent access only) is selected but cannot be chosen as a new binding.",
-          "Choose Load tools. The simulated MCP tools appear and start enabled.",
+          "Choose Load tools. The simulated MCP tools appear and start disabled until explicitly enabled.",
           "Choose Install without an account. The Agent-only account is no longer selectable; restoring it requires credential access.",
         ],
         gap: "The saved grant and MCP response are Storybook fixtures. This does not prove IAM authorization or a live server request.",

@@ -1772,29 +1772,6 @@ export function createPluginFields({
   return {
     section,
     refresh: () => render(),
-    enableDiscoveredTools(
-      id: string,
-      connection: ManagedToolConnection,
-      tools: readonly PluginToolCatalogEntry[],
-    ) {
-      const selection = selections()?.[id];
-      const policy = selection?.driverPolicy;
-      if (
-        !selection?.enabled ||
-        !policy ||
-        Array.isArray(policy.toolNames) ||
-        !isObject(policy.credentials) ||
-        policy.credentials[connection.slot] !== connection.sourceId
-      ) {
-        return;
-      }
-      updateSelection(id, (current) => {
-        current.driverPolicy = {
-          ...current.driverPolicy,
-          toolNames: tools.filter((tool) => tool.available !== false).map((tool) => tool.id),
-        };
-      });
-    },
     setDisabled(value: boolean) {
       disabled = value;
       // The selections JSON stays readable, focusable and copyable; the rest goes inert.

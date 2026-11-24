@@ -126,6 +126,15 @@ test("Google deployment describes only exact reviewed credential requests", asyn
   const ids = new Set(description.credentials.account?.default?.networkRequirementIds);
   const rules = description.networkRequirements.filter(({ id }) => ids.has(id));
   const gmail = rules.filter(({ match }) => match.host === "gmail.googleapis.com");
+  assert.ok(
+    rules.some(
+      ({ match }) =>
+        match.host === "chat.googleapis.com" &&
+        match.requestPolicy?.type === "http" &&
+        match.requestPolicy.method === "GET" &&
+        match.requestPolicy.path === "/v1/spaces",
+    ),
+  );
 
   // A broad approved Template must not turn an unreviewed Gmail route into an injection rule.
   assert.ok(

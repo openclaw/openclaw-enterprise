@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
 import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
@@ -622,164 +620,13 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const savedSlack = record(record(record(saved.data).plugins)[pluginId]);
   assert.deepEqual(record(savedSlack.driverPolicy).toolNames, ["slack_send_message"]);
-  // Deployment consumes these internal Driver results. Record the real implementation's
-  // returns so the test also exercises OCC's selection and source-reference mapping.
-  const describe = t.mock.method(pluginDriver, "describeDeployment");
+  // This Gateway-backed path freezes the saved selections. The TokenService-backed
+  // Agent workflow separately verifies projection and request policy in the admitted revision.
   const deployed = await request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   assert.deepEqual(record(record(deployed.data).plugins).plugins, approved);
   assert.deepEqual(record(deployed.data).credentialSources, credentialSources);
 
-  const descriptionFor = (id: string) => {
-    const call = describe.mock.calls.find(({ arguments: [input] }) => input.plugin.pluginId === id);
-    assert.ok(call?.result, `deployment must describe ${id}`);
-    assert.deepEqual(call.arguments[0].plugin, { catalog: "driver", pluginId: id });
-    return call.result;
-  };
-  const catalog = new URL("../../apps/controller/plugins/", import.meta.url);
-  const fileDigest = async (path: string) =>
-    createHash("sha256")
-      .update(await readFile(new URL(path, catalog)))
-      .digest("hex");
-  const slack = await descriptionFor(pluginId);
-  assert.equal(slack.releaseSha256, slot.releaseSha256);
-  const [server] = slack.tools;
-  assert.ok(server);
-  assert.equal(server.kind, "installation");
-  assert.equal(server.role, "harness");
-  assert.deepEqual(server.installation, {
-    kind: "hosted-mcp",
-    endpoint: "https://mcp.slack.com/mcp",
-    configuration: {
-      kind: "image-manifest",
-      path: "/usr/local/lib/oce/plugin-catalog/oce-slack/mcp.json",
-      server: "slack",
-      sha256: await fileDigest("oce-slack/mcp.json"),
-    },
-  });
-  assert.deepEqual(server.selectedTools, ["slack_send_message"]);
-  const account = slack.credentials.account?.default;
-  assert.ok(account);
-  assert.deepEqual(account.sourceRef, { kind: "credential_source", namespaceId, id: sourceId });
-  assert.deepEqual(account.toolIds, [server.id]);
-  assert.deepEqual(account.projection, { environment: "SLACK_MCP_TOKEN", presentation: "bearer" });
-  const calls = slack.networkRequirements.filter(
-    (rule) =>
-      account.networkRequirementIds.includes(rule.id) &&
-      rule.match.requestPolicy?.type === "mcp" &&
-      rule.match.requestPolicy.method === "tools/call",
-  );
-  assert.deepEqual(
-    calls.map(({ toolId, purpose, match }) => ({ toolId, purpose, match })),
-    [
-      {
-        toolId: server.id,
-        purpose: "invocation",
-        match: {
-          binary: "/usr/local/bin/node",
-          host: "mcp.slack.com",
-          ports: [{ from: 443, to: 443 }],
-          requestPolicy: {
-            type: "mcp",
-            path: "/mcp",
-            method: "tools/call",
-            toolName: "slack_send_message",
-          },
-        },
-      },
-    ],
-  );
-
-  const workspace = await descriptionFor(googleId);
-  const googleAccount = workspace.credentials.account?.default;
-  assert.ok(googleAccount);
-  assert.deepEqual(googleAccount.sourceRef, {
-    kind: "credential_source",
-    namespaceId,
-    id: googleSourceId,
-  });
-  assert.deepEqual(googleAccount.projection, {
-    environment: "GOG_ACCESS_TOKEN",
-    presentation: "bearer",
-  });
-  // Both requests use the same worker executable and Gmail host. Only the Gmail action
-  // needs this account's bearer; discovery fetches the public API description.
-  const gmailGet = workspace.networkRequirements.filter(
-    ({ purpose, match }) =>
-      purpose === "invocation" &&
-      match.host === "gmail.googleapis.com" &&
-      match.binary === "/usr/local/lib/oce/plugins/google/bin/gog" &&
-      match.requestPolicy?.type === "http" &&
-      match.requestPolicy.method === "GET",
-  );
-  const action = gmailGet.find(
-    ({ match }) => match.requestPolicy?.path === "/gmail/v1/users/me/messages",
-  );
-  assert.ok(action);
-  assert.ok(googleAccount.networkRequirementIds.includes(action.id));
-  assert.deepEqual(googleAccount.toolIds, [action.toolId]);
-  const discoveryRules = gmailGet.filter(
-    ({ match }) => match.requestPolicy?.path === "/$discovery/rest",
-  );
-  assert.ok(discoveryRules.length > 0);
-  assert.ok(discoveryRules.every((rule) => !googleAccount.networkRequirementIds.includes(rule.id)));
-  for (const { id, match } of workspace.networkRequirements) {
-    if (match.host === "gmail.googleapis.com" && googleAccount.networkRequirementIds.includes(id)) {
-      assert.ok(match.requestPolicy?.type === "http");
-      assert.match(
-        match.requestPolicy.path,
-        /^\/gmail\//,
-        "the bearer must stay under the Gmail API path",
-      );
-    }
-  }
-  // Parameterized Chat operations cannot become a broader credential-bearing subtree.
-  const chatPaths = workspace.networkRequirements.flatMap(({ id, match }) =>
-    googleAccount.networkRequirementIds.includes(id) &&
-    match.host === "chat.googleapis.com" &&
-    match.requestPolicy?.type === "http" &&
-    match.requestPolicy.method === "GET"
-      ? [match.requestPolicy.path]
-      : [],
-  );
-  assert.ok(chatPaths.includes("/v1/spaces"));
-  assert.ok(chatPaths.every((path) => !path.includes("*")));
-  const release = record(
-    JSON.parse(
-      await readFile(new URL("oce-google-workspace/ai.openclaw.oce/release.json", catalog), "utf8"),
-    ),
-  );
-  const binaryPins = Object.fromEntries(
-    Object.entries(record(release.artifacts)).map(([platform, artifact]) => [
-      platform,
-      string(record(artifact).binarySha256),
-    ]),
-  );
-  assert.deepEqual(
-    workspace.tools.map(({ kind, role, installation }) => ({ kind, role, installation })),
-    [
-      {
-        kind: "installation",
-        role: "gateway",
-        installation: {
-          kind: "image-skill",
-          sha256: await fileDigest("oce-google-workspace/skills/oce-google/SKILL.md"),
-          path: "/usr/local/lib/oce/plugin-catalog/oce-google-workspace/skills/oce-google/SKILL.md",
-        },
-      },
-      {
-        kind: "installation",
-        role: "harness",
-        installation: {
-          kind: "image-executable",
-          path: "/usr/local/lib/oce/plugins/google/bin/gog",
-          binarySha256ByPlatform: binaryPins,
-        },
-      },
-    ],
-  );
-
-  describe.mock.resetCalls();
   // Keep all three sources attached while removing both plugin connections from the draft.
   const cleared = await request("PATCH", agentPath, {
     body: { configurationId, plugins: google, credentialSources },
@@ -787,30 +634,11 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
   assert.deepEqual(record(cleared.data).plugins, google);
   assert.deepEqual(record(cleared.data).credentialSources, credentialSources);
-  const unconnected = await descriptionFor(googleId);
-  assert.deepEqual(unconnected.credentials, { account: {} });
-  // A plugin's reviewed network-only requests do not depend on an account connection.
-  assert.ok(unconnected.networkRequirements.length > 0);
-  assert.ok(
-    unconnected.networkRequirements.every(
-      ({ match }) => match.requestPolicy?.type === "http" && match.requestPolicy.method === "GET",
-    ),
-  );
-  assert.ok(
-    unconnected.networkRequirements.some(
-      ({ match }) =>
-        match.host === "gmail.googleapis.com" && match.requestPolicy?.path === "/$discovery/rest",
-    ),
-  );
-  assert.ok(
-    !unconnected.networkRequirements.some(({ id }) =>
-      googleAccount.networkRequirementIds.includes(id),
-    ),
-  );
   const revision = await request(
     "GET",
     `${agentPath}/revisions/${string(record(deployed.data).id)}`,
   );
   assert.equal(revision.status, 200, JSON.stringify(revision.body));
   assert.deepEqual(record(record(revision.data).plugins).plugins, approved);
+  assert.deepEqual(record(revision.data).credentialSources, credentialSources);
 });

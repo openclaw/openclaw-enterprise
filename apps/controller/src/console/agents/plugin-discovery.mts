@@ -525,9 +525,6 @@ export function createPluginDiscovery({
               retryAfterConflict: undefined,
             },
       );
-      if (connection) {
-        fields.enableDiscoveredTools(id, connection, detail.tools ?? []);
-      }
     } catch (cause) {
       if (!context.isCurrent() || active !== generation) {
         return;

@@ -3053,6 +3053,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [96, "ALTER TABLE"],
                 [95, "CREATE FUNCTION"],
                 [94, "GRANT"],
                 [92, "CREATE FUNCTION"],
@@ -3091,6 +3092,13 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 96) {
+          // 0097 is one ALTER TABLE statement. Reject after that statement has replaced
+          // the initial-grant constraint, so PostgreSQL must undo the completed DDL.
+          failAt = `IF pg_get_constraintdef((SELECT oid FROM pg_constraint
+            WHERE conrelid='occ.credential_sources'::regclass
+              AND conname='credential_sources_oauth_shape')) LIKE '%oauth_granted_scopes <@ oauth_requested_scopes%'
+            THEN RETURN; END IF;`;
         } else if (prefix === 95) {
           // Abort the second function replacement after the snapshot validator accepts a Template receipt.
           failAt = `IF NOT occ.credential_source_snapshots_are_valid(
@@ -3134,7 +3142,7 @@ test(
           db,
           db.name,
           `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN ${failAt} RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000'; END $$;
-        CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${rollbackTag}') EXECUTE FUNCTION public.reject_migration_ddl()`,
+        CREATE EVENT TRIGGER reject_migration_ddl ON ${prefix === 96 ? "ddl_command_end" : "ddl_command_start"} WHEN TAG IN ('${rollbackTag}') EXECUTE FUNCTION public.reject_migration_ddl()`,
         );
         assert.deepEqual(
           await runHistoryMigration(

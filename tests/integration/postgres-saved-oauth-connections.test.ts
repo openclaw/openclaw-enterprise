@@ -181,6 +181,13 @@ test(
     );
     const retired = await inject("DELETE", `${sources}/${source.id}`);
     assert.equal(retired.statusCode, 204, retired.body);
+    const removedTemplate = await inject(
+      "DELETE",
+      `/connection-templates/${template.json().data.id}`,
+    );
+    assert.equal(removedTemplate.statusCode, 204, removedTemplate.body);
+    const removedClient = await inject("DELETE", `/oauth-clients/${client.json().data.id}`);
+    assert.equal(removedClient.statusCode, 204, removedClient.body);
   },
 );
 
