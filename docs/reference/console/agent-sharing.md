@@ -17,10 +17,18 @@ request; the API validates subjects and targets, and an unknown Principal ID is
 reported as such. Sharing does not provision or search for accounts.
 
 The acknowledgment covers full native administration of the shared Agent,
-including its conversations, settings, tools and accessible credentials. This is
-not restricted chat or automatic personal identity for each chat. Sharing does
-not grant OCE Configuration, deployment, Secret or Agent stop permissions. The
-[native launcher](../agent-native-admin.md) still requires its Installation setup and a supported runtime.
+including its conversations, settings, tools and accessible credentials. This
+is not the restricted chat access granted by `agent:operate`. Sharing does not
+grant OCE Configuration, deployment, Secret or Agent stop permissions.
+
+Sharing grants access to an existing OCC Principal. It does not create an OCC
+account or a Gateway profile. When an eligible signed-in person successfully
+connects through OCC's **Open Agent UI** or **Open chat**, the supported Gateway
+creates a native profile for that Principal if needed. It reuses the profile
+while native storage is retained. This happens during browser admission, not
+for each conversation. The [native profile](../agent-native-admin.md#native-authority-and-drift)
+identifies the Principal but does not isolate tools, credentials, files, or
+execution.
 
 ## Direct grants and removal
 
