@@ -73,7 +73,10 @@ interval closes the connection first: the caller gets a connection reset,
 not `504`.
 
 OCC rechecks credential validity, principal status, permission and the selected
-revision every 25 seconds and before final delivery, with a 5-second deadline. Revocation, dependency
+revision every 25 seconds and before ending the response. Each check has a
+5-second deadline. A JSON caller can receive the entire body before the final
+check. For HTTP 200 streams, OCC [holds the completion suffix](../flows/agent-http-chat.md)
+until the check passes. Revocation, dependency
 failure, stop, deletion, replacement or client disconnect aborts the upstream
 connection. Aborting does not prove execution stopped or undo tool effects. A
 request that waits behind a turn when its Gateway ends is not kept. Silence or

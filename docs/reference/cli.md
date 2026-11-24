@@ -204,7 +204,7 @@ combined with `--previous`.
 ```sh
 occ agent runtime agt_...
 occ agent logs agt_... --source gateway --since 10m
-occ agent logs agt_... --source gateway --follow -o json | jq -r .message
+occ agent logs agt_... --source gateway --follow
 ```
 
 ## Output and errors
