@@ -67,13 +67,39 @@ const secretPath = (namespace: Namespace) => `/namespaces/${namespace.id}/secret
 const dialog = (page: Page, name: string) => page.getByRole("dialog", { name, exact: true });
 const SECRET_REFERENCED = "This Secret is referenced.";
 
-async function createFromConsole(page: Page, name: string, value: string) {
-  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
-  const form = dialog(page, "Create Secret");
-  await form.getByLabel("Secret name", { exact: true }).fill(name);
-  await form.getByLabel("Value", { exact: true }).fill(value);
-  await form.getByRole("button", { name: "Create Secret", exact: true }).click();
-  await dialog(page, "Secret created").getByRole("button", { name: "Close" }).click();
+async function expectSecretFocusInView(control: Locator, stop: string) {
+  const { focused, outlined, clearance } = await control.evaluate((node) => {
+    const dialog = node.closest("dialog");
+    if (!dialog) {
+      throw new Error("The Secret control is outside its dialog");
+    }
+    const box = node.getBoundingClientRect();
+    const bounds = dialog.getBoundingClientRect();
+    const left = bounds.left + dialog.clientLeft;
+    const top = bounds.top + dialog.clientTop;
+    const style = globalThis.getComputedStyle(node);
+    const outlineWidth = Number.parseFloat(style.outlineWidth);
+    const outlineReach = Math.max(0, outlineWidth + Number.parseFloat(style.outlineOffset));
+    // The outline must fit inside both the dialog's scrollport and the viewport.
+    const clearance =
+      Math.min(
+        box.left - Math.max(left, 0),
+        box.top - Math.max(top, 0),
+        Math.min(left + dialog.clientWidth, globalThis.innerWidth) - box.right,
+        Math.min(top + dialog.clientHeight, globalThis.innerHeight) - box.bottom,
+      ) - outlineReach;
+    return {
+      focused: node === globalThis.document.activeElement && node.matches(":focus-visible"),
+      outlined: style.outlineStyle !== "none" && outlineWidth > 0,
+      clearance,
+    };
+  });
+  assert.equal(focused, true, `${stop} has visible keyboard focus`);
+  assert.equal(outlined, true, `${stop} draws a focus outline`);
+  assert.ok(
+    clearance >= -0.5,
+    `${stop} must fit with its focus outline (${clearance}px clearance)`,
+  );
 }
 
 async function fillDirectoryTemplate(editor: Locator) {
@@ -756,14 +782,38 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   });
   const other = await fixture.createNamespace("Other tenant", { ready: true });
   await fixture.createSecret(other.id, "Other tenant credential", "synthetic-other-value");
-  const { page } = await newPage(t, fixture, { browser });
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 640, height: 360 }, reducedMotion: "reduce" },
+  });
   await login(page, fixture, secretsUrl(namespace));
   await page.locator(settledView).getByRole("heading", { name: "No Secrets yet" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Other tenant credential" }).count(), 0);
 
+  await page.getByRole("button", { name: "Create Secret", exact: true }).press("Enter");
+  const creation = dialog(page, "Create Secret");
+  const name = creation.getByLabel("Secret name", { exact: true });
+  const value = creation.getByLabel("Value", { exact: true });
+  assert.equal(await hasFocus(name), true);
+  await page.keyboard.press("Tab");
+  await expectSecretFocusInView(
+    creation.getByRole("button", { name: "Show value" }),
+    "Create Show value",
+  );
+  // On the short sheet, Chromium can focus the caret while the bottom of Value is clipped.
+  await page.keyboard.press("Tab");
+  await expectSecretFocusInView(value, "Create Value after Tab");
+  await page.keyboard.press("Tab");
+  await expectSecretFocusInView(creation.getByRole("button", { name: "Close" }), "Create Close");
+  await page.keyboard.press("Shift+Tab");
+  await expectSecretFocusInView(value, "Create Value after Shift+Tab");
+
   // New material is opaque: spaces, Unicode and newlines must reach storage unchanged.
   const original = "  synthetic-console-credential\nsecond line π  ";
-  await createFromConsole(page, "Shared model", original);
+  await name.fill("Shared model");
+  await value.fill(original);
+  await creation.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog(page, "Secret created").getByRole("button", { name: "Close" }).click();
   const listed = await fixture.request("GET", secretPath(namespace));
   assert.equal(listed.status, 200);
   const { data: secrets }: SecretListResponse = listed.body;
@@ -776,13 +826,33 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   );
   assert.deepEqual(await consoleStorage(page), { local: {}, session: {} });
 
+  // In a short desktop window, Replace focuses Value before any Tab event.
+  await page.setViewportSize({ width: 761, height: 300 });
   await page.getByRole("button", { name: "Shared model", exact: true }).click();
   await dialog(page, "Shared model")
     .getByRole("button", { name: "Replace value", exact: true })
-    .click();
+    .press("Enter");
   const replacement = dialog(page, "Replace Secret value");
-  assert.equal(await replacement.getByLabel("Value", { exact: true }).inputValue(), "");
-  await replacement.getByLabel("Value", { exact: true }).fill("synthetic-console-replacement");
+  const replacementValue = replacement.getByLabel("Value", { exact: true });
+  assert.equal(await replacementValue.inputValue(), "");
+  await replacement.evaluate(async (node) => {
+    await Promise.all(node.getAnimations().map((animation) => animation.finished));
+  });
+  await expectSecretFocusInView(replacementValue, "Replace Value on opening");
+  await page.setViewportSize({ width: 640, height: 360 });
+  await page.keyboard.press("Tab");
+  await expectSecretFocusInView(
+    replacement.getByRole("button", { name: "Close" }),
+    "Replace Close",
+  );
+  await page.keyboard.press("Shift+Tab");
+  await expectSecretFocusInView(replacementValue, "Replace Value after Shift+Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expectSecretFocusInView(
+    replacement.getByRole("button", { name: "Show value" }),
+    "Replace Show value",
+  );
+  await replacementValue.fill("synthetic-console-replacement");
   await replacement.getByRole("button", { name: "Replace value", exact: true }).click();
   await dialog(page, "Secret value replaced").getByRole("button", { name: "Close" }).click();
   assert.equal(storage.valueFor(secret), "synthetic-console-replacement");
@@ -795,20 +865,50 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     {},
     { harnessAuth: { method: "api_key", source: secret.ref } },
   );
+  // Keep several readable matches in the library so Back has a real scroll position to restore.
+  for (let index = 1; index <= 8; index += 1) {
+    await fixture.createSecret(namespace.id, `Shared key ${index}`, "synthetic-library-value");
+  }
+  await page.setViewportSize({ width: 640, height: 600 });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page
+    .locator(settledView)
+    .getByRole("button", { name: "Shared key 8", exact: true })
+    .waitFor();
+
   const requests = apiRequests(page, fixture.origin);
+  const query = "Shared";
+  const search = page.getByRole("searchbox", { name: "Search Secrets" });
+  const shared = page.getByRole("button", { name: "Shared model", exact: true });
+  const heading = page.getByRole("heading", { name: "Credentials", level: 1 });
+  const intersectsViewport = (locator: Locator) =>
+    locator.evaluate((node) => {
+      const { top, bottom } = node.getBoundingClientRect();
+      return top < globalThis.innerHeight && bottom > 0;
+    });
+  await search.fill(query);
+  await shared.focus();
+  await shared.evaluate((row) => row.scrollIntoView({ block: "end" }));
+  const libraryScroll = await page.evaluate(() => globalThis.scrollY);
+  assert.equal(
+    await intersectsViewport(heading),
+    false,
+    "the library is scrolled past its heading",
+  );
   const detailRead = responseTo(
     page,
     "GET",
     `${fixture.origin}${secretPath(namespace)}/${secret.id}`,
   );
-  await page.getByRole("button", { name: "Shared model", exact: true }).click();
+  await shared.press("Enter");
   const detailResponse = await detailRead;
   assert.equal(detailResponse.status(), 200);
   const { data: opened }: SecretDetailResponse = await detailResponse.json();
   assert.equal(opened.callerPermissions?.delete, true);
   const detail = dialog(page, "Shared model");
   // Consumers name the Agent, its ID beside it (finding D761).
-  await detail.getByRole("link", { name: agent.name, exact: true }).waitFor();
+  const consumer = detail.getByRole("link", { name: agent.name, exact: true });
+  await consumer.waitFor();
   await detail.getByText(agent.id, { exact: true }).waitFor();
   // A keyboard reader reaches the blocked Delete Secret and hears why (finding 2925).
   await expectReachableReason(
@@ -817,21 +917,69 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     SECRET_REFERENCED,
   );
   assert.doesNotMatch(await detail.innerText(), /remove .*references|remove them/i);
+  const openConsumer = async () => {
+    await consumer.press("Enter");
+    await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
+    await page.getByRole("heading", { name: agent.name, exact: true }).waitFor();
+    await page.locator(settledView).waitFor();
+  };
+  const returnToLibrary = async () => {
+    await page.goBack();
+    await page.waitForURL(`**${secretsUrl(namespace)}`);
+    await page.locator(settledView).getByRole("searchbox", { name: "Search Secrets" }).waitFor();
+    assert.equal(await search.inputValue(), query);
+    assert.equal(await detail.count(), 0, "Back leaves the Secret inspector closed");
+  };
+
+  await openConsumer();
+  await returnToLibrary();
+  assert.equal(await hasFocus(shared), true, "Back focuses the originating Secret row");
+  assert.equal(await shared.evaluate((row) => row.matches(":focus-visible")), true);
+  assert.equal(await page.evaluate(() => globalThis.scrollY), libraryScroll);
+
+  // Another session adds matches before the originating row while the reader is away.
+  await page.keyboard.press("Enter");
+  await openConsumer();
+  await fixture.createSecret(namespace.id, "Shared backup 1", "synthetic-library-value");
+  await fixture.createSecret(namespace.id, "Shared backup 2", "synthetic-library-value");
+  await returnToLibrary();
+  assert.equal(await hasFocus(shared), true);
+  assert.equal(await intersectsViewport(shared), true, "Back reveals the shifted row");
+  assert.equal(
+    await shared.evaluate(
+      (row, oldScroll) =>
+        row.getBoundingClientRect().top + globalThis.scrollY >= oldScroll + globalThis.innerHeight,
+      libraryScroll,
+    ),
+    true,
+    "the old scroll offset would leave the row below the viewport",
+  );
+
+  // The same return has no row to focus when the real list withdraws access while away.
+  await page.keyboard.press("Enter");
+  await openConsumer();
+  const revoked = restrict(fixture.policy, "read", "secret", {
+    namespaceId: namespace.id,
+    resourceId: secret.id,
+  });
+  await returnToLibrary();
+  assert.equal(await shared.count(), 0);
+  assert.equal(await page.getByRole("list", { name: "Secrets" }).getByRole("button").count(), 10);
+  assert.equal(await hasFocus(heading), true);
+  assert.equal(await intersectsViewport(heading), true, "Back reveals the fallback heading");
+  liftRestriction(fixture.policy, revoked);
   assert.ok(
     requests.every((request) => request.method === "GET"),
-    "inspection must be read-only",
+    "inspection and navigation must be read-only",
   );
-  await detail.getByRole("link", { name: agent.name, exact: true }).click();
-  await page.waitForURL(new RegExp(`/console/agents/${agent.id}`));
-  await page.getByRole("heading", { name: "Shared model consumer", exact: true }).waitFor();
 
   // Clear the Agent draft reference through its supported API before deleting the Secret.
   const unbound = await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
     body: { configurationId: agent.configurationId, harnessAuth: null } satisfies UpdateAgentBody,
   });
   assert.equal(unbound.status, 200);
-  await page.getByRole("link", { name: "Credentials", exact: true }).click();
-  await page.getByRole("button", { name: "Shared model", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await shared.click();
   await dialog(page, "Shared model")
     .getByRole("button", { name: "Delete Secret", exact: true })
     .click();

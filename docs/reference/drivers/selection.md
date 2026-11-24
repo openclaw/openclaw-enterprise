@@ -37,33 +37,34 @@ The OpenShell development path remains experimental and unqualified; see its
 
 ## Supported selections
 
-Without `package`, trusted Installation YAML selects bundled Kubernetes Configuration
-and native IAM. Packageless Compute selects [SSH Compute](ssh-compute.md) for
-`compute-ssh` and Kubernetes for all other IDs, including the default
-`compute-kubernetes`. Compose development without YAML selects filesystem
-Configuration, native IAM, Docker Compute, and no SecretDriver. Operators can
-select installed IAM, Compute, Configuration, or Sandbox packages in trusted YAML
-in either mode.
+Without a package, Installation YAML uses Kubernetes Configuration and native
+IAM. Compute uses [SSH Compute](ssh-compute.md) for `compute-ssh` and Kubernetes
+otherwise (default `compute-kubernetes`). Compose without YAML uses filesystem
+Configuration, native IAM, Docker Compute, and no SecretDriver. Both modes
+support installed IAM, Compute, Configuration, and Sandbox packages in trusted YAML.
 
-| Capability                  | Shared contract                                                             | Selection boundary                                                                                                                                   |
-| --------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `configuration`             | [ConfigurationDriver](configuration.md)                                     | Required in Installation YAML; bundled Kubernetes or installed package.                                                                              |
-| `channel`                   | [ChannelDriver](channel.md)                                                 | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                                                                   |
-| `iam`                       | [IAMDriver](iam.md)                                                         | Required in Installation YAML; bundled native IAM or installed package.                                                                              |
-| `compute`                   | [ComputeDriver](compute.md)                                                 | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                                                                |
-| `secret`                    | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                       |
-| `sandbox`                   | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                 |
-| `credential_proxy`          | [LegacyEgressProxyDriver](credential-proxy.md#legacy-protected-egress)      | Optional; paired Sandbox and legacy Proxy from one bundled OpenShell or installed-package registration.                                              |
-| `credential_proxy_delivery` | [CredentialProxyDriver](credential-proxy.md#interface)                      | OCC TokenService selects advertised delivery automatically. New staged deployments require OpenShell.                                                |
-| `credential_gateway`        | [CredentialGatewayDriver](credential-gateway.md)                            | Optional legacy OpenShell Backend member; Credential Refresh requires it.                                                                            |
-| `credential_refresh`        | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                      |
-| `token_service`             | [TokenServiceDriver][token-service-contract]                                | Optional `occ`, `{}` config; [Source lifecycle][token-service-flow]; independent of Sandbox/Gateway/Proxy; uses Installation-private Secret storage. |
-| `service_account`           | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                              |
-| `plugin`                    | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                         |
-| `repo`                      | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                      |
+| Capability                  | Shared contract                                                             | Selection boundary                                                                                                                                                                                     |
+| --------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `configuration`             | [ConfigurationDriver](configuration.md)                                     | Required in Installation YAML; bundled Kubernetes or installed package.                                                                                                                                |
+| `channel`                   | [ChannelDriver](channel.md)                                                 | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                                                                                                                     |
+| `iam`                       | [IAMDriver](iam.md)                                                         | Required in Installation YAML; bundled native IAM or installed package.                                                                                                                                |
+| `compute`                   | [ComputeDriver](compute.md)                                                 | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                                                                                                                  |
+| `secret`                    | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                                                                         |
+| `sandbox`                   | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                                                                   |
+| `credential_proxy`          | [LegacyEgressProxyDriver](credential-proxy.md#legacy-protected-egress)      | Optional; paired Sandbox and legacy Proxy from one bundled OpenShell or installed-package registration.                                                                                                |
+| `credential_proxy_delivery` | [CredentialProxyDriver](credential-proxy.md#interface)                      | TokenService selects delivery from the Sandbox registration. Staged Agent deployments require the bundled OpenShell pair.                                                                              |
+| `credential_gateway`        | [CredentialGatewayDriver](credential-gateway.md)                            | Optional legacy OpenShell Backend member; Credential Refresh requires it.                                                                                                                              |
+| `credential_refresh`        | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                                                                        |
+| `token_service`             | [TokenServiceDriver][token-service-contract]                                | Optional `occ` with Installation-private Secret storage, or `openshell` for the [development preview](../credential-sources/managed-static.md#preview-openshell-custody). Both use `{}` configuration. |
+| `service_account`           | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                                                                |
+| `plugin`                    | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                                                                           |
+| `repo`                      | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                                                                        |
 
 [token-service-contract]: ../../../packages/contracts/src/drivers/token-service/index.ts
 [token-service-flow]: ../../flows/token-service-static-custody.md
+
+The [OCC Source lifecycle][token-service-flow] is independent of Sandbox,
+Credential Gateway, and Credential Proxy.
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.

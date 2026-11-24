@@ -14,7 +14,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
-import type { AgentRecheck, ConsolePageContext } from "../page-context.mjs";
+import type { AgentRecheck, ConsolePageContext, LeaveGuard } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
   storedConfigurationProblem,
@@ -81,13 +81,17 @@ import {
   VERSION_UNAVAILABLE,
 } from "./access-reasons.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
-import { readableRepositoryGrants } from "./sandbox-policy.mjs";
+import {
+  readableRepositoryGrants,
+  renderAgentSandboxPolicy,
+  repositoryRestrictionText,
+} from "./sandbox-policy.mjs";
 import {
   githubAccessLabel,
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
-import { createRepositoryFields } from "./repositories.mjs";
+import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
@@ -456,18 +460,36 @@ function errorPanel(
   );
 }
 
+// Summary values longer than this many characters take a whole row of the grid.
+const SUMMARY_WIDE_VALUE = 48;
+
 function summary(
   values: OpenClawConfigurationDocument,
   details: [string, string | Node | null | undefined][],
   includeModel = true,
 ) {
   const primary = configuredModel(values);
-  const list = element("dl", { className: "configuration-summary agent-settings-summary" });
-  for (const [name, value] of [
-    ...(includeModel ? [["Model", typeof primary === "string" ? primary : "Not specified"]] : []),
-    ...details,
-  ]) {
-    list.append(element("dt", {}, name), element("dd", {}, value ?? "None"));
+  // A grid of label-over-value cells, a few to a row. A long value (many repositories) or a
+  // document that opens in place (Harness settings) takes a whole row so it does not wrap in a
+  // narrow cell.
+  const list = element("dl", { className: "configuration-summary configuration-summary-grid" });
+  const model: typeof details = includeModel
+    ? [["Model", typeof primary === "string" ? primary : "Not specified"]]
+    : [];
+  const rows = [...model, ...details];
+  for (const [name, value] of rows) {
+    const wide =
+      typeof value === "string"
+        ? value.length > SUMMARY_WIDE_VALUE
+        : value instanceof HTMLDetailsElement;
+    list.append(
+      element(
+        "div",
+        wide ? { className: "configuration-summary-wide" } : {},
+        element("dt", {}, name),
+        element("dd", {}, value ?? "None"),
+      ),
+    );
   }
   return list;
 }
@@ -506,6 +528,8 @@ const ACCESS_TAB_NEEDS_ADMINISTRATION =
 // A draft the caller can read but neither change nor save (finding 2421).
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
+const CHANNELS_ACCESS_UNCONFIRMED =
+  "Could not check your edit access. Select Refresh to try again.";
 const CHECKING_CREDENTIAL_ACCESS_STEP = "Checking credential access…";
 const CHECKING_COMPUTE_CONFIGURATION =
   "Checking the Configuration with this Installation's Compute before deploying.";
@@ -889,13 +913,24 @@ export async function renderAgentDetail(
   // (finding 2444). The Configuration editor submits no bindings, so it keeps the rule above.
   const channelBindingsReplace = () => channelBindingsToReplace(callerPermissions);
   const channelsReadOnly = () => configurationReadOnly() && channelBindingsReplace() === null;
-  const channelsReadOnlyReason = () =>
-    callerPermissions?.configurationUpdate === false
+  const channelsAccessUnconfirmed = () =>
+    selected === "draft" &&
+    selectedTab === "channels" &&
+    callerPermissions === unconfirmedPermissions;
+  function channelsReadOnlyReason() {
+    if (!channelsReadOnly()) {
+      return undefined;
+    }
+    if (channelsAccessUnconfirmed()) {
+      return CHANNELS_ACCESS_UNCONFIRMED;
+    }
+    return callerPermissions?.configurationUpdate === false
       ? CONFIGURATION_READ_ONLY
       : channelSecretsOperateReadOnly(
           callerPermissions?.configurationSecretsOperateDeniedBindings,
           CONFIGURATION_SECRETS_READ_ONLY,
         );
+  }
   // Agent-side saves (plugins, authentication source, repository access) would be refused: the
   // answer denies Agent update or a grant each Agent update also checks (finding 2441).
   const agentReadOnly = () => agentSaveDenial(callerPermissions, agent) !== undefined;
@@ -958,6 +993,13 @@ export async function renderAgentDetail(
   let visibleRevisionsLoaded = false;
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
+  let configureRepositories =
+    tab === "repositories" && url.searchParams.get("repositoryAccess") === "1";
+  const isDedicatedCodex = (values: OpenClawConfigurationDocument) =>
+    agent.executionMode === "dedicated" && configuredHarnessId(values) === "codex";
+  const hasRepositoryPermissions = (values: OpenClawConfigurationDocument) =>
+    isDedicatedCodex(values) &&
+    agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
   // Sharing policy reads need Installation administration and a denial is audited, so the
   // Access tab is left out (not disabled) when the session probe already showed that access is
   // missing (spec 3.8). It is about the whole Agent, so every version's strip has it, last.
@@ -1070,8 +1112,14 @@ export async function renderAgentDetail(
     JSON.stringify([namespaceId, target(revision, tab)]);
   // A link to one of this Agent's version tabs that brings the tab into view once it opens.
   // With `deploy`, a draft link brings that draft's Deploy new version into view instead.
-  function versionLink(label: string, revision: string, tab: string, { deploy = false } = {}) {
-    const node = element("a", { href: context.pageUrl(target(revision, tab)) }, label);
+  function versionLink(
+    label: string,
+    revision: string,
+    tab: string,
+    { deploy = false, permissions = false } = {},
+  ) {
+    const destination = target(revision, tab) + (permissions ? "&repositoryAccess=1" : "");
+    const node = element("a", { href: context.pageUrl(destination) }, label);
     node.addEventListener("click", (event) => {
       if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
         return;
@@ -1095,7 +1143,7 @@ export async function renderAgentDetail(
       }
       // The load this navigation starts is the next one.
       linkedVersionView = { key: linkedKey(revision, tab), load: consoleLoads + 1, deploy };
-      context.navigate(target(revision, tab));
+      context.navigate(destination);
     });
     return node;
   }
@@ -1116,14 +1164,14 @@ export async function renderAgentDetail(
   context.setPageActions?.(headerActions);
   // The note that holds the tabs also holds ← Agents and the Namespace selector (finding 1902).
   // Refresh rebuilds the page, so only a share in flight holds it.
-  const refuseLeave = ({ pendingOnly = false, refresh = false } = {}) => {
+  const refuseLeave: LeaveGuard = ({ pendingOnly, refresh, focusFeedback } = {}) => {
     if (
       !sharingWrite &&
       (refresh || !(pendingOnly ? draftWriteInFlight() : draftEditorBlocksNavigation()))
     ) {
       return false;
     }
-    showLeaveBlock();
+    showLeaveBlock(focusFeedback);
     return true;
   };
   context.setLeaveGuard?.(refuseLeave);
@@ -1599,7 +1647,8 @@ export async function renderAgentDetail(
   }
   // A tab without its own editor feedback shows its block at the top of the tab panel.
   const showBlockInPanel = () => showLeaveNote(content, draftEditorNavigationBlock, "start");
-  let showDraftEditorNavigationBlock = showBlockInPanel;
+  let showDraftEditorNavigationBlock: (focusFeedback?: (feedback: HTMLElement) => void) => void =
+    showBlockInPanel;
   // Why the page holds, for each write in flight; editor blocks name their own.
   function leaveReason() {
     if (!draftEditorBlocksNavigation()) {
@@ -1619,7 +1668,7 @@ export async function renderAgentDetail(
     }
     return networkProxyNavigationBlock ?? draftEditorNavigationBlock;
   }
-  function showLeaveBlock() {
+  function showLeaveBlock(focusFeedback?: (feedback: HTMLElement) => void) {
     const reason = leaveReason();
     if (deleting) {
       // Delete replaced the page, editors and tab panel included, with its deletion row: a
@@ -1646,7 +1695,7 @@ export async function renderAgentDetail(
     } else if (networkProxyNavigationBlock) {
       showLeaveNote(content, networkProxyNavigationBlock, "start");
     } else {
-      showDraftEditorNavigationBlock();
+      showDraftEditorNavigationBlock(focusFeedback);
     }
   }
   function draftEditorBlocksNavigation() {
@@ -2191,7 +2240,7 @@ export async function renderAgentDetail(
           agentReadOnly()
           ? READ_ONLY_DRAFT_NOTICE
           : "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
-        : draftReadOnly()
+        : draftReadOnly() && !channelsAccessUnconfirmed()
           ? READ_ONLY_DRAFT_NOTICE
           : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
       : selected === currentRevisionId
@@ -2404,9 +2453,11 @@ export async function renderAgentDetail(
     if (choice) {
       setText(
         choice,
-        configurationReadOnly()
-          ? "Draft · Read-only Configuration"
-          : "Draft · Editable Configuration",
+        callerPermissions === unconfirmedPermissions
+          ? "Draft · Edit access unconfirmed"
+          : configurationReadOnly()
+            ? "Draft · Read-only Configuration"
+            : "Draft · Editable Configuration",
       );
     }
   }
@@ -3490,6 +3541,11 @@ export async function renderAgentDetail(
     const executionMode = agent.executionMode;
     let deployPending = false;
     let deployReloadMessage = "";
+    const repositoryDeploymentWarning = element(
+      "p",
+      { className: "hint", hidden: true },
+      FIRST_REPOSITORY_DEPLOYMENT_WARNING,
+    );
     // A normal Agent link has no creation receipt. The same GitHub credential
     // profile supports legacy access and saved grants, including deny-all.
     const firstGitHubDraft =
@@ -3568,8 +3624,8 @@ export async function renderAgentDetail(
     });
     const proxyControl = element(
       "section",
+      // The card that holds this editor on the Configuration tab has the heading.
       { className: "network-proxy-editor" },
-      element("h3", {}, "Gateway channel proxy"),
       proxyFields.node,
       proxyPermission,
       element(
@@ -4236,7 +4292,12 @@ export async function renderAgentDetail(
           if (deployMessage === "Ready to deploy." && !deployUnavailable) {
             pendingDeploymentHint = draftPendingDeploymentHint();
           }
-          setText(deployStatus, pendingDeploymentHint ?? deployMessage);
+          setText(
+            deployStatus,
+            channelsAccessUnconfirmed()
+              ? "Could not check access to deploy this version."
+              : (pendingDeploymentHint ?? deployMessage),
+          );
         }
       }
       // An unavailable Deploy is described by the line that says why, or by a refused
@@ -4244,8 +4305,25 @@ export async function renderAgentDetail(
       // while one of them shows (finding 2878).
       const deployReason = deployStatus.textContent ? deployStatus : deployFeedback;
       setUnavailable(deploy, deployUnavailable, deployReason);
-      if (deploy.ariaDescription !== pendingDeploymentHint) {
-        deploy.ariaDescription = pendingDeploymentHint;
+      // An empty visible history can hide earlier versions. Bindings can also be empty
+      // with a saved policy, so the guidance describes the consequence conditionally.
+      const showRepositoryWarning =
+        !deployUnavailable &&
+        !reviewRepositories &&
+        callerPermissions?.deploy === true &&
+        callerPermissions.sandboxPolicyRead &&
+        isDedicatedCodex(values) &&
+        visibleRevisions.length === 0 &&
+        !currentRevisionId &&
+        currentRuntimeState === "stopped" &&
+        formerCurrent.size === 0 &&
+        !acceptedHiddenVersion(0);
+      setHidden(repositoryDeploymentWarning, !showRepositoryWarning);
+      const deployDescription = showRepositoryWarning
+        ? FIRST_REPOSITORY_DEPLOYMENT_WARNING
+        : pendingDeploymentHint;
+      if (deploy.ariaDescription !== deployDescription) {
+        deploy.ariaDescription = deployDescription;
       }
       updateChecklist();
     }
@@ -4283,7 +4361,9 @@ export async function renderAgentDetail(
       ...checklistSteps.map((step) => step.item),
     );
     const confirmation = element("p", { className: "hint", role: "status" });
-    const adjustRepositories = versionLink("Open draft repositories", "draft", "repositories");
+    const adjustRepositories = hasRepositoryPermissions(values)
+      ? versionLink("Edit repository permissions", "draft", "repositories", { permissions: true })
+      : versionLink("Open draft repositories", "draft", "repositories");
     const reviewAccess = button("Review saved GitHub access", async () => {
       const generation = repositoryReviewGeneration;
       const current = () =>
@@ -4355,7 +4435,12 @@ export async function renderAgentDetail(
             ? "GitHub access saved at creation"
             : "Saved GitHub access";
         const grants = repositoryReview.grants
-          .map(({ repository, access }) => `${repository} (${githubAccessLabel(access)})`)
+          .map((grant) => {
+            const { repository, access } = grant;
+            const level = githubAccessLabel(access);
+            const restrictions = repositoryRestrictionText(grant);
+            return `${repository} (${level}${restrictions ? ` · ${restrictions}` : ""})`;
+          })
           .join(", ");
         setText(confirmation, `${label}: ${grants || "No repositories allowed"}`);
       } else {
@@ -4513,6 +4598,7 @@ export async function renderAgentDetail(
         deploy.disabled = true;
         deploy.removeAttribute("aria-description");
         deployPending = true;
+        setHidden(repositoryDeploymentWarning, true);
         deployInFlight = true;
         content.toggleAttribute("inert", true);
         updateNavigationControls();
@@ -4770,11 +4856,18 @@ export async function renderAgentDetail(
         },
         { disabled: true },
       );
+      // Its own card on the Configuration tab, below the collaboration and safety card. The
+      // button is described by the hint, which says what turning managed mode off allows.
+      action.setAttribute("aria-describedby", "gateway-managed-mode-hint");
       const control = element(
         "section",
-        { hidden: true },
-        element("h3", {}, "Gateway managed mode"),
-        element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_HINT),
+        { className: "agent-card", hidden: true },
+        element("h2", {}, "Gateway managed mode"),
+        element(
+          "p",
+          { className: "hint", id: "gateway-managed-mode-hint" },
+          GATEWAY_MANAGED_MODE_HINT,
+        ),
         element("div", { className: "form-actions" }, action, reload),
         feedback,
       );
@@ -4788,10 +4881,21 @@ export async function renderAgentDetail(
       "section",
       { className: "card agent-draft-actions" },
       draftActionsHeading,
+      !reviewRepositories && hasRepositoryPermissions(values)
+        ? element(
+            "p",
+            { className: "hint" },
+            versionLink("Set repository permissions", "draft", "repositories"),
+            currentRevisionId || visibleRevisions.length
+              ? " for the next deployment."
+              : " before the first deployment to control this Agent’s access.",
+          )
+        : null,
       checklist,
       reviewRepositories ? confirmation : null,
       reviewRepositories ? reviewAccess : null,
       reviewRepositories ? adjustRepositories : null,
+      repositoryDeploymentWarning,
       // The status follows Deploy in reading order; on a wide screen it shows to its left.
       element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
       deployFeedback,
@@ -5020,6 +5124,16 @@ export async function renderAgentDetail(
         return latestPermissionsRead;
       }
       if (context.isCurrent() && (foreground?.() ?? true) && reread > appliedReread) {
+        // A failed check hides controls above Channels. Keep the tab where the reader
+        // sees it at the moment the result applies, including when access is confirmed again.
+        const changesChannelsAccess =
+          !deleting &&
+          selected === "draft" &&
+          selectedTab === "channels" &&
+          (callerPermissions === unconfirmedPermissions) !==
+            (permissions === unconfirmedPermissions);
+        const channelsTab = changesChannelsAccess ? tabControls.get("channels") : undefined;
+        const tabBounds = channelsTab?.getBoundingClientRect();
         appliedReread = reread;
         callerPermissions = permissions;
         // A deleting Agent shows only the deletion row. If the page opened in that state,
@@ -5047,6 +5161,17 @@ export async function renderAgentDetail(
         applyOperateAnswer(permissions?.operate, reread);
         nativeAdmin.launch.inert =
           permissions?.administer === false && permissions.operate === false;
+        if (
+          channelsTab &&
+          tabBounds &&
+          tabBounds.bottom > 0 &&
+          tabBounds.top < window.innerHeight
+        ) {
+          const moved = channelsTab.getBoundingClientRect().top - tabBounds.top;
+          if (Math.abs(moved) >= 1) {
+            window.scrollBy({ top: moved, behavior: "instant" });
+          }
+        }
       }
       return callerPermissions;
     };
@@ -5230,6 +5355,7 @@ export async function renderAgentDetail(
       control.tabIndex = id === tab ? 0 : -1;
     }
     content.setAttribute("aria-labelledby", `${tabIds}-${tab}`);
+    content.toggleAttribute("data-restore-panel-focus", selected === "draft" && tab === "channels");
     // History can select another tab while focus is in the strip; focus follows the selection,
     // so the focused tab is the one revealed and the Tab stop.
     if (focusInStrip && document.activeElement !== tabControls.get(tab)) {
@@ -5246,6 +5372,10 @@ export async function renderAgentDetail(
       // The deployment may have settled while this tab was parked.
       renderVersionNotice();
       retained.resumeDrafts?.();
+      if (configureRepositories && tab === "repositories") {
+        configureRepositories = false;
+        content.querySelector<HTMLButtonElement>("#manage-repository-permissions")?.click();
+      }
       // So may a permission answer that changes Configuration access (finding 2421).
       redrawConfigurationAccessViews();
       return;
@@ -5550,6 +5680,26 @@ export async function renderAgentDetail(
       statusBlock("info", null, versionNotice(), [], { className: "version-selection-notice" }),
     );
     if (selectedTab === "repositories" && draft) {
+      if (hasRepositoryPermissions(values)) {
+        content.append(
+          renderAgentSandboxPolicy(context, {
+            agent,
+            revisionId: selected,
+            repositoryEditor: {
+              openOnLoad: configureRepositories ? revealed : undefined,
+              policyReadable: () => rereadPermissions().then((fresh) => fresh?.sandboxPolicyRead),
+              canOpen: () => {
+                if (draftEditorBlocksNavigation()) {
+                  showLeaveBlock();
+                  return false;
+                }
+                return true;
+              },
+            },
+          }),
+        );
+      }
+      configureRepositories = false;
       content.append(renderRepositoryTab(context, data));
     } else if (selectedTab === "plugins") {
       const plugins = renderAgentPlugins(context, {
@@ -5600,6 +5750,7 @@ export async function renderAgentDetail(
       const { servicePrincipalId } = agent;
       // Bound Slack token Secrets this caller may not operate, which a save must replace.
       const channelReplace = draft ? channelBindingsReplace() : null;
+      const readOnlyReason = draft ? channelsReadOnlyReason() : undefined;
       // Whether the last save left a Secret grant outstanding, for its saved notice.
       let channelGrantOutstanding = false;
       const channels = renderChannels({
@@ -5610,10 +5761,12 @@ export async function renderAgentDetail(
         // while the Agent has none; a deployed Agent with its key bound was told to set
         // credentials "before first deploy" (finding 2063).
         copy: {
-          ...(draft && channelsReadOnly()
+          ...(readOnlyReason
             ? {
-                readOnlyDescription: `These are the version draft’s channel settings. ${channelsReadOnlyReason()}`,
-                readOnlyCardMessage: "Read-only with your access.",
+                readOnlyDescription: `These are the version draft’s channel settings. ${readOnlyReason}`,
+                readOnlyCardMessage: channelsAccessUnconfirmed()
+                  ? "Editing is unavailable until access is checked."
+                  : "Read-only with your access.",
               }
             : {}),
           drawerNotice: `New version. Changes affect future deployments using this Configuration.${
@@ -5853,13 +6006,12 @@ export async function renderAgentDetail(
       );
       // An answer that lands after this view changes whether it is read-only (finding 2421).
       if (draft) {
-        const shownReadOnly = channelsReadOnly();
         const shownReplace = JSON.stringify(channelReplace);
         followConfigurationAccess(() => {
           if (
             context.isCurrent() &&
             mountedTab &&
-            (channelsReadOnly() !== shownReadOnly ||
+            (channelsReadOnlyReason() !== readOnlyReason ||
               JSON.stringify(channelBindingsReplace()) !== shownReplace)
           ) {
             // Rebuild, not restore: a reusable tab would be parked and shown again as it was.
@@ -6382,7 +6534,11 @@ export async function renderAgentDetail(
           "div",
           { className: "agent-toolbar-actions" },
           versionLink("Draft credentials", "draft", "credentials"),
-          versionLink("Draft repositories", "draft", "repositories"),
+          hasRepositoryPermissions(values)
+            ? versionLink("Edit repository permissions", "draft", "repositories", {
+                permissions: true,
+              })
+            : versionLink("Draft repositories", "draft", "repositories"),
         );
         // A URL without a revision can show a different active version on Back.
         for (const link of draftLinks.querySelectorAll("a")) {
@@ -6427,6 +6583,8 @@ export async function renderAgentDetail(
         followConfigurationAccess(updateSnapshotAccess);
         currentConfigurationEntry = entry;
       }
+      // One card for each part of the tab: the summary, the native document, on a draft the
+      // collaboration and safety toggles and Gateway managed mode, and the Gateway channel proxy.
       content.append(
         element(
           "section",
@@ -6437,18 +6595,35 @@ export async function renderAgentDetail(
             repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
             : null,
-          draft
-            ? renderDraftConfigurationEditor(context, data)
-            : element(
-                "div",
-                {},
-                element("div", { className: "form-actions" }, currentConfigurationEntry),
-                nativeDocument(values, "View admitted native configuration"),
-              ),
-          draft
-            ? (data.managedMode.control ??
-                element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY))
-            : null,
+        ),
+      );
+      if (draft) {
+        content.append(
+          renderDraftConfigurationEditor(context, data),
+          data.managedMode.control ??
+            element(
+              "section",
+              { className: "agent-card" },
+              element("h2", {}, "Gateway managed mode"),
+              element("p", { className: "hint" }, GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY),
+            ),
+        );
+      } else {
+        content.append(
+          element(
+            "section",
+            { className: "agent-card configuration-document" },
+            element("h2", {}, "Settings"),
+            element("div", { className: "form-actions" }, currentConfigurationEntry),
+            nativeDocument(values, "View admitted native configuration"),
+          ),
+        );
+      }
+      content.append(
+        element(
+          "section",
+          { className: "agent-card" },
+          element("h2", {}, "Gateway channel proxy"),
           summary(
             values,
             [
@@ -6615,11 +6790,15 @@ export async function renderAgentDetail(
       },
       { ...agent, agentId: agent.id },
     );
-    showDraftEditorNavigationBlock = () => {
-      setStatusTone(feedback, null);
-      feedback.textContent = draftEditorSaving
-        ? draftEditorNavigationBlock
-        : pendingEditGuidance("leaving this tab");
+    showDraftEditorNavigationBlock = (focusFeedback) => {
+      // A stale or uncertain save already explains the recovery action.
+      if (saveState !== "conflict" && saveState !== "uncertain") {
+        setStatusTone(feedback, null);
+        feedback.textContent = draftEditorSaving
+          ? draftEditorNavigationBlock
+          : pendingEditGuidance("leaving this tab");
+      }
+      focusFeedback?.(feedback);
     };
     function saveOffered() {
       return !fields?.notConfigured() || (fields.isDirty() && fields.bindings().length === 0);
@@ -6772,6 +6951,8 @@ export async function renderAgentDetail(
 
   function renderDraftConfigurationEditor(context: DetailContext, data: DraftDetails) {
     const { snapshot, values, setDraftEditorState } = data;
+    // Holds the Settings card and the collaboration and safety card: a managed mode save makes
+    // both inert, and a save outcome keeps focus that is in either.
     const container = element("div", { className: "configuration-draft-editor" });
     // The JSON editor and its actions. The collaboration and safety toggles below it stay in
     // place while it rerenders, so a toggle keeps focus; the editor keeps its place at the top,
@@ -6792,7 +6973,15 @@ export async function renderAgentDetail(
         }
       },
     });
-    container.append(body, safety.node);
+    container.append(
+      element(
+        "section",
+        { className: "agent-card configuration-document" },
+        element("h2", {}, "Settings"),
+        body,
+      ),
+      safety.node,
+    );
     const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
@@ -7313,6 +7502,8 @@ export async function renderAgentDetail(
       repositoryReviewGeneration += 1;
       repositoryReview = undefined;
     }
+    configureRepositories =
+      nextTab === "repositories" && next.searchParams.get("repositoryAccess") === "1";
     selectedTab = nextTab;
     showTabNotice(unavailableTabNotice(requestedTab));
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.

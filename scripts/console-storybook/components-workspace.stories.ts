@@ -23,6 +23,10 @@ export const WorkspaceResourceMissing = {
   ...story("workspaceResourceMissing"),
   name: "Agent unavailable while reading a file",
 };
+export const WorkspaceUnreachable = {
+  ...story("workspaceUnreachable"),
+  name: "Gateway unreachable",
+};
 export const WorkspaceUnknown = { ...story("workspaceUnknown"), name: "Write outcome unknown" };
 
 export const WorkspaceNavigation = story("workspaceNavigation");

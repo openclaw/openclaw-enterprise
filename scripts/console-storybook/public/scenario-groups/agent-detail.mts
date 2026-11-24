@@ -87,6 +87,7 @@ type AgentDetailScenario = {
   harnessId?: "openclaw";
   credentialSources?: AgentCredentialSourceBinding[];
   configurationChangedElsewhere?: { values: OpenClawConfigurationDocument };
+  policyState?: "repositoryPermissions" | "repositoryPermissionsLimited";
   repositoryBindings?: RepositoryBindingSelection[];
   repositoryAccess?: RepositoryAccess;
   repositoryOptions?: RepositoryOption[];
@@ -144,6 +145,12 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const longPluginId =
+    "codex-plugin:example-document-review-and-records-retention-workspace@openai-curated-remote";
+  const pluginSelectionsWithLongId: PluginDesiredState = {
+    ...pluginSelectionState,
+    [longPluginId]: { enabled: true },
+  };
   const newerDeployment: AgentRevisionSummaryWire = {
     id: "rev_00000000-0000-4000-8000-000000000008",
     namespaceId: "ns_00000000-0000-4000-8000-000000000001",
@@ -157,6 +164,47 @@ export function createAgentDetailScenarios({
     deploymentStatus: "queued",
     deploymentErrorCode: null,
   };
+
+  const repositoryPermissionsDraft = {
+    group: "Pages/Agent detail",
+    name: "Set permissions on a saved draft",
+    path: draft,
+    policyState: "repositoryPermissions",
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application", profile: "github-repository" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "github-repository" }],
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        allowedProfiles: ["github-repository"],
+      },
+    ],
+    description:
+      "The saved Agent has a selected repository and no deployment or repository policy.",
+    steps: [
+      "Before Deploy new version, read the conditional warning about deploying without a repository policy and the need for a new Agent to add Per-repository access later.",
+      "Choose Set repository permissions above Deploy new version. In Repositories, choose Manage permissions.",
+      "Choose Enable policy editing, then Add access. Contributor is selected and Advanced is closed.",
+      "Expand Advanced, set Issues to Read-only, and save. Reopen the policy and check that Pull requests still uses the role.",
+    ],
+    gap: "The policy and deployment records are simulated. This preview cannot confirm runtime access.",
+  } satisfies AgentDetailScenario;
+
+  const repositoryPermissions = {
+    ...repositoryPermissionsDraft,
+    name: "Edit repository permissions after deployment",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    description: "The deployed Agent has a saved Contributor policy for example/application.",
+    steps: [
+      "Choose Edit repository permissions. Check that the saved policy matches the active version. Expand Advanced and set Pull requests to No access.",
+      "Save the policy. Confirm the new policy is pending. Reopen Manage permissions and check that Issues still uses the role.",
+      "Change Contributor to Read-only and save. Reopen Manage permissions to check your choice.",
+    ],
+  } satisfies AgentDetailScenario;
 
   const configurationConflictDraft = {
     group: "Pages/Agent detail",
@@ -1303,7 +1351,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=plugins`,
         deployed: true,
         auth: "codex_pat",
-        agentPlugins: structuredClone(pluginSelectionState),
+        agentPlugins: structuredClone(pluginSelectionsWithLongId),
         agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
         pluginCapabilities,
         pluginDiscovery,
@@ -1311,6 +1359,7 @@ export function createAgentDetailScenarios({
         description:
           "The permission answer denies Agent update, so the saved selections show as a read-only summary with no editor, Save or Discard, and the note names the grant to ask for. The page does not read the plugin policy capabilities, which need Agent update, so the saved default plugin approvers show as text. The API still decides.",
         steps: [
+          "At 390 px, focus the Plugins tab and press Tab. The full plugin ID wraps inside the focused JSON block.",
           "Under Default plugin approvers, read that the next deployment uses these Agent default approvers and find slack: team:TDEMO123:user:UDEMO123. No approver field is offered.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -1542,11 +1591,14 @@ export function createAgentDetailScenarios({
         name: "Plugins in admitted version",
         path: revision,
         deployed: true,
-        agentPlugins: structuredClone(pluginSelectionState),
+        agentPlugins: structuredClone(pluginSelectionsWithLongId),
         pluginCapabilities,
         actions: [click("Plugins")],
         description:
           "An admitted version shows its immutable Agent-owned plugin selection and policy.",
+        steps: [
+          "Select Plugins. At 390 px, focus the tab and press Tab. The full plugin ID wraps inside the focused JSON block.",
+        ],
       },
       invalidConfiguration: {
         group: "Pages/Agent detail",
@@ -1699,6 +1751,40 @@ export function createAgentDetailScenarios({
         ],
         description:
           "The new version draft names Contributor and Read-only access and shows write limits.",
+      },
+      repositoryPermissionsDraft,
+      repositoryPermissions,
+      repositoryPermissionsLimited: {
+        ...repositoryPermissions,
+        name: "Block unlisted API resources",
+        policyState: "repositoryPermissionsLimited",
+        description:
+          "The saved limits allow both listed resources. Namespace permissions currently block issue creation.",
+        steps: [
+          "Choose Edit repository permissions. Check that unlisted API resources are blocked.",
+          "Open Advanced. Issues allows Read and create, but current permissions limit it to Read-only.",
+          "Set Issues to Read-only and save. Reopen the pending policy. Select Reset to role defaults to remove all API limits.",
+        ],
+      },
+      repositoryPermissionsDenied: {
+        ...repositoryPermissions,
+        path: `${draft}&tab=repositories`,
+        name: "Repository policy read denied",
+        readOnlyPermissionSummary: true,
+        description: "The viewer can read this draft but cannot read the repository policy.",
+        steps: [
+          "Choose Manage permissions. Check the permission guidance. The Console shows no policy or save controls.",
+        ],
+      },
+      repositoryPermissionsLoading: {
+        ...repositoryPermissions,
+        path: `${draft}&tab=repositories`,
+        name: "Repository permissions loading",
+        rules: [{ suffix: "/sandbox-policy/networking", hold: true }],
+        description: "The policy read stays pending until the Console times out.",
+        steps: [
+          "Choose Manage permissions. Check the loading message and wait for the read error.",
+        ],
       },
       repositoryEditor: {
         group: "Pages/Agent detail",
@@ -3768,6 +3854,29 @@ export function createAgentDetailScenarios({
     } satisfies Record<string, AgentDetailScenario>,
 
     layout: {
+      channelsAccessUnconfirmedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Channels access could not be checked on tab return",
+        path: `${draft}&tab=channels`,
+        slack: true,
+        rules: [
+          {
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
+            method: "GET",
+            skip: 1,
+            once: true,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "Channels opens with editing available. When you return to the browser tab, the Agent's permission check fails once.",
+        steps: [
+          "Open the preview in its own tab. Use the keyboard to open Edit Slack, then Cancel. Check that focus returns to Edit Slack.",
+          "Switch to another browser tab and return. Channels stays selected and receives focus. Read the access-check message and Refresh guidance. Edit Slack and Deploy new version are unavailable.",
+          "Choose Refresh in the page header. Channels stays selected, the access-check message clears, and Edit Slack is available again.",
+        ],
+      },
       agentDetailLayout: {
         group: "Pages/Agent detail",
         name: "Agent detail layout",
@@ -3867,12 +3976,23 @@ export function createAgentDetailRepositoryScenarios(
       repositories: [{ repositoryRef: "application" }],
     },
     repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
-    rules: [{ suffix: "/repository-options", delayMs: 3000 }],
+    rules: [
+      { suffix: "/repository-options", delayMs: 3000 },
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        skip: 1,
+        once: true,
+        delayMs: 10_000,
+      },
+    ],
     description:
-      "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty.",
+      "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty. The first save waits ten seconds for the Agent read.",
     steps: [
       "During discovery, inspect Access awaiting verification. After discovery, inspect Choose approved access; Save stays disabled and Channels stays enabled.",
-      "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. Save the explicit change and confirm the saved message.",
+      "Under Access for example/application, clear Use Agent default and choose Contributor. Check that the repository reads Repository collaborator · Custom, then select Save repository access.",
+      "While the save is pending, choose Account → Settings. Check that Repositories stays open, the edit remains selected, and the page asks you to wait for the save.",
+      "After Repository access saved appears, choose Account → Settings again. Confirm Signed-in account opens, then go back and check that the custom Repository collaborator access is still saved.",
     ],
   } satisfies AgentDetailScenario;
   const repositoryCollaboratorReadOnly = {

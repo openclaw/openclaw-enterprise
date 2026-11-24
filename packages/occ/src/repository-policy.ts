@@ -714,11 +714,11 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         "The selected repository credential Driver returned an invalid admission snapshot.",
       );
     }
-    const { selectedRepositoryNetworkGrants: selectedGrants } = resolved.resolution;
     return {
       credentials: immutableCopy(snapshot),
-      selectedGrants,
+      resolution: resolved.resolution,
       nativeGit: resolved.resolution.nativeGit,
+      requiresNetworkPolicy: resolved.resolution.requiresNetworkPolicy,
     };
   }
 
