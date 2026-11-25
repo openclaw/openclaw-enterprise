@@ -7,6 +7,9 @@ export default { title: "Pages/Agent detail" };
 
 export const Draft = story("draft");
 export const Layout = story("agentDetailLayout");
+export const ChannelsAccessUnconfirmedOnRefocus = story("channelsAccessUnconfirmedOnRefocus", {
+  openInNewTab: true,
+});
 export const EmptyDeployment = story("deploymentEmpty");
 export const DeploymentSnapshotUnavailable = story("deploymentSnapshotUnavailable");
 export const NewVersion = story("newVersion");

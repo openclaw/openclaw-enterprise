@@ -272,9 +272,9 @@ Upgrade: Verifying upgrade completion. [2026-11-20T10:05:12Z]
 Upgraded controller image; no Agent deployments were requested.
 ```
 
-Stderr shows phases with UTC timestamps when available. Stdout reports
-completion. `--verbose` shows native output. Private evidence retains
-scale/rollout logs. Reconcile uncertain writes.
+Stderr shows phases with UTC timestamps when available. Numbered Doctor checks
+include memory waits. Stdout confirms completion. `--verbose` shows native
+output. Private evidence retains scale/rollout logs. Reconcile uncertain writes.
 
 Repository-enabled releases also require immutable `--broker-image "$BROKER_IMAGE"`.
 Keep protected values equal to live values. The helper preserves the broker hostname,

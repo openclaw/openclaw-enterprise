@@ -6,6 +6,11 @@ TokenService owns a managed static Source and its credential. OCC controls who m
 
 ### OpenAI API key
 
+On first deploy, a Dedicated Agent with no saved grant for the destination uses
+the preset’s exact requests if the Installation ceiling permits its stock executable.
+OpenClaw uses `/usr/local/bin/node`. Codex requires exactly one qualified Codex binary.
+For a custom OpenClaw runtime, save an exact grant for its actual executable.
+
 For the static OpenAI API-key preset, the temporary transport exception covers
 `POST api.openai.com:443/v1/responses`. Dedicated Codex with standalone web
 search also permits the fixed executable to send `POST api.openai.com:443/v1/alpha/search`.
@@ -118,7 +123,7 @@ This example covers dedicated OpenClaw. Codex requires a separate Configuration;
    ```
 
 3. The deploying caller needs `agent:deploy` and `credential_source:operate` on the Source. With OCC-managed transactional Native IAM, deployment creates a missing exact Agent service-principal grant when the caller can operate the Source. Otherwise, grant the Agent service principal `credential_source:operate` before deployment.
-4. Save the Agent's Sandbox networking policy. Enabling editing requires Installation and Agent `administer`; reading requires Agent and SandboxPolicy `read`; saving requires Agent `manage_policy` and SandboxPolicy `update`. See [policy authority](../sandbox-policies.md#authority-and-admission). Send `PATCH /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking/editing` with `{ "enabled": true }`. Send `GET /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking` and use `data.policy.version` as `expectedVersion` in `PUT /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking`. For example, if the current version is `1`:
+4. If the OpenClaw runtime uses a different executable, save the Agent's Sandbox networking policy. Enabling editing requires Installation and Agent `administer`; reading requires Agent and SandboxPolicy `read`; saving requires Agent `manage_policy` and SandboxPolicy `update`. See [policy authority](../sandbox-policies.md#authority-and-admission). Send `PATCH /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking/editing` with `{ "enabled": true }`. Send `GET /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking` and use `data.policy.version` as `expectedVersion` in `PUT /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking`. For example, if the current version is `1`:
 
    ```json
    {

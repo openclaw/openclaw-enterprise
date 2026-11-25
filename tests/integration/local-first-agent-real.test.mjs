@@ -860,13 +860,6 @@ test(
             workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
           });
           const agentPath = `${base}/agents/${agent.id}`;
-          const networkPath = `${agentPath}/sandbox-policy/networking`;
-          await request("PATCH", `${networkPath}/editing`, { enabled: true });
-          const current = await request("GET", networkPath);
-          await request("PUT", networkPath, {
-            expectedVersion: current.policy.version,
-            additions: [nativeModelGrant],
-          });
           const revision = await request("POST", `${agentPath}/deploy`);
           const ready = await waitForNativeRedeploy({
             request,

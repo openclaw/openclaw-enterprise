@@ -1420,6 +1420,7 @@ test(
     };
     const ambiguousGrant = { ...grant, id: "alternate-model-egress", binary: "/usr/bin/other" };
     const codexGrant = { ...grant, id: "codex-model-egress", binary: OPEN_SHELL_CODEX_BINARIES[0] };
+    const wildcardGrant = { ...codexGrant, id: "wildcard-model-egress", host: "*.openai.com" };
     const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
     assert.ok(slack);
     const slackGrant = {
@@ -1430,7 +1431,14 @@ test(
     };
     const installation = {
       ...buildSandboxInstallation(),
-      sandboxNetworkPolicyCeiling: [grant, ambiguousGrant, codexGrant, slackGrant],
+      sandboxNetworkPolicyCeiling: [
+        { ...grant, id: "openclaw-model", binary: "/usr/local/bin/node" },
+        grant,
+        ambiguousGrant,
+        codexGrant,
+        wildcardGrant,
+        slackGrant,
+      ],
       runtime: { nativeWorkerSupport: "custom-image" },
     };
     Reflect.deleteProperty(installation.drivers, "credential_gateway");
@@ -1985,13 +1993,13 @@ test(
       refusedGrant.body,
     );
     assert.deepEqual(await deploymentEffects(nativeSource.id, dedicatedAgent), noDeploymentEffects);
-    const exactGrant = await inject(
+    const clearAmbiguousGrants = await inject(
       "PUT",
       networking,
-      { expectedVersion: 2, additions: [grant] },
+      { expectedVersion: 2, additions: [] },
       nativeApp,
     );
-    assert.equal(exactGrant.statusCode, 200, exactGrant.body);
+    assert.equal(clearAmbiguousGrants.statusCode, 200, clearAmbiguousGrants.body);
     const admitted = await inject("POST", `${base}/agents/${dedicatedId}/deploy`, {}, nativeApp);
     assert.equal(admitted.statusCode, 202, admitted.body);
     const admittedRevision = admitted.json().data;
@@ -2014,7 +2022,7 @@ test(
         bindingRef: "model",
         allowedRequests: [
           {
-            binary: grant.binary,
+            binary: "/usr/local/bin/node",
             host: grant.host,
             ports: grant.ports,
             requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
@@ -2023,6 +2031,10 @@ test(
       },
     ]);
 
+    assert.deepEqual(
+      revision?.credentialDeployment?.networkAccessPolicy.allowed,
+      revision?.credentialDeployment?.injectionPolicies[0]?.allowedRequests,
+    );
     assert.ok(revision);
     // Exercise the PostgreSQL CHECK separately with a candidate mixed policy. Only the
     // model revision above passed deployment admission. No Plugin revision is saved here.
@@ -2192,13 +2204,32 @@ test(
       await deploymentEffects(nativeSource.id, codexAgent),
       codexDeploymentBeforeRefusal,
     );
-    const codexPolicy = await inject(
+    // A saved wildcard on the credential recipient must not trigger an automatic exact-host grant.
+    const wildcardPolicy = await inject(
       "PUT",
       codexNetworking,
-      { expectedVersion: 2, additions: [codexGrant] },
+      { expectedVersion: 2, additions: [wildcardGrant] },
       nativeApp,
     );
-    assert.equal(codexPolicy.statusCode, 200, codexPolicy.body);
+    assert.equal(wildcardPolicy.statusCode, 200, wildcardPolicy.body);
+    const wildcardDeployment = await inject(
+      "POST",
+      `${base}/agents/${codexAgent.id}/deploy`,
+      {},
+      nativeApp,
+    );
+    assert.equal(wildcardDeployment.statusCode, 409, wildcardDeployment.body);
+    assert.deepEqual(
+      await deploymentEffects(nativeSource.id, codexAgent),
+      codexDeploymentBeforeRefusal,
+    );
+    const clearedPolicy = await inject(
+      "PUT",
+      codexNetworking,
+      { expectedVersion: 3, additions: [] },
+      nativeApp,
+    );
+    assert.equal(clearedPolicy.statusCode, 200, clearedPolicy.body);
     const unapprovedCodex = await inject(
       "POST",
       `${base}/agents/${codexAgent.id}/deploy`,
@@ -2251,6 +2282,11 @@ test(
       },
     ]);
 
+    assert.deepEqual(
+      codexRevision?.credentialDeployment?.networkAccessPolicy.allowed,
+      codexRevision?.credentialDeployment?.injectionPolicies[0]?.allowedRequests,
+    );
+
     const searchableCodexResponse = await inject(
       "POST",
       `${base}/agents`,
@@ -2265,19 +2301,6 @@ test(
     );
     assert.equal(searchableCodexResponse.statusCode, 201, searchableCodexResponse.body);
     const searchableCodexId = searchableCodexResponse.json().data.id;
-    const searchableNetworking = `${base}/agents/${searchableCodexId}/sandbox-policy/networking`;
-    assert.equal(
-      (await inject("PATCH", `${searchableNetworking}/editing`, { enabled: true }, nativeApp))
-        .statusCode,
-      200,
-    );
-    const searchablePolicy = await inject(
-      "PUT",
-      searchableNetworking,
-      { expectedVersion: 1, additions: [codexGrant] },
-      nativeApp,
-    );
-    assert.equal(searchablePolicy.statusCode, 200, searchablePolicy.body);
     const firstDeploy = `${base}/agents/${searchableCodexId}/deploy-first`;
     const intent = {
       key: "codex-search-source",
@@ -2329,6 +2352,11 @@ test(
         })),
       },
     ]);
+
+    assert.deepEqual(
+      searchableRevision?.credentialDeployment?.networkAccessPolicy.allowed,
+      searchableRevision?.credentialDeployment?.injectionPolicies[0]?.allowedRequests,
+    );
 
     assert.ok(revision);
     assert.ok(codexRevision);

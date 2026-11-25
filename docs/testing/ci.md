@@ -6,9 +6,10 @@ last_verified: "2026-11-04"
 
 # CI
 
-Choose a test workflow for its scenarios, prerequisites, run procedure, and expected
-results. For triggers and failure consequences across workflows, use the
-[workflow cheat sheet](../reference/cheatsheets/github-actions.md).
+Every pull request runs static checks. CI selects integration tests from the
+changed files. A passing `CI Required` check covers only the selected tests.
+See the [workflow cheat sheet](../reference/cheatsheets/github-actions.md) for
+workflow triggers and failure consequences.
 
 <a id="ci-overview-and-configuration"></a>
 <a id="ci-configuration-and-testing"></a>
@@ -34,14 +35,51 @@ results. For triggers and failure consequences across workflows, use the
 
 ## Checks
 
-| Check                                          | Use it to                                                                    |
-| ---------------------------------------------- | ---------------------------------------------------------------------------- |
-| [CI required checks](ci/required-checks.md)    | Verify source, component workflows, persistence, and packaging for a change. |
-| [First Agent Smoke](ci/first-agent-smoke.md)   | Exercise the installed Agent lifecycle with a simulated model provider.      |
-| [QA Matrix Advisory](ci/qa-advisory.md)        | Test Agent workflows with real providers and OpenShell.                      |
-| [Full Integration](ci/full-integration.md)     | See scheduled admission, approved manual dispatch, and aggregate results.    |
-| [Observability Demo](ci/observability-demo.md) | Verify fixture telemetry and rendered monitoring dashboards.                 |
-| [Local k3d Quickstart](ci/k3d-quickstart.md)   | Exercise browser onboarding, Linear, and Git on one Agent.                   |
+### What blocks merge or release?
+
+- **Merge into `main`** requires [CI Required](ci/required-checks.md). It checks
+  the static results and the selected test lanes. It is the only required status check.
+- **Standalone container and CLI publication** requires the entire CI run for the push to
+  `main` and its `CI Required` check to pass for the exact release commit.
+  [First Agent Smoke](ci/first-agent-smoke.md) uses a simulated model provider.
+  Its failure blocks publication when selected, but does not block merge.
+  Container preparation also requires [native image checks](ci/required-checks.md#scenarios).
+- [Release OCE](../release/README.md) requires approval and a successful Full
+  Integration Aggregate for `lane=all` at the selected source SHA in the release
+  run. It can qualify any commit in protected `main` history without prior push CI.
+
+### When does ordinary CI run integration tests?
+
+| Change or event                                                                            | Tests selected in addition to static checks                                |
+| ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| Allowlisted docs-only PR or verified forward docs-only push to `main`                      | None                                                                       |
+| PR limited to eligible tests and related edits                                             | The lanes that own those tests and, for TypeScript, the type-checking lane |
+| Other PRs, other pushes to `main` (including test-only pushes), merge groups and manual CI | All ordinary CI lanes and First Agent Smoke                                |
+
+Ordinary CI includes PostgreSQL, container and Kubernetes integration tests.
+If CI cannot verify a narrower selection, it runs all ordinary lanes.
+Manual CI also runs native image checks. See the [selection rules](ci/required-checks.md#trigger)
+and [lane coverage](ci/required-checks.md#scenarios).
+
+### When do separate integration workflows run?
+
+Ordinary CI in `full` mode does not start Full Integration. These separate
+workflows have their own triggers.
+
+- [Full Integration](ci/full-integration.md#trigger) includes live model and Slack tests.
+  A schedule checks `main` every 15 minutes.
+  A scheduled run can start only for the current commit without verified full coverage.
+  It must start at least 60 minutes after the previous full run started and 15 minutes
+  after it finished. A successful schedule check can skip all tests. To run one lane
+  or the full suite manually on `main`, the dispatcher must be a member of
+  the [required reviewer team](ci/configuration.md#environments) and approve the run.
+- [QA Matrix Advisory](ci/qa-advisory.md#trigger) runs every six hours on `main`,
+  manually on `main`, or on eligible labeled PRs. Pushes to `main` run QA only
+  when `QA_ADVISORY_ON_PUSH=true`.
+- [Observability Demo](ci/observability-demo.md) runs for relevant PR and `main`
+  changes, merge groups and manual dispatches.
+- [Local k3d Quickstart](ci/k3d-quickstart.md) runs manually on protected `main`
+  or on a designated development-branch push that matches the reviewed commit.
 
 For account-creation races, see the
 [PostgreSQL account provisioning checks](../flows/local-password-authentication.md#debugging-and-verification).

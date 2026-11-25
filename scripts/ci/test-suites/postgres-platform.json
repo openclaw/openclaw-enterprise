@@ -1,7 +1,11 @@
 {
   "prepare": {
     "postgres": true,
-    "requiresPreparedStateForFile": true
+    "requiresPreparedStateForFile": true,
+    "selfProvisionedFiles": [
+      "tests/integration/postgres-bootstrap-failures.test.ts",
+      "tests/integration/postgres-production-wireup.test.ts"
+    ]
   },
   "fileConcurrency": 4,
   "parallelFiles": [

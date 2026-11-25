@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-11-24
-last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
+updated: "2026-11-24"
+last_updated_session: "authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c"
 ---
 
 # Production Startup Flow
@@ -82,8 +82,12 @@ Queries reconnect.
 
 `scripts/diagnose-kubernetes-prerequisites.ts:diagnose`
 [checks prerequisites](../guides/deploy/prerequisite-diagnosis.md) before Helm.
+It pins the kubeconfig, disables kubectl preferences and rejects redirects over
+private Unix sockets. Exec plugins require opt-in. For a Service dependency, it
+reads the Service and checks the named NetworkPolicy's egress grants.
 [EKS inventory](../guides/deploy/prerequisite-diagnosis.md#collect-eks-addresses)
-requires kubectl preferences opt-in and verifies account, ARN, endpoint and CA.
+requires opt-in for all credentials. It verifies the account, ARN, endpoint
+and CA before reading API Service and EndpointSlice addresses.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
@@ -225,21 +229,18 @@ replica has no peer or `preStop`; the 30-second grace cuts off unfinished reques
 Logs show `shutdown.started` (`signal`), then `shutdown.completed` (`durationMs`),
 or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drain.
 
-The PostgreSQL API compositions close the exchange binding, protected Driver,
-prepared GitHub owner, and database in order, continuing after a close fails.
-Shutdown reports the first failure, wrapping a falsey thrown value as an error
-with the original value as its cause. Failed startup preserves the startup error.
-The exchange binding is independent of the protected Driver. See
-`apps/controller/src/composition/production.ts:composeProduction` and
-`apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`.
+The [production](../../apps/controller/src/composition/production.ts) and
+[development](../../apps/controller/src/composition/development-postgres.ts) APIs
+stop TokenService maintenance before closing the exchange binding,
+protected Driver, and database in order. Resource cleanup continues after an
+error and reports the first failure. Failed startup preserves its original error.
 
-The worker closes the repository Git sender binding, prepared Git owner, receipt
-listener, metrics, and prepared GitHub owner in order, continuing after a close
-fails, then stops its loop and database. A listener left open would keep the Pod
-running until its grace ends. Any failure logs `worker.error` `SHUTDOWN_FAILED`
-(exit 1). See `apps/controller/src/worker/shutdown.ts:closeWorkerComposition`.
-Failed startup closes an installed Driver package, refused or loaded, before the
-worker loop owns it, keeping the original error.
+`apps/controller/src/worker/shutdown.ts:closeWorkerComposition` stops the Worker
+loop and removes its readiness marker before closing the Git transport, prepared
+Git owner, receipt listener, metrics, and database. It continues after errors and logs
+`worker.error` with `SHUTDOWN_FAILED` (exit 1). An open listener holds the Pod
+until grace expires. Failed startup closes the installed Driver package, even
+if refused, and preserves the original error.
 
 When set, `controlPlane.nodeSelector` places the API, worker, migration,
 bootstrap, and private proxy on reviewed control-plane nodes. The
@@ -305,15 +306,10 @@ Repository runtime reconciliation continues in the
 
 `internal/occclient/client.go:Client.GetInstallation`
 
-Prepare private CLI JSON containing `data.key` from the retained raw key, as in
-[bootstrap key access](../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key).
-Bootstrap emits no credentials; API/worker cannot retrieve them. Preparation
-does not prove installation success.
-
-Use `occ installation get` with the service key. Its authenticated response
-supplies the server-owned Installation ID; the local key JSON has no metadata.
-The startup Secret annotation `openclaw.dev/installation-id` binds upgrades to
-that Installation.
+Prepare private CLI JSON with [the retained `data.key`](../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key).
+Bootstrap emits no credentials. The API and worker cannot retrieve them.
+Authenticated `occ installation get` supplies the Installation ID. The startup
+Secret's `openclaw.dev/installation-id` annotation binds upgrades to it.
 
 The operator session's `upgrade_installation` checks Helm's deployed revision
 and API Pod binding. The scoped `docs/snippets/openshell-quickstart/request.mts`
@@ -375,7 +371,13 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Changelog
 
+- 2026-11-24 21:59: Limit Service checks to egress. (authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c - cabc3559c04447fc30ae80675db688c23d673e48)
+
 - 2026-11-24 10:41: Trace unrestricted API and refresh Worker egress while preserving initialization isolation. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
+
+- 2026-11-24 02:19: Validate API address inventory and document credential opt-in. (authoring-run/e942eb38-a6b6-461f-beaa-0a1efaa489da - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
+
+- 2026-11-23 19:26: Trace pinned prerequisite reads and EKS identity checks. (authoring-run/ce6b5562-b2f2-4821-b112-f012b4c0de17 - b899d185e0d9ae6a59922d813eeb0bda45172eac)
 
 - 2026-11-23: Bound scrapes.
 
@@ -386,6 +388,8 @@ The shell initializes the missing annotation, patches with UID and
 - 2026-11-19 22:27: Require EKS inventory preferences opt-in. (authoring-run/e7df3cc8-639a-48dc-818c-a5168de86ef1 - 00abb268cdd420d9eed8c3096a15d7f0cdc65934)
 
 - 2026-11-19 22:19: Trace the EKS address collection mode. (authoring-run/a5a3aec7-bb99-4933-b5a1-51dd301739ed - 0ac6f863218c79c2c4143d552a0207a24d20f604)
+
+- 2026-11-19 19:08: Trace the verified prerequisite context. (authoring-run/fb46fd44-f1b3-4ac7-9bd8-0096c2f70fa9 - a99a9c85206960539cf27f47cbe350b033d8b2ca)
 
 - 2026-11-18 13:48: Recognize migration hooks (PST). (authoring-run/fcffdcd5-85ba-4fd1-ad35-bfbbcd6953b6 - 62b4fb61d91580e4080fe3bd22da3e981bffb603)
 

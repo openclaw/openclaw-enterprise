@@ -140,6 +140,8 @@ export interface ModelCredentialPreset {
   readonly destinations: StaticKeyTemplateValues["destinations"];
   /** Qualified native executables when the preset limits the consumer identity. */
   readonly binaries?: readonly string[];
+  /** Stock executable for Harnesses that also support an explicitly granted custom runtime. */
+  readonly defaultBinary?: string;
   readonly projection: Extract<
     DeploymentCredentialBinding,
     { readonly consumer: { readonly kind: "model" } }
@@ -333,30 +335,38 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
   ) {
     const presetId = permittedModelCredentialPresetId(source);
     const fixedCodexModel = presetId === "builtin_codex" || presetId === "codex-pat";
+    const presetBinaries = preset.binaries ?? (preset.defaultBinary ? [preset.defaultBinary] : []);
     const automaticNetwork: DeploymentRequestMatch[] = [];
     const requests: DeploymentRequestMatch[] = preset.destinations.map((destination) => {
-      const grants = networkGrants.filter(
-        (grant) =>
-          grant.host === destination.host &&
-          (preset.binaries === undefined || preset.binaries.includes(grant.binary)) &&
-          grant.ports.some(({ from, to }) => from <= destination.port && destination.port <= to),
-      );
       const route = {
         host: destination.host,
         ports: [{ from: destination.port, to: destination.port }],
         requestPolicy: { type: "http", method: destination.method, path: destination.path },
       } satisfies Omit<DeploymentRequestMatch, "binary">;
-      // For fixed Codex routes the Installation can supply a unique executable
-      // when the Agent has no saved network grant for the destination.
-      const usePresetNetwork = grants.length === 0 && fixedCodexModel;
+      const destinationGrants = networkGrants.filter((grant) =>
+        sandboxNetworkGrantsWithinCeiling([{ ...route, binary: grant.binary }], [grant]),
+      );
+      const grantedBinaries = destinationGrants
+        .filter(
+          (grant) =>
+            grant.host === destination.host &&
+            (preset.binaries === undefined || preset.binaries.includes(grant.binary)),
+        )
+        .map(({ binary }) => binary);
+      // An explicit grant on an API-key destination must identify an approved executable.
+      // Built-in account routes have their own fixed executable regardless of other host grants.
+      const usePresetNetwork =
+        presetBinaries.length > 0 &&
+        grantedBinaries.length === 0 &&
+        (destinationGrants.length === 0 || fixedCodexModel);
       const binaries = usePresetNetwork
-        ? (preset.binaries ?? []).filter((binary) =>
+        ? presetBinaries.filter((binary) =>
             sandboxNetworkGrantsWithinCeiling(
               [{ binary, ...route }],
               dependencies.sandboxNetworkPolicyCeiling,
             ),
           )
-        : grants.map(({ binary }) => binary);
+        : grantedBinaries;
       if (binaries.length !== 1 || destination.path.includes("*")) {
         throw new ResourceStateConflictError(
           preset.destinations.length === 1
@@ -370,7 +380,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       }
       return request;
     });
-    if (fixedCodexModel && new Set(requests.map(({ binary }) => binary)).size !== 1) {
+    if (preset.binaries !== undefined && new Set(requests.map(({ binary }) => binary)).size !== 1) {
       throw new ResourceStateConflictError(
         "The fixed Codex model requests must use the same approved executable.",
       );

@@ -144,6 +144,12 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const longPluginId =
+    "codex-plugin:example-document-review-and-records-retention-workspace@openai-curated-remote";
+  const pluginSelectionsWithLongId: PluginDesiredState = {
+    ...pluginSelectionState,
+    [longPluginId]: { enabled: true },
+  };
   const newerDeployment: AgentRevisionSummaryWire = {
     id: "rev_00000000-0000-4000-8000-000000000008",
     namespaceId: "ns_00000000-0000-4000-8000-000000000001",
@@ -1381,7 +1387,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=plugins`,
         deployed: true,
         auth: "codex_pat",
-        agentPlugins: structuredClone(pluginSelectionState),
+        agentPlugins: structuredClone(pluginSelectionsWithLongId),
         agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
         pluginCapabilities,
         pluginDiscovery,
@@ -1389,6 +1395,7 @@ export function createAgentDetailScenarios({
         description:
           "The permission answer denies Agent update, so the saved selections show as a read-only summary with no editor, Save or Discard, and the note names the grant to ask for. The page does not read the plugin policy capabilities, which need Agent update, so the saved default plugin approvers show as text. The API still decides.",
         steps: [
+          "At 390 px, focus the Plugins tab and press Tab. The full plugin ID wraps inside the focused JSON block.",
           "Under Default plugin approvers, read that the next deployment uses these Agent default approvers and find slack: team:TDEMO123:user:UDEMO123. No approver field is offered.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -1749,11 +1756,14 @@ export function createAgentDetailScenarios({
         name: "Plugins in admitted version",
         path: revision,
         deployed: true,
-        agentPlugins: structuredClone(pluginSelectionState),
+        agentPlugins: structuredClone(pluginSelectionsWithLongId),
         pluginCapabilities,
         actions: [click("Plugins")],
         description:
           "An admitted version shows its immutable Agent-owned plugin selection and policy.",
+        steps: [
+          "Select Plugins. At 390 px, focus the tab and press Tab. The full plugin ID wraps inside the focused JSON block.",
+        ],
       },
       invalidConfiguration: {
         group: "Pages/Agent detail",
@@ -2268,6 +2278,8 @@ export function createAgentDetailScenarios({
         deployed: true,
         candidateDeploymentStatus: "failed",
         bootstrapFailure: true,
+        harness: { state: "running" },
+        harnessAfterFirstRead: { state: "lost", code: "SANDBOX_STOPPED" },
         cleanupStatus: "queued",
         cleanupCompletes: true,
         rules: [
@@ -2326,10 +2338,12 @@ export function createAgentDetailScenarios({
         description:
           "A poll changes the Configuration notice from queued to cleanup pending. The deployment remains failed after cleanup and its recorded evidence stays visible.",
         steps: [
+          "Before the replacement fails, check that Live serving says Sandbox running.",
           "On Configuration, tab to View deployment while the notice says a deployment is queued or in progress.",
           "Wait for the notice to say Deployment resource cleanup needs attention. Press Enter with focus still on the link to open Deployment for v7.",
           "Read the failing oauth-bootstrap exit status beside the successful init container.",
           "After cleanup completes, check that the deployment still shows failed and the evidence remains visible.",
+          "Without refreshing, confirm the same version remains selected and Live serving now says Sandbox lost and Deploy a new version.",
         ],
       },
     } satisfies Record<string, AgentDetailScenario>,
@@ -2373,10 +2387,12 @@ export function createAgentDetailScenarios({
         path: revision,
         deployed: true,
         harness: { state: "lost", code: "SANDBOX_STOPPED" },
+        rules: [{ suffix: "/harness-status", skip: 1, delayMs: 1500 }],
         description:
           "The current version's Sandbox stopped (for example after a node restart) and OCC does not restart it. The Agent still reads active, so Live serving says the Sandbox is lost and names the next step.",
         steps: [
           'Live serving shows a red "Sandbox lost" badge and, on the line under it, "Deploy a new version." The line was reserved while the Sandbox was read, so nothing below moved.',
+          'Switch to another window and return. During the delayed check, "Sandbox lost" and "Deploy a new version." stay visible. They remain when the same reply arrives.',
           "At 390 and 900 wide the note stays on one line under the badge.",
         ],
         gap: "The Sandbox record is simulated; this story does not verify a live OpenShell read or a node restart.",
@@ -4007,6 +4023,29 @@ export function createAgentDetailScenarios({
     } satisfies Record<string, AgentDetailScenario>,
 
     layout: {
+      channelsAccessUnconfirmedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Channels access could not be checked on tab return",
+        path: `${draft}&tab=channels`,
+        slack: true,
+        rules: [
+          {
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
+            method: "GET",
+            skip: 1,
+            once: true,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "Channels opens with editing available. When you return to the browser tab, the Agent's permission check fails once.",
+        steps: [
+          "Open the preview in its own tab. Use the keyboard to open Edit Slack, then Cancel. Check that focus returns to Edit Slack.",
+          "Switch to another browser tab and return. Channels stays selected and receives focus. Read the access-check message and Refresh guidance. Edit Slack and Deploy new version are unavailable.",
+          "Choose Refresh in the page header. Channels stays selected, the access-check message clears, and Edit Slack is available again.",
+        ],
+      },
       agentDetailLayout: {
         group: "Pages/Agent detail",
         name: "Agent detail layout",
