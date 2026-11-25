@@ -591,6 +591,7 @@ export function checkGatewayToolPolicyAdmission() {
     // The pinned OpenClaw fails every turn's tool assembly for an action-bearing tool
     // allowed without actions (finding 2679), so save refuses it.
     [{ allow: ["dashboard"] }, /actions.dashboard must list/],
+    [{ allow: ["session_project"] }, /actions.session_project must list/],
     [null, /must be an object/],
   ];
   const acceptedPolicies: readonly (OpenClawConfigurationValue | undefined)[] = [

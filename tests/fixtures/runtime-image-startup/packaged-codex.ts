@@ -91,15 +91,15 @@ export async function probePackagedCodex(
         }
       : {
           "stock-codex-0.164.0-dependency-pin.patch":
-            "cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197",
+            "c688852ebcf1941452bfcb43ea07b307c4b9e464da444c3d02f4777523eff602",
           "openclaw-terminated-gateway-namespace.patch":
             "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
           "openclaw-planned-completion.patch":
-            "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
+            "600f0f401ceedf4f158b3becc85b21404afaea0e14e6fec00851c08637520cbe",
           "openclaw-http-chat-input.patch":
             "bad12711e8452c1d6045530d99ed76b8e86e408bdf85d3b6f1771c5a841320f8",
           "openclaw-node-setup-renewal.patch":
-            "1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6",
+            "a4662990e1a43ff0e4cfddc58509e164bce7c6d50ffcf535612acec05ac66e49",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);
