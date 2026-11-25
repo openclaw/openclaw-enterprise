@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { type IncomingMessage, request as httpRequest } from "node:http";
+import { text } from "node:stream/consumers";
 import test from "node:test";
 
 import type { AgentRevisionWire, AgentWire } from "../../packages/contracts/src/api/resources.ts";
@@ -12,9 +14,9 @@ test(
     const origin = new URL(process.env.OCC_URL ?? "");
     assert.ok(
       origin.protocol === "http:" &&
-        ["127.0.0.1", "localhost", "[::1]"].includes(origin.hostname) &&
+        ["127.0.0.1", "[::1]"].includes(origin.hostname) &&
         origin.href === origin.origin + "/",
-      "Use a loopback OCC origin.",
+      "Use a numeric loopback OCC origin.",
     );
     const namespace = process.env.OCC_NAMESPACE ?? "";
     const agent = process.env.OCC_TEST_PROVIDER_AGENT ?? "";
@@ -25,22 +27,37 @@ test(
     let key: string;
     try {
       const value: unknown = JSON.parse(await readFile(keyFile, "utf8")).data?.key;
-      assert.ok(typeof value === "string" && /^[!-~]+$/.test(value));
+      assert.ok(
+        typeof value === "string" && /^occ_(?:[A-Za-z0-9_-]{43}|[A-Za-z]{64})$/.test(value),
+      );
       key = value;
     } catch {
       throw new Error("Expected an OCC service-key response file.");
     }
 
     async function request(path: string, body?: unknown) {
-      const response = await fetch(new URL(path, origin), {
-        method: body === undefined ? "GET" : "POST",
-        redirect: "error",
-        headers: { "x-api-key": key, "content-type": "application/json" },
-        signal: AbortSignal.timeout(body === undefined ? 30_000 : 480_000),
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      const url = new URL(path, origin);
+      assert.equal(url.origin, origin.origin);
+      // A one-use HTTP agent ignores the global proxy and does not follow redirects.
+      const response = await new Promise<IncomingMessage>((resolve, reject) => {
+        httpRequest(
+          url,
+          {
+            agent: false,
+            method: body === undefined ? "GET" : "POST",
+            headers: { "x-api-key": key, "content-type": "application/json" },
+            signal: AbortSignal.timeout(body === undefined ? 30_000 : 480_000),
+          },
+          resolve,
+        )
+          .on("error", reject)
+          .end(JSON.stringify(body));
       });
-      assert.equal(response.status, 200);
-      return response.json();
+      if (response.statusCode !== 200) {
+        response.destroy();
+        assert.fail(`Unexpected OCC status ${response.statusCode}`);
+      }
+      return JSON.parse(await text(response));
     }
 
     const path = `/namespaces/${namespace}/agents/${agent}`;
