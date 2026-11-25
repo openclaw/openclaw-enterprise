@@ -27,7 +27,7 @@ import {
   authenticatedHeaders,
   createAuthenticatedControllerRequest,
   signInWithEmailPassword,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.ts";
 import { buildControllerTopologyManifests } from "./topology-controller-manifests.ts";
@@ -55,6 +55,7 @@ import {
   createEnvoyWorkspaceGatewayPlan,
 } from "../helpers/envoy-workspace-gateway.mjs";
 import { assertKubernetesOtelLogs, reportFailedModelTurn } from "./harness-topology-otel.ts";
+import { hasReadyCondition, readReadyAgentPod } from "./harness-topology-pods.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
 import { withSkillPolicyRestore } from "./skill-policy-restore.mjs";
@@ -62,7 +63,7 @@ import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
 import { installedGatewayRpc } from "./installed-gateway-rpc.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.ts";
-import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.mjs";
+import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.ts";
 import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -3835,20 +3836,6 @@ async function assertRetainedArtifact(
   return artifact.id;
 }
 
-/** @param {unknown} pod */
-function hasReadyCondition(pod) {
-  const conditions = asRecord(asRecord(pod)?.status)?.conditions;
-  if (!Array.isArray(conditions)) {
-    return false;
-  }
-  /** @type {readonly unknown[]} */
-  const observedConditions = conditions;
-  return observedConditions.some((condition) => {
-    const fields = asRecord(condition);
-    return fields?.type === "Ready" && fields.status === "True";
-  });
-}
-
 async function assertInterruptedGatewayTurnResumes(context, topology) {
   assert.ok(topology.harnessPod, "restart continuation requires the dedicated Codex topology");
   const configurationPath = `/namespaces/${topology.namespaceId}/configurations/${topology.agent.configurationId}`;
@@ -5317,30 +5304,15 @@ async function assertDedicatedAgentsInstructionsInFreshSession(topology) {
   assert.match(response.trimEnd(), /enterprise openclaw[.!?]*$/);
 }
 
-function selectReadyAgentPod(pods, topology, revisionId = topology.revision.id, previousUid) {
-  return pods.find(
-    (pod) =>
-      typeof pod.metadata.uid === "string" &&
-      pod.metadata.uid !== "" &&
-      pod.metadata.uid !== previousUid &&
-      pod.metadata.deletionTimestamp === undefined &&
-      pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
-      pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
-      pod.metadata.labels?.["openclaw.dev/revision"] === revisionId &&
-      pod.status?.phase === "Running" &&
-      hasReadyCondition(pod),
-  );
-}
-
 async function waitForReadyAgentPod(topology, revisionId, previousUid) {
-  return waitFor(`dedicated Codex Pod for revision ${revisionId}`, async () =>
-    selectReadyAgentPod(await topologyPods(topology), topology, revisionId, previousUid),
+  return waitFor(`dedicated Codex Pod for revision ${revisionId}`, () =>
+    readReadyAgentPod(resources, topology, revisionId, previousUid),
   );
 }
 
 async function kubectlInReadyAgentPod(topology, ...args) {
   const result = await waitFor("the current ready dedicated Harness Pod", async () => {
-    const pod = selectReadyAgentPod(await topologyPods(topology), topology);
+    const pod = await readReadyAgentPod(resources, topology);
     if (pod === undefined) {
       return undefined;
     }
@@ -7137,7 +7109,6 @@ export {
   resource,
   resources,
   secretRotationProbe,
-  selectReadyAgentPod,
   storedSecret,
   waitFor,
   waitForReadyGatewayPod,

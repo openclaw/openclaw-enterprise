@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-24
-last_updated_session: authoring-run/2fff43ca-53a8-4cd9-a462-25f833fec902
+updated: 2026-11-25
+last_updated_session: authoring-run/8d6879f5-e9be-4828-a054-6fb620189dfb
 ---
 
 # Credential source lifecycle flow
@@ -92,7 +92,7 @@ Compute records an idle Sandbox with model credential routes withheld, opens the
 
 For OCC custody, OpenShell Proxy creates or reuses a Provider per projection, resolving each Source at most once for new copies. Existing Providers attach without renewal. Each binding receives a fresh placeholder; failed attachment triggers cleanup. OpenShell refuses to delete an attached Provider.
 
-In the [OpenShell custody preview](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/token-service/openshell.ts:resolveNativeProvider` verifies the Source locator, Workspace, and Provider. Proxy attaches the authoritative Provider directly and the Harness receives a placeholder.
+For [OpenShell custody](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/token-service/openshell.ts:resolveNativeProvider` verifies Source, Workspace, and Provider identity. Proxy attaches that Provider. `apps/controller/src/drivers/sandbox/openshell.ts:prepareStagedHarness` maps its Source-specific supervisor placeholder to the binding's environment and removes the internal variable before starting the Harness.
 
 For an OpenAI API-key Source on Dedicated Codex or OpenClaw, admission derives the
 [model network requests](../reference/credential-sources/managed-static.md#openai-api-key)
@@ -182,6 +182,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 06:13: Trace generic native static custody and binding-specific placeholder delivery. (authoring-run/8d6879f5-e9be-4828-a054-6fb620189dfb - 2ed738ba4cb4c54802879a4c41ca98221f9716e8)
 
 - 2026-11-24 15:22: Verify GitHub installation and mint by name. (authoring-run/2fff43ca-53a8-4cd9-a462-25f833fec902 - 83575ae57607ec1302aa119523df6e3b39a53c50)
 

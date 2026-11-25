@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { launchTrustingBrowser } from "../helpers/dev-up-keycloak.mjs";
 import {
   assertNativeWebSocketRejected,

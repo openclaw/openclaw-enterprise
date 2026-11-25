@@ -1732,17 +1732,25 @@ test("staged OpenShell Proxy attaches and detaches an authoritative Provider wit
   // TokenService verifies custody separately. This case exercises the Proxy against an
   // existing Provider and checks that Proxy cleanup leaves its owner's material in place.
   f.state.provider = provider;
-  proxy.bindNativeSourceResolver(async (source: CredentialSourceReference) => {
-    assert.deepEqual(source, binding.sourceRef);
-    return {
-      workspace: namespace.name,
-      workspaceId: "workspace-id",
-      name,
-      id,
-      resourceVersion: "3",
-      profileVersion: "1",
-    };
-  });
+  const purposes: string[] = [];
+  proxy.bindNativeSourceResolver(
+    async (
+      source: CredentialSourceReference,
+      _signal: AbortSignal,
+      purpose: "delivery" | "withdrawal",
+    ) => {
+      assert.deepEqual(source, binding.sourceRef);
+      purposes.push(purpose);
+      return {
+        workspace: namespace.name,
+        workspaceId: "workspace-id",
+        name,
+        id,
+        resourceVersion: "3",
+        profileVersion: "1",
+      };
+    },
+  );
   await proxy.configureDeployment(f.context, {
     ...configuration,
     bindings: [f.suppliedBinding],
@@ -1753,13 +1761,124 @@ test("staged OpenShell Proxy attaches and detaches an authoritative Provider wit
   assert.deepEqual(await proxy.getDeploymentStatus(f.context, configuration), { state: "ready" });
 
   f.removeCredentialRoute();
+  assert.ok(purposes.every((purpose) => purpose === "delivery"));
   await proxy.removeDeployment(f.context, { targetRef: configuration.targetRef });
+  assert.equal(purposes.at(-1), "withdrawal");
   await proxy.retireSource(namespace, binding.sourceRef, t.signal);
   assert.deepEqual(f.sandbox.spec.providers, []);
   assert.equal(f.state.provider, provider);
   assert.equal(f.resolutions(), 0);
   assert.equal(f.state.creates.length, 0);
   assert.equal(f.state.deletes.length, 0);
+});
+
+test("OpenShell custody delivers a Codex PAT from its authoritative Source Provider", async (t) => {
+  const f = await fixture(t);
+  const proxy = f.createProxy("openshell/token-service");
+  const preset = resolveModelCredentialPreset({
+    presetId: "codex-pat",
+    configuration: { agents: { defaults: { model: "codex/model-fixture" } } },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+  });
+  assert.ok(preset?.binaries?.length);
+  const binary = preset.binaries[0]!;
+  const codex = {
+    ...binding,
+    consumer: { kind: "model" as const, providerId: preset.providerId },
+    projection: preset.projection,
+  };
+  const grants = [...new Set(preset.destinations.map(({ host }) => host))].map((host) => ({
+    binary,
+    host,
+    ports: [{ from: 443, to: 443 }],
+  }));
+  const requests = preset.destinations.map(({ host, method, path }) => ({
+    binary,
+    host,
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http" as const, method, path },
+  }));
+  const policies = [{ bindingRef: "model", allowedRequests: requests }];
+  const context: CredentialDeploymentContext = {
+    ...f.context,
+    revision: {
+      ...f.context.revision,
+      harnessAuth: {
+        method: "credential_source",
+        sourceId: codex.sourceRef.id,
+        sourceType: "static",
+        tokenServiceInstanceId: "tokens",
+      },
+      credentialDeployment: {
+        ...f.context.revision.credentialDeployment!,
+        networkAccessPolicy: { allowed: grants },
+        bindings: [codex],
+        injectionPolicies: policies,
+      },
+    },
+  };
+  const name = openShellProviderName(codex.sourceRef.id);
+  const id = randomUUID();
+  f.state.provider = {
+    metadata: { name, id, workspace: namespace.name, resource_version: "3", labels: {} },
+    type: name,
+    profile_workspace: namespace.name,
+    config: {},
+  };
+  proxy.bindNativeSourceResolver(async () => ({
+    workspace: namespace.name,
+    workspaceId: "workspace-id",
+    name,
+    id,
+    resourceVersion: "3",
+    profileVersion: "1",
+  }));
+  const prepared = await proxy.configureDeployment(context, {
+    ...configuration,
+    bindings: [{ binding: codex, resolveCredential: f.suppliedBinding.resolveCredential }],
+    injectionPolicies: policies,
+  });
+  assert.deepEqual(prepared.credentialProjections, [
+    { bindingRef: "model", environment: "CODEX_ACCESS_TOKEN", placeholder: { kind: "runtime" } },
+  ]);
+  assert.deepEqual(f.sandbox.spec.providers, [name]);
+  assert.equal(f.resolutions(), 0);
+  assert.equal(f.state.creates.length, 0);
+
+  // Readiness requires OpenShell's loaded exact-route policy and serving receipt for the Source.
+  const evidence = f.observeServing();
+  const networks = record(evidence.policy.network_policies);
+  Reflect.deleteProperty(networks, "model");
+  for (const [
+    index,
+    {
+      host,
+      requestPolicy: { method, path },
+    },
+  ] of requests.entries()) {
+    const ruleName = `model_${index}`;
+    networks[ruleName] = {
+      name: ruleName,
+      binaries: [{ path: binary }],
+      endpoints: [
+        {
+          host,
+          path,
+          ports: [443],
+          protocol: "rest",
+          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+          rules: [{ allow: { method, path } }],
+          credential_binding: { provider: name },
+          provider_credentialed: true,
+        },
+      ],
+    };
+  }
+  f.sandbox.spec.policy = sourcePolicyFrom(evidence.policy);
+  record(f.state.policyStatus!.revision).policy = sourcePolicyFrom(evidence.policy);
+  assert.deepEqual(await proxy.getDeploymentStatus(context, configuration), { state: "ready" });
+  record(f.state.policyStatus!.revision).status = "POLICY_STATUS_PENDING";
+  assert.deepEqual(await proxy.getDeploymentStatus(context, configuration), { state: "pending" });
 });
 
 test("OpenShell Source notification leaves an absent delivery Provider absent", async (t) => {

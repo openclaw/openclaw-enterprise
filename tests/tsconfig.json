@@ -255,6 +255,7 @@
     "helpers/keycloak-issuer-material.ts",
     "integration/keycloak-session-lifecycle-cases.ts",
     "integration/skipper-private-git-replacement-cases.ts",
+    "integration/skipper-private-git-model-adapter.test.ts",
     "helpers/node-test-summary.ts",
     "helpers/reuse-port-preload.ts",
     "helpers/released-controller-process.mts",

@@ -37,7 +37,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { cookieHeaderFromSetCookie, signInToControllerApp } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie, signInToControllerApp } from "../helpers/auth-session.ts";
 import { injectJson } from "../helpers/inject-json.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import {

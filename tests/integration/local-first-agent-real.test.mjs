@@ -327,7 +327,10 @@ async function readSecretResourceVersion({ stateDirectory, cluster, env, namespa
   );
 }
 
-async function readTokenServiceCustodyVersion(kube, { installationId, namespaceId, sourceId }) {
+async function readTokenServiceCustodyVersion(
+  kube,
+  { installationId, namespaceId, sourceId, secretNamespace },
+) {
   // Read only owner and object metadata for this disposable Installation. The Source
   // API deliberately exposes no private storage version or Secret reference.
   const template = String.raw`{{range .items}}{{index .metadata.annotations "openclaw.dev/installation-id"}}{{"\t"}}{{index .metadata.annotations "openclaw.dev/private-secret-id"}}{{"\t"}}{{.metadata.uid}}{{"\t"}}{{.metadata.resourceVersion}}{{"\n"}}{{end}}`;
@@ -337,7 +340,7 @@ async function readTokenServiceCustodyVersion(kube, { installationId, namespaceI
       "get",
       "secrets",
       "--namespace",
-      kube.env.OCC_INSTALLATION_SECRET_NAMESPACE ?? "oce-installation-secrets",
+      secretNamespace,
       "--selector",
       "app.kubernetes.io/managed-by=openclaw-enterprise",
     ],
@@ -826,9 +829,7 @@ test(
       const configuration = createHarnessConfiguration("openclaw", expectedModel);
       const installation = await request("GET", "/installation");
       assert.equal(installation.capabilities?.nativeWorkers?.support, "pinned-runtime");
-      assert.ok(
-        installation.capabilities?.credentialSources?.types.some(({ type }) => type === "static"),
-      );
+      assert.ok(installation.capabilities?.modelCredentialSourcePresets?.includes("openai"));
       // Enroll the native Agent's own separate Source through the selected TokenService.
       const nativeSource = await request("POST", `${base}/credential-sources`, {
         name: `first-agent-native-${suffix}`,
@@ -1563,11 +1564,31 @@ test(
       assert.equal(source.state, "ready");
       assert.equal(source.config.provider_preset, "openai");
       assert.equal(source.secrets, undefined);
+      // Helm gives each release a private custody Namespace. Read the Namespace
+      // selected by the running API before comparing the Source receipt.
+      const secretNamespace =
+        recorded.deploymentMode === "k3d"
+          ? (
+              await readKubernetes(
+                custodyKube,
+                [
+                  "get",
+                  "deployment/openclaw-enterprise-api",
+                  "--namespace",
+                  recorded.platformNamespace,
+                ],
+                "the API's installation Secret Namespace",
+                'jsonpath={.spec.template.spec.containers[?(@.name=="api")].env[?(@.name=="OCC_INSTALLATION_SECRET_NAMESPACE")].value}',
+              )
+            ).trim()
+          : "oce-installation-secrets";
+      assert.ok(secretNamespace, "The local API must select an installation Secret Namespace");
       readCustodyVersion = () =>
         readTokenServiceCustodyVersion(custodyKube, {
           installationId: recorded.installationId,
           namespaceId: first.namespaceId,
           sourceId: source.id,
+          secretNamespace,
         });
 
       const bindings = await requestLocalApi(

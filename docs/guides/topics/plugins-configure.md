@@ -64,25 +64,20 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 ## Configure a hosted MCP plugin
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
-OCE discovers available tools using the selected account. On a dedicated OpenClaw
-Agent, select a credential for that slot and the upstream tool names
-the Agent may call. The worker advertises those tools; the Sandbox enforces the
-selection for both worker and script calls. See
+On a dedicated OpenClaw Agent, select a ready TokenService Source for that slot
+and choose **Load tools**. Select the tools the Agent may use, then save the
+Plugin selection. The worker advertises
+those tools; the Sandbox enforces the selection for both worker and script calls. See
 [Get started with managed OpenClaw plugins](openclaw-plugins.md) for a complete
-walkthrough.
-[Managed MCP plugins](../../reference/agent-plugins.md#current-support)
+walkthrough. [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
 
 To connect an account from a Connection Template, select TokenService and the
 native OpenShell Credential Proxy. OCC includes the selected Source when it
 saves the Plugin selection. The operator and Agent service principal need
 `credential_source:operate` on the Source.
 
-On an Installation using the Credential Gateway path, configure `/usr/local/bin/node`
-in `toolBinaries`. Register a `bearer-token` Source with the MCP host, port, path,
-placeholder name, and `protocol: mcp`. Reference the saved access token as its
-`token` Secret and attach the Source to the Agent draft.
-[OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
-· [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
+For a static bearer, register a Source through a compatible static Connection
+Template. See [Register a static Source](../../reference/credential-sources/managed-static.md#register-a-source).
 
 For **Load tools**, verify that the OCE API can resolve and reach the MCP endpoint.
 The chart gives the API unrestricted egress; Agent tool calls still use the Sandbox policy.
@@ -100,13 +95,11 @@ For an enabled tool, open **Tool policy** and set **Require approval for** to
 it does not show arguments. Save and deploy the new version. A direct
 script using the same credential can call that enabled tool without Gateway approval.
 If the Slack channel is enabled, remove native Slack per-plugin approver overrides before deploying a managed MCP approval policy.
-Removing the plugin keeps its independently attached
-credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
-to revoke a running version's credential access.
+Removing the Plugin does not delete its Source or change an independent Agent credential attachment. [Withdraw the Source](../../reference/credential-sources/withdrawal.md) to revoke a running version's credential access.
 
-For example, Slack uses `host: mcp.slack.com`, `port: "443"`, `path: /mcp` and
-`env_var: SLACK_MCP_TOKEN`. Select `slack_search_public` if the account advertises
-it. Inspect its worker server and tool filter:
+For example, the reviewed Slack MCP server is `https://mcp.slack.com/mcp`; the
+worker receives a credential placeholder in `SLACK_MCP_TOKEN`. Select `slack_search_public` if
+the account advertises it. Inspect its worker server and tool filter:
 
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json
