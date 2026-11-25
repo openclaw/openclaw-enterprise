@@ -36,7 +36,7 @@ export async function listManagedMcpToolNames(
     url.password ||
     url.search ||
     url.hash ||
-    !/^[a-z0-9._~+/-]+=*$/iu.test(accessToken) ||
+    !/^[\x21-\x7e]+$/u.test(accessToken) ||
     !allowedMethods.includes("POST")
   ) {
     throw new PluginDiscoveryError("invalid_response");

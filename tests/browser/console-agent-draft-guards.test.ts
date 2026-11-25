@@ -42,7 +42,7 @@ import {
 } from "../fixtures/repository-credentials/github/protocol.ts";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.ts";
@@ -2671,7 +2671,7 @@ test("A recovery link refused by unsaved repository changes preserves Back and F
 
   await page
     .getByRole("region", { name: "Deployment needs attention" })
-    .getByRole("link", { name: "Open Configuration" })
+    .getByRole("link", { name: "Open Configuration draft", exact: true })
     .click();
   await page.getByText(REPOSITORY_EDITS_PENDING).waitFor();
   assert.equal(page.url(), repositoriesUrl);

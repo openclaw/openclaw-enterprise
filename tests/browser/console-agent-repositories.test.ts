@@ -533,6 +533,9 @@ test("Agent repository tab offers Save only to drop every binding while reposito
   );
   // Nothing is left to save, so no dead Save is offered.
   await save.waitFor({ state: "hidden" });
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const access = page.locator('.configuration-summary dt:text-is("Repository access") + dd');
+  assert.equal(await access.textContent(), "None selected");
 });
 
 test("Agent repository tab without a Repo Driver names the setup step and offers no Retry", async (t) => {

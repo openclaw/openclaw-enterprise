@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { after } from "node:test";
+import { after, type TestContext } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.ts";
 import {
@@ -32,8 +32,8 @@ import {
   kubernetesLifecycleCommand,
   parseDevUpResourceState,
 } from "./dev-up-k3d-commands.ts";
-import { bashString, startCommandServer } from "./fixture-command-server.ts";
-import { temporaryDirectory } from "./temporary-directory.mjs";
+import { bashString, startCommandServer, type CommandRequest } from "./fixture-command-server.ts";
+import { temporaryDirectory } from "./temporary-directory.ts";
 import { withoutShellStartup } from "./environment.ts";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
@@ -43,10 +43,9 @@ const defaultRuntimeImage = "openclaw-enterprise-runtime:quickstart";
 
 // Callers isolate scenario environments in fixture.env and leave the parent PATH,
 // cwd and provider executables unchanged. Reuse discovery, never scenario renders.
-let configurationProvider;
-/** @type {Promise<string> | undefined} */
-let cliBuild;
-let cliDirectory;
+let configurationProvider: ReturnType<typeof composeConfigurationProvider> | undefined;
+let cliBuild: Promise<string> | undefined;
+let cliDirectory: string | undefined;
 after(async () => {
   if (cliDirectory) {
     await rm(cliDirectory, { recursive: true, force: true });
@@ -70,7 +69,11 @@ function developmentCli() {
       encoding: "utf8",
       env: process.env,
     });
-    assert.equal(build.status, 0, build.stderr || build.error?.message);
+    assert.equal(
+      build.status,
+      0,
+      build.stderr || build.error?.message || "could not build the dev-up CLI",
+    );
     return executable;
   })();
   return cliBuild;
@@ -78,9 +81,46 @@ function developmentCli() {
 
 // The fake commands of each fixture: its options, the CLI it runs for `occ dev`, and
 // whether prepareLifecycleCommands added the Kubernetes lifecycle commands.
-const fakes = new WeakMap();
+type ContainerEngine = "docker" | "podman";
+type StartupScenario =
+  | "success"
+  | "bootstrap-failed"
+  | "worker-exited"
+  | "worker-timeout"
+  | "api-unauthorized"
+  | "api-mismatch"
+  | "postgres-volume-exists";
+interface FixtureOptions {
+  engine?: ContainerEngine;
+  scenario?: StartupScenario;
+  dockerAlias?: boolean;
+  podmanDockerApi?: boolean;
+  podmanJsonConfig?: boolean;
+  dockerPlatformName?: string;
+  macosPodmanMachine?: "rootful" | "rootless";
+  containerConnection?: string;
+  containerHost?: string;
+}
+type FakeState = {
+  directory: string;
+  engine: ContainerEngine;
+  options: FixtureOptions;
+  cli: string;
+  lifecycle: boolean;
+};
+type Invocation = Omit<CommandRequest, "io">;
+type EngineOutput = Pick<Parameters<typeof projectOccCommand>[2], "stdout" | "exit">;
+type Fixture = Awaited<ReturnType<typeof createFixture>>;
+const fakes = new WeakMap<
+  Fixture,
+  { state: FakeState; server: Awaited<ReturnType<typeof startCommandServer>> }
+>();
 
-function engineCommand(fake, { args, env }, { stdout, exit }) {
+function engineCommand(
+  fake: FakeState,
+  { args, env }: Invocation,
+  { stdout, exit }: EngineOutput,
+): string | void {
   const { engine, options } = fake;
   const podmanJsonConfig = options.podmanJsonConfig ?? false;
   const podmanDockerApi = options.podmanDockerApi ?? false;
@@ -115,10 +155,15 @@ function engineCommand(fake, { args, env }, { stdout, exit }) {
   // command runs it with its own environment and these overrides.
   const delegateComposeConfig = () => {
     const command = env.DEV_UP_REAL_COMPOSE_COMMAND;
-    const prefix = JSON.parse(env.DEV_UP_REAL_COMPOSE_PREFIX || "[]");
+    const prefix: unknown = JSON.parse(env.DEV_UP_REAL_COMPOSE_PREFIX || "[]");
+    assert.ok(
+      Array.isArray(prefix) &&
+        prefix.every((word: unknown): word is string => typeof word === "string"),
+      "expected an array of Compose command arguments",
+    );
     const format = env.DEV_UP_REAL_COMPOSE_FORMAT;
     if (!command || !format) {
-      exit(99, "real Compose configuration provider is required");
+      return exit(99, "real Compose configuration provider is required");
     }
     const commandIndex = composeCommandIndex();
     const composeArgs = args.slice(1, commandIndex + 1).filter((arg, index, values) => {
@@ -143,6 +188,9 @@ function engineCommand(fake, { args, env }, { stdout, exit }) {
       : "";
     if (format === "json") {
       return `${enter}${assignments} exec ${compose}`;
+    }
+    if (!env.DEV_UP_REAL_YQ) {
+      return exit(99, "yq is required for YAML Compose configuration");
     }
     return (
       `${enter}__config=$(${assignments} ${compose}) || exit $?; ` +
@@ -263,9 +311,9 @@ function engineCommand(fake, { args, env }, { stdout, exit }) {
       exit(0);
     }
     const serviceNames = ["migrate", "bootstrap", "controller", "worker"];
-    const requested = serviceNames.includes(args[args.length - 1])
-      ? [args[args.length - 1]]
-      : serviceNames;
+    const selected = args.at(-1);
+    const requested =
+      selected !== undefined && serviceNames.includes(selected) ? [selected] : serviceNames;
     const entries = requested.map((service) => {
       let serviceState = "running";
       let exitCode = 0;
@@ -330,7 +378,11 @@ function engineCommand(fake, { args, env }, { stdout, exit }) {
 
 // The engine, k3d, kubectl and helm after prepareLifecycleCommands: inert cluster and
 // image commands over a resource state file, logged to SAFETY_LOG.
-function lifecycleCommand(fake, invocation, io) {
+function lifecycleCommand(
+  fake: FakeState,
+  invocation: Invocation,
+  io: EngineOutput,
+): string | typeof hold | void {
   const { command, args, env, cwd } = invocation;
   const { stdout, exit } = io;
   const { engine } = fake;
@@ -339,10 +391,12 @@ function lifecycleCommand(fake, invocation, io) {
   if (holdK3dCreate(invocation, fake.directory)) {
     return hold;
   }
+  assert.ok(statePath, "expected lifecycle resource state path");
   const state = parseDevUpResourceState(readFileSync(statePath, "utf8"));
   const save = () => writeFileSync(statePath, JSON.stringify(state));
-  const output = (value) => stdout(value + "\n");
-  const fail = (message) => exit(77, message);
+  const output = (value: string) => stdout(value + "\n");
+  const fail = (message: string): never => exit(77, message);
+  assert.ok(env.SAFETY_LOG, "expected lifecycle safety log path");
   appendFileSync(
     env.SAFETY_LOG,
     JSON.stringify({
@@ -355,11 +409,11 @@ function lifecycleCommand(fake, invocation, io) {
   // Podman records an unqualified local name under the `localhost` registry; Docker
   // keeps it as written. A name whose first component already names a registry is left
   // alone by both engines.
-  const recordedTag = (name) => {
+  const recordedTag = (name: string) => {
     if (engine !== "podman") {
       return name;
     }
-    const first = name.split("/")[0];
+    const first = name.split("/", 1)[0] ?? name;
     // Only a first component before a slash can name a registry; a bare `name:tag`
     // carries its tag there and is still unqualified.
     const qualified =
@@ -368,7 +422,7 @@ function lifecycleCommand(fake, invocation, io) {
   };
   // containerd stores whatever reference was imported, so the node inventory reflects the
   // same qualification the engine applied.
-  const importedTag = (name) => {
+  const importedTag = (name: string) => {
     if (engine === "podman") {
       return recordedTag(name);
     }
@@ -427,11 +481,18 @@ function lifecycleCommand(fake, invocation, io) {
       args[1] === "inspect" &&
       args.includes("{{json .RepoTags}}")
     ) {
-      output(JSON.stringify([recordedTag(args.at(-1))]));
+      const image = args.at(-1);
+      assert.ok(image !== undefined);
+      output(JSON.stringify([recordedTag(image)]));
     } else if (args[0] === "image" && args[1] === "inspect" && args.includes("--format")) {
       output("linux/amd64");
     } else if (args[0] === "image" && args[1] === "save") {
-      writeFileSync(resolve(cwd, args[args.indexOf("--output") + 1]), "fixture image archive\n");
+      const flag = args.indexOf("--output");
+      const destination = args[flag + 1];
+      if (flag < 0 || !destination) {
+        return fail("image save requires --output and a destination");
+      }
+      writeFileSync(resolve(cwd, destination), "fixture image archive\n");
     } else if (
       args[0] === "image" &&
       args[1] === "inspect" &&
@@ -446,7 +507,7 @@ function lifecycleCommand(fake, invocation, io) {
       env.DEV_UP_EXISTING_RUNTIME_IMAGE === "1"
     ) {
       // An existing runtime image.
-    } else if (["volume", "network", "image"].includes(args[0]) && args[1] === "inspect") {
+    } else if (["volume", "network", "image"].includes(args[0] ?? "") && args[1] === "inspect") {
       exit(1);
     } else if (
       args[0] === "ps" &&
@@ -476,7 +537,7 @@ function lifecycleCommand(fake, invocation, io) {
       // The real Compose QA workflow exercises the non-root TLS reader.
     } else if (
       args[0] === "ps" ||
-      (["volume", "network"].includes(args[0]) && args[1] === "ls") ||
+      (["volume", "network"].includes(args[0] ?? "") && args[1] === "ls") ||
       args[0] === "build" ||
       args[0] === "pull" ||
       args[0] === "tag" ||
@@ -488,12 +549,14 @@ function lifecycleCommand(fake, invocation, io) {
         output("exited");
       } else if (args.includes("{{.State.ExitCode}}")) {
         output("0");
-      } else if (["browser-proxy-container-id", "bootstrap-container-id"].includes(args.at(-1))) {
+      } else if (
+        ["browser-proxy-container-id", "bootstrap-container-id"].includes(args.at(-1) ?? "")
+      ) {
         output(JSON.stringify({ image: "sha256:" + "a".repeat(64), user: "node" }));
       } else {
         fail("unexpected inspect: " + args.join(" "));
       }
-    } else if (args[0] === "exec" && args[1].endsWith("-server-0") && args[2] === "nslookup") {
+    } else if (args[0] === "exec" && args[1]?.endsWith("-server-0") && args[2] === "nslookup") {
       // The launcher checks the new node's resolver before any image pull.
       if (scenario === "node-dns-refused") {
         fail(
@@ -503,7 +566,7 @@ function lifecycleCommand(fake, invocation, io) {
       output("Name:\tregistry-1.docker.io\nAddress: 192.0.2.10");
     } else if (
       args[0] === "exec" &&
-      args[1].endsWith("-server-0") &&
+      args[1]?.endsWith("-server-0") &&
       args.slice(2, 5).join(" ") === "ip route get"
     ) {
       // The k3d API server reaches local Pods over the node's cni0 bridge.
@@ -511,23 +574,25 @@ function lifecycleCommand(fake, invocation, io) {
     } else if (args[0] === "exec" && args.includes("images")) {
       if (args.includes("list")) {
         output(
-          [
-            ["openclaw-enterprise-runtime:kubernetes-quickstart", "a".repeat(64)],
-            ["openclaw-enterprise-controller:kubernetes-quickstart", "b".repeat(64)],
-            ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
+          (
             [
-              "openclaw-development/openshell-gateway:occ-dev-owned",
-              "1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5",
-            ],
-            [
-              "openclaw-development/openshell-sandbox:occ-dev-owned",
-              "e57d07cd6cc1fc314b80368d6b51ec6fbf825fb62cd8f081312941180846866f",
-            ],
-            [
-              "openclaw-development/openshell-supervisor:occ-dev-owned",
-              "f1ec231b5dbe5b6a40c33acb2ac847995aabb959a56134ef6d7d7aa4f43199d3",
-            ],
-          ]
+              ["openclaw-enterprise-runtime:kubernetes-quickstart", "a".repeat(64)],
+              ["openclaw-enterprise-controller:kubernetes-quickstart", "b".repeat(64)],
+              ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
+              [
+                "openclaw-development/openshell-gateway:occ-dev-owned",
+                "1fd9e1e807990e66c9486a28d3ce9d649fd7528df48d0e830d2de2148b52dfe5",
+              ],
+              [
+                "openclaw-development/openshell-sandbox:occ-dev-owned",
+                "e57d07cd6cc1fc314b80368d6b51ec6fbf825fb62cd8f081312941180846866f",
+              ],
+              [
+                "openclaw-development/openshell-supervisor:occ-dev-owned",
+                "f1ec231b5dbe5b6a40c33acb2ac847995aabb959a56134ef6d7d7aa4f43199d3",
+              ],
+            ] satisfies [string, string][]
+          )
             .map(
               ([name, digest]) =>
                 importedTag(name) + " application/vnd.oci.image.manifest.v1+json sha256:" + digest,
@@ -568,7 +633,7 @@ function lifecycleCommand(fake, invocation, io) {
   }
 }
 
-function fakeCommand(fake, invocation, io) {
+function fakeCommand(fake: FakeState, invocation: Invocation, io: CommandRequest["io"]) {
   const { command } = invocation;
   return runFake(io, async (output) => {
     if (fake.lifecycle && [fake.engine, "k3d", "kubectl", "helm"].includes(command)) {
@@ -596,24 +661,7 @@ function fakeCommand(fake, invocation, io) {
   });
 }
 
-/**
- * @typedef {"docker" | "podman"} ContainerEngine
- * @typedef {"success" | "bootstrap-failed" | "worker-exited" | "worker-timeout" | "api-unauthorized" | "api-mismatch" | "postgres-volume-exists"} StartupScenario
- * @typedef {{
- *   engine?: ContainerEngine,
- *   scenario?: StartupScenario,
- *   dockerAlias?: boolean,
- *   podmanDockerApi?: boolean,
- *   podmanJsonConfig?: boolean,
- *   dockerPlatformName?: string,
- *   macosPodmanMachine?: "rootful" | "rootless",
- *   containerConnection?: string,
- *   containerHost?: string,
- * }} FixtureOptions
- * @param {import("node:test").TestContext} t
- * @param {FixtureOptions} [options]
- */
-async function createFixture(t, options = {}) {
+async function createFixture(t: TestContext, options: FixtureOptions = {}) {
   const directory = await realpath(await temporaryDirectory(t, "openclaw-dev-up-"));
 
   const fixtureRepository = join(directory, "repository");
@@ -646,12 +694,13 @@ async function createFixture(t, options = {}) {
   const engineLog = join(directory, `${engine}.log`);
   const provider = (configurationProvider ??= composeConfigurationProvider());
   const cli = await developmentCli();
-  const fake = { directory, engine, options, cli, lifecycle: false };
-  fake.server = await startCommandServer({
+  const state: FakeState = { directory, engine, options, cli, lifecycle: false };
+  const server = await startCommandServer({
     forwardedEnv,
-    handle: ({ command, args, env, cwd, io }) => fakeCommand(fake, { command, args, env, cwd }, io),
+    handle: ({ io, ...invocation }) => fakeCommand(state, invocation, io),
   });
-  t.after(() => fake.server.close());
+  t.after(() => server.close());
+  const fake = { state, server };
 
   if (engine === "podman") {
     for (const command of [
@@ -729,7 +778,7 @@ exit 86
     DEV_UP_REAL_COMPOSE_COMMAND: provider.command,
     DEV_UP_REAL_COMPOSE_PREFIX: JSON.stringify(provider.prefix),
     DEV_UP_REAL_COMPOSE_FORMAT: provider.format,
-    DEV_UP_REAL_YQ: provider.yq ?? "",
+    DEV_UP_REAL_YQ: provider.format === "yaml" ? provider.yq : "",
     DEV_UP_REAL_PATH: process.env.PATH ?? "",
     DEV_UP_REPOSITORY: repository,
     DEV_UP_FIXTURE_REPOSITORY: fixtureRepository,
@@ -752,15 +801,24 @@ exit 86
 
 // Only external engine and cluster commands are inert. Configuration rendering,
 // selection, state ownership, rollback, and authenticated HTTP use the real code.
-/**
- * @typedef {"success" | "cancelled-creation" | "docker-stack-holds-api-port" | "node-dns-refused" |
- *   "compose-up-failed" | "compose-down-failed" | "cluster-create-rolled-back" | "cluster-create-failed" |
- *   "cluster-delete-failed" | "readiness-blocked" | "api-unauthorized" | "api-mismatch"} LifecycleScenario
- * @param {Awaited<ReturnType<typeof createFixture>>} fixture
- * @param {LifecycleScenario} [scenario]
- * @param {{engine?: ContainerEngine}} [options]
- */
-async function prepareLifecycleCommands(fixture, scenario = "success", options = {}) {
+type LifecycleScenario =
+  | "success"
+  | "cancelled-creation"
+  | "docker-stack-holds-api-port"
+  | "node-dns-refused"
+  | "compose-up-failed"
+  | "compose-down-failed"
+  | "cluster-create-rolled-back"
+  | "cluster-create-failed"
+  | "cluster-delete-failed"
+  | "readiness-blocked"
+  | "api-unauthorized"
+  | "api-mismatch";
+async function prepareLifecycleCommands(
+  fixture: Fixture,
+  scenario: LifecycleScenario = "success",
+  options: { engine?: ContainerEngine } = {},
+) {
   const engine = options.engine ?? "docker";
   const bin = join(fixture.directory, "bin");
   // Isolate the launcher contract; real sandbox enforcement is covered by the
@@ -793,21 +851,25 @@ async function prepareLifecycleCommands(fixture, scenario = "success", options =
     JSON.stringify({ clusters: ["occ-dev-unrelated"], compose: false }),
   );
   const fake = fakes.get(fixture);
-  assert.equal(engine, fake.engine, "the lifecycle commands use the fixture's engine");
-  fake.lifecycle = true;
+  assert.ok(fake, "expected a registered dev-up fixture");
+  assert.equal(engine, fake.state.engine, "the lifecycle commands use the fixture's engine");
+  fake.state.lifecycle = true;
   for (const command of ["k3d", "kubectl", "helm"]) {
     await writeFakeCommand(fake, join(bin, command), command);
   }
 }
 
-async function writeOverride(fixture, name, lines) {
+async function writeOverride(
+  fixture: Pick<Fixture, "directory">,
+  name: string,
+  lines: readonly string[],
+) {
   const path = join(fixture.directory, name);
   await writeFile(path, [...lines, ""].join("\n"));
   return path;
 }
 
-/** @param {{ directory: string }} fixture */
-async function customRuntimeOverride(fixture) {
+async function customRuntimeOverride(fixture: Pick<Fixture, "directory">) {
   return writeOverride(fixture, "compose.custom-runtime.yaml", [
     "services:",
     "  worker:",
@@ -818,8 +880,7 @@ async function customRuntimeOverride(fixture) {
   ]);
 }
 
-/** @param {{ directory: string }} fixture */
-async function perImageOverride(fixture) {
+async function perImageOverride(fixture: Pick<Fixture, "directory">) {
   return writeOverride(fixture, "compose.per-image.yaml", [
     "services:",
     "  worker:",
@@ -830,8 +891,7 @@ async function perImageOverride(fixture) {
   ]);
 }
 
-/** @param {{ directory: string }} fixture */
-async function publicControllerOverride(fixture) {
+async function publicControllerOverride(fixture: Pick<Fixture, "directory">) {
   return writeOverride(fixture, "compose.public-controller.yaml", [
     "services:",
     "  controller:",

@@ -6,11 +6,12 @@ import {
   getGlobalDispatcher,
   setGlobalDispatcher,
 } from "../../apps/controller/node_modules/undici/index.js";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { keycloakHost, keycloakTokenHost } from "../../scripts/ci/keycloak.ts";
 
 export const keycloakHostPort = Number(process.env.OCC_TEST_KEYCLOAK_HOST_PORT ?? "443");
 
-export function keycloakBrowserRoute(host) {
+export function keycloakBrowserRoute(host: string) {
   return `MAP ${host}:443 127.0.0.1:${keycloakHostPort}`;
 }
 
@@ -46,8 +47,30 @@ if (keycloakHostPort !== 443) {
   });
 }
 
+type RealmAdmin = { username: string; password: string };
+type RealmRow = Record<string, unknown> & { id: string };
+
+function isRealmRow(value: unknown): value is RealmRow {
+  const id = asRecord(value)?.id;
+  return typeof id === "string" && id.length > 0;
+}
+
+/** Read a Keycloak collection at the call site, retaining the complete rows for fixture updates. */
+export function keycloakRealmRows(value: unknown): readonly RealmRow[] {
+  assert.ok(Array.isArray(value), "expected a Keycloak realm collection");
+  const rows: readonly unknown[] = value;
+  assert.ok(rows.every(isRealmRow), "expected each Keycloak realm row to have an id");
+  return rows;
+}
+
 /** Calls the Keycloak admin API as the lane's bootstrap administrator. */
-export async function keycloakRealmAdmin(issuer, admin, method, path, body) {
+export async function keycloakRealmAdmin(
+  issuer: string,
+  admin: RealmAdmin,
+  method: "GET" | "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: object,
+): Promise<unknown> {
   const base = new URL(issuer).origin;
   const token = await fetch(`${base}/realms/master/protocol/openid-connect/token`, {
     method: "POST",
@@ -60,10 +83,15 @@ export async function keycloakRealmAdmin(issuer, admin, method, path, body) {
     signal: AbortSignal.timeout(10_000),
   });
   assert.equal(token.status, 200, "the lane administrator signs in to Keycloak");
+  const accessToken = asRecord(await token.json())?.access_token;
+  assert.ok(
+    typeof accessToken === "string" && accessToken.length > 0,
+    "invalid Keycloak admin token",
+  );
   const response = await fetch(`${base}/admin/realms/oce${path}`, {
     method,
     headers: {
-      authorization: `Bearer ${(await token.json()).access_token}`,
+      authorization: `Bearer ${accessToken}`,
       ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -79,22 +107,20 @@ export async function keycloakRealmAdmin(issuer, admin, method, path, body) {
 
 /** Regenerate one real client's secret, then verify its previous secret no longer authenticates. */
 export async function rotateKeycloakClientSecret(
-  issuer,
-  admin,
-  clientId,
-  previousSecret,
-  tokenUrl,
-) {
-  const [client] = await keycloakRealmAdmin(issuer, admin, "GET", `/clients?clientId=${clientId}`);
-  const next = await keycloakRealmAdmin(
-    issuer,
-    admin,
-    "POST",
-    `/clients/${client.id}/client-secret`,
+  issuer: string,
+  admin: RealmAdmin,
+  clientId: string,
+  previousSecret: string,
+  tokenUrl: string,
+): Promise<string> {
+  const [client] = keycloakRealmRows(
+    await keycloakRealmAdmin(issuer, admin, "GET", `/clients?clientId=${clientId}`),
   );
-  assert.ok(
-    typeof next.value === "string" && next.value.length > 0 && next.value !== previousSecret,
-  );
+  assert.ok(client, "expected the Keycloak client to rotate");
+  const next = asRecord(
+    await keycloakRealmAdmin(issuer, admin, "POST", `/clients/${client.id}/client-secret`),
+  )?.value;
+  assert.ok(typeof next === "string" && next.length > 0 && next !== previousSecret);
   const rejected = await fetch(tokenUrl, {
     method: "POST",
     headers: {
@@ -105,6 +131,7 @@ export async function rotateKeycloakClientSecret(
     signal: AbortSignal.timeout(10_000),
   });
   assert.equal(rejected.status, 401);
-  assert.ok(["invalid_client", "unauthorized_client"].includes((await rejected.json()).error));
-  return next.value;
+  const error = asRecord(await rejected.json())?.error;
+  assert.ok(typeof error === "string" && ["invalid_client", "unauthorized_client"].includes(error));
+  return next;
 }

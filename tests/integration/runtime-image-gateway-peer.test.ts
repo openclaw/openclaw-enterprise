@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stripTypeScriptTypes } from "node:module";
 import { describe, test, type TestContext } from "node:test";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { runWritableGatewayRestart } from "../fixtures/runtime-gateway-writable-restart.ts";
 import {

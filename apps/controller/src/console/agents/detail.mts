@@ -2552,12 +2552,14 @@ export async function renderAgentDetail(
     }
     chooser.value = selected;
     chooser.addEventListener("change", () => {
-      if (draftEditorBlocksNavigation() || sharingWrite) {
-        chooser.value = selected;
+      const requested = chooser.value;
+      // Navigation can retain this page and restore its picker on a later visit.
+      chooser.value = selected;
+      if (sharingWrite) {
         showLeaveBlock();
         return;
       }
-      change(chooser.value, "configuration");
+      change(requested, "configuration");
     });
     trackRevisionControl(chooser);
     const older =
@@ -5669,8 +5671,8 @@ export async function renderAgentDetail(
           }
           return result && requestFailure(result.error).status === 403 ? false : undefined;
         }),
-        // The failed-version recovery stops offering Logs as soon as they are denied.
-        onLogsDenied: () => {
+        // Keep the failed version’s recovery action in sync with the reads available in Logs.
+        onRuntimeAvailabilityChanged: () => {
           if (tabContext.isCurrent() && !recovery.section.hidden) {
             renderLatestDeployment();
           }
@@ -6599,7 +6601,7 @@ export async function renderAgentDetail(
               (binding) =>
                 `${binding.repositoryRef} · ${draft ? draftRepositoryLabel(binding) : (repositoryProfile(binding.profile)?.label ?? "Unknown access level")}`,
             )
-            .join(", ") ?? "None",
+            .join(", ") || (draft ? "None selected" : "None"),
         ],
         [
           "Harness authentication",

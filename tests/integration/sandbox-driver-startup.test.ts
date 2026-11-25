@@ -3,6 +3,7 @@ import {
   stagedManagedMcpPolicy,
   verifyStagedHarnessActivation,
   verifyStagedCodexAccountProjection,
+  verifyStagedNativeSourceProjection,
   verifyStagedModelPolicyObservation,
 } from "./sandbox-driver-staged-harness-cases.ts";
 import {
@@ -64,6 +65,11 @@ test(
 test(
   "OpenShell staged Codex launch carries a placeholder and trusted account context",
   verifyStagedCodexAccountProjection,
+);
+
+test(
+  "OpenShell staged native Source aliases reach only their selected model and Plugin projections",
+  verifyStagedNativeSourceProjection,
 );
 
 registerManagedPluginPolicyCases(credentialGatewayOverProviders);

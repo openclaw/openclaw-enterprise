@@ -74,6 +74,7 @@ and kubeconfig. Setup checks OpenClaw's Google Workspace and Codex's Linear.
 | `openshell-provider-replacement`       | No                   | Codex           | [Managed Provider replacement](../openshell-managed.md#provider-replacement), network changes, model turns and peer isolation.                                                   |
 | `openshell-git-replacement`            | No                   | Codex           | [Managed Git recovery](../openshell-git-replacement.md), workspace retention and revision-scoped repository grants.                                                              |
 | `openshell-optional-plugin-withdrawal` | Yes — OpenShell job  | OpenClaw        | Withdraw optional Slack while preserving model access, Google, independent policy and Source custody.                                                                            |
+| `openshell-token-service-agent`        | No                   | OpenClaw        | Run alone on Kubernetes for a dedicated Agent turn, rotation and withdrawal. The test replaces the key and deletes the [supplied disposable Source](../manual-tests.md).         |
 
 Source: [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs),
 [scenario selection](../../../tests/helpers/qa-selection.mjs).
@@ -184,12 +185,10 @@ For suites outside the **QA matrix**, use
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
-`all` excludes `native-restart`, `channel-egress-upgrade`, `namespace-lifecycle`,
-`sandbox-policy`, `scratch-volume`, `plugin-install`, `openshell-linear-read`,
-`openshell-template-resources`, `openshell-provider-replacement`,
-`openshell-git-replacement`, `openshell-optional-plugin-withdrawal`,
-`codex-search-config`, `harness-overrides` and
-`oidc-agent-chat`.
+`all` selects `http-chat`, `model-ui`, `console-secrets`, `agent-audit`,
+`git-write`, `git-push-denied` and `slack`. Each cell runs only the scenarios its
+Preset and installation support. Other scenarios, including `namespace-lifecycle`, require
+explicit selection.
 Invalid selections fail before provisioning; missing inputs fail selected checks.
 Without `OCC_TEST_QA_MATRIX=1`, the suite skips.
 
@@ -387,7 +386,7 @@ complete OpenShell coverage requires every manifest file to pass.
 
 In `matrix.json`, `scope: full` requires both installations and presets, the default
 scenario set and no permission-profile exclusions. Advisory QA is narrower;
-[Select scenarios](#select-scenarios) lists exclusions from `all`.
+[Select scenarios](#select-scenarios) lists the default scenarios.
 
 [First-Agent timing results](openshell-execution.md#interpret-timing-and-proof)
 can overlap; do not sum them as elapsed time. A Codex timeout permits no retry

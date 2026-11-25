@@ -582,8 +582,8 @@
     {
       "path": "tests/integration/managed-mcp-tool-discovery.test.ts",
       "expectedTests": [
-        "managed MCP discovery reads tool names using one pinned authenticated session",
-        "managed MCP discovery refuses private DNS answers and redirects"
+        "MCP discovery reads tool names using one pinned authenticated session",
+        "MCP discovery refuses unsafe bearer values, private DNS answers, and redirects"
       ]
     },
     {
