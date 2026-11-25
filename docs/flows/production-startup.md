@@ -229,16 +229,15 @@ replica has no peer or `preStop`; the 30-second grace cuts off unfinished reques
 Logs show `shutdown.started` (`signal`), then `shutdown.completed` (`durationMs`),
 or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drain.
 
-[Production](../../apps/controller/src/composition/production.ts) and
-[development](../../apps/controller/src/composition/development-postgres.ts)
-composition close the exchange binding,
-protected Driver, prepared GitHub owner, and database in order. The binding
-closes independently. Shutdown continues after errors and reports the first,
-wrapping a falsey thrown value as the cause. Startup preserves its own error.
+The [production](../../apps/controller/src/composition/production.ts) and
+[development](../../apps/controller/src/composition/development-postgres.ts) APIs
+stop TokenService maintenance before closing the exchange binding,
+protected Driver, and database in order. Resource cleanup continues after an
+error and reports the first failure. Failed startup preserves its original error.
 
-`apps/controller/src/worker/shutdown.ts:closeWorkerComposition` closes the Git
-sender binding, prepared Git owner, receipts, metrics, and prepared GitHub owner
-before stopping the loop and database. It continues after errors and logs
+`apps/controller/src/worker/shutdown.ts:closeWorkerComposition` stops the Worker
+loop and removes its readiness marker before closing the Git transport, prepared
+Git owner, receipt listener, metrics, and database. It continues after errors and logs
 `worker.error` with `SHUTDOWN_FAILED` (exit 1). An open listener holds the Pod
 until grace expires. Failed startup closes the installed Driver package, even
 if refused, and preserves the original error.
@@ -253,24 +252,19 @@ With `database.caSecretName`, `_helpers.tpl` rejects CA paths that would mask
 active client mounts. It normalizes relative paths, dot segments, and trailing
 slashes for comparison and emits accepted paths as supplied.
 
-The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
-grants release `api`, `worker`, and `initialization` Pods DNS, `database.cidrs`, and
-`cluster.cidrs` egress. Collectors have separate DNS, API, and exporter grants.
-Unknown or missing component labels remain default-deny. The pre-install hook
-has its own DNS and database grants. Use explicit IPv4 `/32` hosts and update
-them after endpoint changes. Ports with leading zeros fail.
-
-Separate API-only TCP 443 policies use `api.modelDiscoveryCidrs` and
-`api.pluginDiscoveryCidrs`. Each takes IPv4 `/32` hosts and defaults to no egress.
-Maintain [model discovery](../reference/console/create-and-deploy.md#create-an-agent)
-and [MCP tool discovery](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin)
-independently of Console model selection and Harness egress.
+The [control-plane NetworkPolicies](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
+keep release ingress restricted. The release-wide default deny selects API and
+worker Pods, but Kubernetes combines selected egress grants: a policy for
+components `api` and `worker` allows unrestricted egress. Initialization has a
+separate DNS, database, and Kubernetes API grant. Agent, Sandbox, collector, and
+proxy Pods do not receive the control-plane grant. Pre-install initialization
+retains its hook DNS and database grants.
 
 Managed channel egress uses one installation configuration for the reserved
-OCC provider listener and per-Agent listener allocation. Helm grants the API
-only its reserved port and the worker only configuration inspection. Startup
-records unavailable egress as a warning; channel operations fail closed while
-OCC stays available. See [channel egress](channel-egress.md).
+OCC provider listener and per-Agent listener allocation. The listener fleet
+restricts ingress to its authorized callers. Startup records an unavailable
+listener as a warning; channel operations fail closed while OCC stays available.
+See [channel egress](channel-egress.md).
 
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Below the supported 1.35 baseline, the API logs
@@ -340,8 +334,9 @@ The shell initializes the missing annotation, patches with UID and
 - For `KUBERNETES_VERSION_BELOW_MINIMUM`, upgrade Kubernetes to 1.35 or later.
 - `startup-error` or `worker.startup-error` with code
   `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
-  `host` and `port`. Check `cluster.cidrs` and `cluster.port`; restarted
-  clusters can move it.
+  `host` and `port`. Check the server endpoint and connectivity from the
+  affected Pod; restarted clusters can move it. Helm `cluster.cidrs` and
+  `cluster.port` restrict initialization egress only.
 - Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
 - `DRIVER_CONFIGURATION_INVALID`: inspect `details` (JSON Pointer, code, message).
   `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
@@ -377,6 +372,8 @@ The shell initializes the missing annotation, patches with UID and
 ## Changelog
 
 - 2026-11-24 21:59: Limit Service checks to egress. (authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c - cabc3559c04447fc30ae80675db688c23d673e48)
+
+- 2026-11-24 10:41: Trace unrestricted API and refresh Worker egress while preserving initialization isolation. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 
 - 2026-11-24 02:19: Validate API address inventory and document credential opt-in. (authoring-run/e942eb38-a6b6-461f-beaa-0a1efaa489da - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
 

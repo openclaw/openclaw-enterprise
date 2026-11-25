@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import type { Locator, Page } from "playwright";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { isResourceKind, PERMISSION_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type {
   AccessBinding,
@@ -17,8 +17,8 @@ import type {
   ChannelDirectoryResult,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
-import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, type fileConsoleApp } from "../helpers/console-app.mjs";
@@ -3137,96 +3137,91 @@ export function registerSharingCredentialsAndChannelsCases(
     );
   });
 
-  for (const method of ["api_key", "codex_pat"] as const) {
-    test(`Credentials grants exact Agent access when rebinding ${method}`, async (t) => {
-      const fixture = await detailApp(t);
-      const namespace = await fixture.createNamespace(`Model credential replacement ${method}`, {
-        ready: true,
-      });
-
-      const agent = await fixture.createAgent(
-        namespace.id,
-        "Credential Agent",
-        createHarnessConfiguration("codex", "gpt-4.1"),
-        { executionMode: "dedicated" },
-      );
-
-      const replacement = await fixture.createSecret(
-        namespace.id,
-        "Replacement model credential",
-        "test-replacement-token",
-      );
-
-      const unrelated = await fixture.createSecret(
-        namespace.id,
-        "Unrelated credential",
-        "test-unrelated-token",
-      );
-
-      const { page } = await newPage(t, fixture);
-      await login(
-        page,
-        fixture,
-        `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
-      );
-      await page.getByLabel("Authentication source").selectOption(method);
-      await selectSecret(
-        page,
-        method === "api_key" ? "API key Secret" : "Service account token Secret",
-        replacement,
-      );
-      await page.getByRole("button", { name: "Save authentication source" }).click();
-      // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
-      await page.waitForFunction(
-        () =>
-          globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
-          false,
-      );
-      const bindings = await fixture.request(
-        "GET",
-        `/namespaces/${namespace.id}/iam/access-bindings`,
-      );
-      const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
-      const currentBindings = bindingsFrom(bindings.data);
-      const grants = currentBindings.filter(
-        (binding) =>
-          binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
-      );
-      assert.equal(grants.length, 1);
-      const grant = grants[0];
-      assert.ok(grant);
-      assert.deepEqual(grant, {
-        id: grant.id,
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: agent.servicePrincipalId,
-        roleId: grant.roleId,
-        resourceKind: "secret",
-        resourceId: replacement.id,
-      });
-      assert.deepEqual(
-        readRole(records(roles.data).find((role) => role.id === grant.roleId)).permissions,
-        [{ action: "operate", resourceKind: "secret" }],
-      );
-      assert.equal(
-        currentBindings.some((binding) => binding.resourceId === unrelated.id),
-        false,
-      );
-      const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-      assert.deepEqual(responseData(saved).harnessAuth, { method, source: replacement.ref });
-      // Saving the same source again repairs missing access and reuses an existing exact binding.
-      await page.getByRole("button", { name: "Save authentication source" }).click();
-      await page.waitForFunction(
-        () =>
-          globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
-          false,
-      );
-      assert.deepEqual(
-        (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
-        bindings.data,
-      );
+  test("Credentials grants exact Agent access when rebinding api_key", async (t) => {
+    const method = "api_key";
+    const fixture = await detailApp(t);
+    const namespace = await fixture.createNamespace(`Model credential replacement ${method}`, {
+      ready: true,
     });
-  }
+
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Credential Agent",
+      createHarnessConfiguration("codex", "gpt-4.1"),
+      { executionMode: "dedicated" },
+    );
+
+    const replacement = await fixture.createSecret(
+      namespace.id,
+      "Replacement model credential",
+      "test-replacement-token",
+    );
+
+    const unrelated = await fixture.createSecret(
+      namespace.id,
+      "Unrelated credential",
+      "test-unrelated-token",
+    );
+
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    );
+    await page.getByLabel("Authentication source").selectOption(method);
+    await selectSecret(page, "API key Secret", replacement);
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
+    await page.waitForFunction(
+      () =>
+        globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
+        false,
+    );
+    const bindings = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/iam/access-bindings`,
+    );
+    const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+    const currentBindings = bindingsFrom(bindings.data);
+    const grants = currentBindings.filter(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
+    );
+    assert.equal(grants.length, 1);
+    const grant = grants[0];
+    assert.ok(grant);
+    assert.deepEqual(grant, {
+      id: grant.id,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: grant.roleId,
+      resourceKind: "secret",
+      resourceId: replacement.id,
+    });
+    assert.deepEqual(
+      readRole(records(roles.data).find((role) => role.id === grant.roleId)).permissions,
+      [{ action: "operate", resourceKind: "secret" }],
+    );
+    assert.equal(
+      currentBindings.some((binding) => binding.resourceId === unrelated.id),
+      false,
+    );
+    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.deepEqual(responseData(saved).harnessAuth, { method, source: replacement.ref });
+    // Saving the same source again repairs missing access and reuses an existing exact binding.
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    await page.waitForFunction(
+      () =>
+        globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
+        false,
+    );
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+      bindings.data,
+    );
+  });
 
   test("Credentials retries denied and interrupted grants without repeating the authentication save", async (t) => {
     const fixture = await createConsoleAppFixture(t);
@@ -3265,8 +3260,8 @@ export function registerSharingCredentialsAndChannelsCases(
     const deniedGrant = restrict(fixture.policy, "administer", "installation", {
       resourceId: resourceId(installation),
     });
-    await page.getByLabel("Authentication source").selectOption("codex_pat");
-    await selectSecret(page, "Service account token Secret", replacement);
+    await page.getByLabel("Authentication source").selectOption("api_key");
+    await selectSecret(page, "API key Secret", replacement);
     await page.getByRole("button", { name: "Save authentication source" }).click();
     await page
       .getByText(
@@ -4114,13 +4109,47 @@ export function registerSharingCredentialsAndChannelsCases(
   });
 
   test("Credentials saves an issued service account as a PAT source without granting Secret access", async (t) => {
-    const fixture = await detailApp(t);
+    let state: PlatformStateStore | undefined;
+    const fixture = await createConsoleAppFixture(t, {
+      wrapState(platform: PlatformStateStore) {
+        state = platform;
+        return platform;
+      },
+    });
+    await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Managed PAT source", { ready: true });
 
     // Issuance is outside this Console test. Seed its realistic result through State;
     // the browser still lists, selects and saves it through production API/IAM paths.
     const controller: unknown = fixture.controller;
-    assert.ok(controller instanceof OpenClawController);
+    assert.ok(controller instanceof OpenClawController && state);
+    const { driver } = useInstallationSecretDriver(controller);
+    const store = driver.privateSecrets;
+    assert.ok(store);
+    const instance = await controller.activateTokenServiceInstance("occ", randomUUID());
+    const owner = new OCCTokenServiceDriver(
+      "occ",
+      controller.installation.id,
+      store,
+      instance,
+      state,
+    );
+    controller.registerDriver(owner);
+    controller.selectDriver("token_service", owner.id);
+    const enrollment = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name: "Issued PAT source",
+          type: "static",
+          config: { provider_preset: "codex-pat" },
+          secret: `at-${randomUUID()}`,
+        },
+      },
+    );
+    assert.equal(enrollment.status, 201);
+    const sourceId = enrollment.data.id;
     const account = await controller.transact(async (state) => {
       const created = await state.serviceAccounts.createServiceAccount({
         id: `sa_${randomUUID()}`,
@@ -4129,7 +4158,7 @@ export function registerSharingCredentialsAndChannelsCases(
       });
       return state.serviceAccounts.updateCredential(namespace.id, created.id, {
         kind: "access_token",
-        secretRef: { name: "managed-pat-browser-fixture", key: "token" },
+        sourceId,
       });
     });
     assert.ok(account);
@@ -4137,15 +4166,16 @@ export function registerSharingCredentialsAndChannelsCases(
       namespace.id,
       "Managed PAT Agent",
       createHarnessConfiguration("codex", "gpt-5.1"),
-      { executionMode: "dedicated" },
+      { executionMode: "dedicated", harnessAuth: null },
     );
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(
       page,
       fixture,
-      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
     );
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     await page.getByLabel("Authentication source", { exact: true }).selectOption("service_account");
     await page
       .getByLabel("Issued ChatGPT service account", { exact: true })
@@ -4156,34 +4186,24 @@ export function registerSharingCredentialsAndChannelsCases(
     );
     await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
     assert.equal((await saved).status(), 200);
-    await page.getByRole("button", { name: "Save authentication source", exact: true }).waitFor();
-    assert.equal(
-      await page.getByLabel("Authentication source", { exact: true }).inputValue(),
-      "service_account",
-    );
-    assert.equal(
-      await page.getByLabel("Issued ChatGPT service account", { exact: true }).inputValue(),
-      account.id,
-    );
+    const harnessAuth = { method: "credential_source", sourceId };
     assert.deepEqual(
       responseData(await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`))
         .harnessAuth,
-      {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
-      },
+      harnessAuth,
+    );
+    const patch = requests.find(
+      (request) => request.method === "PATCH" && request.path.endsWith(`/agents/${agent.id}`),
+    );
+    assert.ok(patch);
+    assert.deepEqual(record(patch.body).harnessAuth, harnessAuth);
+    const bindingWrites = requests.filter(
+      ({ method, path }) => method === "POST" && path.endsWith("/access-bindings"),
     );
     assert.equal(
-      requests.some(
-        (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
-      ),
+      bindingWrites.some(({ body }) => record(body).resourceKind === "secret"),
       false,
     );
-    // The draft summary names the selected account rather than a Secret.
-    await page.goto(
-      `${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
-    );
-    await page.getByText(`ChatGPT service account · ${account.id}`, { exact: true }).waitFor();
   });
 
   test("Console can repeat Stop without treating the selected version as cleanup completion", async (t) => {
@@ -4279,50 +4299,44 @@ export function registerSharingCredentialsAndChannelsCases(
   });
 
   test("Credentials preserves an existing OpenClaw credential source without offering Codex login", async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("OpenClaw source", { ready: true });
-
-    const backend = createOpenShellBackend({
-      id: "openshell-browser",
-      type: "openshell",
-      configuration: { endpoint: "http://127.0.0.1:9" },
-      drivers: {
-        sandbox: "sandbox-openshell-local",
-        credential_gateway: "credential-gateway-openshell",
+    let state: PlatformStateStore | undefined;
+    const fixture = await createConsoleAppFixture(t, {
+      wrapState(platform: PlatformStateStore) {
+        state = platform;
+        return platform;
       },
     });
-    t.after(() => backend.client.close());
-    const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/openclaw"] },
-      { backend },
-    );
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("OpenClaw source", { ready: true });
     const controller: unknown = fixture.controller;
-    assert.ok(controller instanceof OpenClawController);
-    controller.registerDriver(gateway);
-    controller.selectDriver("credential_gateway", gateway.id);
-    const input = await fixture.createSecret(
-      namespace.id,
-      "OpenAI source input",
-      "source-browser-fixture",
+    assert.ok(controller instanceof OpenClawController && state);
+    const { driver } = useInstallationSecretDriver(controller);
+    const store = driver.privateSecrets;
+    assert.ok(store);
+    const instance = await controller.activateTokenServiceInstance("occ", randomUUID());
+    const owner = new OCCTokenServiceDriver(
+      "occ",
+      controller.installation.id,
+      store,
+      instance,
+      state,
     );
-
-    // Source registration is outside this Console test. This is the ready API-key
-    // source state the existing OpenClaw credential-gateway path supports.
-    const source = await controller.transact((state) =>
-      state.credentialSources.createCredentialSource({
-        id: `cs_${randomUUID()}`,
-        namespaceId: namespace.id,
-        name: "OpenAI API key",
-        type: "openai",
-        config: {},
-        secrets: { api_key: input.ref },
-        ownerCapability: "credential_gateway",
-        driverId: gateway.id,
-        state: "ready",
-        createdAt: new Date().toISOString(),
-      }),
+    controller.registerDriver(owner);
+    controller.selectDriver("token_service", owner.id);
+    const enrollment = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name: "OpenAI API key",
+          type: "static",
+          config: { provider_preset: "openai" },
+          secret: randomUUID(),
+        },
+      },
     );
+    assert.equal(enrollment.status, 201, JSON.stringify(enrollment.body));
+    const source = enrollment.data;
     const harnessAuth = { method: "credential_source", sourceId: source.id };
     const agent = await fixture.createAgent(
       namespace.id,

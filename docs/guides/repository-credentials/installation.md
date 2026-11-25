@@ -153,8 +153,8 @@ needed by Compute. The Agent never mounts the control socket or App key.
 From the repository root, run `pnpm install --frozen-lockfile`. Then build the
 service with `pnpm credentials:build` and `pnpm credentials:image`, then publish and select its immutable image reference. Also build the full
 Agent runtime using the [repository-root Docker context](../repository-credentials.md#prepare-the-platform-installation).
-Add the following to your existing Helm values, replacing image and network
-placeholders before rendering:
+Add the following to your existing Helm values, replacing the image placeholder
+before rendering:
 
 ```yaml
 repositoryCredentials:
@@ -170,8 +170,6 @@ repositoryCredentials:
   appKeySecretName: occ-repository-app
   tlsSecretName: occ-repository-tls
   publicCaSecretName: occ-repository-ca
-  upstreamCidrs:
-    - "<approved GitHub upstream CIDR>"
 ```
 
 `backendId` must follow the Backend ID rule: 1 to 200 characters, with no
@@ -183,10 +181,9 @@ startup applies before it saves the GitHub Backend. Supply the same literal ID
 in chart values, service configuration, and the registry. The chart handles
 Kubernetes dollar escaping; do not pre-escape values such as `github-$$` or
 `github-$(BACKEND)`. The origin helper reports the original logical ID.
-Supply current
-operator-approved ranges for GitHub HTTPS destinations. The chart
-adds worker-Pod egress on port 443 and ingress from tenant embedded gateways and
-dedicated Agent Pods on port 8443. Compute grants corresponding egress only to
+The chart permits unrestricted Worker egress and grants ingress from tenant
+embedded gateways and dedicated Agent Pods on port 8443. Compute grants
+corresponding egress only to
 the repository consumer; see the
 [network selectors](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Existing model/network
 rules still apply. For repository-bound dedicated Codex, Compute allows the exact broker hostname and sets stock Codex `allow_local_binding = true` and

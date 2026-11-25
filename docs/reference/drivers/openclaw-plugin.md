@@ -33,8 +33,8 @@ The dedicated catalog comes from the reviewed [managed package index](../../../a
 Listing the bundled catalog does not install a plugin, grant access, or read a
 credential. Loading Slack tool details uses the authorized account credential
 to query the MCP server.
-For a credentialed managed package, OCC offers compatible credential sources
-already attached to the Agent. The Driver checks the release digest, credential
+For a credentialed managed package, OCC lists compatible, ready Sources in the
+Agent's Namespace that the caller can read. The Driver checks the release digest, credential
 slot, Harness mode, Compute implementation, and requested policy before save
 and again at deployment admission.
 
@@ -46,9 +46,10 @@ before applying the selected policy. A runtime without `--no-enable` cannot
 prepare the package. Identity or integrity failure prevents Gateway startup.
 Dedicated OpenClaw uses managed package material shipped in the controller and
 runtime images. Compute prepares the Google skill and worker CLI, or the Slack
-worker MCP server and selected tool filter. Credential use requires the selected
-Sandbox and Credential Gateway to deliver the source. See the
-[managed OpenClaw plugin guide](../../guides/topics/openclaw-plugins.md).
+worker MCP server and selected tool filter. TokenService resolves each admitted
+Source and the selected Proxy supplies its credential under the Sandbox policy.
+Delivery through a running Plugin Agent still requires qualification. See
+[Credential Sources](../credential-sources.md).
 
 Kubernetes stores the native OpenClaw installation registry in the Agent-owned
 state database and serializes Gateway replacement. A confirmed embedded native
@@ -96,22 +97,20 @@ supplied plugin map. Preserve other selections. See [HTTP operations](../agent-p
 
 Managed package settings use a separate scope:
 
-| Setting                               | Type         | Requirement | Value, default, and constraints                                                                                                                         |
-| ------------------------------------- | ------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `plugins.<id>.enabled`                | boolean      | Required    | Enables or disables the selected package.                                                                                                               |
-| `plugins.<id>.driverPolicy`           | object       | Optional    | Omit to install without an account. A connected package requires the current `releaseSha256` and `credentials.account`, an attached `cs_...` source ID. |
-| `plugins.<id>.driverPolicy.toolNames` | string array | Optional    | Slack only. Exact upstream tool names; omission selects none. Globs are rejected.                                                                       |
-| `plugins.<id>.tools.<name>.approval`  | string       | Optional    | Slack only, for a selected tool: `all_actions` requests human approval for each native call; `none` adds no approval. Omission adds none.               |
-| `pluginApprovers`                     | array        | Optional    | Agent-wide Slack reviewers for plugin approval prompts; see [Slack approver users](../agent-plugins.md#slack-approver-users).                           |
+| Setting                               | Type         | Requirement | Value, default, and constraints                                                                                                                          |
+| ------------------------------------- | ------------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plugins.<id>.enabled`                | boolean      | Required    | Enables or disables the selected package.                                                                                                                |
+| `plugins.<id>.driverPolicy`           | object       | Optional    | Omit to install without an account. A connected package requires the current `releaseSha256` and `credentials.account`, the selected `cs_...` Source ID. |
+| `plugins.<id>.driverPolicy.toolNames` | string array | Optional    | Slack only. Exact upstream tool names; omission selects none. Globs are rejected.                                                                        |
+| `plugins.<id>.tools.<name>.approval`  | string       | Optional    | Slack only, for a selected tool: `all_actions` requests human approval for each native call; `none` adds no approval. Omission adds none.                |
+| `pluginApprovers`                     | array        | Optional    | Agent-wide Slack reviewers for plugin approval prompts; see [Slack approver users](../agent-plugins.md#slack-approver-users).                            |
 
-Use the current digest and eligible source choices returned by Agent plugin
-capabilities. Google Workspace requires an OpenShell OAuth refresh source and
-the reviewed Google request guard for API calls. Slack requires an attached
-`bearer-token` source with `protocol: mcp`, host `mcp.slack.com`, port `443`, path
-`/mcp`, and placeholder `SLACK_MCP_TOKEN`. The operator and Agent need the
-required source grants. Enable `/usr/local/bin/node` in Credential Gateway
-`toolBinaries`, and permit API discovery egress before loading Slack tools.
-[Google setup](../../guides/topics/openclaw-plugins.md#1-add-a-cli-plugin-google-workspace) · [Slack setup](../../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin).
+Select the release digest and eligible Source from Agent plugin capabilities.
+Google Workspace uses an OAuth Source with a matching Google Template. Slack
+accepts a static bearer or OAuth Source whose Template permits the MCP request
+to `https://mcp.slack.com/mcp`. Loading tools requires Source authorization
+and API connectivity to the MCP server. See [Connection Templates](../connection-templates.md)
+and [Agent Source grants](../credential-sources.md#bind-a-source-to-an-agent).
 
 ## Limits
 
@@ -151,7 +150,7 @@ required source grants. Enable `/usr/local/bin/node` in Credential Gateway
 | Symptom                                          | First check                                                                                             | Corrective action and expected result                                                                                             |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | Package is missing from the catalog              | Check the selected Harness mode and Driver registration.                                                | Use embedded OpenClaw for Diffs or dedicated OpenClaw on Kubernetes for Google Workspace and Slack; the compatible entry appears. |
-| Account slot is empty or save rejects the source | Check Agent attachments, source grants, release digest, and slot compatibility.                         | Attach an eligible source, grant access, and select the account again; save accepts the current release.                          |
+| Account slot is empty or save rejects the source | Check Source grants, release digest, and slot compatibility.                                            | Grant access to an eligible Source and select the account again; save accepts the current release.                                |
 | Slack **Load tools** fails                       | Check API egress, source authorization, token validity, and Slack scopes.                               | Repair the failing prerequisite and reload; the server's tool list appears.                                                       |
 | Slack tool is absent                             | Check `driverPolicy.toolNames` and the deployed revision.                                               | Select the exact upstream name and deploy; the worker advertises it.                                                              |
 | An approval-required deployment fails            | Check native Slack plugin overrides and the packaged managed MCP policy.                                | Remove conflicting overrides or use a matching runtime image; startup can prepare the policy.                                     |

@@ -224,7 +224,6 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     "cluster.cidrs[0]": `${targets.cluster.host}/32`,
     "cluster.port": targets.cluster.port,
     "logging.collector.exporter.cidr": `${targets.exporter.host}/32`,
-    "backend.chatgpt.providerCidr": `${targets.provider.host}/32`,
     "gatewayRouting.envoyNamespace": envoyNamespace,
     "gatewayRouting.gatewayName": "access",
     "gatewayRouting.gatewayClassName": "fixture",
@@ -366,21 +365,17 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
         for (const component of ["api", "worker"]) {
           const labels = sources[component].labels;
           managementSources[`management${component}`] = { namespace: system, labels };
-          // cluster-installation.md supplies this source-side prerequisite; the renderer
-          // under test must supply ingress. It must not be masked by a fixture ingress grant.
-          resources.push(
-            policy(`management-${component}-egress`, system, {
-              podSelector: { matchLabels: labels },
-              policyTypes: ["Egress"],
-              egress: [
-                {
-                  to: [{ podSelector: { matchLabels: management } }],
-                  ports: [{ protocol: "TCP", port: 8080 }],
-                },
-              ],
-            }),
-          );
         }
+        const controlPlaneEgress = baseline.find(
+          (object) =>
+            object.kind === "NetworkPolicy" &&
+            object.metadata.name === "openclaw-enterprise-control-plane-egress",
+        );
+        assert.ok(controlPlaneEgress, "the chart must provide control-plane egress");
+        resources.push({
+          ...controlPlaneEgress,
+          metadata: { ...controlPlaneEgress.metadata, namespace: system },
+        });
         managementTenants = [];
         for (const [index, space] of [namespace, destinations].entries()) {
           const id = `ns_${randomUUID()}`;
@@ -751,8 +746,6 @@ print(json.dumps(payload))
           ? await chart({
               "backend.chatgpt.enabled": true,
               "gatewayRouting.enabled": true,
-              "api.modelDiscoveryCidrs[0]": `${targets.authentication.host}/32`,
-              "api.modelDiscoveryCidrs[1]": `${targets.catalog.host}/32`,
             })
           : baseline;
       const policies = documents.filter(

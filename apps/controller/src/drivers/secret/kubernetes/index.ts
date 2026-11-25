@@ -13,8 +13,8 @@ import {
 import { randomUUID } from "node:crypto";
 import type { CoreV1Api, V1ObjectMeta, V1Secret } from "@kubernetes/client-node";
 import type {
-  InstallationSecretRef,
-  InstallationSecretStore,
+  PrivateSecretRef,
+  PrivateSecretStore,
   JSONSchema,
   Secret,
   SecretBackendRef,
@@ -201,7 +201,7 @@ export class KubernetesSecretDriver implements SecretDriver {
 
   readonly id: string;
   readonly capability = "secret" as const;
-  readonly installationSecrets: InstallationSecretStore;
+  readonly privateSecrets: PrivateSecretStore;
   readonly implementation: string;
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly options: KubernetesSecretDriverOptions;
@@ -218,24 +218,24 @@ export class KubernetesSecretDriver implements SecretDriver {
       throw new SecretValidationError("Unsupported Kubernetes Secret implementation.");
     }
     this.preprovisionedNamespace = selection.preprovisionedNamespace;
-    this.installationSecrets = this.privateSecretStore(
+    this.privateSecrets = this.privateSecretStore(
       selection.installationSecretNamespace ?? "oce-installation-secrets",
     );
     this.options = Object.freeze({ authentication: Object.freeze({ ...options.authentication }) });
   }
 
-  /** Private registration Secrets live outside tenant placement and are never inventoried as Namespace Secrets. */
-  private privateSecretStore(namespace: string): InstallationSecretStore {
-    const identity = (ref: InstallationSecretRef) => ({
+  /** TokenService Secrets live outside tenant placement and are never inventoried as Namespace Secrets. */
+  private privateSecretStore(namespace: string): PrivateSecretStore {
+    const identity = (ref: PrivateSecretRef) => ({
       name: `occ-private-${sha256Hex(JSON.stringify([ref.installationId, ref.id]), 40)}`,
       namespace,
     });
-    const ownership = (ref: InstallationSecretRef) => ({
+    const ownership = (ref: PrivateSecretRef) => ({
       "openclaw.dev/installation-id": ref.installationId,
       "openclaw.dev/private-secret-id": ref.id,
       [DRIVER_ANNOTATION]: this.id,
     });
-    const verify = (secret: V1Secret, ref: InstallationSecretRef) => {
+    const verify = (secret: V1Secret, ref: PrivateSecretRef) => {
       const metadata = secret.metadata;
       if (
         metadata?.namespace !== namespace ||
@@ -253,11 +253,27 @@ export class KubernetesSecretDriver implements SecretDriver {
       }
       return metadata;
     };
-    const read = async (ref: InstallationSecretRef) => {
+    const read = async (ref: PrivateSecretRef) => {
       const client = await this.core();
       const secret = await this.request(() => client.readNamespacedSecret(identity(ref)), "read");
       const metadata = verify(secret, ref);
       return { client, secret, metadata };
+    };
+    const replace = async (
+      ref: PrivateSecretRef,
+      { client, metadata }: Awaited<ReturnType<typeof read>>,
+      value: string,
+    ) => {
+      const secret = await this.request(
+        () =>
+          client.replaceNamespacedSecret({
+            ...identity(ref),
+            body: { metadata, type: "Opaque", stringData: { [SECRET_KEY]: value } },
+          }),
+        "update",
+        { mutating: true },
+      );
+      verify(secret, ref);
     };
     return {
       create: async (ref, value) => {
@@ -292,17 +308,24 @@ export class KubernetesSecretDriver implements SecretDriver {
       },
       update: async (ref, value) => {
         validateValue(value);
-        const { client, metadata } = await read(ref);
-        const secret = await this.request(
-          () =>
-            client.replaceNamespacedSecret({
-              ...identity(ref),
-              body: { metadata, type: "Opaque", stringData: { [SECRET_KEY]: value } },
-            }),
-          "update",
-          { mutating: true },
-        );
-        verify(secret, ref);
+        await replace(ref, await read(ref), value);
+      },
+      compareAndSwap: async (ref, expected, value) => {
+        validateValue(expected);
+        validateValue(value);
+        const current = await read(ref);
+        if (decodedValue(current.secret) !== expected) {
+          return false;
+        }
+        try {
+          await replace(ref, current, value);
+          return true;
+        } catch (error) {
+          if (error instanceof SecretConflictError) {
+            return false;
+          }
+          throw error;
+        }
       },
       withValue: async (ref, use) => use(decodedValue((await read(ref)).secret)),
       delete: async (ref) => {

@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 
+import { revisionCredentialSourceSnapshot } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
+  AgentRevision,
   CredentialDeploymentConfiguration,
   CredentialDeploymentContext,
   CredentialProxyDriver,
@@ -31,9 +33,23 @@ import { OpenShellSandboxConfigurationFailure } from "../sandbox/openshell-sandb
 import {
   compileOpenShellCredentialPolicy,
   openShellCredentialProviderName,
+  openShellNetworksOverlappingCredentialPath,
+  openShellProjectedCredentialProviderName,
+  type OpenShellCredentialRoute,
 } from "../sandbox/openshell-credential-policy.ts";
+import {
+  openShellNetworkRouteMayOverlap,
+  sameOpenShellPolicy,
+} from "../sandbox/openshell-policy.ts";
+import {
+  narrowOpenShellRepositoryRoutes,
+  openShellRepositoryDeploymentPolicy,
+} from "./openshell-repository-policy.ts";
 import { openShellWorkspaceName, type OpenShellGateway } from "../../backends/openshell.ts";
-import type { OpenShellGatewayClient } from "../sandbox/openshell-gateway-client.ts";
+import type {
+  OpenShellGatewayClient,
+  OpenShellSandboxResponse,
+} from "../sandbox/openshell-gateway-client.ts";
 import type { OpenShellNativeProvider } from "../token-service/openshell.ts";
 import {
   confirmSandboxAbsent,
@@ -49,6 +65,7 @@ import {
   assertOpenShellPushedTarget,
   OpenShellCredentialDeliveryRefusedError,
   openShellDeliveryProviderNames,
+  openShellEffectivePolicyMatches,
   openShellPushedPolicyMatches,
   prepareOccTokenServiceProviderCopy,
   readOwnedOpenShellPushedProvider,
@@ -65,11 +82,20 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   private readonly backend: Backend<OpenShellGateway>;
   private readonly nativeSourceOwner: boolean;
   private readonly sandbox: SandboxDriver &
-    Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
+    Pick<OpenShellSandboxDriver, "gitRuntimeProviderName" | "withdrawStagedCredentialRoute">;
   private sourceNamespaceResolver?: (
     sourceRef: CredentialSourceReference,
     signal: AbortSignal,
   ) => Promise<Readonly<Namespace>>;
+  private sourceRevisionResolver?: (
+    sourceRef: CredentialSourceReference,
+    agentId: string,
+    revisionId: string,
+    signal: AbortSignal,
+  ) => Promise<{
+    readonly revision: Readonly<AgentRevision>;
+    readonly activeBindingRefs: ReadonlySet<string>;
+  }>;
   private nativeSourceResolver?: (
     sourceRef: CredentialSourceReference,
     signal: AbortSignal,
@@ -80,7 +106,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     readonly implementation: string;
     readonly tokenServiceImplementation: string;
     readonly backend: Backend<OpenShellGateway>;
-    readonly sandbox: SandboxDriver & Pick<OpenShellSandboxDriver, "withdrawStagedCredentialRoute">;
+    readonly sandbox: SandboxDriver &
+      Pick<OpenShellSandboxDriver, "gitRuntimeProviderName" | "withdrawStagedCredentialRoute">;
   }) {
     this.nativeSourceOwner = selection.tokenServiceImplementation === "openshell/token-service";
     if (!this.nativeSourceOwner && selection.tokenServiceImplementation !== "occ/token-service") {
@@ -136,7 +163,22 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       signal: AbortSignal,
     ) => Promise<Readonly<Namespace>>,
   ): void {
-    this.sourceNamespaceResolver = resolve;
+    this.sourceNamespaceResolver ??= resolve;
+  }
+
+  /** The Proxy needs the admitted Agent policy to acknowledge a refreshed Git delivery. */
+  bindSourceRevisionResolver(
+    resolve: (
+      sourceRef: CredentialSourceReference,
+      agentId: string,
+      revisionId: string,
+      signal: AbortSignal,
+    ) => Promise<{
+      readonly revision: Readonly<AgentRevision>;
+      readonly activeBindingRefs: ReadonlySet<string>;
+    }>,
+  ): void {
+    this.sourceRevisionResolver = resolve;
   }
 
   bindNativeSourceResolver(
@@ -221,6 +263,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     // changes the Sandbox's Provider environment revision.
     for (const name of names) {
       await this.pushCredentialUpdate({
+        namespace,
         client,
         workspace,
         sourceRef,
@@ -235,9 +278,36 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   private async pushCredentialUpdate(
     input: Parameters<typeof updateOccTokenServiceProviderCopy>[0] & {
       readonly client: OpenShellGatewayClient;
+      readonly namespace: Readonly<Namespace>;
     },
   ): Promise<void> {
     const { client, workspace, signal } = input;
+    const repositoryProvider =
+      input.name === openShellProjectedCredentialProviderName(input.sourceRef.id, "GITHUB_TOKEN");
+    if (repositoryProvider) {
+      if (!client.listSandboxes) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      const recipients = await client.listSandboxes(workspace, signal);
+      const ids = new Set<string>();
+      for (const sandbox of recipients) {
+        const providers = sandbox.spec?.providers ?? [];
+        if (
+          !sandbox.id ||
+          ids.has(sandbox.id) ||
+          sandbox.workspace !== workspace ||
+          !sandbox.spec ||
+          !Array.isArray(providers) ||
+          !providers.every((name) => typeof name === "string" && name.length > 0)
+        ) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        ids.add(sandbox.id);
+        if (providers.includes(input.name) && sandbox.configurationActivated !== false) {
+          await this.authorizedRepositoryTarget(input.namespace, input.sourceRef, sandbox, signal);
+        }
+      }
+    }
     const result = await updateOccTokenServiceProviderCopy(input);
     if (!result) {
       return;
@@ -344,7 +414,83 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       ) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
+      if (repositoryProvider) {
+        if (!client.getSandboxConfig || !client.getSandboxPolicyStatus) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        const { context, routes } = await this.authorizedRepositoryTarget(
+          input.namespace,
+          input.sourceRef,
+          sandbox,
+          signal,
+        );
+        const expected = this.repositoryPolicies(context, sandbox, routes).combined;
+        const [config, policyStatus] = await Promise.all([
+          client.getSandboxConfig(workspace, sandboxName, signal),
+          client.getSandboxPolicyStatus(workspace, sandboxName, signal),
+        ]);
+        const revision = asRecord(policyStatus.revision);
+        if (
+          revision?.status !== "POLICY_STATUS_LOADED" ||
+          policyStatus.active_version !== revision.version ||
+          config.version !== revision.version ||
+          config.policy_hash !== desired.policyHash ||
+          config.configuration_admitted !== true ||
+          config.configuration_error ||
+          !sameOpenShellPolicy(revision.policy, expected) ||
+          !openShellPushedPolicyMatches(revision.policy, config.policy, routes) ||
+          !this.repositoryEffectivePolicyMatches(
+            revision.policy,
+            config.policy,
+            context,
+            sandbox,
+            routes,
+          )
+        ) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+      }
     }
+  }
+
+  private async authorizedRepositoryTarget(
+    namespace: Readonly<Namespace>,
+    sourceRef: CredentialSourceReference,
+    sandbox: OpenShellSandboxResponse,
+    signal: AbortSignal,
+  ) {
+    const agentId = sandbox.annotations["openclaw.dev/agent-id"];
+    const revisionId = sandbox.annotations["openclaw.dev/revision-id"];
+    if (!this.sourceRevisionResolver || !agentId || !revisionId) {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
+    const { revision, activeBindingRefs } = await this.sourceRevisionResolver(
+      sourceRef,
+      agentId,
+      revisionId,
+      signal,
+    );
+    const context = { namespace, revision, signal };
+    const deployment = revision.credentialDeployment;
+    if (
+      revision.namespaceId !== sourceRef.namespaceId ||
+      revision.agentId !== agentId ||
+      revision.id !== revisionId ||
+      this.sandbox.harnessResource?.(context)?.resourceName !== sandbox.name ||
+      !deployment ||
+      !deployment.bindings.some(
+        ({ bindingRef, sourceRef: bound, consumer }) =>
+          activeBindingRefs.has(bindingRef) &&
+          consumer.kind === "repository" &&
+          isDeepStrictEqual(bound, sourceRef),
+      )
+    ) {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
+    const routes = this.routes(deployment, revision).filter(({ binding }) =>
+      activeBindingRefs.has(binding.bindingRef),
+    );
+    return { context, routes };
   }
 
   async deployProxy(
@@ -357,11 +503,14 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (!admitted) {
       throw new OpenShellCredentialDeliveryRefusedError();
     }
-    this.routes({
-      ...admitted,
-      networkAccessPolicy: input.networkAccessPolicy,
-      injectionPolicies: input.injectionPolicies,
-    });
+    this.routes(
+      {
+        ...admitted,
+        networkAccessPolicy: input.networkAccessPolicy,
+        injectionPolicies: input.injectionPolicies,
+      },
+      context.revision,
+    );
     return {};
   }
 
@@ -372,10 +521,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     assertOpenShellDeploymentContext(context, this.sandbox.id);
     assertOpenShellDeploymentConfiguration(context, input);
     const admitted = context.revision.credentialDeployment;
-    if (!admitted || input.bindings.length !== admitted.bindings.length) {
+    if (!admitted) {
       throw new DependencyUnavailableError("The native credential bindings are unavailable.");
     }
-    this.routes(admitted);
+    const routes = this.routes(admitted, context.revision);
     if (!isDeepStrictEqual(input.injectionPolicies, admitted.injectionPolicies)) {
       throw new OpenShellCredentialDeliveryRefusedError();
     }
@@ -393,9 +542,28 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       assertOpenShellPushedBindingScope(context, binding);
     }
     const initialTarget = await this.readSandboxTarget(context, input);
+    const attached = initialTarget.sandbox.spec?.providers;
+    if (
+      !initialTarget.sandbox.spec ||
+      (attached !== undefined && !Array.isArray(attached)) ||
+      [...remaining.values()].some(
+        (binding) =>
+          binding.consumer.kind === "model" ||
+          attached?.includes(openShellCredentialProviderName(binding)),
+      )
+    ) {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
     if (typeof initialTarget.client.attachSandboxProviderWithReceipt !== "function") {
       throw new DependencyUnavailableError("Native credential attachment is unavailable.");
     }
+    const selected = new Set(input.bindings.map(({ binding }) => binding.bindingRef));
+    const selectedRoutes = routes.filter(({ binding }) => selected.has(binding.bindingRef));
+    const repositoryPolicy = selectedRoutes.some(
+      ({ binding }) => binding.consumer.kind === "repository",
+    )
+      ? await this.repositoryPolicyBeforeDelivery(context, input, initialTarget, selectedRoutes)
+      : undefined;
     const prepared: DeploymentCredentialBinding[] = [];
     try {
       for (const supplied of input.bindings) {
@@ -407,8 +575,14 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
               workspace: initialTarget.workspace,
               namespaceId: context.namespace.id,
               binding,
+              requireCurrentVersion:
+                revisionCredentialSourceSnapshot(context.revision, binding.sourceRef.id)
+                  ?.sourceType === "oauth2-refresh-token",
               resolveCredential: async () => {
-                await this.readSandboxTarget(context, input);
+                const target = await this.readSandboxTarget(context, input);
+                if (repositoryPolicy) {
+                  await this.repositoryPolicyBeforeDelivery(context, input, target, selectedRoutes);
+                }
                 return supplied.resolveCredential();
               },
               signal: context.signal,
@@ -465,6 +639,50 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           throw new DependencyUnavailableError("The native Provider attachment changed.");
         }
       }
+      const configured = await this.readSandboxTarget(context, input);
+      const providers = configured.sandbox.spec?.providers;
+      if (
+        !Array.isArray(providers) ||
+        admitted.bindings.some((binding) => {
+          const selected = !remaining.has(binding.bindingRef);
+          return providers.includes(openShellCredentialProviderName(binding)) !== selected;
+        })
+      ) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      if (repositoryPolicy) {
+        const target = await this.readSandboxTarget(context, input);
+        const status = await target.client.getPolicyStatus!(
+          { workspace: target.workspace, sandbox: target.name },
+          context.signal,
+        );
+        if (
+          status.state !== "POLICY_STATUS_LOADED" ||
+          status.activeVersion !== status.version ||
+          ![repositoryPolicy.idle, repositoryPolicy.generic, repositoryPolicy.combined].some(
+            (policy) => sameOpenShellPolicy(status.policy, policy),
+          )
+        ) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        if (!sameOpenShellPolicy(status.policy, repositoryPolicy.combined)) {
+          if (!target.sandbox.resourceVersion || !target.client.updatePolicy) {
+            throw new DependencyUnavailableError(
+              "The combined credential policy cannot be applied.",
+            );
+          }
+          await target.client.updatePolicy(
+            {
+              workspace: target.workspace,
+              sandbox: target.name,
+              policy: repositoryPolicy.combined,
+              expectedResourceVersion: target.sandbox.resourceVersion,
+              requestId: randomUUID(),
+            },
+            context.signal,
+          );
+        }
+      }
       return {
         credentialProjections: input.bindings.map(({ binding }) => ({
           bindingRef: binding.bindingRef,
@@ -502,19 +720,29 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       if (!admitted || admitted.proxyDriverId !== this.id) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
-      const routes = this.routes(admitted);
-      const bindings = admitted.bindings;
+      const admittedRoutes = this.routes(admitted, context.revision);
       const target = await this.readSandboxTarget(context, expected);
+      const attached = target.sandbox.spec?.providers;
+      if (!Array.isArray(attached)) {
+        return { state: "pending" };
+      }
+      const bindings = admitted.bindings.filter((binding) =>
+        attached.includes(openShellCredentialProviderName(binding)),
+      );
+      const active = new Set(bindings.map(({ bindingRef }) => bindingRef));
+      if (
+        bindings.length === 0 ||
+        admitted.bindings.some(
+          ({ bindingRef, consumer }) => consumer.kind === "model" && !active.has(bindingRef),
+        )
+      ) {
+        return { state: "pending" };
+      }
+      const routes = admittedRoutes.filter((route) => active.has(route.binding.bindingRef));
       const providers = [];
       for (const binding of bindings) {
         assertOpenShellPushedBindingScope(context, binding);
         const provider = await this.readDeploymentProvider(context, target, binding);
-        if (
-          !Array.isArray(target.sandbox.spec?.providers) ||
-          !target.sandbox.spec.providers.includes(provider.name)
-        ) {
-          return { state: "pending" };
-        }
         providers.push({ binding, provider });
       }
       if (!target.client.getSandboxConfig || !target.client.getSandboxPolicyStatus) {
@@ -561,13 +789,42 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         !positiveRevision(config.config_revision) ||
         admission.config_revision !== config.config_revision ||
         !positiveRevision(config.provider_env_revision) ||
-        admission.provider_env_revision !== config.provider_env_revision ||
+        !positiveRevision(admission.provider_env_revision) ||
         !config.provider_attachment_epoch ||
         config.provider_attachment_epoch !== target.sandbox.spec?.provider_attachment_epoch ||
         !/^[0-9a-f]{64}$/.test(String(revision.policy_hash)) ||
-        !openShellPushedPolicyMatches(revision.policy, config.policy, routes)
+        !openShellPushedPolicyMatches(revision.policy, config.policy, routes) ||
+        (routes.some(({ binding }) => binding.consumer.kind === "repository") &&
+          (!sameOpenShellPolicy(
+            revision.policy,
+            this.repositoryPolicies(context, target.sandbox, routes).combined,
+          ) ||
+            !this.repositoryEffectivePolicyMatches(
+              revision.policy,
+              config.policy,
+              context,
+              target.sandbox,
+              routes,
+            )))
       ) {
         throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      const effectiveNetworks = asRecord(asRecord(config.policy)?.network_policies);
+      if (
+        !effectiveNetworks ||
+        admittedRoutes.some(
+          (route) =>
+            !active.has(route.binding.bindingRef) &&
+            openShellNetworkRouteMayOverlap(
+              openShellNetworksOverlappingCredentialPath(effectiveNetworks, route.path),
+              route,
+            ),
+        )
+      ) {
+        throw new OpenShellCredentialDeliveryRefusedError();
+      }
+      if (admission.provider_env_revision !== config.provider_env_revision) {
+        return { state: "pending" };
       }
       for (const { binding, provider } of providers) {
         // Provider-only status reconstruction records a Gateway-owned OBSERVE receipt. It does
@@ -664,7 +921,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       if (!admitted || admitted.proxyDriverId !== this.id) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
-      this.routes(admitted);
+      const routes = this.routes(admitted, context.revision);
       const selected = new Set(
         input.bindingRefs ?? admitted.bindings.map(({ bindingRef }) => bindingRef),
       );
@@ -715,11 +972,18 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           }
           if (exactWithdrawal) {
             await refused(() =>
-              this.sandbox.withdrawStagedCredentialRoute(
-                context,
-                expected.targetRef.sandboxId,
-                binding.bindingRef,
-              ),
+              routes.some(({ binding: candidate }) => candidate.consumer.kind === "repository")
+                ? this.withdrawRepositoryDeploymentRoute(
+                    context,
+                    expected,
+                    binding.bindingRef,
+                    routes,
+                  )
+                : this.sandbox.withdrawStagedCredentialRoute(
+                    context,
+                    expected.targetRef.sandboxId,
+                    binding.bindingRef,
+                  ),
             );
           }
           if (providers?.includes(providerName) || exactWithdrawal) {
@@ -834,11 +1098,222 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
   }
 
-  private routes(policy: DeploymentPolicy) {
+  private routes(policy: DeploymentPolicy, revision: CredentialDeploymentContext["revision"]) {
     try {
-      return compileOpenShellCredentialPolicy(policy).credentialRoutes;
+      return narrowOpenShellRepositoryRoutes(
+        revision,
+        compileOpenShellCredentialPolicy(policy).credentialRoutes,
+      );
     } catch {
       throw new OpenShellCredentialDeliveryRefusedError();
+    }
+  }
+
+  private repositoryEffectivePolicyMatches(
+    source: unknown,
+    effective: unknown,
+    context: CredentialDeploymentContext,
+    sandbox: OpenShellSandboxResponse,
+    routes: readonly OpenShellCredentialRoute[],
+  ): boolean {
+    const attached = sandbox.spec?.providers ?? [];
+    if (!Array.isArray(attached)) {
+      return false;
+    }
+    const approved = [
+      this.sandbox.gitRuntimeProviderName(context.revision),
+      ...routes.map(({ provider }) => provider),
+    ];
+    return openShellEffectivePolicyMatches(
+      source,
+      effective,
+      approved.filter((name) => attached.includes(name)),
+    );
+  }
+
+  private repositoryPolicies(
+    context: CredentialDeploymentContext,
+    sandbox: Parameters<typeof assertOpenShellPushedTarget>[0],
+    routes: readonly OpenShellCredentialRoute[],
+  ) {
+    const baseline = asRecord(sandbox?.spec?.policy);
+    if (
+      !baseline ||
+      context.revision.sandboxPolicy?.driverId !== this.id ||
+      context.revision.sandboxPolicy.implementation !== this.implementation
+    ) {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
+    try {
+      return openShellRepositoryDeploymentPolicy(context.revision, baseline, routes);
+    } catch {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
+  }
+
+  private async repositoryPolicyBeforeDelivery(
+    context: CredentialDeploymentContext,
+    expected: CredentialDeploymentConfiguration,
+    target: Awaited<ReturnType<OpenShellCredentialProxyDriver["readSandboxTarget"]>>,
+    routes: readonly OpenShellCredentialRoute[],
+  ) {
+    const policies = this.repositoryPolicies(context, target.sandbox, routes);
+    if (!target.client.getPolicyStatus || !target.client.updatePolicy) {
+      throw new DependencyUnavailableError("The combined credential policy is unavailable.");
+    }
+    const status = await target.client.getPolicyStatus(
+      { workspace: target.workspace, sandbox: target.name },
+      context.signal,
+    );
+    if (
+      status.state !== "POLICY_STATUS_LOADED" ||
+      status.activeVersion !== status.version ||
+      ![policies.idle, policies.generic, policies.combined].some((policy) =>
+        sameOpenShellPolicy(status.policy, policy),
+      )
+    ) {
+      throw new OpenShellCredentialDeliveryRefusedError();
+    }
+    await this.readSandboxTarget(context, expected);
+    return policies;
+  }
+
+  private async withdrawRepositoryDeploymentRoute(
+    context: CredentialDeploymentContext,
+    expected: CredentialDeploymentConfiguration,
+    bindingRef: string,
+    routes: readonly OpenShellCredentialRoute[],
+  ): Promise<void> {
+    const target = await this.readSandboxTarget(context, expected);
+    const client = target.client;
+    if (!client.getPolicyStatus || !client.updatePolicy || !client.getSandboxConfig) {
+      throw new DependencyUnavailableError("The combined credential policy cannot be reduced.");
+    }
+    const admitted = this.repositoryPolicies(context, target.sandbox, routes).combined;
+    const admittedNetworks = asRecord(admitted.network_policies);
+    const request = { workspace: target.workspace, sandbox: target.name };
+    const current = await client.getPolicyStatus(request, context.signal);
+    const currentNetworks = asRecord(asRecord(current.policy)?.network_policies);
+    if (
+      !admittedNetworks ||
+      !currentNetworks ||
+      current.state !== "POLICY_STATUS_LOADED" ||
+      current.activeVersion !== current.version
+    ) {
+      throw new DependencyUnavailableError("The current combined credential policy is not loaded.");
+    }
+    const owned = new Map<string, OpenShellCredentialRoute>();
+    for (const [name, value] of Object.entries(admittedNetworks)) {
+      const rule = asRecord(value);
+      const endpoints = rule?.endpoints;
+      if (!Array.isArray(endpoints) || endpoints.length !== 1) {
+        continue;
+      }
+      const endpoint = asRecord(endpoints[0]);
+      const route = routes.find(
+        (candidate) =>
+          candidate.provider === asRecord(endpoint?.credential_binding)?.provider &&
+          candidate.endpointPath === endpoint?.path &&
+          candidate.host === endpoint?.host &&
+          sameOpenShellPolicy(rule?.binaries, [{ path: candidate.binary }]) &&
+          sameOpenShellPolicy(endpoint?.ports, [candidate.port]),
+      );
+      if (route) {
+        owned.set(name, route);
+      }
+    }
+    if (
+      owned.size !== routes.length ||
+      !routes.some(({ binding }) => binding.bindingRef === bindingRef) ||
+      Object.keys(admittedNetworks).some(
+        (name) => !Object.hasOwn(currentNetworks, name) && !owned.has(name),
+      ) ||
+      !sameOpenShellPolicy(current.policy, {
+        ...admitted,
+        network_policies: Object.fromEntries(
+          Object.entries(admittedNetworks).filter(([name]) => Object.hasOwn(currentNetworks, name)),
+        ),
+      })
+    ) {
+      throw new SandboxNetworkPolicyConflictError(
+        "The current policy differs from the admitted credential routes.",
+      );
+    }
+    const reduced = {
+      ...admitted,
+      network_policies: Object.fromEntries(
+        Object.entries(currentNetworks).filter(
+          ([name]) => owned.get(name)?.binding.bindingRef !== bindingRef,
+        ),
+      ),
+    };
+    const retained = [...owned.entries()]
+      .filter(([name]) => Object.hasOwn(reduced.network_policies, name))
+      .map(([, route]) => route);
+    const selected = routes.filter(({ binding }) => binding.bindingRef === bindingRef);
+    const overlaps = (networks: Record<string, unknown>) =>
+      selected.some((route) =>
+        openShellNetworkRouteMayOverlap(
+          openShellNetworksOverlappingCredentialPath(networks, route.path),
+          route,
+        ),
+      );
+    if (overlaps(reduced.network_policies)) {
+      throw new SandboxNetworkPolicyConflictError(
+        "The reduced policy still permits the withdrawn credential path.",
+      );
+    }
+    if (!sameOpenShellPolicy(current.policy, reduced)) {
+      if (!target.sandbox.resourceVersion) {
+        throw new DependencyUnavailableError("The Sandbox resource version is unavailable.");
+      }
+      await client.updatePolicy(
+        {
+          ...request,
+          policy: reduced,
+          expectedResourceVersion: target.sandbox.resourceVersion,
+          requestId: randomUUID(),
+        },
+        context.signal,
+      );
+    }
+    const observed = await client.getPolicyStatus(request, context.signal);
+    const effective = await client.getSandboxConfig(target.workspace, target.name, context.signal);
+    const effectiveNetworks = asRecord(asRecord(effective.policy)?.network_policies);
+    if (observed.state !== "POLICY_STATUS_LOADED" || observed.activeVersion !== observed.version) {
+      throw new DependencyUnavailableError(
+        "The effective reduced credential policy is unconfirmed.",
+      );
+    }
+    if (!sameOpenShellPolicy(observed.policy, reduced)) {
+      if (observed.version === current.version && !sameOpenShellPolicy(current.policy, reduced)) {
+        throw new DependencyUnavailableError("The reduced credential policy is still loading.");
+      }
+      throw new SandboxNetworkPolicyConflictError("The loaded credential policy was not reduced.");
+    }
+    if (effective.version !== observed.version || effective.configuration_admitted !== true) {
+      throw new DependencyUnavailableError(
+        "The reduced credential configuration is still loading.",
+      );
+    }
+    if (
+      effective.configuration_error ||
+      effective.workspace !== target.workspace ||
+      !effectiveNetworks ||
+      !this.repositoryEffectivePolicyMatches(
+        observed.policy,
+        effective.policy,
+        context,
+        target.sandbox,
+        routes,
+      ) ||
+      (retained.length > 0 &&
+        !openShellPushedPolicyMatches(observed.policy, effective.policy, retained)) ||
+      overlaps(effectiveNetworks)
+    ) {
+      throw new SandboxNetworkPolicyConflictError(
+        "The effective reduced policy is unsafe or retained credential delivery is not ready.",
+      );
     }
   }
 

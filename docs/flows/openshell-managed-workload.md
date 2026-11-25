@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-21"
-last_updated_session: authoring-run/e0eab11e-42e2-49a4-bb29-18490c7d2429
+updated: "2026-11-24"
+last_updated_session: authoring-run/522ebc0c-e6e7-4b4a-9225-54318de68516
 ---
 
 # Managed OpenShell workload flow
@@ -170,8 +170,18 @@ its service for the app-server transport.
 ### 3. Select storage paths and connect the node
 
 For a saved native Git grant, Kubernetes Compute freezes the inspected image
-pair and the Agent's Gateway node URL. The Sandbox verifies the node setup
+and the Agent's Gateway node URL. `repositoryRuntimeInputs` also admits staged
+version 8 for Dedicated Codex or OpenClaw when the selected managed Sandbox,
+Credential Proxy, canonical Repository binding, immutable image and inspected
+Workspace route agree. A missing release pin or changed route blocks deployment;
+Codex qualifies the Gateway/Harness image pair, while OpenClaw qualifies its
+Gateway image in the Agent worker role. The Sandbox verifies the node setup
 against that URL and checks the exact Workspace rule during policy readback.
+For staged Repository delivery, its creation digest binds the fixed baseline
+while excluding Proxy-owned dynamic rules; observation separately verifies the
+complete configured and loaded credential policy. The Worker revalidates the
+saved Repository binding before preparation and activation. Withdrawal removes
+that Agent's effective Repository binding without retiring a shared Source.
 The generated Gateway pairs the node identified by the revision's binding.
 If an installed binding disappears, becomes invalid, or changes, the Gateway
 drops its acknowledgment and stops the process that holds the old File Transfer
@@ -244,6 +254,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-24 05:22: Trace staged Repository runtime qualification. (authoring-run/522ebc0c-e6e7-4b4a-9225-54318de68516 - e06270a6179d60c2aa88647bf8e71382589e81bb)
 
 - 2026-11-21 08:42: Require a current Workspace binding for the Gateway acknowledgment. (authoring-run/e0eab11e-42e2-49a4-bb29-18490c7d2429 - 785f76cca5bf3e6fa2f836c86389016dbc6f31db)
 
