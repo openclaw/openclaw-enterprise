@@ -47,7 +47,7 @@ import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
+import { createBackendWorkerDrivers } from "../helpers/postgres-backend-runtime.mjs";
 import type {
   BackendDefinition,
   ComputeDriver,

@@ -17,7 +17,7 @@ import {
   type OpenClawController,
 } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import type {
   RevisionFixture,
   WorkIdentity,

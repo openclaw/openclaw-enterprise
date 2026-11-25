@@ -20,7 +20,7 @@ import {
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
-import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
+import { createBackendFixture } from "../helpers/postgres-backend-runtime.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";

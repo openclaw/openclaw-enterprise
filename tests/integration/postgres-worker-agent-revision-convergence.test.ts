@@ -21,7 +21,8 @@ import {
   type OpenClawController,
   type DeploymentStatusResult,
 } from "../../packages/occ/src/index.ts";
-import { createBackendController, requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { createBackendController } from "../helpers/postgres-backend-runtime.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import type {
   RevisionFixture,
   WorkerEvent,

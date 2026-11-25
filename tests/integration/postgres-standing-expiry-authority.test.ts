@@ -2,7 +2,8 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { backendDefinition, createBackendController } from "../helpers/postgres-backend-state.mjs";
+import { backendDefinition } from "../helpers/postgres-backend-state.ts";
+import { createBackendController } from "../helpers/postgres-backend-runtime.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import {
   deferWork,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RepositoryCredentialRuntimeBinding } from "../../packages/contracts/src/index.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
   repositoryAttempts,
   repositoryBoundary,

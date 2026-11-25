@@ -7,9 +7,9 @@ import { authorizedPrincipal } from "./development-iam-state.ts";
 import {
   createBackendWorkerDrivers,
   createBackendController,
-  ensureInstallation,
-  requiresPostgres,
-} from "./postgres-backend-state.mjs";
+} from "./postgres-backend-runtime.mjs";
+import { ensureInstallation } from "./postgres-backend-state.ts";
+import { requiresPostgres } from "./postgres-database.mjs";
 import { waitFor } from "./wait-for.ts";
 import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
 import { freezeAgentRevision } from "../../packages/contracts/src/index.ts";

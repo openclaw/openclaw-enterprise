@@ -34,7 +34,7 @@ export async function persistPluginState(context: TestContext): Promise<void> {
     import("../helpers/development.mjs"),
     import("../../packages/occ/src/state/postgres-state.ts"),
     import("../helpers/configuration-driver.ts"),
-    import("../helpers/postgres-backend-state.mjs"),
+    import("../helpers/postgres-backend-runtime.mjs"),
   ]);
   const pool = new Pool({ connectionString: databaseUrl });
   context.after(() => pool.end());

@@ -3,7 +3,7 @@ import test, { type TestContext, type TestOptions } from "node:test";
 import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import type { Agent, HarnessAuthBinding } from "../../packages/contracts/src/index.ts";
 import type { RevisionFixture } from "../helpers/postgres-worker-refused-candidate.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 
 export type RuntimeDrivers = NonNullable<ControllerWorkerOptions["drivers"]>;

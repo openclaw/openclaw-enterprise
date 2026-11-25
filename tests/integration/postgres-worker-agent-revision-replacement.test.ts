@@ -8,7 +8,7 @@ import {
   type ControllerWorkState,
   type DeploymentStatusResult,
 } from "../../packages/occ/src/index.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { waitFor } from "../helpers/wait-for.ts";

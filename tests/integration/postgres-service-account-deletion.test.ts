@@ -8,13 +8,9 @@ import {
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
 import { registerAndSelectDrivers } from "../helpers/development.ts";
-import {
-  backendId,
-  createBackendFixture,
-  requiresPostgres,
-  seedBackendBinding,
-  workspaceId,
-} from "../helpers/postgres-backend-state.mjs";
+import { backendId, seedBackendBinding, workspaceId } from "../helpers/postgres-backend-state.ts";
+import { createBackendFixture } from "../helpers/postgres-backend-runtime.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
   "a forced ServiceAccount delete without a Driver returns the issuer receipt and preserves its Source",
