@@ -500,17 +500,34 @@ test("Compute observes only the Strands execution identity pinned by endpoint di
     });
   }
   await t.test("an unavailable read cannot establish loss", async () => {
+    pods = [original];
+    assert.deepEqual(await observe(), { state: "running" });
     receiptReadsForbidden = true;
     assert.deepEqual(await observe(), { state: "unknown" });
     receiptReadsForbidden = false;
     podReadFailure = Object.assign(new Error("Pod list unavailable"), { statusCode: 503 });
     assert.deepEqual(await observe(), { state: "unknown" });
     podReadFailure = undefined;
+    assert.deepEqual(await observe(), { state: "running" });
+    assert.equal(
+      (await endpoint()).tlsPeerCertificate,
+      new X509Certificate(originalPem).toString(),
+    );
+    assert.equal(receipts.length, 1);
+  });
+  await t.test("a partial Pod list cannot establish loss", async () => {
     pods = [replacement];
     podListContinuation = "original-may-be-on-the-next-page";
     assert.deepEqual(await observe(), { state: "unknown" });
     podListContinuation = undefined;
   });
+  await t.test(
+    "a Ready Pod cannot resume the pinned execution after a supervisor restart",
+    async () => {
+      pods = [{ ...original, status: { ...original.status, containerStatuses: [restarted] } }];
+      assert.deepEqual(await observe(), { state: "lost", code: "HARNESS_EXITED" });
+    },
+  );
   for (const [phase, supervisor] of [
     ["Pending", terminated],
     [
