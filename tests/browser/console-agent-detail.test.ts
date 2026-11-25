@@ -1322,6 +1322,76 @@ test("A refused harness grant read leaves an administrator's Deploy alone", asyn
   assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
 });
 
+test("Returning from Plugins preserves the reading position of a Configuration selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Reading position", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Reading position Agent",
+    nativeValues("base"),
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const marker = "here";
+  const trailingLines = Array<string>(24).fill("trailing line");
+  const draft = JSON.stringify(
+    { ...nativeValues("base"), notes: [marker, ...trailingLines] },
+    null,
+    2,
+  );
+  await editor.fill(draft);
+  await page.keyboard.press("Control+End");
+  // Move past the closing object, the closing array, and its trailing entries.
+  for (let i = 0; i < trailingLines.length + 2; i++) {
+    await page.keyboard.press("ArrowUp");
+  }
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  for (let i = 0; i < marker.length; i++) {
+    await page.keyboard.press("Shift+ArrowLeft");
+  }
+
+  const position = () =>
+    editor.evaluate((node) => {
+      if (!(node instanceof HTMLTextAreaElement)) {
+        throw new Error("Configuration JSON must be a textarea");
+      }
+      return {
+        selection: [node.selectionStart, node.selectionEnd, node.selectionDirection],
+        scroll: node.scrollTop,
+        maxScroll: node.scrollHeight - node.clientHeight,
+      };
+    });
+  const before = await position();
+  const start = draft.lastIndexOf(marker);
+  assert.deepEqual(before.selection, [start, start + marker.length, "backward"]);
+  assert.ok(before.scroll > 0 && before.scroll < before.maxScroll);
+
+  const configuration = page.getByRole("tab", { name: "Configuration", exact: true });
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await editor.waitFor({ state: "hidden" });
+  await configuration.click();
+  await editor.waitFor();
+  assert.ok(await hasFocus(configuration));
+  assert.deepEqual(await position(), before);
+  for (let i = 0; i < 20 && !(await hasFocus(editor)); i++) {
+    await page.keyboard.press("Tab");
+  }
+  await nextFrames(page);
+  assert.ok(await hasFocus(editor));
+  assert.deepEqual(await position(), before);
+  await page.keyboard.type("X");
+  assert.equal(
+    await editor.inputValue(),
+    draft.slice(0, start) + "X" + draft.slice(start + marker.length),
+  );
+});
+
 for (const [focus, refocus] of [
   ["status", false],
   ["editor", false],
