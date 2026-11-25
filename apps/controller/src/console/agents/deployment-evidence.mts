@@ -308,6 +308,7 @@ export function createDeploymentStatusPanel(
   onAgentChange: (
     agent: AgentReadWire,
     revisions: Awaited<ReturnType<typeof readRevisionPage>>,
+    afterSuccess: boolean,
   ) => void,
   onStatusChange: (activity: DeploymentActivity) => void,
   // Only the first panel replaces a loading placeholder on an already visible page.
@@ -425,19 +426,28 @@ export function createDeploymentStatusPanel(
     }
     render();
     try {
-      const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
+      const statusRead = Promise.allSettled([
         verifiedRecord ?? readDeployment(context, path, revision.id),
-        refreshAgent ? (context.request(path) as Promise<AgentReadWire>) : null,
-        refreshAgent ? readRevisionPage(context.request, path) : null,
       ]);
+      const readOverview = () =>
+        Promise.allSettled([
+          context.request(path) as Promise<AgentReadWire>,
+          readRevisionPage(context.request, path),
+        ]);
+      // An Agent read started before activation can still select the predecessor.
+      // Once success is known, the three reads can safely run together.
+      const parallelOverview =
+        refreshAgent && (verifiedRecord || lastRecord?.status === "succeeded")
+          ? readOverview()
+          : null;
+      const [statusResult] = await statusRead;
+      let overview = parallelOverview && (await parallelOverview);
       if (!context.isCurrent()) {
         return;
       }
-      if (
-        [statusResult, agentResult, revisionsResult].some(
-          (result) => result.status === "rejected" && requestFailure(result.reason).status === 401,
-        )
-      ) {
+      const expired = (result: PromiseSettledResult<unknown>) =>
+        result.status === "rejected" && requestFailure(result.reason).status === 401;
+      if (expired(statusResult) || overview?.some(expired)) {
         context.onExpired();
         return;
       }
@@ -469,6 +479,20 @@ export function createDeploymentStatusPanel(
         record = poll ? lastRecord : null;
       }
       if (refreshAgent) {
+        if (!overview) {
+          overview = await readOverview();
+          if (!context.isCurrent()) {
+            return;
+          }
+          if (overview.some(expired)) {
+            context.onExpired();
+            return;
+          }
+          if (started !== generation) {
+            return;
+          }
+        }
+        const [agentResult, revisionsResult] = overview;
         if (
           agentResult.status === "fulfilled" &&
           agentResult.value &&
@@ -476,7 +500,11 @@ export function createDeploymentStatusPanel(
           revisionsResult.value
         ) {
           try {
-            onAgentChange(agentResult.value, revisionsResult.value);
+            onAgentChange(
+              agentResult.value,
+              revisionsResult.value,
+              lastRecord?.status === "succeeded",
+            );
           } catch {
             // An overview that does not identify this Agent cannot invalidate its deployment record.
             overviewUnavailable = true;

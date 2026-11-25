@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-11-25
-last_updated_session: authoring-run/c98e1166-f5f2-4d30-a121-7747b0cbec27
+last_updated_session: authoring-run/d934978e-9431-406a-9237-dbffc2d7d88b
 ---
 
 # Console Agent editing and runtime requests
@@ -58,37 +58,37 @@ graph TD
 
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
-After reading the Agent, `loadDetails` settles history and snapshot independently.
-Rejected history warns beside readable drafts. Deploy stays unavailable.
-`snapshotErrorPanel` explains Configuration refusal and hides drafts. Numeric `401` returns to sign-in.
+After the Agent read, `loadDetails` settles history/snapshot independently.
+History errors warn beside readable drafts, blocking Deploy.
+`snapshotErrorPanel` explains Configuration refusal and hides drafts. `401` returns to sign-in.
 
 Browsing: `packages/occ/src/agent-queries.ts:listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing`.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns metadata
-plus `configurationReadError` on decode failure. Operational reads and queries stay strict. Unreadable drafts block editing and deployment without defaults.
+and `configurationReadError` on decode failure. Operational reads/queries stay strict. Unreadable drafts block editing/deployment without defaults.
 **Selected for service** uses `activeRevisionId`.
 **Viewing version** switches `revision=draft`/`revision=<id>` without activation.
-With confirmed Configuration `read`, **Draft credentials** and **Draft repositories**
-open draft tabs without copying snapshot values.
-**Load older versions** appends, keeps selection and focuses the picker after the last page.
+With Configuration `read`, **Draft credentials** and **Draft repositories** open drafts without copying snapshots.
+**Load older versions** appends, retaining selection and focusing the picker after pagination.
 `deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
 
-**Deployment** mounts activity, selected records, and diagnostics
-(`agents/deployment-evidence.mts`); polling spans tabs.
-Activity and label cannot anchor scrolling (`console.css`).
-`detail.mts:renderTab` offers **Retry** for transient snapshot errors.
+**Deployment** shows activity, selected records and diagnostics
+(`agents/deployment-evidence.mts`). `console.css` prevents activity/label scroll anchoring.
+`detail.mts:renderTab` offers Retry for transient snapshot errors.
 After `FIRST_ACTIVITY_WAIT_MS`, completion folds unless cleanup, warnings,
-repository access, or overview errors need attention; outcomes remain.
+repository access or overview errors need attention. Outcomes remain.
 
-**Refresh deployment** queues the latest readable revision’s record/overview reread.
-**Refresh record** rereads the viewed revision, retaining focus and ignoring repeats.
-`createDeploymentStatusPanel` polls pending deployments/cleanup through outages.
-`show` renders without `onFreshRecord`, which retries failed overviews on fresh matching terminal reads.
-`terminalOverview` shares per-outcome Agent/history reads. `recordGeneration` rejects stale records.
-After success, `detail.mts:versionNotice` waits for this overview. Unclassified
-snapshots show only their read-only status.
+**Refresh deployment** queues the latest readable record, then parallel Agent/history
+reads. Known success allows all three concurrently. **Refresh record** rereads the
+viewed version, preserves focus and ignores repeats. `createDeploymentStatusPanel`
+polls pending deployments/cleanup across tabs and outages. `show` never calls
+`onFreshRecord`, which retries failed overviews on fresh matching terminal reads.
+`terminalOverview` shares per-outcome reads. `recordGeneration` rejects stale records.
+After success, `detail.mts:versionNotice` awaits selection. Unknown status shows
+read-only. Only post-success Agent reads confirm newer hidden selections.
+Failed refreshes preserve confirmation for the same selection.
 Refusals clear caches/reads, opening details. Matching errors share alerts. `401` expires sessions.
-Revision changes replace **View deployment**. Same-revision updates preserve focus.
+Revision changes replace **View deployment**. Otherwise focus stays.
 
 Each surface shows revision-specific `repositoryAccess.message` beside unchanged outcomes.
 Conditions reveal details without deploying. Missing guidance leaves repository health unknown.
@@ -368,6 +368,6 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
-- 2026-11-25 03:04: Trace version notices. (authoring-run/c98e1166-f5f2-4d30-a121-7747b0cbec27 - a517e965f8dd3190658b6400e770d41446b8de87)
+- 2026-11-25 03:23: Version notices. (authoring-run/d934978e-9431-406a-9237-dbffc2d7d88b - 6850c03bd0f10b154eed337d8598417d53b62499)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

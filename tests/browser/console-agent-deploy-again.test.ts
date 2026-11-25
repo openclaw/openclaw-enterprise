@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { TestContext } from "node:test";
-import type { BrowserContextOptions, Page } from "playwright";
+import type { BrowserContextOptions, Page, Request } from "playwright";
 import type {
   Agent,
   AgentRevision,
@@ -549,10 +549,12 @@ async function deployingVersion(
   {
     status = "running",
     older = false,
+    hideCurrent = false,
     beforeLogin,
   }: {
     status?: "queued" | "running" | "succeeded";
     older?: boolean;
+    hideCurrent?: boolean;
     beforeLogin?: (
       page: Page,
       resources: {
@@ -569,6 +571,9 @@ async function deployingVersion(
     name,
     { older },
   );
+  if (hideCurrent) {
+    denyRevisionRead(fixture, namespace, current);
+  }
   const record: {
     status: "queued" | "running" | "succeeded" | "failed";
     fail: false | 503 | 403 | 429;
@@ -938,6 +943,72 @@ test("A completed record with no failed Agent reread leaves the newest version H
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deployed version/).count(), 0);
 });
+
+for (const refresh of ["manual refresh", "automatic poll"]) {
+  test(`Completion during ${refresh} does not mistake a hidden predecessor for a newer version`, async (t) => {
+    const { fixture, namespace, agent, current, next, page, record, summary } =
+      await deployingVersion(t, "Hidden predecessor", { hideCurrent: true });
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+    await summary.getByText("A version you cannot read", { exact: true }).waitFor();
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    const complete = async () => {
+      await fixture.activateRevision(namespace.id, agent.id, next.id, current.id);
+      record.status = "succeeded";
+    };
+    const falseOrder = /newer version|is older/i;
+    if (refresh === "manual refresh") {
+      await showDeploymentTab(page);
+      const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, next.id);
+      const gate = Promise.withResolvers<void>();
+      t.after(() => gate.resolve());
+      await page.route(recordUrl, async (route) => {
+        await gate.promise;
+        await route.fallback();
+      });
+      // If Refresh reads the Agent concurrently, let it see v1 before v2 completes.
+      const reads: Request[] = [];
+      page.on("request", (request) => {
+        if (request.url() === agentUrl) {
+          reads.push(request);
+        }
+      });
+      const pending = page.waitForRequest(recordUrl);
+      await page.getByRole("button", { name: "Refresh deployment" }).click();
+      await pending;
+      await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+      for (const read of reads) {
+        const response = await read.response();
+        assert.ok(response);
+        assert.equal(response.status(), 200);
+        assert.equal((await response.json()).data.activeRevisionId, current.id);
+      }
+      await complete();
+      gate.resolve();
+      // Wait for either displayed outcome so stale selection fails here, not on a timeout.
+      await summary.getByText(/^(v2 · Completed|Newer version hidden)$/).waitFor();
+      assert.doesNotMatch(await summary.innerText(), falseOrder);
+      assert.equal(reads.length, 1);
+    } else {
+      const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+      await complete();
+      const selection = await holdRequests(t, page, agentUrl, { method: "GET", once: true });
+      await page.clock.runFor(DEPLOYMENT_POLL_MS);
+      await selection.requested;
+      // Success alone cannot order v2 against the last known, unreadable selection.
+      assert.doesNotMatch(await summary.innerText(), falseOrder);
+      assert.equal(
+        await page.locator(".version-selection-notice").innerText(),
+        "Read-only admitted snapshot.",
+      );
+      selection.release();
+    }
+    await summary.locator("strong").filter({ hasText: /^v2$/ }).waitFor();
+    assert.match(await page.locator(".version-selection-notice").innerText(), /^Current version/);
+    await summary.getByText("v2 · Completed", { exact: true }).waitFor();
+    assert.doesNotMatch(await summary.innerText(), falseOrder);
+    assert.equal(record.recordReads, 2);
+  });
+}
 
 // v3 is current but this reader cannot read it, so completed v2 is the newest version listed and
 // already known to be older than the current one. A failed Agent reread on Refresh deployment
