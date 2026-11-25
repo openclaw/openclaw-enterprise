@@ -6,18 +6,18 @@ author: stevenlee-oai
 
 # Gateway startup credentials
 
-**RFC-20261125-gateway-startup-credentials** · Created 2026-11-25
+**RFC-20261125-gateway-startup-credentials** · Created 2026-11-25 · [Implementation plan](../plans/20261125-gateway-startup-credentials.md)
 
 A Gateway needs usable credentials to connect to services such as Slack. Today, Slack uses Namespace Secrets. [Credential Design 1.0](20261124-credential-design-1-0/index.md) also lets TokenService own credentials, including material held by OpenShell outside Kubernetes. The Gateway has no startup path for those Sources.
 
-**Approach:** Keep the dedicated Gateway's existing canonical Namespace Secret projection and embedded Secret delivery unchanged. For a CredentialSource, the OCC deployment worker authorizes the exact binding, resolves its value from the admitted TokenService owner, and gives Compute the value for dedicated Gateway startup.
+**Approach:** Use `Configuration.secretBindings` to select credentials for Gateway startup. An authorized caller can explicitly bind any supported static CredentialSource, including one also used by Credential Proxy. The OCC worker authorizes the exact binding and resolves TokenService's value; Compute delivers it only to the dedicated Gateway. No Gateway-specific Source profile or native field allowlist is required. Preserve existing Namespace Secret delivery.
 
-**Tradeoff:** This works without changing the Gateway or transferring authoritative custody. But Kubernetes needs a second usable copy in the Gateway Pod namespace. Anyone allowed to create or change workloads there can mount that copy elsewhere. A running Gateway also retains its old value until redeploy, and revocation cannot erase its environment. Source delivery must remain disabled until this exposure is approved or stronger isolation is available.
+**Accepted tradeoff:** An explicit Gateway binding authorizes a usable copy outside Credential Proxy's request restrictions. Kubernetes stages that copy in the Gateway Pod namespace, where workload managers can mount it elsewhere. The running Gateway retains its startup value until managed redeploy; revocation does not erase its environment or immediately remove the staged copy.
 
 ## Delivery flow
 
-1. OCC admits only eligible, ready Sources from the selected TokenService instance, with supported dedicated Gateway delivery. Every Source's immutable owner must match both the selected instance and the instance saved in the revision. Reject Source or exported Gateway delivery in embedded mode, and reject unsupported bindings before saving the revision.
-2. The [worker](../../apps/controller/src/worker.ts) calls the selected Compute Driver's `prepareRevision` with a revision context. The Driver runs in the worker process; there is no separate Compute Pod receiving the value. When it needs startup material, the Driver invokes `context.gatewayStartupCredentials.resolve(signal)`. This worker-owned callback verifies the claim, Agent state, revision, owner, eligibility, and both principals' grants before and after reading from TokenService (or the selected Secret Driver for a supported export), then returns a map of Gateway environment names to values in process memory. The Driver cannot select another Source or destination; there is no fallback.
+1. OCC admits a ready static Source from the same Namespace when its recorded owner matches the selected TokenService instance and dedicated Gateway export is supported. Model presets, Connection Templates, and other consumer bindings do not disqualify it. Record the selected instance in the revision. Reject unsupported or embedded Source delivery before saving the revision.
+2. The [worker](../../apps/controller/src/worker.ts) calls Compute's `prepareRevision`. Compute runs in the worker process and invokes `context.gatewayStartupCredentials.resolve(signal)`. The worker verifies the claim, Agent, revision, owner, supported binding, and both principals' grants before and after reading from TokenService (or the selected Secret Driver for a supported export). It returns only the explicitly bound Gateway environment names and values in memory.
 3. The selected Compute Driver owns delivery. **Kubernetes Compute** writes the exported values through the Kubernetes API into a revision-specific Secret in the Gateway Pod namespace. It configures the Gateway container's `env[].valueFrom.secretKeyRef` to reference that Secret; the kubelet reads it and supplies the environment when starting the Pod. Existing canonical Namespace Secrets remain direct references. A different Compute Driver must provide its own qualified startup transport or reject the binding; it does not automatically create a Kubernetes Secret. Where used, the selected Secret Driver owns Secret storage or export; it does not choose Compute's startup transport.
 4. For exported delivery, Compute authorizes all Gateway bindings immediately before any mutation that can start the Gateway, including mixed bindings and retries. Authorization, read, and staging failures precede that mutation; a later Kubernetes `Recreate` rollout failure can interrupt the predecessor. Sanitize errors and remove abandoned or retired copies without deleting owner material.
 
@@ -27,15 +27,15 @@ If a candidate staged A but has not launched when the owner changes to B, retry 
 
 ### APIs
 
-Extend [SecretBinding.source](../../packages/contracts/src/index.ts) with `CredentialSourceReference` alongside `SecretReference`. Keep exact same-Namespace references, environment destinations, limits, and reserved names. Existing Slack discovery and preflight stay unchanged; refuse Source-backed Slack fields until those consumers are separately extended and qualified.
+Extend [SecretBinding.source](../../packages/contracts/src/index.ts) with `CredentialSourceReference` alongside `SecretReference`. Keep exact same-Namespace references, environment destinations, limits, reserved names, and native Configuration validation. Do not add a Gateway field allowlist. Existing Slack discovery and preflight remain Namespace Secret-only. If an enabled Slack credential input selects a Source, refuse that unsupported integration until qualified; an environment name alone does not disqualify a Gateway binding.
 
 ### IAM
 
-Reuse `operate` on each exact Secret or Source. Configuration save and Agent assignment require the caller's grant; deployment requires both deployer and Agent service principal grants.
+Reuse `operate` on each exact Secret or Source, with the normal Configuration, Agent, and deployment permissions. Configuration save and Agent assignment require the caller's grant; deployment requires both deployer and Agent service principal grants. These permissions authorize explicit Gateway export even when the Source is also used through Credential Proxy.
 
 ### Database entities
 
-Persist references, never values, in Configuration and Agent revision. Record one private `gatewayTokenServiceInstanceId` for all Gateway Source bindings. Do not add them to Harness credential lists. Block Source removal or withdraw its references and delivery copies first; include Configurations, Agents, queued or active revisions, and queued or running provisioning plans. Gateway-only Sources must not acquire Proxy or other consumer associations through enrollment, update, or withdrawal.
+Persist references, never values, in Configuration and Agent revision. Record one private `gatewayTokenServiceInstanceId` for all Gateway Source bindings. Gateway bindings do not create Harness or Proxy bindings. Changing a Gateway binding must not change another consumer's binding. Block Source removal or withdraw all references and delivery copies first; include Configurations, Agents, queued or active revisions, and queued or running provisioning plans.
 
 ### Driver contracts
 
@@ -52,28 +52,23 @@ For exported inputs, require both methods: `resolve` returns only the selected G
 
 ## Initial support
 
-| Owner or Compute                               | Scope                                                                                                                                   |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Kubernetes Namespace Secret                    | Existing Slack path; preserve canonical Secret freshness when a Pod is replaced.                                                        |
-| OCC TokenService                               | Propose static Sources with Kubernetes dedicated Gateway delivery.                                                                      |
-| OpenShell TokenService                         | Preserve external custody and authorized operator export. Its current OpenAI model profile does not qualify Gateway channel enrollment. |
-| Other Secret Drivers or non-Kubernetes Compute | Refuse until secure read or projection, startup delivery, and cleanup are qualified.                                                    |
+| Owner or Compute                               | Scope                                                                                                  |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Kubernetes Namespace Secret                    | Existing Slack path; preserve canonical Secret freshness when a Pod is replaced.                       |
+| OCC TokenService                               | Propose static Sources with Kubernetes dedicated Gateway delivery.                                     |
+| OpenShell TokenService                         | Preserve external custody; qualify authorized operator export and Gateway startup delivery separately. |
+| Other Secret Drivers or non-Kubernetes Compute | Refuse until secure read or projection, startup delivery, and cleanup are qualified.                   |
 
 ## Simplifications
 
 Keeping only Namespace Secrets would be simpler, but would not let a Gateway consume TokenService-owned material. Having the Gateway fetch from TokenService avoids a delivery copy but requires new Gateway integration and authorization. The proposed worker path reuses current owner resolution and Compute startup delivery. No infrastructure simplifications.
-
-## Decisions needed
-
-- Accept access by Gateway namespace workload managers, or require stronger isolation.
-- Define the Gateway-only profile and allowed fields for the existing `static` Source type; qualify OpenShell separately.
-- Decide whether immediate copy removal on revocation or current values on bare Pod restart are required. Recommend OCC-managed redeploy as the initial freshness guarantee.
 
 ## Acceptance Criteria
 
 Use the real API, PostgreSQL worker, Kubernetes Compute, and native Gateway process:
 
 - **AC1:** The Gateway observes A, keeps A after its Source is replaced with B, and observes B after managed redeploy. An unlaunched retry staged with A must start with B. Verify process identity and compare a digest without exposing plaintext.
-- **AC2:** Deny each principal, revoke during owner I/O, and deny staged reuse; each must prevent Gateway mutation. A queued provisioning plan as the sole reference must block Source deletion. Check sanitized failures.
+- **AC2:** Deny each principal, revoke during owner I/O, and deny staged reuse; each must prevent Gateway mutation. A queued provisioning plan as the sole reference must block Source deletion. Verify attributable evidence for the actor, exact Source and revision, without credential values, and sanitized failures.
 - **AC3:** Verify Gateway-only projection, cleanup, and that ordinary workload identities cannot read the copy or create workloads that mount it. This does not protect against namespace administrators.
 - **AC4:** Preserve Slack preflight and discovery checks. A canonical Secret update followed by bare Gateway Pod replacement must observe the update. Qualify actual OpenShell export separately.
+- **AC5:** Explicitly bind a static Source already used through Credential Proxy. Verify that only the Gateway receives the exported copy, the original Proxy binding continues to enforce its request restrictions, and removing the Gateway binding leaves the Proxy binding intact. Without the Gateway binding, no Gateway copy is created.
