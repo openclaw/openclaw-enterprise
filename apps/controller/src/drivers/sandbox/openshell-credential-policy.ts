@@ -173,13 +173,24 @@ type CheckedRequest =
       readonly port: number;
     };
 
-function checkedRequest(request: DeploymentRequestMatch): CheckedRequest {
+type ExecutableRequest = Extract<DeploymentRequestMatch, { readonly binary: string }>;
+
+function requireExecutable(request: DeploymentRequestMatch): asserts request is ExecutableRequest {
+  if (
+    "subject" in request ||
+    typeof request.binary !== "string" ||
+    !request.binary.startsWith("/")
+  ) {
+    credentialPolicyFailure();
+  }
+}
+
+function checkedRequest(request: ExecutableRequest): CheckedRequest {
   const selector = request.requestPolicy;
   const port = request.ports[0]?.from;
   const path = selector?.path;
   if (
     (selector?.type !== "http" && selector?.type !== "mcp") ||
-    !request.binary.startsWith("/") ||
     /[\0*?[\]]/.test(request.binary) ||
     request.binary.split("/").includes("..") ||
     !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(request.host) ||
@@ -215,7 +226,7 @@ function checkedRequest(request: DeploymentRequestMatch): CheckedRequest {
   };
 }
 
-function checkedHttpRequest(request: DeploymentRequestMatch) {
+function checkedHttpRequest(request: ExecutableRequest) {
   const checked = checkedRequest(request);
   if (checked.protocol !== "rest") {
     credentialPolicyFailure();
@@ -288,6 +299,7 @@ export function compileOpenShellCredentialPolicy(
   const environments = new Set<string>();
   const routes = new Map<string, MutableCredentialRoute>();
   for (const network of policy.networkAccessPolicy.allowed) {
+    requireExecutable(network);
     if (network.requestPolicy !== undefined) {
       checkedRequest(network);
     }
@@ -316,6 +328,7 @@ export function compileOpenShellCredentialPolicy(
     environments.add(environment);
     const provider = openShellBindingProviderName(binding, nativeSourceOwner);
     for (const request of requests) {
+      requireExecutable(request);
       const checked = checkedRequest(request);
       const { method, path, port, protocol } = checked;
       const pluginId = binding.consumer.kind === "plugin" ? binding.consumer.pluginId : undefined;
@@ -519,6 +532,7 @@ function openShellPublicRoutes(
     }
   >();
   for (const request of networkOnly) {
+    requireExecutable(request);
     const { method, path, port } = checkedHttpRequest(request);
     if (
       routes.some(

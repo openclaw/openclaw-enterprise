@@ -148,7 +148,16 @@ export interface ModelCredentialPreset {
   >["projection"];
 }
 
+/** Installation approval for one model request by every process of this Agent. */
+export type AgentModelGrant = (input: {
+  readonly sandbox: SandboxDriver | undefined;
+  readonly agent: Readonly<Agent>;
+  readonly source: Readonly<CredentialSource> | undefined;
+  readonly harness: RevisionHarnessDescriptor;
+}) => Extract<DeploymentRequestMatch, { subject: "agent" }> | undefined;
+
 interface PreparedModelCredentialDeployment {
+  readonly agentGrant: ReturnType<AgentModelGrant>;
   readonly source: Readonly<CredentialSource>;
   readonly preset: ModelCredentialPreset;
   readonly owner: InstalledDriver;
@@ -233,6 +242,7 @@ export interface DeploymentAdmissionDependencies {
         readonly harness: RevisionHarnessDescriptor;
       }) => ModelCredentialPreset | undefined)
     | undefined;
+  readonly agentModelGrant: AgentModelGrant | undefined;
   readonly supportsCredentialDeployment:
     | ((input: {
         readonly sandbox: SandboxDriver;
@@ -305,12 +315,14 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
   }
 
   function prepareModelCredentialDeployment(
+    agent: Readonly<Agent>,
     source: CredentialSource | undefined,
     presetId: SourceProviderPresetId | "builtin_codex" | undefined,
     harness: RevisionHarnessDescriptor,
     configuration: OpenClawConfigurationDocument,
     sandbox: SandboxDriver | undefined,
   ): PreparedModelCredentialDeployment | undefined {
+    const agentGrant = dependencies.agentModelGrant?.({ agent, source, harness, sandbox });
     if (!source || !presetId) {
       return undefined;
     }
@@ -326,12 +338,12 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         "The selected model has no matching approved source preset and explicit inference route.",
       );
     }
-    return { source, preset, ...delivery };
+    return { source, preset, agentGrant, ...delivery };
   }
 
   function admitModelCredentialBinding(
-    { source, preset }: PreparedModelCredentialDeployment,
-    networkGrants: readonly DeploymentRequestMatch[],
+    { source, preset, agentGrant }: PreparedModelCredentialDeployment,
+    networkGrants: readonly SandboxNetworkGrant[],
   ) {
     const presetId = permittedModelCredentialPresetId(source);
     const fixedCodexModel = presetId === "builtin_codex" || presetId === "codex-pat";
@@ -343,6 +355,19 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         ports: [{ from: destination.port, to: destination.port }],
         requestPolicy: { type: "http", method: destination.method, path: destination.path },
       } satisfies Omit<DeploymentRequestMatch, "binary">;
+      if (agentGrant) {
+        if (
+          networkGrants.length !== 0 ||
+          preset.destinations.length !== 1 ||
+          !isDeepStrictEqual({ ...route, subject: "agent" }, agentGrant)
+        ) {
+          throw new ResourceStateConflictError(
+            "The whole-Agent model grant requires its exact route without other network grants.",
+          );
+        }
+        automaticNetwork.push(agentGrant);
+        return agentGrant;
+      }
       const destinationGrants = networkGrants.filter((grant) =>
         sandboxNetworkGrantsWithinCeiling([{ ...route, binary: grant.binary }], [grant]),
       );
@@ -433,7 +458,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     if (stagedModel !== undefined) {
       const { binding, injectionPolicy, automaticNetwork } = admitModelCredentialBinding(
         stagedModel,
-        network,
+        additions,
       );
       network.push(...automaticNetwork);
       bindings.push(binding);
@@ -506,7 +531,12 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     let supported = false;
     try {
       supported =
-        sandboxNetworkGrantsWithinCeiling(network, dependencies.sandboxNetworkPolicyCeiling) &&
+        sandboxNetworkGrantsWithinCeiling(
+          network,
+          stagedModel?.agentGrant
+            ? [stagedModel.agentGrant]
+            : dependencies.sandboxNetworkPolicyCeiling,
+        ) &&
         dependencies.supportsCredentialDeployment?.({
           sandbox: delivery.sandbox,
           proxy: delivery.proxy,
@@ -1113,6 +1143,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         configuration.values,
       );
       const stagedModel = prepareModelCredentialDeployment(
+        lockedAgent,
         modelSource,
         presetId,
         revisionHarness,

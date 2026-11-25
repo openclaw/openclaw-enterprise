@@ -186,7 +186,11 @@
         "Strands routing keeps explicit connection factories on the provider proxy",
         "a loopback readiness probe retains capacity when all session channels are busy",
         "a terminal frame flushes queued TCP output",
-        "the policy proxy delivers the complete response to a slow reader at EOF"
+        "the policy proxy delivers the complete response to a slow reader at EOF",
+        "stock control waits for its pin, connects once and stops the child on loss",
+        "a missing pin or a replacement Pod cannot activate stock control",
+        "stock bootstrap refuses missing or overridden placeholders without logging credentials",
+        "only Worker diagnostics expose held versions and a fresh challenge on the pinned control channel"
       ]
     },
     {

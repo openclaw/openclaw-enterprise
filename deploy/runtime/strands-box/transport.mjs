@@ -19,7 +19,7 @@ export function write(stream, data) {
   return stream.write(data);
 }
 
-export function framed(reader, writer, receive, failed) {
+export function framed(reader, writer, receive, failed, preamble = undefined) {
   let pending = Buffer.alloc(0);
   let stopped = false;
   const drainWaiters = new Set();
@@ -59,6 +59,7 @@ export function framed(reader, writer, receive, failed) {
         }
         const message = JSON.parse(pending.subarray(0, end).toString());
         pending = pending.subarray(end + 1);
+        if (preamble?.(message)) continue;
         if (
           !message ||
           typeof message !== "object" ||

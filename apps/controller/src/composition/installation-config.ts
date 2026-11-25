@@ -8,6 +8,11 @@ import {
   prepareOpenShellRepositorySource,
   supportsOpenShellCredentialDeployment,
 } from "./openshell-credential-admission.ts";
+import {
+  strandsBoxAgentModelGrant,
+  supportsStrandsBoxCredentialDeployment,
+} from "./strands-box-credential-admission.ts";
+import { StrandsBoxCredentialProxyDriver } from "../drivers/credential-proxy/strands-box.ts";
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
 import type { NamespaceLifecycleBinding } from "@openclaw-enterprise/occ";
 import {
@@ -50,6 +55,7 @@ import {
   PERMISSION_ACTIONS,
   RepositoryNetworkPolicyAdmissionError,
   RESOURCE_KINDS,
+  SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
 } from "@openclaw-enterprise/contracts";
 import type {
@@ -104,6 +110,7 @@ import {
   PreprovisionedKubernetesNamespace,
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
+import type { StrandsBoxOptions } from "../drivers/sandbox/strands-box.ts";
 import { ManagedOpenShellSandbox } from "../drivers/sandbox/openshell/managed.ts";
 import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
 import {
@@ -229,6 +236,7 @@ export function installationControllerOptions(
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
   | "modelCredentialSourcePresets"
+  | "agentModelGrant"
   | "modelCredentialPreset"
   | "repositoryCredentialAdmission"
   | "stagedRepositoryCeiling"
@@ -273,7 +281,9 @@ export function installationControllerOptions(
         return false;
       }
     },
-    supportsCredentialDeployment: supportsOpenShellCredentialDeployment,
+    agentModelGrant: strandsBoxAgentModelGrant,
+    supportsCredentialDeployment: (input) =>
+      supportsOpenShellCredentialDeployment(input) || supportsStrandsBoxCredentialDeployment(input),
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
     repositoryNetworkPolicyCeiling: installation?.repositoryNetworkPolicyCeiling ?? [],
@@ -342,7 +352,11 @@ export function credentialSourceDeliveryBinding(
   }
   return async (proxy, namespace, source, signal) => {
     const compute = drivers.computeDriver;
-    if (!(proxy instanceof OpenShellCredentialProxyDriver) || !compute.resolveSandboxNamespace) {
+    if (
+      (!(proxy instanceof OpenShellCredentialProxyDriver) &&
+        !(proxy instanceof StrandsBoxCredentialProxyDriver)) ||
+      !compute.resolveSandboxNamespace
+    ) {
       throw new DependencyUnavailableError(
         "The selected credential delivery Proxy cannot retire this Source.",
       );
@@ -896,6 +910,9 @@ export async function readPublicCaBundle(path: string): Promise<string> {
   return certificates.map((certificate) => new X509Certificate(certificate).toString()).join("\n");
 }
 
+const STRANDS_STAGED_MODEL_ID = "strands-box-sandbox-stock-model-source-v1";
+const STRANDS_STOCK_MODEL_ID = "strands-box-sandbox-stock-model-credential-preview-v1";
+
 export async function loadInstallationConfiguration(options: {
   readonly mode: "development" | "production";
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -1067,6 +1084,18 @@ async function composeInstallationConfiguration(
   let repositoryTransportConfiguration = repositoryConfiguration?.transport;
   const sandboxSelection =
     drivers.sandbox === undefined ? undefined : object(drivers.sandbox, "drivers.sandbox");
+  if (
+    sandboxSelection?.id === STRANDS_STOCK_MODEL_ID ||
+    sandboxSelection?.id === STRANDS_STAGED_MODEL_ID
+  ) {
+    throw new InstallationFieldError([
+      {
+        path: "/drivers/sandbox/id",
+        code: "INVALID_VALUE",
+        message: "Select strands-box-sandbox to configure the bundled Strands Box Sandbox Driver.",
+      },
+    ]);
+  }
   let proxySelection: SelectedDriverConfiguration | undefined;
   let packageProxyId: string | undefined;
   let egressAuthority: EgressAuthorityConfiguration | undefined;
@@ -1235,7 +1264,7 @@ async function composeInstallationConfiguration(
       ? await loadBundledOpenShellSandboxDriver()
       : undefined;
 
-  const sandbox =
+  let sandbox =
     sandboxSelection === undefined
       ? undefined
       : selected(
@@ -1244,6 +1273,23 @@ async function composeInstallationConfiguration(
           sandboxPackage?.implementation ?? (boxPackage ? "strands-box" : "openshell"),
           sandboxPackage?.module ?? boxPackage ?? bundledSandboxPackage!,
         );
+  const launcher =
+    boxPackage && sandbox
+      ? (sandbox.configuration as unknown as StrandsBoxOptions).kubernetes.stockLauncher
+      : undefined;
+  if (launcher && sandbox) {
+    // Pin the saved revision to this credential boundary before a worker can prepare it.
+    sandbox = Object.freeze({
+      ...sandbox,
+      id: launcher.agentGrants ? STRANDS_STAGED_MODEL_ID : STRANDS_STOCK_MODEL_ID,
+      ...(launcher.agentGrants && {
+        definition: {
+          ...sandbox.definition,
+          configurationContributions: [SandboxNetworkPolicyConfiguration],
+        },
+      }),
+    });
+  }
   let tokenServiceSelection: SelectedDriverConfiguration | undefined;
   if (drivers.token_service !== undefined) {
     const selection = object(drivers.token_service, "drivers.token_service");
@@ -1265,6 +1311,17 @@ async function composeInstallationConfiguration(
     } else {
       throw new Error("drivers.token_service.id must select occ, or openshell in development.");
     }
+  }
+  if (
+    launcher?.agentGrants &&
+    (tokenServiceSelection?.implementation !== OCCTokenServiceDriver.implementation ||
+      options.createSandboxDriver ||
+      sandboxNetworkPolicyCeiling?.length ||
+      repositoryNetworkPolicyCeiling?.length)
+  ) {
+    throw new Error(
+      "Staged Strands Box requires the bundled Sandbox, OCC TokenService and no additional network grants.",
+    );
   }
   const openShellServiceIntegration =
     kubernetesCompute &&
@@ -1609,7 +1666,7 @@ async function composeInstallationConfiguration(
       }
       return {
         sandboxDriver: new boxPackage.StrandsBoxSandboxDriver(
-          sandbox.configuration as unknown as import("../drivers/sandbox/strands-box.ts").StrandsBoxOptions,
+          sandbox.configuration as unknown as StrandsBoxOptions,
           {
             id: sandbox.id,
             authentication: kubernetes.authentication,
@@ -1733,6 +1790,17 @@ async function composeInstallationConfiguration(
       { capabilities: { sandbox: sandboxDriver, credential_proxy_delivery: deliveryProxy } },
     );
   }
+  if (
+    boxPackage &&
+    sandbox &&
+    sandboxDriver instanceof boxPackage.StrandsBoxSandboxDriver &&
+    sandboxDriver.agentResponsesGrant
+  ) {
+    const deliveryProxy = new StrandsBoxCredentialProxyDriver(sandboxDriver);
+    credentialDeliveryRegistration = new InstalledDriver(sandbox, {
+      capabilities: { sandbox: sandboxDriver, credential_proxy_delivery: deliveryProxy },
+    });
+  }
   const selectsOpenShellTokenService =
     tokenServiceSelection?.implementation === OpenShellTokenServiceDriver.implementation;
   if (
@@ -1819,7 +1887,8 @@ async function composeInstallationConfiguration(
       selection,
     );
   }
-  const sandboxOwner = credentialDeliveryRegistration ?? protectedDriver ?? sandboxDriver;
+  const sandboxOwner: InstalledDriver | SandboxDriver | undefined =
+    credentialDeliveryRegistration ?? protectedDriver ?? sandboxDriver;
   const namespaceLifecycleBindings =
     sandboxDriver === undefined || sandboxOwner?.namespaceLifecycleHooks !== undefined
       ? []

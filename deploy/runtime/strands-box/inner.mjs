@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, mkdirSync } from "node:fs";
+import { lstatSync, readFileSync, mkdirSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { spawn } from "node:child_process";
 import {
@@ -15,6 +15,29 @@ import {
 } from "./transport.mjs";
 
 const manifest = JSON.parse(readFileSync(process.argv[2], "utf8"));
+if (manifest.stockTransport !== undefined) {
+  if (
+    manifest.stockTransport !== true ||
+    !/^strands_box_[0-9a-f]{64}$/u.test(process.env.OPENAI_API_KEY ?? "") ||
+    Object.hasOwn(process.env, "OCE_STRANDS_OPENAI_KEY") ||
+    Object.hasOwn(manifest.environment, "OCE_STRANDS_OPENAI_KEY") ||
+    Object.hasOwn(manifest.environment, "OPENAI_API_KEY") ||
+    Object.keys(manifest.secretEnvironment ?? {}).length
+  ) {
+    throw new Error("Invalid Strands Box credential environment");
+  }
+  const { requireStockProfile, requireStockMasks } = await import("./stock-guard.mjs");
+  requireStockProfile();
+  requireStockMasks();
+  if (
+    manifest.stockStaged !== undefined &&
+    ["/run/strands-material", "/run/strands-release", "/run/strands-stock"].some((path) =>
+      lstatSync(path, { throwIfNoEntry: false }),
+    )
+  ) {
+    throw new Error("Exposed stock Strands Box launch files");
+  }
+}
 const boxProxy = new URL(process.env.HTTPS_PROXY);
 if (boxProxy.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(boxProxy.hostname)) {
   throw new Error("Missing Box-owned proxy");

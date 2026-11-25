@@ -31,6 +31,7 @@
     "openshell-linear": "./test-suites/openshell-linear.json",
     "provider-cutover": "./test-suites/provider-cutover.json",
     "strands-listener-replacement": "./test-suites/strands-listener-replacement.json",
+    "strands-stock-model": "./test-suites/strands-stock-model.json",
     "openshell-oauth": "./test-suites/openshell-oauth.json",
     "openshell-token-service": "./test-suites/openshell-token-service.json",
     "openshell-token-service-agent": "./test-suites/openshell-token-service-agent.json",

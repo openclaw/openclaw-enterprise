@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
@@ -23,6 +23,12 @@ import {
 } from "../../deploy/runtime/strands-box/transport.mjs";
 import { connect as tlsConnect } from "node:tls";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
+import {
+  acceptStockControl,
+  connectStockControl,
+  pipeStockBox,
+} from "../../deploy/runtime/strands-box/stock-launch-transport.mjs";
+import { holdStockKey } from "../../deploy/runtime/strands-box/stock-stage.mjs";
 import { serveHarness } from "../../deploy/runtime/strands-box/supervisor.mjs";
 
 type Frame =
@@ -58,7 +64,14 @@ function tcpPort(server: Pick<Server, "address">): number {
   return address.port;
 }
 
-async function supervisor(t: TestContext) {
+async function supervisor(
+  t: TestContext,
+  staged?: {
+    tls: Awaited<ReturnType<typeof harnessTlsFixture>>;
+    control: Socket;
+    target: { configurationId: string; sourceId: string };
+  },
+) {
   const reservation = createTcpServer();
   await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
   const port = tcpPort(reservation);
@@ -77,7 +90,7 @@ async function supervisor(t: TestContext) {
   });
   gateway.connections = 0;
   await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
-  const tls = await harnessTlsFixture(t);
+  const tls = staged?.tls ?? (await harnessTlsFixture(t));
   const probePath = join(tls.directory, "probe.sock");
   const serving = serveHarness(
     {
@@ -85,11 +98,13 @@ async function supervisor(t: TestContext) {
       statusPort: 0,
       revisionId: "test-revision",
       transportHash: createHash("sha256").update(token).digest("hex"),
-      gateway: { host: "127.0.0.1", port: tcpPort(gateway) },
+      ...(staged
+        ? { stockTransport: true, stockStaged: staged.target }
+        : { gateway: { host: "127.0.0.1", port: tcpPort(gateway) } }),
     },
     {
-      reader,
-      writer,
+      reader: staged?.control ?? reader,
+      writer: staged?.control ?? writer,
       tls,
       probePath,
       status: async () => ({ state: "starting" }),
@@ -121,7 +136,28 @@ async function supervisor(t: TestContext) {
     await accepted;
     return socket;
   }
-  return { ...serving, client, token, reader, frames, gateway, tls };
+  const read = async (
+    path: string,
+    port = tcpPort(serving.diagnostics),
+    bearer: string = token,
+  ) => {
+    const socket = tlsConnect({
+      host: "127.0.0.1",
+      port,
+      servername: "localhost",
+      ca: tls.caBundle,
+    });
+    socket.write(
+      `GET ${path} HTTP/1.1\r\nAuthorization: Bearer ${bearer}\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n`,
+    );
+    const chunks: Buffer[] = [];
+    for await (const chunk of socket) {
+      assert.ok(Buffer.isBuffer(chunk));
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString();
+  };
+  return { ...serving, read, client, token, reader, frames, gateway, tls };
 }
 
 test(
@@ -156,24 +192,7 @@ test(
 );
 
 test("the worker port allows readiness but refuses native upgrades with the same valid bearer", async (t) => {
-  const { diagnostics, tls, token, frames } = await supervisor(t);
-  const read = async (path: string) => {
-    const socket = tlsConnect({
-      host: "127.0.0.1",
-      port: tcpPort(diagnostics),
-      servername: "localhost",
-      ca: tls.caBundle,
-    });
-    socket.write(
-      `GET ${path} HTTP/1.1\r\nAuthorization: Bearer ${token}\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n`,
-    );
-    const chunks: Buffer[] = [];
-    for await (const chunk of socket) {
-      assert.ok(Buffer.isBuffer(chunk));
-      chunks.push(chunk);
-    }
-    return Buffer.concat(chunks).toString();
-  };
+  const { read, frames } = await supervisor(t);
   assert.match(await read("/revisions/test-revision/readiness"), /200 OK[\s\S]*starting/u);
   assert.match(await read("/"), /404 Not Found/u);
   assert.equal(frames.length, 0);
@@ -759,5 +778,167 @@ test(
       assert.equal(response, refusal, `request ${attempt}`);
     }
     assert.equal(requests, attempts);
+  },
+);
+
+test(
+  "stock control waits for its pin, connects once and stops the child on loss",
+  { timeout: 5000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "stock-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const path = join(directory, "control.sock");
+    const receipt = join(directory, "certificate");
+    const { cert } = await harnessTlsFixture(t);
+    const waiting = acceptStockControl(cert, path, receipt, 3000);
+    await assert.rejects(connectStockControl(path, 25), /timed out/u);
+    await writeFile(receipt, cert);
+    const [workload, trusted] = await Promise.all([connectStockControl(path, 3000), waiting]);
+    const child = spawn(process.execPath, ["-e", "process.stdin.pipe(process.stdout)"], {
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    const { done, stop } = pipeStockBox(workload, child);
+    t.after(() => {
+      trusted.destroy();
+      stop();
+    });
+    await assert.rejects(connectStockControl(path, 15), /timed out/u);
+    const response = once(trusted, "data");
+    trusted.write("probe\n");
+    assert.equal((await response)[0].toString(), "probe\n");
+    trusted.end();
+    assert.equal(await done, 1);
+    assert.equal(child.signalCode, "SIGTERM");
+  },
+);
+
+test("a missing pin or a replacement Pod cannot activate stock control", async (t) => {
+  const first = await harnessTlsFixture(t);
+  const replacement = await harnessTlsFixture(t);
+  const path = join(first.directory, "control.sock");
+  const receipt = join(first.directory, "receipt");
+  await assert.rejects(acceptStockControl(first.cert, path, receipt, 10), /receipt timed out/u);
+  await writeFile(receipt, first.cert);
+  await assert.rejects(acceptStockControl(replacement.cert, path, receipt), /receipt mismatch/u);
+  await assert.rejects(connectStockControl(path, 15), /timed out/u);
+});
+
+test("stock bootstrap refuses missing or overridden placeholders without logging credentials", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "stock-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const manifest = join(directory, "workload.json");
+  const secret = "synthetic-model-credential";
+  const placeholder = { OPENAI_API_KEY: `strands_box_${"a".repeat(64)}` };
+  for (const { env, environment, secretEnvironment } of [
+    { env: {}, environment: {} },
+    { env: { OPENAI_API_KEY: secret }, environment: {} },
+    { env: { ...placeholder, OCE_STRANDS_OPENAI_KEY: secret }, environment: {} },
+    { env: placeholder, environment: { OPENAI_API_KEY: secret } },
+    { env: placeholder, environment: {}, secretEnvironment: { OPENAI_API_KEY: "/private/key" } },
+  ]) {
+    await writeFile(
+      manifest,
+      JSON.stringify({ stockTransport: true, environment, secretEnvironment }),
+    );
+    const child = spawnSync(process.execPath, ["deploy/runtime/strands-box/inner.mjs", manifest], {
+      env,
+      encoding: "utf8",
+      timeout: 3000,
+    });
+    assert.equal(child.status, 1);
+    assert.match(child.stderr, /Invalid Strands Box credential environment/u);
+    assert.ok(!child.stderr.includes(secret));
+    assert.equal(child.stdout, "");
+  }
+});
+
+test(
+  "only Worker diagnostics expose held versions and a fresh challenge on the pinned control channel",
+  { timeout: 10000 },
+  async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const { directory, cert, certPath } = tls;
+    const path = join(directory, "control.sock");
+    const [listener, launcher] = await Promise.all([
+      acceptStockControl(cert, path, certPath),
+      connectStockControl(path),
+    ]);
+    t.after(() => {
+      listener.destroy();
+      launcher.destroy();
+    });
+    const target = { sourceId: `cs_${randomUUID()}`, configurationId: `cfg_${randomUUID()}` };
+    const owner = {
+      configurationId: target.configurationId,
+      podUid: randomUUID(),
+      sandboxId: randomUUID(),
+    };
+    const delivery = { sourceId: target.sourceId, version: randomUUID(), value: randomUUID() };
+    const { read, server, diagnostics } = await supervisor(t, { tls, control: listener, target });
+    const route = "/revisions/test-revision/readiness";
+    const status = async () => {
+      const response = await read(route);
+      assert.match(response, /200 OK/u);
+      assert.equal(response.includes(delivery.value), false);
+      return JSON.parse(response.split("\r\n\r\n")[1]!) as {
+        state: string;
+        staged?: {
+          released: boolean;
+          challenge: string;
+          configHash: string;
+          policyHash: string;
+          versions: Record<string, string>;
+        };
+      };
+    };
+    assert.deepEqual(await status(), { state: "starting" });
+    const materialPath = join(directory, "material.json");
+    const releasePath = join(directory, "release");
+    const hold = (control: Socket) =>
+      holdStockKey(control, target, owner.podUid, "config", "policy", materialPath, releasePath);
+    await writeFile(materialPath, JSON.stringify({ ...owner, deliveries: [delivery] }));
+    const stagedRecord = once(listener, "data");
+    const pending = hold(launcher);
+    await stagedRecord;
+    assert.match(await read(route, tcpPort(server)), /404 Not Found/u);
+    assert.match(await read(route, tcpPort(diagnostics), "wrong"), /401 Unauthorized/u);
+    assert.match(await read("/", tcpPort(server)), /503 Service Unavailable/u);
+    const { staged } = await status();
+    assert.ok(staged);
+    const { released, ...receipt } = staged;
+    assert.equal(released, false);
+    assert.match(receipt.challenge, /^[a-f0-9]{64}$/u);
+    assert.equal(receipt.configHash, createHash("sha256").update("config").digest("hex"));
+    assert.equal(receipt.policyHash, createHash("sha256").update("policy").digest("hex"));
+    assert.deepEqual(receipt.versions, { [target.sourceId]: delivery.version });
+    const releasedRecord = once(listener, "data");
+    await writeFile(releasePath, JSON.stringify({ ...owner, ...receipt }));
+    assert.equal(await pending, delivery.value);
+    await releasedRecord;
+    // Release alone cannot assert native readiness. Workload frames cannot change the receipt.
+    assert.deepEqual(await status(), { state: "starting", staged: { ...receipt, released: true } });
+    const closed = once(server, "close");
+    launcher.write(JSON.stringify(receipt) + "\n");
+    await closed;
+
+    // Even a fresh control connection with the same files cannot replay the first release.
+    const nextPath = join(directory, "next.sock");
+    const [nextListener, nextLauncher] = await Promise.all([
+      acceptStockControl(cert, nextPath, certPath),
+      connectStockControl(nextPath),
+    ]);
+    t.after(() => {
+      nextListener.destroy();
+      nextLauncher.destroy();
+    });
+    await assert.rejects(hold(nextLauncher), /Invalid stock Strands Box release/u);
+    for (const invalid of [
+      { ...owner, podUid: randomUUID(), deliveries: [delivery] },
+      { ...owner, deliveries: [{ ...delivery, sourceId: randomUUID() }] },
+      { ...owner, deliveries: [{ ...delivery, expiresAt: Date.now() + 3600000 }] },
+    ]) {
+      await writeFile(materialPath, JSON.stringify(invalid));
+      await assert.rejects(hold(nextLauncher), /Invalid stock Strands Box delivery/u);
+    }
   },
 );

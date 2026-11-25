@@ -25,12 +25,13 @@ export type DeploymentRequestPolicy =
       readonly toolName?: string;
     };
 
-export interface DeploymentRequestMatch extends Pick<
-  SandboxNetworkGrant,
-  "binary" | "host" | "ports"
-> {
+/** An Agent grant permits every process in the bound Sandbox execution. */
+export type DeploymentRequestMatch = Pick<SandboxNetworkGrant, "host" | "ports"> & {
   readonly requestPolicy?: DeploymentRequestPolicy;
-}
+} & (
+    | { readonly binary: string; readonly subject?: never }
+    | { readonly subject: "agent"; readonly binary?: never }
+  );
 
 export interface NetworkAccessPolicy {
   readonly allowed: readonly DeploymentRequestMatch[];

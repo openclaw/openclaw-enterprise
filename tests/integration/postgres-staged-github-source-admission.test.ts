@@ -1412,6 +1412,8 @@ test(
       const running = await state.read((view) => view.agents.findAgent(namespaceId, agentId));
       assert.equal(running?.activeRevisionId, agedRevision.id);
       assert.equal(running?.desiredRuntimeState, "running");
+      const chat = await nativeController.resolveAgentChat(principal.id, agentId, namespaceId);
+      assert.equal(chat.revision?.id, agedRevision.id, "Git withdrawal must preserve model chat");
       assert.equal(github.issuesOfTokens.length, mintsBeforeWorker);
     } finally {
       await worker.stop();

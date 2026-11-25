@@ -985,7 +985,7 @@ ${NATIVE_WORKER_ENTRYPOINT}
       match.requestPolicy.method === "GET" &&
       match.requestPolicy.path === "/calendar/v3/colors",
   )?.match;
-  assert.ok(googleRequest);
+  assert.ok(googleRequest?.binary === google.binaryPath);
   const discovery = description.networkRequirements
     .filter(({ id }) => !account.networkRequirementIds.includes(id))
     .map(({ match }) => match);
@@ -1193,8 +1193,55 @@ ${NATIVE_WORKER_ENTRYPOINT}
   };
   const installedDefaultPluginRequest = { ...googleRequest, host: "docs.example.test" };
   const duplicateModelGrant = { ...grant, id: "model-duplicate" };
+  const agentRequest = {
+    subject: "agent" as const,
+    host: request.host,
+    ports: request.ports,
+    requestPolicy: request.requestPolicy,
+  };
+  const mixedSubject = structuredClone(revision);
+  Object.assign(mixedSubject.credentialDeployment!.injectionPolicies[0]!.allowedRequests[0]!, {
+    subject: "agent",
+  });
   const unsafeRevisions: readonly { readonly reason: string; readonly revision: AgentRevision }[] =
     [
+      {
+        reason:
+          "OpenShell refuses a model policy with matching Agent-wide network and injection grants",
+        revision: {
+          ...base,
+          credentialSources: [revision.credentialSources![0]!],
+          executionAdmission: revision.executionAdmission,
+          sandboxPolicy: driver.admitNetworkPolicy([], 1),
+          credentialDeployment: {
+            ...revision.credentialDeployment!,
+            bindings: [binding],
+            networkAccessPolicy: { allowed: [agentRequest] },
+            injectionPolicies: [
+              { bindingRef: binding.bindingRef, allowedRequests: [agentRequest] },
+            ],
+          },
+        },
+      },
+      {
+        reason: "a persisted injection cannot combine Agent and executable subjects",
+        revision: mixedSubject,
+      },
+      {
+        reason: "OpenShell cannot enforce an Agent-wide grant even without a request selector",
+        revision: {
+          ...revision,
+          credentialDeployment: {
+            ...revision.credentialDeployment!,
+            networkAccessPolicy: {
+              allowed: [
+                ...revision.credentialDeployment!.networkAccessPolicy.allowed,
+                { subject: "agent", host: "other.example.test", ports: grant.ports },
+              ],
+            },
+          },
+        },
+      },
       {
         reason: "two consumers cannot share one credential environment",
         revision: {

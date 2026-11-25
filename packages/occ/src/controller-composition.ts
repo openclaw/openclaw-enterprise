@@ -93,7 +93,7 @@ import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createAgentQueries, type ActiveAgentRevisionSelection } from "./agent-queries.ts";
 import { createDeploymentChannelChecks } from "./deployment-channels.ts";
 import { createAgentDeploymentOperations } from "./agent-deployment-requests.ts";
-import type { ModelCredentialPreset } from "./agent-deployment-admission.ts";
+import type { AgentModelGrant, ModelCredentialPreset } from "./agent-deployment-admission.ts";
 import type { DeployAgentInput } from "./deployment-authorization.ts";
 import { createAgentDraftOperations } from "./agent-drafts.ts";
 import { createAgentPluginValidation } from "./agent-plugin-validation.ts";
@@ -173,6 +173,7 @@ export interface ControllerOptions {
     | undefined;
   readonly preparedTokens?: TokenService | undefined;
   readonly modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
+  readonly agentModelGrant?: AgentModelGrant;
   readonly modelCredentialPreset?: (input: {
     readonly presetId: string;
     readonly configuration: Readonly<Record<string, unknown>>;
@@ -1126,6 +1127,7 @@ export function createControllerComposition(
     configurationDriver: configurationOperations.selectedDriver,
     configuration: configurationOperations,
     modelPolicyAgent,
+    agentModelGrant: options.agentModelGrant,
     modelCredentialPreset: options.modelCredentialPreset,
     supportsCredentialDeployment: options.supportsCredentialDeployment,
     sandboxNetworkPolicyCeiling,

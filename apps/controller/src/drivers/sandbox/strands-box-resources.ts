@@ -1,9 +1,8 @@
 import type { KubernetesObject } from "@kubernetes/client-node";
 import type { SandboxHarnessContext } from "@openclaw-enterprise/contracts";
-import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { sha256Hex } from "@openclaw-enterprise/utils";
 import { posix } from "node:path";
-import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
+import { harnessWorkspacePreparationScript } from "../compute/kubernetes/harness/workspace-preparation.ts";
 import {
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   RUNTIME_WRAPPER_COMMAND,
@@ -15,6 +14,15 @@ import {
 } from "../compute/workspace-setup-runtime.ts";
 import { nodeProgramArguments } from "../compute/node-program.ts";
 import { resolverEgress } from "../kubernetes/network-policy.ts";
+import {
+  OPENAI_RESPONSES,
+  STOCK_BOX_PROFILE,
+  receiverEndpointPermits,
+  refuse,
+  responsesRoute,
+  stockModelDelivery,
+  workspacePolicy,
+} from "./strands-box-model.ts";
 import type { StrandsBoxOptions } from "./strands-box.ts";
 
 const PRIVATE = [
@@ -39,12 +47,6 @@ const SHARED_IMAGE_PATHS = [
   "etc/ssl/certs",
   "usr/share/zoneinfo",
 ];
-function refuse(): never {
-  throw new SandboxRevisionUnsupportedError(
-    "SANDBOX_HARNESS_UNSUPPORTED",
-    "Strands Box cannot preserve these prepared workload requirements.",
-  );
-}
 function absolute(path: string): void {
   if (!path.startsWith("/") || posix.normalize(path) !== path || path === "/") {
     refuse();
@@ -166,16 +168,55 @@ export function strandsBoxResources(
   ) {
     refuse();
   }
+  const stock = stockModelDelivery(context, options);
+  const staged = stock?.staged;
+  const material = `${name}-material`;
+  if (
+    staged &&
+    (r.workspaceSetup?.secretKeyRef.name === material ||
+      r.environment.some(
+        (entry) => "valueFrom" in entry && entry.valueFrom.secretKeyRef.name === material,
+      ))
+  ) {
+    refuse();
+  }
+  if (
+    stock &&
+    (!roles ||
+      literal("CODEX_LOGIN_MODE") !== "api_key" ||
+      literal("CODEX_HOME") !== "/home/node/.codex" ||
+      workspacePath !== "/home/node/workspace")
+  ) {
+    refuse();
+  }
+  const model = literal("OPENCLAW_HARNESS_MODEL");
+  if (stock && (!model || !/^(?:openai|codex)\/[a-zA-Z0-9._:-]{1,256}$/u.test(model))) {
+    refuse();
+  }
   const environment: Record<string, string> = {};
   const secretEnvironment: Record<string, string> = {};
   const volumes: Record<string, unknown>[] = [
     { name: "inputs", configMap: { name } },
     { name: "listener-identity", emptyDir: { medium: "Memory", sizeLimit: "1Mi" } },
-    { name: "shared-runtime", emptyDir: { sizeLimit: "4Gi" } },
+    stock
+      ? { name: "stock-control", emptyDir: { medium: "Memory", sizeLimit: "1Mi" } }
+      : { name: "shared-runtime", emptyDir: { sizeLimit: "4Gi" } },
     { name: "private-home", emptyDir: { sizeLimit: "2Gi" } },
     { name: "box-state", emptyDir: { sizeLimit: "256Mi" } },
     { name: "temporary", emptyDir: { sizeLimit: "64Mi" } },
   ];
+  if (stock) {
+    // Pinning follows listener initialization. Mount the optional directory
+    // (no subPath) so the listener sees the immutable receipt once created.
+    volumes.push({
+      name: "listener-receipt",
+      configMap: {
+        name: `${name}-listener`,
+        optional: true,
+        items: [{ key: "certificate", path: "certificate" }],
+      },
+    });
+  }
   const mounts: Record<string, unknown>[] = [
     { name: "private-home", mountPath: "/home/node" },
     { name: "box-state", mountPath: "/run/strands-box" },
@@ -190,6 +231,34 @@ export function strandsBoxResources(
   const read = ["/app", "/opt/oce", `${ROOT}/workload.json`, "/etc/ssl/certs", ...PRIVATE];
   const write = [...PRIVATE];
   const data: Record<string, string> = {};
+  if (staged) {
+    // A staged Pod starts held. Kubelet publishes each immutable projection
+    // after admission without a restart. Neither path is in the child grants.
+    volumes.push(
+      {
+        name: "stock-material",
+        secret: {
+          secretName: material,
+          optional: true,
+          items: [{ key: "material.json", path: "material.json" }],
+          defaultMode: 0o440,
+        },
+      },
+      {
+        name: "stock-release",
+        configMap: {
+          name: `${name}-release`,
+          optional: true,
+          items: [{ key: "release", path: "release" }],
+        },
+      },
+    );
+    mounts.push(
+      { name: "stock-material", mountPath: "/run/strands-material", readOnly: true },
+      { name: "stock-release", mountPath: "/run/strands-release", readOnly: true },
+    );
+    data.transportRef = JSON.stringify(transport.valueFrom.secretKeyRef);
+  }
   const seen = new Set<string>();
   for (const [index, entry] of r.environment.entries()) {
     if (
@@ -200,6 +269,10 @@ export function strandsBoxResources(
       refuse();
     }
     seen.add(entry.name);
+    if (stock && entry.name === OPENAI_RESPONSES.key) {
+      // Box supplies the child environment entry through its credential proxy.
+      continue;
+    }
     if (
       roles &&
       [
@@ -246,6 +319,17 @@ export function strandsBoxResources(
   for (const mount of r.workspaceMounts) {
     absolute(mount.mountPath);
     relative(mount.subPath);
+    if (
+      stock &&
+      ![
+        "/home/node/workspace",
+        "/home/node/.openclaw-node",
+        "/home/node/.codex/generated_images",
+        "/home/node/.codex/sessions",
+      ].includes(mount.mountPath)
+    ) {
+      refuse();
+    }
     if (!mount.mountPath.startsWith("/home/node/") || typeof mount.readOnly !== "boolean") {
       refuse();
     }
@@ -321,7 +405,10 @@ export function strandsBoxResources(
   const manifest = {
     port,
     transportHash,
-    ...(gateway ? { gateway } : {}),
+    ...(stock && { stockTransport: true }),
+    ...(staged && { stockStaged: staged }),
+    // The split workspace node needs Gateway egress, but the nested Agent needs no tunnel.
+    ...(gateway && !stock ? { gateway } : {}),
     command: roles ? roles.codex : r.command.slice(workloadStart),
     revisionId: context.revision.id,
     statusPort: STRANDS_STATUS_PORT,
@@ -332,23 +419,17 @@ export function strandsBoxResources(
     privateDirectories: PRIVATE,
   };
   data["workload.json"] = JSON.stringify(manifest);
-  const policy = options.policy.network.endpoints.flatMap((endpoint, index) =>
-    endpoint.ports.map(
-      (allowedPort) =>
-        `// Installation-approved destination, including its HTTP authorization.\n@id("connect_${index}_${allowedPort}")\npermit (principal, action == Box::Action::"net:connect", resource)\nwhen { context.input.host == ${JSON.stringify(endpoint.host)} && context.input.port == ${allowedPort} };\n@id("request_${index}_${allowedPort}")\npermit (principal, action == Box::Action::"http:request", resource)\nwhen { context.input.host == ${JSON.stringify(endpoint.host)} && context.input.port == ${allowedPort} };`,
-    ),
-  );
-  const shellWorkspace = workspace.replace(/^\/home\/node(?=\/)/u, "~");
-  policy.push(
-    '@id("workspace_shell")\npermit (principal, action == Box::Action::"shell:exec", resource);',
-    `@id("workspace_files")\npermit (principal, action in [Box::Action::"fs:read", Box::Action::"fs:write", Box::Action::"fs:delete"], resource)\nwhen { context.input.path == ${JSON.stringify(shellWorkspace)} || context.input.path like ${JSON.stringify(`${shellWorkspace}/*`)} };`,
-    '@id("dev_null")\npermit (principal, action in [Box::Action::"fs:read", Box::Action::"fs:write"], resource)\nwhen { context.input.path == "/dev/null" };',
-  );
-  data["policy.dw"] = policy.join("\n");
+  const route = stock ? responsesRoute() : undefined;
+  const policy = route ? [route.policy] : receiverEndpointPermits(options.policy.network);
+  data["policy.dw"] = workspacePolicy(policy, workspace);
   // File subPath projections avoid the atomic symlink generation directory that
   // the Box config protection masks. Secret references remain private files.
+  const launchMode = stock ? "" : "[experimental-features]\ncontainer-agent = true\n";
   data["box.toml"] =
-    `name = "${name.slice(0, 32)}"\nbox_dir = "/run/strands-box/state"\npolicy = "${ROOT}/policy.dw"\n[experimental-features]\ncontainer-agent = true\n[agent]\ncommand = ["/usr/local/bin/node", "--jitless", "/opt/oce/strands-box/inner.mjs", "${ROOT}/workload.json"]\nworkspace = ${JSON.stringify(workspace)}\n[agent.filesystem]\nread = ${JSON.stringify(grantRoots(read))}\nwrite = ${JSON.stringify(grantRoots(write))}\nexec = ["/usr/bin/tini", "/usr/bin/env", "/usr/local/bin/node", "/usr/lib/aarch64-linux-gnu", "/app/node_modules", "/opt/oce/runtime"]\n`;
+    `name = "${name.slice(0, 32)}"\nbox_dir = "/run/strands-box/state"\npolicy = "${ROOT}/policy.dw"\n${launchMode}[agent]\ncommand = ["/usr/local/bin/node", "--jitless", "/opt/oce/strands-box/inner.mjs", "${ROOT}/workload.json"]\nworkspace = ${JSON.stringify(workspace)}\n[agent.filesystem]\nread = ${JSON.stringify(grantRoots(read))}\nwrite = ${JSON.stringify(grantRoots(write))}\nexec = ["/usr/bin/tini", "/usr/bin/env", "/usr/local/bin/node", "/usr/lib/aarch64-linux-gnu", "/app/node_modules", "/opt/oce/runtime"]\n`;
+  if (route) {
+    data["box.toml"] += route.egress;
+  }
   const securityContext = {
     allowPrivilegeEscalation: false,
     readOnlyRootFilesystem: true,
@@ -380,7 +461,9 @@ export function strandsBoxResources(
       terminationMessagePolicy: "File",
       securityContext,
     },
-    {
+  ];
+  if (!stock) {
+    initContainers.push({
       name: "prepare-shared-runtime",
       image: r.image,
       imagePullPolicy: "IfNotPresent",
@@ -405,15 +488,15 @@ mv -T preparing image`,
         ...SHARED_IMAGE_PATHS,
       ],
       volumeMounts: [{ name: "shared-runtime", mountPath: "/shared-runtime" }],
-    },
-    {
-      name: "initialize-workspace-directories",
-      image: r.image,
-      command: ["/usr/bin/tini", "-s", "--", "node", "-e", ...nodeProgramArguments(initialize)],
-      volumeMounts: initMounts,
-      securityContext,
-    },
-  ];
+    });
+  }
+  initContainers.push({
+    name: "initialize-workspace-directories",
+    image: r.image,
+    command: ["/usr/bin/tini", "-s", "--", "node", "-e", ...nodeProgramArguments(initialize)],
+    volumeMounts: initMounts,
+    securityContext,
+  });
   if (r.workspaceSetup) {
     const setup = r.workspaceSetup.secretKeyRef;
     volumes.push({
@@ -448,15 +531,17 @@ mv -T preparing image`,
       securityContext,
     });
   }
-  // Both sides of the Box handoff must open the same executable and runtime objects.
+  // Only the two-container receiver needs shared executable identities.
   const workloadMounts = [
     ...mounts.filter((mount) => !roles || mount.mountPath !== statePath),
-    ...SHARED_IMAGE_PATHS.map((path) => ({
-      name: "shared-runtime",
-      mountPath: `/${path}`,
-      subPath: `image/${path}`,
-      readOnly: true,
-    })),
+    ...(stock
+      ? [{ name: "stock-control", mountPath: "/run/strands-stock", readOnly: true }]
+      : SHARED_IMAGE_PATHS.map((path) => ({
+          name: "shared-runtime",
+          mountPath: `/${path}`,
+          subPath: `image/${path}`,
+          readOnly: true,
+        }))),
   ];
   if (roles && enrollment && "valueFrom" in enrollment) {
     const setup = enrollment.valueFrom.secretKeyRef;
@@ -573,6 +658,7 @@ mv -T preparing image`,
     spec: {
       enableServiceLinks: false,
       hostUsers: false,
+      ...(stock && { runtimeClassName: "oce-strands-box" }),
       shareProcessNamespace: false,
       automountServiceAccountToken: false,
       ...(identity ? { serviceAccountName: identity.serviceAccountName } : {}),
@@ -601,7 +687,18 @@ mv -T preparing image`,
           ],
           env: [{ name: "HOME", value: "/home/node" }],
           volumeMounts: [
-            ...workloadMounts,
+            ...(stock
+              ? [
+                  {
+                    name: "inputs",
+                    mountPath: `${ROOT}/workload.json`,
+                    subPath: "workload.json",
+                    readOnly: true,
+                  },
+                  { name: "stock-control", mountPath: "/run/strands-stock" },
+                  { name: "listener-receipt", mountPath: "/run/strands-receipt", readOnly: true },
+                ]
+              : workloadMounts),
             ...(roles
               ? [{ name: "workspace-outcome", mountPath: "/run/oce-workspace", readOnly: true }]
               : []),
@@ -629,14 +726,36 @@ mv -T preparing image`,
         {
           name: "box-workload",
           image: r.image,
-          command: [
-            "/opt/strands-box/strands-box-contain-trampoline",
-            "--receive-container",
-            "/run/strands-box/state/private/container.sock",
-          ],
+          command: stock
+            ? ["/usr/local/bin/node", "--jitless", "/opt/oce/strands-box/stock-launch.mjs"]
+            : [
+                "/opt/strands-box/strands-box-contain-trampoline",
+                "--receive-container",
+                "/run/strands-box/state/private/container.sock",
+              ],
+          ...(stock && {
+            env: staged
+              ? [
+                  {
+                    name: "OCE_STRANDS_POD_UID",
+                    valueFrom: { fieldRef: { fieldPath: "metadata.uid" } },
+                  },
+                ]
+              : [
+                  {
+                    name: OPENAI_RESPONSES.launcherKey,
+                    valueFrom: { secretKeyRef: stock.secretKeyRef },
+                  },
+                ],
+          }),
           volumeMounts: workloadMounts,
           securityContext: {
             ...securityContext,
+            // The released launcher mounts private procfs in a nested PID namespace.
+            ...(stock && {
+              procMount: "Unmasked",
+              appArmorProfile: { type: "Localhost", localhostProfile: STOCK_BOX_PROFILE },
+            }),
             seccompProfile: {
               type: "Localhost",
               localhostProfile: options.kubernetes.seccompProfile,

@@ -673,6 +673,13 @@
       "when": 1787000000096,
       "tag": "0096_namespace_github_app_clients",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1787000000097,
+      "tag": "0097_agent_deployment_subjects",
+      "breakpoints": true
     }
   ]
 }

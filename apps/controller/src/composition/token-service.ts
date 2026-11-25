@@ -10,6 +10,8 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialDeliveryFailedError,
+  CredentialWithdrawalRefusedError,
+  ResourceStateConflictError,
   DependencyUnavailableError,
   type OpenClawController,
   type PlatformStateStore,
@@ -18,6 +20,9 @@ import type { FastifyInstance } from "fastify";
 
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
+import { kubernetesNamespaceName } from "../drivers/compute/kubernetes/index.ts";
+import { StrandsBoxSandboxDriver } from "../drivers/sandbox/strands-box.ts";
+import { StrandsBoxCredentialProxyDriver } from "../drivers/credential-proxy/strands-box.ts";
 import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
 import { refreshCodexOAuthGrant } from "../drivers/token-service/codex-device-authorization.ts";
 import type { GitHubAppIssuerOptions } from "../drivers/token-service/github-app-issuer.ts";
@@ -168,6 +173,46 @@ export async function installTokenServiceDriver(
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);
+  if (delivery instanceof StrandsBoxCredentialProxyDriver) {
+    const sandbox = drivers.credentialDeliveryRegistration!.require("sandbox");
+    const grant = sandbox instanceof StrandsBoxSandboxDriver && sandbox.agentResponsesGrant;
+    if (!grant) {
+      throw new DependencyUnavailableError("The selected delivery pair has no Agent grant.");
+    }
+    owner.bindStaticUpdateGuard(async (sourceRef, agents, signal) => {
+      if (
+        sourceRef.id === grant.sourceId &&
+        kubernetesNamespaceName(sourceRef.namespaceId) === grant.namespace
+      ) {
+        const agent = await agents.findAgent(sourceRef.namespaceId, grant.agentId);
+        if (agent?.desiredRuntimeState === "running" || agent?.activeRevisionId !== undefined) {
+          throw new ResourceStateConflictError(
+            "Stop the approved Agent before replacing this static credential.",
+          );
+        }
+      }
+      // Targets can outlive a changed grant or a cleared active pointer during Stop.
+      try {
+        await delivery.requireSourceUnused(sourceRef, signal);
+      } catch (error) {
+        if (error instanceof CredentialWithdrawalRefusedError) {
+          throw new ResourceStateConflictError(
+            "Retire the target before replacing its credential.",
+          );
+        }
+        throw error;
+      }
+    });
+    delivery.bindCurrentVersion(async (sourceRef, signal) => {
+      if (
+        controller.selectedDriver("credential_proxy_delivery") !== delivery ||
+        controller.selectedDriver("token_service") !== owner
+      ) {
+        throw new DependencyUnavailableError("The selected delivery pair or TokenService changed.");
+      }
+      return owner.currentStaticVersion({ sourceRef, tokenServiceInstanceId: instanceId }, signal);
+    });
+  }
   if (delivery instanceof OpenShellCredentialProxyDriver) {
     const { OpenShellCredentialDeliveryRefusedError } =
       await import("../drivers/credential-proxy/openshell-pushed-provider.ts");

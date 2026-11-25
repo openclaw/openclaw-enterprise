@@ -81,6 +81,8 @@ First Agent saves approved model network rules before deployment.
 
 The caller binds a ready Source in the same Namespace and selects it for Harness authentication. OCC verifies the Source owner, the provider's authorized destination, the caller's and Agent's Source permissions, and a qualifying network rule within the Installation ceiling. OCC records the Source reference and separate network and per-binding injection policies in the Agent revision. For a Plugin connection, OCC also checks the requests reported by the Plugin Driver against the current Source Template. The [native qualifier](../../apps/controller/src/composition/openshell-credential-admission.ts) compiles the complete proposed policy against the selected Sandbox defaults. OCC refuses an unsupported or ambiguous policy before it saves a revision or queues deployment.
 
+In the [Strands Box preview](strands-box-companion.md#managed-source-startup), the operator names a saved dedicated Codex Agent and a static OpenAI Source in `agentGrants`. On deployment, OCC saves the [same Responses rule](../../apps/controller/src/drivers/sandbox/strands-box-model.ts) with `subject: "agent"` in both policies. Worker authenticates the idle launcher before delivery and rechecks Source access before Compute releases that launch.
+
 <a id="4-resolve-the-source-at-dispatch"></a>
 <a id="pending-native-integration"></a>
 
@@ -115,6 +117,8 @@ On Stop, Compute deletes the Sandbox and retains the saved target until Proxy co
 `packages/occ/src/agent-credential-withdrawal.ts:withdrawAgentCredentialSource`, `apps/controller/src/worker.ts:processCredentialWithdrawal`, `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawCredentialSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:removeDeployment`
 
 OCC checks exact `agent:operate`, records pending withdrawals, and queues reconciliation. Worker rechecks the requester. Sandbox verifies the reduced injection policy and preserves independent network grants. Proxy detaches the binding from its recorded target and confirms a `REVOKED` receipt or Sandbox absence. Unconfirmed removal remains pending with `DEPENDENCY_UNAVAILABLE`.
+
+In the Box preview, withdrawing the model Source blocks new HTTP chats through OCC. Running processes can still use the route until an operator stops the Agent. Withdrawal remains pending until the Pod and credential copy are gone.
 
 Worker derives active bindings from the revision and confirmed withdrawals, omitting revoked optional Plugin bindings. Pending withdrawal, a missing required model, or failed readiness blocks activation. Proxy remains pending until the loaded policy and Provider fingerprint agree.
 
@@ -185,6 +189,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 
 - 2026-11-25 06:13: Trace generic native static custody and binding-specific placeholder delivery. (authoring-run/8d6879f5-e9be-4828-a054-6fb620189dfb - 2ed738ba4cb4c54802879a4c41ca98221f9716e8)
 
+- 2026-11-25 03:35: Trace Agent grants and model Source withdrawal in the Strands Box preview. (authoring-run/83fdae3f-2140-4db1-967e-5da6bd61d976 - 4f3d75d53b467001be8a590a231c8be3e0485ba4)
+
 - 2026-11-24 15:22: Verify GitHub installation and mint by name. (authoring-run/2fff43ca-53a8-4cd9-a462-25f833fec902 - 83575ae57607ec1302aa119523df6e3b39a53c50)
 
 - 2026-11-24 13:46: Trace static Source custody, direct Provider attachment, and retirement in the OpenShell development preview. (authoring-run/ee107727-89f5-45e8-b411-3dfb7b7aa9b5 - b3d10d91c1e7ae20dadcf22eb4b7e350df96b234)
@@ -254,12 +260,5 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 - 2026-11-21 19:51: Reconcile OCC service owners. (01a1ec21-b384-7472-887f-945ae0ab16fc - e12513764)
 - 2026-11-21 11:54: Lead the lifecycle with managed TokenService enrollment and mark old custody paths as transitional. (authoring-run/22722819-a3e4-4a6e-ae08-9e23bde479dd - 15794c3860bcf982b500774d8c700fbcd19aaf71)
 - 2026-11-21 11:45: Reconcile enrollment status with the extracted source flow. (authoring-run/16cfa409-7c14-4f52-9167-3e897f919125 - 7533013d1061c433e27883818cf69f955239c43f)
-- 2026-11-20 23:19: Record staged provision dispatch and observe the saved target on every retry. (01a1ec21-b384-7472-887f-945ae0ab16fc - 63d179f67)
-- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-20 18:49: Document enrolled retry target identity and v8 State admission. (01a1ec21-b384-7472-887f-945ae0ab16fc - c272bc823)
-- 2026-11-20 16:33: Point Harness binding and snapshot checks to their source module. (authoring-run/5406c3c6-28fa-42a9-a7a7-4afa642738f1 - 56b116735a3a38a48eff35bf36152d3032b1d7d3)
-- 2026-11-20 16:18: Link managed enrollment. (authoring-run/9bb61048-2680-4355-9169-bd7a6dd316af - 27b47ccbf7223c303b844af151c9712082380919)
-- 2026-11-20 10:13: Name the serving protected source owner as the legacy egress Driver. (01a1f7ec-0d9e-7803-96c3-eb88548e3788 - b02e93892)
-- 2026-11-20 09:05: Connect staged Agent callers to the selected native delivery Driver and distinguish readiness qualification. (01a1ec21-b384-7472-887f-945ae0ab16fc)
-- 2026-11-20 08:10: Clarify serving and internal custody, registration checks, dispatch, and deletion retry behavior. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 6c7aeed58)
-- 2026-11-20 07:59: Rewrite the serving lifecycle around source ownership, Agent delivery, and staged native limits. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - e76d323cb)
+
+The [documentation history](credential-source-lifecycle/history.md) preserves earlier entries.

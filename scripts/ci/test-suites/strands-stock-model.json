@@ -1,0 +1,12 @@
+{
+  "env": { "OCC_TEST_STRANDS_STOCK_MODEL": "1" },
+  "requiredEnv": ["OCC_URL", "OCC_SERVICE_KEY_FILE", "OCC_NAMESPACE", "OCC_TEST_PROVIDER_AGENT"],
+  "optionalEnv": ["OCC_TEST_STRANDS_STOCK_SOURCE_ID"],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/strands-stock-model-real.test.ts",
+      "expectedTests": ["an active stock Strands Box revision answers a fresh Codex model turn"]
+    }
+  ]
+}

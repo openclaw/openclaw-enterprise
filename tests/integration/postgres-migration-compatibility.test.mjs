@@ -1573,6 +1573,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preAgentDeploymentSubjects"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -1936,6 +1937,59 @@ test(
   },
 );
 
+async function assertAgentSubjectUpgrade(spec, insert, upgrade) {
+  const agent = { subject: "agent" };
+  const executable = { binary: "/usr/bin/model-client" };
+  const withSubjects = (network, injection) => {
+    const candidate = structuredClone(spec);
+    const policy = candidate.credential_deployment;
+    for (const match of policy.networkAccessPolicy.allowed) {
+      delete match.binary;
+      Object.assign(match, network);
+    }
+    const request = policy.injectionPolicies[0].allowedRequests[0];
+    delete request.binary;
+    Object.assign(request, injection);
+    return candidate;
+  };
+  const refused = (candidate) =>
+    assert.rejects(insert(candidate, 3), {
+      code: "23514",
+      constraint: "agent_revisions_execution_admission",
+    });
+  const admitted = withSubjects(agent, agent);
+  await refused(admitted);
+  await upgrade();
+  for (const invalid of [{}, { subject: null }, { subject: "all" }, { ...agent, ...executable }]) {
+    await refused(withSubjects(invalid, invalid));
+  }
+  await refused(withSubjects(agent, executable));
+  await refused(withSubjects(executable, agent));
+
+  const mixed = structuredClone(admitted);
+  mixed.credential_deployment.networkAccessPolicy.allowed.push({
+    ...executable,
+    host: "other.example.org",
+    ports: [{ from: 443, to: 443 }],
+  });
+  await refused(mixed);
+
+  // A raw allowance overlaps the HTTP selector even without an executable path.
+  const overlapping = structuredClone(admitted);
+  overlapping.credential_deployment.networkAccessPolicy.allowed.push({
+    ...agent,
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+  });
+  await refused(overlapping);
+  const uncovered = structuredClone(admitted);
+  uncovered.credential_deployment.injectionPolicies[0].allowedRequests[0].requestPolicy.method =
+    "GET";
+  await refused(uncovered);
+  await insert(admitted, 3);
+  await insert(spec, 4);
+}
+
 test(
   "Canonical migration commands preserve main data and serialize fresh/repeat runners",
   concurrentHistoryPostgres,
@@ -2011,6 +2065,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preAgentDeploymentSubjects"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -2073,6 +2128,8 @@ test(
             ? await discardRetiredGatewaySourcesAcrossCutover(db.app, namespaceId)
             : undefined;
         const receipts = await historyReceipts(db.migrator);
+        const seedStandalone =
+          history === "preNativeGitDelivery" || history === "preAgentDeploymentSubjects";
         const upgrade = async () => {
           const before = await canonicalData(db);
           assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
@@ -2093,7 +2150,7 @@ test(
             ]);
           }
           await assertCompletedHistory(db, receipts, prefix === 94 ? 1 : 0);
-          if (history !== "preNativeGitDelivery") {
+          if (!seedStandalone) {
             await assertUpgradedRevisionReadable(db);
           }
           assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
@@ -2105,7 +2162,7 @@ test(
           assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
           await assertUpgradedAuthentication(db);
         };
-        if (history !== "preNativeGitDelivery") {
+        if (!seedStandalone) {
           await upgrade();
         }
         if (history === "preHumanAuthenticationResults") {
@@ -2156,7 +2213,7 @@ test(
           ).rows[0].allowed,
           true,
         );
-        if (prefix === 87 || history === "preNativeGitDelivery") {
+        if (prefix === 87 || seedStandalone) {
           // An app-role writer can bypass OCC. A valid broader network allowance must still
           // cover every injected request, and standalone execution cannot add repository delivery.
           const original = (
@@ -2236,6 +2293,10 @@ test(
               [`rev_${randomUUID()}`, number, JSON.stringify(value), original.id],
             );
           await insert(spec, 2);
+          if (history === "preAgentDeploymentSubjects") {
+            await assertAgentSubjectUpgrade(spec, insert, upgrade);
+            return;
+          }
           // Canonical escaped UTF-8 and spaces remain valid wire-path segments.
           const escapedPath = structuredClone(spec);
           escapedPath.credential_deployment.injectionPolicies[0].allowedRequests[0].requestPolicy.path =
@@ -3151,6 +3212,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preAgentDeploymentSubjects"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3289,6 +3351,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preAgentDeploymentSubjects"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3460,6 +3523,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preAgentDeploymentSubjects"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3527,6 +3591,11 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 96) {
+          // Reject the second replacement after the request validator accepts Agent subjects.
+          failAt = `IF NOT occ.deployment_request_matches_have_valid_shape(
+            '[{"subject":"agent","host":"example.org","ports":[{"from":443,"to":443}]}]'
+          ) THEN RETURN; END IF;`;
         } else if (prefix === 95) {
           // The Source guard follows the Client constraint change in 0096.
           failAt = "";

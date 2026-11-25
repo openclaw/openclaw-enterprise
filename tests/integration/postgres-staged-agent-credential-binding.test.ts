@@ -12,6 +12,7 @@ import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { openShellCredentialProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
@@ -48,6 +49,8 @@ import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
+import { selection as boxSelection } from "../fixtures/strands-box.ts";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { waitFor, waitUntil } from "../helpers/wait-for.ts";
@@ -1469,6 +1472,7 @@ test(
       core,
       gatewayClient: nativeTransport.client,
     });
+    const admissionClients = Reflect.get(runtime.computeDriver, "apiClients");
     const credentialDeliveryRegistration = runtime.credentialDeliveryRegistration;
     assert.ok(credentialDeliveryRegistration);
     const sandbox = credentialDeliveryRegistration.require("sandbox");
@@ -1477,26 +1481,32 @@ test(
     assert.equal(sandbox, runtime.sandboxDriver);
     const credentialSourceDelivery = credentialSourceDeliveryBinding(runtime);
     assert.ok(credentialSourceDelivery);
-    const nativeController = new OpenClawController(controller.installation, {
-      state,
-      ...installationControllerOptions(runtime.installation),
-      credentialSourceDelivery,
-      namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
-      backends: runtime.installation.backend,
-      recordOperations: true,
-    });
-    for (const capability of ["iam", "configuration", "secret", "token_service"] as const) {
-      const selected = controller.selectedDriver(capability);
-      nativeController.registerDriver(selected);
-      nativeController.selectDriver(capability, selected.id);
+    function selectedController(drivers: typeof runtime) {
+      const selected = new OpenClawController(controller.installation, {
+        state,
+        ...installationControllerOptions(drivers.installation),
+        credentialSourceDelivery: credentialSourceDeliveryBinding(drivers),
+        namespaceLifecycleBindings: drivers.namespaceLifecycleBindings,
+        backends: drivers.installation.backend,
+        recordOperations: true,
+      });
+      for (const capability of ["iam", "configuration", "secret"] as const) {
+        const driver = controller.selectedDriver(capability);
+        selected.registerDriver(driver);
+        selected.selectDriver(capability, driver.id);
+      }
+      selected.registerDriver(drivers.computeDriver);
+      selected.selectDriver("compute", drivers.computeDriver.id);
+      installSelectedSandboxDrivers(selected, drivers);
+      return selected;
     }
-    nativeController.registerDriver(runtime.computeDriver);
-    nativeController.selectDriver("compute", runtime.computeDriver.id);
+    const nativeController = selectedController(runtime);
+    nativeController.registerDriver(owner);
+    nativeController.selectDriver("token_service", owner.id);
     assert.equal(
       await nativeController.activateTokenServiceInstance(owner.id, storeIdentity),
       instanceId,
     );
-    installSelectedSandboxDrivers(nativeController, runtime);
     assert.equal(nativeController.selectedDriver("credential_proxy_delivery"), proxy);
     const pluginDriver = new OCCPluginDriver();
     nativeController.installPluginDrivers([pluginDriver]);
@@ -2583,21 +2593,24 @@ test(
     assert.equal(requested.statusCode, 202, requested.body);
     assert.equal(requested.json().data.state, "pending");
     nativeTransport.effectivePolicyPermissive = true;
+    function withCustody(drivers: typeof runtime) {
+      return {
+        ...drivers,
+        installation: {
+          ...drivers.installation,
+          drivers: {
+            ...drivers.installation.drivers,
+            secret: { ...drivers.installation.drivers.secret, id: driver.id },
+            token_service: { ...drivers.installation.drivers.token_service!, id: owner.id },
+          },
+        },
+        secretDriver: driver,
+      };
+    }
     const createWorker = () =>
       createControllerWorker({
         pool: new pg.Pool({ connectionString: databaseUrl }),
-        drivers: {
-          ...runtime,
-          installation: {
-            ...runtime.installation,
-            drivers: {
-              ...runtime.installation.drivers,
-              secret: { ...runtime.installation.drivers.secret, id: driver.id },
-              token_service: { ...runtime.installation.drivers.token_service!, id: owner.id },
-            },
-          },
-          secretDriver: driver,
-        },
+        drivers: withCustody(runtime),
         pollIntervalMs: 15,
         maxAttempts: 1,
         emit() {},
@@ -2830,6 +2843,16 @@ test(
       // The authorized operator opens the claim. A second requester adds a model withdrawal
       // to that claim, then loses the only grant that allowed them to operate this Agent.
       await request("POST", `${sourcePath(slackSource.id)}/withdraw`, undefined, 202);
+      const chat = await nativeController.resolveAgentChat(
+        principal.id,
+        twoSourceAgent.id,
+        namespaceId,
+      );
+      assert.equal(
+        chat.revision?.id,
+        twoSourceRevision.id,
+        "optional withdrawals must preserve chat",
+      );
       const queuedModel = await memberRequest(
         "POST",
         `${sourcePath(nativeSource.id)}/withdraw`,
@@ -2918,6 +2941,249 @@ test(
         },
       );
     });
+
+    await t.test(
+      "only the approved saved Agent can deploy a whole-Agent Responses Source",
+      async () => {
+        async function saveAgent() {
+          const saved = await inject(
+            "POST",
+            `${base}/agents`,
+            {
+              name: `Box Codex ${randomUUID()}`,
+              configurationId: codexConfiguration.json().data.id,
+              executionMode: "dedicated",
+              harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
+              credentialSources: [{ sourceId: nativeSource.id }],
+            },
+            nativeApp,
+          );
+          assert.equal(saved.statusCode, 201, saved.body);
+          return saved.json().data;
+        }
+        const approved = await saveAgent();
+        const other = await saveAgent();
+        const options = boxSelection(kubernetesNamespace);
+        const agentGrant = {
+          profile: "openai-responses",
+          agentId: approved.id,
+          sourceId: nativeSource.id,
+        };
+        const staged = {
+          ...installation,
+          backend: [],
+          sandboxNetworkPolicyCeiling: [],
+          drivers: {
+            ...installation.drivers,
+            sandbox: {
+              id: "strands-box-sandbox",
+              configuration: {
+                ...options,
+                kubernetes: {
+                  ...options.kubernetes,
+                  stockLauncher: { namespace: kubernetesNamespace, agentGrants: [agentGrant] },
+                },
+              },
+            },
+          },
+        };
+        await assert.rejects(
+          loadInstallationFile(t, { ...staged, sandboxNetworkPolicyCeiling: [codexGrant] }),
+          /no additional network grants/,
+        );
+        const box = await loadInstallationFile(t, staged);
+        assert.ok(box);
+        assert.ok(Reflect.set(box.computeDriver, "apiClients", admissionClients));
+        const boxed = selectedController(box);
+        const boxOwner = await installTokenServiceDriver(boxed, withCustody(box), state);
+        assert.ok(boxOwner);
+        const boxApp = createApp(boxed);
+        const before = await deploymentEffects(nativeSource.id, other);
+        const refused = await inject("POST", `${base}/agents/${other.id}/deploy`, {}, boxApp);
+        assert.equal(refused.statusCode, 409, refused.body);
+        assert.deepEqual(await deploymentEffects(nativeSource.id, other), before);
+
+        const approvedPath = `${base}/agents/${approved.id}`;
+        // A previous installation can leave a saved selection without a Source client.
+        // It could use standing approval, so Box must refuse it until explicitly removed.
+        const empty = { defaultProfile: "github-repository", repositories: [] };
+        await pool.query(
+          "UPDATE occ.agents SET repository_access=$3::jsonb WHERE namespace_id=$1 AND id=$2",
+          [
+            namespaceId,
+            approved.id,
+            JSON.stringify({ ...empty, repositories: [{ repositoryRef: "previous-repository" }] }),
+          ],
+        );
+        const selected = await inject("POST", `${approvedPath}/deploy`, {}, boxApp);
+        assert.equal(selected.statusCode, 409, selected.body);
+        const cleared = await inject(
+          "PATCH",
+          approvedPath,
+          {
+            configurationId: approved.configurationId,
+            repositoryAccess: empty,
+          },
+          boxApp,
+        );
+        assert.equal(cleared.statusCode, 200, cleared.body);
+        assert.deepEqual(cleared.json().data.repositoryAccess, empty);
+        const deployed = await inject("POST", `${approvedPath}/deploy`, {}, boxApp);
+        assert.equal(deployed.statusCode, 202, deployed.body);
+        const revision = await boxed.transact((unit) =>
+          unit.revisions.findRevision(namespaceId, approved.id, deployed.json().data.id),
+        );
+        assert.ok(revision);
+        assert.deepEqual(revision.executionAdmission, { version: 8, mode: "standalone" });
+        assert.equal(revision.repositoryCredentials, undefined);
+        assert.deepEqual(
+          revision.credentialDeployment?.bindings.map(({ consumer }) => consumer.kind),
+          ["model"],
+        );
+        const allowed = [
+          {
+            subject: "agent",
+            host: "api.openai.com",
+            ports: [{ from: 443, to: 443 }],
+            requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+          },
+        ];
+        assert.deepEqual(revision.credentialDeployment?.networkAccessPolicy.allowed, allowed);
+        assert.deepEqual(revision.credentialDeployment?.injectionPolicies, [
+          { bindingRef: "model", allowedRequests: allowed },
+        ]);
+        const ref = {
+          sourceRef: revision.credentialDeployment!.bindings[0]!.sourceRef,
+          tokenServiceInstanceId: instanceId,
+        };
+        const initial = await boxOwner.currentStaticVersion(ref, t.signal);
+        const rotation = await inject(
+          "PATCH",
+          `${base}/credential-sources/${nativeSource.id}`,
+          { secret: randomUUID() },
+          boxApp,
+        );
+        assert.equal(rotation.statusCode, 409, rotation.body);
+        assert.equal(await boxOwner.currentStaticVersion(ref, t.signal), initial);
+        // Simulate loss of the retained target after activation. Withdrawal
+        // alone cannot prove that this execution retired. The real Stop path
+        // must inspect the exact scope and close the pending row once.
+        const deferred = await pool.query(
+          "UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour' WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND idempotency_key=$4 AND state='queued'",
+          [namespaceId, approved.id, revision.id, `agent_revision:${revision.id}:reconcile`],
+        );
+        assert.equal(deferred.rowCount, 1);
+        const active = await state.transact((unit) =>
+          unit.agents.compareAndSetActiveRevision(namespaceId, approved.id, undefined, revision.id),
+        );
+        assert.equal(active?.activeRevisionId, revision.id);
+        assert.ok(Reflect.set(box.computeDriver, "apiClients", Reflect.get(compute, "apiClients")));
+        const selectChat = () => boxed.resolveAgentChat(principal.id, approved.id, namespaceId);
+        assert.equal((await selectChat()).revision?.id, revision.id);
+        const request = await inject(
+          "POST",
+          `${withdrawalPath(approved.id)}/withdraw`,
+          undefined,
+          boxApp,
+        );
+        assert.equal(request.statusCode, 202, request.body);
+        // The Worker is offline. OCC must already deny a new model turn
+        // before routing any bytes to the still-running Gateway.
+        assert.equal((await selectChat()).revision, undefined);
+        const denied = await inject(
+          "POST",
+          `/agents/${approved.id}/chat`,
+          {
+            messages: [{ role: "user", content: "Hello" }],
+          },
+          boxApp,
+        );
+        assert.equal(denied.statusCode, 503, denied.body);
+        const worker = createControllerWorker({
+          pool: new pg.Pool({ connectionString: databaseUrl }),
+          drivers: withCustody(box),
+          pollIntervalMs: 15,
+          maxAttempts: 1,
+          emit() {},
+        });
+        try {
+          await worker.start();
+          const row = () =>
+            state.read((view) =>
+              view.credentialSources.findCredentialWithdrawal(
+                namespaceId,
+                revision.id,
+                nativeSource.id,
+              ),
+            );
+          const pending = await waitFor("a retirement refusal", async () => {
+            const status = await row();
+            return status?.lastReason ? status : undefined;
+          });
+          assert.equal(pending.state, "pending");
+          assert.equal(pending.lastReason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+          assert.equal(pending.completedAt, undefined);
+          const stop = await inject(
+            "POST",
+            `${base}/agents/${approved.id}/stop`,
+            undefined,
+            boxApp,
+          );
+          assert.equal(stop.statusCode, 202, stop.body);
+          await waitUntil(
+            "Box withdrawal closed by confirmed Stop",
+            async () => (await row())?.state === "revoked",
+          );
+          assert.equal((await row())?.lastReason, "WITHDRAWAL_REVISION_RETIRED");
+        } finally {
+          await worker.stop();
+        }
+        const next = await inject(
+          "POST",
+          `${base}/credential-sources`,
+          {
+            name: "Replacement model",
+            type: "static",
+            config: { provider_preset: "openai" },
+            secret: randomUUID(),
+          },
+          boxApp,
+        );
+        assert.equal(next.statusCode, 201, next.body);
+        agentGrant.agentId = other.id;
+        agentGrant.sourceId = next.json().data.id;
+        const replacement = await loadInstallationFile(t, staged);
+        assert.ok(replacement);
+        assert.throws(
+          () => replacement.computeDriver.validateExecutionAdmission!(revision, "stored"),
+          DependencyUnavailableError,
+        );
+        // A rollout that changed the grant too soon can still have immutable
+        // workload inputs for the previous Source in its tenant.
+        const retained = {
+          metadata: { name: "previous-target" },
+          data: { "workload.json": JSON.stringify({ stockStaged: { sourceId: nativeSource.id } }) },
+        };
+        assert.ok(replacement.sandboxDriver);
+        Reflect.set(
+          replacement.sandboxDriver,
+          "observer",
+          Promise.resolve({
+            list: async () => ({ items: [retained] }),
+          }),
+        );
+        const changed = selectedController(replacement);
+        await installTokenServiceDriver(changed, withCustody(replacement), state);
+        const changedApp = createApp(changed);
+        const rotate = (id: string) =>
+          inject("PATCH", `${base}/credential-sources/${id}`, { secret: randomUUID() }, changedApp);
+        const stale = await rotate(nativeSource.id);
+        assert.equal(stale.statusCode, 409, stale.body);
+        assert.equal(await boxOwner.currentStaticVersion(ref, t.signal), initial);
+        const unrelated = await rotate(agentGrant.sourceId);
+        assert.equal(unrelated.statusCode, 200, unrelated.body);
+      },
+    );
 
     for (const value of material) {
       assert.equal(
