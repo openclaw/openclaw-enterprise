@@ -119,7 +119,7 @@ export function candidateDeploymentError(
     return {
       code: "RUNTIME_MODEL_PROBE_FAILED",
       message:
-        "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.",
+        "The startup model check failed. No credential rejection was reported. Check the model name, provider settings, TLS, rate limits and account status. With Codex, also check that the provider is reachable. After the issue is fixed, someone with deploy access to this Agent can deploy a new version.",
       data: {
         runtimeFailure: {
           component: "gateway",

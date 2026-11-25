@@ -3634,6 +3634,8 @@ test("Agent detail reports a failed selected version as probably not serving", a
 test("Deployment activity guides a failed model check or an unauthorized gateway cli", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Model check");
   const { page } = await newPage(t, fixture);
+  const probeNextStep =
+    /^The startup model check failed\. No credential rejection was reported\..*account status\. With Codex, also check that the provider is reachable\. After the issue is fixed, someone with deploy access to this Agent can deploy a new version\.$/;
   const cases: {
     error: DeploymentError | null;
     nextStep: RegExp;
@@ -3650,11 +3652,10 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
         },
       }),
-      nextStep:
-        /^The startup model check failed, but not for a rejected credential: .*, or, with Codex, an unreachable provider\. Check these and the provider account, then deploy a new version\.$/,
+      nextStep: probeNextStep,
       // The runtime's classified cause names why this check failed.
       cause:
-        "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
+        "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota.",
     },
     {
       error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
@@ -3666,7 +3667,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail: "model_not_found" },
         },
       }),
-      nextStep: /^The startup model check failed/,
+      nextStep: probeNextStep,
       cause: "The model provider check reported a failure (model_not_found)",
       // The banner reads the failed version, even when the operator is viewing the draft.
       recoveryMessage:
@@ -3683,7 +3684,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail: "error-event" },
         },
       }),
-      nextStep: /^The startup model check failed, but not for a rejected credential: /,
+      nextStep: probeNextStep,
       cause: "The model provider check reported a failure (error-event)",
     },
     {
@@ -3697,9 +3698,9 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail: "billing" },
         },
       }),
-      nextStep: /^The startup model check failed, but not for a rejected credential: /,
+      nextStep: probeNextStep,
       cause:
-        "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
+        "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits.",
     },
     // Finding 1600: a Codex check retried once ends its detail -attempt2. The advice
     // follows the token without the suffix, and the text says the retry also failed.
@@ -3707,7 +3708,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       [
         [
           "rate_limit-attempt2",
-          "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version. The check was retried once and failed again.",
+          "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota. The check was retried once and failed again.",
         ],
         [
           "turn-failed-attempt2",
@@ -3724,7 +3725,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail },
         },
       }),
-      nextStep: /^The startup model check failed, but not for a rejected credential: /,
+      nextStep: probeNextStep,
       cause,
     })),
     {
@@ -3760,6 +3761,8 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
         await recovery.getByRole("link").first().textContent(),
         "Open Configuration draft",
       );
+    } else if (error.code === "RUNTIME_MODEL_PROBE_FAILED") {
+      await recovery.getByText(error.message, { exact: false }).waitFor();
     }
     // A failed or timed-out model check leads as one; a refused gateway CLI does not.
     const lead = error.code.startsWith("RUNTIME_MODEL_PROBE_")

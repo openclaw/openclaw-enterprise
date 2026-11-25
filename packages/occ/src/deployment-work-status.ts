@@ -307,7 +307,7 @@ function deploymentErrorMessage(code: string, agentId: string): string {
     case "RUNTIME_MODEL_PROBE_TIMEOUT":
       return "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.";
     case "RUNTIME_MODEL_PROBE_FAILED":
-      return "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.";
+      return "The startup model check failed. No credential rejection was reported. Check the model name, provider settings, TLS, rate limits and account status. With Codex, also check that the provider is reachable. After the issue is fixed, someone with deploy access to this Agent can deploy a new version.";
     case "RUNTIME_LOGIN_FAILED":
       return "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.";
     case "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE":
