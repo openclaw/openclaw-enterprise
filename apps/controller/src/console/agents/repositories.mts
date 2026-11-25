@@ -804,15 +804,23 @@ export function createRepositoryFields(
     searchState.browsing = false;
     renderResults();
   });
+  function isComposing(event: KeyboardEvent) {
+    // The final IME keydown can arrive after composition ends.
+    return event.isComposing || event.keyCode === 229;
+  }
   search.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown") {
+    if (event.key === "ArrowDown" && !isComposing(event)) {
       event.preventDefault();
       searchState.dismissed = false;
       renderResults();
       results.querySelector<HTMLInputElement>('input[type="checkbox"]:not(:disabled)')?.focus();
     }
     if (event.key === "Enter") {
+      // Enter in search must never submit the surrounding form.
       event.preventDefault();
+      if (event.repeat || isComposing(event)) {
+        return;
+      }
       if (searchState.dismissed) {
         searchState.dismissed = false;
         renderResults();
@@ -824,7 +832,7 @@ export function createRepositoryFields(
     }
   });
   discovery.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || !search.isConnected) {
+    if (event.key !== "Escape" || isComposing(event) || !search.isConnected) {
       return;
     }
     event.preventDefault();

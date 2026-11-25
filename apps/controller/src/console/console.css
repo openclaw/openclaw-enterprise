@@ -3350,8 +3350,23 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: min(72rem, calc(100% - 2 * var(--space-4)));
   height: min(52rem, calc(100% - 2 * var(--space-4)));
 }
+/* The longer message sizes the row so typing does not move the field or its actions. */
 #create-namespace-description {
+  display: grid;
   overflow-wrap: anywhere;
+}
+#create-namespace-description > span {
+  grid-area: 1 / 1;
+}
+#create-namespace-description > [aria-hidden="true"] {
+  visibility: hidden;
+}
+#create-namespace-conflict {
+  color: var(--color-danger);
+}
+/* Keep Done in place when the access check adds a second action. */
+#create-namespace-access + .dialog-actions {
+  justify-content: space-between;
 }
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));

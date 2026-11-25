@@ -59,18 +59,19 @@ test("docs build renders every authored page and preserves repository ownership"
   }
   const index = await readFile(join(root, "dist/docs/index.html"), "utf8");
   assert.match(index, /href="\/guides\/deploy\/local-setup\//);
-  // Existing bookmarks and the remaining rendered guide link must resolve to executable downloads.
+  // Existing bookmarks and the rendered guide links must resolve to executable downloads.
   const quickstart = "snippets/openshell-quickstart";
-  const localSetup = await readFile(
-    join(root, "dist/docs/guides/deploy/local-setup/index.html"),
-    "utf8",
-  );
-  assert.ok(localSetup.includes(`install -m 600 docs/${quickstart}/configure-installation.mts`));
-  const codexPlugins = await readFile(
-    join(root, "dist/docs/guides/integrations/codex-plugins/index.html"),
-    "utf8",
-  );
-  assert.ok(codexPlugins.includes(`href="/${quickstart}/inspect-linear-transcript.mjs"`));
+  const guides = [
+    ["deploy/local-setup", "configure-installation"],
+    ["integrations/codex-plugins", "inspect-linear-transcript"],
+  ] as const;
+  for (const [guide, script] of guides) {
+    const html = await readFile(join(root, "dist/docs/guides", guide, "index.html"), "utf8");
+    assert.ok(html.includes(`href="/${quickstart}/${script}.mjs"`));
+    if (guide === "deploy/local-setup") {
+      assert.ok(html.includes(`install -m 600 docs/${quickstart}/${script}.mts`));
+    }
+  }
   for (const script of [
     "configure-installation",
     "inspect-linear-transcript",
@@ -89,6 +90,17 @@ test("docs build renders every authored page and preserves repository ownership"
     execFileSync(process.execPath, ["--check", asset], { encoding: "utf8" });
     assert.equal(existsSync(join(published, quickstart, script + ".mts")), false);
   }
+  const enrollment = await readFile(
+    join(published, "guides/repository-credentials/openshell-enrollment/index.html"),
+    "utf8",
+  );
+  // Existing enrollment bookmarks must lead to the guide for Source-backed Git access.
+  assert.ok(
+    enrollment.includes(
+      'href="/guides/repository-credentials/#set-github-app-access-for-an-openshell-agent"',
+    ),
+  );
+
   // Run the shipped staging command from both trees. The published shell must copy
   // the historical download and use the same staged filename when sending a turn.
   const stage = join("docs", quickstart, "stage-session.sh");

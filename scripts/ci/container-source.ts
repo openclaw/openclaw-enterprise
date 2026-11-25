@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 
-import { repository, validateCi } from "./container-release/admission.ts";
+import { repository, validateCi, validateCompletedCiRun } from "./container-release/admission.ts";
 import { field, shaPattern } from "./container-release/metadata.ts";
 
 function readMetadata(endpoint: string, label: string): unknown {
@@ -69,6 +69,58 @@ function selectRun(sourceSha: string) {
   return { run, id, attempt };
 }
 
+function resultDescription(conclusion: unknown) {
+  switch (conclusion) {
+    case "success":
+      return "passed";
+    case "failure":
+      return "failed";
+    case "cancelled":
+      return "was cancelled";
+    case "skipped":
+      return "was skipped";
+    case "timed_out":
+      return "timed out";
+    default:
+      return undefined;
+  }
+}
+
+function observedResults(
+  workflow: unknown,
+  run: unknown,
+  current: unknown,
+  jobs: unknown[],
+  sourceSha: string,
+  id: number,
+) {
+  // A failed first check may have stopped validation before the second run was checked.
+  try {
+    validateCompletedCiRun(run, workflow, sourceSha, id);
+    validateCompletedCiRun(current, workflow, sourceSha, id);
+  } catch {
+    return "";
+  }
+  const conclusion = field(run, "conclusion");
+  const outcome = resultDescription(conclusion);
+  if (!outcome || field(current, "conclusion") !== conclusion) {
+    return "";
+  }
+  const names = jobs.map((job) => field(job, "name"));
+  if (!names.every((name) => typeof name === "string" && name.length > 0)) {
+    return "";
+  }
+  const required = names.indexOf("CI Required");
+  if (required === -1) {
+    return ` The workflow ${outcome}. The CI Required job is missing.`;
+  }
+  const job = resultDescription(field(jobs[required], "conclusion"));
+  if (!job || required !== names.lastIndexOf("CI Required")) {
+    return "";
+  }
+  return ` The workflow ${outcome}. The CI Required job ${job}.`;
+}
+
 function main() {
   const [sourceSha, ...extra] = process.argv.slice(2);
   if (!sourceSha || !shaPattern.test(sourceSha) || extra.length !== 0) {
@@ -83,9 +135,10 @@ function main() {
     throw new Error("Could not verify the workflow ID. Check the CI workflow in GitHub.");
   }
   const { run, id, attempt } = selectRun(sourceSha);
+  const attemptUrl = `https://github.com/${repository}/actions/runs/${id}/attempts/${attempt}`;
   if (field(run, "status") !== "completed") {
     throw new Error(
-      `CI is not complete. Watch https://github.com/${repository}/actions/runs/${id}/attempts/${attempt} and recheck the same source.`,
+      `Wait for the whole CI run to finish, even if CI Required has already passed. Watch ${attemptUrl} and recheck the same source.`,
     );
   }
 
@@ -117,7 +170,7 @@ function main() {
     validateCi(current.run, workflow, jobs, sourceSha, id, attempt);
   } catch {
     throw new Error(
-      "CI does not qualify this commit. Check the workflow, run conclusion and CI Required job.",
+      `CI does not qualify this commit.${observedResults(workflow, run, current.run, jobs, sourceSha, id)} Inspect ${attemptUrl}`,
     );
   }
   requireMainTip(sourceSha);

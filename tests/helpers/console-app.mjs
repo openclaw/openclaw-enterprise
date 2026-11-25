@@ -191,6 +191,8 @@ export function chromiumTrustArg(certs) {
  * A TLS ingress on 127.0.0.1:`port` that forwards every request to the HTTP listener on
  * 127.0.0.1:`upstreamPort`, as a production ingress would. `tls` ({ key, cert }, PEM) is the
  * leaf to serve; without it a one-day self-signed leaf for `originHost` is made with openssl.
+ * When the ingress must bind first, pass a function for `upstreamPort` that returns
+ * the port once the upstream is ready and undefined otherwise.
  * Returns the leaf and close().
  */
 export async function startHttpsIngress({
@@ -236,10 +238,16 @@ export async function startHttpsIngress({
     }
   }
   const ingress = createHttpsServer({ key, cert }, (incoming, outgoing) => {
+    const targetPort = typeof upstreamPort === "function" ? upstreamPort() : upstreamPort;
+    if (targetPort === undefined) {
+      outgoing.writeHead(503, { connection: "close" });
+      outgoing.end();
+      return;
+    }
     const upstream = httpRequest(
       {
         hostname: "127.0.0.1",
-        port: upstreamPort,
+        port: targetPort,
         method: incoming.method,
         path: incoming.url,
         headers: incoming.headers,
