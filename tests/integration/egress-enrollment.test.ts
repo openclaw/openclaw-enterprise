@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { protectedMetadataFixture } from "../helpers/static-egress.mjs";
+
+import { isArray, isRecord, record } from "../helpers/egress-observation-values.ts";
 import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { protectedMetadataFixture } from "../helpers/static-egress.mjs";
 
 test("zero-route admission has no business allow and an older supplier cannot claim its execution authority", async (t) => {
   const f = await protectedMetadataFixture(t, { recordInstallation: false });
@@ -13,33 +15,38 @@ test("zero-route admission has no business allow and an older supplier cannot cl
     {},
     "empty protected routes do not select an unprotected default",
   );
-  const middleware = configuration.network_middlewares["oce-egress"];
+  const middleware = record(record(configuration.network_middlewares)["oce-egress"]);
   assert.equal(middleware.execution_authority, true);
-  assert.deepEqual(middleware.endpoints.include, ["deny-egress.invalid"]);
+  assert.deepEqual(record(middleware.endpoints).include, ["deny-egress.invalid"]);
   const policy = { ...f.attachment.configuration, ...configuration };
   const attachment = { plan, configuration: policy };
-  const observed = f.observed;
+  // Narrow the live fixture object, not a copy: the gateway reads these mutations.
+  const observed: unknown = f.observed;
+  assert.ok(isRecord(observed));
+  const { observation, evidence } = observed;
+  assert.ok(isRecord(observation) && isRecord(evidence));
   observed.policy = policy;
-  observed.observation.effective_policy = policy;
+  observation.effective_policy = policy;
   const installed = await f.egress.wiringStatus(context, attachment);
   assert.equal(installed?.enforcement.authorityScope, "execution");
   assert.ok(await f.egress.verifyInstallation(context, installed));
-  const current = observed.evidence.enforced_capabilities;
+  const current = evidence.enforced_capabilities;
+  assert.ok(isArray(current) && current.every((capability) => typeof capability === "string"));
   const old = current.filter((cap) => !cap.endsWith(".protected-no-material.v1"));
-  observed.evidence.enforced_capabilities = old;
+  evidence.enforced_capabilities = old;
   assert.equal(
     await f.egress.wiringStatus(context, attachment),
     undefined,
     "fresh gateway, old loaded supervisor",
   );
   assert.equal(await f.egress.verifyInstallation(context, installed), false);
-  observed.evidence.enforced_capabilities = [...current].sort();
+  evidence.enforced_capabilities = [...current].sort();
   assert.equal(
     await f.egress.wiringStatus(context, attachment),
     undefined,
     "loaded enforcement evidence must retain its canonical order",
   );
-  observed.evidence.enforced_capabilities = current;
+  evidence.enforced_capabilities = current;
   const widened = {
     ...policy,
     network_policies: { unexpected: { endpoints: [{ host: "deny-egress.invalid" }] } },
@@ -55,6 +62,8 @@ test("zero-route admission has no business allow and an older supplier cannot cl
   observed.requiredCapabilities = old;
   await assert.rejects(assertAvailable, unavailable, "complete supported, incomplete required");
   delete observed.requiredCapabilities;
-  observed.supportedCapabilities = [...current, current[0]];
+  const [duplicateCapability] = current;
+  assert.ok(duplicateCapability, "the current supplier evidence has capabilities to duplicate");
+  observed.supportedCapabilities = [...current, duplicateCapability];
   await assert.rejects(assertAvailable, unavailable, "complete required, duplicate in supported");
 });

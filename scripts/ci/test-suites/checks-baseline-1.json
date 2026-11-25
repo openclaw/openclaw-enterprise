@@ -158,7 +158,7 @@
     "tests/integration/openshell-observed-request-hook.test.ts",
     "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/agent-grant-rehearsal.test.ts",
-    "tests/integration/egress-enrollment.test.mjs",
+    "tests/integration/egress-enrollment.test.ts",
     "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
@@ -1050,7 +1050,7 @@
       ]
     },
     {
-      "path": "tests/integration/egress-enrollment.test.mjs"
+      "path": "tests/integration/egress-enrollment.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-prepared-repository.test.mjs"

@@ -114,7 +114,7 @@ request/stream retries observed one request and a failed CLI turn, not provider-
 Run the startup coordination integration separately:
 
 ```sh
-node --test tests/integration/egress-enrollment.test.mjs
+node --test tests/integration/egress-enrollment.test.ts
 ```
 
 The generated entrypoint uses the real Sandbox service client against local HTTP
@@ -211,7 +211,7 @@ supervisor enforcement or bypass prevention.
 ## Check connected request admission without a runtime
 
 ```sh
-node --test tests/integration/egress-connected-preflight.test.mjs \
+node --test tests/integration/egress-connected-preflight.test.ts \
   tests/integration/egress-connected-lifecycle-preflight.test.ts
 ```
 
