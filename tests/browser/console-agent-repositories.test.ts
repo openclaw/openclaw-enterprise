@@ -1421,14 +1421,20 @@ test("Agent repository search prioritizes exact names before prefix matches", as
     await page.locator("#repository-results .repository-identity strong").allTextContents(),
     ["omega/application", "zeta/application", "alpha/application-api", "beta/my-application"],
   );
-  await search.press("Enter");
+  // Holding Enter must add only the first match.
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.up("Enter");
+  assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), false);
   assert.equal(await repositoryCheckbox(page, "omega/application").isChecked(), true);
   assert.equal(
     await page.locator(".repository-card .repository-identity strong").innerText(),
     "omega/application",
   );
   assert.equal(await search.inputValue(), "ApPlIcAtIoN");
-  // Repeated Enter skips the already checked choice and selects the next match.
+  // Confirming text composition leaves the next match for a fresh press.
+  await search.dispatchEvent("keydown", { key: "Enter", isComposing: true });
+  assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), false);
   await search.press("Enter");
   assert.equal(await repositoryCheckbox(page, "omega/application").isChecked(), true);
   assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), true);

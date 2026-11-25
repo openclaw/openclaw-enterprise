@@ -804,7 +804,14 @@ export function createRepositoryFields(
     searchState.browsing = false;
     renderResults();
   });
+  function isComposing(event: KeyboardEvent) {
+    // The final IME keydown can arrive after composition ends.
+    return event.isComposing || event.keyCode === 229;
+  }
   search.addEventListener("keydown", (event) => {
+    if (isComposing(event)) {
+      return;
+    }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       searchState.dismissed = false;
@@ -813,6 +820,9 @@ export function createRepositoryFields(
     }
     if (event.key === "Enter") {
       event.preventDefault();
+      if (event.repeat) {
+        return;
+      }
       if (searchState.dismissed) {
         searchState.dismissed = false;
         renderResults();
@@ -824,7 +834,7 @@ export function createRepositoryFields(
     }
   });
   discovery.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || !search.isConnected) {
+    if (event.key !== "Escape" || isComposing(event) || !search.isConnected) {
       return;
     }
     event.preventDefault();
