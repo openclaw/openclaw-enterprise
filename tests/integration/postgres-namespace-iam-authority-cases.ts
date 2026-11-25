@@ -571,7 +571,7 @@ export async function httpRoleDeletionAfterRevocation(context: TestContext) {
   assert.equal(written.statusCode, 204);
   const writerRequestId = written.headers["x-request-id"];
   assert.equal(typeof writerRequestId, "string");
-  await state.read(async (unit) => {
+  await state.transact(async (unit) => {
     assert.equal(await unit.iamPolicy.getRole(namespace.id, firstTarget.id), undefined);
     assert.equal(await unit.iamPolicy.getAccessBinding(namespace.id, firstBinding.id), undefined);
     const mutation = (await unit.audit.list()).find(
@@ -603,7 +603,7 @@ export async function httpRoleDeletionAfterRevocation(context: TestContext) {
   const requestId = denied.headers["x-request-id"];
   assert.equal(typeof requestId, "string");
   assert.equal(body.meta.requestId, requestId);
-  const events = await state.read((unit) => unit.audit.list());
+  const events = await state.transact((unit) => unit.audit.list());
   const requestEvents = events.filter((event) => event.requestId === requestId);
   const denial = requestEvents.find((event) => event.kind === "authorization_denial");
   assert.ok(denial);
@@ -628,7 +628,7 @@ export async function httpRoleDeletionAfterRevocation(context: TestContext) {
   assert.equal(allowed.statusCode, 204);
   assert.deepEqual(await fixture.observeGrants(delegate.principalId, false), remainingGrants);
   assert.equal(typeof allowed.headers["x-request-id"], "string");
-  await state.read(async (unit) => {
+  await state.transact(async (unit) => {
     assert.equal(await unit.iamPolicy.getRole(namespace.id, target.id), undefined);
     const mutation = (await unit.audit.list()).find(
       (event) => event.requestId === allowed.headers["x-request-id"] && event.kind === "mutation",
