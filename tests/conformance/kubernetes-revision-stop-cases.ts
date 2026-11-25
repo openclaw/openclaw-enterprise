@@ -299,6 +299,11 @@ export async function checkContainmentRetirementRetry() {
 }
 
 export async function checkStopRetainsAgentStorage() {
+  await checkAgentStorageCleanup("stop");
+  await checkAgentStorageCleanup("retire");
+}
+
+async function checkAgentStorageCleanup(operation: "stop" | "retire") {
   const driver = createKubernetesComputeDriver(
     routedOptions({
       runtime: {
@@ -336,12 +341,16 @@ export async function checkStopRetainsAgentStorage() {
       "app.kubernetes.io/name": gatewayName,
     },
   );
-  service.metadata.uid = "service-uid";
+  service.metadata.resourceVersion = "2";
+  if (operation === "stop") {
+    service.metadata.uid = "service-uid";
+  }
   const account = driver["manifest"]("v1", "ServiceAccount", gatewayName, ownership, {
     name: namespace,
     plane: "execution",
   });
   account.metadata.uid = "account-uid";
+  account.metadata.resourceVersion = "3";
   const route = driver["gatewayRoute"](
     revision,
     ownership,
@@ -367,7 +376,7 @@ export async function checkStopRetainsAgentStorage() {
   let accountDeleted = false;
   let gatewayDeleted = false;
   let routeDeleted = false;
-  let failServiceDelete = true;
+  let failServiceDelete = operation === "stop";
   let gatewayPodObservations = 0;
   const gatewayPod = {
     apiVersion: "v1",
@@ -405,10 +414,11 @@ export async function checkStopRetainsAgentStorage() {
         async listNamespacedPod() {
           assert.equal(gatewayDeleted, true);
           gatewayPodObservations += 1;
+          const draining = operation === "stop" && gatewayPodObservations === 1;
           return {
             apiVersion: "v1",
             kind: "PodList",
-            items: gatewayPodObservations === 1 ? [structuredClone(gatewayPod)] : [],
+            items: draining ? [structuredClone(gatewayPod)] : [],
           };
         },
         async readNamespacedService({ name }: ReadDeployment) {
@@ -421,7 +431,7 @@ export async function checkStopRetainsAgentStorage() {
           deletions.push(["Service", request]);
           if (failServiceDelete) {
             failServiceDelete = false;
-            throw new Error("service delete failed");
+            throw Object.assign(new Error("service delete failed"), { code: 503 });
           }
           serviceDeleted = true;
         },
@@ -463,13 +473,42 @@ export async function checkStopRetainsAgentStorage() {
     }),
   });
 
+  const deletedKinds = () => deletions.map(([kind]) => kind);
+  const target = { name: gatewayName, namespace };
+  const uidDelete = (uid: string) => ({ ...target, body: { preconditions: { uid } } });
+  const serviceDelete = ["Service", uidDelete("service-uid")];
+  const accountDelete = ["ServiceAccount", uidDelete("account-uid")];
+
+  if (operation === "retire") {
+    // Routing closes first, but a missing Service UID must leave all three named resources intact.
+    await assert.rejects(
+      driver.retireRevision(revision),
+      /Service UID must be explicitly configured/u,
+    );
+    assert.deepEqual(deletedKinds(), ["HTTPRoute"]);
+
+    service.metadata.uid = "service-uid";
+    await driver.retireRevision(revision);
+    assert.deepEqual(deletions.slice(1), [
+      serviceDelete,
+      accountDelete,
+      ["Deployment", uidDelete("gateway-uid")],
+    ]);
+    assert.equal(privateClaimDeleted, false);
+    return;
+  }
+
   // A failed shared cleanup must retry after the exact route and Deployment are absent.
   await assert.rejects(driver.stopRevision(revision), /service delete failed/);
+  assert.deepEqual(deletedKinds(), ["HTTPRoute", "Deployment", "Service"]);
   await driver.stopRevision(revision);
-  assert.deepEqual(
-    deletions.map(([kind]) => kind),
-    ["HTTPRoute", "Deployment", "Service", "Service", "ServiceAccount"],
-  );
+  const stopped = { uid: "gateway-uid", resourceVersion: "1" };
+  assert.deepEqual(deletions.slice(1), [
+    ["Deployment", { ...target, body: { preconditions: stopped } }],
+    serviceDelete,
+    serviceDelete,
+    accountDelete,
+  ]);
   assert.equal(gatewayPodObservations, 2);
 
   // The worker stops the published revision before retiring predecessors. A missing

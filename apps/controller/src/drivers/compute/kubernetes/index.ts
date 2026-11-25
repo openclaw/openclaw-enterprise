@@ -10563,36 +10563,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ? (["Service", "ServiceAccount", "Deployment"] as const)
         : (["Service", "ServiceAccount"] as const);
     for (const kind of kinds) {
-      const existing = await this.getOwned(kind, name, namespace, ownership);
-      if (existing === undefined) {
-        continue;
-      }
-      const uid = required(existing.metadata.uid, `${kind} UID`);
-      const request = {
-        name,
-        namespace: namespace.name,
-        body: { preconditions: { uid } },
-      };
-      await this.request(
-        async () => {
-          if (kind === "Deployment") {
-            await clients.apps.deleteNamespacedDeployment(request);
-          } else if (kind === "Service") {
-            await clients.core.deleteNamespacedService(request);
-          } else {
-            await clients.core.deleteNamespacedServiceAccount(request);
-          }
-        },
-        { mutating: true },
-      );
+      await this.deleteOwnedNamespacedResource(kind, name, ownership, namespace, clients);
     }
   }
 
   private async deleteOwnedNamespacedResource(
-    kind: "ConfigMap" | "ServiceAccount" | "NetworkPolicy" | "Secret" | "Service",
+    kind: "ConfigMap" | "ServiceAccount" | "NetworkPolicy" | "Secret" | "Service" | "Deployment",
     name: string,
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
+    resolvedClients?: KubernetesApiClients,
   ): Promise<void> {
     const existing = await this.getOwned(kind, name, namespace, ownership);
     if (existing === undefined) {
@@ -10603,7 +10583,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       namespace: namespace.name,
       body: { preconditions: { uid: required(existing.metadata.uid, `${kind} UID`) } },
     };
-    const clients = await this.clients(namespace.plane);
+    const clients = resolvedClients ?? (await this.clients(namespace.plane));
     await this.request(
       async () => {
         if (kind === "ConfigMap") {
@@ -10614,6 +10594,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
           await clients.core.deleteNamespacedServiceAccount(request);
         } else if (kind === "Service") {
           await clients.core.deleteNamespacedService(request);
+        } else if (kind === "Deployment") {
+          await clients.apps.deleteNamespacedDeployment(request);
         } else {
           await clients.networking.deleteNamespacedNetworkPolicy(request);
         }
