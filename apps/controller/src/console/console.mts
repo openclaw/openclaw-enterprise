@@ -2510,8 +2510,10 @@ async function loadPage({
       }
       const headerFocus = versionHeaderFocus();
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
-      // A header control chosen during this read takes priority over the older scroll position.
-      if (!headerFocus) {
+      // The shell already restores Namespace focus. Keep that control in view too.
+      const keptNamespaceFocus =
+        switchingVersion && restoredShell.scopeSelector?.contains(document.activeElement);
+      if (!headerFocus && !keptNamespaceFocus) {
         window.scrollTo({ top: retainedView.scrollY, left: 0 });
       }
       shell = restoredShell;
