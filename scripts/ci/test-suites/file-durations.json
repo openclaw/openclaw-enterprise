@@ -363,6 +363,7 @@
     "tests/integration/secret-driver-startup.test.ts": 600,
     "tests/integration/service-api-keys.test.ts": 2300,
     "tests/integration/skipper-private-git-origin.test.mjs": 3200,
+    "tests/integration/skipper-private-git-model-adapter.test.ts": 100,
     "tests/integration/ssh-compute-startup.test.ts": 800,
     "tests/integration/startup-ipv6-loopback.test.ts": 4700,
     "tests/integration/static-egress.test.mjs": 11600,
