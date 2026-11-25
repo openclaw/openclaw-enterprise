@@ -1,6 +1,7 @@
 import type { CredentialPolicyReductionState } from "./credential-policy-reduction.ts";
 import type {
-  CredentialSource,
+  StoredCredentialSource as CredentialSource,
+  CredentialSource as TokenServiceCredentialSource,
   CredentialWithdrawal,
   EgressInstallation,
   EgressMaterialEvidence,
@@ -30,7 +31,15 @@ export interface CredentialSourceReadRepository {
     namespaceId: string,
     credentialSourceId: string,
   ): Promise<Readonly<CredentialSource> | undefined>;
+  /** Namespace inventory for every Source owner. Callers enforce resource authorization. */
   listCredentialSources(namespaceId: string): Promise<readonly Readonly<CredentialSource>[]>;
+  /** Page across ready Namespaces by Source ID for maintenance by the selected owner. */
+  scanReadyTokenServiceSourceIds(
+    type: TokenServiceCredentialSource["type"],
+    tokenServiceInstanceId: string,
+    limit: number,
+    afterId?: string,
+  ): Promise<readonly { namespaceId: string; id: string }[]>;
   findCredentialWithdrawal(
     namespaceId: string,
     revisionId: string,
@@ -45,6 +54,8 @@ export interface CredentialSourceReadRepository {
 export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
 
 export interface CredentialSourceRepository extends CredentialSourceReadRepository {
+  requestOAuthRevocation(namespaceId: string, sourceId: string, principalId: string): Promise<void>;
+  confirmOAuthRevocation(namespaceId: string, sourceId: string, at: string): Promise<void>;
   rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
   recordEgressInstallation(installation: EgressInstallation): Promise<void>;
   retireEgressInstallation(namespaceId: string, revisionId: string): Promise<void>;

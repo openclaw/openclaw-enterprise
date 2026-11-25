@@ -450,7 +450,6 @@ export async function prepareMaterialization({
           clientSecretKey: "client-secret",
           caSecretName: "signin-rehearsal-oidc-ca",
           caSecretKey: "ca.pem",
-          egressCidrs: [initial.status.podIP + "/32"],
         },
       };
       values.agentNativeAdmin = { enabled: false };

@@ -11,6 +11,7 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import type { CredentialSourceWire } from "../../packages/contracts/src/api/resources.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 
@@ -61,15 +62,6 @@ async function json<T>(response: Response): Promise<T> {
 }
 
 type Agent = { id: string; activeRevisionId?: string };
-type Source = {
-  id: string;
-  namespaceId: string;
-  ownerCapability: string;
-  type: string;
-  state: string;
-  config: Record<string, string>;
-  secrets: Record<string, unknown>;
-};
 type Deployment = { deploymentId: string; status: string; error?: { code: string } };
 type Withdrawal = {
   agentId: string;
@@ -153,19 +145,20 @@ test(
       return (await json<{ data: T }>(await request(method, path, status, body))).data;
     }
 
-    function assertSource(source: Source): void {
+    function assertSource(source: CredentialSourceWire): void {
       assert.ok(
         source.id === sourceId &&
           source.namespaceId === namespaceId &&
-          source.ownerCapability === "token_service" &&
           source.type === "static" &&
           source.state === "ready" &&
-          source.config?.provider_preset === "openai" &&
-          source.secrets &&
-          Object.keys(source.secrets).length === 0 &&
-          !("secret" in source) &&
-          !("backendRef" in source),
-        "The exact managed Source must be ready and expose only sanitized metadata.",
+          source.config?.provider_preset === "openai",
+        "The exact managed Source must be ready.",
+      );
+      assert.ok(
+        ["secret", "secrets", "ownerCapability", "backendRef"].every(
+          (field) => !Object.hasOwn(source, field),
+        ),
+        "The public Source response omits custody fields.",
       );
     }
 
@@ -198,7 +191,7 @@ test(
       Array.isArray(existingAgents) && existingAgents.length === 0,
       "Use a fresh Namespace with no Agents because the test rotates and deletes the Source.",
     );
-    assertSource(await data<Source>("GET", sourcePath, 200));
+    assertSource(await data<CredentialSourceWire>("GET", sourcePath, 200));
     const placed = await gateway.getWorkspace(workspace, rpc());
     assert.ok(placed?.id && placed.labels["openclaw.dev/namespace-id"] === namespaceId);
     const provider = await gateway.getProvider(workspace, providerName, rpc());
@@ -371,8 +364,8 @@ test(
     // An invalid synthetic replacement is private to the Gateway. Observe the serving version
     // through supervisor readiness so the test does not send this value to the model endpoint.
     assertSource(
-      await data<Source>("PATCH", sourcePath, 200, {
-        secret: { opaque: `synthetic-native-agent-${randomUUID()}` },
+      await data<CredentialSourceWire>("PATCH", sourcePath, 200, {
+        secret: `synthetic-native-agent-${randomUUID()}`,
       }),
     );
     const rotated = await gateway.getProvider(workspace, providerName, rpc());
@@ -417,6 +410,6 @@ test(
     const retained = await gateway.getProvider(workspace, providerName, rpc());
     assert.equal(retained?.id, provider.id);
     assert.equal(retained?.resourceVersion, rotated.resourceVersion);
-    assertSource(await data<Source>("GET", sourcePath, 200));
+    assertSource(await data<CredentialSourceWire>("GET", sourcePath, 200));
   },
 );

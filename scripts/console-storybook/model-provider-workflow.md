@@ -1,26 +1,22 @@
-# Inspect shared model configuration and authorize a credential
+# Inspect model configuration and save a Credential Source
 
-Use these desktop stories:
+Open **Pages/Create Agent → Codex with model Credential Source**. The story fills a
+dummy OpenAI API key in a masked field and leaves **Credential storage** set to
+**Credential Source**. Select **Create Agent**. Confirm that the request log shows
+`POST …/credential-sources` before the Agent draft save, with no `POST …/secrets`.
+The draft uses the returned Credential Source ID. The response does not contain
+the entered key. Deploying this draft is a separate action.
 
-- **Pages/Settings → Shared model provider**
-- **Pages/Create Agent → Authorize shared model destination**
-- **Pages/Create Agent → Destination authorization refusal**
+Also inspect these changed states:
 
-In Settings, expand Compute and inspect `runtime.modelProvider`. Switch between
-Fields and JSON. Confirm that the URL and protocol agree and that no credential
-value appears. The view is read-only; operators change Installation startup
-configuration.
+- **Credential Source creation denied** shows a simulated permission refusal.
+- **Credential Source outcome unknown** shows a simulated TokenService outage and clears the entered key.
+- **Credential Source creation pending** shows the submitting state while the request waits.
 
-In Create Agent, select the simulated model Secret. Enter
-`https://models.example.com/v1` in **Authorized base URL**, then create the Agent.
-Confirm that the source registration carries `config.authorized_base_url` and
-does not carry `config.base_url`. This field authorizes the key's destination;
-it does not choose or override the Installation endpoint.
-
-Also check the existing default-source, missing-credential, registration-failure,
-and uncertain-registration stories. An empty authorization uses OpenAI's default
-destination. Pending registration locks its configuration. Check registration before editing
-a refused request; uncertain registration reuses the same request. Switching to account authentication hides source configuration.
+For guided provisioning with the existing Secret path, select **Namespace Secret**
+under **Credential storage** and choose a Secret. **Pages/Settings → Shared model
+provider** remains a read-only view of Installation startup configuration; Source
+creation does not change that configuration.
 
 ## Correct an edited model catalog
 

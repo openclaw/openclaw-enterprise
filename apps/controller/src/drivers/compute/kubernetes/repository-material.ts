@@ -235,6 +235,7 @@ export function repositoryMaterialSpec(
     return undefined;
   }
   if (
+    admitted.authorization === "credential_source" ||
     !Array.isArray(bindings) ||
     bindings.length === 0 ||
     bindings.length > 16 ||

@@ -107,7 +107,15 @@ for (const [name, response, podmanIds] of [
       root,
       podmanIds === undefined ? "docker" : "podman",
       `case "$1:$6" in
-  version:|compose:up|compose:down) exit 0 ;;
+  version:|compose:down) exit 0 ;;
+  compose:up)
+    [ "\${OCC_POSTGRES_PORT+x}" = x ] || exit 98
+    if [ "$TEST_PODMAN_IDS_SET" = 1 ]; then
+      [ -z "$OCC_POSTGRES_PORT" ] || exit 98
+    else
+      [ "$OCC_POSTGRES_PORT" = 0 ] || exit 98
+    fi
+    exit 0 ;;
   compose:ps)
     if [ "$TEST_PODMAN_IDS_SET" = 1 ]; then
       printf '%s\\n' 'unrecognized arguments: postgres' >&2

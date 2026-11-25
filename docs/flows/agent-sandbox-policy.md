@@ -64,9 +64,9 @@ Installation ceiling and Sandbox wildcard and range support. Preview writes noth
 Validation names failed fields and checks. Stale or denied requests retain resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details without Unicode controls.
 
-`packages/occ/src/agent-deployment-admission.ts:admitModelCredentialPolicy` matches
-one grant against the approved inference host/port, checks the ceiling, and
-records separate network and method/path injection policies in the revision ([status](../reference/credential-sources.md#implementation-status)).
+Model admission uses saved grants or, for built-in Codex OAuth, exact preset
+requests if the Installation ceiling allows one stock executable. Revisions
+store separate network and injection policies. [Source status](../reference/credential-sources.md#implementation-status)
 
 `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` requires Agent
 `manage_policy` and SandboxPolicy `update` and locks Namespace and Agent.
@@ -114,12 +114,13 @@ PUT uses Read Committed to observe revocations during IAM lock waits.
 
 `apps/controller/src/console/agents/sandbox-policy.mts:repositoryApiEditor`
 previews role, Namespace and Agent limits. Refresh and rejected saves retain
-drafts if saved grants match. Otherwise, discard them. PUT validates the list.
-The editor confirms Agent, Namespace, version
-and grants, including limits. First deployment review shows API limits beside each role.
-Deny-all and withdrawal require confirmation.
-Unscoped history requires a new Agent. Unreadable revisions require a compatible
-controller and Worker to stop.
+drafts while saved grants match. PUT validates the list. The editor confirms the
+Agent, Namespace, version and grants. First deployment shows API limits by role.
+Deny-all requires confirmation. TokenService Git withdrawal keeps model network
+rules. Dedicated Agents can save Git grants after standalone model-only
+deployments. Stop before deploying those grants. OCC and the Worker reject
+unscoped history through `supportsScopedRepositoryHistory`.
+Git presents OpenShell's placeholder through a repository-scoped HTTPS credential helper.
 
 Deployment rechecks Repo scope, proxy and Driver identities before credential
 access and revision insertion. PostgreSQL binds version, grants and identity,

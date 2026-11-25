@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-24
-last_updated_session: authoring-run/e8a6ff72-e8b4-4dbd-8885-b0ca85474a91
+last_updated_session: authoring-run/d736e424-120c-47a9-baef-3f33977053ac
 ---
 
 # Console Agent stop and deletion
@@ -116,9 +116,13 @@ refusal with the Agent's name and the Request ID, or the API's text when the ref
 about grants. The first Delete stays unavailable, described by the refusal, until a permission
 read started after the refusal allows delete. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
 rereads the exact Agent every few seconds; **Refresh deletion status** reads it
-on demand. A read error stops polling. Only a not-found read after
-an accepted or uncertain request, or when an already-deleting Agent is opened,
-returns to the Agents list in the selected Namespace. A `403` after the Agent was marked
+on demand. A read error stops polling. A status `404` after an accepted or uncertain
+request, or for an already-deleting Agent, returns to Agents in the selected Namespace.
+If deletion was accepted or the Agent was observed deleting, that landing briefly shows
+a polite status saying deletion was requested and cleanup is unconfirmed. The notice stays
+with the same operator and Namespace and does not add a status read. An uncertain request
+without an observed deleting state returns without the notice. A direct detail-page miss
+stays on detail. A DELETE `404` requires a manual status refresh. A status `403` after the Agent was marked
 deleting means the caller can no longer follow cleanup. The Console stops polling and closes
 the repeat confirmation if it is open. If the reader confirmed a repeat while that status read was
 pending, the Console drops the unsent request. Neither action cancels a DELETE already sent or
@@ -199,8 +203,7 @@ still means requested intent, not completed shutdown.
   and `operate` do not authorize deletion. For another repeat `403`, follow the API's
   explanation. Any failed repeat pauses polling until a manual action. Use the displayed
   Request ID when present.
-- An accepted deletion remains in progress until the exact Agent read reports
-  not found. A failed refresh does not establish whether cleanup finished.
+- A status `404` or failed refresh does not establish whether cleanup finished.
 
 The Go regression `TestAgentStopReturnsNoticeDeliveryErrors` in
 `internal/occcli/agent_stop_output_test.go` covers all three CLI advice branches
@@ -221,6 +224,7 @@ controller persistence or Compute shutdown.
 
 ## Changelog
 
+- 2026-11-24 17:24: Describe the deletion status notice in the accompanying change. (authoring-run/d736e424-120c-47a9-baef-3f33977053ac - 6666de78b66ff4b1d7d5fea1021b8cd115a2d1be)
 - 2026-11-24 06:26: Identify the selected Agent in Stop and Delete confirmations. (authoring-run/e8a6ff72-e8b4-4dbd-8885-b0ca85474a91 - 4d4681144427368743596e0379b28dbadfef8c58)
 - 2026-11-20 17:34: Distinguish a denied deletion retry from status readback in the accompanying change. (authoring-run/428a2ef4-6974-4fd7-bad2-6f7f6099e5bd - acbfc35811e8929485813bbd315f5d12f71a4028)
 

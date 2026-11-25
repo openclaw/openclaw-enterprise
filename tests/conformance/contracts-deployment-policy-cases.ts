@@ -75,7 +75,6 @@ export function registerDeploymentPolicyCases(): void {
       name: "Work",
       type: "static",
       config: {},
-      secrets: {},
       state: "ready",
       createdAt: "2026-11-20T00:00:00Z",
       ownerCapability: "token_service",
@@ -717,7 +716,7 @@ export function registerDeploymentPolicyCases(): void {
           bindings: [
             {
               ...binding,
-              consumer: { kind: "repository", repositoryId: "repo_calendar" },
+              consumer: { kind: "repository" },
               projection: { ...binding.projection, presentation: "repository_git" },
             },
           ],

@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { GitHubProfile } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
@@ -198,14 +199,12 @@ export function registerRepositoryCases() {
         },
       );
       assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-
       assert.equal(bound.mock.callCount(), 1, "fresh planning uses the bound policy exactly once");
       assert.equal(legacy.mock.callCount(), 0, "fresh planning bypasses the legacy resolver");
       assert.deepEqual(bound.mock.calls[0]?.arguments, [
         { namespaceId: namespace.id, bindings: repositoryBindings },
       ]);
       const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
-      assert.deepEqual(queued.plan.repositoryBindings, repositoryBindings);
       assert.deepEqual(queued.plan.repositoryAccess, repositoryAccess);
       assert.deepEqual(queued.plan.pluginApprovers, []);
       assert.equal(queued.agent_id, null);
@@ -258,6 +257,7 @@ export function registerRepositoryCases() {
             : undefined;
         },
       );
+      fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);
       await fixture.stopWorker();
       const workerBoundCalls = bound.mock.calls.slice(boundCallsBeforeWorker);
       assert.ok(
@@ -267,7 +267,7 @@ export function registerRepositoryCases() {
       for (const call of workerBoundCalls) {
         assert.equal(call.this, repoDriver);
         assert.deepEqual(call.arguments, [
-          { namespaceId: namespace.id, bindings: queued.plan.repositoryBindings },
+          { namespaceId: namespace.id, bindings: repositoryAccessSelections(repositoryAccess) },
         ]);
       }
       assert.equal(
@@ -332,7 +332,7 @@ export function registerRepositoryCases() {
       assert.equal(agent.status, 200, JSON.stringify(agent.body));
       assert.ok("repositoryAccess" in agent.data);
       assert.equal(agent.data.gatewayManagedMode, false);
-      assert.deepEqual(agent.data.repositoryBindings, repositoryBindings);
+      assert.deepEqual(repositoryAccessSelections(agent.data.repositoryAccess), repositoryBindings);
       assert.deepEqual(agent.data.repositoryAccess, repositoryAccess);
       assert.deepEqual(agent.data.pluginApprovers, []);
       const revisionPath = `${agentPath}/revisions/${status.revisionId}`;
@@ -355,10 +355,12 @@ export function registerRepositoryCases() {
       const customizedRead = await fixture.requestChecked(AgentReadResponse, "GET", agentPath);
       assert.ok("repositoryAccess" in customizedRead.data);
       assert.deepEqual(customizedRead.data.repositoryAccess, custom);
-      assert.deepEqual(customized.data.repositoryBindings, repositoryBindings);
+      assert.deepEqual(
+        repositoryAccessSelections(customized.data.repositoryAccess),
+        repositoryBindings,
+      );
       // Database constraints enforce consistency even when an application writer is bypassed.
       for (const invalid of [
-        { defaultProfile: "git-write", repositories: [{ repositoryRef: "project" }] },
         { ...custom, extra: true },
         { ...custom, repositories: [...repositoryBindings, ...repositoryBindings] },
         { ...custom, repositories: [{ repositoryRef: "project", profile: null }] },
@@ -372,11 +374,14 @@ export function registerRepositoryCases() {
         );
       }
       const cleared = await fixture.requestChecked(AgentResponse, "PATCH", agentPath, {
-        body: { configurationId: status.configurationId, repositoryBindings: [] },
+        body: {
+          configurationId: status.configurationId,
+          repositoryAccess: { defaultProfile: "git-write", repositories: [] },
+        },
       });
       assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+      assert.deepEqual(cleared.data.repositoryAccess?.repositories, []);
       assert.equal(Object.hasOwn(cleared.data, "repositoryBindings"), false);
-      assert.equal(Object.hasOwn(cleared.data, "repositoryAccess"), false);
       const historical = await fixture.requestChecked(
         AgentRevisionReadResponse,
         "GET",
@@ -513,13 +518,12 @@ export function registerRepositoryCases() {
         "provisioning-installation-access",
         { installationAccess: true },
       );
-      const { repositoryAccess: ignored, ...body } = repositoryProvisioningBody(
-        namespace.id,
-        secrets,
-        {
-          repositoryBindings: [{ repositoryRef: "installation", profile: "github-installation" }],
+      const body = repositoryProvisioningBody(namespace.id, secrets, {
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: "installation", profile: "github-installation" }],
         },
-      );
+      });
       const admitted = await fixture.requestChecked(
         AgentProvisioningResponse,
         "POST",

@@ -4,8 +4,8 @@ Select approved repositories, deploy an Agent, then use ordinary `git` and the `
 The worker Token Service owns GitHub App credentials. Choose an
 [access level](../reference/repository-credentials/access-levels.md) for the task.
 
-For a dedicated OpenShell Agent with managed GitHub App credentials, follow
-[Push a Git branch from an OpenShell Agent](repository-credentials/openshell-git-push.md).
+For a dedicated OpenShell Agent, use [GitHub App access](#select-a-github-source-for-an-openshell-agent)
+with TokenService and native Credential Proxy.
 
 Keep the gateway private to approved clients, with enforced NetworkPolicies and
 HTTPS on port 443. A `.svc` hostname or ClusterIP alone does not establish isolation;
@@ -13,8 +13,9 @@ check forwarding, Ingress, load balancers and effective policy enforcement.
 
 ## Prepare the platform installation
 
-Select `repository.nativeSender` with `repository.preparedGitHub`. Controller
-startup rejects the legacy Installation `drivers.repo` selection. Drain accepted
+For the prepared repository sender, select `repository.nativeSender` with
+`repository.preparedGitHub`. Controller startup rejects the legacy Installation
+`drivers.repo` selection. Drain accepted
 work on its original owner before cutover; do not replay an unknown result. See
 [prepared native setup](../reference/repository-credentials/prepared-native-git.md#install-and-check).
 
@@ -46,9 +47,48 @@ docker build -f deploy/runtime/Dockerfile \
 The image includes Git, the client helper and pinned `gh` 2.103.2. Publish or
 import it, select its digest and configure model authentication.
 
+<a id="select-a-github-source-for-an-openshell-agent"></a>
+
+## Set GitHub App access for an OpenShell Agent
+
+This path requires the selected TokenService, the paired OpenShell Sandbox and
+Credential Proxy, and qualified runtime images. Dedicated Codex can use the
+operator-managed or service-mode Sandbox. Select the GitHub Backend and its
+approved registry with `repository.id` and
+`repository.configuration.sessionDurationSeconds`. In each registry entry, use
+the short GitHub name, such as `project`, and grant its Namespace access.
+Use the [TokenService registry example](../reference/repository-credentials/access-levels.md#tokenservice-registry-example)
+for the matching `repositoryNetworkPolicyCeiling`. The selected Client supplies
+the signing key. TokenService verifies the installation owner and saves the
+repository IDs returned by GitHub.
+
+In Helm, set `repositoryCredentials.registryConfigMapName` to the approved
+registry ConfigMap. Set the GitHub Backend's `registryPath` to
+`/etc/openclaw/repository-registry/registry.json`.
+
+1. As Installation administrator, open **Credentials → Credential clients →
+   Register client**. Select **GitHub App**, choose **Installation-wide** or
+   the Agent's Namespace, enter the App ID, and select its PEM signing key.
+   TokenService verifies the key and keeps it private.
+2. In the Agent's **Repositories** settings, choose the approved repositories,
+   their access levels, and a GitHub App Client available in that Namespace.
+   Selecting or changing the Client requires Installation administration.
+3. Select the model credential, then save and deploy. Deploy requires permission
+   to use an eligible Namespace Source or to create one. TokenService mints a
+   finite installation token when needed. Credential Proxy injects it only on
+   requests allowed by the Agent's saved grants.
+
+Use **Rotate GitHub App key** on the same Client to replace its signing key.
+TokenService uses that key at the next mint. Existing installation tokens keep
+their own expiry.
+
+The Agent's saved Repository grants apply for that deployment, subject to
+withdrawal. The configured session duration applies to legacy Repository sessions.
+
 ## Keep Git access on the same running Agent
 
-An Agent administrator can approve one repository binding until they remove that approval.
+For legacy Repository sessions, an Agent administrator can approve one
+repository binding until they remove that approval.
 The worker can then open another short session for the same running Agent without an hourly
 approval or a replacement Agent. Git can pause between sessions. The approval does not extend a
 token, change its repository or permissions, or grant access to a model.
@@ -127,7 +167,7 @@ body = {
             "id": os.environ["HARNESS_SECRET_ID"],
         },
     },
-    "repositoryBindings": [{"repositoryRef": "application", "profile": "git-write"}],
+    "repositoryAccess": {"defaultProfile": "git-write", "repositories": [{"repositoryRef": "application"}]},
 }
 with open("agent.json", "w") as output:
     json.dump(body, output)
