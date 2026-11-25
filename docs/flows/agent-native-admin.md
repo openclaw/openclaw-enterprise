@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-25
+last_updated_session: authoring-run/d93ce6b2-1bd9-4a1f-a711-ef61e5c3e880
 ---
 
 # Agent Native Admin UI Flow
@@ -158,7 +158,9 @@ admission remains in `apps/controller/src/index.ts`.
 
 `ResourceConflictError` becomes only `status: "stopped"` for an authorized stopped Agent without a selected version, or for an operator whose Agent is stopping. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing.
 
-OCC derives the selected version's target. An administrator viewing a non-running Agent receives `stopped` with the host and origin. For a newer exclusive replacement, OCC rechecks access to the selected predecessor. The saved record must name that predecessor and have phase `pre-stop`. OCC returns `unavailable` after the worker records [`stopping`](../reference/agents/planned-replacement.md) or if the matching record is missing.
+OCC derives the selected version's target. An administrator viewing a non-running Agent receives `stopped` with the host and origin. If several revisions are newer than the active revision, OCC checks only the newest. The bundled stores skip unrelated revisions. The request still fails if OCC cannot read the active revision or the newest successor.
+
+For a newer exclusive replacement, OCC rechecks access to the selected predecessor. The saved record must name that predecessor and have phase `pre-stop`. OCC returns `unavailable` after the worker records [`stopping`](../reference/agents/planned-replacement.md) or if the matching record is missing.
 
 The target accompanies an [`unsupported` reason](../reference/agent-native-admin.md#unsupported-reasons). `not-enabled` means the Configuration did not opt this Agent into browser chat. `configuration` means another native setting prevents access.
 
@@ -336,6 +338,7 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
+- 2026-11-25 06:03: Describe successor selection in the shared lookup. (authoring-run/d93ce6b2-1bd9-4a1f-a711-ef61e5c3e880 - 2ed738ba4cb4c54802879a4c41ca98221f9716e8)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 
@@ -366,18 +369,5 @@ admin Configuration remains Pod-local.
 - 2026-11-11 09:26: Classify native admission failures. (authoring-run/28db5867-56df-4145-a1c5-07be7a7874ee - f0b9c002c0577bcc8854913b0eafa5449bd5fbe3)
 
 - 2026-11-11 01:50: Share the predecessor stop boundary. (authoring-run/01a17edc-73a7-74a3-86e5-aa8c53bfb1b9)
-
-- 2026-11-10 12:28: Describe delegated profiles, revision credentials, and private browser routing in accompanying implementation. Runtime qualification pending. (authoring-run/a88e2937-bfa9-4cff-8dfd-d108048d60d6 - eff92cc67c38da5f9f4b86a839fb3ce4281a28b6)
-
-- 2026-11-10 08:30: Add named chat and stale-version browser recovery. (authoring-run/37c71df8-7e9c-4224-bc36-e4091f387620 - eef0b3f10d0e0f4ed09fd32086c84628c41f1b93)
-
-- 2026-11-09 14:07: Consolidate browser authorization and document current-cookie logout. (authoring-run/f217fd51-af6b-4d6a-a888-b2be4880aa91 - e39be9803)
-
-- 2026-11-09 12:12: Added OIDC sessions and scoped chat. (codex/oidc-agent-chat - f1ebda062)
-- 2026-11-06 07:57: Integrate host-only exchange, repeat launches and current session ownership in accompanying changes. (authoring-run/43cf1307-6d25-4d9d-951e-55fe09a514b8 - a4c2191e73337d73ee27e7fe2c9a51cef40d99f5)
-
-- 2026-11-03 12:55: Sign-in link for unactivated page loads. (fix/native-admin-signed-out-html-fallback)
-
-- 2026-11-02 09:55: Shorten provisioning prose and link shared status definitions after rebasing. (authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9 - 393b1585e4b10a3232abf10c60b766d8e55d85ce)
 
 [Agent native admin documentation history](agent-native-admin/history.md) preserves the older dated entries.

@@ -3872,18 +3872,26 @@ function repositories(
               .map((revision) => immutableCopy(revision))
           : [],
       ),
-    listRevisionMetadata: async (namespaceId, agentId) =>
-      Object.freeze(
-        snapshot.namespaces.get(namespaceId)?.deletedAt === undefined
-          ? (snapshot.revisions.get(agentKey(namespaceId, agentId)) ?? [])
-              .filter(
-                (revision) => revision.namespaceId === namespaceId && revision.agentId === agentId,
-              )
-              .map(({ id, namespaceId, agentId, revision, backendId, createdAt }) =>
-                Object.freeze({ id, namespaceId, agentId, revision, backendId, createdAt }),
-              )
-          : [],
-      ),
+    listRevisionMetadata: async (namespaceId, agentId, options) => {
+      if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+        return Object.freeze([]);
+      }
+      const history = snapshot.revisions.get(agentKey(namespaceId, agentId)) ?? [];
+      // createRevision keeps this history in numeric order, even for out-of-order inserts.
+      const candidates = options === undefined ? history : history.slice(-1);
+      return Object.freeze(
+        candidates
+          .filter(
+            (candidate) =>
+              candidate.namespaceId === namespaceId &&
+              candidate.agentId === agentId &&
+              (options === undefined || candidate.revision > options.newestAfter),
+          )
+          .map(({ id, namespaceId, agentId, revision, backendId, createdAt }) =>
+            Object.freeze({ id, namespaceId, agentId, revision, backendId, createdAt }),
+          ),
+      );
+    },
     pageRevisionSummaries: async (namespaceId, agentId, { before, limit }) => {
       const older =
         snapshot.namespaces.get(namespaceId)?.deletedAt === undefined

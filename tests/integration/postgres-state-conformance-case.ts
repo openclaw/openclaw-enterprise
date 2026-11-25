@@ -2,14 +2,43 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Socket } from "node:net";
 import type { TestContext } from "node:test";
-import type { PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import type { PermissionAction } from "../../packages/contracts/src/index.ts";
-import type { PlatformReadView } from "../../packages/occ/src/index.ts";
 import {
   databaseUrl,
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.ts";
+
+// Count bytes on every connection this read acquires. Unlike a latency threshold, the
+// transfer bound still detects overfetch on a slow or busy runner.
+export async function measurePostgresRead<T>(pool: Pool, read: () => Promise<T>) {
+  const sockets = new Map<Socket, number>();
+  const acquired = (client: PoolClient) => {
+    // pg exposes the active stream at runtime, including its byte counter.
+    assert.ok("connection" in client, "expected an acquired pg client connection");
+    const connection = client.connection;
+    assert.ok(typeof connection === "object" && connection !== null && "stream" in connection);
+    const socket = connection.stream;
+    assert.ok(socket instanceof Socket, "expected the pg connection to use a Node socket");
+    if (!sockets.has(socket)) {
+      sockets.set(socket, socket.bytesRead);
+    }
+  };
+  pool.on("acquire", acquired);
+  try {
+    const started = performance.now();
+    const result = await read();
+    const ms = Math.round(performance.now() - started);
+    let bytes = 0;
+    for (const [socket, before] of sockets) {
+      bytes += socket.bytesRead - before;
+    }
+    return { result, bytes, ms };
+  } finally {
+    pool.off("acquire", acquired);
+  }
+}
 
 export async function verifyPostgresStateConformance(context: TestContext) {
   const [{ DatabaseError, Pool }, { PostgresPlatformState }, { NativeIAMDriver }] =
@@ -604,40 +633,10 @@ export async function verifyPostgresStateConformance(context: TestContext) {
      FROM generate_series(1, 64) AS n`,
     [fixture.namespace.id, large],
   );
-  // The bound counts the bytes the database sends for one read, which a slow or busy runner
-  // does not change: a list that reads the full documents receives about 64 x 0.9 MB, a
-  // summary list a few hundred bytes a row. Every pool client this read checks out is counted.
-  const received = async <T>(read: (view: PlatformReadView) => Promise<T>) => {
-    const sockets = new Map<Socket, number>();
-    const acquired = (client: PoolClient) => {
-      // pg exposes the active stream at runtime, including its byte counter.
-      assert.ok("connection" in client, "expected an acquired pg client connection");
-      const connection = client.connection;
-      assert.ok(typeof connection === "object" && connection !== null && "stream" in connection);
-      const socket = connection.stream;
-      assert.ok(socket instanceof Socket, "expected the pg connection to use a Node socket");
-      if (!sockets.has(socket)) {
-        sockets.set(socket, socket.bytesRead);
-      }
-    };
-    pool.on("acquire", acquired);
-    try {
-      const started = performance.now();
-      const result = await state.read(read);
-      const ms = Math.round(performance.now() - started);
-      let bytes = 0;
-      for (const [socket, before] of sockets) {
-        bytes += socket.bytesRead - before;
-      }
-      return { result, bytes, ms };
-    } finally {
-      pool.off("acquire", acquired);
-    }
-  };
-  const revisionPage = await received((view) =>
-    view.revisions.pageRevisionSummaries(fixture.namespace.id, fixture.agent.id, {
-      limit: 100,
-    }),
+  const revisionPage = await measurePostgresRead(pool, () =>
+    state.read((view) =>
+      view.revisions.pageRevisionSummaries(fixture.namespace.id, fixture.agent.id, { limit: 100 }),
+    ),
   );
   const heavyRevisions = revisionPage.result.revisions.filter(({ revision }) => revision > 5000);
   assert.deepEqual(
@@ -646,8 +645,8 @@ export async function verifyPostgresStateConformance(context: TestContext) {
   );
   assert.equal(heavyRevisions.length, 64);
   assert.equal(heavyRevisions[0]?.harness.mode, fixture.revision.harness.mode);
-  const presetSummaries = await received((view) =>
-    view.presets.listPresetSummaries(fixture.namespace.id),
+  const presetSummaries = await measurePostgresRead(pool, () =>
+    state.read((view) => view.presets.listPresetSummaries(fixture.namespace.id)),
   );
   assert.ok(presetSummaries.result.length >= 64);
   const measured = (read: { bytes: number; ms: number }) => `${read.bytes} bytes in ${read.ms} ms`;

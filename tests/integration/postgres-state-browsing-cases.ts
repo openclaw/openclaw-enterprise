@@ -33,6 +33,7 @@ import {
 } from "../helpers/postgres-platform-state.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { measurePostgresRead } from "./postgres-state-conformance-case.ts";
 
 export async function browseUnreadableState(context: TestContext): Promise<void> {
   const { Pool } = await import("pg");
@@ -475,18 +476,15 @@ export async function selectNativeAdminRevision(context: TestContext): Promise<v
       }),
     );
   // Revisions are immutable to the application role, so seed unreadable rows as copies.
-  const insertUnreadable = async (template: Pick<AgentRevision, "id">, revision: number) => {
-    const id = `rev_${randomUUID()}`;
-    await pool.query(
+  const insertUnreadable = (template: Pick<AgentRevision, "id">, first: number, last = first) =>
+    pool.query(
       `INSERT INTO occ.agent_revisions
          (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
-       SELECT $1, namespace_id, agent_id, $2, backend_id,
+       SELECT 'rev_' || gen_random_uuid(), namespace_id, agent_id, n, backend_id,
               jsonb_set(admitted_spec, '{plugins,plugins}', $4::jsonb, false), admitted_at
-       FROM occ.agent_revisions WHERE id = $3`,
-      [id, revision, template.id, JSON.stringify(malformedPlugins)],
+       FROM occ.agent_revisions, generate_series($2::int, $3::int) AS n WHERE id = $1`,
+      [template.id, first, last, JSON.stringify(malformedPlugins)],
     );
-    return id;
-  };
   const active = await createRevision(2);
   await insertUnreadable(active, 1);
   await pool.query("UPDATE occ.agents SET active_revision_id = $2 WHERE id = $1", [
@@ -494,28 +492,38 @@ export async function selectNativeAdminRevision(context: TestContext): Promise<v
     active.id,
   ]);
 
+  const selectForAdmin = () =>
+    controller.getAdministerableActiveAgentRevision(principalId, namespaceId, agent.id);
+  const selectForBrowser = () =>
+    controller.getBrowserAccessibleActiveAgentRevision(principalId, namespaceId, agent.id);
+
   // An unreadable older snapshot must not make a healthy active revision unavailable.
-  const selection = await controller.getAdministerableActiveAgentRevision(
-    principalId,
-    namespaceId,
-    agent.id,
-  );
+  const selection = await selectForAdmin();
   assert.equal(selection.revision.id, active.id);
   assert.equal(selection.successor, undefined);
 
-  // Only the newest later revision is decoded strictly, and it fails closed when unreadable.
-  const newer = await createRevision(3);
-  const withSuccessor = await controller.getAdministerableActiveAgentRevision(
-    principalId,
-    namespaceId,
-    agent.id,
+  const newer = await createRevision(67);
+  const before = await measurePostgresRead(pool, selectForBrowser);
+  assert.equal(before.result.mode, "admin");
+  assert.equal(before.result.successor?.id, newer.id);
+
+  // Adding 64 unreadable revisions between active and newest must not transfer their
+  // metadata to the controller. Their revision IDs alone exceed 2 KiB.
+  const inserted = await insertUnreadable(active, 3, 66);
+  assert.equal(inserted.rowCount, 64);
+  const after = await measurePostgresRead(pool, selectForBrowser);
+  assert.equal(after.result.mode, "admin");
+  assert.equal(after.result.successor?.id, newer.id);
+  assert.ok(before.bytes > 0 && after.bytes > 0);
+  assert.ok(
+    after.bytes < before.bytes + 2048,
+    `native admin read grew from ${before.bytes} to ${after.bytes} bytes`,
   );
-  assert.equal(withSuccessor.successor?.id, newer.id);
-  await insertUnreadable(active, 4);
-  await assert.rejects(
-    controller.getAdministerableActiveAgentRevision(principalId, namespaceId, agent.id),
-    { name: "DependencyUnavailableError" },
-  );
+
+  // The newest later revision is decoded strictly and fails closed when unreadable.
+  await insertUnreadable(active, 68);
+  await assert.rejects(selectForAdmin, { name: "DependencyUnavailableError" });
+  await assert.rejects(selectForBrowser, { name: "DependencyUnavailableError" });
 }
 
 export async function refuseUnreadableDeployment(context: TestContext): Promise<void> {
