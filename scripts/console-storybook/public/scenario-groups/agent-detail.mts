@@ -2220,10 +2220,12 @@ export function createAgentDetailScenarios({
         path: revision,
         deployed: true,
         harness: { state: "lost", code: "SANDBOX_STOPPED" },
+        rules: [{ suffix: "/harness-status", skip: 1, delayMs: 1500 }],
         description:
           "The current version's Sandbox stopped (for example after a node restart) and OCC does not restart it. The Agent still reads active, so Live serving says the Sandbox is lost and names the next step.",
         steps: [
           'Live serving shows a red "Sandbox lost" badge and, on the line under it, "Deploy a new version." The line was reserved while the Sandbox was read, so nothing below moved.',
+          'Switch to another window and return. During the delayed check, "Sandbox lost" and "Deploy a new version." stay visible. They remain when the same reply arrives.',
           "At 390 and 900 wide the note stays on one line under the badge.",
         ],
         gap: "The Sandbox record is simulated; this story does not verify a live OpenShell read or a node restart.",

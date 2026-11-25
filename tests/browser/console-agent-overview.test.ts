@@ -1326,6 +1326,7 @@ test("Refocus refreshes the same Sandbox and preserves the open draft", async (t
     "one Sandbox GET after admission",
   );
 
+  assert.equal(await serving.getByText("Sandbox running.", { exact: true }).isVisible(), false);
   const lost = nextOverviewRead(page, statusUrl);
   await page.getByText("Still checking…", { exact: true }).waitFor();
   await refocusSandboxOverview(page);
@@ -1349,6 +1350,18 @@ test("Refocus refreshes the same Sandbox and preserves the open draft", async (t
   );
   assert.deepEqual(reads.slice().sort(), [agentUrl, permissionsUrl, statusUrl].sort());
 
+  // Keep the warning and recovery step visible until the same version's next read settles.
+  const repeated = await holdRequests(t, page, statusUrl, { once: true, afterServer: true });
+  const stillLost = nextOverviewRead(page, statusUrl);
+  await refocusSandboxOverview(page);
+  await repeated.requested;
+  assert.ok(await serving.getByText("Sandbox lost", { exact: true }).isVisible());
+  assert.ok(await serving.getByText("Deploy a new version.", { exact: true }).isVisible());
+  repeated.release();
+  assert.deepEqual(await sandboxObservation(await stillLost), [revision.id, "lost"]);
+  await waitForReadmittedSandbox(page);
+  assert.equal(await serving.locator(".badge").textContent(), "Sandbox lost");
+
   const unavailable = await holdRequests(t, page, statusUrl, {
     once: true,
     fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Sandbox status unavailable."),
@@ -1362,6 +1375,10 @@ test("Refocus refreshes the same Sandbox and preserves the open draft", async (t
   await waitForReadmittedSandbox(page);
   assert.equal(await editor.inputValue(), draft);
 
+  // A fresh running observation must also clear a confirmed loss directly.
+  await refocusSandboxOverview(page);
+  await serving.getByText("Sandbox lost", { exact: true }).waitFor();
+  await waitForReadmittedSandbox(page);
   const recovered = nextOverviewRead(page, statusUrl);
   sandbox.state.harness = { state: "running" };
   await refocusSandboxOverview(page);
