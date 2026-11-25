@@ -22,12 +22,20 @@ follows `:focus-visible`. No part of any ring may be cut off.
    to the selected **Configuration** tab.
 3. Open **Pages / Agent detail / Long version history**. Tab to **Viewing
    version**. The native picker is one Tab stop and names v8 as the viewed version.
-   Use its native keyboard controls to choose a version. Tab to **Load older
-   versions** and press Enter: while the next page loads it reads **Loading older
+   Use its native keyboard controls to choose a version. Wait without moving
+   focus; the Agent heading receives focus. Tab to **Load older versions** and
+   press Enter: while the next page loads it reads **Loading older
    versions…**, looks disabled, and keeps focus. When the last page loads, focus
    returns to the picker and the viewed version stays selected. On **New version
    in progress, then current**, focus the picker before the poll finishes: its
    service marker updates without moving focus or changing the viewed version.
+   **Signed-in slow-read check:** the story delays older history
+   pages, not the selected version read. In the signed-in Console, switch versions
+   on the same Agent while that read is slow. From the focused heading, press Tab
+   to **Copy Agent ID**. When the read succeeds and replaces the header, the
+   replacement button must keep focus. Repeat with Shift+Tab to **← Agents**;
+   the replacement link must keep focus, and Enter must open Agents. Check both
+   controls on first and repeat visits at desktop and phone widths.
 4. Open **Pages / Agent detail / Runtime logs**. Tab to the log pane. Its ring
    sits inside the pane edge (inset). Tab to a log row summary. Its ring sits
    outside, like a button, and the pane scrolls far enough to show its bottom

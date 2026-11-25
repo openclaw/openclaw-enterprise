@@ -5127,15 +5127,46 @@ test("Viewing version matches the Configuration snapshot when revisiting a queue
     assert.equal(new URL(page.url()).searchParams.get("revision"), id);
     assert.equal(await chooser.inputValue(), id);
   };
+  const heading = page.getByRole("heading", { name: "Picker Agent", exact: true });
+  const back = page.getByRole("link", { name: "← Agents", exact: true });
+  const copy = page.getByRole("button", { name: "Copy Agent ID", exact: true });
+  const hasFocus = (control: Locator) => control.evaluate((node) => node.matches(":focus-visible"));
+  const openQueuedVersion = async (key: string, control: Locator) => {
+    const url = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/revisions/${second.id}`;
+    const read = await holdRequests(t, page, url, { method: "GET", once: true, afterServer: true });
+    await chooser.press("ArrowUp");
+    assert.equal((await read.requested)?.status(), 200);
+    assert.ok(await hasFocus(heading));
+    await page.keyboard.press(key);
+    assert.ok(await hasFocus(control));
+    read.release();
+    await checkVersion(second.id, "openai/gpt-5.1");
+    return control.evaluate((node) => {
+      const { top, bottom } = node.getBoundingClientRect();
+      return { focused: node.matches(":focus-visible"), inView: top >= 0 && bottom <= innerHeight };
+    });
+  };
+
   await checkVersion(first.id, "openai/gpt-4.1");
-  await chooser.selectOption(second.id);
-  await checkVersion(second.id, "openai/gpt-5.1");
+  const destination = await back.getAttribute("href");
+  const firstVisit = await openQueuedVersion("Shift+Tab", back);
+  assert.equal(await back.getAttribute("href"), destination);
   const queuedPicker = required(await chooser.elementHandle());
-  await chooser.selectOption(first.id);
+  // Leave the header above the viewport but keep the picker in view.
+  await chooser.focus();
+  await page.mouse.wheel(0, 240);
+  await page.waitForFunction(
+    (button) => button.getBoundingClientRect().bottom < 0,
+    required(await copy.elementHandle()),
+  );
+  assert.ok(await chooser.evaluate((node) => node.getBoundingClientRect().top >= 0));
+  await page.keyboard.press("ArrowDown");
   await checkVersion(first.id, "openai/gpt-4.1");
-  await chooser.selectOption(second.id);
-  await checkVersion(second.id, "openai/gpt-5.1");
+  assert.ok(await hasFocus(heading));
+  const returnVisit = await openQueuedVersion("Tab", copy);
   assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+  const expected = { focused: true, inView: true };
+  assert.deepEqual({ firstVisit, returnVisit }, { firstVisit: expected, returnVisit: expected });
 });
 
 // The Versions list marked only the current version: a failed v2 looked like v1 (finding 2095),

@@ -1350,7 +1350,6 @@ function mountRetainedView(current: Route, retained: RetainedView, feature: Page
     shell.diagnostics = retained.state.diagnostics;
   }
   mountedRouteKey = routeKey(current);
-  window.scrollTo({ top: retained.scrollY, left: 0 });
   return shell;
 }
 
@@ -1854,6 +1853,17 @@ async function loadPage({
       ? mountedViewState?.deferredAgentSearch
       : undefined;
   const focused = document.activeElement;
+  const { agentId } = current;
+  // Only a switch from this Agent’s picker. Links and history have their own focus targets.
+  const switchingVersion =
+    fromNavigation &&
+    !restoreHistory &&
+    agentId &&
+    current.namespace &&
+    matchesAgentIdentity(mountedAgent, agentId, current.namespace) &&
+    focused instanceof HTMLSelectElement &&
+    focused.id === "revision-selector" &&
+    mountedViewState?.view.contains(focused);
   // Only resume the tab or its editing controls. Returning must not put a destructive action under Enter.
   const leavingDraftControl =
     agentHistory &&
@@ -2476,6 +2486,18 @@ async function loadPage({
       retained && resumingView && current.feature === "namespaces" && !restoreFocus
         ? focusInShownView()
         : null;
+    // The reader can leave the held heading while the snapshot loads. Capture that choice
+    // immediately before either shell replacement, only for the same admitted Agent.
+    const versionHeaderFocus = () =>
+      switchingVersion &&
+      document.hasFocus() &&
+      previousOwner !== null &&
+      owner === previousOwner &&
+      selectedNamespace === current.namespace &&
+      matchesAgentIdentity(firstAgent, agentId, selectedNamespace) &&
+      document.activeElement?.matches(".page-header--agent :is(a.page-back, button.page-meta-copy)")
+        ? focusInShownView()
+        : null;
     if (unchanged && retainedView && retainedState) {
       stopLoadingTimer();
       forgetRetainedView(taken);
@@ -2486,7 +2508,12 @@ async function loadPage({
       if (returningToDraft && heldHeading?.isConnected && document.activeElement !== heldHeading) {
         returnFocusMoved = true;
       }
+      const headerFocus = versionHeaderFocus();
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
+      // A header control chosen during this read takes priority over the older scroll position.
+      if (!headerFocus) {
+        window.scrollTo({ top: retainedView.scrollY, left: 0 });
+      }
       shell = restoredShell;
       // Landing notices stay on a refocus of the same view and clear on a new navigation.
       if (!resumingView) {
@@ -2506,7 +2533,7 @@ async function loadPage({
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
       restoreRefocus = () => {
-        (restoreFocus ?? namespaceShellFocus)?.restore(restoredShell.view);
+        (restoreFocus ?? namespaceShellFocus ?? headerFocus)?.restore(restoredShell.view);
         if (returningToDraft && mayReturnFocus() && document.activeElement === document.body) {
           retainedView.restoreAgentControl?.();
         }
@@ -2947,6 +2974,7 @@ async function loadPage({
             document.activeElement === pendingAgentHeading ||
             (heldHeading !== null && document.activeElement === heldHeading) ||
             shownNow.view.contains(document.activeElement);
+          const headerFocus = versionHeaderFocus();
           const detailShell = renderShell(privatePage, false);
           shell = detailShell;
           detailShell.view.replaceWith(detailView);
@@ -2968,6 +2996,7 @@ async function loadPage({
             // A rebuilt snapshot may reveal before its shortcuts are ready.
             heldHeading = heading;
           }
+          headerFocus?.restore(detailView);
           markRevealed();
           runAfterReveal();
         };
