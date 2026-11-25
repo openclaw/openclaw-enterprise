@@ -49,9 +49,10 @@ Earlier shipped versions of the bundled defaults are archived in
 a same-name copy that still equals an earlier version (normalized JSON) with the
 current template, keeping its ID and AccessBindings, and audits
 `openclaw.presets.update` with `source: installation-defaults-refresh`. Copies
-matching no shipped version are operator edits and stay; so do `presets.files`
-copies and retired names such as `standard-codex`. To keep an earlier version,
-rename the copy or change any field. A refused refresh (say, a deny Restriction
+matching no shipped version and retired names such as `standard-codex` stay.
+With `includeDefaults` enabled, a `presets.files` entry matching the current bundled
+name and template also permits refreshing a superseded copy. To keep an earlier version, rename the
+copy or change any field. A refused refresh (say, a deny Restriction
 on `preset:update`) keeps the copy and logs `presets.default-refresh-skipped`.
 
 Namespace deletion removes copies that equal, by name and template, a configured
@@ -134,8 +135,8 @@ and adds Slack Socket Mode and workspace instructions for software engineering.
 It uses the Codex harness with **Service Accounts** authentication (`codex_pat`).
 The `model` variable defaults to `gpt-6-astra` and remains editable; its rendered
 model reference is `codex/gpt-6-astra`. The preset exposes only `name` and `model`
-variables. After **Use Preset**, choose an existing service account Secret or
-**Create new Secret...** before creating the Agent.
+variables. After **Use Preset**, enter the service account token for **Credential Source**
+storage. If **Namespace Secret** is available, select it to choose or create a Secret.
 
 List the shipped container file as above; `includeDefaults` alone does not add it.
 
@@ -285,22 +286,19 @@ appear only as a whole token in `agent.harnessAuth.secret`, with method
 }
 ```
 
-A method-only `agent.harnessAuth`, such as `{ "method": "codex_pat" }`,
-preselects authentication without supplying credentials. The creation form still
-requires a Secret selection; a concrete Agent requires a complete credential binding.
+Method-only `agent.harnessAuth` preselects authentication without a binding.
+**Use existing Secret** requires `operate` on the readable same-Namespace Secret.
+Console binds the reference without fetching its value. Switching input mode or
+**Credential storage** clears the token. For a password variable, **Create new Secret** defaults to Namespace Secret storage. Eligible unbound Dedicated OpenAI API
+keys or Codex service account tokens instead enroll a static Credential Source
+through TokenService when managed storage is selected or required. Rendering
+creates nothing. Values never enter Preset storage, Agent JSON or Configuration JSON.
 
-For an authentication password variable, the Console offers **Create new Secret**
-or **Use existing Secret**. Existing mode lists readable Namespace Secret metadata
-and uses the selected reference without fetching its value. Switching modes clears
-the entered token; the saved Preset remains unchanged.
-
-In new mode, **Use Preset** carries the value into the masked credential input, and
-**Create Agent** creates a Namespace Secret. Both modes then grant the Agent exact
-access through the ordinary creation flow. The value never belongs in Preset
-storage, Agent JSON, or Configuration JSON. API clients must create a Secret and
-replace `secret` with `source: <SecretRef>` before submitting an ordinary Agent
-request; rendering alone creates no resources. Partial saves follow normal
-recovery; retrying credential access does not recreate the Agent.
+API clients must replace `secret` with a supported binding, for example
+`source: <SecretRef>` after creating a Secret. Follow [creation recovery](../flows/platform-console/agent-creation.md#4-submit-provisioning-or-an-ordinary-draft)
+and [conditional grants](../flows/platform-console/agent-creation.md#5-grant-secret-access-and-edit-authentication).
+Reuse confirmed credentials. Check Secrets or Credential Sources after unknown
+writes before further action. Never repeat blindly. Grant retries retain the Agent.
 
 String variables can still supply existing credential reference IDs.
 [SecretRefs](configuration/secrets.md) remain structured, unresolved references;
@@ -353,26 +351,27 @@ owner must explicitly grant Preset access; rerunning bootstrap does not change
 stored Roles. The public Namespace policy API supports exact-Preset access, but
 cannot edit an Installation Role or grant collection-wide `create`.
 
-Preset access grants no permission to create Agents or use referenced Secrets.
-After rendering, Configuration and Agent creation enforce their existing schemas,
-credential rules, and authorization before saving. Deployment rechecks admission.
-Console checks do not replace server validation. Audit records omit templates and
-variable values.
+Preset access alone permits neither Agent creation nor Secret use.
+The server validates schemas, credentials and authorization before saving
+Configurations and Agents. Deployment rechecks admission. Audits omit
+templates and variable values.
 
 Invalid inputs return `400`; denied access returns `403`; a missing exact target
 returns `404`; duplicate names or lifecycle conflicts return `409`; unavailable
-IAM, persistence, or required Driver capability returns `503`. Delete Presets
-before deleting their Namespace. Deleting one removes its resource-scoped IAM
-bindings, but keeps copied Agents, Configurations, and credential sources.
+IAM, persistence, or required Driver capability returns `503`.
+[Delete blocking Presets](#bundled-default-upgrades) first.
+[Namespace deletion](namespaces.md#deletion-and-tombstones) requires `preset:delete`
+on each matching default copy. Deleting a Preset removes its IAM bindings.
+Copied Agents, Configurations and credential sources remain.
 
 ## Limits and recovery
 
 Create and update Presets through the HTTP API; `occ preset list`, `get`, and
 `delete` cover the rest ([CLI reference](cli.md#resource-commands)). The console
-only selects and applies them. There is no inheritance, version history, or Agent
-metadata recording which Preset was used. Creation still saves a Configuration
-and an Agent separately. Follow [partial-save recovery](console/create-and-deploy.md#create-an-agent)
-if the second save fails or a response is lost.
+only selects and applies them. Presets have no inheritance or version history.
+Agents do not record their Preset. Ordinary creation saves the Configuration
+and Agent separately. If the first save is uncertain, [trace it](../flows/platform-console/agent-creation.md#4-submit-provisioning-or-an-ordinary-draft).
+For Agent save failures, follow [partial-save recovery](console/create-and-deploy.md#create-an-agent).
 
 A Preset is read once when selected. **Use Preset** renders its variables and
 opens an ordinary editable Agent form; changing the draft does not update or

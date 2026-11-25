@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-22
-last_updated_session: authoring-run/fa04a724-f976-4d2d-8880-441c38f9f34d
+updated: 2026-11-25
+last_updated_session: authoring-run/5285b629-c2be-4720-b57b-1dd375287ce5
 ---
 
 # Agent Presets flow
@@ -32,34 +32,32 @@ through existing APIs. Deployment follows
 
 ## Flow
 
+The diagram follows an ordinary draft. See [Agent creation](platform-console/agent-creation.md#flow)
+for guided provisioning.
+
 ```mermaid
 graph TD
-  S0["API startup with defaults enabled"] --> S1["Authorize and lock eligible Namespaces"]
-  S1 --> S2["Create missing names; preserve existing copies"]
-  S2 --> C
-  N["Authorized Namespace creation"] --> S2
-  A["Operator creates or updates a Preset"] --> B["OCC checks the grant"]
-  B --> W["OCC locks the Namespace and checks the grant again"]
-  W -->|Allowed| V["OCC validates any submitted template"]
-  W -->|Denied| P["Return 403"]
-  V --> C["Store Namespace-owned Preset"]
-  C --> D["Console reads selected Preset once"]
-  D --> E["User supplies variables and selects Use Preset"]
-  D -->|Default quick-start without variables| F
-  E --> F["Renderer copies launch settings"]
-  F --> G["Chooser closes; user edits and saves ordinary draft"]
-  U["User selects Start without Preset"] --> G
-  G --> S["Password input: create Secret in current Namespace"]
-  S --> H["Configuration API admits and saves"]
-  G -->|Existing credential binding| H
-  H --> I["Agent API admits and saves"]
-  I -->|Model Secret selected| O["Grant Agent access to the selected model Secret"]
-  I -->|No model Secret| J
-  O --> J["Independent Agent draft"]
-  O -->|Grant fails| R["Retain Agent and retry credential access"]
-  F -->|Invalid variable| E
-  I -->|Agent save fails| K["Keep Configuration ID for safe retry"]
-  J --> L["Credential preparation and version admission"]
+  A["Startup or Namespace creation"] --> B["Seed eligible Presets"]
+  C["Preset write"] --> D["Lock Namespace, recheck grant and validate"]
+  B --> E["Store Namespace Preset"]
+  D --> E
+  E --> F["Read selected Preset once"]
+  F --> G["Supply variables and render"]
+  F -->|Default shortcut| H["Edit Agent form"]
+  G --> H
+  U["Start without Preset"] --> H
+  H --> I["Resolve credential binding or storage"]
+  I -->|Unknown write| K
+  I -->|Ready| J["Save Configuration, then Agent"]
+  J -->|Unknown| K["Lock creation and check affected resource"]
+  J -->|Confirmed refusal| M["Follow offered recovery"]
+  J -->|Saved| N["Check saved Agent<br/>Grant eligible access if needed"]
+  N -->|Complete or skipped| O["Open draft"]
+  N -->|Failure| T["Retain Agent<br/>Follow offered recovery"]
+  O -->|Legacy review required| P["Review saved GitHub access"]
+  P -->|Confirmed| Q["Deployment admission"]
+  P -->|Failed or unconfirmed| R["Block deployment"]
+  O -->|Review not required| Q
 ```
 
 ## Execution Trace
@@ -153,8 +151,9 @@ removes the caller's update permission.
 The [repository](../../packages/occ/src/state/postgres-state.ts) stores the whole
 template in `occ.presets`. PATCH then locks the Preset and replaces an included
 template atomically. Preset DELETE removes its exact IAM bindings in the transaction.
-Presets prevent Namespace deletion while present. The controller's normal audit
-path records mutations and denials without template or variable contents.
+See [Namespace deletion rules](../reference/presets.md#bundled-default-upgrades).
+The controller's normal audit path records mutations and denials without template
+or variable contents.
 
 ### 3. Read and render the selected copy
 
@@ -232,11 +231,10 @@ state. Clearing/navigation retain policies, fallbacks and referenced metadata.
 
 [The creation form](../../apps/controller/src/console/agents/create.mts) copies
 rendered settings into editable fields and checks their form representation.
-A method-only Preset authentication default selects API key or Service Accounts
-without binding a Secret. The shared Secret picker requires a same-Namespace
-selection. **Create new Secret...** saves immediately and stages the reference;
-the browser never reads existing Secret bytes. Final Agent admission still
-requires a complete authentication binding.
+A method-only Preset authentication default selects a method without binding a
+credential. A Secret selection must be in the same Namespace. **Create new
+Secret...** saves immediately and stages its reference without reading existing
+Secret bytes. Agent admission requires a complete authentication binding.
 Rendered `agent.pluginApprovers` remains ordinary Agent draft data. Omission
 inherits the form default, an empty array keeps the explicit no-approver default,
 and selected channel identities are submitted through the normal Agent create
@@ -252,51 +250,58 @@ variables remain confined to the credential field. User-edited workspace bytes
 follow the existing private workspace setup path in both regular and provisioning
 creation. The form keeps Secret bindings internally and exposes channel-specific
 Secret controls rather than a raw bindings editor.
-Model Secret references survive draft navigation; passwords do not. Provider or
-authentication-method changes clear the selection. Existing or Preset-bound
-references are reused. Ordinary creation grants the Agent service principal
-exact Secret `operate` access; Agent-conflict and grant retries retain the
-reference. The caller needs grant-management permission. A failed grant keeps
-the saved Agent and offers retry. Provisioning derives it from `harnessAuth.source`.
-Password inputs first create a same-Namespace Secret, clear the input, and
-retain the reference. Save then creates Configuration and Agent resources and
-grants access; dedicated provisioning follows its existing flow. Password bytes
-reach only Secret creation. Each API request performs schema, native credential
-and authorization admission before persistence.
+Model Secret references survive navigation, Agent conflicts and grant retries.
+Passwords do not. Changing provider or authentication method clears the selection.
+Console reuses existing and Preset-bound references. Password input defaults to a
+same-Namespace Secret. For an eligible unbound Dedicated OpenAI API key or Codex
+service account token, selecting or requiring managed storage instead enrolls a
+static Credential Source through TokenService. Confirmed credentials are reused
+after later failures. An uncertain write clears the input and locks creation.
+Check Secrets or Credential Sources, as applicable, before further action. Never
+repeat an uncertain write blindly. Credential values do not enter Agent or
+Configuration JSON. See [Agent creation](platform-console/agent-creation.md#4-submit-provisioning-or-an-ordinary-draft)
+for storage and save checks.
 
-A confirmed duplicate-name Secret response offers the permission-aware picker or an
-independent new name in the same form. Selection clears the entered key; neither option
-reads or deletes the existing value, and other draft fields remain. Other known refusals
-retain the masked input for correction or retry; uncertain writes clear it and lock
-creation. Agent-name conflicts do not enable Secret recovery. Credential-context changes
-clear the notice, alternate name and required state; returning to a password method does
-not restore that recovery. The focused notice and choices sit under model credentials
-and belong to the attempted name. Changing that name or submitting a new attempt clears
-feedback but preserves an edited alternate name. Submit trims and validates alternate
-names before writing. Selecting an existing Secret restores the optional service-account
-plugin discovery token field. Later save failures reuse the saved Secret reference.
-If Configuration creation succeeds but Agent creation fails, the form retains
-the Configuration ID and locks Configuration-affecting controls. A safe retry
-reuses the saved Configuration. An uncertain response requires inspection before
-another creation attempt. See [creation recovery](../reference/console/create-and-deploy.md#create-an-agent).
+Console IAM grants require grant-management permission. Console checks the saved Agent and grants
+eligible exact model Secret, Credential Source and staged channel access. A copied
+Configuration binding alone triggers no grant, and a matching deny can still block
+use. See [credential access](platform-console/agent-creation.md#5-grant-secret-access-and-edit-authentication).
+Dedicated provisioning uses `harnessAuth.source`.
+
+After a confirmed Secret name conflict, use the permission-aware picker or
+choose a new name. Both preserve other fields. Selection clears the key without
+reading or deleting the existing value. Other known refusals retain the input.
+Agent-name conflicts do not enable Secret recovery. The focused notice names the
+attempted Secret. Changing credential context clears the notice and alternate-name
+state. Returning to password input cannot restore recovery. Renaming or resubmitting
+clears feedback but preserves alternate-name edits. Submit trims and validates the
+name. Selecting an existing Secret restores optional service-account plugin
+discovery. An uncertain Configuration save prevents Agent POST. Confirmed Agent
+refusal locks Configuration controls. Refresh repository choices if required and
+use the offered retry to reuse the Configuration. An uncertain Agent POST locks
+creation. Check Agents before further action. Follow [creation recovery](platform-console/agent-creation.md#4-submit-provisioning-or-an-ordinary-draft).
 
 ### 5. Hand off to deployment
 
 `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`
 
-The saved Agent has a new identity and no Preset reference. Variable inputs are
-not stored as a separate map. Rendered values are ordinary Agent/Configuration
-settings. Credential preparation and [version admission](configuration-driver/persistence-and-revisions.md)
-read those resources, not the Preset. Later Preset changes cannot change a draft
-or an immutable saved version.
+The Agent has its own ID and no Preset reference or variable map. Console opens
+the saved draft after any required grant checks. A first legacy GitHub draft with
+saved grants requires **Review saved GitHub access** before deployment. Failed or
+unconfirmed review blocks deployment until review succeeds or the saved draft is
+reloaded and checked. Automatic GitHub App access skips only this legacy review.
+See [Agent creation](platform-console/agent-creation.md#5-grant-secret-access-and-edit-authentication).
+[Version admission](configuration-driver/persistence-and-revisions.md) reads the
+Agent and Configuration. Preset edits leave drafts and saved versions unchanged.
 
 ## Debugging and Verification
 
 - A missing selector entry can mean missing exact Preset `read` permission;
   compare the Namespace and the authenticated list response.
-- Chooser errors identify variable or form-field problems before any save. Save errors
-  come from existing Configuration or Agent admission; retain request and saved
-  Configuration IDs when investigating partial or uncertain outcomes.
+- Chooser errors identify variable or form-field problems before any save.
+  Identify which request failed and which resources were saved. Keep the request
+  ID if available and any saved resource IDs. See [step 4](#4-save-an-independent-draft)
+  for recovery.
 - [Controller integration coverage](../../tests/integration/presets-controller.test.ts)
   exercises the HTTP workflow, admission, isolation, and copy independence.
   [PostgreSQL coverage](../../tests/integration/postgres-presets.test.ts) exercises
@@ -321,6 +326,11 @@ or an immutable saved version.
 
 ## Changelog
 
+- 2026-11-25 04:10: Distinguish credential storage and deployment review. (authoring-run/5285b629-c2be-4720-b57b-1dd375287ce5 - 105ffee9962176cf42fc7cfe013b8b94831435db)
+- 2026-11-24 02:29: Check grants before credential access. (authoring-run/ba9ea959-8a2b-4cab-830f-387425ba3574 - e2d257fbd92637a19042477ef2ad8c6ecf3f9fdf)
+
+- 2026-11-23 14:21: Show the Configuration save lock. (authoring-run/c19f29e8-5721-43ff-bada-5264ccb9b4ea - 54922275aed4dd2c5d6c23901fb0a2ff42a54136)
+- 2026-11-23 13:25: Clarify draft outcomes and refresh. (authoring-run/b8e9fa39-d34f-4d9c-b2e4-d1cbe1f79036 - 0844df38c9838ec25596b96b70ba76440c5be22d)
 - 2026-11-22 12:08: Explain how Preset PATCH rechecks the update grant under the Namespace lock. (authoring-run/fa04a724-f976-4d2d-8880-441c38f9f34d - ec37f064957a64fb8b8f4185ae17de6ca86f0b7a)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-10 23:35: Explain real-token Preset launch validation and deferred Gateway password references. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
