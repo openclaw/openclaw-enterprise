@@ -347,7 +347,7 @@ export function createNamespaceOperations({
     const templates = await state.connectionTemplates.countNamespaceConnectionTemplates(
       namespace.id,
     );
-    const clients = await state.connectionTemplates.countNamespaceCredentialClients(namespace.id);
+    const clients = await state.credentialClients.countNamespace(namespace.id);
     if (clients > 0) {
       contents.push("OAuth clients");
       counts["OAuth clients"] = clients;

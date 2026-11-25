@@ -462,8 +462,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     source: Readonly<GitHubAppInstallationCredentialSource>,
   ): Promise<void> {
     this.assertCurrentGitHubAppRegistryScope(source);
-    const client = await this.state.read(({ connectionTemplates }) =>
-      connectionTemplates.findCredentialClient(source.clientId),
+    const client = await this.state.read(({ credentialClients }) =>
+      credentialClients.find(source.clientId),
     );
     this.assertGitHubAppClient(client, source);
     this.clientSecretRef(client);
@@ -479,13 +479,12 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       throw new ResourceStateConflictError("GitHub App Source enrollment is unavailable.");
     }
     const scope = admitGitHubAppSourceScope(input, githubApp.registry);
-    return this.state.transact(async ({ namespaces, connectionTemplates, credentialSources }) => {
+    return this.state.transact(async ({ namespaces, credentialClients, credentialSources }) => {
       const namespace = await namespaces.lockNamespace(ref.namespaceId);
       if (namespace?.status !== "ready") {
         throw new ResourceStateConflictError("The credential source Namespace is not ready.");
       }
-      // Serialize enrollment with client retirement before issuing against its signing key.
-      const client = await connectionTemplates.lockCredentialClient(input.clientId);
+      const client = await credentialClients.find(input.clientId);
       this.assertGitHubAppClient(client, {
         namespaceId: ref.namespaceId,
         clientId: input.clientId,
@@ -825,7 +824,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     const ref = source.sourceRef;
     const stored = this.storageRef(ref);
     const committed = await this.state.transact(
-      async ({ namespaces, connectionTemplates, credentialSources }) => {
+      async ({ namespaces, credentialClients, credentialSources }) => {
         const namespace = await namespaces.lockNamespace(ref.namespaceId);
         const current = this.ownedSource(
           await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
@@ -851,7 +850,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
               : undefined;
           }
         }
-        const client = await connectionTemplates.findCredentialClient(current.clientId);
+        const client = await credentialClients.find(current.clientId);
         this.assertGitHubAppClient(client, current);
         const signingKeyRef = this.clientSecretRef(client);
         const installationToken = await withComputeAbortSignal(signal, () =>
