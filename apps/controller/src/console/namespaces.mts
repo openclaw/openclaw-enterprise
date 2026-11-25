@@ -5,6 +5,7 @@ import {
   dismissOnBackdrop,
   element,
   field,
+  setDescription,
   setUnavailable,
   statusBlock,
   validateFields,
@@ -313,10 +314,11 @@ export function renderNamespaces(
       placeholder: "e.g. Support",
     });
     // The name is refused at the field, as the API would refuse it, as soon as it is typed or
-    // pasted (validateFields reports the custom validity). Any edit also clears a server
-    // refusal shown on it.
+    // pasted (validateFields reports the custom validity). Editing also clears a field
+    // error returned by the server.
     const checkName = () => name.setCustomValidity(namespaceNameProblem(name.value));
     name.addEventListener("input", () => {
+      showConflict();
       checkName();
       // An error already shown is rechecked too, so clearing the name swaps it for "required".
       if (name.validity.customError || name.hasAttribute("aria-invalid")) {
@@ -324,6 +326,15 @@ export function renderNamespaces(
       }
     });
     const feedback = element("div");
+    let conflict: { name: string; alert: HTMLElement } | undefined;
+    function showConflict() {
+      // A 409 describes this attempt, without making the name invalid or blocking a retry.
+      if (conflict) {
+        const matches = name.value.trim() === conflict.name;
+        conflict.alert.hidden = !matches;
+        setDescription(name, conflict.alert.id, matches);
+      }
+    }
     const cancel = button("Cancel", close);
     const submit = element(
       "button",
@@ -490,11 +501,16 @@ export function renderNamespaces(
       cancel.disabled = true;
       submit.disabled = true;
       submit.textContent = "Creating…";
+      const submittedName = name.value.trim();
+      if (conflict) {
+        setDescription(name, conflict.alert.id, false);
+        conflict = undefined;
+      }
       feedback.replaceChildren();
       try {
         const result = await context.request("/namespaces", {
           method: "POST",
-          body: { name: name.value.trim() },
+          body: { name: submittedName },
           expectedStatus: 201,
         });
         if (!context.isCurrent()) {
@@ -558,6 +574,10 @@ export function renderNamespaces(
         } else {
           refusal = statusBlock("danger", null, message, [], { id: "create-namespace-refusal" });
           feedback.replaceChildren(refusal, ...requestId);
+          if (error.status === 409) {
+            conflict = { name: submittedName, alert: refusal };
+            showConflict();
+          }
         }
         // A refused or unconfirmed creation leaves the name and Create Namespace in the Tab
         // order, described by the alert that says why (finding 2935); focus moves to Cancel.

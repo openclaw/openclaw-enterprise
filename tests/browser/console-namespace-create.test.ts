@@ -166,17 +166,33 @@ test("a Namespace name conflict keeps the form editable for correction", async (
   await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
   const name = dialog.getByLabel("Namespace name");
-  await name.fill("Existing team");
+  const requests = apiRequests(page, fixture.origin);
+  await name.fill(" Existing team ");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
   // The API's own sentence: a live Namespace has the name (not one a deleted Namespace keeps).
-  await dialog.getByRole("alert").filter({ hasText: NAMESPACE_NAME_CONFLICT }).waitFor();
+  const conflict = dialog.getByRole("alert").filter({ hasText: NAMESPACE_NAME_CONFLICT });
+  const described = dialog.getByRole("textbox", { description: NAMESPACE_NAME_CONFLICT });
+  await conflict.waitFor();
+  assert.equal(await described.count(), 1);
   // A taken name is the reader's to fix: no request ID beside it (finding 2102).
   assert.equal(await dialog.getByText(/Request ID/).count(), 0);
-  assert.equal(await name.inputValue(), "Existing team");
+  assert.equal(await name.inputValue(), " Existing team ");
   await waitForEnabled(name);
   assert.equal(await name.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  // Editing the submitted name removes the stale warning. Returning to the trimmed
+  // name restores it, without another request or a new validation barrier.
+  await page.keyboard.press("End");
+  await page.keyboard.type("2");
+  assert.equal(await conflict.isVisible(), false);
+  assert.equal(await described.count(), 0);
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Backspace");
+  assert.equal(await conflict.isVisible(), true);
+  assert.equal(await described.count(), 1);
+  assert.equal(await name.getAttribute("aria-invalid"), null);
   await name.fill("New team");
-  await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  assert.equal(creates(requests).length, 1);
+  await name.press("Enter");
   await page
     .getByRole("dialog", { name: "Namespace created", exact: true })
     .getByRole("button", { name: "Done" })
@@ -325,6 +341,8 @@ test("a rate-limited or malformed creation answer is reported, not shown as crea
     .waitFor();
   await waitForEnabled(name);
   await waitForEnabled(submit);
+  await name.fill("Another team");
+  assert.match(await dialog.getByRole("alert").innerText(), /Wait before trying again/);
   await submit.click();
   await dialog
     .getByRole("alert")
