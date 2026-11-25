@@ -1795,13 +1795,22 @@ export async function renderAgentDetail(
       (control) => !control.disabled && !control.hidden,
     );
     const at = enabled.findIndex((control) => control === document.activeElement);
+    if (at === -1 || event.altKey || event.ctrlKey || event.metaKey || event.defaultPrevented) {
+      return;
+    }
+    // Reveal the return stop before Tab or Shift+Tab leaves the strip. When focus leaves
+    // the document, focusout has no destination and looks like a window losing focus.
+    if (event.key === "Tab") {
+      revealSelectedTab(tabControls.get(selectedTab));
+      return;
+    }
     const next = {
       ArrowLeft: at - 1,
       ArrowRight: at + 1,
       Home: 0,
       End: enabled.length - 1,
     }[event.key];
-    if (at === -1 || next === undefined || event.altKey || event.ctrlKey || event.metaKey) {
+    if (next === undefined) {
       return;
     }
     event.preventDefault();
@@ -1816,6 +1825,13 @@ export async function renderAgentDetail(
     // scroll padding, so the tab and its ring clear the faded edge.
     control.focus({ preventScroll: true });
     control.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+  // A click outside the strip can leave the return stop clipped without a Tab keydown.
+  tabs.addEventListener("focusin", (event) => {
+    const control = tabControls.get(selectedTab);
+    if (event.target === control && control.matches(":focus-visible")) {
+      revealSelectedTab(control);
+    }
   });
   // Tabbing back in lands on the selected tab, wherever the arrows left focus. Checked once focus
   // has moved: a window losing focus leaves it on the tab, so the arrowed-to stop stays.
@@ -2103,13 +2119,14 @@ export async function renderAgentDetail(
     }
   }
   const revealTimer = setTimeout(showDetail, FIRST_ACTIVITY_WAIT_MS);
-  function revealSelectedTab() {
+  // During resize, keep the arrowed-to tab in view even if it is not selected.
+  function revealSelectedTab(
+    shown = tabs.contains(document.activeElement)
+      ? document.activeElement
+      : tabControls.get(selectedTab),
+  ) {
     // Resize can change which edges fade. Refresh them before reading their scroll padding.
     fadeTabEdges();
-    // A tab that has focus (moved there with the arrows) stays in view over the selected one.
-    const shown = tabs.contains(document.activeElement)
-      ? document.activeElement
-      : tabControls.get(selectedTab);
     if (!shown) {
       return;
     }

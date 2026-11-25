@@ -10,10 +10,12 @@ follows `:focus-visible`. No part of any ring may be cut off.
    links. Every stop, including the Namespace select, Refresh, search, Create
    Agent and each Agent name, shows the same 3 px accent ring just outside its
    edge.
-2. Open **Pages / Agent detail / Draft**. Tab to the selected tab, arrow through
-   the others, then Tab to Edit Configuration and the **View native
-   Configuration** disclosure. Each tab shows the inset ring on all four sides;
-   the other stops show the outer ring.
+2. Open **Pages / Agent detail / Draft**. Tab to the selected tab, then arrow
+   through its unselected neighbors. Tab into the panel, then press Shift+Tab to
+   return to the selected tab. At 390 px, check that its label and entire focus
+   ring are clear of both horizontal fades. Tab to Edit Configuration and the
+   **View native Configuration** disclosure. Each tab shows the inset ring on all
+   four sides. The other stops show the outer ring.
 3. Open **Pages / Agent detail / Long version history**. Tab to **Viewing
    version**. The native picker is one Tab stop and names v8 as the viewed version.
    Use its native keyboard controls to choose a version. Tab to **Load older

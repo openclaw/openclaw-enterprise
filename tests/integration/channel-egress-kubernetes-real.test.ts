@@ -1010,6 +1010,7 @@ test(
     };
     const topology = await arrangeProductionTopology(context, "dedicated", slack, {
       ...selectedTopologyModelAuthentication(),
+      controlPlaneAuditEnabled: true,
       channelEgressCapacity: 2,
       channelEgress: {
         upstreamProxies: [
@@ -1099,6 +1100,25 @@ test(
       },
     );
     assert.equal(grant.status, 201);
+    // The containment probe reads real audit records as the human test operator.
+    // Native IAM requires a direct read_audit grant for this exact Agent.
+    const auditRole = await topology.adminRequest("POST", `/namespaces/${namespaceId}/iam/roles`, {
+      name: "Gateway upstream proxy audit reader",
+      permissions: [{ action: "read_audit", resourceKind: "agent" }],
+    });
+    assert.equal(auditRole.status, 201);
+    const auditGrant = await topology.adminRequest(
+      "POST",
+      `/namespaces/${namespaceId}/iam/access-bindings`,
+      {
+        subjectKind: "identity",
+        subjectId: topology.secretApi.assignmentPrincipalId,
+        roleId: auditRole.data.id,
+        resourceKind: "agent",
+        resourceId: agentId,
+      },
+    );
+    assert.equal(auditGrant.status, 201);
     const selection = { url: proxy.url, credentialSecretId: secret.data.id };
     const saved = await topology.request("PATCH", path, { networkProxy: selection });
     assert.equal(saved.status, 200);
@@ -1718,8 +1738,12 @@ test(
       currentGateway: string,
       extraSurfaces: string[] = [],
     ) => {
-      const audit = await topology.adminRequest("GET", `${path}/audit-events`);
+      const audit = await topology.request("GET", `${path}/audit-events`);
       assert.equal(audit.status, 200);
+      assert.ok(
+        rows(record(audit.data).events).length > 0,
+        "Expected audit records for the Agent.",
+      );
       const workerPods = await listed(
         "pods",
         topology.platformNamespace,
