@@ -8,7 +8,7 @@ Assume a downloaded script can read the Agent's environment and files, run
 commands and open network connections. In the credential-free repository metadata profile,
 the grant covers the whole Agent execution. The trusted sender controls which
 requests reach GitHub and which responses return to that execution. See the
-[deprecated protected metadata exchange](../credential-sources/protected-repository-metadata.md).
+[retired protected metadata exchange](../credential-sources/protected-repository-metadata.md).
 
 ## What can a process inside the execution do?
 
@@ -40,30 +40,22 @@ the request and response checks, even on a credential-free read. A proxy setting
 startup hook cannot establish that every request takes this path. See the
 [installed bypass checks](../../testing/static-egress.md#select-the-prepared-connected-lane).
 
-Stock OpenShell 0.1.5 and 0.1.6 offer a separately approved installation-wide GitHub
-preview. GitHub installation membership, permissions and branch rules bound
-that access. OpenClaw Enterprise adds no Git ref allowlist for the installation
-preview. Repository-scoped access has separate grant and request-binding checks.
-See [OpenShell Git profiles](../repository-credentials/protected-openshell-git.md).
+Earlier releases offered a separately approved installation-wide GitHub
+preview on stock OpenShell 0.1.5 and 0.1.6. GitHub installation membership,
+permissions, and branch rules bounded that access. See the
+[retired OpenShell Git profiles](../repository-credentials/protected-openshell-git.md).
 
 ## What happens when access changes?
 
-Withdraw the metadata source binding from the Agent's running revision to
-stop the walkthrough's read. OCC checks access before selecting the operation
-and again before authorizing the send. A withdrawal between those checks denies
-the send.
-A request that already has a permit can still reach GitHub. If the outcome
-is unknown, inspect the original attempt. Repeating a possible write can apply it twice.
-See [send authorization](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/packages/occ/src/credential-proxy.ts) and
-[source withdrawal](../credential-sources/withdrawal.md).
+OCC checked the metadata Source before selecting the operation and again
+before issuing a send permit. Withdrawal between those checks denied the send.
+A permitted request could still reach GitHub. Git access had its own approval,
+separate from the metadata Source binding.
 
-Git access through `repositoryAccess` has its own approval. An operator can
-withdraw Git approval while a separate metadata Source still permits its read.
-OCC denial, removal of an installed route and revocation or expiry at GitHub
-are separate events. See the
-[Token Service lifecycle](../repository-credentials.md#token-service-lifecycle).
-
-In the [withdrawal example](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/tests/integration/credential-proxy-withdrawal.test.ts), the operator removes binding A while B keeps working. After B is withdrawn, OCC denies it, but the test peer still returns `200` until policy takes effect. After policy application and restart, the stored plan has no routes and both requests receive `403`. An installed sender needs its own [custody and withdrawal checks](../../testing/protected-repository-custody.md#qualify-installed-custody).
+The [historical withdrawal test](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/tests/integration/credential-proxy-withdrawal.test.ts)
+showed that OCC could deny a withdrawn Source before the installed route stopped
+serving it. After policy application and restart, both withdrawn routes returned
+`403`.
 
 ## Who remains trusted?
 

@@ -105,12 +105,11 @@ cannot restrict the method or path. The Git-only Repository grant does not allow
 that REST endpoint. No Source, credential injection, or request-time OCC check
 participates.
 
-Credential 1.0 retires the protected metadata and repository exchanges,
-including response filtering, per-send OCC authorization, OCE branch allowlists,
-exact-ref checks, and bounded pull request operations. The legacy Driver has been removed.
-Branch protection is outside Credential Design 1.0. The independent
+The retired legacy credential-egress Driver filtered metadata responses,
+authorized each protected send through OCC, and enforced its Git ref and pull
+request rules. Branch protection is outside Credential Design 1.0. The independent
 [prepared Git broker](../reference/repository-credentials/prepared-native-git.md)
-is a separate execution path outside this 1.0 model.
+supports exact-ref writes and draft pull requests outside Credential Design 1.0.
 
 <a id="proposed-change-pull-the-git-credential-at-the-supervisor"></a>
 <a id="proposed-git-credential-pull"></a>

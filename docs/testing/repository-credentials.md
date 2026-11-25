@@ -59,19 +59,18 @@ node --test tests/integration/repository-credentials-client-config.test.ts \
   tests/integration/repository-credentials-router.test.ts
 ```
 
-### Protected repository metadata reads
+<a id="protected-repository-metadata-reads"></a>
 
-`checks-baseline-2` runs the [metadata response test](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/tests/integration/protected-repository-metadata-read.test.ts)
-with the real route policy, upstream sender, and a loopback TLS origin. An independent
-socket observer captures the decrypted request and the origin response through EOF.
-Two client processes read through FIN and receive only the configured repository identity.
+### Public repository metadata reads
 
-The test refuses changed routes and GET bodies before they reach the origin.
-On a successful read it strips synthetic credentials reflected in headers and body.
-A forbidden final trailer yields the exact `exchange-uncertain` response, while
-ordinary reads still accept benign trailers. The dispatch gate is a fixture.
-For authenticated sibling execution, joined authorization, and the response OpenShell
-actually delivers, use the [installed custody qualification](protected-repository-custody.md).
+Verify that the Agent can reach the public endpoint under its
+[admitted Sandbox policy](../guides/credential-proxy.md#verify-use-loss-and-withdrawal)
+and receives the upstream response without a credential.
+
+The retired [protected metadata exchange](../reference/credential-sources/protected-repository-metadata.md)
+had a [controlled response test](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/tests/integration/protected-repository-metadata-read.test.ts)
+that verified the filtered reply and rejected requests at a loopback TLS origin.
+The dispatch gate in that test was a fixture.
 
 ## Verify Agent admission and durable ownership
 

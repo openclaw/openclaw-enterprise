@@ -274,10 +274,9 @@ until callbacks and disposal finish.
 
 ## GitHub response data
 
-The deprecated [protected metadata exchange](credential-sources/protected-repository-metadata.md)
-releases only `{ id, full_name }` after checking repository identity and reaching
-stream end without actual trailers. Joined OpenShell enforcement still needs
-deployment proof.
+The retired [protected metadata exchange](credential-sources/protected-repository-metadata.md)
+returned only `{ id, full_name }`. For public metadata, an admitted Sandbox
+network rule lets the Agent receive GitHub's full response.
 
 For legacy profiles with broader API access, bounded REST JSON responses omit
 `temp_clone_token` from the repository, its `parent` and `source`, and a pull
