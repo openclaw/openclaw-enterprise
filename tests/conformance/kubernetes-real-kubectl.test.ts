@@ -314,7 +314,14 @@ test("a dedicated Harness selects a live Ready Pod for the requested revision", 
   // A rollout waits for the next revision before updating topology.revision.
   assert.equal(selectReadyAgentPod(pods, topology, "next"), undefined);
   const replacement = pod("replacement");
-  assert.equal(selectReadyAgentPod([...pods, replacement], topology, "next"), replacement);
+  replacement.status.conditions.unshift({ type: "Initialized", status: "True" });
+  const partial = [
+    { metadata: pod("no-status").metadata },
+    { ...pod("no-conditions"), status: { phase: "Running" } },
+    { ...pod("malformed"), status: { phase: "Running", conditions: [null] } },
+  ];
+  const rollout = [...partial, ...pods, replacement];
+  assert.equal(selectReadyAgentPod(rollout, topology, "next"), replacement);
   assert.equal(selectReadyAgentPod([replacement, ...pods], topology), current);
 
   // A restart within the same revision must also skip the previous UID.

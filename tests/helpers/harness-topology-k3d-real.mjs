@@ -2361,18 +2361,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     );
   }
   const pods = await waitFor(`production ${mode} workload Pods`, async () => {
-    const running = (await topologyPods({ placement, gatewayPlacement })).filter((pod) => {
-      const conditions = asRecord(asRecord(pod)?.status)?.conditions;
-      if (!Array.isArray(conditions)) {
-        return false;
-      }
-      /** @type {readonly unknown[]} */
-      const observedConditions = conditions;
-      return observedConditions.some((condition) => {
-        const fields = asRecord(condition);
-        return fields?.type === "Ready" && fields.status === "True";
-      });
-    });
+    const running = (await topologyPods({ placement, gatewayPlacement })).filter(hasReadyCondition);
     return running.length === (mode === "dedicated" ? 2 : 1) ? running : undefined;
   });
   const workloadRole = (/** @type {unknown} */ pod) =>
@@ -3842,8 +3831,18 @@ async function assertRetainedArtifact(
   return artifact.id;
 }
 
+/** @param {unknown} pod */
 function hasReadyCondition(pod) {
-  return pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True");
+  const conditions = asRecord(asRecord(pod)?.status)?.conditions;
+  if (!Array.isArray(conditions)) {
+    return false;
+  }
+  /** @type {readonly unknown[]} */
+  const observedConditions = conditions;
+  return observedConditions.some((condition) => {
+    const fields = asRecord(condition);
+    return fields?.type === "Ready" && fields.status === "True";
+  });
 }
 
 async function assertInterruptedGatewayTurnResumes(context, topology) {
@@ -5324,7 +5323,7 @@ function selectReadyAgentPod(pods, topology, revisionId = topology.revision.id, 
       pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
       pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
       pod.metadata.labels?.["openclaw.dev/revision"] === revisionId &&
-      pod.status.phase === "Running" &&
+      pod.status?.phase === "Running" &&
       hasReadyCondition(pod),
   );
 }
