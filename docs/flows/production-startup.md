@@ -236,29 +236,26 @@ Git owner, receipt listener, metrics, and database. It continues after errors an
 until grace expires. Failed startup closes the installed Driver package, even
 if refused, and preserves the original error.
 
-When set, `controlPlane.nodeSelector` places the API, worker, migration,
-bootstrap, and private proxy on reviewed control-plane nodes. The
-`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` template sets
-`EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`. Compute owns tenant
-Gateway and Agent placement.
+Optional `controlPlane.nodeSelector` places API, worker, migration,
+bootstrap and private proxy on reviewed nodes.
+`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` sets
+`EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`. Compute places tenant
+Gateways and Agents.
 
-With `database.caSecretName`, `_helpers.tpl` rejects CA paths that would mask
-active client mounts. It normalizes relative paths, dot segments, and trailing
-slashes for comparison and emits accepted paths as supplied.
+With `database.caSecretName`, `_helpers.tpl` rejects paths masking active client
+mounts. It normalizes relative paths, dot segments and trailing slashes for
+comparison only.
 
-The [control-plane NetworkPolicies](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
-keep release ingress restricted. The release-wide default deny selects API and
-worker Pods, but Kubernetes combines selected egress grants: a policy for
-components `api` and `worker` allows unrestricted egress. Initialization has a
-separate DNS, database, and Kubernetes API grant. Agent, Sandbox, collector, and
-proxy Pods do not receive the control-plane grant. Pre-install initialization
-retains its hook DNS and database grants.
+[NetworkPolicies](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
+restrict release ingress. Kubernetes combines grants. Despite release-wide
+default deny, only `api` and `worker` components receive the unrestricted
+control-plane egress grant. Initialization allows DNS, database and Kubernetes
+API access. Pre-install hooks retain DNS and database grants.
 
-Managed channel egress uses one installation configuration for the reserved
-OCC provider listener and per-Agent listener allocation. The listener fleet
-restricts ingress to its authorized callers. Startup records an unavailable
-listener as a warning; channel operations fail closed while OCC stays available.
-See [channel egress](channel-egress.md).
+[Channel egress](channel-egress.md) configures the reserved OCC provider
+listener and per-Agent listener allocation together. Listeners admit only
+authorized callers. If unavailable, startup warns, channel operations fail
+closed and OCC stays available.
 
 The Kubernetes Compute Driver queries the API server version and verifies
 authenticated Namespace access. Below the supported 1.35 baseline, the API logs
