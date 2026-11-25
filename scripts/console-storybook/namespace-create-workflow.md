@@ -8,8 +8,10 @@ in-memory storage for those API boundaries.
 1. Open **Pages/Namespaces → Ready and provisioning**. Select **Create Namespace**.
    Enter a unique name, create it, and inspect **Namespace created**. Select
    **Done**: its card reads **Provisioning**. Repeat with another name and select
-   **Open Agents**: the Namespace selector names the new Namespace. After
-   **Done** or Escape, focus is on **Create Namespace**.
+   **Open Agents** to see the new Namespace in the selector. While the
+   dialog checks access, watch **Done**. It keeps its position and keyboard
+   focus when **Open Agents** appears. Tab to **Open Agents** to choose it.
+   After **Done** or Escape, focus is on **Create Namespace**.
 2. Open **Empty**. Creation is available even without a readable Namespace.
    In **Empty for a member**, **Create Namespace** is a secondary action and the
    empty state says to ask an administrator. In

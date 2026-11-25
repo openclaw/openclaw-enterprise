@@ -459,9 +459,7 @@ export function renderNamespaces(
         }
         const keepDoneFocus = !initial && document.activeElement === done;
         if (result === "readable") {
-          access.remove();
-          dialog.setAttribute("aria-describedby", description.id);
-          done.removeAttribute("aria-describedby");
+          access.textContent = "This Namespace is in your list.";
           const openAgents = button(
             "Open Agents",
             () => {
@@ -470,8 +468,13 @@ export function renderNamespaces(
             },
             { tone: "primary" },
           );
-          actions.replaceChildren(done, openAgents);
-          (keepDoneFocus ? done : openAgents).focus();
+          // Keep Done connected and focused through a press that spans the read.
+          const retryFocused = document.activeElement === retry;
+          retry.remove();
+          actions.append(openAgents);
+          if (retryFocused) {
+            openAgents.focus();
+          }
         } else if (result === "denied" || result === "omitted") {
           if (result === "denied") {
             const guidance =
@@ -487,7 +490,7 @@ export function renderNamespaces(
             access.textContent = `This Namespace is unavailable to view. ${guidance}`;
           }
           done.classList.add("button", "button--primary");
-          actions.replaceChildren(done);
+          retry.remove();
           done.focus();
         } else {
           access.textContent = "Access could not be confirmed.";

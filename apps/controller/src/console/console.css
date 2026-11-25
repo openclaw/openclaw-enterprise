@@ -3353,6 +3353,10 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 #create-namespace-conflict {
   color: var(--color-danger);
 }
+/* Keep Done in place when the access check adds a second action. */
+#create-namespace-access + .dialog-actions {
+  justify-content: space-between;
+}
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));
 }

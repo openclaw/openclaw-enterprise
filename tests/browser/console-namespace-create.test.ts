@@ -197,11 +197,28 @@ test("a Namespace name conflict keeps the form editable for correction", async (
   assert.equal(await name.getAttribute("aria-invalid"), null);
   await name.fill("New team");
   assert.equal(creates(requests).length, 1);
+  const url = page.url();
+  const read = await holdRequests(t, page, `${fixture.origin}/namespaces`, {
+    method: "GET",
+    once: true,
+    afterServer: true,
+  });
   await name.press("Enter");
-  await page
-    .getByRole("dialog", { name: "Namespace created", exact: true })
-    .getByRole("button", { name: "Done" })
-    .click();
+  assert.equal((await read.requested)?.status(), 200);
+  const confirmation = page.getByRole("dialog", { name: "Namespace created", exact: true });
+  const done = confirmation.getByRole("button", { name: "Done" });
+  const agents = confirmation.getByRole("button", { name: "Open Agents" });
+  assert.equal(await agents.count(), 0);
+  assert.equal(await done.evaluate((node) => node === document.activeElement), true);
+  // Finish the same press even if the second action appears while Space is held.
+  await page.keyboard.down("Space");
+  read.release();
+  await agents.waitFor();
+  assert.equal(await done.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.up("Space");
+  await confirmation.waitFor({ state: "hidden" });
+  assert.equal(page.url(), url);
+  assert.equal(creates(requests).length, 2);
   await page.locator(settledView).getByRole("link", { name: "New team", exact: true }).waitFor();
   await focusReturnsToOpener(page);
 });
