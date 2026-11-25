@@ -135,23 +135,54 @@ change the general delivery contract's deferred detection of missed updates or G
 already passed their final authorization check. The implementation and wire representation remain
 open.
 
+## Receiver profile for the split Pod
+
+In the split Pod, the `box-workload` container starts the [Box receiver](https://github.com/strands-agents/box/pull/482).
+On some nodes the runtime’s default AppArmor profile denies a mount the receiver needs. The
+proposed `receiverAppArmorProfile` setting lets the installation operator select a profile for
+that container alone. The direct launch experiment has no separate receiver.
+
+- If the operator omits the setting, leave the Pod manifest unchanged. The runtime keeps its
+  existing default.
+- If the operator sets it, use the exact name of a profile already loaded on the node. Set
+  `securityContext.appArmorProfile.type` to `Localhost` and `localhostProfile` to that name on
+  `box-workload` only. Reject empty names, paths, inline policy and requests for `Unconfined` or
+  `RuntimeDefault`. Agents and workspaces cannot select a profile.
+- If the node cannot apply the requested profile, fail startup. Never fall back or install a
+  profile on the operator’s behalf. Include the selection in the revision’s preparation inputs.
+  A change requires a new revision.
+
+Before scheduling on a node, the operator must verify the intended policy is loaded in enforce
+mode. The profile name alone proves neither its contents nor its mode. Test an installed launch
+with the selected profile and check each container’s effective profile. Keep seccomp, private
+user namespaces, proc masks, dropped capabilities, the ban on privilege escalation and TLS.
+Test omission against the original manifest and verify that a missing profile prevents startup.
+The receiver still needs the Box patch and an authenticated descriptor handoff for protected use.
+
 ## Trust boundary
 
 In the native experiment, one trusted Box parent directly starts its trampoline and contained Codex
 child in the same Agent Pod container. Kubernetes NetworkPolicy applies to the Pod as a whole.
 Qualify the native boundary before protected use.
 
-The current split Pod instead starts the receiver independently. Its confinement profile may need
-to permit specific mounts. The file node must reach the Gateway but must not open the live Box
-loopback proxy. Pod NetworkPolicy cannot distinguish these callers. Qualify any per-container
-profile with seccomp, user namespaces, proc masks, dropped capabilities, and TLS retained. A
-profile label alone is not proof of enforcement. Verify real file operations and reconnect, a Box
-HTTPS request before and after, a refused sibling connection to the same live proxy port, and a
-successful connection to that port at another address. Check new processes, replacements, and
-already-connected sockets. A connection policy alone cannot revoke a socket that another process
-already opened and passed to the file node. Test descriptor transfer separately. While the proxy
-is serving, remove the caller restriction in an isolated test. Check whether an in-flight request
-finishes and require a fresh file-node request to stop before it reaches the upstream service.
+In the split Pod, the file node shares the outer network with the Box proxy. It must reach the
+Gateway. For protected execution it must be unable to connect to the live proxy. Selecting a
+receiver profile does not isolate the file node. Pod NetworkPolicy cannot distinguish it from
+the trusted sender.
+
+Test the file node first with its ordinary inputs, then with the proxy’s address, port and public
+CA. Never supply the workload placeholder. Failure to identify the listener leaves connectivity
+untested. An HTTP refusal means the connection succeeded. Record TCP connections, completed TLS
+handshakes, HTTP requests and authenticated provider operations separately.
+
+Verify that the file node can edit a file, reconnect and read it back. Confirm that Box can make
+an authorized HTTPS request before and after the file node’s connection attempt. The file node
+must fail to connect to the proxy and succeed against a test listener on the same port at another
+address. Check new processes and replacement containers. Test transfer of an already connected
+socket separately. A rule blocking new connections cannot revoke that socket. In an isolated test,
+remove the caller restriction while the proxy is serving. Record whether an in-flight request
+finishes. Record whether a new connection succeeds and require that no fresh file-node request
+reaches the upstream service.
 
 | Boundary            | Sandbox requirement                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

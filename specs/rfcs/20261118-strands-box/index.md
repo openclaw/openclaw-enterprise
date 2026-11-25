@@ -41,8 +41,9 @@ with different rights.
 
 ### Interim preview for a dedicated Codex API key
 
-**Every process in this Agent may use the dedicated key through
-`POST https://api.openai.com/v1/responses`. None may read or recover the key.**
+**Any process in the Agent workload may call `POST https://api.openai.com/v1/responses`
+with the temporary placeholder. None may read or recover the provider key.** The trusted
+supervisor runs in a separate container.
 Callers choose the query, request body and other headers. They can use any model, provider
 tool or remote MCP server the key permits. A compromised process can spend money and send
 Agent data through the provider. The route imposes no spending limit.
@@ -50,8 +51,14 @@ Agent data through the provider. The route imposes no spending limit.
 `policy.network.experimentalOpenAiModelCredential` requires a dedicated least-privilege provider
 identity and dedicated Codex with `api_key` authentication. Allow only that public HTTPS route on
 port 443. Refuse aliases, managed plugins and standalone search. Only the supervisor mounts the
-key read-only. Box reads `env://OPENAI_API_KEY`, supplies a fresh placeholder per execution and
-substitutes the key on egress. Refuse missing or malformed placeholders.
+key read-only. Box supplies the workload with a fresh placeholder for each execution. It reads
+`env://OPENAI_API_KEY` in the supervisor container and substitutes the key only when the request
+carries the matching placeholder. Refuse a missing, malformed or incorrect placeholder.
+
+Anyone who can change the Pod’s mounts can expose the Secret. Before using a real key, the
+operator must restrict who can change workloads and ensure that admission preserves the mounts.
+Checking a Pod after startup cannot undo an earlier exposure. The protected design also requires
+[verified delivery before release](strands-box-held-launch.md#ownership-and-release).
 
 Stop the old execution and confirm retirement before deploying the new revision. Revoke and
 replace any key the old execution could read. If retirement is uncertain, hold deployment.
@@ -143,12 +150,19 @@ The representation remains open.
 
 ### Driver contracts
 
-This proposal adds two declarations. The Installation would select `deployment` in
+The credential contract adds two declarations. The Installation would select `deployment` in
 `drivers.credential_proxy.contract` and the verified manifest would declare the same value in
 `oce.credentialProxyContract`. Omitting both preserves legacy Git authority. Paired
 Sandbox and CredentialProxy Drivers support [held startup](strands-box-held-launch.md).
 V1 supports HTTP API-key inference and refuses personal access tokens, interactive login and
 WebSocket credential delivery.
+
+On nodes where the default AppArmor profile blocks a required mount, we propose letting the
+installation operator [select a profile for the Box receiver](strands-box-held-launch.md#receiver-profile-for-the-split-pod).
+The optional setting `drivers.sandbox.configuration.kubernetes.receiverAppArmorProfile` belongs
+to the bundled Strands driver. Operators could select it without enabling model credentials.
+The shared Sandbox interface stays unchanged. Neither `main` nor the preview branch exposes this
+setting today.
 
 <a id="alternatives-and-open-decisions"></a>
 
