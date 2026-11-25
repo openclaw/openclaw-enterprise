@@ -3635,7 +3635,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Model check");
   const { page } = await newPage(t, fixture);
   const probeNextStep =
-    /^The startup model check failed\. No credential rejection was reported\..*rate limits and account\. With Codex, check that the provider is reachable\. After the fix, someone with deploy access to this Agent can deploy a new version\.$/;
+    /^The startup model check failed\. No credential rejection was reported\..*rate limits and account\. With Codex, check that the provider is reachable\. After the fix, someone with deploy access can deploy a new version\.$/;
   const cases: {
     error: DeploymentError | null;
     nextStep: RegExp;
