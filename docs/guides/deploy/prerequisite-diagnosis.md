@@ -7,6 +7,65 @@ namespace and prerequisite controllers through your infrastructure workflow firs
 The command does not create resources, update policies, change your current
 context, or run commands inside Pods.
 
+## Keep the credential plugin policy in force
+
+If your organization restricts which programs kubectl can run for credentials,
+use `--require-kuberc` for both diagnosis and EKS address collection. Use this
+mode only when the credential owner approves a policy-only JSON file as the
+authoritative policy for this run. Do not convert a managed YAML file or
+copy selected rules into a weaker policy.
+
+Set `KUBERC` to the absolute path the owner supplies. Leave
+`KUBECTL_KUBERC` unset or set to `true`. For example, to run a prepared plan:
+
+```bash
+KUBERC=/secure/occ/operator-policy.json TMPDIR="$RUN_DIR" \
+  node scripts/diagnose-kubernetes-prerequisites.ts --require-kuberc \
+  --config "$RUN_DIR/prerequisites.json"
+```
+
+Use the stock Linux amd64 build of kubectl v1.35.0, v1.36.2, or v1.36.4.
+This mode rejects other builds based on the version and platform the client
+reports. Verify the binary yourself and use a trusted kubeconfig, PATH, and
+credential program.
+
+The policy must be a regular file of at most 64 KiB, without a final symlink.
+It must contain a single `kubectl.config.k8s.io/v1beta1` `Preference`. Only
+`DenyAll` or `Allowlist` with a nonempty list of executable names or absolute
+paths is supported. Each allowlist entry must use the `name` field. This
+mode rejects the `command` field because v1.35.0 does not support it.
+Use unescaped ASCII letters, digits, dots, underscores,
+plus signs or hyphens in each path component. Do not use `.` or `..` as
+components. Do not set aliases, command defaults or other options.
+
+For example, the native JSON structure for an EKS policy that permits only the
+`aws` plugin is shown below. Use the policy your credential owner supplies.
+
+```json
+{
+  "apiVersion": "kubectl.config.k8s.io/v1beta1",
+  "kind": "Preference",
+  "credentialPluginPolicy": "Allowlist",
+  "credentialPluginAllowlist": [{ "name": "aws" }]
+}
+```
+
+A plugin policy controls which program kubectl runs. It does not approve the
+program’s arguments or restrict other programs such as direct AWS CLI calls.
+
+The command rechecks the original policy and its private copy before each read,
+including isolated certificate checks.
+If either changes, stop and verify the policy before starting again. A change
+cannot revoke a request already in progress. `DenyAll` blocks credential plugins.
+A context using only a token or client certificate can still authenticate.
+A context combining an exec plugin and another credential is rejected.
+If the result is unknown, check with the policy owner that the selected plugin
+is allowed. A connection failure can produce the same result.
+
+If your policy needs other settings, a managed YAML file or immediate revocation,
+use the infrastructure owner's inventory. Never disable a required policy to
+work around a refusal.
+
 ## Collect EKS addresses
 
 Use the cluster ARN from your infrastructure outputs and the intended kubeconfig
@@ -16,12 +75,10 @@ exist. You need AWS CLI access to call `sts get-caller-identity`,
 identity needs to read the `default/kubernetes` Service and list its EndpointSlices.
 
 Address collection pins the verified server and CA in a private temporary
-kubeconfig. It requires `KUBECTL_KUBERC=false` for the command, including for
-token and client certificate credentials. This disables all `kuberc` rules,
-including credential plugin rules. Use the command only with a trusted
-kubeconfig and context and the credential owner's permission. If policy requires
-kubectl preferences, collect the addresses through the infrastructure workflow.
-Set `TMPDIR` to an existing private directory before running the command.
+kubeconfig. Set `TMPDIR` to an existing private directory. In the example below,
+use `KUBECTL_KUBERC=false` only with the credential owner's permission to disable
+all kubectl preferences. If policy is required, replace that prefix with the
+owner's absolute `KUBERC` path and add [`--require-kuberc`](#keep-the-credential-plugin-policy-in-force).
 
 ```bash
 KUBECTL_KUBERC=false TMPDIR=/secure/occ/prerequisite-run node scripts/diagnose-kubernetes-prerequisites.ts \
@@ -148,7 +205,7 @@ file and a directory. Overlapping mounts at the selected file, StatefulSet
 claims that replace the volume, subpath mounts, and projected volumes fail
 the check.
 
-Grant named Kubernetes `get` access to the selected workload and mounted Secret.
+Use an identity already authorized to `get` the workload and mounted Secret.
 The Kubernetes API returns whole objects. The subprocess uses the public leaf,
 checks whether required keys exist and returns the result with resource UIDs
 and resource versions. The check compares the workload UID and resource version
@@ -196,17 +253,12 @@ Use an exec plugin, token or client certificate in place of a built-in
 kubeconfig `auth-provider`. The command refuses built-in providers before
 making requests because their refresh can replace credentials in a kubeconfig.
 
-Diagnosis disables all kubectl preferences so defaults cannot change the
-verified target. An approved token or client certificate works without an
-exec plugin exception. For an exec plugin, follow the credential owner's
-procedure. If it permits running the plugin without kubectl preferences for
-the trusted kubeconfig and context, prefix this command with
-`KUBECTL_KUBERC=false`. The command does not apply any `kuberc` rules,
-including a credential plugin policy. An inherited `KUBECTL_KUBERC=false` or
-`KUBERC=off` also permits the diagnostic to run the plugin. Check with the
-credential owner before using that environment. If policy requires those rules for
-the plugin, use an approved credential without a plugin. If policy requires
-kubectl preferences for every call, use the infrastructure workflow.
+By default, diagnosis disables kubectl preferences so command defaults cannot
+change the target. An approved token or client certificate needs no plugin.
+For an exec plugin, [keep the required policy in force](#keep-the-credential-plugin-policy-in-force).
+Only prefix the command with `KUBECTL_KUBERC=false` if the credential owner
+permits disabling preferences, including the plugin policy. Check inherited
+`KUBECTL_KUBERC=false` or `KUBERC=off` before running the command.
 
 The operator needs named reads of the GatewayClass, Deployments,
 CRDs, namespace and `default/kubernetes` Service, and list access to that

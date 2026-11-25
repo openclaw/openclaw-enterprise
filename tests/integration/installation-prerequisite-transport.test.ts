@@ -140,9 +140,15 @@ function object(kind: "Service" | "Secret", name: string, fields: object) {
   };
 }
 
-const kubectlError = spawnSync("kubectl", ["version", "--client"], {
-  stdio: "ignore",
-}).error;
+const clientProbe = spawnSync(
+  "kubectl",
+  ["--kubeconfig", "/dev/null", "version", "--client", "-o", "json"],
+  {
+    encoding: "utf8",
+    env: { ...process.env, KUBECTL_KUBERC: "false", KUBERC: "off" },
+  },
+);
+const kubectlError = clientProbe.error;
 const withoutKubectl =
   !process.env.OCC_TEST_KUBERNETES_CONFIGURATION &&
   kubectlError !== undefined &&
@@ -190,10 +196,11 @@ test(
       kind: "ExecCredential",
       status: { token },
     };
+    const pluginPath = join(source, "credential-plugin");
     const pluginMarker = join(source, "credential-plugin-started");
     await writeFile(
-      join(source, "credential-plugin"),
-      `#!/bin/sh\n: > "$TEST_PLUGIN_MARKER"\nprintf '%s\\n' '${JSON.stringify(plugin)}'\n`,
+      pluginPath,
+      `#!/bin/sh\necho started >> "$TEST_PLUGIN_MARKER"\nprintf '%s\\n' '${JSON.stringify(plugin)}'\n`,
       { mode: 0o700 },
     );
 
@@ -494,13 +501,15 @@ test(
         kubeconfig: snapshot,
         context: "selected",
         socketPrefix: join(projectionDirectory, "1"),
+        policy: null,
         timeout: 10_000,
       };
     }
+    const diagnosticArgs = ["--config", plan, "--json"];
     function collect(
       environment: NodeJS.ProcessEnv = {},
       expectCleanup = true,
-      invocation: string[] | ProjectionCheck = ["--config", plan, "--json"],
+      invocation: string[] | ProjectionCheck = diagnosticArgs,
     ) {
       const isCli = Array.isArray(invocation);
       const args = isCli ? invocation : [];
@@ -511,8 +520,8 @@ test(
           env: {
             ...process.env,
             HOME: operatorHome,
-            KUBERC: undefined,
-            KUBECTL_KUBERC: undefined,
+            KUBERC: isCli ? undefined : "off",
+            KUBECTL_KUBERC: isCli ? undefined : "false",
             TEST_PLUGIN_MARKER: pluginMarker,
             TMPDIR: scratch,
             KUBECACHEDIR: join(directory, "cache"),
@@ -587,11 +596,12 @@ test(
       kubeconfig: string,
       expectedCode: number | null = 1,
       environment?: NodeJS.ProcessEnv,
+      args = diagnosticArgs,
     ) {
       await writeFile(path, kubeconfig, { mode: 0o600 });
       httpsRequests.length = 0;
       httpRequests.length = 0;
-      const { code, output } = await collect(environment).result;
+      const { code, output } = await collect(environment, true, args).result;
       if (expectedCode !== null) {
         assert.equal(code, expectedCode);
       }
@@ -746,7 +756,83 @@ test(
         assert.deepEqual(await readdir(projectionDirectory), ["kubeconfig.json"]);
       },
     );
-    await t.test("mounted certificates use pinned reads and reconcile each workload", async () => {
+    const execUser = {
+      exec: {
+        apiVersion: plugin.apiVersion,
+        command: "./credential-plugin",
+        interactiveMode: "Never",
+      },
+    };
+    const execConfig = config("bearer", execUser);
+    const kubectl = spawnSync("sh", ["-c", "command -v kubectl"], {
+      encoding: "utf8",
+    });
+    assert.equal(kubectl.status, 0);
+    const preference = { apiVersion: "kubectl.config.k8s.io/v1beta1", kind: "Preference" };
+    const allowlist = (...names: string[]) => ({
+      ...preference,
+      credentialPluginPolicy: "Allowlist",
+      credentialPluginAllowlist: names.map((name) => ({ name })),
+    });
+    const policyFile = join(source, "required-kuberc");
+    const policyArgs = [...diagnosticArgs, "--require-kuberc"];
+    // Select expectations from the actual client, independently of the CLI under test.
+    assert.equal(clientProbe.status, 0);
+    const { clientVersion } = JSON.parse(clientProbe.stdout);
+    const supportsPolicy =
+      clientVersion?.platform === "linux/amd64" &&
+      clientVersion.gitTreeState === "clean" &&
+      clientVersion.major === "1" &&
+      ((clientVersion.minor === "35" && clientVersion.gitVersion === "v1.35.0") ||
+        (clientVersion.minor === "36" &&
+          ["v1.36.2", "v1.36.4"].includes(clientVersion.gitVersion)));
+    const policyClient = { skip: supportsPolicy ? false : "requires a qualified kubectl" };
+
+    const denyAll = JSON.stringify({ ...preference, credentialPluginPolicy: "DenyAll" });
+
+    async function changePolicyAtProxyStartup(target: string) {
+      await writeFile(path, execConfig, { mode: 0o600 });
+      await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
+      await rm(pluginMarker, { force: true });
+      httpsRequests.length = 0;
+      httpRequests.length = 0;
+      // Change only the source after the pre-spawn check. The real proxy starts
+      // with an unchanged private policy that still permits the plugin.
+      const bin = join(directory, "proxy-start-bin");
+      await mkdir(bin, { recursive: true });
+      const replacement = JSON.stringify(allowlist(pluginPath, "another-plugin"));
+      await writeFile(
+        join(bin, "kubectl"),
+        `#!/bin/sh
+for arg do
+  if [ "$arg" = "$TEST_TARGET" ]; then
+    printf '%s' "$TEST_REPLACEMENT" > "$TEST_KUBERC_PATH" || exit 1
+  fi
+done
+exec "$TEST_KUBECTL" "$@"
+`,
+        { mode: 0o700 },
+      );
+      const { code, stdout, stderr } = await collect(
+        {
+          PATH: `${bin}:${process.env.PATH}`,
+          KUBERC: policyFile,
+          TEST_KUBECTL: kubectl.stdout.trim(),
+          TEST_TARGET: `--accept-paths=^${target}$`,
+          TEST_KUBERC_PATH: policyFile,
+          TEST_REPLACEMENT: replacement,
+        },
+        true,
+        policyArgs,
+      ).result;
+      assert.equal(await readFile(policyFile, "utf8"), replacement);
+      assert.equal(httpRequests.length, 0);
+      assert.equal(code, 2);
+      assert.equal(stdout, "");
+      assert.match(stderr, /kuberc.*changed/iu);
+    }
+
+    await t.test("mounted certificates use pinned reads and reconcile each workload", async (t) => {
       const workloadPath = "/apis/apps/v1/namespaces/default/deployments/client";
       const mountedSecretPath = "/api/v1/namespaces/default/secrets/mounted-client";
       const workloadMetadata = {
@@ -936,24 +1022,70 @@ syncBuiltinESMExports();
             },
           },
         ];
-        for (const [index, id] of [
-          "controller:default/controller",
-          "service-tls",
-          "client-certificate",
-        ].entries()) {
-          assert.deepEqual(checks.get(id), { id, ...expected[index]?.check });
+        async function assertProjectedChecks(checks: Map<string, Observation>) {
+          for (const [index, id] of [
+            "controller:default/controller",
+            "service-tls",
+            "client-certificate",
+          ].entries()) {
+            assert.deepEqual(checks.get(id), { id, ...expected[index]?.check });
+          }
+          assert.deepEqual(
+            (await readFile(trace, "utf8"))
+              .trim()
+              .split("\n")
+              .map((line) => JSON.parse(line)),
+            expected.map(({ kind, check }) => ({
+              kind,
+              code: 0,
+              stdout: digest(`${JSON.stringify(check)}\n`),
+              stderrDiscarded: true,
+            })),
+          );
         }
-        assert.deepEqual(
-          (await readFile(trace, "utf8"))
-            .trim()
-            .split("\n")
-            .map((line) => JSON.parse(line)),
-          expected.map(({ kind, check }) => ({
-            kind,
-            code: 0,
-            stdout: digest(`${JSON.stringify(check)}\n`),
-            stderrDiscarded: true,
-          })),
+        await assertProjectedChecks(checks);
+
+        await t.test(
+          "required kuberc guards every isolated certificate read",
+          policyClient,
+          async () => {
+            // An approved plugin must authenticate the real reads while only
+            // the reduced observations leave the controller and certificate children.
+            await rm(trace);
+            await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
+            const allowed = await observations(
+              execConfig,
+              null,
+              {
+                KUBERC: policyFile,
+                NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+              },
+              policyArgs,
+            );
+            await assertProjectedChecks(allowed);
+            assert.equal(httpRequests.length, 0);
+            assert.ok(httpsRequests.every(({ bearer }) => bearer === `Bearer ${token}`));
+            const selectedPaths = () =>
+              httpsRequests
+                .map(({ path }) => path)
+                .filter((path) => [secretPath, workloadPath, mountedSecretPath].includes(path));
+            assert.deepEqual(selectedPaths(), [
+              secretPath,
+              workloadPath,
+              mountedSecretPath,
+              workloadPath,
+            ]);
+
+            // After resolving the mount, a policy change before the next proxy
+            // is ready must prevent both plugin invocation and the named Secret GET.
+            await changePolicyAtProxyStartup(mountedSecretPath);
+            assert.deepEqual(selectedPaths(), [secretPath, workloadPath]);
+            assert.equal(httpsRequests.at(-1)?.path, workloadPath);
+            assert.equal(
+              await readFile(pluginMarker, "utf8"),
+              "started\n".repeat(httpsRequests.length),
+            );
+          },
         );
 
         // Kubernetes measures UTF-8 bytes before it cleans the item paths.
@@ -1055,18 +1187,50 @@ syncBuiltinESMExports();
         await writeFile(plan, JSON.stringify(planInput));
       }
     });
-    const execConfig = config("bearer", {
-      exec: {
-        apiVersion: plugin.apiVersion,
-        command: "./credential-plugin",
-        interactiveMode: "Never",
-      },
+    await t.test("waits for a listening proxy without replaying a disconnected GET", async () => {
+      const bin = join(directory, "proxy-delay-bin");
+      const marker = join(directory, "proxy-delay");
+      await mkdir(bin);
+      // Widen the bind-to-listen gap for the first read, then start genuine
+      // kubectl. In the second run drop the connection after receiving the GET.
+      await writeFile(
+        join(bin, "kubectl"),
+        `#!/usr/bin/env python3
+import os, socket, sys, time
+marker = os.environ["TEST_MARKER"]
+if "--unix-socket" in sys.argv and not os.path.exists(marker):
+    address = sys.argv[sys.argv.index("--unix-socket") + 1]
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(address)
+        if os.environ["TEST_DROP"] == "yes":
+            listener.listen()
+            with listener.accept()[0] as peer, peer.makefile("rb") as received:
+                with open(marker, "wb") as log:
+                    log.write(received.readline())
+        else:
+            open(marker, "w").close()
+            time.sleep(0.25)
+        os.unlink(address)
+os.execv(os.environ["TEST_KUBECTL"], sys.argv)
+`,
+        { mode: 0o700 },
+      );
+      const env = {
+        PATH: `${bin}:${process.env.PATH}`,
+        TEST_KUBECTL: kubectl.stdout.trim(),
+        TEST_MARKER: marker,
+      };
+      const ready = await observations(verifiedConfig, null, { ...env, TEST_DROP: "no" });
+      assert.equal(ready.get("kubernetes-api")?.status, "passed");
+      assert.equal(httpsRequests.filter(({ path }) => path === apiPath).length, 1);
+      await rm(marker);
+      const dropped = await observations(verifiedConfig, null, { ...env, TEST_DROP: "yes" });
+      assert.equal((await readFile(marker, "utf8")).trim(), `GET ${apiPath} HTTP/1.1`);
+      assert.equal(dropped.get("kubernetes-api")?.status, "unknown");
+      assert.equal(httpsRequests.filter(({ path }) => path === apiPath).length, 0);
     });
     await t.test("a late kuberc policy cannot be bypassed to run an exec plugin", async () => {
-      const kubectl = spawnSync("sh", ["-c", "command -v kubectl"], {
-        encoding: "utf8",
-      });
-      assert.equal(kubectl.status, 0);
+      await rm(pluginMarker, { force: true });
       const bin = join(directory, "late-policy-bin");
       await mkdir(bin);
       const policy = join(operatorHome, ".kube", "kuberc");
@@ -1114,6 +1278,130 @@ fi
         assert.equal(checks.get("service-tls")?.status, "failed");
         assert.match(checks.get("service-tls")?.action ?? "", /verify.*tls\.crt/u);
         assert.match(checks.get("service-egress")?.action ?? "", /Service owner/u);
+      },
+    );
+    if (!supportsPolicy) {
+      await t.test(
+        "an unqualified client refuses required policy before authentication",
+        async () => {
+          await writeFile(path, execConfig, { mode: 0o600 });
+          await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
+          await rm(pluginMarker, { force: true });
+          httpsRequests.length = 0;
+          httpRequests.length = 0;
+          const result = await collect({ KUBERC: policyFile }, true, policyArgs).result;
+          assert.equal(result.code, 2);
+          assert.equal(result.stdout, "");
+          assert.match(result.stderr, /stock kubectl/u);
+          await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+          assert.equal(httpsRequests.length + httpRequests.length, 0);
+        },
+      );
+    }
+    for (const [name, policy, user, code, status] of [
+      ["DenyAll", denyAll, execUser, 2, "unknown"],
+      [
+        "a nonmatching allowlist",
+        JSON.stringify(allowlist("another-plugin")),
+        execUser,
+        2,
+        "unknown",
+      ],
+      [
+        "a static token alongside exec",
+        denyAll,
+        { ...execUser, token: replacementToken },
+        1,
+        "failed",
+      ],
+    ] as const) {
+      await t.test(
+        `required kuberc prevents credential use with ${name}`,
+        policyClient,
+        async () => {
+          await writeFile(policyFile, policy);
+          await rm(pluginMarker, { force: true });
+          const checks = await observations(
+            config("bearer", user),
+            code,
+            { KUBERC: policyFile },
+            policyArgs,
+          );
+          assert.equal(checks.get("kubernetes-api")?.status, status);
+          assert.equal(checks.get("service-tls")?.status, "unknown");
+          await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+          assert.equal(httpsRequests.length + httpRequests.length, 0);
+        },
+      );
+    }
+    await t.test(
+      "required kuberc rejects missing or invalid policy and conflicting flags before authentication",
+      async () => {
+        await writeFile(path, execConfig, { mode: 0o600 });
+        await rm(pluginMarker, { force: true });
+        httpsRequests.length = 0;
+        httpRequests.length = 0;
+        for (const [policy, extraArgs, error] of [
+          [undefined, [], /requires an absolute KUBERC path/u],
+          [denyAll.replace("DenyAll", "Unknown"), [], /policy-only/u],
+          [denyAll.replace("DenyAll", "Deny\\u0041ll"), [], /policy-only/u],
+          [denyAll, ["--context", "selected"], /Usage:/u],
+        ] as const) {
+          if (policy !== undefined) {
+            await writeFile(policyFile, policy);
+          }
+          const { code, stdout, stderr } = await collect(
+            { KUBERC: policy === undefined ? undefined : policyFile },
+            true,
+            [...policyArgs, ...extraArgs],
+          ).result;
+          assert.equal(code, 2);
+          assert.equal(stdout, "");
+          assert.match(stderr, error);
+        }
+        await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+        assert.equal(httpsRequests.length + httpRequests.length, 0);
+      },
+    );
+    await t.test(
+      "a change to required kuberc at proxy startup stops the first authenticated read",
+      policyClient,
+      async () => {
+        await changePolicyAtProxyStartup(apiPath);
+        assert.equal(httpsRequests.length, 0);
+        await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+      },
+    );
+    await t.test(
+      "a change to required kuberc stops later authenticated reads",
+      policyClient,
+      async () => {
+        await writeFile(path, execConfig, { mode: 0o600 });
+        await writeFile(policyFile, JSON.stringify(allowlist(pluginPath)));
+        await rm(pluginMarker, { force: true });
+        httpsRequests.length = 0;
+        httpRequests.length = 0;
+        firstServiceRead = () => {
+          // The replacement also allows this plugin. Only a check for a change
+          // to the original policy can stop the next read.
+          writeFileSync(policyFile, JSON.stringify(allowlist(pluginPath, "another-plugin")));
+        };
+        try {
+          const { code, stdout, stderr } = await collect({ KUBERC: policyFile }, true, policyArgs)
+            .result;
+          assert.deepEqual(
+            httpsRequests.map(({ path }) => path),
+            [apiPath],
+          );
+          assert.ok(httpsRequests[0]?.bearer === `Bearer ${token}`);
+          assert.equal(httpRequests.length, 0);
+          assert.equal(await readFile(pluginMarker, "utf8"), "started\n");
+          assert.equal(code, 2);
+          assert.equal(stdout, "");
+          assert.match(stderr, /kuberc.*changed/iu);
+        } finally {
+          firstServiceRead = undefined;
+        }
       },
     );
     await t.test("plaintext contexts fail before any Kubernetes request", async () => {
@@ -1373,8 +1661,12 @@ esac
             await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
 
             const optedIn = { ...environment, KUBECTL_KUBERC: "false" };
-            async function expectInventoryFailure(reason: RegExp, inventoryArgs = args) {
-              const { code, stdout, stderr } = await collect(optedIn, true, inventoryArgs).result;
+            async function expectInventoryFailure(
+              reason: RegExp,
+              inventoryArgs = args,
+              env: NodeJS.ProcessEnv = optedIn,
+            ) {
+              const { code, stdout, stderr } = await collect(env, true, inventoryArgs).result;
               assert.equal(code, 2, stderr);
               assert.equal(stdout, "");
               assert.match(stderr, reason);
@@ -1442,9 +1734,13 @@ esac
                 },
               ],
             };
-            try {
-              apiSlicesReply = { status: 200, body };
-              const accepted = await collect(optedIn, true, args).result;
+            async function expectCompleteInventory(
+              env: NodeJS.ProcessEnv,
+              inventoryArgs: string[],
+            ) {
+              httpsRequests.length = 0;
+              await rm(pluginMarker, { force: true });
+              const accepted = await collect(env, true, inventoryArgs).result;
               assert.equal(accepted.code, 0, accepted.stderr);
               const report = JSON.parse(accepted.stdout) as {
                 context: string;
@@ -1468,6 +1764,30 @@ esac
               );
 
               assertAuthenticatedReads();
+              await stat(pluginMarker);
+            }
+            try {
+              apiSlicesReply = { status: 200, body };
+              await expectCompleteInventory(optedIn, args);
+
+              // Direct AWS calls retain the caller's environment. Kubectl must
+              // enforce the allowlist when invoking AWS as a credential plugin.
+              const requiredArgs = [...args, "--require-kuberc"];
+              await writeFile(environment.KUBERC, JSON.stringify(allowlist("another-plugin")));
+              httpsRequests.length = 0;
+              await rm(pluginMarker, { force: true });
+              await expectInventoryFailure(
+                supportsPolicy ? /kubernetes-api/u : /stock kubectl/u,
+                requiredArgs,
+                environment,
+              );
+              await assert.rejects(stat(pluginMarker), { code: "ENOENT" });
+              assert.equal(httpsRequests.length + httpRequests.length, 0);
+
+              if (supportsPolicy) {
+                await writeFile(environment.KUBERC, JSON.stringify(allowlist("aws")));
+                await expectCompleteInventory(environment, requiredArgs);
+              }
 
               // Valid IPv4 replies cannot conceal a structurally invalid or unrelated item.
               for (const extra of [

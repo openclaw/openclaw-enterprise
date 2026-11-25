@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { X509Certificate } from "node:crypto";
+import { hash, X509Certificate } from "node:crypto";
 import { once } from "node:events";
 import { constants } from "node:fs";
-import { mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { get, type IncomingMessage } from "node:http";
-import { isIP } from "node:net";
+import { createConnection, isIP, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, posix, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, posix, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual, parseArgs } from "node:util";
 
@@ -30,6 +30,7 @@ type ProjectedCheck =
   | { kind: "serving"; selection: DeploymentSelection; serverName: string }
   | { kind: "client"; selection: ClientCertificate };
 type ProjectionRequest = {
+  policy: KubercSnapshot | null;
   check: ProjectedCheck;
   socketPrefix: string;
   kubeconfig: string;
@@ -492,30 +493,234 @@ function validateConfig(value: unknown): DiagnosticPlan {
   };
 }
 
-const commandEnv = { ...process.env, AWS_PAGER: "", AWS_CLI_AUTO_PROMPT: "off" };
-const kubectlEnv = { ...commandEnv, KUBECTL_KUBERC: "false", KUBERC: "off" };
+const commandEnv: NodeJS.ProcessEnv = { ...process.env, AWS_PAGER: "", AWS_CLI_AUTO_PROMPT: "off" };
+type KubercSnapshot = {
+  executable: string;
+  clientIdentity: string;
+  source: string;
+  copy: string;
+  sha256: string;
+};
+type ReadCommand = {
+  executable: string;
+  argv0?: "kubectl";
+  env: NodeJS.ProcessEnv;
+  prefix: string[];
+  policy: KubercSnapshot | null;
+};
+const withoutKuberc: ReadCommand = {
+  executable: "kubectl",
+  env: { ...commandEnv, KUBECTL_KUBERC: "false", KUBERC: "off" },
+  prefix: [],
+  policy: null,
+};
+
+// Once a required policy is lost, even an independent diagnostic check must stop.
+class KubercError extends DiagnosticError {}
+const policyChanged =
+  "The required kuberc or kubectl changed or became unreadable. Check both and start a new run.";
+const projectionPolicyFailure = 3;
+
+async function readKuberc(path: string): Promise<Buffer> {
+  // Do not follow a final symlink, block on a FIFO or read an unbounded stream.
+  await using file = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  const info = await file.stat();
+  if (!info.isFile() || info.size < 1 || info.size > 65536) {
+    throw new KubercError("KUBERC must identify a nonempty regular policy file of at most 64 KiB.");
+  }
+  const bytes = Buffer.alloc(info.size + 1);
+  // Reject a short read or growth instead of parsing a prefix as a policy.
+  const { bytesRead } = await file.read(bytes);
+  if (bytesRead !== info.size) {
+    throw new KubercError("The required kuberc changed during the read.");
+  }
+  return bytes.subarray(0, bytesRead);
+}
+
+function isPolicyEntry(entry: unknown): boolean {
+  if (!isObject(entry, ["name"]) || typeof entry.name !== "string") {
+    return false;
+  }
+  const parts = entry.name.startsWith("/") ? entry.name.slice(1).split("/") : [entry.name];
+  return parts.every((part) => /^[A-Za-z0-9_+.-]+$/u.test(part) && part !== "." && part !== "..");
+}
+
+function isPolicyOnly(text: string): boolean {
+  const policy: unknown = JSON.parse(text);
+  if (
+    !isObject(policy, [
+      "apiVersion",
+      "kind",
+      "credentialPluginPolicy",
+      "credentialPluginAllowlist",
+    ]) ||
+    policy.apiVersion !== "kubectl.config.k8s.io/v1beta1" ||
+    policy.kind !== "Preference"
+  ) {
+    return false;
+  }
+  const entries = policy.credentialPluginAllowlist;
+  const supported =
+    (policy.credentialPluginPolicy === "DenyAll" && entries === undefined) ||
+    (policy.credentialPluginPolicy === "Allowlist" &&
+      Array.isArray(entries) &&
+      entries.length > 0 &&
+      entries.every(isPolicyEntry));
+  // All admitted keys and values are ASCII without whitespace. This round trip
+  // rejects duplicate keys and escapes. Hand kubectl the original bytes.
+  return supported && text.replace(/[ \t\r\n]/gu, "") === JSON.stringify(policy);
+}
+
+async function kubectlExecutable(): Promise<string> {
+  // Resolve once so config view and the supervised proxy use the client checked
+  // below. The operator must supply a trusted stock kubectl and trusted PATH.
+  for (const directory of (commandEnv.PATH ?? "").split(delimiter)) {
+    if (!isAbsolute(directory)) {
+      break;
+    }
+    try {
+      return await realpath(`${directory}${sep}kubectl`);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        (error.code === "ENOENT" || error.code === "ENOTDIR")
+      ) {
+        continue;
+      }
+      break;
+    }
+  }
+  throw new KubercError("Required kuberc needs a trusted kubectl on an absolute PATH.");
+}
+
+// Qualify both plugin denial and a matching allowlist with each stock client.
+const qualifiedKubectlVersions = ["v1.35.0", "v1.36.2", "v1.36.4"];
+
+async function kubectlIdentity(path: string): Promise<string> {
+  const { dev, ino, ctimeNs } = await stat(path, { bigint: true });
+  return `${dev}:${ino}:${ctimeNs}`;
+}
+
+async function verifyPolicy(policy: KubercSnapshot | null) {
+  if (policy === null) {
+    return;
+  }
+  try {
+    if (
+      (await kubectlIdentity(policy.executable)) === policy.clientIdentity &&
+      hash("sha256", await readKuberc(policy.source)) === policy.sha256 &&
+      hash("sha256", await readKuberc(policy.copy)) === policy.sha256
+    ) {
+      return;
+    }
+  } catch {
+    // Filesystem details and policy contents must stay out of reports.
+  }
+  throw new KubercError(policyChanged);
+}
+
+function requiredKubectl(policy: KubercSnapshot): ReadCommand {
+  return {
+    executable: policy.executable,
+    argv0: "kubectl",
+    prefix: ["--kuberc", policy.copy],
+    env: { ...commandEnv, KUBECTL_KUBERC: "true", KUBERC: policy.copy },
+    policy,
+  };
+}
+
+async function withRequiredKuberc(
+  directory: string,
+  deadline: number,
+  signal: AbortSignal,
+): Promise<ReadCommand> {
+  if (process.platform === "win32") {
+    throw new KubercError("Required kuberc needs Unix file and socket support.");
+  }
+  const source = commandEnv.KUBERC;
+  if (
+    !source ||
+    !isAbsolute(source) ||
+    (commandEnv.KUBECTL_KUBERC !== undefined && commandEnv.KUBECTL_KUBERC !== "true")
+  ) {
+    throw new KubercError(
+      "--require-kuberc requires an absolute KUBERC path and KUBECTL_KUBERC unset or true.",
+    );
+  }
+  const copy = resolve(directory, "kuberc.json");
+  let original: Buffer;
+  try {
+    original = await readKuberc(source);
+    if (!isPolicyOnly(original.toString("utf8"))) {
+      throw new Error();
+    }
+    await writeFile(copy, original, { flag: "wx", mode: 0o600 });
+  } catch {
+    throw new KubercError(
+      "Required kuberc must be a readable, policy-only v1beta1 JSON Preference with DenyAll or a nonempty Allowlist.",
+    );
+  }
+  const executable = await kubectlExecutable();
+  const kubectl = requiredKubectl({
+    executable,
+    clientIdentity: await kubectlIdentity(executable),
+    source,
+    copy,
+    sha256: hash("sha256", original),
+  });
+  // The client-only probe must never resolve the selected or ambient credentials.
+  const result = parseJson<unknown>(
+    await commandOutput(
+      kubectl,
+      ["--kubeconfig", "/dev/null", "version", "--client", "-o", "json"],
+      deadline,
+      signal,
+    ),
+  );
+  const version = isObject(result) ? result.clientVersion : undefined;
+  if (
+    !isObject(version) ||
+    version.major !== "1" ||
+    version.gitTreeState !== "clean" ||
+    version.platform !== "linux/amd64" ||
+    typeof version.gitVersion !== "string" ||
+    !qualifiedKubectlVersions.includes(version.gitVersion) ||
+    version.minor !== version.gitVersion.split(".")[1]
+  ) {
+    throw new KubercError(
+      `Required kuberc needs a trusted stock kubectl release for Linux amd64. Supported versions are ${qualifiedKubectlVersions.join(", ")}.`,
+    );
+  }
+  return kubectl;
+}
+
 const outputLimit = 2 * 1024 * 1024;
 
 // A credential plugin can inherit its parent's pipes. Bound both the wait and the
 // captured bytes even when the CLI or a descendant never closes those pipes.
 async function commandOutput(
-  command: string,
+  command: ReadCommand,
   args: string[],
   deadline: number,
   signal: AbortSignal,
   projection?: ProjectionRequest,
 ): Promise<string> {
+  await verifyPolicy(command.policy);
   signal.throwIfAborted();
   const timeout = Math.min(projection ? projectionTimeout : 20_000, deadline - performance.now());
   if (timeout <= 0) {
     throw new DiagnosticError("The collection deadline expired.");
   }
   const grouped = process.platform !== "win32";
-  const child = spawn(command, args, {
+  const child = spawn(command.executable, [...command.prefix, ...args], {
+    argv0: command.argv0,
     detached: grouped,
     stdio: projection ? ["ignore", "pipe", "ignore", "ipc"] : ["ignore", "pipe", "pipe"],
-    // Direct AWS calls must preserve the caller’s credential plugin policy.
-    env: command === "kubectl" ? kubectlEnv : commandEnv,
+    env: command.env,
   });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
@@ -580,6 +785,10 @@ async function commandOutput(
       });
     }
   });
+  if (projection && result === projectionPolicyFailure) {
+    throw new KubercError(policyChanged);
+  }
+  await verifyPolicy(command.policy);
   if (result !== 0) {
     const text = Buffer.concat(stderr).toString();
     let reason = "The read failed or returned incomplete data.";
@@ -607,8 +816,9 @@ async function commandOutput(
 // (stdin EOF) or deadline, including when a credential plugin is still running.
 const proxySupervisor = `
   import { spawn } from "node:child_process";
-  const [timeout, socketFd, ...args] = process.argv.slice(1);
-  const proxy = spawn("kubectl", args, {
+  const [timeout, socketFd, executable, ...args] = process.argv.slice(1);
+  const proxy = spawn(executable, args, {
+    argv0: "kubectl",
     stdio: ["ignore", "ignore", "ignore", ...(socketFd === "3" ? [3] : [])],
   });
   const stop = () => process.kill(-process.pid, "SIGKILL");
@@ -619,6 +829,7 @@ const proxySupervisor = `
 `;
 
 async function kubernetesGet<T>(
+  kubectl: ReadCommand,
   socket: string,
   kubeconfig: string,
   context: string,
@@ -652,6 +863,7 @@ async function kubernetesGet<T>(
     ? `/proc/self/fd/${socketDirectory.fd}/${socketName}`
     : socket;
   const proxySocket = socketDirectory ? `/proc/self/fd/3/${socketName}` : socket;
+  await verifyPolicy(kubectl.policy);
   requestSignal.throwIfAborted();
   const exactPath = path.replace(/\?.*$/u, "").replaceAll(".", "\\.");
   const proxy = spawn(
@@ -662,6 +874,8 @@ async function kubernetesGet<T>(
       proxySupervisor,
       String(timeout),
       socketDirectory ? "3" : "",
+      kubectl.executable,
+      ...kubectl.prefix,
       "--kubeconfig",
       kubeconfig,
       "--context",
@@ -677,7 +891,7 @@ async function kubernetesGet<T>(
     {
       detached: true,
       stdio: ["pipe", "ignore", "ignore", ...(socketDirectory ? [socketDirectory.fd] : [])],
-      env: kubectlEnv,
+      env: kubectl.env,
     },
   );
   proxy.stdin?.on("error", () => {});
@@ -689,21 +903,45 @@ async function kubernetesGet<T>(
       resolve();
     });
   });
-  try {
-    while (!(await stat(localSocket).catch(() => undefined))?.isSocket()) {
-      if (closed) {
-        throw new DiagnosticError(
-          "The private transport to the selected endpoint could not start.",
-        );
+  // bind creates the socket file before listen. Retry only local connection
+  // failures during startup. No HTTP request exists until this loop finishes.
+  async function connectProxy() {
+    while (!closed) {
+      requestSignal.throwIfAborted();
+      const connection = createConnection(localSocket);
+      try {
+        await once(connection, "connect", { signal: requestSignal });
+        return connection;
+      } catch (error) {
+        connection.destroy();
+        if (
+          !(error instanceof Error) ||
+          !("code" in error) ||
+          (error.code !== "ENOENT" && error.code !== "ECONNREFUSED")
+        ) {
+          throw error;
+        }
       }
       await delay(20, undefined, { signal: requestSignal });
     }
+    throw new DiagnosticError("The private transport to the selected endpoint could not start.");
+  }
 
+  let transport: Socket | undefined;
+  try {
+    const connection = await connectProxy();
+    transport = connection;
+    // The proxy can disconnect during the asynchronous policy check.
+    connection.on("error", () => {});
+    await verifyPolicy(kubectl.policy);
+    if (connection.destroyed) {
+      throw new DiagnosticError("The private transport to the selected endpoint closed.");
+    }
+    requestSignal.throwIfAborted();
     const response = await new Promise<IncomingMessage>((resolve, reject) => {
       get(
         {
-          socketPath: localSocket,
-          agent: false,
+          createConnection: () => connection,
           path,
           headers: { host: "localhost", accept: "application/json" },
           signal: requestSignal,
@@ -778,6 +1016,7 @@ async function kubernetesGet<T>(
     }
     throw new DiagnosticError("The read failed or returned incomplete data.");
   } finally {
+    transport?.destroy();
     proxy.stdin?.end();
     await settled;
     // The enclosing run removes the directory even if this early unlink fails.
@@ -793,13 +1032,14 @@ function parseJson<T>(output: string): T {
 }
 
 async function readSelectedKubeconfig(
+  kubectl: ReadCommand,
   config: Pick<DiagnosticPlan, "kubeconfig" | "context">,
   deadline: number,
   signal: AbortSignal,
 ): Promise<KubeconfigView> {
   const view = parseJson<KubeconfigView>(
     await commandOutput(
-      "kubectl",
+      kubectl,
       [
         "--kubeconfig",
         config.kubeconfig,
@@ -1328,6 +1568,9 @@ function mountedClientSecret(
 const projectionTimeout = 45_000;
 
 function unreadable(error: unknown): CheckResult {
+  if (error instanceof KubercError) {
+    throw error;
+  }
   return {
     status: "unknown",
     summary:
@@ -1370,7 +1613,7 @@ function controllerReadiness(selection: DeploymentSelection, item: Deployment | 
 }
 
 async function projectCheck(
-  { check, socketPrefix, kubeconfig, context, timeout }: ProjectionRequest,
+  { policy, check, socketPrefix, kubeconfig, context, timeout }: ProjectionRequest,
   signal: AbortSignal,
 ): Promise<CheckResult> {
   if (
@@ -1381,10 +1624,23 @@ async function projectCheck(
   ) {
     throw new DiagnosticError("The selected observation requires a private collection directory.");
   }
+  // Reuse the parent's qualified client and original policy digest. Opening a
+  // new snapshot here would admit a policy loosened since the first API read.
+  if (policy !== null && policy?.copy !== resolve(dirname(kubeconfig), "kuberc.json")) {
+    throw new KubercError(policyChanged);
+  }
+  const kubectl = policy === null ? withoutKuberc : requiredKubectl(policy);
+  if (
+    kubectl.env.KUBERC !== commandEnv.KUBERC ||
+    kubectl.env.KUBECTL_KUBERC !== commandEnv.KUBECTL_KUBERC
+  ) {
+    throw new KubercError(policyChanged);
+  }
   const deadline = performance.now() + timeout;
   let readNumber = 0;
   const read = namedReader(<T>(path: string, optional: boolean) =>
     kubernetesGet<T>(
+      kubectl,
       `${socketPrefix}-${++readNumber}`,
       kubeconfig,
       context,
@@ -1576,8 +1832,12 @@ async function diagnose(
   config: DiagnosticPlan | InventoryPlan,
   directory: string,
   signal: AbortSignal,
+  requireKuberc: boolean,
 ): Promise<DiagnosticReport | AddressInventory> {
   const deadline = performance.now() + 120_000;
+  const kubectl = requireKuberc
+    ? await withRequiredKuberc(directory, deadline, signal)
+    : withoutKuberc;
   const kubeconfig = join(directory, "kubeconfig.json");
   const checks: CheckReport[] = [];
   let localFailure: CheckResult | undefined;
@@ -1585,10 +1845,13 @@ async function diagnose(
   let selectedEndpoint: ReturnType<typeof verifiedHttpsEndpoint>;
   let blocker: { id: "eks-cluster-identity" | "kubernetes-api"; summary: string } | undefined;
   try {
-    const view = await readSelectedKubeconfig(config, deadline, signal);
+    const view = await readSelectedKubeconfig(kubectl, config, deadline, signal);
     connection = view.clusters?.[0]?.cluster;
     selectedEndpoint = connection && verifiedHttpsEndpoint(connection.server);
     const user = view.users?.[0]?.user;
+    const token = user?.token || user?.tokenFile;
+    const certificate = user?.["client-certificate"] || user?.["client-certificate-data"];
+    const key = user?.["client-key"] || user?.["client-key-data"];
     if (user?.["auth-provider"] !== undefined) {
       // Built-in providers can rotate credentials and persist the successor
       // into the selected file. The temporary copy cannot own that refresh.
@@ -1599,6 +1862,18 @@ async function diagnose(
           "Ask the credential owner for a context using an exec plugin, token or client certificate.",
       };
     } else if (
+      requireKuberc &&
+      user?.exec &&
+      (token || certificate || key || user.username || user.password)
+    ) {
+      // A second credential can authenticate the request without running the plugin.
+      localFailure = {
+        status: "failed",
+        summary: "Required kuberc cannot use a context combining exec with other credentials.",
+        action: "Ask the credential owner for a context with a single credential source.",
+      };
+    } else if (
+      !requireKuberc &&
       user?.exec?.command &&
       process.env.KUBERC !== "off" &&
       process.env.KUBECTL_KUBERC !== "false"
@@ -1607,21 +1882,14 @@ async function diagnose(
       // kuberc disabled, even if no policy exists when the context is resolved.
       localFailure = {
         status: "failed",
-        summary: "The selected exec plugin requires explicitly disabled kubectl preferences.",
+        summary: "Choose how kubectl should authorize the selected credential plugin.",
         action:
-          "Set KUBECTL_KUBERC=false for this command only if the credential owner permits using this plugin without kubectl preferences.",
+          "Use --require-kuberc with the credential owner’s policy file, or use an approved non-plugin context. Set KUBECTL_KUBERC=false only if the owner permits disabling preferences.",
       };
     } else if (
       !selectedEndpoint ||
       connection?.["insecure-skip-tls-verify"] ||
-      !(
-        user?.token ||
-        user?.tokenFile ||
-        user?.exec?.command ||
-        ((user?.["client-certificate"] || user?.["client-certificate-data"]) &&
-          (user?.["client-key"] || user?.["client-key-data"])) ||
-        (user?.username && user?.password)
-      )
+      !(token || user?.exec?.command || (certificate && key) || (user?.username && user?.password))
     ) {
       localFailure = {
         status: "failed",
@@ -1634,6 +1902,9 @@ async function diagnose(
     }
   } catch (error) {
     signal.throwIfAborted();
+    if (error instanceof KubercError) {
+      throw error;
+    }
     localFailure = {
       status: "unknown",
       summary:
@@ -1651,6 +1922,7 @@ async function diagnose(
   }
   const kube = <T>(path: string, optional = false) => {
     return kubernetesGet<T>(
+      kubectl,
       nextSocket(),
       kubeconfig,
       config.context,
@@ -1663,6 +1935,7 @@ async function diagnose(
   const getNamed = namedReader(kube);
   async function project(check: ProjectedCheck): Promise<CheckResult> {
     const request: ProjectionRequest = {
+      policy: kubectl.policy,
       check,
       kubeconfig,
       context: config.context,
@@ -1670,7 +1943,13 @@ async function diagnose(
       timeout: Math.floor(Math.min(projectionTimeout, deadline - performance.now())),
     };
     return parseJson<CheckResult>(
-      await commandOutput(process.execPath, [import.meta.filename], deadline, signal, request),
+      await commandOutput(
+        { executable: process.execPath, env: kubectl.env, prefix: [], policy: kubectl.policy },
+        [import.meta.filename],
+        deadline,
+        signal,
+        request,
+      ),
     );
   }
 
@@ -1723,7 +2002,8 @@ async function diagnose(
     const aws = async <T>(...args: string[]) =>
       parseJson<T>(
         await commandOutput(
-          "aws",
+          // Direct AWS calls retain the caller’s environment.
+          { executable: "aws", env: commandEnv, prefix: [], policy: kubectl.policy },
           [
             ...args,
             "--region",
@@ -2172,17 +2452,17 @@ async function main(): Promise<void> {
       config: { type: "string" },
       json: { type: "boolean", default: false },
       "inventory-eks": { type: "string" },
+      "require-kuberc": { type: "boolean", default: false },
       kubeconfig: { type: "string" },
       context: { type: "string" },
     },
   });
   let config: DiagnosticPlan | InventoryPlan;
   if (values["inventory-eks"] !== undefined && values.config === undefined && !values.json) {
-    // Pinning this read requires disabling preferences. Require the caller's
-    // choice before a mutable kubeconfig can select a credential plugin.
-    if (process.env.KUBECTL_KUBERC !== "false") {
+    // Require an explicit choice before a mutable kubeconfig can select a plugin.
+    if (!values["require-kuberc"] && process.env.KUBECTL_KUBERC !== "false") {
       throw new DiagnosticError(
-        "EKS address collection requires explicit KUBECTL_KUBERC=false. Proceed only if the credential owner permits running without kubectl preferences.",
+        "Use --require-kuberc with the credential owner’s policy file, or obtain the inventory from the infrastructure owner. Running without preferences requires explicit KUBECTL_KUBERC=false and the credential owner’s permission.",
       );
     }
     config = {
@@ -2200,14 +2480,14 @@ async function main(): Promise<void> {
     config = validateConfig(JSON.parse(await readFile(values.config, "utf8")));
   } else {
     throw new DiagnosticError(
-      "Usage: node scripts/diagnose-kubernetes-prerequisites.ts --config FILE [--json] or --inventory-eks CLUSTER_ARN --kubeconfig FILE --context NAME",
+      "Usage: node scripts/diagnose-kubernetes-prerequisites.ts --config FILE [--json] [--require-kuberc] or --inventory-eks CLUSTER_ARN --kubeconfig FILE --context NAME [--require-kuberc]",
     );
   }
   const directory = await mkdtemp(join(tmpdir(), "oce-prerequisites-"));
   let report: DiagnosticReport | AddressInventory;
   let cleanupFailed = false;
   try {
-    report = await diagnose(config, directory, cancellation.signal);
+    report = await diagnose(config, directory, cancellation.signal, values["require-kuberc"]);
   } finally {
     try {
       await rm(directory, { recursive: true, force: true });
@@ -2269,6 +2549,12 @@ try {
       const result = await projectCheck(request as ProjectionRequest, signal).catch(unreadable);
       signal.throwIfAborted();
       process.stdout.write(`${JSON.stringify(result)}\n`);
+    } catch (error) {
+      if (!(error instanceof KubercError)) {
+        throw error;
+      }
+      // Stop all checks even if the original policy was restored before exit.
+      process.exitCode = projectionPolicyFailure;
     } finally {
       process.off("disconnect", stop);
       if (process.connected) {

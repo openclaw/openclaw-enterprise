@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-24"
-last_updated_session: "authoring-run/d741699f-1816-4494-b673-ec5ca6b39ead"
+updated: "2026-11-25"
+last_updated_session: "authoring-run/260fe853-dd79-4ddc-b8cf-541f4c2fd13e"
 ---
 
 # Production Startup Flow
@@ -80,18 +80,17 @@ options, reads TLS files, and checks IP-host certificates. On failover, restart,
 ### 1. Prepare native production inputs
 
 `scripts/diagnose-kubernetes-prerequisites.ts:diagnose`
-[checks prerequisites](../guides/deploy/prerequisite-diagnosis.md) before Helm.
-Both modes pin the kubeconfig, disable kubectl preferences and use private Unix
-sockets that refuse redirects. Diagnosis requires opt-in for exec credentials.
+[checks prerequisites](../guides/deploy/prerequisite-diagnosis.md).
+It pins kubeconfig and rejects redirects. `--require-kuberc` pins the operator's
+credential plugin policy. Otherwise preferences are disabled and exec requires
+opt-in. Each read connects to the private proxy, rechecks any required policy
+and sends one GET. A disconnect never triggers another GET. Service checks compare NetworkPolicy grants.
 [EKS inventory](../guides/deploy/prerequisite-diagnosis.md#collect-eks-addresses)
-requires opt-in for every credential type. It verifies account, ARN, endpoint
-and CA before collecting IPv4 addresses from the API Service and its EndpointSlices.
+verifies account, ARN, endpoint and CA before reading Service and EndpointSlice addresses.
 
-`scripts/diagnose-kubernetes-prerequisites.ts:projectCheck` receives controller
-and TLS selections over private IPC. A disconnect interrupts the read. The child
-returns only the result and retains the Secret body. For client mounts it
-rereads the workload after the Secret. A changed UID or `resourceVersion` yields
-`unknown`. Missing required keys, overlong item paths or path conflicts fail.
+`projectCheck` isolates controller and certificate reads under the same
+policy. It returns only the result. If the client workload UID or
+`resourceVersion` changes during the Secret read, the result is `unknown`.
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
@@ -363,12 +362,13 @@ The shell initializes the missing annotation, patches with UID and
 
 ## Changelog
 
-- 2026-11-24 02:58: Check Secret item path byte limits. (authoring-run/d741699f-1816-4494-b673-ec5ca6b39ead - b75c6cd3a6fbddf70f550a5a9a3462ed3872a3ae)
-
-- 2026-11-24 02:20: Restrict certificate and controller projection to the validated parent request. (authoring-run/adf92678-9370-432d-b05f-fc9b18392642 - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
-
+- 2026-11-25 04:09: Apply the same policy to isolated reads. (authoring-run/260fe853-dd79-4ddc-b8cf-541f4c2fd13e - 96274fd324d5555f267bc068c882fbba845bcd00)
+- 2026-11-25 04:07: Wait for the private proxy before a read. (authoring-run/178ebf38-4eb3-485d-9582-a65c54236dbf - 5d3ecae51db52a4b559e0731cf6b6801617f5761)
+- 2026-11-24 23:03: Check the selected credential plugin policy before Kubernetes reads. (authoring-run/16c42be4-2ccf-4749-aa31-ff8545237a2d - a012271e4e3b5d6688fcfb49c2803e4c7faf4390)
+- 2026-11-24 21:59: Limit Service checks to egress. (authoring-run/d640fdf3-e74c-4b97-a2b2-603febc1a78c - cabc3559c04447fc30ae80675db688c23d673e48)
 - 2026-11-24 10:41: Trace unrestricted API and refresh Worker egress while preserving initialization isolation. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
-
+- 2026-11-24 02:58: Check Secret item path byte limits. (authoring-run/d741699f-1816-4494-b673-ec5ca6b39ead - b75c6cd3a6fbddf70f550a5a9a3462ed3872a3ae)
+- 2026-11-24 02:20: Restrict certificate and controller projection to the validated parent request. (authoring-run/adf92678-9370-432d-b05f-fc9b18392642 - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
 - 2026-11-24 02:19: Validate API address inventory and document credential opt-in. (authoring-run/e942eb38-a6b6-461f-beaa-0a1efaa489da - 1b6b18670a33c9d51b4fc4cbc0a901a08782c963)
 
 - 2026-11-23 20:03: Check path conflicts in mounted Secret volumes. (authoring-run/273e5f77-256f-4a55-9c68-0f103675bad7 - b899d185e0d9ae6a59922d813eeb0bda45172eac)
