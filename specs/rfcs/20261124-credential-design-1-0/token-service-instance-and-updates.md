@@ -57,7 +57,7 @@ deliver. A notification does not grant general access to Secrets or other source
 - **Pull (proposed):** A proxy can obtain an authorized credential when a bound consumer needs it.
   On an update notification it can invalidate its cache or take no action, according to its freshness
   contract. It must not resolve material merely to discard a push. The
-  [Git credential pull discussion](git-credential-pull.md) retains the open first-request,
+  [Git credential pull discussion](../0023-egress-proxy-credential-lifecycle/git-credential-pull.md) retains the open first-request,
   recipient, grant, and cache questions. This amendment does not implement or qualify pull.
 
 A failed delivery does not roll back the committed credential. OCC reports a sanitized delivery

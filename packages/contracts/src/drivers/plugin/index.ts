@@ -96,7 +96,11 @@ export interface PluginDriver extends Driver {
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage>;
   getCatalogPlugin?(
-    input: PluginDiscoveryAuthentication & { readonly pluginId: string },
+    input: PluginDiscoveryAuthentication & {
+      readonly pluginId: string;
+      /** Raw names from OCC's qualified, authenticated MCP transport. */
+      readonly discoveredMcpToolNames?: readonly string[];
+    },
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry>;
 }

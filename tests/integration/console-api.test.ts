@@ -31,8 +31,9 @@ import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   authenticatedHeaders,
   cookieHeaderFromSetCookie,
+  createAuthenticatedControllerRequest,
   setCookieHeaders,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 
 import { Check } from "typebox/value";
 import { Type, type TSchema } from "typebox";
@@ -68,6 +69,7 @@ import {
   NamespaceCallerPermissionsResponse,
   NamespaceSecretPermissionsResponse,
   NamespaceListResponse,
+  NamespaceResponse,
   AgentListResponse,
   ConfigurationResponse,
   SecretDetailResponse,
@@ -123,6 +125,32 @@ function noSecretProviderFields(backend: unknown) {
   assert.equal(typeof backend.id, "string");
   assert.equal(backend.type, "chatgpt");
 }
+
+test("the authenticated injection fixture forwards the console origin and session", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const request = await createAuthenticatedControllerRequest(
+    fixture.app,
+    fixture.credentials,
+    fixture.origin,
+  );
+  const { status: createdStatus, ...created } = await request("POST", "/namespaces", {
+    name: "Injected session",
+  });
+  const createdEnvelope: unknown = created;
+  assert.equal(createdStatus, 201);
+  assert.ok(Check(NamespaceResponse, createdEnvelope));
+  assert.equal(createdEnvelope.data.name, "Injected session");
+  const { status: observedStatus, ...observed } = await request(
+    "GET",
+    `/namespaces/${createdEnvelope.data.id}`,
+  );
+  const observedEnvelope: unknown = observed;
+  assert.equal(observedStatus, 200);
+  assert.ok(Check(NamespaceResponse, observedEnvelope));
+  assert.equal(observedEnvelope.data.id, createdEnvelope.data.id);
+  assert.equal(observedEnvelope.data.name, createdEnvelope.data.name);
+});
 
 test("console Backend API returns only safe Installation-admin summaries", async (t) => {
   const fixture = await createConsoleAppFixture(t);

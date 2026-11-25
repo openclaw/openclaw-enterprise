@@ -1,294 +1,107 @@
 # Set up and operate Credential Proxy
 
-Credential Proxy lets an Agent use an approved credential through an enforcing
-transport without putting provider material in the Agent's configuration. OCC
-controls access to the execution; the selected Driver enforces the request and
-credential delivery. For prepared GitHub access, Token Service also maintains
-the short-lived credential. The setup and verification depend on the selected
-delivery profile. The [architecture walkthrough](../design/credential-proxy.md)
-shows what a child process can request and what it can read in the response.
-
-Use matching OpenShell 0.1.6 components and mandatory pre-credential middleware
-for [repository enrollment](repository-credentials/openshell-enrollment.md).
-A rollout or source registration alone does not establish enforcement. Missing
-request hooks are refused before credential release. Older or unqualified
-compositions can return `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`; do not broaden a
-ref-limited grant to bypass that error. The
-[Credential Proxy reference](../reference/drivers/credential-proxy.md) describes
-the delivery contracts.
+OCC admits each Credential Source binding. TokenService owns the credential,
+Credential Proxy prepares and updates its delivery, and Sandbox enforces the
+network policy when the Agent sends a request. See the
+[credential Source reference](../reference/credential-sources.md) for the current
+contract.
 
 ## Choose the path before changing an installation
 
-| Intended use               | Requirement and limit                                                                                                                                                                                                                                                                                                                                   |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protected static inference | The bundled OpenShell Driver refuses new protected sources, live adoption and new revisions. Existing admitted revisions retain recovery and original-owner cleanup. Other Drivers require qualified whole-execution enforcement; see [protected static inference](../reference/credential-sources/protected-inference.md#bundled-openshell-admission). |
-| Prepared GitHub App access | Worker Token Service prepares credentials; OCC authorizes scope and lifetime; Credential Proxy installs and fences delivery. Protected delivery requires a qualified sender.                                                                                                                                                                            |
-| Native prepared Git        | A separate explicit Kubernetes/dedicated Codex path without Sandbox or Credential Proxy; it does not provide OpenShell isolation. See [native Git](../reference/repository-credentials/prepared-native-git.md).                                                                                                                                         |
-
-For a packaged Driver, select its Sandbox and Credential Proxy capabilities
-from the same registration. The [Driver selection guide](../reference/drivers/selection.md#select-a-protected-sender)
-shows the Installation settings and profile requirements. Selection establishes
-which implementation OCC loads; qualification establishes what the installed
-sender actually enforces.
-
-Use the [upgrade procedure](deploy/credential-proxy-upgrade.md) for an existing
-installation moving from Credential Gateway to TokenService.
-
-## Prepare enforcement, trust, and custody
-
-For a reviewed development candidate, follow
-[local candidate image selection](deploy/local-openshell-images.md), including
-all three immutable OpenShell images, their source commit, and matching charts.
-New local protected static-inference launches are retired. The launcher rejects
-`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
-`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before effects, including with
-Kubernetes/OpenShell. Unset, empty or `0` protected-egress selections retain ordinary
-Gateway authentication. See the [retirement notice](deploy/local-openshell-images.md#select-the-protected-profile).
-
-The following bundled static authority configuration preserves existing admitted
-revisions and their authorization, withdrawal and cleanup. It does not re-enable
-new protected sources, live adoption or new revisions.
-For protected static inference, the Installation selects the same Driver ID in
-`backend[].drivers.credential_proxy` and `drivers.credential_proxy`. A bundled
-OpenShell authority selection has this shape:
-
-```yaml
-drivers:
-  credential_proxy:
-    id: openshell-egress
-    configuration:
-      middlewareName: oce-authority
-      authorityScope: execution
-      authority:
-        host: 0.0.0.0
-        port: 9444
-        certificatePath: /etc/openclaw/egress/tls/tls.crt
-        privateKeyPath: /etc/openclaw/egress/tls/tls.key
-        issuerPublicKeyPath: /etc/openclaw/egress/issuer/issuer.pub
-        issuer: openshell-gateway:openshell-gateway
-        audience: oce-egress
-        keyId: current
-```
-
-This is a fragment, not a complete Installation. Match issuer, audience, key ID,
-and middleware name to the configured peers. Keep the
-[OpenShell Backend and Sandbox configuration](../reference/drivers/openshell-credential-gateway.md).
-A packaged Driver instead takes configuration through its Sandbox selection;
-its matching Credential Proxy selection has an empty `configuration`.
-Either kind can add `requestCapacity` to size OCC's in-memory request bounds; see
-[request-time capacity](../reference/drivers/credential-proxy.md#request-time-capacity).
-
-The API owns the static authority listener. Development binds only to loopback.
-Production needs a reachable host and a certificate covering the Service DNS
-name. With Helm, use `host: 0.0.0.0` (or `::`) and the `egressAuthority.port`
-value. Startup and the upgrade check refuse another host or port, a disabled
-`egressAuthority`, or file paths other than the chart mounts shown above, with
-`CHART_LISTENER_MISMATCH`. The Backend requires HTTPS
-with bearer-file or mutual TLS authentication. Register `oce-authority` under
-`[[openshell.supervisor.middleware]]` with its HTTPS `grpc_endpoint`, `audience`,
-`tls_ca_cert_path`, and `max_payload_bytes = 4194304`. Both peers must support
-`openshell.supervisor-middleware.http-credential-access.v1` and all five capabilities
-required by [connected qualification](../testing/static-egress.md#select-the-prepared-connected-lane).
-Verify the Agent's WSS server trust separately from the controller's Backend mTLS;
-an administrator client Secret must never be projected into the Agent. See
-[trust prerequisites](../testing/static-egress.md#protected-launch-packaging).
-
-With Helm, enable `egressAuthority`, set its `port`, `tlsSecretName` (`tls.crt`,
-`tls.key`), and `issuerSecretName` (`public.pem`). Its `clients` must select the
-actual Gateway and trusted supervisor namespaces and Pod labels. Allow those
-peers to reach the authority and resolve DNS. Keep upstream access constrained
-to the selected endpoints. The Gateway signing private key stays with the
-Gateway; the authority receives its public key. All phases of an exchange must
-reach the same authority process; replicated shared exchange state is unavailable.
-
-For prepared GitHub access, use the separate
-[protected repository configuration](../reference/repository-credentials/protected-openshell-git.md#configuration-for-a-qualified-release).
-Only the worker receives the App signing key and persistent custody key. Do not
-copy either into Agent configuration. The request-phase worker service and its
-TLS port are separate from the static API authority above. A missing key,
-unqualified sender, or unavailable trust path is a stop condition, not a reason
-to use an ambient token.
-
-## Enable Google Workspace requests from a dedicated worker
-
-OCE binds the selected Google source to its host, path, OAuth scopes and plugin
-release when deploying the Agent. For each request, the OpenShell supervisor
-sends the HTTP details and deployed binding to a shared guard in the execution
-cluster. The guard checks the release’s operation map locally. OpenShell
-substitutes the bearer after approval. Redeploy to apply a new plugin selection.
-Public Discovery uses no credential.
-
-Set the source’s `config.binary` to `/usr/local/lib/oce/plugins/google/bin/gog`
-when the installation allows other executables. The checks also cover `gog` helpers.
-
-Install the guard once for the OpenShell Gateway. Use the execution cluster’s
-Helm context and the same digest-pinned OCE controller image that deploys the map.
-
-```sh
-helm upgrade --install oce-plugin-guard deploy/helm/openclaw-plugin-request-guard \
-  --namespace openshell-system --values guard-values.yaml --set-string image="$OCE_IMAGE"
-```
-
-In `guard-values.yaml`, set `tlsSecretName` for the guard Service DNS name,
-`issuerSecretName` for the Gateway’s verification key (`public.pem`), and
-`issuer` and `keyId` to match the Gateway. Set `clients` to the Gateway and
-supervisor namespace and Pod selectors, as illustrated in the
-[chart values](../../deploy/helm/openclaw-plugin-request-guard/values.yaml).
-Allow both peers to reach the Service. The guard reads its keys at startup.
-Roll its Pods after rotating a Secret in place and update the Gateway’s trusted
-CA if it changes. Register the guard on the Gateway:
-
-```toml
-[[openshell.supervisor.middleware]]
-name = "oce-plugin-requests"
-grpc_endpoint = "https://openclaw-enterprise-plugin-request-guard.openshell-system.svc.cluster.local:9445"
-audience = "urn:openshell:extension:middleware:oce-plugin-requests"
-tls_ca_cert_path = "/etc/openshell/certs/oce-egress-ca.pem"
-max_payload_bytes = 4194304
-timeout = "2s"
-```
-
-Restart the Gateway to load the registration. Set
-`drivers.sandbox.configuration.gateway.managedPluginMiddleware` to the same
-`grpc_endpoint`. Select the account, save, and deploy. If the guard is
-unreachable, the supervisor denies guarded requests before sending them upstream.
-
-For Gmail, configure `gmail.googleapis.com`, `/gmail/v1/users/me/messages` and
-`gmail.readonly`. At a controlled upstream, verify that listing IDs receives the
-bearer and fetching an individual message produces no request. To allow more
-mapped Gmail operations, explicitly configure a subtree such as `/gmail/v1/users/me/**`.
-[Withdraw the source](../reference/credential-sources/withdrawal.md) to stop its use
-by the running version.
+- For managed model Sources, use OCC TokenService and an OpenShell Sandbox
+  registration that exposes native Credential Proxy delivery.
+  [Driver selections](../reference/drivers/selection.md#supported-selections)
+- For native Git, follow [GitHub App setup](repository-credentials.md#set-github-app-access-for-an-openshell-agent).
+  TokenService renews the GitHub installation token, and Credential Proxy
+  injects it only on requests admitted for the Agent.
+- For public GitHub metadata, admit ordinary network access to the endpoint.
+  GitHub returns its full response; no CredentialSource or credential injection is
+  involved. The Git grant does not authorize GitHub REST. Configure only the
+  restrictions supported by the selected Sandbox; current per-Agent policy
+  additions use executable, host, and port grants. [Sandbox network policy](../reference/sandbox-policies.md)
+- For the separate Kubernetes prepared Git path without a Sandbox or
+  Credential Proxy, use the [prepared native Git reference](../reference/repository-credentials/prepared-native-git.md).
 
 <a id="register-authorize-and-deploy-a-static-source"></a>
 <a id="register%2C-authorize%2C-and-deploy-a-static-source"></a>
 
 ## Register, authorize, and deploy an OpenAI static inference source
 
-Use [managed static Source enrollment](../reference/credential-sources/managed-static.md) with the selected TokenService and native Credential Proxy. The [local OpenShell walkthrough](deploy/openshell-credential-sources.md#register-the-key) describes binding and verifying the new Source. Existing Gateway Sources require re-enrollment. See [Source ownership and current limits](../reference/credential-sources.md#implementation-status).
+1. Select OCC TokenService and the paired OpenShell Sandbox and native Proxy.
+   [Driver selections](../reference/drivers/selection.md#supported-selections)
+2. [Register a static Source](../reference/credential-sources/managed-static.md#register-a-source)
+   in the Agent's Namespace with the `openai` provider preset.
+3. Select the Source in Harness authentication, grant the Agent permission to
+   use it, and use the stock preset request grant when available. Save an explicit network grant for a custom runtime.
+   [Agent deployment](../reference/credential-sources/managed-static.md#deploy-an-agent-with-the-source)
 
-## Enroll prepared GitHub access
+For a dedicated Codex example, see [first Agent setup](deploy/deploy-first-agent.md).
 
-Follow [OpenShell repository enrollment](repository-credentials/openshell-enrollment.md)
-to authorize repositories for a Namespace and select up to 16 on an Agent using
-`github-repository`. The worker prepares a token for exactly that selection;
-GitHub permissions and branch rules still apply. No preview option or OCE branch
-list is needed. Existing explicit `git-write` grants retain their ref limits.
-The walkthrough covers Repository approval and Admin setup. Enroll model credentials as a separate TokenService Source.
+<a id="enroll-prepared-github-access"></a>
+
+## Enroll GitHub App access
+
+[Register a GitHub App Client and select repositories for the Agent](repository-credentials.md#set-github-app-access-for-an-openshell-agent).
+Keep the model Source and Git Source permissions separate.
+
+<a id="enable-google-workspace-requests-from-a-dedicated-worker"></a>
+
+## Connect a Plugin account
+
+Use the [Plugin setup guide](topics/openclaw-plugins.md) to connect an OAuth account or select a static MCP Source. Live Slack OAuth tool execution and an unselected-tool denial were verified in [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673); live Google OAuth and static Slack tool execution remain unverified.
 
 ## Verify use, loss, and withdrawal
 
-Use [model verification](operate/model-verification.md) to send a fresh nonce
-through the actual Agent. Its unauthenticated request must fail and its
-administrator-authenticated request must return the nonce. That denial tests
-Gateway authentication; it does not prove Credential Proxy enforcement.
+Wait for successful deployment and verify a fresh
+[model response](operate/model-verification.md) through the running Agent. An
+unauthenticated request checks the Agent's entry point. To check Proxy enforcement,
+use an approved request and a request outside the saved policy. Verify the allowed
+request at the upstream and confirm the denied request never reached it.
 
-For static inference, verify a valid `POST` to the configured base URL plus
-`/responses` or `/chat/completions` with the exact admitted model. Attempt the same
-request with a different model, and a `GET` to that inference route; both must be
-refused by enforcement. Use a controlled origin with independent request logs,
-and record the selected revision, enforcement refusal and **no new origin
-request**. A provider error or an unready Harness does not establish that denial.
+For public metadata, verify the separately admitted network access and confirm
+that the request needs no credential. This path returns GitHub's response
+without the legacy sender's field filtering.
 
-Save the successful response, then
-withdraw the exact source through OCC:
-
-```bash
-./bin/occ agent credential-withdrawal request "$AGENT_ID" "$SOURCE_ID"
-./bin/occ agent credential-withdrawal get "$AGENT_ID" "$SOURCE_ID" -o json
-```
-
-Inspect the withdrawal state and reason:
-
-- **In-place removal:** wait for `revoked`. Make a fresh request through the same
-  Agent; record the enforcement refusal and verify that no request reached the
-  controlled origin.
-- **Runtime retirement required:** if the reason is
-  `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT` and `revisionId` names a
-  version other than the selected one, see
-  [withdrawal](../reference/credential-sources/withdrawal.md#withdraw-a-source-from-an-agent).
-  For the selected version, if `withdrawalInProgress` is `true`, wait for that
-  attempt first: a version that just became selected gets one more attempt.
-  Otherwise follow the
-  [retirement procedure](deploy/credential-proxy-upgrade.md#stop-and-settle-before-upgrading).
-  Observe retirement of the exact execution, record the actual withdrawal state
-  and reason, and leave pending custody with its original owner. Do not restart
-  that execution to test a refusal.
-
-An upstream request already sent can finish. Credential Proxy can still withhold
-a response it has not released; withdrawal cannot recall bytes already released.
-A withdrawn model source
-cannot support continued model turns. Restore service with an authorized
-replacement binding and a new revision; restarting cannot restore withdrawn
-permission. See [withdrawal](../reference/credential-sources/withdrawal.md).
-
-For a `git-write` grant with an explicit review ref, use the admitted `<owner>/<repo>.git` path.
-Verify discovery (`GET /<owner>/<repo>.git/info/refs?service=git-upload-pack`),
-fetch (`POST /<owner>/<repo>.git/git-upload-pack`) and a push to the approved review
-ref (`POST /<owner>/<repo>.git/git-receive-pack`). Independently read the written ref. A push to another
-ref and `DELETE` on the same Git route must be refused before reaching the origin.
-For `github-repository`, push and read back its ref in each selected repository.
-Verify that the same Agent cannot push to an unselected private repository in the
-same installation. Ordinary permitted refs remain available within the selected set.
-For installation-wide access, there is **no OCE ref allowlist**: GitHub controls
-membership and permissions. Use an unsupported method such as that `DELETE` for
-the OCE negative check; a GitHub `404` outside membership is not an OCE denial.
-Capture the selected revision and correlated enforcement and origin evidence.
-The [native Git example](../reference/repository-credentials/prepared-native-git.md)
-applies only to its separate composition.
+For an active managed model Source, [request withdrawal](../reference/credential-sources/withdrawal.md#withdraw-a-source-from-an-agent)
+and verify that the affected Agent can no longer use it. Wait for confirmed
+detachment or retirement of the affected runtime. To restore model access,
+grant and deploy a replacement Source. An upstream request already authorized
+may finish.
 
 ### Withdraw repository access
 
-Token expiry, finite grant/session expiry and standing-approval removal are
-different checks. For standing access, fetch a commit known to be absent locally
-after the original token expires, without changing the binding. This checks
-renewal; it cannot extend a finite grant. Then withdraw while the replacement
-token and session are still valid:
+Remove the Agent's Source-backed repository selection using its **Repositories**
+settings. Check that the deployment's Git delivery is withdrawn and that a fresh
+Git read fails. Send a model request through the same Agent to verify that its
+independent model credential continues to work. See the [Git withdrawal flow](../flows/agent-repository-credentials.md#2-freeze-a-deployable-revision).
 
-1. As an Agent administrator, read
-   `GET /namespaces/:namespaceId/agents/:agentId/repository-approvals`.
-2. Select the approval for the current binding. Send
-   `POST /namespaces/:namespaceId/agents/:agentId/repository-approvals/:approvalId/remove`
-   with `{"expectedGeneration": <that approval's generation>}`. This is the
-   **approval generation**, not the Agent, source or policy generation. Require
-   `204`; on a conflict, read current approval state before deciding what to do.
-3. Require a fresh fetch to fail with `access_withdrawn` before the token/session
-   expires, with no new origin request. An already authorized send may finish.
-4. Clear the binding using the existing Configuration ID:
+Prepared Git uses a separate standing or finite session procedure.
+[Prepared native Git access](../reference/repository-credentials/prepared-native-git.md#what-a-request-authorizes)
 
-   ```bash
-   jq -n --arg configuration "$CONFIGURATION_ID" \
-     '{configurationId: $configuration, repositoryAccess: {defaultProfile:"github-repository", repositories:[]}}' > repository-withdrawal.json
-   ./bin/occ agent update "$AGENT_ID" --file repository-withdrawal.json
-   ```
+<a id="prepare-enforcement-trust-and-custody"></a>
+<a id="configure-a-legacy-protected-sender"></a>
 
-Removing the binding before standing approval is rejected. **For finite access**,
-there is no standing approval to remove: use the binding-removal step directly
-and verify fresh denial.
+## Existing legacy protected exchanges
 
-Require a new model reply in the same conversation after Git removal. Continuity
-requires verified Git-only policy reduction and healthy independent model access;
-an explicit model withdrawal or IAM refusal queues retirement of that runtime.
-Unavailable evidence keeps cleanup pending without repeating the reduction or stopping
-a healthy Agent. Verify continuity on the selected release; readiness alone does
-not prove it. Static model sources do not renew tokens;
-existing Gateway refresh sources use their own
-[rotation procedure](../reference/credential-sources/other-delivery-modes.md#rotate-a-refresh-source).
+`LegacyEgressProxyDriver` and its `drivers.credential_proxy` selection are
+deprecated and pending removal. Credential Design 1.0 retires their special
+protected metadata and repository exchanges instead of migrating them. Do not
+select this Driver for new model, Git, Plugin, or metadata workflows. Use
+TokenService and native Credential Proxy for credentials.
+Sandbox network policy and ordinary Channel egress are separate capabilities.
+
+For an existing qualified exchange, retain its matching release, authority,
+trust, and peer configuration. See the [historical protected-sender setup](https://github.com/openclaw/openclaw-enterprise/blob/105ffee9962176cf42fc7cfe013b8b94831435db/docs/guides/credential-proxy.md#prepare-enforcement-trust-and-custody)
+and [qualified sender prerequisites](../reference/drivers/selection.md#select-a-protected-sender).
+New local protected static-inference launches are [retired](deploy/local-openshell-images.md#select-the-protected-profile).
 
 ## Diagnose before retrying
 
-| Observation                                       | Action and recovery evidence                                                                                                                        |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source `failed`, `absent`, or missing credentials | Read `credential-source get` and its `reason`; correct the owning Secret or enrollment. Require a new successful real request, not just `ready`.    |
-| Unavailable authority or lost installation        | Check peer TLS trust, selected Driver identity, network access, and current runtime. Keep access closed until the current installation is verified. |
-| Refresh reports `reauthorize`                     | Obtain new provider authorization through the source's supported enrollment; do not replay an old refresh token.                                    |
-| Installation or send outcome is unknown           | Preserve the original operation and custody. Fence the old worker/recipient and reconcile through its owner; do not resend or fabricate success.    |
-| Withdrawal remains `pending`                      | Inspect its reason and `withdrawalInProgress`; follow the withdrawal recovery procedure. Do not report revocation as complete.                      |
-
-Public deployment status is not a token-custody ledger. If the selected owner
-cannot establish whether issuance, installation, or retirement completed, stop
-the transition and retain its recovery state. Do not edit database rows as an
-operator workaround. For Git reason codes and log correlation, see
-[adapter diagnostics](../reference/repository-credentials/protected-openshell-git.md#diagnose-a-refused-request).
-Detailed enforcement evidence belongs in
-[qualification procedures](../testing/protected-repository-custody.md).
+- For a failed Source, check its status and reason. If the new value was
+  committed and delivery failed, [retry delivery](deploy/credential-lifecycle.md#replace-an-occ-tokenservice-managed-model-key).
+- If the Proxy cannot reach OpenShell, check the management endpoint, TLS
+  trust, Driver selections, and the affected Agent revision.
+- For pending withdrawal, inspect the reported reason and
+  [withdrawal recovery](../reference/credential-sources/withdrawal.md#withdraw-a-source-from-an-agent).
+  Retain custody and operation evidence until the selected owner verifies the
+  outcome.

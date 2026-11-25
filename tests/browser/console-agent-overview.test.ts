@@ -1910,34 +1910,81 @@ test("Recovery offers Open Configuration draft when the caller may edit the Conf
   );
   await askForLogs.waitFor();
 
-  role.permissions.push({ action: "operate", resourceKind: "agent" });
-  await shown();
-  await draft.waitFor();
-  assert.deepEqual(await links(), ["Open v1 Logs", "Open draft"]);
-
   role.permissions = without("deploy", "agent");
+  role.permissions.push({ action: "operate", resourceKind: "agent" });
   answer = await shown();
   assert.equal(answer.deploy, false);
   assert.equal(answer.operate, true);
   assert.equal(answer.readLogs, false);
-  assert.deepEqual(await links(), ["Open v1 Logs"]);
+  const shortcut = recovery
+    .getByRole("link", { name: /\bv1\b/ })
+    .and(page.locator('[href*="tab=logs"]'));
+  assert.equal(await shortcut.isVisible(), true);
+  assert.equal((await links()).length, 1);
   await recovery
     .getByText(
       "Ask a Configuration editor to choose a model this account can use. Someone with deploy access must then redeploy this Agent.",
       { exact: false },
     )
     .waitFor();
-  // Runtime status makes the tab useful, but the log text read is skipped.
+  // A local text skip must still let the operator return to the failed version's status.
+  role.permissions.push({ action: "deploy", resourceKind: "agent" });
+  await page.clock.install();
+  await shown();
+  await draft.waitFor();
   const requests = apiRequests(page, fixture.origin);
-  const status = page.waitForResponse(
-    (r) => new URL(r.url()).pathname === `${path}/deployments/${failed.id}/runtime`,
+  const statusUrl = `${fixture.origin}${path}/deployments/${failed.id}/runtime`;
+  const configuration = page.getByRole("tab", { name: "Configuration", exact: true });
+  const visitStatus = async () => {
+    assert.equal(await shortcut.isVisible(), true, "the operator can return to v1 status");
+    assert.deepEqual((await links()).slice(1), ["Open draft"]);
+    const status = page.waitForResponse(statusUrl);
+    await shortcut.press("Enter");
+    assert.equal((await status).status(), 200);
+    await page.locator(".runtime-pod").first().waitFor();
+    await page.getByText(LOG_TEXT_DENIED).waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(await versionChooser(page).inputValue(), failed.id);
+    for (const name of ["Follow", "Refresh logs", "Download"]) {
+      assert.equal(await page.getByRole("button", { name, exact: true }).isDisabled(), true);
+    }
+  };
+  await visitStatus();
+  await configuration.press("Enter");
+  await waitForIdleFetches(page);
+  await visitStatus();
+  assert.deepEqual(await links(), ["View v1 runtime status in Logs", "Open draft"]);
+  assert.equal(await askForLogs.isVisible(), true);
+
+  // A real refusal on the next poll withdraws only the status shortcut, even before
+  // the permission summary can report the revocation.
+  const poll = await holdRequests(t, page, statusUrl, { once: true });
+  await page.clock.fastForward(10_000);
+  await poll.requested;
+  await shortcut.press("Tab");
+  const focusedDraft = required(await draft.elementHandle());
+  const draftHref = required(await draft.getAttribute("href"));
+  assert.ok(await focusedDraft.evaluate((node) => node.matches(":focus-visible")));
+  const permissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`);
+  restrict(fixture.policy, "operate", "agent", { namespaceId: namespace.id, resourceId: agent.id });
+  const refused = page.waitForResponse(statusUrl);
+  poll.release();
+  assert.equal((await refused).status(), 403);
+  await page.getByText(/runtime status is no longer shown/).waitFor();
+  assert.deepEqual(await links(), ["Open draft"]);
+  assert.ok(
+    await focusedDraft.evaluate((node) => node.matches(":focus-visible")),
+    "withdrawing the status shortcut keeps keyboard focus on Open draft",
   );
-  await recovery.getByRole("link", { name: "Open v1 Logs" }).click();
-  assert.equal((await status).status(), 200);
-  await page.getByText(LOG_TEXT_DENIED).waitFor();
+  assert.equal(await draft.getAttribute("class"), "button button--primary");
+  assert.equal(await draft.getAttribute("href"), draftHref);
+  permissions.release();
+  await waitForIdleFetches(page);
+  assert.ok(await focusedDraft.evaluate((node) => node.matches(":focus-visible")));
+  await configuration.press("Enter");
+  await waitForIdleFetches(page);
+  assert.deepEqual(await links(), ["Open draft"]);
   assert.ok(!requests.some(({ path }) => path.includes("/runtime/logs")));
-  await askForLogs.waitFor();
-  assert.deepEqual(await links(), []);
 });
 
 test("A failed version raises no recovery while the current version is on no loaded page", async (t) => {
@@ -2187,11 +2234,15 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
     { exact: true },
   );
   await askForLogs.waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
+  assert.deepEqual(await recovery.getByRole("link").allTextContents(), [
+    "Open Configuration draft",
+  ]);
   // Leaving Logs for another tab of the same version keeps that.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await askForLogs.waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
+  assert.deepEqual(await recovery.getByRole("link").allTextContents(), [
+    "Open Configuration draft",
+  ]);
   const configuration = recovery.getByRole("link", {
     name: "Open Configuration draft",
     exact: true,
@@ -2202,8 +2253,10 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("link", { name: "Denied logs" }).click();
   await recovery.getByText("Ask someone with log access", { exact: false }).waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   await configuration.waitFor();
+  assert.deepEqual(await recovery.getByRole("link").allTextContents(), [
+    "Open Configuration draft",
+  ]);
 });
 
 // When a failed newer version replaced the running one, the replacement sentence overrode the
@@ -5074,15 +5127,58 @@ test("Viewing version matches the Configuration snapshot when revisiting a queue
     assert.equal(new URL(page.url()).searchParams.get("revision"), id);
     assert.equal(await chooser.inputValue(), id);
   };
+  const heading = page.getByRole("heading", { name: "Picker Agent", exact: true });
+  const back = page.getByRole("link", { name: "← Agents", exact: true });
+  const copy = page.getByRole("button", { name: "Copy Agent ID", exact: true });
+  const hasFocus = (control: Locator) => control.evaluate((node) => node.matches(":focus-visible"));
+  const openQueuedVersion = async (control: Locator, ...keys: string[]) => {
+    const url = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/revisions/${second.id}`;
+    const read = await holdRequests(t, page, url, { method: "GET", once: true, afterServer: true });
+    await chooser.press("ArrowUp");
+    assert.equal((await read.requested)?.status(), 200);
+    assert.ok(await hasFocus(heading));
+    for (const key of keys) {
+      await page.keyboard.press(key);
+    }
+    assert.ok(await hasFocus(control));
+    read.release();
+    await checkVersion(second.id, "openai/gpt-5.1");
+    assert.deepEqual(
+      await control.evaluate((node) => {
+        const { top, bottom } = node.getBoundingClientRect();
+        return {
+          focused: node.matches(":focus-visible"),
+          inView: top >= 0 && bottom <= innerHeight,
+        };
+      }),
+      { focused: true, inView: true },
+    );
+  };
+
   await checkVersion(first.id, "openai/gpt-4.1");
-  await chooser.selectOption(second.id);
-  await checkVersion(second.id, "openai/gpt-5.1");
+  const destination = await back.getAttribute("href");
+  await openQueuedVersion(back, "Shift+Tab");
+  assert.equal(await back.getAttribute("href"), destination);
   const queuedPicker = required(await chooser.elementHandle());
-  await chooser.selectOption(first.id);
-  await checkVersion(first.id, "openai/gpt-4.1");
-  await chooser.selectOption(second.id);
-  await checkVersion(second.id, "openai/gpt-5.1");
-  assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+  const namespaceSelect = page.getByRole("combobox", { name: "Namespace", exact: true });
+  for (const [control, ...keys] of [
+    [copy, "Tab"],
+    [namespaceSelect, "Tab", "Tab"],
+  ] as const) {
+    // Leave the header above the viewport but keep the picker in view.
+    await chooser.focus();
+    await page.mouse.wheel(0, 240);
+    await page.waitForFunction(
+      (button) => button.getBoundingClientRect().bottom < 0,
+      required(await copy.elementHandle()),
+    );
+    assert.ok(await chooser.evaluate((node) => node.getBoundingClientRect().top >= 0));
+    await page.keyboard.press("ArrowDown");
+    await checkVersion(first.id, "openai/gpt-4.1");
+    assert.ok(await hasFocus(heading));
+    await openQueuedVersion(control, ...keys);
+    assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+  }
 });
 
 // The Versions list marked only the current version: a failed v2 looked like v1 (finding 2095),

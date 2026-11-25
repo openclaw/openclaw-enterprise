@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { tooDeepJsonPath } from "../../apps/controller/src/http/json-depth.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import {
   assertAcceptedDepth,
   assertRefusedDepth,

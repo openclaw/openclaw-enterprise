@@ -171,7 +171,7 @@ test(
       import("../../apps/controller/src/composition/development-postgres.ts"),
       import("../../apps/controller/src/composition/installation-config.ts"),
       import("../../apps/controller/src/worker.ts"),
-      import("../helpers/auth-session.mjs"),
+      import("../helpers/auth-session.ts"),
     ]);
 
     const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });

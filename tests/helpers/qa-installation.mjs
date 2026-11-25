@@ -803,7 +803,7 @@ export { repository };
 /**
  * @typedef {{
  *   consoleUrl: string,
- *   credentials: import("./auth-session.mjs").SignInCredentials,
+ *   credentials: import("./auth-session.ts").SignInCredentials,
  * }} QaConsoleBindings
  */
 

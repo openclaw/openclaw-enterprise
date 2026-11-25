@@ -1,6 +1,6 @@
 import { story } from "./story.ts";
 
-export default { title: "Pages/Secrets" };
+export default { title: "Pages/Credentials/Secrets", id: "pages-secrets" };
 
 export const Populated = story("secrets");
 export const Mobile = story("secretsMobile", { frameHeight: "844px" });

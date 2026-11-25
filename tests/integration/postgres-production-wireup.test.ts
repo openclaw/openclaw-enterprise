@@ -40,7 +40,7 @@ import {
 import {
   authenticatedHeaders,
   signInWithEmailPassword as signInThroughTransport,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";

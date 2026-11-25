@@ -21,13 +21,23 @@ follows `:focus-visible`. No part of any ring may be cut off.
    **Repositories**, press Shift+Tab once to leave the strip. Press Tab to return
    to the selected **Configuration** tab.
 3. Open **Pages / Agent detail / Long version history**. Tab to **Viewing
-   version**. The native picker is one Tab stop and names v8 as the viewed version.
-   Use its native keyboard controls to choose a version. Tab to **Load older
-   versions** and press Enter: while the next page loads it reads **Loading older
-   versions…**, looks disabled, and keeps focus. When the last page loads, focus
+   version**. The picker is one Tab stop. It starts on Draft, with v8
+   selected for service. Choose v8 with the keyboard. Wait for focus to move
+   to the Agent heading. Tab back to the picker and repeat with v7. Tab to
+   **Load older versions** and press Enter. While the next page loads, the
+   button reads **Loading older versions…**, looks disabled, and keeps focus. When the last page loads, focus
    returns to the picker and the viewed version stays selected. On **New version
-   in progress, then current**, focus the picker before the poll finishes: its
+   in progress, then current**, focus the picker before the poll finishes. Its
    service marker updates without moving focus or changing the viewed version.
+
+   **Long version history** delays loading older versions. To check a slow version
+   switch, use the signed-in Console. Switch versions, then press Shift+Tab to
+   **← Agents** while the version loads. After it opens, the link should still
+   have visible focus. Press Enter to return to Agents. Repeat the switch,
+   this time tabbing forward to **Copy Agent ID** or **Namespace**. Both
+   should stay in view when focused, even on a return to a version you left
+   scrolled down. Check desktop and phone widths.
+
 4. Open **Pages / Agent detail / Runtime logs**. Tab to the log pane. Its ring
    sits inside the pane edge (inset). Tab to a log row summary. Its ring sits
    outside, like a button, and the pane scrolls far enough to show its bottom
@@ -59,7 +69,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
    pager, and the read-only authentication and Slack token fields (finding
    2899): a select or text field fades its text, and ignores arrow keys and
    typing too. So do the Secret dialog's **Replace value** and **Delete
-   Secret** (**Pages / Secrets / Read only for this caller**) and the issued
+   Secret** (**Pages / Credentials / Secrets / Read only for this caller**) and the issued
    account select (**Components / Credentials / Issued service accounts
    unavailable**) (finding 2925). On **Pages / Agents / Stop from the list**,
    confirm Stop: the Stop icon becomes unavailable and keeps focus, described
@@ -75,7 +85,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
    outcome keeps its fields and confirmation in the Tab order, described by
    its alert, while focus moves to Cancel or Close (finding 2935): **Pages /
    Namespaces / Create permission denied** and **Create outcome unknown**,
-   **Pages / Secrets / Create denied** and **Concurrent reference conflict**,
+   **Pages / Credentials / Secrets / Create denied** and **Concurrent reference conflict**,
    and the Stop and Delete confirmations when a refusal arrives while they are
    open (**Pages / Agents / Stop from the list, permission arrives while
    confirmation is open**, **Components / Stop Agent / Permission arrives while
@@ -126,7 +136,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
     accent, and still opens the JSON. In **Components / Dialogs / Plugins
     (wide)**, **Access and credential setup** looks the same.
 15. Open **Components / Native admin / Refreshing access**. Tab to **Refresh
-    access** and press Enter: while it reads (1.5 s) it keeps focus. Repeat and
+    access** and press Enter. While it reads (1.5 s) it keeps focus. Repeat and
     press Tab during the read: focus stays where you moved it. On **Available
     once a deployment completes**, focus the unavailable **Open Agent UI**
     before the poll lands: the live link that replaces it keeps focus.
@@ -206,3 +216,12 @@ merges the local draft. The story simulates a conflict before sending a write.
 The Agent detail browser test also returns to the tab while a save is pending.
 If the Controller returns `409` during the access check, focus should move from
 the save status to **Reload draft** once access is confirmed.
+
+After the conflict, choose **← Agents**. The existing explanation comes into view
+and takes focus. Press **Shift+Tab** to return to **Reload draft**. Merely focusing
+the link while the save settles must keep focus on the link when the conflict appears.
+
+Choose **Reload draft** and review the warning about the other browser’s saved
+`/gateway/bind` value. Use **Refresh** in the Console header. Focus
+**Save Configuration** and check that the same warning describes it. Confirm your
+local `/gateway/bind` edit remains in the JSON editor.
