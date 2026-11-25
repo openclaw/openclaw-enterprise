@@ -298,10 +298,21 @@ export function renderNamespaces(
       "aria-describedby": "create-namespace-description",
     });
     const title = element("h2", { id: "create-namespace-title" }, "Create Namespace");
+    const introduction = element(
+      "span",
+      {},
+      "A Namespace keeps a team's Agents and resources together, with its own access rules.",
+    );
+    const conflict = element("span", {
+      id: "create-namespace-conflict",
+      role: "alert",
+      "aria-hidden": "true",
+    });
     const description = element(
       "p",
       { id: "create-namespace-description", className: "muted" },
-      "A Namespace keeps a team's Agents and resources together, with its own access rules.",
+      introduction,
+      conflict,
     );
     // No maxlength: it counts UTF-16 code units and silently cuts a longer paste, which would
     // then be saved under the cut name. namespaceNameProblem refuses it instead (finding 2046).
@@ -326,15 +337,13 @@ export function renderNamespaces(
       }
     });
     const feedback = element("div");
-    let conflict: { name: string; alert: HTMLElement } | undefined;
+    let rejectedName: string | undefined;
     function showConflict() {
-      // A 409 describes this attempt, without making the name invalid or blocking a retry.
-      if (conflict) {
-        const matches = name.value.trim() === conflict.name;
-        description.hidden = matches;
-        conflict.alert.hidden = !matches;
-        setDescription(name, conflict.alert.id, matches);
-      }
+      // A conflict describes the submitted name, but does not block another attempt.
+      const matches = name.value.trim() === rejectedName;
+      introduction.setAttribute("aria-hidden", String(matches));
+      conflict.setAttribute("aria-hidden", String(!matches));
+      setDescription(name, conflict.id, matches);
     }
     const cancel = button("Cancel", close);
     const submit = element(
@@ -503,12 +512,9 @@ export function renderNamespaces(
       submit.disabled = true;
       submit.textContent = "Creating…";
       const submittedName = name.value.trim();
-      if (conflict) {
-        setDescription(name, conflict.alert.id, false);
-        conflict.alert.remove();
-        description.hidden = false;
-        conflict = undefined;
-      }
+      rejectedName = undefined;
+      showConflict();
+      conflict.textContent = "";
       feedback.replaceChildren();
       try {
         const result = await context.request("/namespaces", {
@@ -575,15 +581,9 @@ export function renderNamespaces(
           feedback.replaceChildren(...requestId);
           name.setCustomValidity(message);
         } else if (error.status === 409) {
-          // Keep the dialog description linked while the conflict takes its place above the field.
-          const alert = element(
-            "p",
-            { id: "create-namespace-refusal", role: "alert" },
-            element("span", { className: "error" }, message),
-          );
           feedback.replaceChildren();
-          description.after(alert);
-          conflict = { name: submittedName, alert };
+          rejectedName = submittedName;
+          conflict.textContent = message;
           showConflict();
         } else {
           refusal = statusBlock("danger", null, message, [], { id: "create-namespace-refusal" });
