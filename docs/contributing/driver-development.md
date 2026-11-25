@@ -18,13 +18,14 @@ enforce, and which failures must stop the operation:
 - [Plugin](../reference/drivers/plugin.md) and [ServiceAccount](../reference/drivers/service-account.md)
 
 Installed npm packages can implement **Compute, Configuration, IAM, or Sandbox**.
-A Sandbox package can also provide Credential Proxy through one registration;
-follow the [legacy egress Driver walkthrough](credential-proxy-driver.md) for that
-paired capability and its profile limits. Secret, Plugin, and ServiceAccount
-have bundled selections only. If you need one of those capabilities, change the
-existing platform implementation; adding an npm package alone will not make it
-selectable. Use the [supported selections](../reference/drivers/selection.md#supported-selections)
-and [repository layout](../layout.md#source-ownership) to find its owner. Bundled
+The bundled OpenShell Sandbox supplies Credential Proxy through the same
+registration when TokenService is selected. See
+[develop a Credential Proxy Driver](credential-proxy-driver.md). Secret, Plugin,
+and ServiceAccount have bundled selections only. To change one of those
+capabilities, update its bundled implementation.
+
+Use the [supported selections](../reference/drivers/selection.md#supported-selections)
+and [repository layout](../layout.md#source-ownership) to find the capability owner. Bundled
 infrastructure implementations live under `apps/controller/src/drivers/`; native
 IAM lives in `packages/iam/`. Composition lives in `apps/controller/src/composition/`.
 
@@ -65,14 +66,15 @@ factories consume the original validated input. Callbacks receive an isolated,
 frozen copy and cannot replace configuration values. Declare runtime contributions only when a
 resource-owner binding supplies their authorization and lifecycle. A Sandbox
 advertising `networkPolicy` must contribute `(agent, sandbox-network-policy)`.
-Return the selected `id` and `implementation`, the expected
-`capability`, and its required methods on each capability object. For paired
-capabilities, return one `DriverRegistration` with shared lifecycle hooks
-instead of independent instances. The controller must declare the package
-as a direct production dependency at an exact version; update the lockfile with
-it. For a bundled implementation, follow the existing capability directory and
-wire it into controller composition. Consult the [package and factory contract](../reference/drivers/selection.md#package-identity-and-factory-exports)
+Return one Driver with the selected `id` and `implementation`, the expected
+`capability`, and its required methods. The controller must declare the package
+as a direct production dependency at an exact version. Update the lockfile with
+it. Consult the [package and factory contract](../reference/drivers/selection.md#package-identity-and-factory-exports)
 for the complete loader rules.
+
+For a bundled implementation, follow the existing capability directory and wire
+it into controller composition. The bundled OpenShell Sandbox and Credential
+Proxy share one registration.
 
 Implement the failure paths as carefully as the successful ones. OCC owns
 platform authorization and resources; an execution Driver acts on the admitted

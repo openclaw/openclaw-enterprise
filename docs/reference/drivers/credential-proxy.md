@@ -8,7 +8,7 @@ kind: reference/driver
 
 - [Properties](#properties)
 - [Methods](#methods)
-- [Legacy protected egress](#legacy-protected-egress)
+- [Historical protected egress](#historical-protected-egress)
 
 ## Overview
 
@@ -49,70 +49,18 @@ planned. OpenShell prepares admitted HTTP and managed MCP projections with a
 Provider per projection. See [current support and limits](../credential-sources.md#implementation-status).
 
 <a id="legacy-protected-egress"></a>
+<a id="delivery-profiles"></a>
+<a id="registration-and-execution-release"></a>
+<a id="request-time-exchange"></a>
+<a id="installed-material"></a>
+<a id="cancellation-retries-and-uncertainty"></a>
+<a id="request-time-capacity"></a>
 
 ### Historical protected egress
 
-This section records the old contract for earlier releases.
-
-| Member               | Requirement | Retained behavior                                                                                            |
-| -------------------- | ----------- | ------------------------------------------------------------------------------------------------------------ |
-| `sourceControl`      | Required    | Identifies the Backend, sender, resolver, and provider used by deprecated protected admission.               |
-| `configureRevision`  | Required    | Prepares the exact admitted protected plan without broadening it.                                            |
-| `wiringStatus`       | Required    | Observes authenticated installation evidence for that plan.                                                  |
-| `verifyInstallation` | Required    | Rechecks current counterpart evidence before release.                                                        |
-| `removeRevision`     | Required    | Removes the owned installation and reports confirmed cleanup.                                                |
-| `bindExchange`       | Optional    | Required by a retained request-time exchange transport.                                                      |
-| `bindRepositoryGit`  | Optional    | Required by retained protected repository delivery, together with Sandbox repository access.                 |
-| `policyReduction`    | Optional    | Required when the admitted plan records reduction; applies and independently observes a nonexpanding change. |
-
-#### Delivery profiles
-
-Retained admissions preserve their original guarantee: version 3 covers protected
-request-time routes, version 4 exact dispatch, version 5 online authorization,
-version 6 an observed-hook installation preview, and version 7 exact dispatch
-with verified reduction v2. Online authorization and a hook observed at startup
-do not establish exact dispatch or filtered response custody. A lost
-request-time authorization reply records possible use; do not repeat the send.
-
-#### Registration and execution release
-
-The API and Worker must match the Driver registration, admitted plan, execution,
-and authenticated installation evidence. Compute verifies the counterpart before
-releasing a retained protected execution. A stored receipt or accepted
-configuration is not current readiness evidence.
-
-#### Request-time exchange
-
-A retained transport binds `resolve`, `authorizeSend`, `beginResponse`,
-`renewResponse`, and `protectResponse` to the captured request and reply.
-Resolution does not authorize a send. `authorizeSend` rechecks current authority;
-the sender enforces its deadline at the controlled send boundary. Do not retry an
-uncertain authorized exchange.
-
-#### Installed material
-
-For retained protected Git, material installation and send authorization remain
-separate. A Provider attachment is not permission to send, and an authorization
-decision does not prove delivery or the upstream result.
-
-#### Cancellation, retries and uncertainty
-
-Preserve operation identities, deadlines, and pending outcomes across restart.
-Cancellation is not proof of remote rollback. Observe existing state before a
-new mutation; do not repeat an uncertain installation, policy reduction, or
-business exchange just to obtain a reply. Withdrawal prevents fresh authority
-but cannot undo an already authorized upstream effect.
-
-#### Request-time capacity
-
-The deprecated exchange registry keeps limits per API process. For an existing
-installation, the retained `requestCapacity` defaults are 1,024 operations,
-256 authenticating operations, 256 operations per Sandbox, 8,192 request IDs,
-and 2,048 IDs per Sandbox. Operation counts have a maximum of 8,192; ID counts
-have a maximum of 131,072. Shares cannot exceed their pools. The request-ID
-window is 30 seconds. A limit breach refuses resolution; invalid settings fail
-startup. Consult the [release-specific legacy reference](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/reference/drivers/credential-proxy.md#request-time-capacity)
-for old configuration and resource sizing when retiring an existing deployment.
+The `LegacyEgressProxyDriver` contract and its protected exchanges were removed.
+See the [former Driver contract](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/reference/drivers/credential-proxy.md#legacy-protected-egress)
+for their behavior before removal.
 
 ## IAM
 
@@ -154,9 +102,9 @@ TokenService retains Source custody until Source deletion.
 
 ## Configuration
 
-Select TokenService and a compatible Sandbox registration. The registration
-supplies `credential_proxy`; it has no separate Installation YAML
-selector. See [supported selections](selection.md#supported-selections).
+Select TokenService and the bundled OpenShell Sandbox. Its registration supplies
+`credential_proxy` automatically. Startup rejects the old
+`drivers.credential_proxy` setting. See [supported selections](selection.md#supported-selections).
 
 ## Limits
 
@@ -173,8 +121,6 @@ prove that a running Harness consumed the credential.
   expected credential version. Do not treat desired configuration as receipt.
 - If update delivery fails after commit, retry the committed version through the
   [Source API](../credential-sources.md#retry-credential-delivery).
-- If a retained legacy exchange is uncertain, inspect its original owner and
-  pending outcome; do not repeat the authorized request.
 
 ## Implementations
 
