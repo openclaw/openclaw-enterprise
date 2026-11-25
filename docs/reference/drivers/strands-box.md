@@ -85,8 +85,6 @@ drivers:
 
 4. Store the invented key in a Secret. In the Agent's Harness authentication
    binding, set `method` to `api_key` and `source` to the Secret reference.
-   If the Agent configuration specifies an OpenAI provider URL, it must match
-   the Installation's `runtime.modelProvider.baseUrl`.
 5. Deploy the Agent. Verify that the model answers and that you can read and
    write a workspace file.
 
