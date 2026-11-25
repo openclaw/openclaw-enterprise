@@ -223,23 +223,24 @@ retirement. Compute retirement owns workload termination and Sandbox cleanup;
 the worker invokes neither independently.
 
 `withClaimHeartbeat()` renews before effects and every third of the lease. Lease
-loss, heartbeat failure or shutdown aborts Compute; stale tokens cannot publish.
-An unanswered renewal does not extend the lease, although an in-flight request
-can still complete. Health updates do not delay renewal; health failure alone
-does not mean lease loss.
+loss, heartbeat failure or shutdown aborts Compute. Stale tokens cannot publish.
+Unanswered renewals cannot extend leases. In-flight requests can complete.
+Health updates do not delay renewal. Health failure does not prove lease loss.
 
-The [Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
-and [Docker execution flow](docker-compose-development.md) own infrastructure and
-Sandbox dispatch. Namespace deletion checks Compute eligibility before provider
-hooks; an unclaimed external namespace skips those hooks and is retained by Compute.
+[Kubernetes Compute](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
+and [Docker](docker-compose-development.md) own infrastructure and Sandbox dispatch.
+Compute checks Namespace deletion eligibility before hooks and retains unclaimed
+external namespaces without invoking them. On retry, [Strands cleanup](../../apps/controller/src/drivers/sandbox/strands-box.ts)
+completes after 403/404 only when the same Kubernetes client confirms the exact
+backing Namespace's core-v1 `NotFound` (404). Later participants, including Compute,
+still run.
 
-When `prepareRevision` rejects, the worker asks Compute for an optional validated
-failure description (Kubernetes names the stage and maps only reviewed
-classifications, status codes, and messages), emits
-`worker.compute-prepare-failed`, and keeps the retry behavior. An unreachable
-Sandbox gateway here or in a predecessor stop defers the pass as
-`SANDBOX_GATEWAY_UNAVAILABLE`, refunding the attempt, until the deadline fails it
-with that code; other work keeps its attempt budget.
+On `prepareRevision` rejection, the worker requests Compute's optional validated
+failure description, emits `worker.compute-prepare-failed` and retains retries.
+Kubernetes reports the stage and maps reviewed classifications, status codes and messages.
+An unreachable Sandbox gateway during preparation or predecessor stop defers as
+`SANDBOX_GATEWAY_UNAVAILABLE` and refunds attempts until the deadline fails with
+that code. Other work retains attempt budgets.
 
 <a id="6-persist-the-result-and-finish-revision-activation" class="anchor-alias"></a>
 
