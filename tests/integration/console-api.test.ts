@@ -13,7 +13,7 @@ import { text } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   authorizationDenials,
   backendFixtures,

@@ -9,7 +9,7 @@ import {
   deploymentFailureStep,
 } from "../../packages/occ/src/deployment-failure-steps.ts";
 import { AgentProvisioningStatusSchema } from "../../packages/contracts/src/api/resources.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import {
   createProviderSandboxDriver,
@@ -1798,6 +1798,7 @@ test("Recovery offers Open Configuration draft when the caller may edit the Conf
   // Configuration save would pass; an Agent update would fail on the Harness API key Secret.
   const member = await fixture.createNamespaceMember("configuration-recovery", namespace.id, [
     ...AGENT_READ,
+    ["read_logs", "agent"],
     ["update", "agent"],
     ["update", "configuration"],
   ]);
@@ -1850,7 +1851,10 @@ test("Recovery offers Open Configuration draft when the caller may edit the Conf
       (grant) => grant.action !== action || grant.resourceKind !== resourceKind,
     );
 
+  // Log text and runtime status share a tab. Either grant makes the shortcut useful.
   let answer = await shown();
+  assert.equal(answer.readLogs, true);
+  assert.equal(answer.operate, false);
   assert.equal(answer.configurationUpdate, true);
   assert.equal(answer.configurationSecretsOperate, true);
   assert.equal(answer.agentSourcesOperate, false);
@@ -1892,9 +1896,30 @@ test("Recovery offers Open Configuration draft when the caller may edit the Conf
   assert.equal(answer.agentSourcesOperate, true);
   await recovery.getByRole("link", { name: "Open draft", exact: true }).waitFor();
   assert.deepEqual(await links(), ["Open v1 Logs", "Open draft"]);
+  role.permissions = without("read_logs", "agent");
+  answer = await shown();
+  assert.equal(answer.readLogs, false);
+  assert.equal(answer.operate, false);
+  const draft = recovery.getByRole("link", { name: "Open draft", exact: true });
+  await draft.waitFor();
+  assert.deepEqual(await links(), ["Open draft"]);
+  assert.equal(await draft.getAttribute("class"), "button button--primary");
+  const askForLogs = recovery.getByText(
+    "Ask someone with log access to check the failed version’s logs.",
+    { exact: false },
+  );
+  await askForLogs.waitFor();
+
+  role.permissions.push({ action: "operate", resourceKind: "agent" });
+  await shown();
+  await draft.waitFor();
+  assert.deepEqual(await links(), ["Open v1 Logs", "Open draft"]);
+
   role.permissions = without("deploy", "agent");
   answer = await shown();
   assert.equal(answer.deploy, false);
+  assert.equal(answer.operate, true);
+  assert.equal(answer.readLogs, false);
   assert.deepEqual(await links(), ["Open v1 Logs"]);
   await recovery
     .getByText(
@@ -1902,11 +1927,16 @@ test("Recovery offers Open Configuration draft when the caller may edit the Conf
       { exact: false },
     )
     .waitFor();
+  // Runtime status makes the tab useful, but the log text read is skipped.
+  const requests = apiRequests(page, fixture.origin);
+  const status = page.waitForResponse(
+    (r) => new URL(r.url()).pathname === `${path}/deployments/${failed.id}/runtime`,
+  );
   await recovery.getByRole("link", { name: "Open v1 Logs" }).click();
+  assert.equal((await status).status(), 200);
   await page.getByText(LOG_TEXT_DENIED).waitFor();
-  await recovery
-    .getByText("Ask someone with log access to check the failed version’s logs.", { exact: false })
-    .waitFor();
+  assert.ok(!requests.some(({ path }) => path.includes("/runtime/logs")));
+  await askForLogs.waitFor();
   assert.deepEqual(await links(), []);
 });
 
@@ -2126,18 +2156,6 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   // v1 keeps serving; the v2 redeploy failed.
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedRecord(page, fixture, namespace, agent, revision);
-  // Log text has its own grant (read_logs); this reader's log read is denied.
-  await page.route(new RegExp(`/deployments/${revision.id}/runtime/logs(\\?|$)`), (route) =>
-    route.fulfill({
-      status: 403,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "FORBIDDEN", message: "Access denied." },
-        meta: { requestId: "req_test_recovery_logs" },
-      }),
-    }),
-  );
-
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
@@ -2146,7 +2164,20 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
       { exact: true },
     )
     .waitFor();
+  // Revoke log access after the permission check, before the Controller handles the read.
+  const logPath = new RegExp(`/deployments/${revision.id}/runtime/logs(\\?|$)`);
+  const held = await holdRequests(t, page, logPath, { once: true, method: "GET" });
+  const refused = page.waitForResponse(logPath);
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
+  await held.requested;
+  restrict(fixture.policy, "read_logs", "agent", {
+    namespaceId: namespace.id,
+    resourceId: agent.id,
+  });
+  held.release();
+  const response = await refused;
+  assert.equal(response.status(), 403);
+  assert.equal(record(record(await response.json()).error).code, "FORBIDDEN");
   await page.getByText(LOG_TEXT_DENIED).waitFor();
 
   // The denial updates the recovery at once: it says who can check the logs instead of
@@ -5010,6 +5041,49 @@ for (const viewport of [
     assert.equal(await deploy.isDisabled(), true);
   });
 }
+
+test("Viewing version matches the Configuration snapshot when revisiting a queued version", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Saved versions", "Picker Agent", {
+    recordOperations: true,
+  });
+  const { revision: first } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeValues("v2", { providerModel: "gpt-5.1" }),
+  );
+  const second = await fixture.deployAgent(namespace.id, agent.id);
+  const operator = await fixture.createNamespaceMember("version-operator", namespace.id, [
+    ...AGENT_READ,
+    ["operate", "agent"],
+  ]);
+  await trackSettledFetches(page);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, first.id, "configuration"),
+    operator.credentials,
+  );
+
+  const chooser = versionChooser(page);
+  const snapshot = page.locator(settledView).getByRole("tabpanel", { name: "Configuration" });
+  const checkVersion = async (id: string, model: string) => {
+    await snapshot.getByText(model, { exact: true }).waitFor();
+    // Leaving during a read rebuilds the page on return and hides a stale picker.
+    await waitForIdleFetches(page);
+    assert.equal(new URL(page.url()).searchParams.get("revision"), id);
+    assert.equal(await chooser.inputValue(), id);
+  };
+  await checkVersion(first.id, "openai/gpt-4.1");
+  await chooser.selectOption(second.id);
+  await checkVersion(second.id, "openai/gpt-5.1");
+  const queuedPicker = required(await chooser.elementHandle());
+  await chooser.selectOption(first.id);
+  await checkVersion(first.id, "openai/gpt-4.1");
+  await chooser.selectOption(second.id);
+  await checkVersion(second.id, "openai/gpt-5.1");
+  assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+});
 
 // The Versions list marked only the current version: a failed v2 looked like v1 (finding 2095),
 // and each version was its own Tab stop, 51 on one Agent (finding 2101). The latest version now

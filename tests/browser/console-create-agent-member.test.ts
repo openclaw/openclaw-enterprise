@@ -17,7 +17,7 @@ import {
   type SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
 
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { authorizationDenials, createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { grantConfiguredNamespaceRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";

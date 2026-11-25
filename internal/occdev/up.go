@@ -362,6 +362,12 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if err := r.writeKubeconfigs(ctx, state); err != nil {
 			return err
 		}
+		if sandboxDriver == "openshell" {
+			// OCC TokenService needs its Kubernetes private store before the Compose API starts.
+			if err := r.ensureKubernetesNamespace(ctx, "oce-installation-secrets"); err != nil {
+				return err
+			}
+		}
 		if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
 			return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
 		}

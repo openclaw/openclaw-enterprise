@@ -10,7 +10,7 @@ import {
 } from "../../apps/controller/src/auth/oidc.ts";
 import type { ProviderFailure } from "../../apps/controller/src/auth/provider-transport.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { encodeSegment as encode, idTokenSigner, rsaSigningKey } from "../helpers/id-token.mjs";
+import { encodeSegment as encode, idTokenSigner, rsaSigningKey } from "../helpers/id-token.ts";
 
 // An Auth0-shaped issuer: the trailing slash is part of `iss`.
 const issuer = "https://tenant.idp.example.test/";

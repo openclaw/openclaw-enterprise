@@ -27,7 +27,7 @@ import { createEnvoyWorkspaceGatewayPlan } from "./envoy-workspace-gateway.mjs";
 import { createHarnessConfiguration, nativeAdminGatewayAuth } from "./harness-configuration.mjs";
 import { loadInstallationFile } from "./installation-file.ts";
 import {
-  createOpenShellInstallationConfiguration,
+  createOpenShellTokenServiceInstallationConfiguration,
   createOpenShellKubernetesFixture,
 } from "./openshell-kubernetes-real.mjs";
 import { createPostgresAgentApp } from "./postgres-agent-app.mjs";
@@ -140,7 +140,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
     host: "storage.googleapis.com",
     ports,
   };
-  const configuration = createOpenShellInstallationConfiguration({
+  const configuration = createOpenShellTokenServiceInstallationConfiguration({
     authentication: { mode: "kubeconfig", kubeconfigPath, context: kubernetesContext },
     platformNamespace,
     gatewayImage,
@@ -152,10 +152,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   const backend = asRecord((startup.backend as unknown[])[0])!;
   const sandbox = asRecord(asRecord(drivers.sandbox)?.configuration)!;
   const sandboxKubernetes = asRecord(sandbox.kubernetes)!;
-  Reflect.deleteProperty(drivers, "credential_gateway");
-  Reflect.deleteProperty(asRecord(backend.drivers)!, "credential_gateway");
   Object.assign(drivers, {
-    token_service: { id: "occ", configuration: {} },
     plugin: [{ id: "occ-plugin", configuration: {} }],
   });
   configuration.drivers.compute.id = controller.selectedDriver("compute").id;
@@ -350,7 +347,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   const agentConfig = await request(
     "POST",
     `${base}/configurations`,
-    { name: "Optional Plugin", kind: "agent", values },
+    { kind: "agent", values },
     201,
   );
   const agent = await request(

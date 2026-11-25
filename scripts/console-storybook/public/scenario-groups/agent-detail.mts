@@ -2080,6 +2080,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Fold Deployment details and Tab to Run diagnostics for this version. Routine queued polls keep the fold, focus and visible button position. Repeat expanded at desktop and phone widths; unchanged healthy Refresh deployment also keeps the fold.",
           'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+          "On Configuration, use Viewing version to choose v6, then v7. Repeat with the keyboard. Each time you return to v7, the picker should show v7 and the notice should say Deploying version. Selected for service stays v6.",
           "Open draft and check the hint beside the enabled Deploy new version button. It reads “v7 was queued at the last check.”",
         ],
       },
@@ -2641,8 +2642,8 @@ export function createAgentDetailScenarios({
         description:
           "The viewer can read the Agent. Recovery tells them to ask a Configuration editor to choose a model and someone with deploy access to redeploy.",
         steps: [
-          "Check that the recovery has one link, Open v7 Logs, and the header says Open draft. The picker includes Draft and its Configuration access.",
-          "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
+          "Check that recovery says whom to ask for logs. The viewer cannot read logs or runtime status, so the block has no Logs link.",
+          "The header still offers Open draft. The picker includes Draft and its Configuration access.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
       },
@@ -2657,6 +2658,7 @@ export function createAgentDetailScenarios({
           update: false,
           deploy: true,
           operate: false,
+          readLogs: false,
           delete: false,
           administer: false,
           configurationUpdate: false,
@@ -2669,7 +2671,7 @@ export function createAgentDetailScenarios({
         description:
           "The viewer can deploy the Agent. Recovery tells them to ask a Configuration editor to choose a model, then redeploy after the editor saves it.",
         steps: [
-          "Select Open draft and confirm the Configuration tab opens in view, focused, without deploying.",
+          "Confirm Open draft is the only recovery action. Select it and check that the Configuration tab opens in view, focused, without deploying.",
         ],
         gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
       },

@@ -229,7 +229,9 @@ export function createDeploymentRecovery(
       : `${version} did not deploy successfully`;
     // Offer only links the caller's permission answer and this tab's remembered denials
     // allow; the API still authorizes each page they open (finding 1458).
+    // Operators can inspect runtime status on the Logs tab without access to log text.
     const logsAllowed =
+      !(permissions?.readLogs === false && permissions.operate === false) &&
       !logTextDenied(context, agentId) &&
       !context.deniedReads?.has(`${path}/revisions/${encodeURIComponent(latest.id)}`);
     // Agent permissions can support opening a draft; they do not grant Configuration access.

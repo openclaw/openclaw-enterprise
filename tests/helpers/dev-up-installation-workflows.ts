@@ -7,6 +7,8 @@ import { constants as osConstants, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import test, { before } from "node:test";
 import { promisify } from "node:util";
+import type { Page } from "playwright";
+import { asRecord } from "../../packages/utils/src/objects.ts";
 import { devUpUnrelatedImage, prepareDevUpImage } from "../../scripts/ci/prepare.ts";
 import { availablePort } from "../helpers/available-port.ts";
 import { startupFailureObservation } from "./local-first-agent-stack.mjs";
@@ -14,6 +16,46 @@ import { startupFailureObservation } from "./local-first-agent-stack.mjs";
 const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");
 const selected = process.env.OCC_TEST_DEV_UP_K3D_REAL === "1";
+
+function record(value: unknown, ...path: string[]): Record<string, unknown> {
+  for (const key of path) {
+    value = asRecord(value)?.[key];
+  }
+  const fields = asRecord(value);
+  assert.ok(fields, "Expected a JSON object");
+  return fields;
+}
+
+function list(value: unknown): unknown[] {
+  assert.ok(Array.isArray(value), "Expected a JSON array");
+  return value;
+}
+
+function stringField(value: unknown): string {
+  assert.ok(typeof value === "string", "Expected a string field");
+  return value;
+}
+
+function accountData(response: unknown) {
+  const data = record(response, "data");
+  const version = data.version;
+  assert.ok(typeof version === "number", "Expected a numeric account version");
+  return { data, version };
+}
+
+function ownField(error: unknown, key: string): unknown {
+  return error == null ? undefined : Object.getOwnPropertyDescriptor(error, key)?.value;
+}
+
+function buildErrorCategory(output: string): string {
+  const patterns: [string, RegExp][] = [
+    ["space", /no space left on device|\bENOSPC\b/i],
+    ["oom", /out of memory|cannot allocate memory|\boom[- ]kill(?:ed|er)?\b/i],
+    ["download", /failed to (?:download|fetch)|download failed/i],
+    ["compile", /\berror TS\d{4}\b|compilation failed|failed to compile/i],
+  ];
+  return patterns.find(([, pattern]) => pattern.test(output))?.[0] ?? "unknown";
+}
 
 // Both the lane and direct opt-in execution need this image on a cold engine.
 // Keep the 15-minute pull retry bound, three 30-second inspections and process
@@ -44,7 +86,7 @@ export function registerInstallationRefusals() {
       const root = await mkdtemp(join(tmpdir(), "oce-dev-image-preflight-"));
       t.after(() => rm(root, { recursive: true, force: true }));
       const stateDirectory = join(root, "state");
-      const environment = {
+      const environment: NodeJS.ProcessEnv = {
         ...process.env,
         OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
         OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
@@ -57,7 +99,7 @@ export function registerInstallationRefusals() {
 
       // Fail before state or cluster creation if an operator mixes one selected
       // image with a separately built checkout or uses mutable image tags.
-      const reject = async (overrides, expected) => {
+      const reject = async (overrides: NodeJS.ProcessEnv, expected: RegExp) => {
         await assert.rejects(
           execute(join(repository, "scripts", "dev-up"), [], {
             cwd: repository,
@@ -65,7 +107,7 @@ export function registerInstallationRefusals() {
             timeout: 30_000,
           }),
           (error) => {
-            assert.match(error.stderr, expected);
+            assert.match(stringField(ownField(error, "stderr")), expected);
             return true;
           },
         );
@@ -105,7 +147,7 @@ export function registerInstallationRefusals() {
       const root = await mkdtemp(join(tmpdir(), "oce-dev-policy-failure-"));
       const stateDirectory = join(root, "state");
       const cluster = `occ-dev-policy-${randomUUID().slice(0, 8)}`;
-      const ports = new Set();
+      const ports = new Set<number>();
       while (ports.size < 3) {
         ports.add(await availablePort());
       }
@@ -129,7 +171,7 @@ process.exit(result.status ?? 1);
 `,
         { mode: 0o700 },
       );
-      const environment = {
+      const environment: NodeJS.ProcessEnv = {
         ...process.env,
         PATH: `${root}${delimiter}${process.env.PATH}`,
         OPENCLAW_DEV_PORT: String(apiPort),
@@ -178,60 +220,58 @@ process.exit(result.status ?? 1);
         (error) => {
           // A cold build can fail before the policy probe. Preserve its category
           // without including launcher output, which can contain private state.
-          const output = [error.stdout, error.stderr]
+          const stdout = ownField(error, "stdout");
+          const stderr = ownField(error, "stderr");
+          const code = ownField(error, "code");
+          const rawSignal = ownField(error, "signal");
+          const out = typeof stdout === "string" ? stdout : "";
+          const err = typeof stderr === "string" ? stderr : "";
+          const output = [stdout, stderr]
             .filter((value) => typeof value === "string")
             .map((value) => value.slice(-65_536))
             .join("\n");
-          const buildError =
-            [
-              ["space", /no space left on device|\bENOSPC\b/i],
-              ["oom", /out of memory|cannot allocate memory|\boom[- ]kill(?:ed|er)?\b/i],
-              ["download", /failed to (?:download|fetch)|download failed/i],
-              ["compile", /\berror TS\d{4}\b|compilation failed|failed to compile/i],
-            ].find(([, pattern]) => pattern.test(output))?.[0] ?? "unknown";
-          const exit = Number.isSafeInteger(error.code) ? error.code : "unknown";
+          const buildError = buildErrorCategory(output);
+          const exit = typeof code === "number" && Number.isSafeInteger(code) ? code : "unknown";
           let signal = "unknown";
-          if (error.signal == null) {
+          if (rawSignal == null) {
             signal = "none";
           } else if (
-            ["SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV", "SIGINT", "SIGHUP"].includes(error.signal)
+            typeof rawSignal === "string" &&
+            ["SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV", "SIGINT", "SIGHUP"].includes(rawSignal)
           ) {
-            signal = error.signal;
+            signal = rawSignal;
           }
           const elapsedSeconds = Math.round((performance.now() - launchStarted) / 1_000);
-          const stages = [
+          const stages: [string, string][] = [
             ["cluster creation", "Creating Kubernetes-only k3d cluster"],
             ["image import", "Importing the controller and PostgreSQL images"],
             ["network isolation check", "Verifying Kubernetes network isolation"],
           ];
-          const stage =
-            stages.findLast(([, marker]) => error.stdout?.includes(marker))?.[0] ?? "unknown";
+          const stage = stages.findLast(([, marker]) => out.includes(marker))?.[0] ?? "unknown";
           const startup = startupFailureObservation();
-          startup.write(typeof error.stdout === "string" ? error.stdout : "");
-          const observation = startup.finish(error.code, error.signal, error.killed);
+          startup.write(out);
+          const observation = startup.finish(code, rawSignal, Boolean(ownField(error, "killed")));
           const attribution = observation
             ? ` primary-stage ${observation.primaryStage}, cleanup-failed ${observation.cleanupFailed}, parent-context-done ${observation.parentContextDone}.`
             : "";
           const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}, stage ${stage}, elapsed ${elapsedSeconds}s.${attribution}`;
           assert.ok(
-            /Verifying Kubernetes network isolation before configuring gateway trust/.test(
-              error.stdout,
-            ),
+            /Verifying Kubernetes network isolation before configuring gateway trust/.test(out),
             `Launcher did not reach the network isolation guard; ${diagnostic}`,
           );
           assert.ok(
-            /Kubernetes NetworkPolicy enforcement could not be verified/.test(error.stderr),
+            /Kubernetes NetworkPolicy enforcement could not be verified/.test(err),
             `Launcher did not report failed NetworkPolicy enforcement; ${diagnostic}`,
           );
           assert.ok(
-            !/Installing OCE in Namespace/.test(error.stdout),
+            !/Installing OCE in Namespace/.test(out),
             `Launcher installed OCE despite failed NetworkPolicy enforcement; ${diagnostic}`,
           );
           return true;
         },
       );
       assert.equal(existsSync(stateDirectory), false, "failed startup must remove owned state");
-      const clusters = JSON.parse(
+      const clusters: unknown = JSON.parse(
         (
           await execute(realK3d, ["cluster", "list", "-o", "json"], {
             cwd: repository,
@@ -240,56 +280,52 @@ process.exit(result.status ?? 1);
         ).stdout,
       );
       assert.equal(
-        clusters.some(({ name }) => name === cluster),
+        list(clusters).some((item) => record(item).name === cluster),
         false,
       );
     },
   );
 }
 
-export function assertKeycloakSecondPassFailure(error) {
-  const { stdout, stderr, code, signal } = Object.fromEntries(
-    ["stdout", "stderr", "code", "signal"].map((key) => [
-      key,
-      error == null ? undefined : Object.getOwnPropertyDescriptor(error, key)?.value,
-    ]),
-  );
+export function assertKeycloakSecondPassFailure(error: unknown) {
+  const stdout = ownField(error, "stdout");
+  const stderr = ownField(error, "stderr");
+  const code = ownField(error, "code");
+  const signal = ownField(error, "signal");
   const out = typeof stdout === "string" ? stdout : "";
   const err = typeof stderr === "string" ? stderr : "";
   const secondPass = "Enabling Keycloak sign-in (second Helm pass)";
-  const expected = [
+  const checkpoints: [string, string, string][] = [
     ["Keycloak second Helm pass", out, secondPass],
     ["injected second Helm pass failure", err, "injected second Helm pass failure"],
     ["injected owned cluster deletion failure", err, "injected owned cluster deletion failure"],
-  ].find(([, stream, marker]) => !stream.includes(marker));
+  ];
+  const expected = checkpoints.find(([, stream, marker]) => !stream.includes(marker));
   if (!expected) {
     return true;
   }
 
   // Launcher streams can contain credentials with arbitrary delimiters. Publish only
   // fixed labels, even when the launcher stops before either fault is injected.
-  const stage =
-    [
-      ["cluster creation", "Creating Kubernetes-only k3d cluster"],
-      ["image import", "Importing the controller and PostgreSQL images"],
-      ["network isolation check", "Verifying Kubernetes network isolation"],
-      ["OCE installation", "Installing OCE in Namespace"],
-      ["Keycloak installation", "Installing Keycloak in Namespace"],
-      ["Keycloak discovery", "Waiting for Keycloak discovery"],
-      ["Keycloak second Helm pass", secondPass],
-    ].findLast(([, marker]) => out.includes(marker))?.[0] ?? "unknown";
+  const stages: [string, string][] = [
+    ["cluster creation", "Creating Kubernetes-only k3d cluster"],
+    ["image import", "Importing the controller and PostgreSQL images"],
+    ["network isolation check", "Verifying Kubernetes network isolation"],
+    ["OCE installation", "Installing OCE in Namespace"],
+    ["Keycloak installation", "Installing Keycloak in Namespace"],
+    ["Keycloak discovery", "Waiting for Keycloak discovery"],
+    ["Keycloak second Helm pass", secondPass],
+  ];
+  const stage = stages.findLast(([, marker]) => out.includes(marker))?.[0] ?? "unknown";
   const failedBuild =
     out.match(
       /^\[occ-dev-timing\] stage=(controller-build|runtime-build) elapsed_ms=\d+ failed=true$/m,
     )?.[1] ?? "unknown";
-  const buildError =
-    [
-      ["space", /no space left on device|\bENOSPC\b/i],
-      ["oom", /out of memory|cannot allocate memory|\boom[- ]kill(?:ed|er)?\b/i],
-      ["download", /failed to (?:download|fetch)|download failed/i],
-      ["compile", /\berror TS\d{4}\b|compilation failed|failed to compile/i],
-    ].find(([, pattern]) => pattern.test(err))?.[0] ?? "unknown";
-  const exit = Number.isInteger(code) && code >= 0 && code <= 255 ? code : "unknown";
+  const buildError = buildErrorCategory(err);
+  const exit =
+    typeof code === "number" && Number.isInteger(code) && code >= 0 && code <= 255
+      ? code
+      : "unknown";
   const termination =
     signal === null
       ? "none"
@@ -315,32 +351,47 @@ export function registerInstallationKeycloak() {
         keycloakInstructions,
         keycloakLauncher,
         launchTrustingBrowser,
-        publishedJSON,
+        publishedJSON: requestJSON,
         verifyKeycloakAPIEgress,
       } = await import("../helpers/dev-up-keycloak.mjs");
+      const publishedJSON: (
+        endpoint: { hostname: string; port: number; ca: string },
+        path: string,
+        options?: {
+          method?: string;
+          headers?: Record<string, string>;
+          body?: string;
+          expectedStatus?: number;
+        },
+      ) => Promise<unknown> = requestJSON;
       const { chromium } = await import("playwright");
       const fixture = await keycloakLauncher(t);
       // Bootstrap and both Keycloak setup sign-ins must use the same normalized password,
       // including significant spaces, when an input has one Windows-style file terminator.
       const password = ` ${randomUUID()} `;
-      fixture.environment.OPENCLAW_DEV_PASSWORD = `${password}\r\n`;
+      const environment: NodeJS.ProcessEnv = fixture.environment;
+      environment.OPENCLAW_DEV_PASSWORD = `${password}\r\n`;
       const up = await fixture.dev("up");
       assert.equal((await fixture.read("initial-admin-password")) === password, true);
       const instructions = keycloakInstructions(up.stdout);
-      const origin = `https://${fixture.consoleHost}:${fixture.browserPort}`;
+      const { browserPort } = fixture;
+      assert.ok(browserPort !== undefined, "Expected a reserved browser port");
+      const origin = `https://${fixture.consoleHost}:${browserPort}`;
       assert.equal(instructions.consoleUrl, `${origin}/console/`);
       assert.deepEqual(instructions.caFiles, [
         join(fixture.stateDirectory, "browser-ca.crt"),
         join(fixture.stateDirectory, "gateway-ca.crt"),
       ]);
       assert.deepEqual(instructions.hosts, [{ address: "127.0.0.1", host: fixture.keycloakHost }]);
-      const state = JSON.parse(await fixture.read("state.json"));
+      const state = record(JSON.parse(await fixture.read("state.json")));
       assert.equal(state.signIn, "keycloak");
-      const values = JSON.parse(await fixture.read("helm-values.json"));
-      assert.equal(values.auth.oidc.enabled, true);
-      assert.equal(values.auth.passwordSignIn, "recovery-only");
-      assert.equal(values.agentNativeAdmin.enabled, true);
-      assert.equal(values.agentNativeAdmin.domain, `agents.${fixture.cluster}.oce.localhost`);
+      const values = record(JSON.parse(await fixture.read("helm-values.json")));
+      const auth = record(values.auth);
+      const nativeAdmin = record(values.agentNativeAdmin);
+      assert.equal(record(auth.oidc).enabled, true);
+      assert.equal(auth.passwordSignIn, "recovery-only");
+      assert.equal(nativeAdmin.enabled, true);
+      assert.equal(nativeAdmin.domain, `agents.${fixture.cluster}.oce.localhost`);
       // Probe the actual API after the OIDC upgrade, when the additive policy is active.
       await verifyKeycloakAPIEgress(fixture, state, values);
       const issuer = `https://${fixture.keycloakHost}/realms/oce`;
@@ -352,24 +403,24 @@ export function registerInstallationKeycloak() {
         },
         "/realms/oce/.well-known/openid-configuration",
       );
-      assert.equal(discovery.issuer, issuer);
-      assert.equal(discovery.token_endpoint, `${issuer}/protocol/openid-connect/token`);
+      assert.equal(record(discovery).issuer, issuer);
+      assert.equal(record(discovery).token_endpoint, `${issuer}/protocol/openid-connect/token`);
       const providers = await publishedJSON(
         {
           hostname: fixture.consoleHost,
-          port: fixture.browserPort,
+          port: browserPort,
           ca: await fixture.read("browser-ca.crt"),
         },
         "/api/auth/providers",
       );
-      assert.equal(providers.data.oidc, true);
-      assert.equal(providers.data.password, false);
+      assert.equal(record(providers, "data").oidc, true);
+      assert.equal(record(providers, "data").password, false);
 
       // Follow the printed steps: import the two CA files into a fresh NSS
       // database and resolve only the printed hosts line. The Console host is a
       // *.localhost name, which browsers resolve to loopback themselves.
       const browser = await launchTrustingBrowser(chromium, fixture.root, instructions);
-      const api = (page, path, body) =>
+      const api = (page: Page, path: string, body?: Record<string, string | number>) =>
         page.evaluate(
           async ({ path, body }) => {
             const response = await fetch(path, {
@@ -379,7 +430,8 @@ export function registerInstallationKeycloak() {
                 : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
               signal: AbortSignal.timeout(10_000),
             });
-            return { status: response.status, json: await response.json() };
+            const json: unknown = await response.json();
+            return { status: response.status, json };
           },
           { path, body },
         );
@@ -395,8 +447,8 @@ export function registerInstallationKeycloak() {
         assert.equal(signedIn.status, 200, "the recovery administrator remains usable");
         const admin = await api(page, "/api/auth/session");
         assert.equal(admin.status, 200);
-        const adminId = admin.json.data.user.id;
-        assert.equal(adminId, values.auth.recoveryUserId);
+        const adminId = stringField(record(admin.json, "data", "user").id);
+        assert.equal(adminId, auth.recoveryUserId);
         // Create a real password account through the supported administrator API.
         // Its correct password must still be denied in the recovery-only profile.
         const member = { email: `member-${randomUUID()}@example.test`, password: randomUUID() };
@@ -428,7 +480,7 @@ export function registerInstallationKeycloak() {
             const session = await api(page, "/api/auth/session");
             assert.equal(session.status, 200);
             assert.equal(
-              session.json.data.user.id,
+              record(session.json, "data", "user").id,
               adminId,
               "Alice is attached to the existing administrator",
             );
@@ -438,7 +490,7 @@ export function registerInstallationKeycloak() {
             const account = await publishedJSON(
               {
                 hostname: fixture.consoleHost,
-                port: fixture.browserPort,
+                port: browserPort,
                 ca: await fixture.read("browser-ca.crt"),
               },
               `/api/auth/accounts/${adminId}`,
@@ -449,7 +501,8 @@ export function registerInstallationKeycloak() {
                 },
               },
             );
-            assert.equal(account.data.userId, adminId);
+            const administrator = accountData(account);
+            assert.equal(administrator.data.userId, adminId);
             const sessionCookie = cookies.find(
               ({ name, value }) => name === "__Secure-openclaw_occ_shared.session_token" && value,
             );
@@ -465,7 +518,7 @@ export function registerInstallationKeycloak() {
 
             const endpoint = {
               hostname: fixture.consoleHost,
-              port: fixture.browserPort,
+              port: browserPort,
               ca: await fixture.read("browser-ca.crt"),
             };
             const headers = {
@@ -479,30 +532,30 @@ export function registerInstallationKeycloak() {
               password: randomUUID(),
             });
             assert.equal(created.status, 201);
-            const path = `/api/auth/accounts/${created.json.data.id}`;
-            const before = await publishedJSON(endpoint, path, { headers });
+            const path = `/api/auth/accounts/${stringField(record(created.json, "data").id)}`;
+            const before = accountData(await publishedJSON(endpoint, path, { headers }));
             assert.equal(before.data.disabled, false);
             const disabled = await api(page, `${path}/disable`, {
-              expectedVersion: before.data.version,
+              expectedVersion: before.version,
             });
             assert.equal(disabled.status, 200);
-            const persisted = await publishedJSON(endpoint, path, { headers });
+            const persisted = accountData(await publishedJSON(endpoint, path, { headers }));
             assert.equal(persisted.data.disabled, true);
-            assert.ok(persisted.data.version > before.data.version);
+            assert.ok(persisted.version > before.version);
 
             // Revoke this administrator's OCE sessions, then replay the captured
             // cookie with a current target version so only session admission fails.
             const revoked = await api(page, `/api/auth/accounts/${adminId}/revoke`, {
-              expectedVersion: account.data.version,
+              expectedVersion: administrator.version,
             });
             assert.equal(revoked.status, 200);
             const refused = await publishedJSON(endpoint, `${path}/enable`, {
               method: "POST",
               headers: { ...headers, "content-type": "application/json" },
-              body: JSON.stringify({ expectedVersion: persisted.data.version }),
+              body: JSON.stringify({ expectedVersion: persisted.version }),
               expectedStatus: 401,
             });
-            assert.equal(refused.error.code, "UNAUTHENTICATED");
+            assert.equal(record(refused, "error").code, "UNAUTHENTICATED");
 
             // A fresh recovery session observes the durable state independently
             // of the revoked cookie and the failed mutation response.
@@ -522,7 +575,7 @@ export function registerInstallationKeycloak() {
                   cookie: recoveryCookies.map(({ name, value }) => `${name}=${value}`).join("; "),
                 },
               });
-              assert.deepEqual(unchanged.data, persisted.data);
+              assert.deepEqual(record(unchanged).data, persisted.data);
             } finally {
               await recovery.close();
             }
@@ -552,8 +605,8 @@ export function registerInstallationKeycloak() {
             }).toString(),
           },
         );
-        assert.equal(typeof token.access_token, "string");
-        const authorization = `Bearer ${token.access_token}`;
+        const accessToken = stringField(record(token).access_token);
+        const authorization = `Bearer ${accessToken}`;
         const users = await publishedJSON(
           keycloak,
           "/admin/realms/oce/users?username=alice&exact=true",
@@ -561,10 +614,11 @@ export function registerInstallationKeycloak() {
             headers: { authorization },
           },
         );
-        assert.equal(users.length, 1);
-        const [alice] = users;
+        const matches = list(users);
+        assert.equal(matches.length, 1);
+        const alice = record(matches[0]);
         assert.equal(alice.username, "alice");
-        assert.match(alice.id, /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/iu);
+        assert.match(stringField(alice.id), /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/iu);
         alicePassword = randomUUID();
         await publishedJSON(keycloak, `/admin/realms/oce/users/${alice.id}/reset-password`, {
           method: "PUT",
@@ -572,7 +626,7 @@ export function registerInstallationKeycloak() {
           headers: { authorization, "content-type": "application/json" },
           body: JSON.stringify({ type: "password", value: alicePassword, temporary: false }),
         });
-        const before = JSON.parse(
+        const before: unknown = JSON.parse(
           (
             await fixture.kubectl([
               "-n",
@@ -586,7 +640,8 @@ export function registerInstallationKeycloak() {
             ])
           ).stdout,
         );
-        assert.equal(before.items.length, 1);
+        const previousPods = list(record(before).items);
+        assert.equal(previousPods.length, 1);
         await fixture.kubectl([
           "-n",
           "occ-development-keycloak",
@@ -602,7 +657,7 @@ export function registerInstallationKeycloak() {
           "deployment/keycloak",
           "--timeout=180s",
         ]);
-        const after = JSON.parse(
+        const after: unknown = JSON.parse(
           (
             await fixture.kubectl([
               "-n",
@@ -616,7 +671,10 @@ export function registerInstallationKeycloak() {
             ])
           ).stdout,
         );
-        assert.ok(after.items.some((pod) => pod.metadata.uid !== before.items[0].metadata.uid));
+        const previousUid = record(previousPods[0], "metadata").uid;
+        assert.ok(
+          list(record(after).items).some((pod) => record(pod, "metadata").uid !== previousUid),
+        );
         // A fresh browser session must authenticate with the same persisted realm credentials.
         await signInAlice();
       } finally {
@@ -665,7 +723,7 @@ if (args[0] === "upgrade" && index >= 0 && args[index + 1] === ${JSON.stringify(
   console.error("injected owned cluster deletion failure"); process.exit(1);
 }`,
         ],
-      ]) {
+      ] as const) {
         await writeFile(
           join(fixture.root, name),
           `#!${process.execPath}
@@ -679,16 +737,15 @@ process.exit(result.status ?? 1);
           { mode: 0o700 },
         );
       }
-      await assert.rejects(
-        fixture.dev("up", {
-          ...fixture.environment,
-          PATH: `${fixture.root}${delimiter}${fixture.environment.PATH}`,
-        }),
-        assertKeycloakSecondPassFailure,
-      );
+      const environment: NodeJS.ProcessEnv = fixture.environment;
+      const faultEnvironment = {
+        ...fixture.environment,
+        PATH: `${fixture.root}${delimiter}${environment.PATH}`,
+      };
+      await assert.rejects(fixture.dev("up", faultEnvironment), assertKeycloakSecondPassFailure);
       assert.equal(existsSync(helmMarker), true);
       assert.equal(existsSync(deleteMarker), true);
-      assert.equal(JSON.parse(await fixture.read("state.json")).cluster, fixture.cluster);
+      assert.equal(record(JSON.parse(await fixture.read("state.json"))).cluster, fixture.cluster);
       for (const name of ["kubeconfig", "initial-admin-password", "keycloak-alice-password"]) {
         assert.equal((await stat(join(fixture.stateDirectory, name))).mode & 0o077, 0);
       }

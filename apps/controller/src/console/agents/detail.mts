@@ -2552,12 +2552,14 @@ export async function renderAgentDetail(
     }
     chooser.value = selected;
     chooser.addEventListener("change", () => {
-      if (draftEditorBlocksNavigation() || sharingWrite) {
-        chooser.value = selected;
+      const requested = chooser.value;
+      // Navigation can retain this page and restore its picker on a later visit.
+      chooser.value = selected;
+      if (sharingWrite) {
         showLeaveBlock();
         return;
       }
-      change(chooser.value, "configuration");
+      change(requested, "configuration");
     });
     trackRevisionControl(chooser);
     const older =
@@ -6599,7 +6601,7 @@ export async function renderAgentDetail(
               (binding) =>
                 `${binding.repositoryRef} · ${draft ? draftRepositoryLabel(binding) : (repositoryProfile(binding.profile)?.label ?? "Unknown access level")}`,
             )
-            .join(", ") ?? "None",
+            .join(", ") || (draft ? "None selected" : "None"),
         ],
         [
           "Harness authentication",

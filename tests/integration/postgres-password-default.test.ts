@@ -3,7 +3,7 @@ import { scryptSync } from "node:crypto";
 import test from "node:test";
 import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   postgresSignInState,
   installationRoles,

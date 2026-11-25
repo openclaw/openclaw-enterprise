@@ -26,8 +26,10 @@ stories retain their older profile fixtures.
 ## Positive and negative checks
 
 1. In the empty story, confirm no selected repositories and a Contributor Agent
-   default. Select application through its checkbox. Save repository access;
-   the request must keep `defaultProfile: "git-full"` and explicitly select
+   default. Open **Configuration** and check that **Repository access** shows
+   **None selected**. Return to **Repositories**, select application through
+   its checkbox and save repository access. The request must keep
+   `defaultProfile: "git-full"` and explicitly select
    `{ repositoryRef: "application", profile: "github-repository" }`. Confirm
    the saved message and selection after visiting Channels and returning.
    API-only must not be selectable.
