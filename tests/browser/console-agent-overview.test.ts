@@ -1961,6 +1961,10 @@ test("Recovery offers Open Configuration draft when the caller may edit the Conf
   const poll = await holdRequests(t, page, statusUrl, { once: true });
   await page.clock.fastForward(10_000);
   await poll.requested;
+  await shortcut.press("Tab");
+  const focusedDraft = required(await draft.elementHandle());
+  const draftHref = required(await draft.getAttribute("href"));
+  assert.ok(await focusedDraft.evaluate((node) => node.matches(":focus-visible")));
   const permissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`);
   restrict(fixture.policy, "operate", "agent", { namespaceId: namespace.id, resourceId: agent.id });
   const refused = page.waitForResponse(statusUrl);
@@ -1968,8 +1972,15 @@ test("Recovery offers Open Configuration draft when the caller may edit the Conf
   assert.equal((await refused).status(), 403);
   await page.getByText(/runtime status is no longer shown/).waitFor();
   assert.deepEqual(await links(), ["Open draft"]);
+  assert.ok(
+    await focusedDraft.evaluate((node) => node.matches(":focus-visible")),
+    "withdrawing the status shortcut keeps keyboard focus on Open draft",
+  );
+  assert.equal(await draft.getAttribute("class"), "button button--primary");
+  assert.equal(await draft.getAttribute("href"), draftHref);
   permissions.release();
   await waitForIdleFetches(page);
+  assert.ok(await focusedDraft.evaluate((node) => node.matches(":focus-visible")));
   await configuration.press("Enter");
   await waitForIdleFetches(page);
   assert.deepEqual(await links(), ["Open draft"]);

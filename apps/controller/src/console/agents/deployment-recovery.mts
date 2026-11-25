@@ -339,7 +339,28 @@ export function createDeploymentRecovery(
       actions.forEach((action, index) => {
         action.className = index === 0 ? "button button--primary" : "button";
       });
-      recoveryActions.replaceChildren(...actions);
+      // Keep a surviving focused link attached. Deploy again and Open draft can share a URL
+      // but have different click handlers, so the label must match too.
+      const focused = document.activeElement;
+      const retained =
+        focused instanceof HTMLAnchorElement && focused.parentElement === recoveryActions
+          ? actions.find(
+              (link) => link.href === focused.href && link.textContent === focused.textContent,
+            )
+          : undefined;
+      if (focused && retained) {
+        for (const child of Array.from(recoveryActions.children)) {
+          if (child !== focused) {
+            child.remove();
+          }
+        }
+        const index = actions.indexOf(retained);
+        focused.className = retained.className;
+        focused.before(...actions.slice(0, index));
+        focused.after(...actions.slice(index + 1));
+      } else {
+        recoveryActions.replaceChildren(...actions);
+      }
       recoveryActions.hidden = actions.length === 0;
     }
     return { revisionId: latest.id, version, text: `${lead}. ${impact}` };
