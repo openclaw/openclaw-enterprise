@@ -88,5 +88,9 @@ Withdrawing a required model Source blocks new OCE HTTP chats. A running
 process can still use the installed key until an operator with Stop permission
 retires the execution. Preserve the original API, Worker and grant until cleanup
 finishes. Removing the pair disables its checks for retained copies.
-To rotate the static key, update the Source after retirement,
-then deploy a fresh revision.
+To rotate the static key, update the existing Source after retirement,
+then deploy a fresh revision under the same registration.
+
+Before switching registrations, confirm that Stop completed under the
+original registration and plan to use a new Agent. Deployment and Stop
+revisit earlier revisions and can fail if their registration differs.
