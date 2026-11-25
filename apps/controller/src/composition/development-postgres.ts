@@ -123,7 +123,11 @@ export async function composePostgresDevelopment(
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, drivers?.protectedDriver, database);
+    closeResources(
+      exchange,
+      drivers?.protectedDriver ?? drivers?.credentialDeliveryRegistration,
+      database,
+    );
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
@@ -209,7 +213,9 @@ export async function composePostgresDevelopment(
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    installSelectedSandboxDrivers(controller, drivers ?? { sandboxDriver, protectedDriver });
+    if (drivers) {
+      installSelectedSandboxDrivers(controller, drivers);
+    }
     if (configurationDriver !== undefined) {
       controller.registerDriver(configurationDriver);
       controller.selectDriver("configuration", configurationDriver.id);

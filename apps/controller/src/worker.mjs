@@ -106,7 +106,7 @@ let metricsClosing;
 let receiptServer;
 let repositoryGitTransport;
 let preparedRepositoryGit;
-let protectedDriver;
+let sandboxOwner;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -170,7 +170,7 @@ try {
     }
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
-  protectedDriver = drivers?.protectedDriver;
+  sandboxOwner = drivers?.protectedDriver ?? drivers?.credentialDeliveryRegistration;
   let computeDriver;
   if (drivers === undefined && mode === "development") {
     const { createDevelopmentDockerComputeDriver } =
@@ -301,10 +301,10 @@ try {
     await unlink(readinessPath).catch(() => {});
   }
   if (worker !== undefined) {
-    // The worker closes its protected Driver; before it exists, close the loaded registration.
+    // The worker closes its Sandbox registration; before it exists, close it here.
     await worker.stop().catch(() => {});
   } else {
-    await protectedDriver?.close().catch(() => {});
+    await sandboxOwner?.close().catch(() => {});
     await pool?.end();
   }
   try {

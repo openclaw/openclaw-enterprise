@@ -1781,8 +1781,8 @@ export class ControllerWorker {
     }
     this.closing = true;
     await this.stopLoop();
-    // A failed protected Driver close must not leave the database pool open.
-    await closeResources(this.protectedDriver, this.state);
+    // A failed Sandbox registration close must not leave the database pool open.
+    await closeResources(this.protectedDriver ?? this.credentialDeliveryRegistration, this.state);
     this.emit({ event: "worker.stopped" });
   }
 
@@ -2078,7 +2078,8 @@ export class ControllerWorker {
     if (this.configuration?.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(this.configuration);
     }
-    const lifecycle = this.protectedDriver ? this.protectedDriver.lifecycleDriver : this.sandbox;
+    const owner = this.protectedDriver ?? this.credentialDeliveryRegistration;
+    const lifecycle = owner ? owner.lifecycleDriver : this.sandbox;
     if (lifecycle?.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(lifecycle);
     }

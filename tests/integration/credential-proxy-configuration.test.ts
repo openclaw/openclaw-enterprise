@@ -12,7 +12,7 @@ import {
   type ProxyRevisionContext,
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
-import { DriverConfigurationRegistry } from "../../packages/occ/src/index.ts";
+import { DriverConfigurationRegistry, InstalledDriver } from "../../packages/occ/src/index.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -23,7 +23,7 @@ import {
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import * as releaseFixture from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 import * as repositoryFixture from "../fixtures/driver-packages/protected-execution-driver/repository-git.ts";
-import { createExternalProtectedDriver } from "../../apps/controller/src/composition/driver-packages.ts";
+import { createExternalSandboxDriver } from "../../apps/controller/src/composition/driver-packages.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 const sensitive = "SECRET-DO-NOT-LEAK";
@@ -236,7 +236,9 @@ test("the external protected factory closes a registration it refuses", async ()
   };
   const { calls } = releaseFixture;
   const closed = calls.close;
-  const accepted = await createExternalProtectedDriver(releaseFixture, selection);
+  const options = { legacyProxySelected: true, tokenServiceSelected: false };
+  const accepted = await createExternalSandboxDriver(releaseFixture, selection, options);
+  assert.ok(accepted instanceof InstalledDriver);
   assert.equal(calls.close, closed, "an accepted registration stays open");
   await accepted.close();
   assert.equal(calls.close, closed + 1);
@@ -251,19 +253,21 @@ test("the external protected factory closes a registration it refuses", async ()
     },
   });
   await assert.rejects(
-    createExternalProtectedDriver(
+    createExternalSandboxDriver(
       partial(() => void closes++),
       selection,
+      options,
     ),
     { name: "DriverSelectionError" },
   );
   await assert.rejects(
-    createExternalProtectedDriver(
+    createExternalSandboxDriver(
       partial(() => {
         closes++;
         throw new Error("close failed");
       }),
       selection,
+      options,
     ),
     { name: "DriverSelectionError" },
   );

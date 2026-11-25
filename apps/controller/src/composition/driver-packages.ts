@@ -5,11 +5,9 @@ import { findPackageJSON } from "node:module";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
-  ComputeDriver,
-  ConfigurationDriver,
+  DriverByCapability,
   DriverImplementation,
   DriverRegistration,
-  IAMDriver,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import type { NativeIAMStateStore } from "@openclaw-enterprise/iam";
@@ -18,6 +16,7 @@ import type { SelectedDriverConfiguration } from "./installation-config.ts";
 import { withoutByteOrderMark } from "./startup-file.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
+type ExternalDriverCapability = "configuration" | "iam" | "compute";
 
 interface ExternalDriverModule extends DriverImplementation {
   createDriver(options: {
@@ -389,12 +388,12 @@ export async function loadDriverPackage(
   });
 }
 
-export function createExternalDriver(
+export function createExternalDriver<Capability extends ExternalDriverCapability>(
   implementation: ExternalDriverModule,
   selection: SelectedDriverConfiguration,
-  capability: "configuration" | "iam" | "compute" | "sandbox",
+  capability: Capability,
   platformState?: NativeIAMStateStore,
-): ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver {
+): DriverByCapability[Capability] {
   if (capability === "iam" && typeof platformState?.loadNativeIAMState !== "function") {
     throw new Error("drivers.iam factory requires platform state.");
   }
@@ -407,6 +406,14 @@ export function createExternalDriver(
       ...(capability === "compute" ? { getOperationAbortSignal: currentComputeAbortSignal } : {}),
     }),
   );
+  return validateExternalDriver(created, selection, capability);
+}
+
+function validateExternalDriver<Capability extends ExternalDriverCapability | "sandbox">(
+  created: ConfigurationRecord | undefined,
+  selection: SelectedDriverConfiguration,
+  capability: Capability,
+): DriverByCapability[Capability] {
   if (created === undefined) {
     throw new Error(`drivers.${capability} factory result must be one object.`);
   }
@@ -448,26 +455,40 @@ export function createExternalDriver(
   ) {
     throw new Error("drivers.compute factory returned invalid lifecycle Driver wiring.");
   }
-  return created as unknown as ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver;
+  return created as unknown as DriverByCapability[Capability];
 }
 
 /** Load one package instance for the selected capabilities; the sandbox selection owns its configuration.
  * A registration this refuses is closed before the refusal returns, so a refused startup can exit. */
-export async function createExternalProtectedDriver(
+export async function createExternalSandboxDriver(
   implementation: ExternalDriverModule,
   selection: SelectedDriverConfiguration,
-  // Composition that changes the installed authority must also change its durable identity.
-  repositoryAuthorityIdentity?: string,
-): Promise<InstalledDriver> {
+  options: {
+    readonly legacyProxySelected: boolean;
+    readonly tokenServiceSelected: boolean;
+    // Composition that changes the installed authority must also change its durable identity.
+    readonly repositoryAuthorityIdentity?: string | undefined;
+  },
+): Promise<InstalledDriver | SandboxDriver> {
   const { id, configuration } = selection;
   const registration = asRecord(
     implementation.createDriver({ id, configuration, implementation: selection.implementation }),
   );
+  const { legacyProxySelected, tokenServiceSelected, repositoryAuthorityIdentity } = options;
   try {
+    if (
+      !legacyProxySelected &&
+      (!registration || registration.capability === "sandbox" || !("capabilities" in registration))
+    ) {
+      return validateExternalDriver(registration, selection, "sandbox");
+    }
     if (!registration || !asRecord(registration.capabilities)) {
       throw new Error(
         "The selected package must return one Driver registration for Sandbox and Credential Proxy.",
       );
+    }
+    if (!legacyProxySelected && !tokenServiceSelected) {
+      throw new Error("An external Sandbox delivery registration requires drivers.token_service.");
     }
     const owner = new InstalledDriver(
       repositoryAuthorityIdentity === undefined
@@ -476,7 +497,7 @@ export async function createExternalProtectedDriver(
       registration as unknown as DriverRegistration,
     );
     owner.require("sandbox");
-    owner.require("credential_proxy");
+    owner.require(legacyProxySelected ? "credential_proxy" : "credential_proxy_delivery");
     return owner;
   } catch (error) {
     try {

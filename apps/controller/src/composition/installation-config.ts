@@ -108,7 +108,7 @@ import { ManagedOpenShellSandbox } from "../drivers/sandbox/openshell/managed.ts
 import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
 import {
   createExternalDriver,
-  createExternalProtectedDriver,
+  createExternalSandboxDriver,
   loadDriverPackage,
 } from "./driver-packages.ts";
 import { SshComputeDriver, type SshComputeDriverOptions } from "../drivers/compute/ssh/index.ts";
@@ -1494,11 +1494,7 @@ async function composeInstallationConfiguration(
           configured.configuration as unknown as KubernetesConfigurationDriverOptions,
           { id: configured.id, implementation: configured.implementation, preprovisionedNamespace },
         )
-      : (createExternalDriver(
-          configurationPackage.module,
-          configured,
-          "configuration",
-        ) as ConfigurationDriver);
+      : createExternalDriver(configurationPackage.module, configured, "configuration");
   // One gateway object serves both member Drivers, so they share clients and naming.
   const openShell =
     openShellBackend === undefined
@@ -1566,10 +1562,10 @@ async function composeInstallationConfiguration(
     },
   );
   const tokenService = new TokenService();
-  const createCredentialDeliveryProxy = async (
+  const createCredentialDeliveryProxy = (
     pairedSandbox: SandboxDriver,
     tokenServiceImplementation: string,
-  ): Promise<CredentialProxyDriver> => {
+  ): CredentialProxyDriver => {
     const sandbox = pairedSandbox as SandboxDriver &
       Pick<OpenShellSandboxDriver, "gitRuntimeProviderName" | "withdrawStagedCredentialRoute">;
     if (
@@ -1588,8 +1584,10 @@ async function composeInstallationConfiguration(
       sandbox,
     });
   };
-  const { sandboxDriver, protectedDriver, repositoryTransport } = await (async (): Promise<
-    Pick<InstallationRuntimeDrivers, "sandboxDriver" | "protectedDriver" | "repositoryTransport">
+  const { sandboxDriver, registration, repositoryTransport } = await (async (): Promise<
+    Pick<InstallationRuntimeDrivers, "sandboxDriver" | "repositoryTransport"> & {
+      registration?: InstalledDriver;
+    }
   > => {
     if (sandbox === undefined) {
       return {};
@@ -1620,22 +1618,17 @@ async function composeInstallationConfiguration(
       };
     }
     if (sandboxPackage !== undefined) {
-      if (proxySelection === undefined) {
-        return {
-          sandboxDriver: createExternalDriver(
-            sandboxPackage.module,
-            sandbox,
-            "sandbox",
-          ) as SandboxDriver,
-        };
+      const external = await createExternalSandboxDriver(sandboxPackage.module, sandbox, {
+        legacyProxySelected: proxySelection !== undefined,
+        tokenServiceSelected: tokenServiceSelection !== undefined,
+        repositoryAuthorityIdentity:
+          repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
+      });
+      if (!(external instanceof InstalledDriver)) {
+        return { sandboxDriver: external };
       }
-      const owner = await createExternalProtectedDriver(
-        sandboxPackage.module,
-        sandbox,
-        repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
-      );
-      loaded.externalOwner = owner;
-      return { sandboxDriver: owner.require("sandbox"), protectedDriver: owner };
+      loaded.externalOwner = external;
+      return { sandboxDriver: external.require("sandbox"), registration: external };
     }
     if (proxySelection === undefined) {
       return {
@@ -1671,10 +1664,7 @@ async function composeInstallationConfiguration(
     const deliveryProxy =
       tokenServiceSelection === undefined
         ? undefined
-        : await createCredentialDeliveryProxy(
-            capabilities.sandbox,
-            tokenServiceSelection.implementation,
-          );
+        : createCredentialDeliveryProxy(capabilities.sandbox, tokenServiceSelection.implementation);
     const owner = new InstalledDriver(
       {
         ...sandbox,
@@ -1702,14 +1692,15 @@ async function composeInstallationConfiguration(
     );
     return {
       sandboxDriver: owner.require("sandbox"),
-      protectedDriver: owner,
+      registration: owner,
       ...(repositoryTransport && { repositoryTransport }),
     };
   })();
+  const protectedDriver = proxySelection === undefined ? undefined : registration;
   let credentialDeliveryRegistration =
     tokenServiceSelection !== undefined &&
-    protectedDriver?.capabilities.includes("credential_proxy_delivery")
-      ? protectedDriver
+    registration?.capabilities.includes("credential_proxy_delivery")
+      ? registration
       : undefined;
   if (
     credentialDeliveryRegistration === undefined &&
@@ -1720,7 +1711,7 @@ async function composeInstallationConfiguration(
     !boxPackage &&
     options.createSandboxDriver === undefined
   ) {
-    const deliveryProxy = await createCredentialDeliveryProxy(
+    const deliveryProxy = createCredentialDeliveryProxy(
       sandboxDriver,
       tokenServiceSelection.implementation,
     );
@@ -1779,11 +1770,7 @@ async function composeInstallationConfiguration(
   ]);
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
-    computeDriver = createExternalDriver(
-      computePackage.module,
-      compute,
-      "compute",
-    ) as ComputeDriver;
+    computeDriver = createExternalDriver(computePackage.module, compute, "compute");
   } else if (sshCompute) {
     computeDriver = new SshComputeDriver(
       compute.configuration as unknown as SshComputeDriverOptions,
@@ -1827,7 +1814,7 @@ async function composeInstallationConfiguration(
   const createIAMDriver = (state: NativeIAMStateStore): IAMDriver => {
     return iamPackage === undefined
       ? new NativeIAMDriver(state, { id: iam.id, implementation: iam.implementation })
-      : (createExternalDriver(iamPackage.module, iam, "iam", state) as IAMDriver);
+      : createExternalDriver(iamPackage.module, iam, "iam", state);
   };
   if (
     options.mode === "production" &&
