@@ -110,6 +110,11 @@ function answerText(request) {
 const failedAuditNonces = new Set();
 const auditToolResults = new Map();
 
+function auditToolId(caller, text) {
+  // OpenClaw preserves provider-style call IDs when it resends full history.
+  return caller === "embedded" ? `call_${text.slice(-20)}` : text;
+}
+
 function auditScenario(caller, text) {
   if (!auditFailures) {
     return;
@@ -134,8 +139,9 @@ function auditFault(transport, model, request, caller) {
       return undefined;
     }
     const { input, previous_response_id } = JSON.parse(request);
+    const callId = auditToolId(caller, text);
     const result = input.findLast(
-      (item) => item.type === "function_call_output" && item.call_id === text,
+      (item) => item.type === "function_call_output" && item.call_id === callId,
     );
     const retried = failedAuditNonces.has(text);
     // Only reject a real continuation. Recovery must resend history without the reference.
@@ -254,7 +260,7 @@ function auditToolEvents(model, text, caller) {
       id: `fc_${randomUUID().replaceAll("-", "")}`,
       type: "function_call",
       status: "completed",
-      call_id: text,
+      call_id: auditToolId(caller, text),
       name: "exec",
       arguments: JSON.stringify({
         code: `text('${expected.slice(0, 18)}' + '${expected.slice(18)}')`,
