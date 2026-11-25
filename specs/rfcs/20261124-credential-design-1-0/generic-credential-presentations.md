@@ -4,7 +4,9 @@ rfc: index.md
 
 # Admit generic credential presentations
 
-This proposed amendment extends the [Installation credential ownership amendment](installation-credential-ownership.md#prepare-an-agent-revision). It lets a reviewed consumer declare where and how its credential may appear in an outbound request without naming an API provider or changing the selected TokenService's custody of the Source.
+Current managed model Source presets and Plugin slots use Bearer authorization. OCE already sends Anthropic model keys in `x-api-key` outside managed Source delivery, although [Anthropic also accepts Bearer](https://platform.claude.com/docs/en/manage-claude/authentication). The model binding contract names `x-api-key`, but no production Source preset emits it, and native OpenShell delivery refuses non-Bearer model and Plugin bindings. Other API clients can use an [`api-key` header for Azure OpenAI](https://learn.microsoft.com/en-us/azure/foundry/openai/latest) or [HTTP Basic for Twilio](https://www.twilio.com/docs/usage/requests-to-twilio). A managed binding cannot use those formats unless it can describe and enforce their placement.
+
+This proposed amendment extends the [Installation credential ownership amendment](installation-credential-ownership.md#prepare-an-agent-revision). A reviewed consumer declares where and how its credential may appear in an outbound request. TokenService keeps custody of the Source. Existing Bearer flows do not require this extension.
 
 ## Decision
 
