@@ -2739,7 +2739,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .collection-toolbar > input[type="search"],
 .sandbox-policy input[type="search"],
 .sandbox-policy select,
-.repository-discovery input[type="search"],
 .plugin-control select,
 .plugin-json textarea,
 .revision-selector select,
@@ -4852,13 +4851,13 @@ html:has(#create-agent-form) {
   margin: 0;
   font-size: var(--text-md);
 }
-.repository-discovery > label {
-  display: block;
-  margin-bottom: var(--space-2);
-  font-weight: var(--weight-medium);
+.repository-discovery > .field {
+  margin-top: 0;
 }
 .repository-discovery input[type="search"] {
   min-height: 44px;
+  /* Leave room for the label when the browser scrolls to the search field. */
+  scroll-margin-block-start: calc(1lh + var(--space-2));
 }
 .repository-selected {
   margin-top: var(--space-6);

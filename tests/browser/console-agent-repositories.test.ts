@@ -1389,8 +1389,9 @@ test("Agent repository pagination keeps focus when every result on a page is sel
 });
 
 test("Agent repository search prioritizes exact names before prefix matches", async (t) => {
+  const prefixMatch = "alpha/application-api-with-a-long-common-repository-name-ending-in-blue";
   const repositories = [
-    "alpha/application-api",
+    prefixMatch,
     "beta/my-application",
     "omega/application",
     "zeta/application",
@@ -1424,7 +1425,7 @@ test("Agent repository search prioritizes exact names before prefix matches", as
   // Enter adds the first match, so exact short names must outrank a different owner's prefix.
   assert.deepEqual(
     await page.locator("#repository-results .repository-identity strong").allTextContents(),
-    ["omega/application", "zeta/application", "alpha/application-api", "beta/my-application"],
+    ["omega/application", "zeta/application", prefixMatch, "beta/my-application"],
   );
   const submissions = await page.evaluateHandle(() => {
     const count = { value: 0 };
@@ -1465,6 +1466,48 @@ test("Agent repository search prioritizes exact names before prefix matches", as
   await search.press("Enter");
   assert.equal(await repositoryCheckbox(page, "omega/application").isChecked(), true);
   assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), true);
+
+  // On a phone the next match can be below the fold. Keep search focused and
+  // leave the results heading above the sticky form actions.
+  await page.setViewportSize(consoleViewports[1]);
+  await nextFrames(page);
+  await results.getByRole("heading", { name: "Approved repositories" }).evaluate((heading) => {
+    heading.scrollIntoView({ block: "end", behavior: "instant" });
+  });
+  assert.ok(await hasFocus(search));
+  assert.ok(await inViewport(search));
+  assert.ok(
+    await results
+      .getByText(prefixMatch, { exact: true })
+      .evaluate((name) => name.getBoundingClientRect().top >= globalThis.innerHeight),
+    "The next result must be below the viewport before Enter",
+  );
+  const nextChoice = repositoryCheckbox(page, prefixMatch);
+  assert.equal(await nextChoice.isChecked(), false);
+  assert.ok(
+    await search.evaluate(
+      (input, name) =>
+        input.ariaDescribedByElements?.some((description) => {
+          const bounds = description.getBoundingClientRect();
+          return (
+            description.textContent.includes(name) &&
+            bounds.height > 0 &&
+            bounds.top >= 0 &&
+            bounds.bottom <= globalThis.innerHeight &&
+            description.scrollWidth <= description.clientWidth
+          );
+        }),
+      prefixMatch,
+    ),
+    "The focused search must show the full next repository name",
+  );
+
+  await page.keyboard.press("Enter");
+  assert.ok(await nextChoice.isChecked());
+  assert.equal(await repositoryCheckbox(page, "beta/my-application").isChecked(), false);
+  assert.ok(await hasFocus(search));
+  assert.equal(await search.inputValue(), "application");
+  assert.equal(await submissions.evaluate((count) => count.value), 0);
 });
 
 for (const discoveryState of ["later page", "search filter", "dismissed results"]) {
