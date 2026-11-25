@@ -8,6 +8,7 @@ import type pg from "pg";
 
 import { startGatewayRuntimeAuditListener } from "../../apps/controller/src/http/runtime-audit.ts";
 import {
+  AuditEventFactory,
   createRuntimeAuditReplaySigner,
   runtimeAuditReplayVerifier,
 } from "../../packages/audit/src/index.ts";
@@ -96,6 +97,7 @@ export async function checkGatewayAudit(
     other: AgentRevision;
     codex: AgentRevision;
     replacementId: string;
+    actorId: string;
     readPage: (agentId: string) => Promise<AgentAuditPage>;
   },
 ) {
@@ -109,13 +111,18 @@ export async function checkGatewayAudit(
     replayVerifier: runtimeAuditReplayVerifier(token),
   });
   const session = { sessionId: randomUUID() };
-  const turn = { ...session, turnId: randomUUID(), messageId: randomUUID() };
+  const turn = { ...session, turnId: `chatcmpl_${randomUUID()}`, messageId: randomUUID() };
   const attempt = { ...turn, modelCallId: randomUUID(), provider: "openai", model: "gpt-4.1" };
   const envelope = (): { eventId: string; occurredAt: string } => ({
     eventId: randomUUID(),
     occurredAt: new Date().toISOString(),
   });
-  const started = { ...envelope(), action: "openclaw.runtime.turn.started", ...turn };
+  const started = {
+    ...envelope(),
+    action: "openclaw.runtime.turn.started",
+    ...turn,
+    messageLink: "linked",
+  };
 
   // A retry after worker restart can reuse the credential for this revision only.
   assert.equal(await post(started, token), 401);
@@ -340,6 +347,7 @@ export async function checkGatewayAudit(
     action: "openclaw.runtime.turn.started",
     turnId: randomUUID(),
     messageId: randomUUID(),
+    messageLink: "linked",
     occurredAt: new Date(Date.parse(historicalEnd) - 24 * 60 * 60 * 1000).toISOString(),
   };
   const replayFields = {
@@ -494,7 +502,7 @@ export async function checkGatewayAudit(
       ],
       [
         "openclaw.runtime.turn.started",
-        { ...turn, agentRevisionId: revision.id, runtimeSource: "openclaw" },
+        { ...turn, messageLink: "linked", agentRevisionId: revision.id, runtimeSource: "openclaw" },
       ],
     ],
   );
@@ -506,9 +514,115 @@ export async function checkGatewayAudit(
     persisted.rows.map((row) => row.id),
     events.map((entry) => entry.id),
   );
+  const linkedEvent = events.find(
+    (entry) =>
+      entry.action === "openclaw.runtime.turn.started" && entry.details.turnId === turn.turnId,
+  );
+  assert.ok(linkedEvent);
+
+  // The HTTP relay can save a completion ID before a runtime turn record arrives.
+  // Peer and old-revision records with that same ID must not prove a current turn.
+  const installation = await state.loadInstallation();
+  assert.ok(installation);
+  const requestId = `req_${randomUUID()}`;
+  const finishedAt = new Date().toISOString();
+  const completionIdHash = createHash("sha256")
+    .update(`audit-chat-completion-v1:${turn.turnId}`)
+    .digest("hex");
+  const terminal = new AuditEventFactory().create({
+    installationId: installation.id,
+    namespaceId: revision.namespaceId,
+    actorId: input.actorId,
+    resource: { kind: "agent", id: revision.agentId, namespaceId: revision.namespaceId },
+    kind: "mutation",
+    source: "occ",
+    action: "openclaw.agents.chat.completed",
+    outcome: "success",
+    requestId,
+    details: {
+      revisionId: replacementId,
+      messageCount: 2,
+      completionIdHash,
+      startedAt: new Date(Date.parse(finishedAt) - 60_000).toISOString(),
+      finishedAt,
+    },
+  });
+  const unmatchedId = `chatcmpl_${randomUUID()}`;
+  const unmatchedHash = createHash("sha256")
+    .update(`audit-chat-completion-v1:${unmatchedId}`)
+    .digest("hex");
+  const unmatched = {
+    ...terminal,
+    id: `aud_${randomUUID()}`,
+    requestId: `req_${randomUUID()}`,
+    details: { ...terminal.details, completionIdHash: unmatchedHash },
+  };
+  await state.auditSink.append(unmatched);
+  const unmatchedEvent = (await input.readPage(revision.agentId)).events.find(
+    (entry) => entry.id === unmatched.id,
+  );
+  assert.ok(unmatchedEvent?.event === "http_chat");
+  assert.equal(unmatchedEvent.completionIdHash, unmatchedHash);
+  assert.equal(unmatchedEvent.turnId, undefined);
+  await state.auditSink.append(terminal);
+  const pending = (await input.readPage(revision.agentId)).events.find(
+    (entry) => entry.event === "http_chat" && entry.requestId === requestId,
+  );
+  assert.ok(pending?.event === "http_chat");
+  assert.equal(pending.messageCount, 2);
+  assert.equal(pending.completionIdHash, completionIdHash);
+  assert.equal(pending.turnId, undefined);
+  const storedTerminal = await pool.query<{ details: Record<string, unknown> }>(
+    "SELECT details FROM occ.audit_events WHERE id = $1",
+    [terminal.id],
+  );
+  assert.equal(storedTerminal.rows[0]?.details.completionIdHash, completionIdHash);
+  assert.ok(!JSON.stringify(storedTerminal.rows[0]?.details).includes(turn.turnId));
+
+  // A producer can confirm the turn without knowing which saved message caused it.
+  const unlinked = {
+    ...envelope(),
+    occurredAt: finishedAt,
+    ...session,
+    action: "openclaw.runtime.turn.started",
+    turnId: turn.turnId,
+    messageLink: "unknown",
+  };
+  assert.equal(await post(unlinked, replacement.token), 204);
+  const unlinkedPage = await input.readPage(revision.agentId);
+  const unlinkedEvent = unlinkedPage.events.find(
+    (entry) =>
+      entry.event === "runtime_activity" &&
+      entry.action === "openclaw.runtime.turn.started" &&
+      entry.details.agentRevisionId === replacementId &&
+      entry.details.turnId === unlinked.turnId,
+  );
+  assert.ok(
+    unlinkedEvent?.event === "runtime_activity" &&
+      unlinkedEvent.action === "openclaw.runtime.turn.started",
+  );
+  assert.equal(unlinkedEvent.details.messageLink, "unknown");
+  assert.equal(unlinkedEvent.details.messageId, undefined);
+  const linkedHttp = unlinkedPage.events.find(
+    (entry) => entry.event === "http_chat" && entry.requestId === requestId,
+  );
+  assert.ok(linkedHttp?.event === "http_chat");
+  assert.equal(linkedHttp.turnId, turn.turnId);
+
+  // The same completion ID reported in a second session is ambiguous.
+  // A later query must remove the link instead of selecting either session.
+  const ambiguous = { ...unlinked, eventId: randomUUID(), sessionId: randomUUID() };
+  assert.equal(await post(ambiguous, replacement.token), 204);
+  const ambiguousHttp = (await input.readPage(revision.agentId)).events.find(
+    (entry) => entry.id === terminal.id,
+  );
+  assert.ok(ambiguousHttp?.event === "http_chat");
+  assert.equal(ambiguousHttp.turnId, undefined);
   return {
     end: historicalEnd,
     sessionEventId: replayRows.rows[0].id as string,
     turnEventId: oldTurnRows.rows[0]!.id,
+    linkedTurnEventId: linkedEvent.id,
+    unlinkedTurnEventId: unlinkedEvent.id,
   };
 }

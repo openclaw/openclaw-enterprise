@@ -222,6 +222,7 @@ export {
   TransientDependencyError,
   WorkClaimLostError,
   AgentAuditDisclosureUnavailableError,
+  AgentAuditRevisionUnavailableError,
   AgentChatAccessUnavailableError,
   AuditAppendUnavailableError,
   PostgresCommitOutcomeUnknownError,

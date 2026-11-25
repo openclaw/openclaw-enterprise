@@ -264,14 +264,17 @@ with the `read_audit` permission directly to your Principal and the Agent.
 OCC checks the grant each time you request a page.
 
 Send `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`.
-The response lists selected Agent lifecycle records, runtime activity, API
-reads, and worker events from a 24-hour period, newest first. The period ends
+The response lists Agent lifecycle, HTTP chat, runtime, API read, and worker
+records for a 24-hour period, newest first. The period ends
 now by default. For older records, set `end` to a UTC timestamp, such as
 `?end=2026-11-20T00:00:00.000Z`. Use `end` only on the first page and do
 not select a future time. Lifecycle records show the
 saved action, such as Agent creation, deployment admission, or activation.
 They include an Agent revision ID when OCC verifies that revision belongs to
-the Agent. A work ID connects job records without exposing the internal work key.
+the Agent. A work ID connects job records. For `http_chat`, use `requestId` to
+connect admission and result. `messageCount` counts submitted entries;
+`turnId` appears only after a matching runtime turn is saved. Older records
+can lack the count.
 
 Set `limit` to 1–100 records per page. The default is 50. Send `nextCursor` as
 `cursor` within 15 minutes of the first page. Use the same session and Agent.
@@ -288,7 +291,7 @@ and `read_audit_content` directly on the Agent. The same Role can contain
 both permissions. The content grant gives you access to linked user messages
 from chats with this Agent, including chats that other users started.
 
-1. List the Agent's audit events. Find a turn with `details.messageId`.
+1. List the Agent's audit events. Find a turn with `details.messageLink: linked`.
 2. Copy the event's top-level `id` into the following request.
 
 ```http
@@ -308,18 +311,17 @@ You can send the same text twice in the same chat. Each request gets its own
 turn and saved message. Codex links an HTTP turn when it identifies the saved
 prompt.
 
-If the Gateway saves the message after the turn starts, check the completion
-event. A turn that a policy blocks after the save can still link to its input.
-The link can be missing if the turn combines inputs, the Gateway skips the
-save, or the Gateway loses the ID before it reports the turn. Check for
-`details.messageId` before you offer **Open message**.
+If the start has no link, check the completion. `messageLink` is `linked`,
+`input_hidden`, `input_blocked`, `steering_input`, `internal_input`,
+`multiple_inputs`, `invalid_reference`, or `unknown`. `multiple_inputs` means
+the Gateway confirmed conflicting saved inputs. `unknown` gives no cause.
 
-| Status | What to check                                                                                                                            |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `403`  | Check both direct grants for this Agent.                                                                                                 |
-| `404`  | The event must be from the active revision. Its linked user message must still be visible in chat history and fit within 64 KiB of text. |
-| `501`  | Check that the Installation uses Native IAM, PostgreSQL, and Control Plane audit with managed Gateway routing.                           |
-| `503`  | OCC could not finish the Gateway lookup or confirm the disclosure record. Try again.                                                     |
+| Status | What to check                                                                                                                                                              |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `403`  | Check both direct grants for this Agent.                                                                                                                                   |
+| `404`  | `revision_unavailable`: the event's revision cannot serve the lookup. `message_unavailable`: history cannot return eligible text within 64 KiB. Neither confirms deletion. |
+| `501`  | Check that the Installation uses Native IAM, PostgreSQL, and Control Plane audit with managed Gateway routing.                                                             |
+| `503`  | OCC could not finish the Gateway lookup or confirm the disclosure record. Try again.                                                                                       |
 
 ## Access and limitations
 

@@ -214,6 +214,13 @@ export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableE
   }
 }
 
+export class AgentAuditRevisionUnavailableError extends Error {
+  constructor() {
+    super("The Agent revision for this audit event is not available for message lookup.");
+    this.name = "AgentAuditRevisionUnavailableError";
+  }
+}
+
 /** The database did not accept required audit evidence in the current transaction. */
 export class AuditAppendUnavailableError extends DependencyUnavailableError {
   readonly reasonCode: "AUDIT_CAPACITY_EXCEEDED" | undefined;

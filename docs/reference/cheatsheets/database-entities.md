@@ -494,6 +494,7 @@ Keeps an append-only record of bootstrap, changes to resources, and authorizatio
 When Control Plane audit is enabled, it also records covered API requests,
 worker activity, and disclosures of Agent audit records. It stores the session,
 turn, model call, HTTP model attempt and model response events that registered Gateways report.
+HTTP chat records include submitted message counts and observed completion ID hashes.
 See the [audit guide](../../guides/topics/audit-log.md).
 
 - `id`

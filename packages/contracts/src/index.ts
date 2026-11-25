@@ -1593,6 +1593,7 @@ export interface AuditEvent extends Scope {
 
 export {
   RUNTIME_AUDIT_ACTIONS,
+  RUNTIME_AUDIT_MESSAGE_LINK_VALUES,
   RuntimeAuditObservationSchema,
   projectRuntimeAgentAuditDetails,
 } from "./runtime-audit.ts";
@@ -1724,7 +1725,9 @@ export * from "./api/common.ts";
 export {
   AGENT_AUDIT_PAGE_LIMIT,
   AGENT_AUDIT_PROJECTION_VERSION,
+  AGENT_HTTP_CHAT_AUDIT_ACTIONS,
   AGENT_LIFECYCLE_AUDIT_ACTIONS,
+  projectAgentHttpChatAuditDetails,
   projectAgentLifecycleAuditDetails,
   type AgentAuditEntry,
   isAgentAuditLinkedTurn,

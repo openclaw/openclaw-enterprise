@@ -1,7 +1,7 @@
 ---
 created: "2026-11-16"
-updated: "2026-11-24 11:55"
-last_updated_session: "authoring-run/398ebd74-9254-4f53-9416-263c57eca6f2"
+updated: "2026-11-24 19:07"
+last_updated_session: "authoring-run/c14b7752-dc1d-449e-9cee-f248859972e8"
 ---
 
 # Agent HTTP chat flow
@@ -100,7 +100,7 @@ retirement removes both resources. Core code does not construct Kubernetes paths
 headers, replaces the model target and hashes an explicit conversation label
 with stable principal and Agent identities. It constructs upstream headers
 without copying caller credentials. With audit on or off, the relay queues
-`openclaw.agents.chat.admitted` through the State audit sink. If SQLite
+`openclaw.agents.chat.admitted` with the submitted message count through the State audit sink. If SQLite
 cannot save a required record, OCC returns `503` without forwarding.
 Otherwise, the relay sends the HTTP request once.
 
@@ -116,7 +116,9 @@ Failure, revision change, client disconnect or deadline aborts the upstream
 connection. One outer cleanup clears the timers and disconnect listeners, aborts
 the upstream and queues one chat result. Before headers, OCC can return its
 error envelope. After headers, it closes the response. The result identifies
-the principal and revision without message content. A PostgreSQL outage
+the principal, revision, message count and completion ID hash without message
+content. The Agent audit reader confirms a matching runtime turn before it adds a
+turn ID. A PostgreSQL outage
 can prevent the access check, but OCC can still queue the interruption.
 If OCC cannot queue the result, it logs `http.audit_append_failed`.
 
@@ -169,6 +171,8 @@ repeats a chat request to recover an audit record.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-24 19:07: Trace chat message count and confirmed turn links. (authoring-run/c14b7752-dc1d-449e-9cee-f248859972e8 - c2c2c657d183f6a7beec125d1e9b05aab877c161)
 
 - 2026-11-24 11:55: Update the source for HTTP permission checks. (authoring-run/398ebd74-9254-4f53-9416-263c57eca6f2 - bf3d0ed3a444c0c70768c713d66efee717152b7a)
 

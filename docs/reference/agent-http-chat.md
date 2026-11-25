@@ -141,15 +141,18 @@ Agent permission. A permission denial has outcome `denied`. If the
 access check becomes unavailable during a turn, the interruption
 record can show the same reason code.
 
-`openclaw.agents.chat.*` records identify the request, principal, authentication method, Agent,
-Namespace, revision, timing, streaming mode and result. They exclude prompts,
-responses, credentials and raw conversation labels. OCC logs a failure to
-queue the result. It cannot undo a turn. Permission denials and other API
-operations keep their existing audit rules.
+`openclaw.agents.chat.*` records identify the request, caller, Agent, revision,
+time, streaming mode, result, and number of submitted `messages` entries. Older
+records can lack the count. A result can include `completionIdHash`, a SHA-256
+hash of the completion ID returned by the Gateway. These records exclude message text, response text, credentials,
+and raw conversation labels. OCC logs a failure to queue the result; it cannot
+undo the turn.
 
-The Agent audit API excludes these HTTP chat records. Use approved
-database access to read them after delivery. For the separate Gateway
-turn records, see the [audit guide](../guides/topics/audit-log.md#agent-runtime-activity).
+The [Agent audit API](../guides/topics/audit-log.md#read-an-agents-audit-events)
+returns these records as `http_chat`. Their request ID connects admission and
+result. The API adds `turnId` only when the hash matches one recorded session
+and turn for the same Agent and revision during the request. Missing or ambiguous
+evidence leaves the link absent. Delayed runtime records can delay the link.
 
 ### Queue storage
 

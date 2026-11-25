@@ -293,7 +293,7 @@ function permissionDescription(
   operationId: OccApiRoute["operationId"],
 ): string {
   if (operationId === "listAgentAuditEvents") {
-    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent records for a 24-hour period. Use end on the first page to select a past period.";
+    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected lifecycle, HTTP chat, runtime, API read, and worker records for a 24-hour period. Use end on the first page to select a past period.";
   }
   if (operationId === "getAgentAuditEventMessage") {
     return "Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event and its saved user message from the active revision. OCC records the disclosure before it returns the text.";

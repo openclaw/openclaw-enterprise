@@ -1504,9 +1504,23 @@
               },
               "message": { "maxLength": 256, "minLength": 1, "type": "string" },
               "reason": {
-                "const": "credential_registration_pending",
-                "description": "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
-                "type": "string"
+                "anyOf": [
+                  {
+                    "const": "credential_registration_pending",
+                    "description": "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "revision_unavailable",
+                    "description": "The audit event's Agent revision cannot serve a message lookup.",
+                    "type": "string"
+                  },
+                  {
+                    "const": "message_unavailable",
+                    "description": "The linked message cannot be returned from chat history.",
+                    "type": "string"
+                  }
+                ]
               },
               "remainingResources": {
                 "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
@@ -22855,7 +22869,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/audit-events": {
       "get": {
-        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent records for a 24-hour period. Use end on the first page to select a past period.",
+        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected lifecycle, HTTP chat, runtime, API read, and worker records for a 24-hour period. Use end on the first page to select a past period.",
         "operationId": "listAgentAuditEvents",
         "parameters": [
           {
@@ -22948,10 +22962,23 @@
                       "data": {
                         "events": [
                           {
+                            "action": "openclaw.agents.chat.completed",
+                            "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
+                            "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+                            "event": "http_chat",
+                            "id": "aud_123e4567-e89b-42d3-a456-426614174002",
+                            "messageCount": 3,
+                            "occurredAt": "2026-10-01T11:31:01.000000Z",
+                            "outcome": "success",
+                            "requestId": "req_123e4567-e89b-42d3-a456-426614174000",
+                            "turnId": "0f8a6dad-40e1-4121-8521-676796fdcf83"
+                          },
+                          {
                             "action": "openclaw.runtime.turn.completed",
                             "details": {
                               "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
                               "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+                              "messageLink": "linked",
                               "outcome": "succeeded",
                               "runtimeSource": "openclaw",
                               "sessionId": "123e4567-e89b-42d3-a456-426614174000",
@@ -22982,7 +23009,7 @@
                           }
                         ],
                         "nextCursor": null,
-                        "projectionVersion": 3,
+                        "projectionVersion": 4,
                         "window": {
                           "end": "2026-10-01T12:00:00.000Z",
                           "start": "2026-09-30T12:00:00.000Z"
@@ -23112,6 +23139,68 @@
                                   }
                                 },
                                 "required": ["id", "occurredAt", "outcome", "event", "action"],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "action": {
+                                    "enum": [
+                                      "openclaw.agents.chat.admitted",
+                                      "openclaw.agents.chat.completed",
+                                      "openclaw.agents.chat.failed",
+                                      "openclaw.agents.chat.interrupted"
+                                    ]
+                                  },
+                                  "actorId": {
+                                    "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                    "type": "string"
+                                  },
+                                  "agentRevisionId": {
+                                    "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "completionIdHash": {
+                                    "pattern": "^[a-f0-9]{64}$",
+                                    "type": "string"
+                                  },
+                                  "event": { "const": "http_chat", "type": "string" },
+                                  "id": {
+                                    "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "messageCount": { "minimum": 0, "type": "integer" },
+                                  "occurredAt": {
+                                    "format": "date-time",
+                                    "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                    "type": "string"
+                                  },
+                                  "outcome": {
+                                    "anyOf": [
+                                      { "const": "success", "type": "string" },
+                                      { "const": "denied", "type": "string" },
+                                      { "const": "failure", "type": "string" }
+                                    ]
+                                  },
+                                  "requestId": {
+                                    "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "turnId": {
+                                    "maxLength": 256,
+                                    "minLength": 1,
+                                    "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "occurredAt",
+                                  "outcome",
+                                  "event",
+                                  "action",
+                                  "agentRevisionId"
+                                ],
                                 "type": "object"
                               },
                               {
@@ -23271,6 +23360,13 @@
                                       },
                                       "details": {
                                         "additionalProperties": false,
+                                        "else": {
+                                          "not": { "required": ["messageId"], "type": "object" }
+                                        },
+                                        "if": {
+                                          "properties": { "messageLink": { "const": "linked" } },
+                                          "type": "object"
+                                        },
                                         "properties": {
                                           "agentRevisionId": {
                                             "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -23281,6 +23377,18 @@
                                             "minLength": 1,
                                             "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
                                             "type": "string"
+                                          },
+                                          "messageLink": {
+                                            "enum": [
+                                              "linked",
+                                              "unknown",
+                                              "input_hidden",
+                                              "input_blocked",
+                                              "steering_input",
+                                              "internal_input",
+                                              "multiple_inputs",
+                                              "invalid_reference"
+                                            ]
                                           },
                                           "runtimeSource": { "enum": ["openclaw", "codex"] },
                                           "sessionId": {
@@ -23300,8 +23408,10 @@
                                           "agentRevisionId",
                                           "runtimeSource",
                                           "sessionId",
-                                          "turnId"
+                                          "turnId",
+                                          "messageLink"
                                         ],
+                                        "then": { "required": ["messageId"], "type": "object" },
                                         "type": "object"
                                       },
                                       "event": { "const": "runtime_activity", "type": "string" },
@@ -23349,6 +23459,13 @@
                                       },
                                       "details": {
                                         "additionalProperties": false,
+                                        "else": {
+                                          "not": { "required": ["messageId"], "type": "object" }
+                                        },
+                                        "if": {
+                                          "properties": { "messageLink": { "const": "linked" } },
+                                          "type": "object"
+                                        },
                                         "properties": {
                                           "agentRevisionId": {
                                             "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -23359,6 +23476,18 @@
                                             "minLength": 1,
                                             "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
                                             "type": "string"
+                                          },
+                                          "messageLink": {
+                                            "enum": [
+                                              "linked",
+                                              "unknown",
+                                              "input_hidden",
+                                              "input_blocked",
+                                              "steering_input",
+                                              "internal_input",
+                                              "multiple_inputs",
+                                              "invalid_reference"
+                                            ]
                                           },
                                           "outcome": {
                                             "anyOf": [
@@ -23392,8 +23521,10 @@
                                           "runtimeSource",
                                           "sessionId",
                                           "turnId",
+                                          "messageLink",
                                           "outcome"
                                         ],
+                                        "then": { "required": ["messageId"], "type": "object" },
                                         "type": "object"
                                       },
                                       "event": { "const": "runtime_activity", "type": "string" },
@@ -23953,7 +24084,7 @@
                             { "type": "null" }
                           ]
                         },
-                        "projectionVersion": { "const": 3, "type": "number" },
+                        "projectionVersion": { "const": 4, "type": "number" },
                         "window": {
                           "additionalProperties": false,
                           "properties": {
@@ -24133,6 +24264,7 @@
                           "details": {
                             "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
                             "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+                            "messageLink": "linked",
                             "outcome": "succeeded",
                             "runtimeSource": "openclaw",
                             "sessionId": "123e4567-e89b-42d3-a456-426614174000",
@@ -24170,6 +24302,13 @@
                                 },
                                 "details": {
                                   "additionalProperties": false,
+                                  "else": {
+                                    "not": { "required": ["messageId"], "type": "object" }
+                                  },
+                                  "if": {
+                                    "properties": { "messageLink": { "const": "linked" } },
+                                    "type": "object"
+                                  },
                                   "properties": {
                                     "agentRevisionId": {
                                       "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -24181,6 +24320,7 @@
                                       "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
                                       "type": "string"
                                     },
+                                    "messageLink": { "const": "linked", "type": "string" },
                                     "runtimeSource": { "enum": ["openclaw", "codex"] },
                                     "sessionId": {
                                       "maxLength": 256,
@@ -24200,8 +24340,10 @@
                                     "runtimeSource",
                                     "sessionId",
                                     "turnId",
-                                    "messageId"
+                                    "messageId",
+                                    "messageLink"
                                   ],
+                                  "then": { "required": ["messageId"], "type": "object" },
                                   "type": "object"
                                 },
                                 "event": { "const": "runtime_activity", "type": "string" },
@@ -24249,6 +24391,13 @@
                                 },
                                 "details": {
                                   "additionalProperties": false,
+                                  "else": {
+                                    "not": { "required": ["messageId"], "type": "object" }
+                                  },
+                                  "if": {
+                                    "properties": { "messageLink": { "const": "linked" } },
+                                    "type": "object"
+                                  },
                                   "properties": {
                                     "agentRevisionId": {
                                       "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -24260,6 +24409,7 @@
                                       "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
                                       "type": "string"
                                     },
+                                    "messageLink": { "const": "linked", "type": "string" },
                                     "outcome": {
                                       "anyOf": [
                                         { "enum": ["succeeded", "failed", "cancelled", "unknown"] },
@@ -24286,8 +24436,10 @@
                                     "sessionId",
                                     "turnId",
                                     "messageId",
+                                    "messageLink",
                                     "outcome"
                                   ],
+                                  "then": { "required": ["messageId"], "type": "object" },
                                   "type": "object"
                                 },
                                 "event": { "const": "runtime_activity", "type": "string" },

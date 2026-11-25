@@ -140,15 +140,22 @@ test("audit sanitization retains operational evidence while removing nested sens
     driver: { id: "gateway-local", password: "nested-password-value" },
     attempts: [{ secret: "nested-secret-value", result: "denied" }],
     body: "private-request-body-value",
+    validTurn: { messageLink: "linked" },
+    invalidTurn: { messageLink: "private-user-message-value" },
   });
 
   const serialized = JSON.stringify(sanitized);
   assert.ok(serialized.includes("namespace-a"));
   assert.ok(serialized.includes("gateway-local"));
   assert.ok(serialized.includes("denied"));
+  assert.deepEqual((sanitized as Record<string, unknown>).validTurn, { messageLink: "linked" });
+  assert.deepEqual((sanitized as Record<string, unknown>).invalidTurn, {
+    messageLink: "[REDACTED]",
+  });
   assert.ok(!serialized.includes("nested-password-value"));
   assert.ok(!serialized.includes("nested-secret-value"));
   assert.ok(!serialized.includes("private-request-body-value"));
+  assert.ok(!serialized.includes("private-user-message-value"));
 });
 
 test("audit evidence retains Installation identity and rejects another Namespace", async () => {

@@ -687,6 +687,13 @@
       "when": 1787000000098,
       "tag": "0098_runtime_audit_replay",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1787000000099,
+      "tag": "0099_agent_http_chat_audit_page",
+      "breakpoints": true
     }
   ]
 }

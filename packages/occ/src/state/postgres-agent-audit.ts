@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import {
+  AGENT_HTTP_CHAT_AUDIT_ACTIONS,
   AGENT_LIFECYCLE_AUDIT_ACTIONS,
   RUNTIME_AUDIT_ACTIONS,
+  projectAgentHttpChatAuditDetails,
   projectAgentLifecycleAuditDetails,
   projectRuntimeAgentAuditDetails,
   type AgentAuditEntry,
@@ -10,6 +12,7 @@ import {
 import { PersistedStateInvalidError } from "../errors.ts";
 
 const runtimeActionSql = RUNTIME_AUDIT_ACTIONS.map((action) => `'${action}'`).join(", ");
+const httpChatActionSql = AGENT_HTTP_CHAT_AUDIT_ACTIONS.map((action) => `'${action}'`).join(", ");
 const agentLifecycleActionSql = AGENT_LIFECYCLE_AUDIT_ACTIONS.agent
   .map((action) => `'${action}'`)
   .join(", ");
@@ -34,7 +37,7 @@ const publicColumns = `id, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T
          kind, action, outcome, actor_id AS "actorId",
          details->'__occAuditMetadata'->>'requestId' AS "requestId"`;
 
-// The reader holds the Agent row while checking which revision currently serves its chat.
+// The reader checks the active revision after it verifies both Agent audit grants.
 export const SELECT_LINKED_TURN = `
   SELECT ${publicColumns}, details AS "runtimeDetails"
   FROM occ.audit_events
@@ -43,10 +46,6 @@ export const SELECT_LINKED_TURN = `
     AND action IN ('openclaw.runtime.turn.started', 'openclaw.runtime.turn.completed')
     AND occurred_at <= statement_timestamp()
     AND details ? 'messageId'
-    AND details->>'agentRevisionId' = (
-      SELECT active_revision_id FROM occ.agents
-      WHERE namespace_id = $1 AND id = $2 AND desired_runtime_state = 'running'
-    )
 `;
 
 // Bound each source in page order before merging it with the other sources.
@@ -55,6 +54,30 @@ export const SELECT_AGENT_AUDIT = `
          details->>'operationId' AS "operationId",
          details->>'workId' AS "workId", details->>'attemptId' AS "attemptId",
          details->>'workState' AS "workState",
+         details->>'revisionId' AS "chatRevisionId",
+         details->'messageCount' AS "messageCount", details->>'completionIdHash' AS "completionIdHash",
+         CASE WHEN kind = 'mutation'
+           AND action IN ('openclaw.agents.chat.completed', 'openclaw.agents.chat.failed',
+                          'openclaw.agents.chat.interrupted')
+           AND details->>'completionIdHash' ~ '^[a-f0-9]{64}$'
+           AND details->>'startedAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'
+           AND details->>'finishedAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'
+           AND pg_input_is_valid(details->>'startedAt', 'timestamp with time zone')
+           AND pg_input_is_valid(details->>'finishedAt', 'timestamp with time zone') THEN (
+           SELECT CASE WHEN count(DISTINCT ROW(turn.details->>'sessionId', turn.details->>'turnId')) = 1
+             THEN min(turn.details->>'turnId') END
+           FROM occ.audit_events AS turn
+           WHERE turn.namespace_id = $1 AND turn.resource_kind = 'agent' AND turn.resource_id = $2
+             AND turn.kind = 'runtime_activity'
+             AND turn.action IN ('openclaw.runtime.turn.started', 'openclaw.runtime.turn.completed')
+             AND turn.details->>'agentRevisionId' = scoped_events.details->>'revisionId'
+             AND turn.details->>'sessionId' IS NOT NULL
+             AND turn.occurred_at BETWEEN (scoped_events.details->>'startedAt')::timestamptz
+                                      AND (scoped_events.details->>'finishedAt')::timestamptz
+             AND turn.occurred_at <= statement_timestamp()
+             AND encode(sha256(convert_to('audit-chat-completion-v1:' || (turn.details->>'turnId'), 'UTF8')), 'hex')
+               = scoped_events.details->>'completionIdHash'
+         ) END AS "turnId",
          CASE WHEN kind = 'runtime_activity' THEN details END AS "runtimeDetails",
          agent_lifecycle AS "agentLifecycle",
          CASE WHEN agent_lifecycle AND resource_kind = 'agent_revision' THEN resource_id
@@ -88,6 +111,12 @@ export const SELECT_AGENT_AUDIT = `
         AND action IN (${runtimeActionSql})
       ${pageOrder})
     UNION ALL
+    (SELECT ${evidenceColumns}, false AS agent_lifecycle
+      FROM occ.audit_events
+      WHERE ${pageWindow} AND resource_kind = 'agent' AND resource_id = $2
+        AND kind = 'mutation' AND action IN (${httpChatActionSql})
+      ${pageOrder})
+    UNION ALL
     (SELECT ${evidenceColumns}, true AS agent_lifecycle
       FROM occ.audit_events
       WHERE ${pageWindow} AND resource_kind = 'agent' AND resource_id = $2
@@ -111,7 +140,7 @@ export const SELECT_AGENT_AUDIT = `
 
 type ControlPlaneEntry = Exclude<
   AgentAuditEntry,
-  { event: "agent_lifecycle" | "runtime_activity" }
+  { event: "agent_lifecycle" | "runtime_activity" | "http_chat" }
 >;
 type ControlPlaneEvent = ControlPlaneEntry["event"];
 const events = new Map<string, ControlPlaneEvent>([
@@ -168,6 +197,20 @@ export function projectAgentAuditRow(row: Record<string, unknown>): AgentAuditEn
       throw new PersistedStateInvalidError("Persisted Agent lifecycle audit event is invalid.");
     }
     return { ...common, ...lifecycle };
+  }
+
+  if ((AGENT_HTTP_CHAT_AUDIT_ACTIONS as readonly unknown[]).includes(row.action)) {
+    const chat = projectAgentHttpChatAuditDetails(
+      row.action,
+      row.chatRevisionId,
+      row.messageCount,
+      row.completionIdHash,
+      row.turnId,
+    );
+    if (chat === undefined) {
+      throw new PersistedStateInvalidError("Persisted HTTP chat audit event is invalid.");
+    }
+    return { ...common, ...chat };
   }
 
   const event = events.get(row.action as string);

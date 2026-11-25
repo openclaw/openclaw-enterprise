@@ -1421,6 +1421,11 @@ export const auditEvents = occSchema.table(
     index("audit_events_agent_runtime_page_idx")
       .on(table.namespaceId, table.resourceId, table.occurredAt.desc(), table.id.desc())
       .where(sql`${table.resourceKind} = 'agent' AND ${table.kind} = 'runtime_activity'`),
+    index("audit_events_agent_http_chat_page_idx")
+      .on(table.namespaceId, table.resourceId, table.occurredAt.desc(), table.id.desc())
+      .where(
+        sql`${table.resourceKind} = 'agent' AND ${table.kind} = 'mutation' AND ${table.action} IN ('openclaw.agents.chat.admitted','openclaw.agents.chat.completed','openclaw.agents.chat.failed','openclaw.agents.chat.interrupted')`,
+      ),
     check("audit_events_outcome_valid", sql`${table.outcome} IN ('success', 'denied', 'failure')`),
     check(
       "audit_events_details_object",

@@ -104,7 +104,9 @@ export async function getAgentAuditEventMessage(
     signal: request.signal,
   });
   if (message === undefined) {
-    throw failure(404, "NOT_FOUND", "The linked user message is unavailable.");
+    const error = failure(404, "NOT_FOUND", "The linked user message is unavailable.");
+    error.reason = "message_unavailable";
+    throw error;
   }
 
   // Release the database locks during the Gateway call. Recheck the session,

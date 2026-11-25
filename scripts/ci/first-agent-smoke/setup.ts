@@ -36,7 +36,7 @@ export function createApi(origin: string, key: string) {
     body?: unknown,
     options?:
       | { signal?: AbortSignal | undefined; response?: never }
-      | { response: "chat"; signal: AbortSignal; expectedStatus: number },
+      | { response: "chat" | "chat_stream"; signal: AbortSignal; expectedStatus: number },
   ) => {
     const url = new URL(path, origin);
     assert.equal(
@@ -65,6 +65,11 @@ export function createApi(origin: string, key: string) {
       throw new Error(`${method} ${path}: ${failure.message}${cause}`, { cause: error });
     }
     const text = await response.text();
+    if (options?.response === "chat_stream") {
+      assert.equal(response.status, options.expectedStatus, `${method} ${path}: chat failed`);
+      assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream(?:;|$)/u);
+      return { body: text, requestId: response.headers.get("x-request-id") };
+    }
     let envelope: unknown;
     try {
       envelope = JSON.parse(text);
@@ -380,7 +385,17 @@ export async function signInConsole(
           response.once("end", () => {
             const status = response.statusCode ?? 500;
             if (status < 200 || status >= 300) {
-              reject(new Error(`${method} ${url.pathname}: HTTP ${status}`));
+              const error = new Error(`${method} ${url.pathname}: HTTP ${status}`);
+              try {
+                const envelope: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+                const reason = wireField(wireField(envelope, "error"), "reason");
+                if (reason === "message_unavailable" || reason === "revision_unavailable") {
+                  Object.assign(error, { reason });
+                }
+              } catch {
+                // Keep the HTTP failure when the response has no JSON error envelope.
+              }
+              reject(error);
               return;
             }
             if (path === signIn) {

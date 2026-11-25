@@ -71,7 +71,7 @@ the paths.
 | `error.details[].message` | `string` | No | max length: 512 |
 | `error.details[].path` | `string` | Yes | max length: 512; pattern: `^(?:/(?:[^~/]\|~0\|~1)*)*$` |
 | `error.message` | `string` | Yes | min length: 1; max length: 256 |
-| `error.reason` | `"credential_registration_pending"` | No | On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes. |
+| `error.reason` | `"credential_registration_pending" or "revision_unavailable" or "message_unavailable"` | No | — |
 | `error.remainingResources` | `array<object>` | No | max items: 7; Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others. |
 | `error.remainingResources[].count` | `integer` | Yes | minimum: 0 |
 | `error.remainingResources[].ids` | `array<string>` | Yes | max items: 20 |
@@ -6334,7 +6334,7 @@ List audit metadata for one Agent
 
 **Operation ID:** `listAgentAuditEvents`
 
-**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent records for a 24-hour period. Use end on the first page to select a past period.
+**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected lifecycle, HTTP chat, runtime, API read, and worker records for a 24-hour period. Use end on the first page to select a past period.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -6368,9 +6368,9 @@ List audit metadata for one Agent
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.events` | `array<object or object or object or object or object or object or object or object or object or object or object>` | Yes | max items: 100 |
+| `data.events` | `array<object or object or object or object or object or object or object or object or object or object or object or object>` | Yes | max items: 100 |
 | `data.nextCursor` | `string or null` | Yes | — |
-| `data.projectionVersion` | `3` | Yes | — |
+| `data.projectionVersion` | `4` | Yes | — |
 | `data.window` | `object` | Yes | — |
 | `data.window.end` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.window.start` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
@@ -6383,10 +6383,23 @@ Example response
   "data": {
     "events": [
       {
+        "action": "openclaw.agents.chat.completed",
+        "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
+        "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+        "event": "http_chat",
+        "id": "aud_123e4567-e89b-42d3-a456-426614174002",
+        "messageCount": 3,
+        "occurredAt": "2026-10-01T11:31:01.000000Z",
+        "outcome": "success",
+        "requestId": "req_123e4567-e89b-42d3-a456-426614174000",
+        "turnId": "0f8a6dad-40e1-4121-8521-676796fdcf83"
+      },
+      {
         "action": "openclaw.runtime.turn.completed",
         "details": {
           "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
           "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+          "messageLink": "linked",
           "outcome": "succeeded",
           "runtimeSource": "openclaw",
           "sessionId": "123e4567-e89b-42d3-a456-426614174000",
@@ -6417,7 +6430,7 @@ Example response
       }
     ],
     "nextCursor": null,
-    "projectionVersion": 3,
+    "projectionVersion": 4,
     "window": {
       "end": "2026-10-01T12:00:00.000Z",
       "start": "2026-09-30T12:00:00.000Z"
@@ -6486,6 +6499,7 @@ Example response
       "details": {
         "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
         "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+        "messageLink": "linked",
         "outcome": "succeeded",
         "runtimeSource": "openclaw",
         "sessionId": "123e4567-e89b-42d3-a456-426614174000",

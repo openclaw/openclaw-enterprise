@@ -5,7 +5,14 @@ import { linkedTurnEntry, runtimeAuditPageEntry } from "../runtime-audit.ts";
 import { AuditId, Meta, RequestId, RevisionId, Timestamp } from "./common.ts";
 
 export const AGENT_AUDIT_PAGE_LIMIT = 100;
-export const AGENT_AUDIT_PROJECTION_VERSION = 3;
+export const AGENT_AUDIT_PROJECTION_VERSION = 4;
+
+export const AGENT_HTTP_CHAT_AUDIT_ACTIONS = [
+  "openclaw.agents.chat.admitted",
+  "openclaw.agents.chat.completed",
+  "openclaw.agents.chat.failed",
+  "openclaw.agents.chat.interrupted",
+] as const;
 
 export const AGENT_LIFECYCLE_AUDIT_ACTIONS = {
   agent: [
@@ -114,6 +121,47 @@ const AgentLifecycleAuditEntry = Type.Object(
   { additionalProperties: false },
 );
 
+const HttpChatReference = Type.String({
+  minLength: 1,
+  maxLength: 256,
+  pattern: "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+});
+
+const AgentHttpChatAuditDetails = Type.Object(
+  {
+    event: Type.Literal("http_chat"),
+    action: Type.Enum(AGENT_HTTP_CHAT_AUDIT_ACTIONS),
+    agentRevisionId: RevisionId,
+    messageCount: Type.Optional(Type.Integer({ minimum: 0 })),
+    completionIdHash: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+    turnId: Type.Optional(HttpChatReference),
+  },
+  { additionalProperties: false },
+);
+
+const AgentHttpChatAuditEntry = Type.Object(
+  { ...auditEntryFields, ...AgentHttpChatAuditDetails.properties },
+  { additionalProperties: false },
+);
+
+export function projectAgentHttpChatAuditDetails(
+  action: unknown,
+  agentRevisionId: unknown,
+  messageCount: unknown,
+  completionIdHash: unknown,
+  turnId: unknown,
+): Type.Static<typeof AgentHttpChatAuditDetails> | undefined {
+  const projected = {
+    event: "http_chat",
+    action,
+    agentRevisionId,
+    ...(messageCount === null ? {} : { messageCount }),
+    ...(completionIdHash === null ? {} : { completionIdHash }),
+    ...(turnId === null ? {} : { turnId }),
+  };
+  return Check(AgentHttpChatAuditDetails, projected) ? projected : undefined;
+}
+
 export function projectAgentLifecycleAuditDetails(
   action: unknown,
   agentRevisionId: unknown,
@@ -131,6 +179,7 @@ export function projectAgentLifecycleAuditDetails(
 const AgentAuditEntry = Type.Union([
   ControlPlaneAgentAuditEntry,
   AgentLifecycleAuditEntry,
+  AgentHttpChatAuditEntry,
   runtimeAuditPageEntry(auditEntryFields),
 ]);
 

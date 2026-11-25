@@ -304,6 +304,7 @@ test(
         other: other.revision,
         codex: peerDeployment.json().data,
         replacementId: deploymentId,
+        actorId: principal.id,
         readPage: async (agentId) => {
           const response = await inject(
             "GET",
@@ -402,11 +403,13 @@ test(
         const page = await inject("GET", auditPath);
         assert.equal(page.statusCode, 200, page.body);
         const events: AgentAuditPage["events"] = page.json().data.events;
-        const turn = events.find(
-          (event) =>
-            event.event === "runtime_activity" && event.action === "openclaw.runtime.turn.started",
+        assert.ok(recovered);
+        const evidence = recovered;
+        const turn = events.find((event) => event.id === evidence.linkedTurnEventId);
+        assert.ok(
+          turn?.event === "runtime_activity" && turn.action === "openclaw.runtime.turn.started",
         );
-        assert.ok(turn);
+        assert.equal(turn.details.messageLink, "linked");
         const path = `${auditPath}/${turn.id}/message`;
         const read = () => inject("GET", path);
         assert.equal((await app.inject({ method: "GET", url: path })).statusCode, 401);
@@ -433,11 +436,15 @@ test(
         const peerRead = await inject("GET", `${peerPath}/audit-events/${turn.id}/message`);
         assert.equal(peerRead.statusCode, 404, peerRead.body);
 
-        // Both exact grants allow the lookup. This turn has no live link to open.
+        // Both exact grants allow the lookup. The old revision is not serving this Agent.
         await bind(agent.id);
         const missing = await read();
         assert.equal(missing.statusCode, 404, missing.body);
         assert.equal(missing.json().data, undefined);
+        assert.equal(missing.json().error.reason, "revision_unavailable");
+        const unknown = await inject("GET", `${auditPath}/${evidence.unlinkedTurnEventId}/message`);
+        assert.equal(unknown.statusCode, 404, unknown.body);
+        assert.equal(unknown.json().error.reason, undefined);
         assert.equal((await inject("GET", `${path}?messageId=other`)).statusCode, 400);
         const removed = await inject(
           "DELETE",

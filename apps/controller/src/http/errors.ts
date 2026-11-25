@@ -7,6 +7,7 @@ import { UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import {
   AgentCredentialSourceBindingError,
   AgentDeletingError,
+  AgentAuditRevisionUnavailableError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
   CallerStateDeniedError,
@@ -85,6 +86,7 @@ export class RequestFailure extends Error {
   readonly code: string;
   readonly details?: readonly ErrorDetail[];
   registrationRetryAfterSeconds?: number;
+  reason?: "revision_unavailable" | "message_unavailable";
   remainingResources?: readonly {
     kind: string;
     count: number;
@@ -190,12 +192,15 @@ export function canonicalFailure(reply: FastifyReply, error: RequestFailure): vo
   if (error.registrationRetryAfterSeconds !== undefined) {
     reply.header("retry-after", String(error.registrationRetryAfterSeconds));
   }
+  const reason =
+    error.reason ??
+    (error.registrationRetryAfterSeconds === undefined
+      ? undefined
+      : "credential_registration_pending");
   reply.status(error.status).send({
     error: {
       code: error.code,
-      ...(error.registrationRetryAfterSeconds === undefined
-        ? {}
-        : { reason: "credential_registration_pending" }),
+      ...(reason === undefined ? {} : { reason }),
       // Some messages come from Drivers or name submitted values; none may break the cap.
       message: capped(error.message),
       ...(error.details === undefined ? {} : { details: error.details }),
@@ -915,6 +920,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof AgentDeletingError) {
     return failure(409, "AGENT_DELETING", "The requested Agent is being deleted.");
+  }
+  if (error instanceof AgentAuditRevisionUnavailableError) {
+    const result = failure(404, "NOT_FOUND", error.message);
+    result.reason = "revision_unavailable";
+    return result;
   }
   if (error instanceof BrowserAuthorizationError) {
     return failure(

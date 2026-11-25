@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-24 17:38"
-last_updated_session: "authoring-run/5f4255c4-b1d1-4890-b127-2882657adce0"
+updated: "2026-11-24 19:07"
+last_updated_session: "authoring-run/c14b7752-dc1d-449e-9cee-f248859972e8"
 ---
 
 # Audit ledger flow
@@ -220,13 +220,13 @@ validate, authenticate or sanitize their values. Events and lists are immutable.
 `packages/occ/src/agent-audit-reader.ts:listAgentAuditEvents`, and
 `apps/controller/src/composition/control-plane-audit.ts:postgresAgentAuditState`
 
-Audit must be on. Native IAM and OCC must share PostgreSQL State.
-Every reader needs a human session and a direct `read_audit` grant on
-the Agent. OCC holds the session and locks the active Agent, ready
-Namespace and policy tables through commit. It rechecks access under lock.
+Audit must be on. Native IAM and OCC share PostgreSQL State. A human reader
+needs `read_audit` directly on the Agent. OCC rechecks access under lock.
 
 State selects [approved records](../guides/topics/audit-log.md#read-an-agents-audit-events)
-within the requested 24-hour window and derives public work IDs. Before releasing each page, OCC commits
+within the requested 24-hour window and derives public work IDs. It projects HTTP
+chat records and matches a completion ID hash to a saved turn from the same Agent
+and revision. Before releasing each page, OCC commits
 `openclaw.audit.agent.read` with the actor, Agent, request ID, window,
 projection version and count. The encrypted cursor binds the session,
 Agent and window and expires 15 minutes after issue.
@@ -295,20 +295,21 @@ The plugin warns of queue failure or overflow. Agent deletion removes the queue.
 `apps/controller/src/http/agent-audit.ts:getAgentAuditEventMessage` and
 `apps/controller/src/gateway/audit-message-client.ts:readAgentAuditMessage`
 
-The plugin sets `details.messageId` for [supported inputs](../guides/topics/audit-log.md#open-the-message-for-a-turn).
+The plugin sets `messageLink` and includes `messageId` only for a confirmed input.
 It matches OpenClaw HTTP inputs by the `openai-http` channel and `<turn ID>:user` key.
-The plugin and reader use `runtimeAuditReference` to match turn IDs that need
-a hash. The link requires the original session and message IDs.
+`runtimeAuditReference` can hash turn IDs. Links need original session and message IDs.
 
 1. In a PostgreSQL transaction, `packages/occ/src/agent-audit-reader.ts:selectAgentAuditMessage`
    requires a human session and direct `read_audit` and `read_audit_content`
    grants on this Agent. The requested event must identify a linked turn
-   and match `activeRevisionId`. The desired state must be `running`.
+   and match `activeRevisionId`. The desired state must be `running`; otherwise
+   the authorized lookup returns `revision_unavailable`.
 2. Afterward, Envoy checks the OCC service key on the [private route](../reference/gateway-routing.md#endpoint-and-route).
    OCC requires exactly the `operator.sessions.read` scope. It resolves
    the session ID with `sessions.resolve` and calls `chat.message.get`
    with the returned key, session ID and message ID. It checks message ID, user role,
-   turn ID and visible text (maximum 64 KiB). Exceeding four concurrent
+   turn ID and visible text (maximum 64 KiB). Unavailable text returns
+   `message_unavailable`. Exceeding four concurrent
    lookups per API process or five seconds per lookup returns HTTP `503`.
 3. OCC repeats step 1 and records `openclaw.audit.agent.message.read`
    with the analyst and event ID. After confirmed commit, OCC returns
@@ -346,6 +347,8 @@ a hash. The link requires the original session and message IDs.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 19:07: Trace HTTP chat projection and confirmed message-link reasons. (authoring-run/c14b7752-dc1d-449e-9cee-f248859972e8 - c2c2c657d183f6a7beec125d1e9b05aab877c161)
 
 - 2026-11-24 17:38: Trace signed replay after revision retirement. (authoring-run/5f4255c4-b1d1-4890-b127-2882657adce0 - 61b5d467d3ed00c9f955ab0d09c73420f332ce78)
 

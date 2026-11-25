@@ -314,6 +314,7 @@ const linkedTurn = {
     runtimeSource: "openclaw",
     sessionId: uuid,
     turnId: "0f8a6dad-40e1-4121-8521-676796fdcf83",
+    messageLink: "linked",
     messageId: "7501adc8-16ab-45d7-8ed8-a63bf342629f",
     outcome: "succeeded",
   },
@@ -628,6 +629,18 @@ export const responseExamples = {
     projectionVersion: AGENT_AUDIT_PROJECTION_VERSION,
     window: { start: "2026-09-30T12:00:00.000Z", end: time },
     events: [
+      {
+        id: "aud_123e4567-e89b-42d3-a456-426614174002",
+        occurredAt: "2026-10-01T11:31:01.000000Z",
+        event: "http_chat",
+        action: "openclaw.agents.chat.completed",
+        outcome: "success",
+        actorId: id("prn"),
+        requestId: id("req"),
+        agentRevisionId: revisionId,
+        messageCount: 3,
+        turnId: linkedTurn.details.turnId,
+      },
       linkedTurn,
       {
         id: id("aud"),

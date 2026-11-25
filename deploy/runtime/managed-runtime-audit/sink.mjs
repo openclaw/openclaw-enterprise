@@ -23,12 +23,18 @@ function encode(event) {
     sessionId === event.sessionId &&
     event.messageId &&
     runtimeAuditReference(event.messageId) === event.messageId;
+  const isTurn =
+    event.action === "openclaw.runtime.turn.started" ||
+    event.action === "openclaw.runtime.turn.completed";
   return JSON.stringify({
     ...event,
     sessionId,
     turnId: event.turnId && runtimeAuditReference(event.turnId),
     modelCallId: event.modelCallId && runtimeAuditReference(event.modelCallId),
     messageId: canLink ? event.messageId : undefined,
+    ...(isTurn && event.messageLink === "linked" && !canLink
+      ? { messageLink: "invalid_reference" }
+      : {}),
     eventId: event.eventId ?? randomUUID(),
     occurredAt: event.occurredAt ?? new Date().toISOString(),
   });
@@ -184,10 +190,13 @@ export function createAuditSink() {
     retryTimer = undefined;
     const times = globalRetryAt > Date.now() ? [globalRetryAt] : [...deferredScopes.values()];
     if (!closed && times.length) {
-      retryTimer = setTimeout(() => {
-        retryTimer = undefined;
-        void drain();
-      }, Math.max(0, Math.min(...times) - Date.now()));
+      retryTimer = setTimeout(
+        () => {
+          retryTimer = undefined;
+          void drain();
+        },
+        Math.max(0, Math.min(...times) - Date.now()),
+      );
       retryTimer.unref();
     }
   }

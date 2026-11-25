@@ -7,6 +7,7 @@ import type {
 } from "./controller-authority.ts";
 import {
   AgentAuditDisclosureUnavailableError,
+  AgentAuditRevisionUnavailableError,
   NotImplementedError,
   ScopeViolationError,
 } from "./errors.ts";
@@ -134,13 +135,20 @@ export function createAgentAuditReader({
         if (event === undefined) {
           throw new ScopeViolationError("The Agent has no current message link for this event.");
         }
+        const agent = await unit.agents.findAgent(namespaceId, agentId);
+        if (
+          agent?.desiredRuntimeState !== "running" ||
+          agent.activeRevisionId !== event.details.agentRevisionId
+        ) {
+          throw new AgentAuditRevisionUnavailableError();
+        }
         const revision = await unit.revisions.findRevision(
           namespaceId,
           agentId,
           event.details.agentRevisionId,
         );
         if (revision === undefined) {
-          throw new ScopeViolationError("The linked revision is unavailable.");
+          throw new AgentAuditRevisionUnavailableError();
         }
         return {
           result: { event, revision },

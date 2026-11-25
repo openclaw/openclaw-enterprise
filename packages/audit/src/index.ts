@@ -1,9 +1,10 @@
 import { deepFreeze } from "@openclaw-enterprise/utils";
-import type {
-  AuditEvent,
-  AuditEventKind,
-  AuditOutcome,
-  AuthorizationRequest,
+import {
+  RUNTIME_AUDIT_MESSAGE_LINK_VALUES,
+  type AuditEvent,
+  type AuditEventKind,
+  type AuditOutcome,
+  type AuthorizationRequest,
 } from "@openclaw-enterprise/contracts";
 
 import { REDACTED, redactAuditText } from "./runtime-reference.ts";
@@ -59,6 +60,7 @@ const SENSITIVE_KEY =
   /(?:access[_-]?token|api[_-]?key|authorization|bearer|client[_-]?secret|cookie|credential|password|private[_-]?key|provider[_-]?(?:credential|token)|refresh[_-]?token|secret|session[_-]?(?:cookie|token)|token|body|content|message|prompt|text|transcript)/i;
 const SAFE_REFERENCE_KEY = /(?:id|ids|ref|reference|name|names|kind|count)$/i;
 const UNSAFE_PROPERTY = /^(?:__proto__|constructor|prototype)$/;
+const SAFE_MESSAGE_LINK_VALUES = new Set<string>(RUNTIME_AUDIT_MESSAGE_LINK_VALUES);
 
 function redact(value: unknown, visited: WeakSet<object>, depth: number): unknown {
   if (depth > 16) {
@@ -90,7 +92,9 @@ function redact(value: unknown, visited: WeakSet<object>, depth: number): unknow
     if (UNSAFE_PROPERTY.test(key)) {
       continue;
     }
-    const sensitive = SENSITIVE_KEY.test(key) && !SAFE_REFERENCE_KEY.test(key);
+    const safeMessageLink =
+      key === "messageLink" && typeof entry === "string" && SAFE_MESSAGE_LINK_VALUES.has(entry);
+    const sensitive = SENSITIVE_KEY.test(key) && !SAFE_REFERENCE_KEY.test(key) && !safeMessageLink;
     sanitized[key] = sensitive ? REDACTED : redact(entry, visited, depth + 1);
   }
   return sanitized;

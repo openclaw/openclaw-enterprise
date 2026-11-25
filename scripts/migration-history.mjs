@@ -171,6 +171,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 97 && completedCount > 97) {
     return "preRuntimeAuditReplay";
   }
+  if (count === 98 && completedCount > 98) {
+    return "preAgentHttpChatAuditPage";
+  }
   if (count === completedCount) {
     return "completed";
   }

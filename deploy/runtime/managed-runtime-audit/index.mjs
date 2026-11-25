@@ -71,17 +71,31 @@ function recordInput({ inputs, sink, attempts }, { target, messageId, message })
   }
   const key = JSON.stringify([target.sessionId, runId]);
   const metadata = message.__openclaw;
-  const unavailable =
-    message.display === false ||
-    metadata?.steerTargetRunId ||
-    metadata?.beforeAgentRunBlocked ||
+  let status = "linked";
+  if (message.display === false) {
+    status = "input_hidden";
+  } else if (metadata?.beforeAgentRunBlocked) {
+    status = "input_blocked";
+  } else if (metadata?.steerTargetRunId) {
+    status = "steering_input";
+  } else if (
     message.idempotencyKey?.startsWith("followup-collect:") ||
-    (message.provenance && message.provenance.kind !== "external_user");
-  const ambiguous = inputs.has(key) && inputs.get(key) !== messageId;
-  remember(inputs, key, unavailable || ambiguous ? null : messageId);
+    (message.provenance && message.provenance.kind !== "external_user")
+  ) {
+    status = "internal_input";
+  }
+  const previous = inputs.get(key);
+  if (previous?.status === "multiple_inputs") {
+    status = "multiple_inputs";
+  } else if (previous && previous.messageId !== messageId) {
+    status = previous.status === "linked" && status === "linked" ? "multiple_inputs" : "unknown";
+  } else if (previous && previous.status !== "linked") {
+    status = previous.status;
+  }
+  remember(inputs, key, { messageId, status });
   if (attempts && metadata?.runId && metadata.mirrorOrigin === "codex-app-server") {
     const nativeTurnId = metadata.mirrorIdentity.slice(0, -":prompt".length);
-    attempts.link(nativeTurnId, unavailable || ambiguous ? null : key);
+    attempts.link(nativeTurnId, status === "linked" ? key : null);
   }
 }
 
@@ -102,11 +116,12 @@ function recordLifecycle({ sessionId, runId, ts, data }) {
   // Repeated starts share the active run. A start after settlement opens it again.
   remember(turns, key, started);
   active.attempts?.wake();
-  const messageId = inputs.get(key);
+  const input = inputs.get(key);
   const identity = {
     sessionId,
     turnId: runId,
-    ...(messageId ? { messageId } : {}),
+    messageLink: input?.status ?? "unknown",
+    ...(input?.status === "linked" ? { messageId: input.messageId } : {}),
     occurredAt: new Date(ts).toISOString(),
   };
   if (started) {

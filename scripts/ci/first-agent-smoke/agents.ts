@@ -321,6 +321,50 @@ export async function allowAgentAuditRead(
 type AuditReader = Awaited<ReturnType<typeof allowAgentAuditRead>>;
 type SmokeRuntime = "codex" | "embedded-openclaw" | "dedicated-openclaw";
 
+async function assertHttpChatAudit(
+  reader: AuditReader,
+  input: {
+    requestId: string;
+    turnId: string;
+    revisionId: string;
+    messageCount: number;
+    text: string;
+  },
+) {
+  const events = await waitFor(
+    `HTTP chat audit for request ${input.requestId}`,
+    async () => {
+      const page = await reader.readAudit();
+      const records = page.events
+        .filter((event) => event.event === "http_chat")
+        .filter((event) => event.requestId === input.requestId);
+      const admitted = records.find((event) => event.action === "openclaw.agents.chat.admitted");
+      const completed = records.find((event) => event.action === "openclaw.agents.chat.completed");
+      return {
+        done: !!admitted && completed?.turnId === input.turnId,
+        value: { admitted, completed },
+      };
+    },
+    minute,
+  );
+  assert.ok(events?.admitted && events.completed);
+  for (const event of [events.admitted, events.completed]) {
+    assert.equal(event.agentRevisionId, input.revisionId);
+    assert.equal(event.messageCount, input.messageCount);
+    assert.ok(!JSON.stringify(event).includes(input.text), "HTTP audit exposed message content");
+  }
+  assert.equal(events.admitted.turnId, undefined, "admission invented a turn before the reply");
+  const completionIdHash = createHash("sha256")
+    .update(`audit-chat-completion-v1:${input.turnId}`)
+    .digest("hex");
+  assert.equal(
+    events.completed.completionIdHash,
+    completionIdHash,
+    "HTTP result lost its completion hash",
+  );
+  assert.equal(events.completed.turnId, input.turnId, "HTTP result linked the wrong turn");
+}
+
 export async function assertAgentTurnAudit(
   readAudit: () => Promise<AgentAuditPage>,
   {
@@ -463,6 +507,7 @@ export async function assertAgentAuditMessage(
   // The Gateway supplies the expected transcript ID, independently of the audit plugin.
   assert.ok(source.messageId, "missing original user message in chat history");
   assert.equal(event.details.messageId, source.messageId, "turn points to the wrong chat message");
+  assert.equal(event.details.messageLink, "linked");
   assert.ok(!JSON.stringify(event).includes(source.text), "the audit list exposed message content");
   if (checkGrant) {
     // The same signed-in analyst can list this turn but needs a second grant to open it.
@@ -557,14 +602,18 @@ function openHttpChat(
   const user = `audit-http-${randomUUID()}`;
   const text = `Reply with exactly this nonce and no other text: ${nonce}`;
 
-  function post(inputs: string[], expectedStatus: number) {
+  function post(inputs: string[], expectedStatus: number, streaming = false) {
     const timeout = AbortSignal.timeout(3 * minute);
     return stack.api(
       "POST",
       `/agents/${agent.id}/chat`,
-      { user, messages: inputs.map((content) => ({ role: "user", content })) },
       {
-        response: "chat",
+        user,
+        messages: inputs.map((content) => ({ role: "user", content })),
+        ...(streaming ? { stream: true } : {}),
+      },
+      {
+        response: streaming ? "chat_stream" : "chat",
         expectedStatus,
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       },
@@ -586,7 +635,43 @@ function openHttpChat(
   async function send(inputs = [text]) {
     return (await respond(inputs)).turnId;
   }
-  return { nonce, text, send, respond, expectUnavailable: () => post([text], 503) };
+  async function respondStream(inputs = [text]) {
+    const response = await post(inputs, 200, true);
+    const requestId = wireField(response, "requestId");
+    const body = wireField(response, "body");
+    assert.ok(typeof requestId === "string" && requestId.length > 0);
+    assert.ok(typeof body === "string");
+    const frames = body
+      .split(/\r?\n\r?\n/u)
+      .flatMap((frame) => frame.split(/\r?\n/u).filter((line) => line.startsWith("data:")));
+    assert.ok(
+      frames.some((frame) => frame.slice(5).trim() === "[DONE]"),
+      "stream has no final marker",
+    );
+    const chunks = frames
+      .map((frame) => frame.slice(5).trim())
+      .filter((data) => data !== "[DONE]")
+      .map((data): unknown => JSON.parse(data));
+    assert.ok(chunks.length > 0, "stream has no completion chunk");
+    const turnId = wireField(chunks[0], "id");
+    assert.ok(typeof turnId === "string" && turnId.length > 0);
+    let content = "";
+    for (const chunk of chunks) {
+      assert.equal(wireField(chunk, "id"), turnId, "stream changed its completion ID");
+      const choices = wireField(chunk, "choices");
+      assert.ok(Array.isArray(choices));
+      for (const choice of choices) {
+        const delta = wireField(choice, "delta");
+        const part = delta && wireField(delta, "content");
+        if (typeof part === "string") {
+          content += part;
+        }
+      }
+    }
+    assert.ok(content === nonce, "stream content differs from the model reply");
+    return { requestId, turnId };
+  }
+  return { nonce, text, send, respond, respondStream, expectUnavailable: () => post([text], 503) };
 }
 
 async function httpMessageIds(stack: KubernetesAccess, gateway: GatewayPod, sessionId: string) {
@@ -706,13 +791,13 @@ export async function checkHttpTurnAudit(
   // Keep PostgreSQL rejecting the turn start until the second HTTP reply arrives.
   const before = await countModelRequests();
   const { turn, refusedId } = await withRefusedTurnWrite(stack, revisionId, async () => {
-    const id = await chat.send();
+    const response = await chat.respond();
     const requests = await countModelRequests();
     assert.ok(requests > before, `${agent.label}: the turn did not reach the model`);
-    return { id, requests };
+    return { ...response, requests };
   });
   // Recovery must deliver the original event once without repeating the model request.
-  const second = await readTurn(2, turn.id, refusedId);
+  const second = await readTurn(2, turn.turnId, refusedId);
   assert.equal(
     await countModelRequests(),
     turn.requests,
@@ -724,6 +809,7 @@ export async function checkHttpTurnAudit(
   const ids = await httpMessageIds(stack, gateway, sessionId);
   await assertAgentAuditMessage(reader, first, { messageId: ids.first, text });
   await assertAgentAuditMessage(reader, second, { messageId: ids.second, text });
+  await assertHttpChatAudit(reader, { ...turn, revisionId, messageCount: 1, text });
   log(`${agent.label}: OCC HTTP turn events matched the saved user messages`);
   if (runtime === "codex") {
     const beforeRetry = await countModelRequests();
@@ -734,10 +820,22 @@ export async function checkHttpTurnAudit(
     log(`${agent.label}: recovered the held turn with the Gateway retry command`);
   } else {
     // An HTTP turn can have a reply even when it has no single original user message.
-    const combined = await readTurn(3, await chat.send(["An earlier user message.", text]));
+    const response = await chat.respondStream(["An earlier user message.", text]);
+    const combined = await readTurn(3, response.turnId);
     assert.equal(combined.details.messageId, undefined);
+    assert.equal(combined.details.messageLink, "unknown");
     await assert.rejects(reader.readMessage(combined.id), /HTTP 404$/);
+    await assertHttpChatAudit(reader, { ...response, revisionId, messageCount: 2, text });
   }
+
+  // The audit row remains, but a deleted chat can no longer return its text.
+  const session = await gatewayRpc(stack, gateway, "sessions.resolve", { sessionId });
+  const key = wireField(session, "key");
+  assert.ok(typeof key === "string" && key.length > 0);
+  await gatewayRpc(stack, gateway, "sessions.delete", { key, expectedSessionId: sessionId });
+  await assert.rejects(reader.readMessage(second.id), (error: unknown) =>
+    error instanceof Error ? wireField(error, "reason") === "message_unavailable" : false,
+  );
 }
 
 async function connectedNodeIds(stack: KubernetesAccess, gateway: GatewayPod) {

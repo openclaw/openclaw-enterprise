@@ -15,6 +15,17 @@ const turn = {
   turnId: reference,
   messageId: Type.Optional(reference),
 };
+export const RUNTIME_AUDIT_MESSAGE_LINK_VALUES = [
+  "linked",
+  "unknown",
+  "input_hidden",
+  "input_blocked",
+  "steering_input",
+  "internal_input",
+  "multiple_inputs",
+  "invalid_reference",
+] as const;
+const messageLink = Type.Enum(RUNTIME_AUDIT_MESSAGE_LINK_VALUES);
 const model = {
   ...turn,
   modelCallId: reference,
@@ -64,24 +75,34 @@ function runtimeEvent<const Action extends string, Fields extends TProperties>(
 }
 
 function turnSchemas<Fields extends TProperties>(fields: Fields) {
+  const constraints = {
+    if: { type: "object", properties: { messageLink: { const: "linked" } } },
+    then: { type: "object", required: ["messageId"] },
+    else: { not: { type: "object", required: ["messageId"] } },
+  };
   return [
-    runtimeEvent("openclaw.runtime.turn.started", fields),
-    runtimeEvent("openclaw.runtime.turn.completed", {
-      ...fields,
-      outcome: Type.Union([outcome, Type.Literal("blocked")]),
-    }),
+    runtimeEvent("openclaw.runtime.turn.started", fields, constraints),
+    runtimeEvent(
+      "openclaw.runtime.turn.completed",
+      { ...fields, outcome: Type.Union([outcome, Type.Literal("blocked")]) },
+      constraints,
+    ),
   ] as const;
 }
 
 export function linkedTurnEntry<Common extends TProperties>(common: Common) {
-  const linked = turnSchemas({ ...turn, messageId: reference });
+  const linked = turnSchemas({
+    ...turn,
+    messageId: reference,
+    messageLink: Type.Literal("linked"),
+  });
   return schemaUnion(linked.map((schema) => schema.pageEntry(common)));
 }
 
 const schemas = [
   runtimeEvent("openclaw.runtime.session.started", session),
   runtimeEvent("openclaw.runtime.session.ended", session),
-  ...turnSchemas(turn),
+  ...turnSchemas({ ...turn, messageLink }),
   runtimeEvent("openclaw.runtime.model_call.started", model),
   runtimeEvent("openclaw.runtime.model_call.completed", { ...model, outcome }),
   runtimeEvent(

@@ -457,6 +457,28 @@ test("smoke API refuses a redirect instead of resending its key", async (t) => {
   assert.deepEqual(requests, []);
 });
 
+test("smoke API preserves an HTTP chat stream and its request ID", async (t) => {
+  const stream = 'data: {"id":"chatcmpl_fixture"}\n\ndata: [DONE]\n\n';
+  const port = await listen(
+    t,
+    createServer((_request, response) => {
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "x-request-id": "req_fixture",
+      });
+      response.write(stream.slice(0, 8));
+      response.end(stream.slice(8));
+    }),
+  );
+  const result = await createApi(`http://127.0.0.1:${port}`, "synthetic-smoke-key")(
+    "POST",
+    "/agents/agt_fixture/chat",
+    { stream: true },
+    { response: "chat_stream", expectedStatus: 200, signal: AbortSignal.timeout(5_000) },
+  );
+  assert.deepEqual(result, { body: stream, requestId: "req_fixture" });
+});
+
 registerInstalledGitTransportCase();
 
 function virtualClock() {
