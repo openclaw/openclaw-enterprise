@@ -2115,6 +2115,8 @@ export function createAgentDetailScenarios({
         deployed: true,
         candidateDeploymentStatus: "failed",
         bootstrapFailure: true,
+        harness: { state: "running" },
+        harnessAfterFirstRead: { state: "lost", code: "SANDBOX_STOPPED" },
         cleanupStatus: "queued",
         cleanupCompletes: true,
         rules: [
@@ -2173,10 +2175,12 @@ export function createAgentDetailScenarios({
         description:
           "A poll changes the Configuration notice from queued to cleanup pending. The deployment remains failed after cleanup and its recorded evidence stays visible.",
         steps: [
+          "Before the replacement fails, check that Live serving says Sandbox running.",
           "On Configuration, tab to View deployment while the notice says a deployment is queued or in progress.",
           "Wait for the notice to say Deployment resource cleanup needs attention. Press Enter with focus still on the link to open Deployment for v7.",
           "Read the failing oauth-bootstrap exit status beside the successful init container.",
           "After cleanup completes, check that the deployment still shows failed and the evidence remains visible.",
+          "Without refreshing, confirm the same version remains selected and Live serving now says Sandbox lost and Deploy a new version.",
         ],
       },
     } satisfies Record<string, AgentDetailScenario>,
