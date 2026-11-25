@@ -337,6 +337,19 @@ test(
           timeoutMs: cpuScaledImageTimeoutMs(75_000),
         });
         await mkdir(join(directory, "client-home"), { recursive: true });
+        if (index === 0) {
+          // The same packaged Gateway and Envoy verify OCC's cron HTTP wrapper without a model turn.
+          await execute(process.execPath, ["tests/fixtures/gateway-routing/cron-native-probe.ts"], {
+            env: {
+              PATH: process.env.PATH,
+              HOME: join(directory, "client-home"),
+              NODE_EXTRA_CA_CERTS: join(directory, "cert.pem"),
+              OCC_WORKSPACE_PROOF_KEY_PATH: join(directory, "api-key"),
+              OCC_WORKSPACE_PROOF_ENDPOINT: `wss://127.0.0.1:${port}`,
+            },
+            timeout: 60_000,
+          });
+        }
         const content = `Owned native workspace ${index}: exact text.\n`;
         const deniedWrites: WorkspaceNativeProbeInput["deniedWrite"][] = [
           {

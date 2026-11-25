@@ -7,7 +7,7 @@ repository; Namespace policy determines which levels are available.
 
 The registry's `namespaces[].profiles` lists the access modes that Agents in that
 OCE Namespace may select for the repository. An Agent's
-`repositoryBindings[].profile` selects one allowed mode. OCE rejects a binding
+`repositoryAccess.repositories[].profile` selects one allowed mode. OCE rejects a binding
 whose profile is not allowed by the Namespace policy.
 
 | Profile             | Permission selection                                                          |
@@ -24,11 +24,14 @@ policy must include `permissions`. For example, `contents: write` and
 GitHub App permissions and repository rules still apply. This profile does not
 accept an OCE branch allowlist; GitHub governs branch restrictions.
 
-For one `github-repository` binding, the Installation and Namespace can opt into
+For a legacy session with one `github-repository` binding, the Installation and Namespace can opt into
 [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
 The approved scope includes the exact repository identity and permission map.
-Multiple selected repositories remain finite; standing approval does not extend
-the lifetime of individual sessions or tokens.
+Legacy sessions for multiple selected repositories remain finite.
+
+With TokenService Git, the revision records its Agent Repository grants
+independently of the installation token's expiry. The legacy session duration
+does not set a deadline on those grants.
 
 The other profiles do not accept a custom registry `permissions` map. Their
 effective permissions and supported operations depend on the selected delivery,
@@ -37,6 +40,46 @@ as described below. `git-full` does not mean unrestricted GitHub administration.
 Installation-wide access uses a separate
 [`installationAccess` entry](protected-openshell-git.md#grant-access-to-a-github-app-installation);
 `github-installation` is not a value in a repository's `profiles` list.
+
+### TokenService registry example
+
+This registry permits read-only Git access to `project` in one Namespace.
+Replace the example Namespace, App, and installation IDs. Set `backendId` to
+the selected GitHub Backend ID.
+
+```json
+{
+  "version": 1,
+  "backendId": "repository-backend",
+  "providerInstanceId": "github-production",
+  "appId": "123456",
+  "githubInstallationId": "789012",
+  "maximumDurationSeconds": 900,
+  "repositories": [
+    {
+      "repositoryRef": "project",
+      "repository": "project",
+      "namespaces": [
+        {
+          "namespaceId": "ns_00000000-0000-4000-8000-000000000001",
+          "profiles": ["github-repository"],
+          "nativeGit": "v1",
+          "permissions": { "contents": "read", "metadata": "read" }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Use the same short repository name in the Installation's ceiling. The registry
+grants access to the Namespace. The ceiling limits the grants its Agents can save.
+
+```yaml
+repositoryNetworkPolicyCeiling:
+  - repository: project
+    access: read
+```
 
 ### Native Git delivery
 
@@ -260,17 +303,12 @@ Agent create, provision, and update requests can use `repositoryAccess`:
 ```
 
 An omitted entry profile inherits `defaultProfile`. An explicit profile remains
-custom even when equal to the default. Responses retain this intent alongside
-resolved `repositoryBindings`; saved versions contain concrete profiles.
-Changing desired access affects future deployments only. An empty repositories
-array removes attachments while retaining the default.
+custom even when equal to the default. The Agent response returns the saved
+`repositoryAccess`, and deployment resolves those selections against Namespace
+policy before freezing the grants in the Agent revision.
 
-`repositoryAccess` and `repositoryBindings` are mutually exclusive request fields.
-For direct `repositoryBindings`, omitting `profile` selects `github-repository`
-when that is the registry policy's sole profile; otherwise it selects `git-write`.
-Agents without saved intent open with their existing profiles marked custom.
-Omitting both fields during update preserves existing settings; updating direct
-bindings clears inheritance intent. Profiles remain subject to Namespace policy.
+Omitting `repositoryAccess` preserves the saved selections. An empty
+`repositories` array removes the selections while retaining the default profile.
 
 ## API and branch boundaries
 

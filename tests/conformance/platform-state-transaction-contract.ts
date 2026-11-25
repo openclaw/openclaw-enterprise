@@ -789,7 +789,7 @@ export async function verifyPlatformStateTransactions(
     agentId: proxyAgent.id,
     configurationId: proxyConfiguration.id,
     servicePrincipalId: proxyAgent.servicePrincipalId,
-    networkProxy,
+    networkProxy: { ...networkProxy },
     compute: { ...revision.compute, networkProxyAdmission: "private-admission" },
   };
   await store.transact(async (transaction) => {
@@ -801,5 +801,24 @@ export async function verifyPlatformStateTransactions(
     const saved = await revisions.findRevision(namespace.id, proxyAgent.id, proxyRevision.id);
     assert.deepEqual(saved?.networkProxy, networkProxy);
     assert.equal(saved?.compute.networkProxyAdmission, "private-admission");
+  });
+
+  // Private admission alone cannot authorize a different proxy from the owning Agent's.
+  const mismatchedProxyRevision = {
+    ...proxyRevision,
+    id: identifier("rev"),
+    revision: 2,
+    networkProxy: { url: "https://proxy.example:9443" },
+  };
+  await assertUnavailableAgentRevision(
+    store,
+    mismatchedProxyRevision,
+    "AgentRevision network proxy must match the owning Agent.",
+  );
+  await store.read(async ({ revisions }) => {
+    assert.equal(
+      await revisions.findRevision(namespace.id, proxyAgent.id, mismatchedProxyRevision.id),
+      undefined,
+    );
   });
 }

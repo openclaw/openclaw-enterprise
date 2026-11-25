@@ -114,53 +114,24 @@ export interface PreparedTokenRef {
 
 /** Registration binds an immutable grant to its issuer secret. Its reference survives renewal. */
 export interface TokenService {
-  register(
-    registration: OAuthRefreshTokenRegistration,
-    signal: AbortSignal,
-  ): Promise<OAuthAccountRef>;
   register(registration: PreparedTokenRegistration, signal: AbortSignal): Promise<PreparedTokenRef>;
-  resolve(
-    reference: OAuthAccountRef,
-    options: TokenResolveOptions,
-  ): Promise<OAuthConnectionAccessToken | undefined>;
   resolve(
     reference: PreparedTokenRef,
     options: TokenResolveOptions,
   ): Promise<PreparedTokenSelection | undefined>;
-  resolve(
-    reference: PreparedTokenRef | OAuthAccountRef,
-    options: TokenResolveOptions,
-  ): Promise<ResolvedToken | undefined>;
-  issuer(
-    kind: OAuthAccountRef["kind"],
-  ): Pick<OAuthRefreshTokenIssuer, "status" | "maintain" | "retire"> | undefined;
   issuer(provider: EgressRef): Omit<PreparedTokenIssuer, "configure" | "resolve"> | undefined;
 }
 
-/** Stable reference to a saved account. Its private grant can rotate between resolutions. */
+/** Private OAuth lifecycle reference derived from a Source identity. */
 export interface OAuthAccountRef {
   readonly kind: "oauth_refresh_token";
   readonly namespaceId: string;
   readonly sourceId: string;
 }
 
-/** OCC supplies the template version and the client registration the person approved at consent. */
-export interface OAuthRefreshTokenRegistration extends OAuthAccountRef {
-  readonly approval: {
-    readonly connectionTemplateId: string;
-    readonly connectionTemplateVersion: number;
-    readonly oauthClientId: string;
-  };
-  readonly grant: OAuthConnectionGrant;
-}
-
-/** The installed owner of saved OAuth grants. OCC and the worker use its lifecycle operations. */
+/** Internal OAuth lifecycle collaborator used by the selected TokenService. */
 export interface OAuthRefreshTokenIssuer {
   readonly tokenKind: OAuthAccountRef["kind"];
-  register(
-    registration: OAuthRefreshTokenRegistration,
-    signal: AbortSignal,
-  ): Promise<OAuthAccountRef>;
   resolve(
     ref: OAuthAccountRef,
     options: TokenResolveOptions,
@@ -174,7 +145,6 @@ export interface OAuthRefreshTokenIssuer {
 export interface OAuthConnectionRegistration {
   readonly issuer: string;
   readonly tokenUrl: string;
-  readonly oauthClientId: string;
   readonly tokenEndpointAuthMethod: "none" | "client_secret_post" | "client_secret_basic";
   readonly resource?: string;
   readonly clientId: string;

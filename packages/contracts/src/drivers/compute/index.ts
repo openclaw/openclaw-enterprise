@@ -18,7 +18,7 @@ import type {
   Agent,
   AgentNetworkProxy,
   AgentRevision,
-  CredentialSource,
+  StoredCredentialSource,
   CredentialSourceType,
   HarnessAuthSnapshot,
   HarnessExecutionMode,
@@ -28,9 +28,9 @@ import type {
   ResolvedHarnessAuth,
   RevisionHarnessDescriptor,
   Scope,
+  SourceProviderPresetId,
   SecretBindings,
   SecretEnvironmentProjection,
-  ServiceAccountCredential,
 } from "../../index.ts";
 import type {
   AdmittedRepositoryBinding,
@@ -82,7 +82,7 @@ export interface ComputeRevisionContext {
   readonly workspaceSetup?: Readonly<WorkspaceSetup>;
   readonly harnessAuth: ResolvedHarnessAuth;
   /** Non-model sources resolved again at dispatch, in admission order. */
-  readonly credentialSources?: readonly Readonly<CredentialSource>[];
+  readonly credentialSources?: readonly Readonly<StoredCredentialSource>[];
   readonly secretEnvironment: readonly SecretEnvironmentProjection[];
   /** Exact authorized Secret identity for the Gateway channel proxy; never projected to Gateway. */
   readonly networkProxyCredential?: Pick<
@@ -412,11 +412,12 @@ export interface ComputeDriver extends Driver {
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
+    modelPreset?: SourceProviderPresetId,
   ): Readonly<Record<string, unknown>>;
   /** Check source consent against the resolved settings before any credential delivery. */
   validateHarnessCredentialSources?(
     harness: RevisionHarnessDescriptor,
-    sources: readonly Readonly<import("../../index.ts").CredentialSource>[],
+    sources: readonly Readonly<import("../../index.ts").StoredCredentialSource>[],
   ): void;
   /**
    * Withdraw expired Git access or a durably withdrawn standing or finite grant.
@@ -463,15 +464,6 @@ export interface ComputeDriver extends Driver {
     request: AgentRuntimeLogRequest,
   ): Promise<AgentRuntimeLogChunk>;
   deleteAgentRuntimeCredentials?(binding: ComputeAgentBinding): Promise<void>;
-  /**
-   * Removes a ServiceAccount's account-owned access-token Secret. A force-delete with no
-   * ServiceAccount Driver left calls it so no copy of the unrevoked token stays behind.
-   */
-  deleteServiceAccountCredential?(input: {
-    readonly namespaceId: string;
-    readonly serviceAccountId: string;
-    readonly secretRef: ServiceAccountCredential["secretRef"];
-  }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
   /**
    * Resolve a private browser transport for an already-authorized, exact AgentRevision.
@@ -523,7 +515,7 @@ export interface ComputeDriver extends Driver {
    */
   withdrawCredentialSource?(
     revision: Readonly<AgentRevision>,
-    source: Readonly<CredentialSource>,
+    source: Readonly<StoredCredentialSource>,
     signal: AbortSignal,
     options?: CredentialPolicyWithdrawalOptions,
   ): Promise<CredentialAttachmentStatus>;

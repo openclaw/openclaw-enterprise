@@ -11,9 +11,11 @@ independent verification.
 
 ## Select a release and chart
 
-From a successful [container publication](../../release/containers.md), record
-its source commit, successful CI run, publication run and attempt, and both
-immutable image digests. Check the publication receipt and remote digests; a tag
+From a successful publication, record the source commit, publication run and
+attempt, and both immutable image digests. For [Release OCE](../../release/README.md),
+record the qualifying workflow commit and the full-suite result. For
+[standalone image publication](../../release/containers.md), record the successful
+push CI run. Check the publication receipt and remote digests; a tag
 alone does not establish the image contents. Publication smoke checks do not
 prove a production deployment. Select images that include the features you need
 and support the target node architectures.
@@ -27,8 +29,7 @@ examples, and helpers. From the repository root, compare `git rev-parse HEAD`
 with the recorded full source SHA and check `git status --short` for changes.
 If a separately published chart is available, verify its publication receipt,
 source commit, chart digest, and image annotations against the selected image publication;
-use it only when the release owner confirms compatibility. Chart publication
-is a separate process and is not assumed to have occurred for an image release.
+use it only when the release owner confirms compatibility. Release OCE publishes the matching chart. Standalone image publication can omit it.
 
 ## Copy the verified images to ECR
 

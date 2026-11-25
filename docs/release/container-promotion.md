@@ -2,7 +2,7 @@
 
 [`container-promote.yml`](../../.github/workflows/container-promote.yml) copies the exact
 controller and runtime digests already published by
-[Enterprise Containers](containers.md). It never builds images, creates a
+[Release OCE](README.md) or [Enterprise Containers](containers.md). It never builds images, creates a
 repository, changes visibility, or falls back to an alternate destination.
 
 Promotion requires an ordinary successful publication from the public Enterprise
@@ -25,7 +25,9 @@ closed. No private-code bootstrap is attempted.
 
 1. Merge the reviewed promotion workflow to `main`.
 2. From a successful GHCR publication, record its full source SHA, run ID, and
-   exact attempt. Its publication receipt must still be retained.
+   exact attempt. Its publication receipt must still be retained. For a
+   completed Release OCE recovery, select the successful recovery run. Its final
+   alias job and the original preparation evidence must be available.
 3. Under an explicit publication request, manually dispatch **Promote Enterprise
    Containers to Docker Hub** on `main` with those three inputs after checking
    the producer, destinations, and
@@ -34,8 +36,11 @@ closed. No private-code bootstrap is attempted.
    with `--all --preserve-digests`; the copied digest is verified at Docker Hub.
    Existing identical tags are left unchanged; conflicting tags are rejected.
 
-Source must be in the selected main workflow's history and retain successful
-exact CI. The receipt's base digest must still match `CONTAINER_NODE_BASE_IMAGE`.
+The source must be in the selected `main` workflow's history. For Release OCE,
+promotion verifies the qualification record and full-suite aggregate for the
+source and original qualifying workflow. For Enterprise Containers, promotion
+checks the successful push CI run for the source. The receipt's base digest
+must still match `CONTAINER_NODE_BASE_IMAGE`.
 The two images are not an atomic transaction. Inspect the remote digests after
 partial failure; do not remove or replace tags automatically.
 

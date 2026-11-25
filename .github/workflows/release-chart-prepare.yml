@@ -1,0 +1,78 @@
+name: Prepare OCE release chart
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      ci_run_id:
+        required: false
+        type: string
+      ci_attempt:
+        required: false
+        type: string
+      node_base_image:
+        required: false
+        type: string
+      controller_digest:
+        required: true
+        type: string
+      runtime_digest:
+        required: true
+        type: string
+    outputs:
+      chart_sha256:
+        value: ${{ jobs.chart.outputs.chart_sha256 }}
+      version:
+        value: ${{ jobs.chart.outputs.version }}
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  CI_RUN_ID: ${{ inputs.ci_run_id }}
+  CI_ATTEMPT: ${{ inputs.ci_attempt }}
+  NODE_BASE_IMAGE: ${{ inputs.node_base_image }}
+
+jobs:
+  chart:
+    name: Prepare digest-pinned Helm chart
+    # Image destination variables belong to this environment. Chart preparation
+    # needs only a read token and never logs in to GHCR.
+    environment: container-publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      chart_sha256: ${{ steps.package.outputs.chart_sha256 }}
+      version: ${{ steps.package.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: ${{ inputs.source_sha != github.sha && '0' || '1' }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Verify the selected source and Node base
+        run: node scripts/ci/container-release.ts select-source
+      - uses: ./.github/actions/setup-registry
+        with:
+          skopeo: "false"
+          helm: "true"
+      - name: Package the chart with both tested image digests
+        id: package
+        env:
+          GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
+          GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
+          CONTROLLER_DIGEST: ${{ inputs.controller_digest }}
+          RUNTIME_DIGEST: ${{ inputs.runtime_digest }}
+        run: node scripts/ci/prepare-release-chart.ts "$RUNNER_TEMP/prepared-chart"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-chart-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared-chart
+          retention-days: 7
+          if-no-files-found: error

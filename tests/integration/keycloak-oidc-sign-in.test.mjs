@@ -1,4 +1,8 @@
-import { keycloakRealmAdmin } from "../helpers/ci-keycloak-realm.mjs";
+import {
+  keycloakBrowserRoute,
+  keycloakHostPort,
+  keycloakRealmAdmin,
+} from "../helpers/ci-keycloak-realm.mjs";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -29,10 +33,9 @@ import {
 
 // Real Keycloak, prepared by scripts/ci/prepare.ts for the keycloak-oidc lane
 // (docs/testing/kubernetes.md#keycloak-oidc-tests): it imports tests/fixtures/keycloak/realm-oce.json and serves
-// https://keycloak.oce.localhost on 127.0.0.1:443 under a per-run CA that this process
-// trusts through NODE_EXTRA_CA_CERTS. Nothing here is stubbed: the browser fills Keycloak's
-// own login form, and the controller reaches the real token and JWKS endpoints with its
-// production transport. Requests are only observed.
+// https://keycloak.oce.localhost under a per-run CA that this process trusts through
+// NODE_EXTRA_CA_CERTS. The browser fills Keycloak's login form, and the controller
+// reaches the real token and JWKS endpoints with its production HTTPS transport.
 const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
 const secretsFile = process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE;
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
@@ -131,12 +134,12 @@ after(async () => {
   }
 });
 
-/** The Keycloak leaf as served on 127.0.0.1:443, verified against the lane CA. */
+/** The Keycloak leaf served on the fixture port, verified against the lane CA. */
 async function keycloakLeaf() {
   const ca = await readFile(process.env.OCC_TEST_KEYCLOAK_CA_CERT);
   return tlsPeerCertificate({
     host: "127.0.0.1",
-    port: 443,
+    port: keycloakHostPort,
     servername: new URL(issuer).hostname,
     ca,
   });
@@ -271,7 +274,10 @@ async function serveConsole(t, tokenAuth, overrides = {}, wait = unmeasured) {
     browser = await chromium.launch({
       headless: true,
       // Trusts exactly the two lane leaves: the Console origin and Keycloak.
-      args: [chromiumTrustArg([tls.cert, await keycloakLeaf()])],
+      args: [
+        chromiumTrustArg([tls.cert, await keycloakLeaf()]),
+        `--host-resolver-rules=${keycloakBrowserRoute(new URL(issuer).hostname)}`,
+      ],
       ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
         ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
         : {}),

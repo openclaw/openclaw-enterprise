@@ -6,7 +6,14 @@ function clientServiceAccount(account: Readonly<ServiceAccount>): Record<string,
     id: account.id,
     namespaceId: account.namespaceId,
     name: account.name,
-    ...(account.credential === undefined ? {} : { credential: { kind: account.credential.kind } }),
+    ...(account.credential === undefined
+      ? {}
+      : {
+          credential: {
+            kind: account.credential.kind,
+            ...("sourceId" in account.credential ? { sourceId: account.credential.sourceId } : {}),
+          },
+        }),
   };
 }
 

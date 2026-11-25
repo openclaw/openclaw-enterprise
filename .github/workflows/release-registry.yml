@@ -1,0 +1,133 @@
+name: OCE release registry
+
+on:
+  workflow_call:
+    inputs:
+      phase:
+        type: string
+        required: true
+      source_sha:
+        type: string
+        required: true
+      image_tag:
+        type: string
+        required: false
+      producer_run_id:
+        type: string
+        required: true
+      producer_attempt:
+        type: string
+        required: true
+
+jobs:
+  registry:
+    name: ${{ inputs.phase }}
+    if: >-
+      github.repository == 'openclaw/openclaw-enterprise' &&
+      github.workflow_ref == 'openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main' &&
+      github.event_name == 'workflow_dispatch' && github.ref_protected && github.run_attempt == '1' &&
+      contains(fromJSON('["preflight","immutable","aliases"]'), inputs.phase)
+    # The caller grants packages:read for preflight and packages:write for transfer.
+    environment: container-publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+      PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+      PRODUCER_ATTEMPT: ${{ inputs.producer_attempt }}
+      GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
+      GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
+    steps:
+      - name: Match the protected dispatch before checking out release code
+        env:
+          DISPATCH_SOURCE: ${{ github.event.inputs.source_sha }}
+          DISPATCH_TAG: ${{ github.event.inputs.image_tag }}
+          DISPATCH_PUBLISH: ${{ github.event.inputs.publish }}
+          RECOVERY_RUN_ID: ${{ github.event.inputs.recovery_run_id }}
+          PHASE: ${{ inputs.phase }}
+        run: |
+          test "$SOURCE_SHA" = "$DISPATCH_SOURCE"
+          test "$IMAGE_TAG" = "$DISPATCH_TAG"
+          test "$PRODUCER_RUN_ID" = "${RECOVERY_RUN_ID:-$GITHUB_RUN_ID}"
+          test "$PRODUCER_ATTEMPT" = 1
+          test "$PHASE" = preflight || test "$DISPATCH_PUBLISH" = true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - uses: ./.github/actions/setup-registry
+        with:
+          helm: "true"
+      - name: Download the original chart and image references
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: release-chart-${{ inputs.producer_run_id }}-${{ inputs.producer_attempt }}
+          run-id: ${{ inputs.producer_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/prepared/chart
+      - name: Download the original alias state
+        if: inputs.phase != 'preflight' || inputs.producer_run_id != github.run_id
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: release-registry-baseline-${{ inputs.producer_run_id }}-${{ inputs.producer_attempt }}
+          run-id: ${{ inputs.producer_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/prepared
+      - name: Download the sealed controller archive
+        if: inputs.phase == 'immutable'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: container-controller-${{ inputs.producer_run_id }}-${{ inputs.producer_attempt }}
+          run-id: ${{ inputs.producer_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/prepared/container-controller-${{ inputs.producer_run_id }}-${{ inputs.producer_attempt }}
+      - name: Download the sealed runtime archive
+        if: inputs.phase == 'immutable'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: container-runtime-${{ inputs.producer_run_id }}-${{ inputs.producer_attempt }}
+          run-id: ${{ inputs.producer_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/prepared/container-runtime-${{ inputs.producer_run_id }}-${{ inputs.producer_attempt }}
+      - name: Download verified immutable receipts
+        if: inputs.phase == 'aliases'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: release-registry-immutable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared
+      - name: Verify and execute the requested registry phase
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PHASE: ${{ inputs.phase }}
+        run: node scripts/ci/release-registry.ts "$PHASE" "$RUNNER_TEMP/prepared"
+      - name: Retain the original alias state before the first write
+        if: inputs.phase == 'preflight' && inputs.producer_run_id == github.run_id
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release-registry-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared/baseline.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain immutable image and chart receipts
+        if: inputs.phase == 'immutable'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release-registry-immutable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/prepared/publication.json
+            ${{ runner.temp }}/prepared/chart-publication.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain the final image receipt for promotion
+        if: inputs.phase == 'aliases'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: container-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared/publication.json
+          if-no-files-found: error
+          retention-days: 30

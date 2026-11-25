@@ -10,7 +10,8 @@ simulated data.
    and **Create Secret**. Each is a centred box with the same corners, edge,
    shadow and backdrop. Cancel is on the left and the confirming action on the
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
-   Create Secret).
+   Create Secret). In Stop and Delete, check the Agent name and ID before
+   confirming.
    In Delete, read what stays in the Namespace, then open **View separate cleanup
    commands**. Each command includes the Namespace ID. Press Enter on **Copy
    Configuration command**, then on **Copy Secret command** if it appears. Only
@@ -47,6 +48,9 @@ simulated data.
 5. Open each **(phone)** story. The dialog is a full-width sheet on the bottom
    edge with rounded top corners. Stop, Delete and Create Secret are only as tall
    as their content. The drawer header keeps Close beside its title.
+   At short desktop and phone heights, open **Pages / Secrets / Create** and
+   **Replace value** and use Tab and Shift+Tab to check that the focused control
+   and its outline are fully visible.
 6. Turn on reduced motion (browser developer tools, Rendering, "Emulate CSS media
    feature prefers-reduced-motion: reduce") and reopen a dialog: it appears
    without the fade or slide.
