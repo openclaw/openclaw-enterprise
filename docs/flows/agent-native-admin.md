@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: "2026-11-25 02:02"
+last_updated_session: "authoring-run/8e090a9d-4f9b-484c-8864-1bfb938b3999"
 ---
 
 # Agent Native Admin UI Flow
@@ -12,7 +12,7 @@ OCC authorizes and proxies exact-Agent HTTP/WebSocket browser access using OCE s
 
 ## Entry Points
 
-- Trigger: Enable native admin at Agent creation, open its URL, or run `scripts/first-agent.ts --control-ui` in Local Setup with OpenShell.
+- Trigger: **Enable browser chat** at creation, open its URL, or [use local OpenShell](../testing/openshell.md#first-agent-proof).
 - Source: `scripts/first-agent.ts:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
@@ -336,6 +336,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 02:02: Correct trigger. (authoring-run/8e090a9d-4f9b-484c-8864-1bfb938b3999 - 3ca1a29742ea914fb3a7034ed25e5b361f449bed)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
