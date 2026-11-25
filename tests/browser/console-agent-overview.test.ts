@@ -5042,6 +5042,49 @@ for (const viewport of [
   });
 }
 
+test("Viewing version matches the Configuration snapshot when revisiting a queued version", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Saved versions", "Picker Agent", {
+    recordOperations: true,
+  });
+  const { revision: first } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeValues("v2", { providerModel: "gpt-5.1" }),
+  );
+  const second = await fixture.deployAgent(namespace.id, agent.id);
+  const operator = await fixture.createNamespaceMember("version-operator", namespace.id, [
+    ...AGENT_READ,
+    ["operate", "agent"],
+  ]);
+  await trackSettledFetches(page);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, first.id, "configuration"),
+    operator.credentials,
+  );
+
+  const chooser = versionChooser(page);
+  const snapshot = page.locator(settledView).getByRole("tabpanel", { name: "Configuration" });
+  const checkVersion = async (id: string, model: string) => {
+    await snapshot.getByText(model, { exact: true }).waitFor();
+    // Leaving during a read rebuilds the page on return and hides a stale picker.
+    await waitForIdleFetches(page);
+    assert.equal(new URL(page.url()).searchParams.get("revision"), id);
+    assert.equal(await chooser.inputValue(), id);
+  };
+  await checkVersion(first.id, "openai/gpt-4.1");
+  await chooser.selectOption(second.id);
+  await checkVersion(second.id, "openai/gpt-5.1");
+  const queuedPicker = required(await chooser.elementHandle());
+  await chooser.selectOption(first.id);
+  await checkVersion(first.id, "openai/gpt-4.1");
+  await chooser.selectOption(second.id);
+  await checkVersion(second.id, "openai/gpt-5.1");
+  assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+});
+
 // The Versions list marked only the current version: a failed v2 looked like v1 (finding 2095),
 // and each version was its own Tab stop, 51 on one Agent (finding 2101). The latest version now
 // carries its deployment's outcome while it is in progress or failed, and the
