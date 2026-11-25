@@ -1111,7 +1111,7 @@ revisionTest(
       error: {
         code: "RUNTIME_MODEL_PROBE_FAILED",
         message:
-          "The startup model check failed. No credential rejection was reported. Check the model name, provider settings, TLS, rate limits and account status. With Codex, also check that the provider is reachable. After the issue is fixed, someone with deploy access to this Agent can deploy a new version.",
+          "The startup model check failed. No credential rejection was reported. Check the model, provider settings, TLS, rate limits and account. With Codex, check that the provider is reachable. After the fix, someone with deploy access can deploy a new version.",
         data: { runtimeFailure },
       },
     });
