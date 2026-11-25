@@ -4,7 +4,7 @@ import test, { type TestContext } from "node:test";
 import pg from "pg";
 import type { Namespace } from "@openclaw-enterprise/contracts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;

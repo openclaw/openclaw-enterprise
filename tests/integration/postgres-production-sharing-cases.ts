@@ -12,7 +12,7 @@ import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { composeProduction } from "../helpers/password-hasher.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitFor } from "../helpers/wait-for.ts";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

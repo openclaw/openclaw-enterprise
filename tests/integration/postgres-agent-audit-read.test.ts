@@ -4,7 +4,7 @@ import pg from "pg";
 import type { AgentAuditPage } from "@openclaw-enterprise/contracts";
 
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";

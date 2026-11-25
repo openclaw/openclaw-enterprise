@@ -3,7 +3,7 @@ import test from "node:test";
 import pg from "pg";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/errors.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { protocol, serverError } from "./postgres-transaction-protocol-fixture.ts";
 
