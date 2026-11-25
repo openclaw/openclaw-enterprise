@@ -135,6 +135,17 @@ export const CreatePresetWorkspaceFiles = {
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
 export const CreatePresetMultiline = story("createPresetMultiline");
 export const CreatePresetMultilineApplied = story("createPresetMultilineApplied");
+export const ExistingCredentialSourceLoading = story("createExistingSourceLoading");
+export const ExistingCredentialSourceListFailure = story("createExistingSourceListFailure");
+export const ExistingCredentialSourceNoMatch = story("createExistingSourceNoMatch");
+export const CreateExistingCredentialSourceDenied = story("createExistingSourceDenied");
+export const CreateWithExistingCredentialSource = {
+  ...story("createWithExistingCredentialSource"),
+  name: "Reuse an existing Credential Source",
+};
+export const ExistingSourceDestinationMismatch = story(
+  "createExistingSourceUnsupportedDestination",
+);
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
 export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
 export const CreateCredentialRegistrationRefused = story("createCredentialRegistrationRefused");
@@ -290,6 +301,10 @@ export const CreateAnthropic = {
 };
 export const CreateCodexPat = { ...story("createCodexPat"), name: "Service Accounts" };
 export const CreateOAuth = story("createOAuth");
+export const CreateWithSavedCodexOAuth = {
+  ...story("createWithSavedCodexOAuth"),
+  name: "Reuse a saved ChatGPT OAuth Source",
+};
 export const CreateOAuthPending = story("createOAuthPending");
 export const CreateOAuthReady = story("createOAuthReady");
 export const CreateOAuthDenied = story("createOAuthDenied");

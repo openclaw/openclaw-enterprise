@@ -250,15 +250,11 @@ the Harness credential source was withdrawn from the version
 (`CREDENTIAL_WITHDRAWN`), when the Harness authentication Secret or source, or a
 listed credential source, is missing or changed since admission
 (`HARNESS_AUTH_SOURCE_UNAVAILABLE`, `CREDENTIAL_SOURCE_UNAVAILABLE`), when the
-protected egress provider the Harness source was admitted with is no longer
-available (`EGRESS_PROVIDER_UNAVAILABLE`), or when the
-Installation no longer selects the version's Credential Gateway
-(`CREDENTIAL_GATEWAY_MISMATCH`) or Secret Driver (`SECRET_DRIVER_MISMATCH`). A
-version pinned to a Compute Driver the controller no longer selects, or to a
-Harness version it no longer approves, fails with `COMPUTE_DRIVER_MISMATCH` or
-`HARNESS_DESCRIPTOR_MISMATCH`. A version whose ServiceAccount Backend binding
-no longer matches the Agent's Backend, or whose credential is no longer issued,
-fails with `SERVICE_ACCOUNT_BACKEND_MISMATCH`. Each status message names the fix. See the
+selected credential delivery owner no longer matches the revision
+(`CREDENTIAL_SOURCE_UNAVAILABLE`), or when the selected Secret Driver does not
+match (`SECRET_DRIVER_MISMATCH`). A version pinned to a Compute Driver the
+controller no longer selects, or to a Harness version it no longer approves,
+fails with `COMPUTE_DRIVER_MISMATCH` or `HARNESS_DESCRIPTOR_MISMATCH`. Each status message names the fix. See the
 [worker configuration reference](../settings/operations.md#controller-worker-environment) for
 defaults and supported overrides.
 

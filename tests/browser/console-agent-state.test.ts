@@ -1033,11 +1033,11 @@ test("A member's Agent detail reads no bound Secret her Secret list leaves out",
   assert.deepEqual(secretDenials(), []);
 });
 
-// Finding D757. A bound Secret's links open the console's Secrets page with that Secret's metadata
+// Finding D757. A bound Secret's links open the Console Credentials page with that Secret's metadata
 // and consumers, not the API path's raw JSON. A member whose Secret list leaves the Secret out
 // gets no link, which would only open a refusal the API audits; the Credentials field says why
 // its name is unavailable, as the Configuration tab does.
-test("Credentials links a readable bound Secret to the Secrets page and explains an unreadable one", async (t) => {
+test("Credentials links a readable bound Secret to the Credentials page and explains an unreadable one", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Secret links");
   const secret = await fixture.createSecret(namespace.id, "Linked model key", "hidden-model");
   const agent = await fixture.createAgent(namespace.id, "Linked Agent", nativeValues("x"), {
@@ -1095,7 +1095,7 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   const named = admin.getByRole("link", { name: "Linked model key", exact: true });
   await named.waitFor();
   assert.equal(await named.getAttribute("href"), secretPage);
-  // The Secrets page opens that Secret's metadata and consumers, Agent included.
+  // The Credentials page opens that Secret's metadata and consumers, Agent included.
   const [opened] = await Promise.all([admin.waitForEvent("popup"), named.click()]);
   const dialog = opened.getByRole("dialog", { name: "Linked model key" });
   await dialog.getByText(secret.id, { exact: true }).waitFor();
@@ -1111,13 +1111,13 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   await opened.getByRole("button", { name: "Refresh", exact: true }).click();
   await opened.waitForFunction((row) => !row.isConnected, oldRow);
   await opened.getByRole("button", { name: "Linked model key", exact: true }).waitFor();
-  // The Secrets page opens a linked Secret in the same task that draws the list.
+  // The Credentials page opens a linked Secret in the same task that draws the list.
   assert.equal(await opened.getByRole("dialog").count(), 0);
   assert.equal(new URL(opened.url()).search, `?namespace=${namespace.id}`);
 
-  // Finding 2645. The link keeps its Secret until the Secrets page shows it: through sign-in when
-  // it opens signed out, through a failed first load's Retry, and through a session that expires
-  // during the load. Each time the dialog opens and the parameter leaves the URL.
+  // Finding 2645. The link keeps its Secret until Credentials shows it: through sign-in when
+  // it opens signed out, Refresh after a failed Secret inventory, and session expiry during
+  // the load. Each time the dialog opens and the parameter leaves the URL.
   const expectLinkedDialog = async (page: Page) => {
     const linked = page.getByRole("dialog", { name: "Linked model key" });
     await linked.getByText(secret.id, { exact: true }).waitFor();
@@ -1135,7 +1135,10 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
     { times: 1 },
   );
   await member.goto(`${fixture.origin}${secretPage}`);
-  await member.getByRole("button", { name: "Retry", exact: true }).click();
+  await member
+    .getByText("The Secret inventory could not be loaded. Select Refresh to check again.")
+    .waitFor();
+  await member.getByRole("button", { name: "Refresh", exact: true }).click();
   await expectLinkedDialog(member);
 
   const expiring = await holdRequests(t, member, secretList, { once: true });

@@ -8,8 +8,10 @@ last_updated_session: "authoring-run/5ab9f2fd-bf55-4e30-a445-a5a432c3b796"
 
 ## Overview
 
-See [Git setup](../guides/repository-credentials.md) and
-[qualification](../testing/repository-credentials.md).
+Credential 1.0 grants Source-backed Git Read or Read/write per repository.
+OpenShell checks requests locally; GitHub enforces branch rules. Prepared sessions and deprecated
+exchanges are outside 1.0. See [setup](../guides/repository-credentials.md)
+and [qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
@@ -117,19 +119,18 @@ administrators see access limits. A missing selection adds `meta.notConfigured`.
 Discovery failure returns `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
 The catalog accepts 1,000 repositories plus the Installation option. Overflow
-returns `503 DEPENDENCY_UNAVAILABLE`. The editor accepts 16 selections.
+returns `503 DEPENDENCY_UNAVAILABLE`. The editor allows 16 selections.
 `repositorySettings` resolves explicit and inherited selections. PostgreSQL
-checks bindings. Empty drafts can save during catalog outages.
+checks bindings. Empty drafts save during catalog outages.
 
 Reuse a saved Configuration after an Agent rejection. Reload choices before
 retrying a scope failure. Read both resources after an uncertain save.
 
-Requests carry refs and optional profiles. TokenService Git also saves a Client
-and access per ref. Legacy GitHub defaults to `git-write` without provider calls.
+Requests carry Repository references and optional profiles. TokenService Git saves
+a Client and access per Repository. Legacy GitHub defaults to `git-write`.
 
 `apps/controller/src/drivers/repo/github/access/registry.ts:resolveGitHubRepositoryBinding`
-requires an exact Namespace/ref/profile. Each binding gets one grant with a
-fingerprint covering provider, App, installation, repository, duration, full
+requires an exact Namespace/ref/profile. Each binding’s grant fingerprint covers provider, App, installation, repository, duration, full
 Namespace profile policy, exact permissions and optional normalized push-ref
 allowlist. Omitted selections persist. `[]` clears them.
 

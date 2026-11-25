@@ -40,7 +40,14 @@ import {
   withRequestId,
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
-import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
+import {
+  CODEX_SOURCE_DESTINATION_HINT,
+  configuredHarnessId,
+  credentialSourceOperateDenial,
+  createModelCredentialSourceField,
+  harnessAuthDescription,
+  modelSourceProvider,
+} from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
 import {
   ACCESS_NOT_INCLUDED,
@@ -1120,18 +1127,6 @@ function renderAgentForm(
   let modelCredentialSource = draft.modelCredentialSource;
   let modelCredentialSecret = draft.modelCredentialSecret;
   const authMethodField = field("Authentication method", authMethod);
-  const credentialStorage = element(
-    "select",
-    { id: "model-credential-storage" },
-    element("option", { value: "source" }, "Credential Source"),
-    element("option", { value: "secret" }, "Namespace Secret"),
-  );
-  // A Preset's password or bound Secret keeps its declared authentication path.
-  if (passwordAuth || boundSource?.kind === "secret" || modelCredentialSource?.kind === "secret") {
-    credentialStorage.value = "secret";
-  }
-  const credentialStorageField = field("Credential storage", credentialStorage);
-
   const credentialLabel = element("label", { for: apiKey.id }, "API key");
   const credentialHelp = element("p", { className: "hint", id: "provider-credential-help" });
 
@@ -1259,6 +1254,38 @@ function renderAgentForm(
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
+  const embeddedSourceHint = element(
+    "p",
+    { className: "hint", hidden: true },
+    "Credential Sources require Dedicated execution. If this Installation supports it, choose Codex or select Dedicated under Runtime details.",
+  );
+  const modelSourcePicker = createModelCredentialSourceField(context, {
+    id: "agent-model-credential",
+    label: "Model credential",
+    addNew: {
+      label: "Add new credential…",
+      initial: draft.inputs?.modelCredentialChoice === "new",
+    },
+    initial:
+      draft.inputs?.modelCredentialChoice !== "new" &&
+      modelCredentialSource?.kind === "credential_source"
+        ? modelCredentialSource
+        : null,
+    onChange(source) {
+      edited = true;
+      apiKey.value = "";
+      modelCredentialSource = source;
+      modelCredentialSecret = source;
+      resetPluginDiscovery();
+      feedback.textContent = "";
+      updateControls();
+    },
+  });
+  const existingSourceDestinationHint = element(
+    "p",
+    { className: "hint", hidden: true },
+    CODEX_SOURCE_DESTINATION_HINT,
+  );
   // The picker owns validation and reports an accepted choice above. Searching its list
   // must not clear the field's validity or mark the draft as edited.
   for (const event of ["input", "change"]) {
@@ -1299,8 +1326,7 @@ function renderAgentForm(
       return;
     }
     passwordAuth = false;
-    credentialStorageHelp.textContent = "Choose the Secret to use when this Agent runs.";
-    credentialStorage.value = "secret";
+    newCredentialHelp.textContent = "Choose the Secret to use when this Agent runs.";
     operateAnswer.reset();
     apiKey.value = "";
     resetPluginDiscovery();
@@ -1330,7 +1356,7 @@ function renderAgentForm(
     initial: draft.oauthLogin,
     hint: "Sign in for this dedicated Codex Agent. The same saved login supports plugin browsing before deployment and when editing later versions.",
     onChange(source) {
-      if (authMethod.value === "credential_source") {
+      if (authMethod.value === "credential_source" && modelSourcePicker.creating) {
         modelCredentialSource = source;
         modelCredentialSecret = source;
         resetPluginDiscovery();
@@ -1338,7 +1364,7 @@ function renderAgentForm(
       }
     },
   });
-  const credentialStorageHelp = element(
+  const newCredentialHelp = element(
     "p",
     { className: "hint" },
     passwordAuth
@@ -1351,7 +1377,7 @@ function renderAgentForm(
     credentialLabel,
     apiKey,
     credentialHelp,
-    credentialStorageHelp,
+    newCredentialHelp,
   );
   const savePatForDiscovery = button("Save service account token", () => {
     void savePatSource();
@@ -1382,8 +1408,10 @@ function renderAgentForm(
       : null,
     ...(!binding
       ? [
-          credentialStorageField,
+          modelSourcePicker.field,
+          existingSourceDestinationHint,
           modelCredentialField,
+          embeddedSourceHint,
           oauthLogin.section,
           transientCredentialField,
           secretConflictRecovery,
@@ -1745,6 +1773,7 @@ function renderAgentForm(
     modelCredentialSource = null;
     modelCredentialSecret = undefined;
     modelCredentialPicker.resetSelection();
+    modelSourcePicker.reset();
   }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
@@ -1767,10 +1796,6 @@ function renderAgentForm(
     } else {
       updateModelConfiguration(true, values);
     }
-  });
-  credentialStorage.addEventListener("change", () => {
-    clearModelCredential();
-    updateControls();
   });
   authMethod.addEventListener("change", () => {
     clearModelCredential();
@@ -1802,6 +1827,9 @@ function renderAgentForm(
       clearModelCredential();
       resetModelChoices(true, "", values);
     } else {
+      if (modelCredentialSource?.kind === "credential_source") {
+        clearModelCredential();
+      }
       updateModelConfiguration(true, values);
     }
     updateControls();
@@ -1811,6 +1839,9 @@ function renderAgentForm(
     const previousHarness = harness.value;
     if (mode.value === "embedded") {
       harness.value = "openclaw";
+      if (modelCredentialSource?.kind === "credential_source") {
+        clearModelCredential();
+      }
     }
     // Topology alone does not change the model policy or provider transport.
     if (harness.value !== previousHarness) {
@@ -2506,7 +2537,7 @@ function renderAgentForm(
     harness,
     nativeProvider,
     authMethod,
-    credentialStorage,
+    modelCredentialChoice: modelSourcePicker.control,
     model,
     modelChoice,
     configuration,
@@ -2773,19 +2804,31 @@ function renderAgentForm(
     installationCapabilities?.modelCredentialSourcePresets?.includes(
       authMethod.value === "codex_pat" ? "codex-pat" : "openai",
     ) === true;
+  const canUseManagedStatic = () =>
+    nativeProvider.value === "openai" &&
+    mode.value === "dedicated" &&
+    (authMethod.value === "api_key" ||
+      (harness.value === "codex" && authMethod.value === "codex_pat")) &&
+    (staticSourceRequired() || !capabilityDiscoveryDone);
+  const usesModelSourcePicker = () =>
+    !binding &&
+    !passwordAuth &&
+    nativeProvider.value === "openai" &&
+    mode.value === "dedicated" &&
+    (canUseManagedStatic() ||
+      (harness.value === "codex" && authMethod.value === "credential_source"));
   const usesManagedStatic = () =>
     savedCredentialSource !== undefined ||
     (!binding &&
       !savedCredentialSource &&
-      nativeProvider.value === "openai" &&
-      mode.value === "dedicated" &&
-      (authMethod.value === "api_key" ||
-        (harness.value === "codex" && authMethod.value === "codex_pat")) &&
-      (staticSourceRequired() || credentialStorage.value === "source"));
+      ((passwordAuth && staticSourceRequired()) ||
+        (!passwordAuth && canUseManagedStatic() && modelSourcePicker.creating)));
+  const usesExistingModelSource = () => usesModelSourcePicker() && !modelSourcePicker.creating;
   // TokenService enrollment and per-repository GitHub access use the draft path.
   const shouldProvision = () =>
     !repositories.scoped() &&
     !usesManagedStatic() &&
+    !usesExistingModelSource() &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
     mode.value === "dedicated" &&
     provisionableExecutionModes.has(mode.value);
@@ -3019,11 +3062,11 @@ function renderAgentForm(
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
-    if (usesOAuth && !binding) {
+    if (usesOAuth && !binding && modelSourcePicker.creating) {
       modelCredentialSource = oauthLogin.source;
       modelCredentialSecret = oauthLogin.source;
     }
-    oauthLogin.setActive(usesOAuth && !binding);
+    oauthLogin.setActive(usesOAuth && !binding && modelSourcePicker.creating);
     oauthLogin.setDisabled(planLocked || saved);
     // Anthropic and a runtime binding fix the mode too; with a pending or saved form they keep it
     // natively disabled. The Codex harness lock is applied below, once its hint is set.
@@ -3138,7 +3181,7 @@ function renderAgentForm(
           ? notReady
             ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then."
             : "Dedicated Agents are provisioned and deployed when created."
-          : usesManagedStatic()
+          : usesManagedStatic() || usesExistingModelSource()
             ? "This Agent will be saved as a draft with its Credential Source. Deploy it from the Agent page after creation."
             : capabilitiesUnreadable
               ? // Without the Installation's capabilities, deploying may need an administrator.
@@ -3232,21 +3275,35 @@ function renderAgentForm(
     oauthOption.hidden = harness.value !== "codex";
     oauthOption.disabled = harness.value !== "codex";
     const managedStatic = usesManagedStatic();
-    credentialStorageField.hidden = Boolean(
-      staticSourceRequired() ||
+    const existingSource = usesExistingModelSource();
+    credentialLabel.textContent = usesPat ? "Service account token" : "API key";
+    modelCredentialField.hidden = Boolean(
+      binding || passwordAuth || managedStatic || existingSource || usesOAuth,
+    );
+    embeddedSourceHint.hidden = Boolean(
       binding ||
       nativeProvider.value !== "openai" ||
-      mode.value !== "dedicated" ||
-      !["api_key", "codex_pat"].includes(authMethod.value),
+      harness.value !== "openclaw" ||
+      mode.value !== "embedded",
     );
-    credentialStorage.disabled ||= Boolean(
-      savedCredentialSource || savedSecret || savedConfiguration,
+    transientCredentialField.hidden =
+      usesOAuth || existingSource || (!passwordAuth && !managedStatic);
+    let modelSourcePurpose: "openai" | "codex-pat" | "builtin_codex" = "openai";
+    if (usesOAuth) {
+      modelSourcePurpose = "builtin_codex";
+    } else if (usesPat) {
+      modelSourcePurpose = "codex-pat";
+    }
+    modelSourcePicker.setAddNewLabel(usesOAuth ? "Sign in with OAuth" : "Add new credential…");
+    modelSourcePicker.setAddNewDisabled(Boolean(savedConfiguration));
+    modelSourcePicker.setActive(usesModelSourcePicker(), modelSourcePurpose);
+    modelSourcePicker.setDisabled(
+      planLocked || Boolean(savedAgent || savedCredentialSource || savedSecret),
     );
-    credentialLabel.textContent = usesPat ? "Service account token" : "API key";
-    modelCredentialField.hidden = Boolean(binding || passwordAuth || managedStatic || usesOAuth);
-    transientCredentialField.hidden = usesOAuth || (!passwordAuth && !managedStatic);
-    credentialStorageHelp.textContent = managedStatic
-      ? "Saves a Credential Source with the selected TokenService. Use it to load hosted plugins and deploy the Agent."
+    existingSourceDestinationHint.hidden =
+      !existingSource || harness.value !== "codex" || usesPat || usesOAuth;
+    newCredentialHelp.textContent = managedStatic
+      ? "This credential will be saved for reuse and bound to the Agent."
       : "Stores the model credential as a Namespace Secret.";
     savePatForDiscovery.hidden =
       !usesPat || !managedStatic || Boolean(savedCredentialSource || savedSecret);
@@ -3261,13 +3318,16 @@ function renderAgentForm(
     modelCredentialField.querySelector("label")!.textContent = usesPat
       ? "Service account token Secret"
       : "API key Secret";
-    modelCredentialPicker.setRequired(!binding && !passwordAuth && !managedStatic && !usesOAuth);
+    modelCredentialPicker.setRequired(
+      !binding && !passwordAuth && !managedStatic && !existingSource && !usesOAuth,
+    );
     modelCredentialPicker.setDisabled(
       planLocked ||
         Boolean(
           binding ||
           passwordAuth ||
           managedStatic ||
+          existingSource ||
           usesOAuth ||
           savedConfiguration ||
           savedCredentialSource ||
@@ -3306,13 +3366,18 @@ function renderAgentForm(
       credentialHelp.textContent = "Use an Anthropic API key for embedded OpenClaw.";
     }
     apiKey.required = Boolean(
-      (passwordAuth || managedStatic) && !usesOAuth && !savedCredentialSource && !savedSecret,
+      (passwordAuth || managedStatic) &&
+      !usesOAuth &&
+      !existingSource &&
+      !savedCredentialSource &&
+      !savedSecret,
     );
     apiKey.disabled ||= Boolean(
       savedSecret ||
       savedCredentialSource ||
       binding ||
       usesOAuth ||
+      existingSource ||
       (!passwordAuth && !managedStatic),
     );
     startOver.disabled =
@@ -3877,7 +3942,7 @@ function renderAgentForm(
   function plannedHarnessAuth(
     usesOAuth: boolean,
   ): HarnessAuthBinding | { method: "api_key" | "codex_pat" } | undefined {
-    if (usesOAuth) {
+    if (usesOAuth && !usesExistingModelSource()) {
       return undefined;
     }
     // The operator-managed runtime binding names no Secret, so it is sent as it is everywhere.
@@ -3886,6 +3951,9 @@ function renderAgentForm(
     }
     if (savedCredentialSource) {
       return { method: "credential_source", sourceId: savedCredentialSource.id };
+    }
+    if (usesExistingModelSource() && modelCredentialSource?.kind === "credential_source") {
+      return { method: "credential_source", sourceId: modelCredentialSource.id };
     }
     if (usesManagedStatic()) {
       const method = binding?.method ?? authMethod.value;
@@ -3964,6 +4032,13 @@ function renderAgentForm(
       focusConfiguration();
       return;
     }
+    if (usesExistingModelSource() && !modelSourceProvider(values, harness.value, mode.value)) {
+      configurationError.show(
+        "The existing Credential Source cannot be used with this model provider or destination. Update the Configuration JSON or choose compatible authentication.",
+      );
+      focusConfiguration();
+      return;
+    }
     if (
       (!binding || hasBoundModelCredential) &&
       isObject(selected) &&
@@ -4024,12 +4099,17 @@ function renderAgentForm(
     if (
       !binding &&
       !savedCredentialSource &&
-      ((!passwordAuth && !usesManagedStatic()) || usesOAuth) &&
-      modelCredentialSource?.kind !== (usesOAuth ? "credential_source" : "secret")
+      ((!passwordAuth && !usesManagedStatic()) || usesOAuth || usesExistingModelSource()) &&
+      modelCredentialSource?.kind !==
+        (usesOAuth || usesExistingModelSource() ? "credential_source" : "secret")
     ) {
-      feedback.textContent = usesOAuth
-        ? "Complete ChatGPT sign-in before creating the Agent."
-        : "Choose a model credential Secret before creating the Agent.";
+      if (usesExistingModelSource()) {
+        feedback.textContent = "Choose an existing Credential Source before creating the Agent.";
+      } else if (usesOAuth) {
+        feedback.textContent = "Complete ChatGPT sign-in before creating the Agent.";
+      } else {
+        feedback.textContent = "Choose a model credential Secret before creating the Agent.";
+      }
       return;
     }
     pending = true;
@@ -4044,6 +4124,7 @@ function renderAgentForm(
     // retry after an administrator's grant goes on.
     if (
       passwordAuth &&
+      !usesExistingModelSource() &&
       !usesManagedStatic() &&
       !usesOAuth &&
       !savedSecret &&
@@ -4068,7 +4149,8 @@ function renderAgentForm(
     const plannedAuth = plannedHarnessAuth(usesOAuth);
     const savesFirst =
       !usesOAuth &&
-      ((passwordAuth && !savedSecret) || (!savedCredentialSource && usesManagedStatic()));
+      ((passwordAuth && !usesExistingModelSource() && !savedSecret) ||
+        (!savedCredentialSource && usesManagedStatic()));
     if (
       !savedConfiguration &&
       !savedAgent &&
@@ -4140,7 +4222,13 @@ function renderAgentForm(
     const requestedSecretName = requestedModelSecretName();
     let refusedInConfiguration = false;
     try {
-      if (passwordAuth && !usesManagedStatic() && !usesOAuth && !savedSecret) {
+      if (
+        passwordAuth &&
+        !usesManagedStatic() &&
+        !usesExistingModelSource() &&
+        !usesOAuth &&
+        !savedSecret
+      ) {
         mutationStarted = true;
         creatingSecret = true;
         const result = await request(`${namespacePath(namespaceId)}/secrets`, {
@@ -4174,6 +4262,8 @@ function renderAgentForm(
         }
         showSavedStatus();
         harnessAuth = { method: "credential_source", sourceId: source.id };
+      } else if (usesExistingModelSource() && modelCredentialSource?.kind === "credential_source") {
+        harnessAuth = { method: "credential_source", sourceId: modelCredentialSource.id };
       } else {
         const selected = passwordAuth && !usesOAuth ? savedSecret?.ref : modelCredentialSource;
         harnessAuth = binding ?? selectedHarnessAuth(authMethod.value, selected);
@@ -4271,14 +4361,19 @@ function renderAgentForm(
             body: agentBody,
           }).catch((cause: unknown) => {
             if (repositoryBindings.length === 0 && requestFailure(cause).status === 403) {
+              const exactSourceDenial =
+                usesExistingModelSource() && harnessAuth.method === "credential_source"
+                  ? credentialSourceOperateDenial(cause, harnessAuth.sourceId)
+                  : undefined;
               const reason = agentSaveAccessReason(namedDenial(cause), namespaceId, agentBody);
               const help =
                 capabilitiesUnreadable && context.installationAdmin === false
                   ? askAdministratorTo("check your access")
                   : "Review grants and IAM Restrictions.";
               const retry = reason ? " If access changes, select Create Agent again here." : "";
-              responseFields(cause).refusal =
-                `Agent creation was refused. ${reason ?? ACCESS_NOT_INCLUDED} ${help}${retry}`;
+              responseFields(cause).refusal = exactSourceDenial
+                ? `Agent creation was refused. ${exactSourceDenial} If access changes, select Create Agent again here.`
+                : `Agent creation was refused. ${reason ?? ACCESS_NOT_INCLUDED} ${help}${retry}`;
             }
             throw cause;
           }),

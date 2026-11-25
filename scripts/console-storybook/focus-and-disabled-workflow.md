@@ -69,7 +69,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
    pager, and the read-only authentication and Slack token fields (finding
    2899): a select or text field fades its text, and ignores arrow keys and
    typing too. So do the Secret dialog's **Replace value** and **Delete
-   Secret** (**Pages / Secrets / Read only for this caller**) and the issued
+   Secret** (**Pages / Credentials / Secrets / Read only for this caller**) and the issued
    account select (**Components / Credentials / Issued service accounts
    unavailable**) (finding 2925). On **Pages / Agents / Stop from the list**,
    confirm Stop: the Stop icon becomes unavailable and keeps focus, described
@@ -85,7 +85,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
    outcome keeps its fields and confirmation in the Tab order, described by
    its alert, while focus moves to Cancel or Close (finding 2935): **Pages /
    Namespaces / Create permission denied** and **Create outcome unknown**,
-   **Pages / Secrets / Create denied** and **Concurrent reference conflict**,
+   **Pages / Credentials / Secrets / Create denied** and **Concurrent reference conflict**,
    and the Stop and Delete confirmations when a refusal arrives while they are
    open (**Pages / Agents / Stop from the list, permission arrives while
    confirmation is open**, **Components / Stop Agent / Permission arrives while
@@ -216,3 +216,12 @@ merges the local draft. The story simulates a conflict before sending a write.
 The Agent detail browser test also returns to the tab while a save is pending.
 If the Controller returns `409` during the access check, focus should move from
 the save status to **Reload draft** once access is confirmed.
+
+After the conflict, choose **← Agents**. The existing explanation comes into view
+and takes focus. Press **Shift+Tab** to return to **Reload draft**. Merely focusing
+the link while the save settles must keep focus on the link when the conflict appears.
+
+Choose **Reload draft** and review the warning about the other browser’s saved
+`/gateway/bind` value. Use **Refresh** in the Console header. Focus
+**Save Configuration** and check that the same warning describes it. Confirm your
+local `/gateway/bind` edit remains in the JSON editor.

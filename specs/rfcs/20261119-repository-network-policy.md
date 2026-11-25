@@ -131,7 +131,7 @@ With only Issues read, B can still push and open PRs, but cannot create issues.
 
 **Earlier REST support.** [#7118](https://github.com/openclaw/openclaw-enterprise/pull/7118) required `scopedRest: "v1"` and excluded issue creation. [#6864](https://github.com/openclaw/openclaw-enterprise/pull/6864) removed that setting and added the issue POST.
 
-The [registration and GitHub App](../../docs/reference/repository-credentials/access-levels.md#native-git-delivery) must allow `issues` for issue reads and `pull_requests` for PR reads. PR creation requires `pull_requests: write` and Write on the target. Under `/repos/{owner}/{repo}`, the [rules](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts) allow GET on `/issues`, `/pulls` and their numbered detail paths, plus eligible POSTs to either collection. Issue reads can return PRs. PR updates, merges and GraphQL remain unavailable.
+The [registration and GitHub App](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/repository-credentials/access-levels.md#native-git-delivery) must allow `issues` for issue reads and `pull_requests` for PR reads. PR creation requires `pull_requests: write` and Write on the target. Under `/repos/{owner}/{repo}`, the [rules](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts) allow GET on `/issues`, `/pulls` and their numbered detail paths, plus eligible POSTs to either collection. Issue reads can return PRs. PR updates, merges and GraphQL remain unavailable.
 
 **What creation permits.** The rule checks the destination of [PR creation](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request). It leaves query parameters and JSON fields unrestricted.
 

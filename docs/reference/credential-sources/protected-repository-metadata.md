@@ -1,16 +1,18 @@
-# Other credential delivery modes
+# Deprecated protected repository metadata
+
+Credential Design 1.0 retires this special metadata Source and its exact-send
+authorization and filtered-response exchange. Ordinary credential-free metadata
+uses separately admitted Sandbox network access, returns GitHub's full response,
+and needs no Source or credential. The Git grant itself does not authorize REST.
+
+The current code still exposes this deprecated `LegacyEgressProxyDriver` path
+until removal. The details below apply only to existing legacy deployments.
 
 Use [TokenService enrollment](../credential-sources.md#register-a-source) for
 model credentials, OAuth and GitHub installation Sources. A qualified selected
-Credential Proxy can offer **credential-free repository metadata** for one
+legacy egress Driver can offer **credential-free repository metadata** for one
 approved repository identity read. The sender applies request and response
 controls without injecting a credential.
-
-For a dedicated Agent, the **OpenClaw Gateway Pod** reads its admitted channel
-credentials and any configured Gateway password from Kubernetes Secrets.
-The Harness receives the model credential projection separately. Embedded
-execution combines Gateway and Harness in one workload. See
-[runtime credential placement](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
 
 OpenShell is a development integration. See the
 [OpenShell qualification requirements](../drivers/openshell-sandbox.md#qualification-contract),
@@ -26,7 +28,7 @@ OpenShell is a development integration. See the
 
 The selected Proxy must list the type in its catalog. The example requires a
 qualified sender and Sandbox that enforce the protected exchange. See
-[protected-exchange requirements](../../design/credential-proxy.md#which-checks-does-openshell-provide).
+[legacy protected-exchange flow](../../flows/credential-source-egress.md#follow-the-metadata-get).
 
 Replace the sample IDs. Execution authority admits every process in that execution.
 
@@ -71,9 +73,9 @@ bindings. Omit it to keep them or send `[]` to remove them all.
 
 [Grant the Agent service principal access to the source](../authorization.md#manage-namespace-policy)
 with a Namespace IAM Role and AccessBinding. Each requested Source must be ready with its recorded owner selected.
-The Credential Proxy owns these metadata Sources.
+The deprecated legacy egress Driver owns these metadata Sources.
 
-Deployment with credential sources requires a selected Sandbox Driver. For these delivery modes, the revision records each Source's ID, type, and owning Driver ID. For the `widgets-metadata` example, the protected
+Deployment with credential sources requires a selected Sandbox Driver. Staged model or Plugin delivery cannot share an execution with a Proxy-owned metadata Source. For these delivery modes, the revision records each Source's ID, type, and owning Driver ID. For the `widgets-metadata` example, the protected
 plan allows `GET /repos/acme/widgets` for that execution and source generation. Follow the
 [request to GitHub and its reply](../../flows/credential-source-egress.md#follow-the-metadata-get).
 Cloning, pushing or creating a pull request requires a separately admitted
@@ -83,11 +85,6 @@ Cloning, pushing or creating a pull request requires a separately admitted
 
 Metadata grants are fixed at registration. To
 change a grant, register a replacement, update the Agent binding, and deploy.
-
-## Rotate a refresh source
-
-For OAuth and GitHub installation renewal, use the
-[TokenService Source lifecycle](../credential-sources.md).
 
 ## Withdraw a source from an Agent
 
