@@ -1332,6 +1332,7 @@ test("Returning from Plugins preserves the reading position of a Configuration s
     nativeValues("base"),
   );
   const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 540, height: 900 });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
   await openAdvancedSettings(page);
@@ -1339,7 +1340,7 @@ test("Returning from Plugins preserves the reading position of a Configuration s
   const marker = "here";
   const trailingLines = Array<string>(24).fill("trailing line");
   const draft = JSON.stringify(
-    { ...nativeValues("base"), notes: [marker, ...trailingLines] },
+    { notes: ["Plan details ".repeat(72), marker, ...trailingLines] },
     null,
     2,
   );
@@ -1373,18 +1374,31 @@ test("Returning from Plugins preserves the reading position of a Configuration s
   assert.ok(before.scroll > 0 && before.scroll < before.maxScroll);
 
   const configuration = page.getByRole("tab", { name: "Configuration", exact: true });
-  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  await editor.waitFor({ state: "hidden" });
-  await configuration.click();
-  await editor.waitFor();
-  assert.ok(await hasFocus(configuration));
-  assert.deepEqual(await position(), before);
-  for (let i = 0; i < 20 && !(await hasFocus(editor)); i++) {
-    await page.keyboard.press("Tab");
+  for (const widen of [false, true]) {
+    await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+    await editor.waitFor({ state: "hidden" });
+    if (widen) {
+      await page.setViewportSize({ width: 1440, height: 900 });
+    }
+    await configuration.click();
+    await editor.waitFor();
+    assert.ok(await hasFocus(configuration));
+    const returned = await position();
+    if (widen) {
+      // The shorter wrapped entry now puts the selection on the first screen.
+      assert.ok(returned.maxScroll < before.maxScroll);
+      assert.deepEqual(returned.selection, before.selection);
+      assert.equal(returned.scroll, 0);
+    } else {
+      assert.deepEqual(returned, before);
+    }
+    for (let i = 0; i < 20 && !(await hasFocus(editor)); i++) {
+      await page.keyboard.press("Tab");
+    }
+    await nextFrames(page);
+    assert.ok(await hasFocus(editor));
+    assert.deepEqual(await position(), returned);
   }
-  await nextFrames(page);
-  assert.ok(await hasFocus(editor));
-  assert.deepEqual(await position(), before);
   await page.keyboard.type("X");
   assert.equal(
     await editor.inputValue(),

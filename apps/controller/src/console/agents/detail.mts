@@ -5488,10 +5488,11 @@ export async function renderAgentDetail(
             ? content.querySelector<HTMLTextAreaElement>("#configuration-json")
             : null;
         if (editor) {
-          const { scrollTop, scrollLeft } = editor;
+          const { scrollTop, scrollLeft, scrollHeight } = editor;
           mountedTab.resumeDrafts = () => {
             resumeDrafts();
-            if (content.contains(editor)) {
+            // If lines rewrapped while away, the old offset can hide the selection.
+            if (content.contains(editor) && editor.scrollHeight === scrollHeight) {
               editor.scrollTo(scrollLeft, scrollTop);
             }
           };
