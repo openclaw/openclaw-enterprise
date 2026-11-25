@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 
@@ -6,6 +7,17 @@ import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { assertApiError } from "../helpers/api-error.ts";
 import type { ModelDiscoveryFixture } from "./secret-api.test.ts";
+
+async function stockCodexCatalogUrl() {
+  // Codex sends the major, minor and patch of the CLI bundled in the runtime.
+  const recipe = await readFile(
+    new URL("../../deploy/runtime/Dockerfile", import.meta.url),
+    "utf8",
+  );
+  const version = /^ENV OPENAI_CODEX_VERSION=(\d+\.\d+\.\d+)(?:[-+]\S+)?$/m.exec(recipe)?.[1];
+  assert.ok(version, "expected the stock runtime to pin the Codex CLI version");
+  return `https://chatgpt.com/backend-api/codex/models?client_version=${version}`;
+}
 
 export function registerModelDiscoveryCases({
   createFixture,
@@ -106,7 +118,7 @@ export function registerModelDiscoveryCases({
         "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-new",
         "https://api.anthropic.com/v1/models?limit=1000",
         "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
-        "https://chatgpt.com/backend-api/codex/models?client_version=0.156.0",
+        await stockCodexCatalogUrl(),
       ],
     );
     assert.deepEqual(calls[0]?.[1]?.headers, { Authorization: `Bearer ${apiKey}` });
@@ -210,7 +222,7 @@ export function registerModelDiscoveryCases({
       transport.mock.calls.map(({ arguments: args }) => args[0]),
       [
         "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
-        "https://chatgpt.com/backend-api/codex/models?client_version=0.156.0",
+        await stockCodexCatalogUrl(),
       ],
     );
     assert.equal(

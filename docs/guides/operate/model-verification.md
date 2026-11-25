@@ -11,7 +11,7 @@ an interactive check with the same loopback password, use the
 
 Use the same credential that the Agent will use. If you use an existing credential source and only have its registered name, ask its owner for a Codex model ID that works with it.
 
-**ChatGPT service account token.** From the operator’s Bash shell, use the private token file to look up its workspace account, then list the model IDs in that account’s Codex catalog. Set `credential_file` to the token file you selected in the quickstart.
+**ChatGPT service account token.** Set `credential_file` to the private token file you chose in the quickstart. Run this Bash command to list the Codex models visible to that account. For a custom runtime, replace `0.164.0` in the URL with the major, minor, and patch numbers of its Codex CLI.
 
 ```bash
 (
@@ -28,7 +28,7 @@ Use the same credential that the Agent will use. If you use an existing credenti
     headers+=(--header 'X-OpenAI-Fedramp: true')
   fi
   token_header | curl -fsS --header @- "${headers[@]}" \
-    'https://chatgpt.com/backend-api/codex/models?client_version=0.156.0' |
+    'https://chatgpt.com/backend-api/codex/models?client_version=0.164.0' |
     jq -r '.models[] | select(.visibility == "list") | .slug'
 )
 ```

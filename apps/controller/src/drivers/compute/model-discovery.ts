@@ -64,7 +64,7 @@ export async function discoverHarnessModels(input: {
       url.searchParams.set("limit", "1000");
     }
     if (pat) {
-      // Codex 0.156 hydrates the account from whoami; callers never supply account authority.
+      // Use the account returned by whoami so callers cannot choose a different account.
       const identity = await readDiscoveryResponse(
         await fetch("https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami", {
           headers: { ...headers },
@@ -83,7 +83,7 @@ export async function discoverHarnessModels(input: {
       if (identity.chatgpt_account_is_fedramp) {
         headers["X-OpenAI-Fedramp"] = "true";
       }
-      url.href = "https://chatgpt.com/backend-api/codex/models?client_version=0.156.0";
+      url.href = "https://chatgpt.com/backend-api/codex/models?client_version=0.164.0";
     }
     const currentDate = new Date().toISOString().slice(0, 10);
     const models = new Map<string, { readonly id: string; readonly name: string }>();
