@@ -165,6 +165,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 95 && completedCount > 95) {
     return "preNamespaceGitHubAppClients";
   }
+  if (count === 96 && completedCount > 96) {
+    return "preSharedGitSourceRepositoryGrants";
+  }
   if (count === completedCount) {
     return "completed";
   }

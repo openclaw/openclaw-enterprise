@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-24"
-last_updated_session: authoring-run/522ebc0c-e6e7-4b4a-9225-54318de68516
+updated: "2026-11-25"
+last_updated_session: authoring-run/ee533e3c-94ac-4b41-8155-e9b2afede620
 ---
 
 # Managed OpenShell workload flow
@@ -169,8 +169,7 @@ its service for the app-server transport.
 
 ### 3. Select storage paths and connect the node
 
-For a saved native Git grant, Kubernetes Compute freezes the inspected image
-and the Agent's Gateway node URL. `repositoryRuntimeInputs` also admits staged
+For a saved native Git grant, OCC checks the selected Sandbox and Credential Proxy, then asks Kubernetes Compute to qualify the Harness. Compute freezes the inspected image and the Agent's Gateway node URL. `repositoryRuntimeInputs` also admits staged
 version 8 for Dedicated Codex or OpenClaw when the selected managed Sandbox,
 Credential Proxy, canonical Repository binding, immutable image and inspected
 Workspace route agree. A missing release pin or changed route blocks deployment;
@@ -180,7 +179,7 @@ against that URL and checks the exact Workspace rule during policy readback.
 For staged Repository delivery, its creation digest binds the fixed baseline
 while excluding Proxy-owned dynamic rules; observation separately verifies the
 complete configured and loaded credential policy. The Worker revalidates the
-saved Repository binding before preparation and activation. Withdrawal removes
+saved Repository binding before preparation and activation. A shared Source may cover other repositories. Only the Agent's admitted grants enter its Sandbox policy. Withdrawal removes
 that Agent's effective Repository binding without retiring a shared Source.
 The generated Gateway pairs the node identified by the revision's binding.
 If an installed binding disappears, becomes invalid, or changes, the Gateway
@@ -254,6 +253,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-25 06:17: Trace Compute placement and per-Agent grants for shared Git Sources. (authoring-run/ee533e3c-94ac-4b41-8155-e9b2afede620 - 2b7559218658c2260ae534e96a86d956df100c04)
 
 - 2026-11-24 05:22: Trace staged Repository runtime qualification. (authoring-run/522ebc0c-e6e7-4b4a-9225-54318de68516 - e06270a6179d60c2aa88647bf8e71382589e81bb)
 

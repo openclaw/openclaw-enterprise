@@ -204,14 +204,9 @@ can maintain the serving predecessor if the deployment has no earlier attempt.
 If earlier work could have changed the Gateway, the Worker keeps that repair
 blocked. Stop the Agent and confirm its workload has retired.
 
-The Kubernetes and OpenShell pair can admit [native Git](repository-credentials/access-levels.md#native-git-delivery)
-for a dedicated Codex Harness, an OpenAI credential source and the managed
-Gateway. The controller build must pin the inspected Gateway and Agent images
-by manifest digest using `OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
-`OCC_INSPECTED_WORKSPACE_AGENT_DIGEST`. Qualify both role images together, then use the
-[runtime-first controller build](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git). Leaving the arguments empty disables this
-placement. A first empty list can be saved. Deploying it is refused before
-launch. Stop the active revision to retire its access.
+Kubernetes Compute checks the placement and inspected images for [native Git](repository-credentials/access-levels.md#native-git-delivery). Dedicated Codex requires both the Gateway and Agent manifest digests. Dedicated OpenClaw requires a service-mode OpenShell Sandbox and a separately qualified Gateway image that runs the OpenClaw worker. Qualify the worker by running a model turn and scoped Git reads on that image before publication. An unset pin disables that placement. See the [controller build arguments](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git).
+
+A first empty list can be saved. Deploying it is refused before launch. Stop the active revision to retire its access.
 
 ## Denials and recommendations
 

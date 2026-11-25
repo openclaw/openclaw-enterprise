@@ -29,9 +29,7 @@ For a legacy session with one `github-repository` binding, the Installation and 
 The approved scope includes the exact repository identity and permission map.
 Legacy sessions for multiple selected repositories remain finite.
 
-With TokenService Git, the revision records its Agent Repository grants
-independently of the installation token's expiry. The legacy session duration
-does not set a deadline on those grants.
+A TokenService Git Source can cover several repositories in one Namespace. Deploy can reuse it when the caller can operate the Source and it covers every selected repository. The revision records only the Agent's approved repositories and access levels. Token renewal preserves those grants.
 
 The other profiles do not accept a custom registry `permissions` map. Their
 effective permissions and supported operations depend on the selected delivery,
