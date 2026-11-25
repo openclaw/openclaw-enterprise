@@ -14,13 +14,15 @@ import {
   validateFields,
 } from "./dom.mjs";
 import { namespaceNameProblem, type NamespacePageContext } from "./namespaces.mjs";
+import type { ConsolePageContext } from "./page-context.mjs";
 import { secretValueControl } from "./secrets.mjs";
 
-type Context = NamespacePageContext & {
-  namespaceId: string;
-  namespace: Pick<Namespace, "name" | "status"> | undefined;
-  items: unknown;
-};
+type Context = NamespacePageContext &
+  Pick<ConsolePageContext, "drafts"> & {
+    namespaceId: string;
+    namespace: Pick<Namespace, "name" | "status"> | undefined;
+    items: unknown;
+  };
 
 type StaticTemplate = { id: string; displayName: string };
 const sourceTypeLabel: Record<CredentialSourceSummary["type"], string> = {
@@ -30,6 +32,7 @@ const sourceTypeLabel: Record<CredentialSourceSummary["type"], string> = {
 };
 const CREATE_DENIED =
   "Creating a Credential Source needs Credential Source create in this Namespace. Ask an Installation administrator for access.";
+const CONFLICT_RECOVERY = "source-create-conflict";
 
 function sourcePurpose(source: CredentialSourceSummary) {
   if (source.modelPreset) {
@@ -105,7 +108,7 @@ function createFailure(cause: unknown): string {
     return "The Source was refused. Check the name, value, and selected purpose.";
   }
   if (status === 409) {
-    return "The Source could not be created in its current state. Check the name, Namespace, and selected purpose.";
+    return "The request outcome is unknown. The credential owner may already hold the value. Close this dialog and select Refresh to check the Source inventory. If the Source is absent, ask an operator to check the credential owner before trying again.";
   }
   return "The request outcome is unknown. Close this dialog and select Refresh to check the Source inventory before submitting again.";
 }
@@ -119,6 +122,20 @@ export function renderCredentialSources(context: Context) {
   let notice: HTMLElement | null = null;
   const list = element("div");
   const feedback = element("div", { role: "status" });
+  const conflictName = context.drafts.get(CONFLICT_RECOVERY);
+  if (typeof conflictName === "string") {
+    if (sources.items.some((source) => source.name === conflictName)) {
+      context.drafts.forget(CONFLICT_RECOVERY);
+    } else {
+      feedback.append(
+        statusBlock(
+          "warning",
+          "Check the credential owner before retrying",
+          `The Source "${conflictName}" is not in your readable inventory. The credential owner may already hold its value. Ask an operator to check the owner before trying again.`,
+        ),
+      );
+    }
+  }
   const create = button("Create Source", () => void openCreate(), { tone: "primary" });
   const toolbar = element("div", { className: "collection-toolbar" }, create);
   if (context.namespace?.status !== "ready") {
@@ -133,7 +150,7 @@ export function renderCredentialSources(context: Context) {
     statusBlock(
       "info",
       "Credential values stay private",
-      "Only readable Source metadata appears here. Creating a Source does not grant an Agent access or deploy it.",
+      "Only readable Source metadata appears here. Creating a Source does not grant an Agent access or deploy it. After an unconfirmed creation, ask an operator to check the credential owner before retrying if the Source you tried to create is absent from your readable inventory.",
       [],
       { role: null },
     ),
@@ -532,9 +549,13 @@ export function renderCredentialSources(context: Context) {
           result.replaceChildren(
             statusBlock("danger", "Source not confirmed", createFailure(cause)),
           );
-          outcomeUnknown = ![400, 403, 404, 409, 429, 501].includes(
-            requestFailure(cause).status ?? 0,
-          );
+          outcomeUnknown = ![400, 403, 404, 429, 501].includes(requestFailure(cause).status ?? 0);
+          if (requestFailure(cause).status === 409) {
+            const capture = () => sourceName;
+            context.drafts.track(CONFLICT_RECOVERY, capture);
+            context.drafts.unsavedWhen(CONFLICT_RECOVERY, () => false);
+            context.drafts.record(CONFLICT_RECOVERY, capture);
+          }
           denied = requestFailure(cause).status === 403;
           submissionBlocked = outcomeUnknown || denied;
           if (outcomeUnknown) {

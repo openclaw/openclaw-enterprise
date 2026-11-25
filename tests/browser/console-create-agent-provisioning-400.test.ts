@@ -39,6 +39,20 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import {
+  credentialSourceDeliveryBinding,
+  installationControllerOptions,
+} from "../../apps/controller/src/composition/installation-config.ts";
+import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
+import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
+import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { credentialGatewayOverProviders } from "../integration/sandbox-driver-credential-fixture.ts";
+import {
+  buildSandboxInstallation,
+  loadSelectedOpenShellAgentInstallation,
+} from "../integration/sandbox-driver-installation-fixture.ts";
+import {
   apiRequests,
   fileBrowser,
   holdRequests,
@@ -988,30 +1002,75 @@ test("a lost successful Source create reply blocks another create until Refresh 
   assert.notEqual(await create.getAttribute("aria-disabled"), "true");
   assert.equal(pathRequests(requests, "POST", base).length, 1);
 
-  // A service-unavailable response can also arrive after the owner committed. It must
-  // block another enrollment just like a lost successful reply.
+  // These controlled responses arrive after a real Source POST commits. Neither a
+  // service error nor a conflict proves the owner did not take custody.
+  for (const [status, code, sourceName] of [
+    [503, "DEPENDENCY_UNAVAILABLE", "Unavailable reply"],
+    [409, "RESOURCE_CONFLICT", "Conflict reply"],
+  ] as const) {
+    await page.unroute(fixture.origin + base);
+    await page.route(fixture.origin + base, async (route) => {
+      if (route.request().method() !== "POST") {
+        return route.continue();
+      }
+      const committed = await route.fetch();
+      assert.equal(committed.status(), 201);
+      return route.fulfill(apiErrorResponse(status, code, "Owner returned an error."));
+    });
+    await create.click();
+    const unavailable = page.getByRole("dialog", { name: "Create Credential Source", exact: true });
+    await unavailable.getByLabel("Source name", { exact: true }).fill(sourceName);
+    await unavailable
+      .getByLabel("Credential purpose", { exact: true })
+      .selectOption("model:openai");
+    await unavailable
+      .getByLabel("Credential value", { exact: true })
+      .fill("synthetic-source-value");
+    await unavailable.getByRole("button", { name: "Create Source", exact: true }).click();
+    await unavailable.getByText("Source not confirmed", { exact: true }).waitFor();
+    assert.equal(await unavailable.getByText(/outcome is unknown/i).isVisible(), true);
+    assert.equal(
+      await unavailable.getByRole("button", { name: "Create Source", exact: true }).isDisabled(),
+      true,
+    );
+    await unavailable.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await create.getAttribute("aria-disabled"), "true");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.getByText(sourceName, { exact: true }).waitFor();
+  }
+  assert.equal(pathRequests(requests, "POST", base).length, 3);
+  assert.equal(((await fixture.request("GET", base)).data as unknown[]).length, 3);
+
+  // This controlled conflict has no catalog row. The fixture does not claim to
+  // prove native owner custody; it verifies that Refresh cannot dismiss that possibility.
   await page.unroute(fixture.origin + base);
-  await page.route(fixture.origin + base, async (route) => {
-    if (route.request().method() !== "POST") {
-      return route.continue();
-    }
-    const committed = await route.fetch();
-    assert.equal(committed.status(), 201);
-    return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Owner unavailable."));
-  });
+  await page.route(fixture.origin + base, (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill(apiErrorResponse(409, "RESOURCE_CONFLICT", "Owner conflict."))
+      : route.continue(),
+  );
   await create.click();
-  const unavailable = page.getByRole("dialog", { name: "Create Credential Source", exact: true });
-  await unavailable.getByLabel("Source name", { exact: true }).fill("Unavailable reply");
-  await unavailable.getByLabel("Credential purpose", { exact: true }).selectOption("model:openai");
-  await unavailable.getByLabel("Credential value", { exact: true }).fill("synthetic-source-value");
-  await unavailable.getByRole("button", { name: "Create Source", exact: true }).click();
-  await unavailable.getByText(/outcome is unknown/i).waitFor();
+  const conflict = page.getByRole("dialog", { name: "Create Credential Source", exact: true });
+  await conflict.getByLabel("Source name", { exact: true }).fill("Absent Source");
+  await conflict.getByLabel("Credential purpose", { exact: true }).selectOption("model:openai");
+  await conflict.getByLabel("Credential value", { exact: true }).fill("synthetic-source-value");
+  await conflict.getByRole("button", { name: "Create Source", exact: true }).click();
+  await conflict.getByText(/credential owner may already hold/i).waitFor();
+  await conflict.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByText("Check the credential owner before retrying", { exact: true }).waitFor();
   assert.equal(
-    await unavailable.getByRole("button", { name: "Create Source", exact: true }).isDisabled(),
+    await page.getByText(/Absent Source.*not in your readable inventory/).isVisible(),
     true,
   );
-  assert.equal(pathRequests(requests, "POST", base).length, 2);
-  assert.equal(((await fixture.request("GET", base)).data as unknown[]).length, 2);
+  assert.notEqual(await create.getAttribute("aria-disabled"), "true");
+  assert.equal(pathRequests(requests, "POST", base).length, 4);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page
+    .getByText(
+      /After an unconfirmed creation.*if the Source you tried to create is absent from your readable inventory/,
+    )
+    .waitFor();
 });
 
 test("Create Agent reuses a Source without enrolling it; replacement persists the exact Reference", async (t) => {
@@ -1096,7 +1155,10 @@ test("Create Agent reuses a Source without enrolling it; replacement persists th
   assert.equal(await configuration.getAttribute("aria-invalid"), "true");
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
-  await configuration.fill(originalConfiguration);
+  const canonicalHost = object(JSON.parse(originalConfiguration));
+  object(object(object(canonicalHost.models).providers).openai).baseUrl =
+    "https://API.OPENAI.COM/v1";
+  await configuration.fill(JSON.stringify(canonicalHost, null, 2));
   const response = await submitCreateAgent(page, fixture, namespace.id, {
     path: "agents",
     status: 201,
@@ -1253,12 +1315,234 @@ test("Codex Agent Credentials with an openai model provider excludes codex-pat S
   const codexPicker = page.getByLabel("Existing Credential Source", { exact: true });
   assert.equal(await codexPicker.locator(`option[value="${openaiSource}"]`).count(), 1);
   assert.equal(await codexPicker.locator(`option[value="${codexPat}"]`).count(), 1);
+  await codexPicker.selectOption(codexPat);
+  assert.equal(
+    await page.getByText(/Codex PAT Source.*Use Installation default.*retain/i).isVisible(),
+    true,
+  );
 
   const { page: createPage } = await openModelSourceForm(t, fixture, namespace, "codex");
   await createPage
     .getByLabel("Credential storage", { exact: true })
     .selectOption("existing_source");
   assert.equal(await createPage.getByText(destinationGuidance).isVisible(), true);
+});
+
+test("Replacing an OpenAI Source with a Codex PAT drops the prior model provider override before deployment", async (t) => {
+  // This scenario needs actual staged Source admission, which the lighter enrollment
+  // fixture cannot provide. Kubernetes transport is controlled; selected Drivers and
+  // the Console, IAM, and deployment API remain real.
+  const binary = present(OPEN_SHELL_CODEX_BINARIES[0]);
+  const installation = {
+    ...buildSandboxInstallation(),
+    sandboxNetworkPolicyCeiling: ["api.openai.com", "auth.openai.com", "chatgpt.com"].map(
+      (host, index) => ({
+        id: `model-route-${index}`,
+        binary,
+        host,
+        ports: [{ from: 443, to: 443 }],
+      }),
+    ),
+    runtime: { nativeWorkerSupport: "custom-image" as const },
+  };
+  Reflect.deleteProperty(installation.drivers, "credential_gateway");
+  Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
+  const core = new FakeSecretCoreV1Api();
+  const runtime = await loadSelectedOpenShellAgentInstallation(t, {
+    installation,
+    computeId: "console-pat-replacement-compute",
+    tokenServiceId: "occ",
+    core,
+    gatewayClient: completeOpenShellGatewayClient(credentialGatewayOverProviders().client),
+  });
+  assert.ok(Reflect.set(runtime.secretDriver, "client", Promise.resolve(core)));
+  let state: PlatformStateStore | undefined;
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: [],
+    ...installationControllerOptions(runtime.installation),
+    backends: runtime.installation.backend,
+    credentialSourceDelivery: credentialSourceDeliveryBinding(runtime),
+    namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
+    secretDriver: runtime.secretDriver,
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await readyNamespace(fixture, "Codex PAT replacement");
+  const placed = core.addNamespace(namespace.id);
+  Object.assign(core.namespaces.get(placed)!, { apiVersion: "v1", kind: "Namespace" });
+  const controller = controllerOf(fixture);
+  controller.registerDriver(runtime.computeDriver);
+  controller.selectDriver("compute", runtime.computeDriver.id);
+  await installTokenServiceDriver(controller, runtime, present(state));
+  installSelectedSandboxDrivers(controller, runtime);
+
+  const openaiSource = await enrollModelSource(fixture, namespace.id, "OpenAI model");
+  const patSource = await enrollModelSource(fixture, namespace.id, "Codex PAT", "codex-pat");
+  const configurationId = resourceId(
+    await fixture.createConfiguration(
+      namespace.id,
+      createHarnessConfiguration("codex", "example-model"),
+    ),
+  );
+  const base = `/namespaces/${namespace.id}`;
+  const created = await fixture.request("POST", `${base}/agents`, {
+    body: {
+      name: "Codex replacement Agent",
+      executionMode: "dedicated",
+      configurationId,
+      harnessAuth: { method: "credential_source", sourceId: openaiSource },
+      credentialSources: [{ sourceId: openaiSource }],
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const agent = object(created.data);
+  const agentId = resourceId(agent);
+  const agentPath = `${base}/agents/${agentId}`;
+  const role = await fixture.request("POST", `${base}/iam/roles`, {
+    body: {
+      name: "Use model Source",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  });
+  assert.equal(role.status, 201, JSON.stringify(role.body));
+  const grant = await fixture.request("POST", `${base}/iam/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: resourceId(role.data),
+      resourceKind: "credential_source",
+      resourceId: openaiSource,
+    },
+  });
+  assert.equal(grant.status, 201, JSON.stringify(grant.body));
+  const prior = await fixture.request("POST", `${agentPath}/deploy`, {
+    body: {
+      harnessOverrides: {
+        modelProvider: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" },
+      },
+    },
+  });
+  assert.equal(prior.status, 202, JSON.stringify(prior.body));
+  const priorId = resourceId(prior.data);
+  await fixture.activateRevision(namespace.id, agentId, priorId);
+  const stopped = await fixture.request("POST", `${agentPath}/stop`);
+  assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+  // A real worker would clear the active pointer on shutdown. The fixture only
+  // models this completion; it does not claim to run a worker or runtime.
+  assert.ok(
+    await present(state).transact((unit) =>
+      unit.agents.compareAndClearActiveRevision(namespace.id, agentId, priorId),
+    ),
+  );
+
+  const { page } = await newPage(t, fixture, { browser });
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Existing Credential Source", { exact: true }).selectOption(patSource);
+  const savedResponse = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + agentPath && response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  assert.equal((await savedResponse).status(), 200);
+  await page.getByText("Authentication source saved.", { exact: true }).waitFor();
+  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  await waitForEnabled(deploy);
+  const settings = page.getByLabel("Harness settings", { exact: true });
+  assert.equal(await settings.inputValue(), "default");
+  assert.equal(await settings.locator('option[value="custom"]').isDisabled(), true);
+  const deployedResponse = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + `${agentPath}/deploy` &&
+      response.request().method() === "POST",
+  );
+  await deploy.click();
+  const deployed = await deployedResponse;
+  assert.equal(deployed.status(), 202, await deployed.text());
+  assert.deepEqual(object(deployed.request().postDataJSON()).harnessOverrides, {});
+  const revision = object(object(await deployed.json()).data);
+  assert.equal(Object.hasOwn(object(object(revision.harness).overrides), "modelProvider"), false);
+
+  // Source read is useful for the Console's destination guidance, but deployment
+  // authorization requires operate. A read denial must not invent a new prerequisite.
+  const restoreRead = revokeAdministratorGrant(fixture, ["read", "credential_source"]);
+  const sourcePath = `${base}/credential-sources/${patSource}`;
+  assert.equal((await fixture.request("GET", sourcePath)).status, 403);
+  const sourceRead = await holdRequests(t, page, fixture.origin + sourcePath, {
+    method: "GET",
+    once: true,
+  });
+  await page.goto(
+    `${fixture.origin}/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+    { waitUntil: "domcontentloaded" },
+  );
+  await sourceRead.requested;
+  await page.getByRole("tab", { name: "Configuration", exact: true }).waitFor();
+  const fallbackDeploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  assert.equal(await fallbackDeploy.isDisabled(), true);
+  await page.getByText("Checking Credential Source destination…", { exact: true }).waitFor();
+  sourceRead.release();
+  await page.locator(".agent-harness-settings summary").click();
+  await page
+    .getByText(/Deployment will check whether the requested Harness destination is compatible\./)
+    .waitFor();
+  await waitForEnabled(fallbackDeploy);
+  const fallbackResponse = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + `${agentPath}/deploy` &&
+      response.request().method() === "POST",
+  );
+  await fallbackDeploy.click();
+  const fallback = await fallbackResponse;
+  assert.equal(fallback.status(), 202, await fallback.text());
+  assert.deepEqual(object(fallback.request().postDataJSON()).harnessOverrides, {});
+  const fallbackRevision = resourceId(object(await fallback.json()).data);
+  await page.waitForURL((url) => url.searchParams.get("revision") === fallbackRevision);
+
+  const deniedAgain = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + sourcePath && response.request().method() === "GET",
+  );
+  await page.goto(
+    `${fixture.origin}/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+    { waitUntil: "domcontentloaded" },
+  );
+  assert.equal((await deniedAgain).status(), 403);
+  restoreRead();
+  const refreshedSource = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + sourcePath && response.request().method() === "GET",
+  );
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  assert.equal((await refreshedSource).status(), 200);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version", exact: true }));
+  const refreshedSettings = page.getByLabel("Harness settings", { exact: true });
+  assert.equal(await refreshedSettings.inputValue(), "default");
+  assert.equal(await refreshedSettings.locator('option[value="custom"]').isDisabled(), true);
+  assert.equal(
+    await page
+      .getByText(/Deployment will check whether the requested Harness destination is compatible\./)
+      .count(),
+    0,
+  );
+
+  // A viewer who cannot deploy has no Harness destination controls to inform.
+  // Do not send an optional exact Source read which would produce an invisible denial.
+  revokeAdministratorGrant(fixture, ["deploy", "agent"]);
+  revokeAdministratorGrant(fixture, ["read", "credential_source"]);
+  const viewerRequests = apiRequests(page, fixture.origin);
+  await page.goto(
+    `${fixture.origin}/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=configuration`,
+    { waitUntil: "domcontentloaded" },
+  );
+  await page.getByText(/deploying this Agent.*Agent deploy on it/i).waitFor();
+  assert.equal(pathRequests(viewerRequests, "GET", sourcePath).length, 0);
 });
 
 test("Source operate denial leaves an honestly reported saved Configuration and no Agent", async (t) => {

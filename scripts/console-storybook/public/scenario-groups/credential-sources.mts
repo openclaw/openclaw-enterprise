@@ -4,6 +4,7 @@ import { click, create, form } from "../create-agent-form-data.mts";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const sourceId = "cs_00000000-0000-4000-8000-000000000020";
 const replacementId = "cs_00000000-0000-4000-8000-000000000021";
+const codexPatId = "cs_00000000-0000-4000-8000-000000000023";
 type StaticSource = Extract<CredentialSourceResponse["data"], { type: "static" }>;
 const source = (id: string, name: string): StaticSource => ({
   id,
@@ -28,6 +29,10 @@ const previewTemplateSource: StaticSource = {
   connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000005",
 };
 const previewInventory = [...previewModelSources, previewTemplateSource];
+const previewCodexPatSource: StaticSource = {
+  ...source(codexPatId, "Codex PAT"),
+  config: { provider_preset: "codex-pat" },
+};
 
 const path = `/console/credentials/sources?namespace=${namespaceId}`;
 const openExistingSource = [
@@ -264,6 +269,32 @@ export const credentialSourceScenarios = {
     description:
       "The draft explains that an active Agent must complete Stop before deploying the managed Source, and that the effective Codex destination is checked at deployment.",
   },
+  credentialsCodexPatFixedDestination: {
+    group: "Components/Credentials",
+    name: "Codex PAT Source with a previous model provider override",
+    path: `/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=${namespaceId}&revision=draft&tab=credentials`,
+    harnessId: "codex",
+    auth: "api-source",
+    deployed: true,
+    harnessOverrides: {
+      modelProvider: {
+        baseUrl: "https://api.openai.com/v1",
+        protocol: "openai-responses",
+        supportsStandaloneWebSearch: false,
+      },
+    },
+    initialCredentialSources: [previewCodexPatSource],
+    actions: [
+      { selector: "#harness-auth-existing-source", value: codexPatId },
+      click("Save authentication source"),
+      {
+        selector: '.agent-harness-settings:has(option[value="custom"]:disabled) > summary',
+        click: true,
+      },
+    ],
+    description:
+      "The previous simulated version used an OpenAI Source with a model provider override. After the draft switches to a Codex PAT Source, its exact metadata read identifies the fixed destination. Harness settings selects Use Installation default, does not retain the old model provider override, and disables a new override. Deployment is not exercised.",
+  },
   credentialsUnsupportedModelSource: {
     group: "Components/Credentials",
     name: "Model Source unavailable without an approved destination",
@@ -331,6 +362,27 @@ export const credentialSourceScenarios = {
       "The simulated API saves a Source and loses its reply. The cleared form and Create Source action remain blocked until Refresh checks the inventory.",
     steps: [
       "Close the dialog, select Refresh, and confirm Uncertain model appears in the inventory.",
+    ],
+  },
+  credentialsSourceCreateConflictUnknown: {
+    group: "Pages/Credentials",
+    name: "Credential Source conflict outcome unknown",
+    path,
+    oauthCatalog: "ready",
+    rules: [
+      {
+        suffix: "/credential-sources",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: "The requested platform resource already exists.",
+      },
+    ],
+    actions: createInventorySource,
+    description:
+      "A simulated 409 response cannot confirm whether the credential owner took custody. The form clears the value, blocks another create, and directs the reviewer to Refresh the inventory and ask an operator to inspect the owner if the Source is absent.",
+    steps: [
+      "Close the dialog and select Refresh. The simulated inventory remains empty; the preview does not establish whether the credential owner holds the value.",
     ],
   },
   credentialsSourceCreateDenied: {

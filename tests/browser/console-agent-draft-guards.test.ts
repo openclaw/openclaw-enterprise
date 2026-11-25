@@ -1498,7 +1498,12 @@ test("a Namespace member enrolls a TokenService model credential before saving a
   const capabilities = record(data.capabilities);
   assert.equal(capabilities.agentProvisioning, undefined);
   assert.deepEqual(capabilities.modelCredentialSourcePresets, ["openai", "codex-pat"]);
-  assert.equal(await page.getByLabel("Credential storage").isVisible(), false);
+  // Source enrollment and reuse are distinct choices even when Namespace Secrets
+  // are unavailable to this member.
+  const storage = page.getByLabel("Credential storage");
+  assert.equal(await storage.isVisible(), true);
+  assert.equal(await storage.inputValue(), "source");
+  assert.equal(await storage.locator('option[value="existing_source"]').count(), 1);
   await page.getByLabel("Agent name", { exact: true }).fill("Member model Agent");
   await page.getByLabel("API key", { exact: true }).fill("synthetic-console-member-model");
   const model = page.getByLabel("Model ID", { exact: true });

@@ -141,6 +141,7 @@ export const CredentialsSlackPartial = {
 export const AuthMissing = { ...story("authMissing"), name: "No authentication source" };
 export const ReplaceExistingCredentialSource = story("credentialsReplaceExistingSource");
 export const FirstManagedCredentialSource = story("credentialsFirstManagedSource");
+export const CodexPatFixedDestination = story("credentialsCodexPatFixedDestination");
 export const UnsupportedModelCredentialSource = story("credentialsUnsupportedModelSource");
 export const ReplaceCredentialSourceDenied = story("credentialsReplaceSourceDenied");
 export const ExistingCredentialSource = story("credentialsExistingSource");

@@ -17,6 +17,9 @@ export const CredentialSourceCreatedInventoryDenied = story(
 );
 export const CredentialSourceTemplatesUnavailable = story("credentialsSourceTemplatesUnavailable");
 export const CredentialSourceCreateUnknown = story("credentialsSourceCreateUnknown");
+export const CredentialSourceCreateConflictUnknown = story(
+  "credentialsSourceCreateConflictUnknown",
+);
 export const CredentialSourceCreateDenied = story("credentialsSourceCreateDenied");
 
 export const ConnectionTemplates = story("credentialsTemplateCatalog");

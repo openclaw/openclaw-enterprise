@@ -103,11 +103,14 @@ export function modelSourceProvider(
     responseFields(responseFields(configuration).models).providers,
   ).openai;
   const nativeOpenAI = responseFields(provider);
+  const nativeHostname =
+    typeof nativeOpenAI.baseUrl === "string"
+      ? /^https:\/\/([^/:]+)(?::443)?\/v1\/?$/.exec(nativeOpenAI.baseUrl)?.[1]
+      : undefined;
   return harnessId === "openclaw" &&
     providerId === "openai" &&
     nativeOpenAI.api === "openai-responses" &&
-    typeof nativeOpenAI.baseUrl === "string" &&
-    /^https:\/\/api\.openai\.com(?::443)?\/v1\/?$/.test(nativeOpenAI.baseUrl)
+    nativeHostname?.toLowerCase() === "api.openai.com"
     ? "openai"
     : undefined;
 }
@@ -533,7 +536,13 @@ export function createHarnessAuthFields(
       : "The Agent's current credential source is preserved. Source replacement is unavailable for the configured model provider or destination.";
   }
   const currentSourceHint = element("p", { className: "hint" }, currentSourceText);
-  const codexSourceHint = element("p", { className: "hint" }, CODEX_SOURCE_DESTINATION_HINT);
+  const codexSourceHint = element(
+    "p",
+    { className: "hint" },
+    providerId === "codex"
+      ? `${CODEX_SOURCE_DESTINATION_HINT} A Codex PAT Source uses a fixed destination. At deployment, choose Use Installation default instead of retaining or overriding the model provider.`
+      : CODEX_SOURCE_DESTINATION_HINT,
+  );
   const accountField = element(
     "div",
     { className: "form-field" },

@@ -14,6 +14,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
+import { readCredentialSourceMetadata } from "../credential-source-metadata.mjs";
 import type { AgentRecheck, ConsolePageContext, LeaveGuard } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
@@ -3588,6 +3589,13 @@ export async function renderAgentDetail(
     let snapshot: Configuration = found;
     let values = snapshot.values;
     const executionMode = agent.executionMode;
+    const harnessSourceId =
+      agent.harnessAuth?.method === "credential_source" &&
+      executionMode === "dedicated" &&
+      configuredHarnessId(values) === "codex"
+        ? agent.harnessAuth.sourceId
+        : undefined;
+    let sourceDestinationChecking = harnessSourceId !== undefined;
     let deployPending = false;
     let deployReloadMessage = "";
     const repositoryDeploymentWarning = element(
@@ -4009,6 +4017,7 @@ export async function renderAgentDetail(
       const retainedConfiguration = retainedConfigurationState();
       return (
         deployPending ||
+        sourceDestinationChecking ||
         (reviewRepositories &&
           (!repositoryReview || callerPermissions?.sandboxPolicyRead !== true)) ||
         proxyDirty ||
@@ -4184,7 +4193,7 @@ export async function renderAgentDetail(
     }
     function updateDeployControls() {
       harnessControls.hidden = callerPermissions?.deploy !== true;
-      harnessControls.toggleAttribute("inert", deployPending);
+      harnessControls.toggleAttribute("inert", deployPending || sourceDestinationChecking);
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
       credentials?.section?.toggleAttribute("inert", authenticationSaveState !== "idle");
       const retainedConfiguration = retainedConfigurationState();
@@ -4265,6 +4274,8 @@ export async function renderAgentDetail(
           deployMessage = "Review saved GitHub access before deploying.";
         } else if (deployReloadMessage) {
           deployMessage = deployReloadMessage;
+        } else if (sourceDestinationChecking) {
+          deployMessage = "Checking Credential Source destination…";
         } else if (authenticationSaveState === "saving") {
           deployMessage = "Wait for the authentication save to finish before deploying.";
         } else if (authenticationSaveState === "uncertain") {
@@ -4635,12 +4646,14 @@ export async function renderAgentDetail(
         updateChecklist();
       });
     }
+    const sourceDestinationHint = element("p", { className: "hint", hidden: true });
     const harnessControls = element(
       "details",
       { className: "card agent-harness-settings" },
       element("summary", {}, "Harness destination"),
       field({ label: "Harness settings", control: harnessChoice }),
       providerFields,
+      sourceDestinationHint,
       element(
         "p",
         { className: "hint" },
@@ -4968,6 +4981,52 @@ export async function renderAgentDetail(
       draftActions.insertAdjacentElement("afterend", harnessControls);
     }
     renderDetailHeading();
+    if (harnessSourceId) {
+      void (async () => {
+        try {
+          const permissions = await latestPermissionsRead;
+          if (
+            permissions?.deploy !== true ||
+            !context.isCurrent() ||
+            generation !== detailsGeneration
+          ) {
+            return;
+          }
+          const sourcePath = `/namespaces/${encodeURIComponent(namespaceId)}/credential-sources/${encodeURIComponent(harnessSourceId)}`;
+          const source = readCredentialSourceMetadata(await request(sourcePath), namespaceId);
+          if (source?.id !== harnessSourceId) {
+            throw new Error("The Credential Source metadata did not match the saved Source.");
+          }
+          if (!context.isCurrent() || generation !== detailsGeneration) {
+            return;
+          }
+          if (source.modelPreset === "codex-pat") {
+            harnessChoice.querySelector('option[value="retain"]')?.remove();
+            harnessChoice.querySelector<HTMLOptionElement>('option[value="custom"]')!.disabled =
+              true;
+            harnessChoice.value = "default";
+            sourceDestinationHint.textContent =
+              "This Codex PAT Source has a fixed destination. Model provider overrides are unavailable.";
+            sourceDestinationHint.hidden = false;
+          }
+        } catch (cause) {
+          if (!context.isCurrent() || generation !== detailsGeneration) {
+            return;
+          }
+          if (requestFailure(cause).status === 401) {
+            context.onExpired();
+            return;
+          }
+          sourceDestinationHint.textContent = `${namedDenial(cause) ?? "Credential Source metadata is unavailable."} Deployment will check whether the requested Harness destination is compatible.`;
+          sourceDestinationHint.hidden = false;
+        } finally {
+          if (context.isCurrent() && generation === detailsGeneration) {
+            sourceDestinationChecking = false;
+            updateDeployControls();
+          }
+        }
+      })();
+    }
     return {
       get snapshot() {
         return snapshot;

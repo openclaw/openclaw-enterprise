@@ -35,6 +35,12 @@ before choosing a Source. Open **Components/Credentials → Replace an existing
 Credential Source**, select **Save authentication source**, and check that the Agent
 uses the replacement ID without another Source enrollment. Deployment is separate.
 **Select a first managed Source for Codex** shows the Stop requirement and the destination check that occurs at deployment.
+Open **Components/Credentials → Codex PAT Source with a previous model provider override**.
+The simulated draft has switched from an OpenAI Source to a Codex PAT Source. Expand
+**Harness destination** if needed. Confirm that **Harness settings** selects
+**Use Installation default**, the previous model provider override cannot be retained, and
+**Override model provider** is unavailable. The Credentials guidance identifies the PAT Source's
+fixed destination. This story does not deploy the draft.
 
 Inspect these list and failure stories:
 
@@ -47,6 +53,10 @@ Inspect these list and failure stories:
   available after Template discovery fails.
 - **Credential Source create outcome unknown** clears the value and blocks another create.
   Close the dialog and select **Refresh** to find the Source saved by the simulated API.
+- **Credential Source conflict outcome unknown** simulates a `409 RESOURCE_CONFLICT` response,
+  clears the value, and blocks another create. Close the dialog and select **Refresh**. If the Source
+  is absent, the guidance directs an operator to check the credential owner before another attempt.
+  The preview cannot establish whether the owner holds the value.
 - **Pages/Create Agent → Existing Source operate denied after Configuration save** reports
   the retained Configuration and the refused Agent create.
 - **Components/Credentials → Credential Source replacement denied** leaves the saved Agent
