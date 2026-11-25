@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
-updated: 2026-11-22
-last_updated_session: authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc
+updated: 2026-11-25
+last_updated_session: authoring-run/94ca3b94-b1d1-4aa4-8da6-ab2d17cf904a
 ---
 
 # Managed static credential source custody flow
@@ -99,6 +99,8 @@ Run `node --test tests/integration/postgres-staged-agent-credential-binding.test
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 04:21: Document CLI enrollment for one read-only repository from standard input. (authoring-run/94ca3b94-b1d1-4aa4-8da6-ab2d17cf904a - bf7a88d2899cea31aefa38beb2ddd96815ed5a9f)
 
 - 2026-11-22 12:28: Retire the selected Proxy delivery copy before TokenService removes Source custody. (authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc - 802c9adb9)
 

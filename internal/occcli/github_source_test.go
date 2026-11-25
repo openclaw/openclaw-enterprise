@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -63,7 +64,29 @@ func TestGitHubSourceShortcut(t *testing.T) {
 		return out.String(), err
 	}
 	flags := []string{"--github-repo", "acme/docs"}
-	out, err := run(strings.NewReader(token+"\r\n"), flags...)
+	file, err := os.CreateTemp(t.TempDir(), "pat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(token + "\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := file.Chmod(0640); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := run(file, flags...); err == nil || calls.Load() != 0 {
+			t.Fatal("accepted shared token file")
+		}
+		if err := file.Chmod(0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := run(file, flags...)
 	if err != nil || !strings.Contains(out, "cs_fixture") || calls.Load() != 1 {
 		t.Fatalf("registration: %v", err)
 	}
