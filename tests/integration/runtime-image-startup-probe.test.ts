@@ -7,8 +7,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
-import { describe, test } from "node:test";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { describe, test, type TestContext } from "node:test";
+import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
@@ -33,7 +33,7 @@ import {
   isRuntimeFailure,
   phaseAt,
   withStartupProbeEvidence,
-} from "../helpers/runtime-image-startup-probe.mjs";
+} from "../helpers/runtime-image-startup-probe.ts";
 
 // The endpoint's events and the wrapper's output reach the test through
 // separate log followers, so the endpoint can report a state before the wrapper
@@ -41,7 +41,7 @@ import {
 // wrapper line its assertions read.
 
 // Give each unexpected startup outcome its own assertion location in CI.
-function assertStartupReady(run) {
+function assertStartupReady(run: Awaited<ReturnType<typeof runStartupProbeScenario>>) {
   const { failure, detail } = startupProbeFailureDetails(run);
   if (failure === "MODEL_PROBE_TIMEOUT") {
     assert.fail(`the model probe timed out\n${detail}`);
@@ -56,7 +56,7 @@ function assertStartupReady(run) {
 
 // The probe gates native startup: the provider answered the model turn before
 // the native process listened or the HTTP readiness endpoint passed.
-async function assertProbeGatesStartup(t, kind, delayMs) {
+async function assertProbeGatesStartup(t: TestContext, kind: "codex" | "gateway", delayMs: number) {
   const run = await runStartupProbeScenario(t, {
     kind,
     mode: "answer",
@@ -72,10 +72,11 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
     const { events, phases } = run.snapshot;
     const answered = run.first(events, isTurnAnswer);
     assert.ok(answered, "the stand-in provider answered the probe");
-    assert.equal(phaseAt(phases, "model-probe")?.outcome, "ok");
-    assert.ok(
-      phaseAt(phases, "model-probe").sinceStartMs <= phaseAt(phases, "native-spawn").sinceStartMs,
-    );
+    const probe = phaseAt(phases, "model-probe");
+    const spawn = phaseAt(phases, "native-spawn");
+    assert.equal(probe?.outcome, "ok");
+    assert.ok(typeof probe?.sinceStartMs === "number" && typeof spawn?.sinceStartMs === "number");
+    assert.ok(probe.sinceStartMs <= spawn.sinceStartMs);
     // Phase times count from wrapper start, endpoint times from container
     // start; compare each only within its own clock.
     assert.equal(
@@ -93,7 +94,9 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
       false,
       "plugin status was ready before the probe passed",
     );
-    assert.ok(run.first(events, observedValue("ready", true)).at >= answered.at);
+    const ready = run.first(events, observedValue("ready", true));
+    assert.ok(typeof ready?.at === "number" && typeof answered.at === "number");
+    assert.ok(ready.at >= answered.at);
     assert.equal(events.some(isRuntimeFailure), false);
     if (kind === "codex") {
       // Exercise resident HTTP readiness after the full wrapper's real Codex
@@ -120,7 +123,7 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
 // A rejected credential reports AUTHENTICATION_FAILED for #583's prompt
 // deployment failure, starts no native process, the wrapper holds that
 // evidence until it is terminated, and HTTP readiness stays unavailable.
-async function assertRejectedCredentialFailsFast(t, kind) {
+async function assertRejectedCredentialFailsFast(t: TestContext, kind: "codex" | "gateway") {
   const run = await runStartupProbeScenario(t, {
     kind,
     mode: "reject",
@@ -135,6 +138,7 @@ async function assertRejectedCredentialFailsFast(t, kind) {
     assert.equal(phaseAt(phases, "native-spawn"), undefined, "a failed probe starts nothing");
     assert.doesNotMatch(output, new RegExp(startupProbeApiKey));
     const failure = run.first(events, observedValue("runtimeFailure", "AUTHENTICATION_FAILED"));
+    assert.ok(failure, "the wrapper reported authentication failure");
     assertHeldFailureDeadline(failure.ms);
     assert.equal((await run.collect()).running, true, "the wrapper holds the failure evidence");
     t.diagnostic(describeStartupProbeRun(`${kind} rejected credential`, run));
@@ -200,10 +204,14 @@ describe("runtime image startup model probes", { concurrency: 2 }, () => {
         ["exec", containerName, "node", "--input-type=module", "-e", stripTypeScriptTypes(source)],
         { timeout: 300_000 * imageSmokeTimeoutMultiplier },
       );
-      const result = JSON.parse(stdout);
-      assert.equal(result.sameIdentityAfterExpiredReplay, true);
-      assert.equal(result.singleBootstrapCompletion, true);
-      assert.equal(result.unpairedExpiredRejected, true);
+      const result: unknown = JSON.parse(stdout);
+      assert.ok(result !== null && typeof result === "object");
+      assert.ok(
+        "sameIdentityAfterExpiredReplay" in result &&
+          result.sameIdentityAfterExpiredReplay === true,
+      );
+      assert.ok("singleBootstrapCompletion" in result && result.singleBootstrapCompletion === true);
+      assert.ok("unpairedExpiredRejected" in result && result.unpairedExpiredRejected === true);
     },
   );
 });

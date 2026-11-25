@@ -146,7 +146,7 @@ OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_I
     tests/integration/runtime-image-startup.test.ts \
     tests/integration/runtime-image-gateway-workspace.test.ts \
     tests/integration/runtime-image-public-github-read.test.mjs \
-    tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-startup-probe.test.ts \
     tests/integration/runtime-image-codex-readiness.test.ts \
     tests/integration/runtime-image-startup-termination.test.ts \
     tests/integration/runtime-image-gateway-unclean-restart.test.ts \

@@ -332,7 +332,7 @@ OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
     tests/integration/runtime-image-state-migration.test.ts \
     tests/integration/runtime-image-managed-files.test.ts \
     tests/integration/runtime-image-native-listener.test.ts \
-    tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-startup-probe.test.ts \
     tests/integration/runtime-image-startup-termination.test.ts \
     tests/integration/runtime-image-gateway-unclean-restart.test.ts \
     tests/integration/runtime-image-gateway-retained-state.test.ts \

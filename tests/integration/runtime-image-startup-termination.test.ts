@@ -1,5 +1,5 @@
 // Runtime wrapper SIGTERM in every startup phase, split from
-// runtime-image-startup-probe.test.mjs so CI runs it beside the startup model
+// runtime-image-startup-probe.test.ts so CI runs it beside the startup model
 // probes. Both files start the wrapper through the same scenario helper. The
 // Gateway restart after an unclean stop is in
 // runtime-image-gateway-unclean-restart.test.ts.
@@ -12,7 +12,7 @@ import { imageTestOptions } from "../helpers/runtime-image-startup.ts";
 import {
   runStartupProbeScenario,
   withStartupProbeEvidence,
-} from "../helpers/runtime-image-startup-probe.mjs";
+} from "../helpers/runtime-image-startup-probe.ts";
 import {
   observedValue,
   isModelTurn,
