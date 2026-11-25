@@ -307,13 +307,16 @@ export async function startPreparedGitHubGitOwner(
           grant: { ...grant, profile: "github-installation" },
         };
       }
+      if (repo?.repositoryId === undefined) {
+        return;
+      }
       return {
         ...common,
         adoption: selected ? protectedGitAdoption : "prepared_repository_git",
         grant: {
           ...grant,
-          repositoryId: repo!.repositoryId,
-          repository: repo!.repository,
+          repositoryId: repo.repositoryId,
+          repository: repo.repository,
           profile: base ? "git-ref-draft-pr" : "git-ref-write",
           ...(base ? { pullRequestBase: base } : {}),
           pushRef: pushRef!,

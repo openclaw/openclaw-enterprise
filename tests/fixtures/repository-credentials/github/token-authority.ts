@@ -12,6 +12,7 @@ type TokenAuthorityOptions = {
   lifetimeMs: number | ((index: number) => number);
   repositoryId?: string;
   expectedRepositoryIds?: readonly RepositoryId[];
+  repositoriesByName?: ReadonlyMap<string, RepositoryId>;
   additionalPermissions?: readonly Permissions[];
   installationAccess?: boolean;
 };
@@ -33,6 +34,7 @@ type Issuance = {
   claims: Record<string, unknown>;
   permissions: Permissions;
   repositoryIds: RepositoryId[] | "installation";
+  requestedNames?: string[];
   expires: number;
 };
 
@@ -63,12 +65,14 @@ export function createTokenAuthority({
   lifetimeMs,
   repositoryId = fixtureRepositoryId,
   expectedRepositoryIds = [repositoryId],
+  repositoriesByName,
   additionalPermissions = [],
   installationAccess = false,
 }: TokenAuthorityOptions) {
   const tokens = new Map<string, Token>();
   const issuesOfTokens: Issuance[] = [];
   const authenticationAttempts: { tokenIndex: number | undefined; boundary: string }[] = [];
+  let appPublicKey = publicKey;
 
   function tokenFrom(authorization: string | undefined) {
     if (authorization?.startsWith("Basic ")) {
@@ -93,7 +97,7 @@ export function createTokenAuthority({
     token.uses++;
     return true;
   }
-  function issue(authorization: string | undefined, body: unknown) {
+  function verifyAppJwt(authorization: string | undefined) {
     const jwt = tokenFrom(authorization);
     const [header, payload, signature, extra] = jwt?.split(".") ?? [];
     assert.ok(
@@ -105,7 +109,7 @@ export function createTokenAuthority({
       verify(
         "sha256",
         Buffer.from(`${header}.${payload}`),
-        publicKey,
+        appPublicKey,
         Buffer.from(signature, "base64url"),
       ),
       "invalid App JWT signature",
@@ -120,17 +124,37 @@ export function createTokenAuthority({
     assert.ok(iat <= clock.wallNow() / 1000);
     assert.ok(exp > clock.wallNow() / 1000);
     assert.ok(exp - iat <= 600);
+    return { jwt, claims };
+  }
 
+  function issue(authorization: string | undefined, body: unknown) {
+    const { jwt, claims } = verifyAppJwt(authorization);
     assert.ok(isObject(body), "invalid issuance body");
     const installation = installationAccess && Object.keys(body).length === 0;
     let repositoryIds: RepositoryId[] | "installation" = "installation";
     let permissions: Permissions = { metadata: "read", contents: "write" };
+    let requestedNames: string[] | undefined;
     if (!installation) {
-      const { repository_ids: ids, permissions: selectedPermissions } = body;
-      assert.ok(Array.isArray(ids) && ids.every(isRepositoryId), "expected repository IDs");
-      assert.deepEqual(ids.map(String), expectedRepositoryIds.map(String));
+      const { repository_ids: ids, repositories: names, permissions: selectedPermissions } = body;
+      if (Array.isArray(names)) {
+        assert.equal(ids, undefined, "choose one finite repository selector");
+        assert.ok(names.length > 0 && names.every((name) => typeof name === "string"));
+        assert.ok(repositoriesByName);
+        requestedNames = names;
+        const resolved = names.map((name) => repositoriesByName.get(name));
+        assert.ok(
+          resolved.every((id) => id !== undefined),
+          "expected installed repository names",
+        );
+        assert.deepEqual(resolved.map(String).sort(), expectedRepositoryIds.map(String).sort());
+        repositoryIds = resolved;
+      } else {
+        assert.equal(names, undefined);
+        assert.ok(Array.isArray(ids) && ids.every(isRepositoryId), "expected repository IDs");
+        assert.deepEqual(ids.map(String), expectedRepositoryIds.map(String));
+        repositoryIds = ids;
+      }
       assert.ok(isPermissions(selectedPermissions), "expected permissions");
-      repositoryIds = ids;
       permissions = selectedPermissions;
     }
     const acceptedPermissions: readonly Permissions[] = [
@@ -189,6 +213,7 @@ export function createTokenAuthority({
       claims,
       permissions: { ...permissions },
       repositoryIds: repositoryIds === "installation" ? repositoryIds : [...repositoryIds],
+      ...(requestedNames ? { requestedNames } : {}),
       expires,
     });
     return { token, expires, permissions };
@@ -231,6 +256,10 @@ export function createTokenAuthority({
   return {
     permitsRepository,
     issue,
+    verifyAppJwt,
+    setAppPublicKey(key: KeyObject) {
+      appPublicKey = key;
+    },
     authorize,
     authorizeRepository(authorization: string | undefined, repositoryId: RepositoryId) {
       if (!authorize(authorization, `repository:${repositoryId}`)) {

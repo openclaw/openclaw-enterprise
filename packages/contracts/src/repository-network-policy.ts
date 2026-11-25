@@ -44,6 +44,7 @@ export class RepositoryNetworkPolicyAdmissionError extends Error {
 }
 
 export const repositoryNetworkGrantPattern = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/;
+const repositoryNamePattern = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 export const maxRepositoryNetworkGrants = 32;
 
 export function parseRepositoryApiLimits(input: unknown, path = "/apiLimits"): RepositoryApiLimits {
@@ -83,6 +84,7 @@ export function parseRepositoryApiLimits(input: unknown, path = "/apiLimits"): R
 function parseGrants(
   value: unknown,
   path: "/repositoryNetworkPolicy" | "/repositoryNetworkPolicyCeiling",
+  allowRepositoryNames = false,
 ): RepositoryNetworkGrant[] {
   if (!Array.isArray(value)) {
     throw new RepositoryNetworkPolicyAdmissionError(
@@ -121,17 +123,26 @@ function parseGrants(
         "Each grant must contain a repository and an access level.",
       );
     }
-    const { repository, access } = entry as Record<string, unknown>;
+    const { repository: configuredRepository, access } = entry as Record<string, unknown>;
+    const repository =
+      allowRepositoryNames &&
+      typeof configuredRepository === "string" &&
+      !configuredRepository.includes("/")
+        ? configuredRepository.toLowerCase()
+        : configuredRepository;
     if (
       typeof repository !== "string" ||
       repository !== repository.trim() ||
-      !repositoryNetworkGrantPattern.test(repository) ||
+      (!repositoryNetworkGrantPattern.test(repository) &&
+        !(allowRepositoryNames && repositoryNamePattern.test(repository))) ||
       repository.endsWith(".git")
     ) {
       throw new RepositoryNetworkPolicyAdmissionError(
         "INVALID_VALUE",
         `${entryPath}/repository`,
-        "Use a canonical lowercase owner/name without a .git suffix.",
+        allowRepositoryNames
+          ? "Use a repository name or lowercase owner/name without a .git suffix."
+          : "Use a canonical lowercase owner/name without a .git suffix.",
       );
     }
     if (repositories.has(repository)) {
@@ -160,9 +171,12 @@ function parseGrants(
 /** Parse trusted Installation configuration without constructing an Agent policy. */
 export function parseRepositoryNetworkPolicyCeiling(
   value: unknown,
+  allowRepositoryNames = false,
 ): RepositoryNetworkPolicyCeiling {
   return Object.freeze(
-    parseGrants(value, "/repositoryNetworkPolicyCeiling").map((grant) => Object.freeze(grant)),
+    parseGrants(value, "/repositoryNetworkPolicyCeiling", allowRepositoryNames).map((grant) =>
+      Object.freeze(grant),
+    ),
   );
 }
 

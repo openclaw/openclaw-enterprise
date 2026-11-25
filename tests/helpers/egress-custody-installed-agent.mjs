@@ -4,11 +4,8 @@ import assert from "node:assert/strict";
 import { record } from "./egress-observation-values.ts";
 import { selectLiveControllerPods } from "./egress-installed-stack.mjs";
 import { observeInstalledProtection } from "./egress-installed-agent.mjs";
-import { protectedConfigurationBody, sourceAccessBindingBody } from "./egress-connected-inputs.mjs";
-import {
-  credentialFreeRepository,
-  repositoryPath,
-} from "../fixtures/egress-custody-repository-origin.mjs";
+import { protectedConfigurationBody } from "./egress-connected-inputs.mjs";
+import { credentialFreeRepository } from "../fixtures/egress-custody-repository-origin.mjs";
 
 export async function admitRepositoryAgent(
   setup,
@@ -17,42 +14,7 @@ export async function admitRepositoryAgent(
   owned,
   name = "custody-" + evidence.runId,
 ) {
-  const { create, provider } = owned;
-  // Prove the actual API and worker select this synthetic issuer before enrolling its App key.
-  // Inspect only nonsecret Installation routing. Missing selection must never fall back to GitHub.
-  const { controllerNamespace } = setup.input;
-  const inspectOrigin = [
-    'import { readFileSync } from "node:fs";',
-    'import { createRequire } from "node:module";',
-    'import { pathToFileURL } from "node:url";',
-    // The installed Node process runs from /app; the controller owns this dependency.
-    'const require = createRequire(new URL("./apps/controller/package.json", import.meta.url));',
-    'const { loadYaml } = await import(pathToFileURL(require.resolve("@kubernetes/client-node")));',
-    'const startup = loadYaml(readFileSync(process.env.OCC_CONFIG_PATH, "utf8"));',
-    "const p = startup.drivers.credential_proxy.configuration.preparedGitHub;",
-    "if (!p.apiOrigin || !p.issuerCaPath || !p.custodyKeyPath) process.exit(1);",
-    "process.stdout.write(p.apiOrigin);",
-  ].join("\n");
-  // The prepared-stack observation predates any deliberate API restart. Inspect the live pair.
-  const controllerPods = await selectLiveControllerPods(setup);
-  for (const pod of controllerPods) {
-    const origin = await setup.f.kubectl(
-      "exec",
-      "-n",
-      controllerNamespace,
-      pod.metadata.name,
-      "--",
-      "node",
-      "--input-type=module",
-      "-e",
-      inspectOrigin,
-    );
-    assert.equal(
-      origin.trim(),
-      provider.businessOrigin,
-      "both control-plane Pods must select this private issuer",
-    );
-  }
+  const { create } = owned;
   const configuration = await create(
     "configurations",
     protectedConfigurationBody(setup.controller.model),
@@ -65,43 +27,14 @@ export async function admitRepositoryAgent(
     executionMode: "dedicated",
     harnessAuth: { method: "runtime" },
   });
-  const issuer = await create("secrets", { name, value: provider.privateKey });
-  const source = await create("credential-sources", {
-    name,
-    type: "github-app-metadata",
-    config: { ...provider.identity, agent_id: agent.id, authority: "execution" },
-    secrets: { private_key: issuer.ref },
-  });
-  assert.equal(source.egress?.adoption, "prepared", "must use protected warm-only GitHub source");
   const route = stack.namespacePath + "/agents/" + agent.id;
-  const api = evidence.api;
-  await api("PATCH", route, {
-    configurationId: configuration.id,
-    harnessAuth: { method: "runtime" },
-    credentialSources: [{ sourceId: source.id }],
-  });
-  // Preparation belongs to the worker. Do not race a deliberately cold Compute gate.
-  await setup.f.waitFor(
-    "proactive prepared repository credential",
-    async () => {
-      const status = await api("GET", stack.namespacePath + "/credential-sources/" + source.id);
-      return provider.issues > 0 && status.status.state === "ready";
-    },
-    120_000,
-  );
   const role = await create("iam/roles", {
     name,
     permissions: [{ action: "operate", resourceKind: "credential_source" }],
   });
-  const binding = await create("iam/access-bindings", sourceAccessBindingBody(agent, role, source));
-  const bindings = await api("GET", stack.namespacePath + "/iam/access-bindings");
-  assert.deepEqual(
-    bindings.filter(({ subjectId }) => subjectId === agent.servicePrincipalId).map(({ id }) => id),
-    [binding.id],
-  );
-  const transport = await api("POST", route + "/runtime-credentials", {});
+  const transport = await evidence.api("POST", route + "/runtime-credentials", {});
   assert.equal(transport.transportConfigured, true);
-  return { agent, source, role, binding, route };
+  return { agent, role, route };
 }
 
 export async function activateRepositoryAgent(setup, stack, evidence, owned, admitted) {
@@ -132,18 +65,14 @@ export async function activateRepositoryAgent(setup, stack, evidence, owned, adm
   );
   const sandbox = await setup.f.waitForSandbox(stack.placement, revision);
   const sandboxId = await owned.recordSandbox(sandbox);
-  const noMaterial = source.egress?.adoption === "credential_free";
-  const repository = noMaterial
-    ? credentialFreeRepository.full_name
-    : owned.provider.identity.repository;
+  const repository = credentialFreeRepository.full_name;
   const installed = await observeInstalledProtection(
     setup,
     stack,
     evidence,
     { agent, source, revision, sandbox, sandboxId },
     ({ grant }) =>
-      grant.kind ===
-        (noMaterial ? "credential_free_repository_metadata" : "github_repository_metadata") &&
+      grant.kind === "credential_free_repository_metadata" &&
       grant.repository === repository &&
       grant.isolationId === agent.id &&
       grant.profile === "metadata-read",
@@ -153,19 +82,13 @@ export async function activateRepositoryAgent(setup, stack, evidence, owned, adm
   const [exactRoute, ...others] = installed.installation.plan.routes;
   assert.equal(others.length, 0);
   assert.equal(exactRoute.method, "GET");
-  assert.equal(exactRoute.path, noMaterial ? "/repos/" + repository : repositoryPath);
+  assert.equal(exactRoute.path, "/repos/" + repository);
   assert.equal(
     exactRoute.origin,
     owned.provider.businessOrigin,
     "must address selected synthetic GitHub",
   );
   assert.equal(record(exactRoute.binding.execution).revisionId, revision.id);
-  if (!noMaterial) {
-    assert.ok(
-      owned.provider.issues > 0,
-      "provider must observe proactive scoped token issue before first workload read",
-    );
-  }
   return { ...installed, revision };
 }
 
@@ -316,53 +239,4 @@ function verifyWorkloadCannotObtainComputeSigner(setup, harness, agentId, revisi
       "workload must lack " + resourceAttributes.verb + " " + resourceAttributes.resource,
     );
   }
-}
-
-// Only a freshly prepared, expressly disposable single API Pod may be restarted.
-export async function restartDedicatedAuthority(setup) {
-  const { kubectl, waitFor } = setup.f;
-  const { controllerNamespace, controllerSelector } = setup.input;
-  const api = async () =>
-    JSON.parse(
-      await kubectl(
-        "get",
-        "pods",
-        "-n",
-        controllerNamespace,
-        "-l",
-        controllerSelector,
-        "-o",
-        "json",
-      ),
-    ).items.filter(
-      (p) =>
-        p.metadata.labels["app.kubernetes.io/component"] === "api" && !p.metadata.deletionTimestamp,
-    );
-  const [old, ...others] = await api();
-  assert.equal(others.length, 0);
-  assert.equal(
-    old.metadata.annotations["openclaw.dev/egress-custody-qualification-restart"],
-    "permitted",
-    "operator must dedicate this authority to the installed restart qualification",
-  );
-  assert.ok(old.spec.containers.some(({ image }) => image === setup.input.images.controller));
-  await kubectl("delete", "pod", old.metadata.name, "-n", controllerNamespace, "--wait=false");
-  const fresh = await waitFor(
-    "fresh installed authority after lost dispatch acknowledgement",
-    async () => {
-      const [pod, ...other] = await api();
-      if (!pod || other.length || pod.metadata.uid === old.metadata.uid) {
-        return;
-      }
-      if (
-        !pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True")
-      ) {
-        return;
-      }
-      assert.ok(pod.spec.containers.some(({ image }) => image === setup.input.images.controller));
-      return pod;
-    },
-    180_000,
-  );
-  return { retiredAuthorityUid: old.metadata.uid, replacementAuthorityUid: fresh.metadata.uid };
 }

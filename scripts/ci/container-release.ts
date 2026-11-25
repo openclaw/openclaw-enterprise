@@ -3,7 +3,11 @@ import { appendFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { publicationAlias, validate } from "./container-release/admission.ts";
+import {
+  publicationAlias,
+  selectPreparationSource,
+  validate,
+} from "./container-release/admission.ts";
 import { digestPattern, identity, match } from "./container-release/metadata.ts";
 import { smoke } from "./container-release/native-smoke.ts";
 import { assemble, runtimeBuild, verifyPlatform } from "./container-release/oci.ts";
@@ -38,7 +42,14 @@ export {
 
 async function main() {
   const [command, directory] = process.argv.slice(2);
-  if (command === "validate") {
+  if (command === "select-source") {
+    const source = selectPreparationSource(process.env, directory);
+    assert.ok(process.env.GITHUB_ENV);
+    await appendFile(
+      process.env.GITHUB_ENV,
+      `NATIVE_BUILD_CONTEXT=${source.path}\nNODE_BASE_IMAGE=${source.nodeBase}\n`,
+    );
+  } else if (command === "validate") {
     const attempt = await validate(process.env);
     assert.ok(process.env.GITHUB_OUTPUT !== undefined, "GITHUB_OUTPUT is required.");
     await appendFile(process.env.GITHUB_OUTPUT, `ci_attempt=${attempt}\n`);

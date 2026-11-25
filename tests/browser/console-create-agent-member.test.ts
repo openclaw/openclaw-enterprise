@@ -333,7 +333,7 @@ test("a member whose permission check failed is told so and retries only that ch
   assert.equal(await focusedId(page), "create-agent-access");
   assert.equal(
     await status.textContent(),
-    "Agents you create here are saved as drafts for later deployment.",
+    "This Agent will be saved as a draft with its Credential Source. Deploy it from the Agent page after creation.",
   );
   assert.equal(await retry.count(), 0);
   assert.deepEqual(
@@ -871,6 +871,7 @@ test("a member's form links Create Agent to why a Namespace that turned failed r
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, writer.credentials);
   await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
   await page.locator("#create-agent-access").waitFor();
+  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await submit.getAttribute("aria-describedby"), null);
   status = "failed";
@@ -930,6 +931,7 @@ test("a member's refused Configuration create and empty Secret list name the acc
     noSecretRead.credentials,
   );
   await other.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await other.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   await other
     .getByText(
       "No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ask an Installation administrator for Secret read and operate on an existing one.",
@@ -959,6 +961,7 @@ test("a member without Secret create sees the inline Create Secret action disabl
     noSecretCreate.credentials,
   );
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const denial = SECRET_CREATE_DENIED;
   await page.getByText(`Choose an existing Secret. ${denial}`, { exact: true }).first().waitFor();
   await page.getByLabel("API key Secret", { exact: true }).fill("no matching Secret");

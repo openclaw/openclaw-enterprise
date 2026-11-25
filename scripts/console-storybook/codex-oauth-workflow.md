@@ -48,10 +48,10 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
 
 Open **Components/Credentials → ChatGPT login poll denied (Experimental)** and choose
 **Sign in with OAuth**. The simulated API starts the login, then refuses the first poll.
-Confirm the refusal names the missing CredentialSource operate permission and shows a
-request ID. The fixture withholds the source ID from a caller who lacks read access.
-Choose **Retry login check**. The fixture simulates restored access and the login becomes
-ready. The request log shows two polls for the same login and one start.
+Confirm the refusal names the missing CredentialSource create permission and shows a
+request ID. The failed attempt is cancelled and has no Source. Choose **Cancel login**,
+then start a new login after access is restored. The new login becomes ready. The request
+log shows separate starts for the failed attempt and the successful login.
 
 ## Return after an interrupted start
 
@@ -131,12 +131,7 @@ Capture screenshots of pending, ready, and failure states and a short video of
 sign-in, plugin selection, and cancellation. Keep evidence outside the checkout.
 Record the tested commit and browser; label it simulated UI proof.
 
-## Select a managed or imported PAT
+## Select an issued PAT Source
 
-Open **Components/Credentials → ChatGPT service account**. Confirm the issued
-Research service account is selected. Switch to **Service Accounts**, select an
-imported token Secret, then switch back to **Issued ChatGPT service account** and
-save. The request uses `codex_pat` with a `service_account` source reference; the
-imported choice uses the same method with a `secret` source reference. Check
-**No issued service accounts** and **Issued service accounts unavailable** for
-the empty and denied states.
+Use the [issued account selection workflow](codex-pat-workflow.md) to verify that
+saving a ChatGPT service account binds its TokenService Source to the Agent.

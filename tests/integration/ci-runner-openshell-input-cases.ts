@@ -322,55 +322,61 @@ export function registerOpenShellAdmissionCases() {
     }
   }
 
-  test("custom native providers require a separate Codex credential before Local Setup", async (t) => {
+  test("native First Agent refuses custom providers before Local Setup", async (t) => {
     const root = await fixture(t);
     const file = join(
       repositoryRoot,
       "tests/integration/local-first-agent-openshell-real.test.mjs",
     );
-    for (const custom of [false, true]) {
-      for (const pat of [false, true]) {
-        for (const endpoint of [
-          "",
-          "https://custom-model.example.test/v1",
-          "malformed-private-endpoint",
-        ]) {
-          const result = spawnSync(
-            process.execPath,
-            [
-              "--test",
-              "--test-name-pattern=^a local Kubernetes installer can deploy and reuse an Agent",
-              file,
-            ],
-            {
-              encoding: "utf8",
-              env: {
-                PATH: process.env.PATH,
-                HOME: process.env.HOME,
-                OCC_TEST_LOCAL_FIRST_AGENT_REAL: "1",
-                OPENAI_API_KEY: "synthetic-model-credential",
-                OCC_TEST_OPENSHELL_MODEL_BASE_URL: endpoint,
-                ...(pat ? { CODEX_ACCESS_TOKEN: "synthetic-codex-credential" } : {}),
-                ...(custom
-                  ? { OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: join(root, "provider.json") }
-                  : {}),
-                // Stop after credential admission, before provisioning a stack.
-                OCC_DEVELOPMENT_STATE_DIRECTORY: join(root, "absent-state"),
-              },
-            },
-          );
-          assert.equal(result.status, 1);
-          let expected =
-            /OCC_DEVELOPMENT_STATE_DIRECTORY must select valid Kubernetes Local Setup state/u;
-          if (endpoint) {
-            expected = /The first-Agent installer requires the public OpenAI endpoint/u;
-          } else if (custom && !pat) {
-            expected = /CODEX_ACCESS_TOKEN is required for the first invocation/u;
-          }
-          assert.match(result.stdout + result.stderr, expected);
-          assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
-        }
-      }
+    const providerFile = {
+      OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE: join(root, "provider.json"),
+    };
+    const endpointRefusal = /The first-Agent installer requires the public OpenAI endpoint/u;
+    const presetRefusal =
+      /The native First Agent proof requires the approved TokenService OpenAI preset/u;
+    const cases = [
+      {
+        variables: {},
+        expected: /OCC_DEVELOPMENT_STATE_DIRECTORY must select valid Kubernetes Local Setup state/u,
+      },
+      {
+        variables: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "https://custom-model.example.test/v1" },
+        expected: endpointRefusal,
+      },
+      {
+        variables: { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "malformed-private-endpoint" },
+        expected: endpointRefusal,
+      },
+      { variables: providerFile, expected: presetRefusal },
+      {
+        variables: { ...providerFile, CODEX_ACCESS_TOKEN: "synthetic-codex-credential" },
+        expected: presetRefusal,
+      },
+    ];
+    for (const { variables, expected } of cases) {
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--test",
+          "--test-name-pattern=^a local Kubernetes installer can deploy and reuse an Agent",
+          file,
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            PATH: process.env.PATH,
+            HOME: process.env.HOME,
+            OCC_TEST_LOCAL_FIRST_AGENT_REAL: "1",
+            OPENAI_API_KEY: "synthetic-model-credential",
+            // Stop after credential admission, before provisioning a stack.
+            OCC_DEVELOPMENT_STATE_DIRECTORY: join(root, "absent-state"),
+            ...variables,
+          },
+        },
+      );
+      assert.equal(result.status, 1);
+      assert.match(result.stdout + result.stderr, expected);
+      assert.doesNotMatch(result.stdout + result.stderr, /malformed-private-endpoint/u);
     }
   });
 

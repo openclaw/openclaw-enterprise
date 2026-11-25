@@ -1,8 +1,3 @@
-/** The currently qualified adapter pair for managed plugin credential injection. */
-export function supportsManagedPluginRuntime(sandbox?: string, gateway?: string): boolean {
-  return sandbox === "openshell" && gateway === "openshell";
-}
-
 export const managedCredentialEnvironment = "OPENCLAW_MANAGED_CREDENTIAL_ENV";
 
 // The adapter owns placeholder syntax; shared worker bootstrap consumes this helper.

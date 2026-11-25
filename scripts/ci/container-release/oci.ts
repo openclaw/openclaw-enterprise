@@ -11,6 +11,7 @@ import {
   identity,
   integerPattern,
   isPlatform,
+  isReleaseOce,
   match,
   platforms,
   shaPattern,
@@ -80,7 +81,7 @@ export async function verifyPlatform(
   match(expected.workflowSha, shaPattern, "Expected a full workflow SHA.");
   match(expected.runId, integerPattern, "Expected a producer run ID.");
   match(expected.attempt, integerPattern, "Expected a producer attempt.");
-  if (expected.ciRunId !== "" || expected.ciAttempt !== "") {
+  if (!isReleaseOce(env) && (expected.ciRunId !== "" || expected.ciAttempt !== "")) {
     match(expected.ciRunId, integerPattern, "Expected a CI run ID.");
     match(expected.ciAttempt, integerPattern, "Expected a CI attempt.");
   }
@@ -104,6 +105,18 @@ export async function verifyPlatform(
   const receipt = await metadata(receiptName);
   for (const [key, value] of Object.entries(expected)) {
     assert.deepEqual(field(receipt, key), value, `Platform receipt ${key} mismatch.`);
+  }
+  if (isReleaseOce(env)) {
+    assert.equal(
+      field(receipt, "ciRunId"),
+      undefined,
+      "Release OCE does not use push CI receipts.",
+    );
+    assert.equal(
+      field(receipt, "ciAttempt"),
+      undefined,
+      "Release OCE does not use push CI receipts.",
+    );
   }
   assert.equal(field(receipt, "platform"), platform, "Platform receipt architecture mismatch.");
   assert.equal(

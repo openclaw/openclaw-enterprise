@@ -234,8 +234,8 @@ A prepared repository App key that cannot sign stops the worker with
   implementations and exact Kubernetes access.
 - **`KUBERNETES_API_UNAVAILABLE` at startup:** The Compute preflight got no
   answer from the Kubernetes API server in the event's `host` and `port`.
-  Confirm the API and worker egress policy still allows that address (Helm
-  `cluster.cidrs` and `cluster.port`) and that the server is running.
+  Confirm the server is running and that the API and worker can resolve and
+  reach the reported address. The chart permits their outbound connections.
 - **`AUTH_SECRET_INVALID` or `AUTH_BASE_URL_INVALID` at startup:** The API
   and initialization Job require an auth secret of at least 32 characters,
   an HTTPS Console origin, and an Agent DNS domain. The two hosts must share
