@@ -35,7 +35,7 @@ import {
   GATEWAY_SECURITY_DEFAULTS,
   withGatewaySecurityDefaults,
   withSetting,
-} from "../helpers/admitted-configuration.mjs";
+} from "../helpers/admitted-configuration.ts";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const firstAgent = join(repository, "scripts", "first-agent.ts");

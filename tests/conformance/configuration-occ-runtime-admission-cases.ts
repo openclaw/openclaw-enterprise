@@ -16,7 +16,7 @@ import {
   ScopeViolationError,
   resolveConfiguredHarnessId,
 } from "../../packages/occ/src/index.ts";
-import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
+import { admittedConfiguration } from "../helpers/admitted-configuration.ts";
 
 import {
   catalogRowUnselected,

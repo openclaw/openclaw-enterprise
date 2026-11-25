@@ -1,4 +1,18 @@
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  type LoggingLevel,
+  type OpenClawConfigurationDocument,
+  type OpenClawConfigurationValue,
+} from "../../packages/contracts/src/index.ts";
+
+type ConfigurationFields = Readonly<Record<string, unknown>>;
+type SettingPredicate = (parent: ConfigurationFields, root: ConfigurationFields) => boolean;
+type GatewayDefault = {
+  readonly path: readonly [string, ...string[]];
+  readonly value: OpenClawConfigurationValue;
+  readonly explicit: OpenClawConfigurationValue;
+  readonly admits?: SettingPredicate;
+};
 
 // The expected Gateway security defaults and OpenClaw sandbox refusals, spelled once for every
 // test that builds an admitted document or exercises the rules. Kept independent of
@@ -6,10 +20,12 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 // that drops a default or accepts a refused value fails a test.
 
 // No legacy exec policy beside the setting: OpenClaw reads a mode over `security` and `ask`.
-const noExecPolicy = (exec) => exec.security === undefined && exec.ask === undefined;
+const noExecPolicy = (exec: ConfigurationFields) =>
+  exec.security === undefined && exec.ask === undefined;
 // A `channels` entry other than the shared settings that is not turned off (finding 3191).
-const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-const channelEnabled = (_parent, root) =>
+const isObject = (value: unknown): value is ConfigurationFields =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const channelEnabled: SettingPredicate = (_parent, root) =>
   isObject(root.channels) &&
   Object.entries(root.channels).some(
     ([provider, channel]) =>
@@ -20,7 +36,7 @@ const channelEnabled = (_parent, root) =>
 // Each row gives an unset setting its OCE default and supplies an explicit value admission
 // preserves. `admits` sees the object that would hold the setting and the document root. The
 // inline-program rule reads the exec mode filled by the preceding row.
-export const GATEWAY_SECURITY_DEFAULTS = Object.freeze([
+export const GATEWAY_SECURITY_DEFAULTS = Object.freeze<GatewayDefault[]>([
   { path: ["tools", "exec", "applyPatch", "workspaceOnly"], value: true, explicit: false },
   {
     path: ["session", "dmScope"],
@@ -39,7 +55,12 @@ export const GATEWAY_SECURITY_DEFAULTS = Object.freeze([
 ]);
 
 // Fills `value` at an unset `path` when `admits` accepts the object that would hold it.
-function withUnset(parent, [key, ...rest], value, admits = () => true) {
+function withUnset(
+  parent: ConfigurationFields,
+  [key = "undefined", ...rest]: readonly string[],
+  value: OpenClawConfigurationValue,
+  admits: (parent: ConfigurationFields) => boolean,
+): ConfigurationFields {
   const current = parent[key];
   if (rest.length === 0) {
     return current === undefined && admits(parent) ? { ...parent, [key]: value } : parent;
@@ -58,25 +79,49 @@ function withUnset(parent, [key, ...rest], value, admits = () => true) {
 // `values` with each of `defaults` (every GATEWAY_SECURITY_DEFAULTS row unless given) it leaves
 // unset filled, as deployment admission fills it: a value of any type, or a non-object on the
 // path, is kept.
-export function withGatewaySecurityDefaults(values, defaults = GATEWAY_SECURITY_DEFAULTS) {
+export function withGatewaySecurityDefaults(
+  values: object,
+  defaults = GATEWAY_SECURITY_DEFAULTS,
+): ConfigurationFields {
   return defaults.reduce(
     (filled, { path, value, admits = () => true }) =>
       withUnset(filled, path, value, (parent) => admits(parent, filled)),
-    values,
+    values as ConfigurationFields,
   );
 }
 
 // `values` with `value` at `path`, copying each object on the way.
-export function withSetting(values, [key, ...rest], value) {
+export function withSetting(
+  values: OpenClawConfigurationDocument,
+  path: readonly string[],
+  value: OpenClawConfigurationValue,
+): OpenClawConfigurationDocument;
+export function withSetting(
+  values: unknown,
+  path: readonly string[],
+  value: unknown,
+): ConfigurationFields;
+export function withSetting(
+  values: unknown,
+  [key = "undefined", ...rest]: readonly string[],
+  value: unknown,
+): ConfigurationFields {
+  // Preserve JavaScript's spread and property access on non-object intermediate values.
+  const parent = values as ConfigurationFields | null | undefined;
   return {
-    ...values,
-    [key]: rest.length === 0 ? value : withSetting(values?.[key] ?? {}, rest, value),
+    ...parent,
+    [key]: rest.length === 0 ? value : withSetting(parent?.[key] ?? {}, rest, value),
   };
 }
 
 // The document deployment admission freezes into an AgentRevision when OCC owns native logging.
-export function admittedConfiguration(values, level = "info") {
-  return admitLoggingConfiguration(withGatewaySecurityDefaults(values), level);
+export function admittedConfiguration(
+  values: object,
+  level: LoggingLevel = "info",
+): OpenClawConfigurationDocument {
+  // The HTTP fixture's schema guard narrows a valid configuration only to `object`.
+  const filled = withGatewaySecurityDefaults(values) as OpenClawConfigurationDocument;
+  return admitLoggingConfiguration(filled, level);
 }
 
 const sandboxUnsupported =
@@ -101,8 +146,10 @@ export const OPENCLAW_SANDBOX_SETTINGS = Object.freeze([
     refused: ["sandbox", null],
     requirement: `must be "auto", "gateway" or "node" or unset: ${sandboxUnsupported}`,
   },
-]);
+] as const);
 
 // The refusal of `setting` at `path` (an array), as every save path and deployment word it.
-export const openClawSandboxRefusal = (setting, path) =>
-  `Configuration setting ${path.join(".")} ${setting.requirement}.`;
+export const openClawSandboxRefusal = (
+  setting: { readonly requirement: string },
+  path: readonly string[],
+) => `Configuration setting ${path.join(".")} ${setting.requirement}.`;

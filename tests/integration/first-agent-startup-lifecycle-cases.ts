@@ -9,7 +9,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { servedAs } from "../helpers/agent-identity.ts";
-import { withGatewaySecurityDefaults } from "../helpers/admitted-configuration.mjs";
+import { withGatewaySecurityDefaults } from "../helpers/admitted-configuration.ts";
 
 type Fixture = {
   directory: string;

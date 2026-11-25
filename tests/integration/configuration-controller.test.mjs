@@ -68,7 +68,7 @@ import {
   OPENCLAW_SANDBOX_SETTINGS,
   openClawSandboxRefusal,
   withSetting,
-} from "../helpers/admitted-configuration.mjs";
+} from "../helpers/admitted-configuration.ts";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function createConfigurationBackend() {

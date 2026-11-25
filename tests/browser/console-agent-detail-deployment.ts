@@ -104,7 +104,7 @@ import {
 import {
   OPENCLAW_SANDBOX_SETTINGS,
   openClawSandboxRefusal,
-} from "../helpers/admitted-configuration.mjs";
+} from "../helpers/admitted-configuration.ts";
 
 type PluginScopeFixture = {
   fields: ReturnType<typeof import("/console/agents/plugin-fields.mjs").createPluginFields>;
