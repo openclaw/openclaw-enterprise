@@ -352,7 +352,7 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
   structurally invalid, or a runtime `modelApiKey` selector is supplied (use
   `harnessAuth`). Also when the Namespace does not approve the repository
   selections, the request sends both `repositoryAccess` and
-  `repositoryBindings`, or `harnessAuth.source` names a ServiceAccount in another
+  `repositoryAccess`, or `harnessAuth.source` names a ServiceAccount in another
   Namespace; the message names the rule.
 - `404 NOT_FOUND`: The nonempty Backend ID does not name a configured Backend.
 - `401`: The session cookie is missing, invalid, expired, or revoked.

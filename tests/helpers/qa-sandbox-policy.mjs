@@ -8,8 +8,7 @@ import { protectedText, redactedQaTail } from "./qa-secrets.ts";
 /** Run the real OpenShell workflow against explicitly prepared, disposable infrastructure. */
 export async function verifyQaSandboxPolicy(artifacts, scenario = "network-policy") {
   const scratch = scenario === "scratch-volume";
-  const usesApiKey =
-    scenario === "namespace-lifecycle" || scratch || scenario === "openshell-git-model";
+  const usesApiKey = scenario === "namespace-lifecycle" || scratch;
   // Namespace readiness is proved first, then native OpenClaw Agents complete real model turns.
   const token = usesApiKey
     ? undefined
@@ -29,8 +28,7 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
       : {
           OPENAI_API_KEY: namespaceCredential,
           OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_QA_OPENAI_MODEL,
-          OCC_TEST_OPENSHELL_HARNESS:
-            scratch || scenario === "openshell-git-model" ? "codex" : "openclaw",
+          OCC_TEST_OPENSHELL_HARNESS: scratch ? "codex" : "openclaw",
           ...(scratch ? { OCC_TEST_OPENSHELL_MODEL_BASE_URL: "https://api.openai.com/v1" } : {}),
         }),
     OCC_TEST_OPENSHELL_K3D_REAL: "1",
@@ -53,11 +51,6 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
       /ok 1 - OpenShell mounts the admitted operator scratch PVC through the Agent workflow/;
     outcome =
       "real admitted scratch and durable workspace writes, with missing and replaced PVC refusal";
-  } else if (scenario === "openshell-git-model") {
-    file = "tests/integration/openshell-git-retention-real.test.ts";
-    expected = /ok 1 - OpenShell retains its runtime after Git expiry and worker restart/;
-    outcome =
-      "fresh model registration after Git configuration, model turns with and without repositories, and enforced Git expiry";
   } else if (scenario === "plugin-install") {
     expected = /ok 1 - OpenShell installs selected Codex plugins before WebSocket startup/;
     outcome = "real Agent plugin installation, native restart discovery, and selection removal";
@@ -66,9 +59,6 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
     `--env-file=${resolve(envFile)}`,
     "--test",
     "--test-reporter=tap",
-    ...(scenario === "openshell-git-model"
-      ? ["--test-name-pattern=^OpenShell retains its runtime after Git expiry and worker restart$"]
-      : []),
     ...(scenario === "plugin-install"
       ? ["--test-name-pattern=^OpenShell installs selected Codex plugins"]
       : []),

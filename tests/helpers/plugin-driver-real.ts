@@ -9,7 +9,6 @@ import { Check } from "typebox/value";
 import type { ServiceAccountDriverFactory } from "../../apps/controller/src/composition/installation-config.ts";
 import type { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import type {
-  KubernetesComputeDriver as KubernetesCompute,
   KubernetesComputeDriverOptions,
   KubernetesGatewayRoutingOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
@@ -478,14 +477,8 @@ async function deriveCodexWorkspaceId(accessToken: string) {
   return accountId;
 }
 
-type ServiceAccountCompute = Pick<
-  KubernetesCompute,
-  "storeServiceAccountCredential" | "deleteServiceAccountCredential"
->;
-
 function createImportedCodexServiceAccountDriverFactory(
   imported: CodexServiceAccountImport,
-  compute: ServiceAccountCompute,
 ): ServiceAccountDriverFactory {
   const driverId = "chatgpt-service-accounts";
   const backendId = "openai";
@@ -513,19 +506,17 @@ function createImportedCodexServiceAccountDriverFactory(
         );
       },
       async createCredential(account) {
-        const secretRef = await compute.storeServiceAccountCredential({
-          namespaceId: account.namespaceId,
-          serviceAccountId: account.id,
-          credentialId: `imported-credential-${account.id}`,
-          accessToken: imported.accessToken,
-        });
-        controller.registerRollback(() =>
-          compute.deleteServiceAccountCredential({
+        const owner = controller.selectedDriver("token_service");
+        const source = await owner.createSource(
+          {
+            type: "static",
             namespaceId: account.namespaceId,
-            serviceAccountId: account.id,
-            secretRef,
-            accessToken: imported.accessToken,
-          }),
+            name: `${account.name} issued PAT`,
+            lifecycleConfig: { settings: {} },
+            secret: imported.accessToken,
+            config: { provider_preset: "codex-pat" },
+          },
+          AbortSignal.timeout(30_000),
         );
         const result = await controller.transact((unit) =>
           state.queryInTransaction(
@@ -537,16 +528,9 @@ function createImportedCodexServiceAccountDriverFactory(
           ),
         );
         assert.equal(result.rowCount, 1, "imported ServiceAccount binding must be exact.");
-        return { kind: "access_token", secretRef };
+        return { kind: "access_token", sourceId: source.id };
       },
       async delete(account) {
-        if (account.credential?.kind === "access_token") {
-          await compute.deleteServiceAccountCredential({
-            namespaceId: account.namespaceId,
-            serviceAccountId: account.id,
-            secretRef: account.credential.secretRef,
-          });
-        }
         await controller.transact((unit) =>
           state.queryInTransaction(
             unit,
@@ -853,7 +837,7 @@ export async function createPluginDriverRealFixture(
     { loadInstallationConfiguration },
     { composeProduction },
     { createControllerWorker },
-    { KubernetesComputeDriver, kubernetesNamespaceName },
+    { kubernetesNamespaceName },
   ] = await Promise.all([
     import("../../packages/occ/src/state/postgres-state.ts"),
     import("../../apps/controller/src/auth/index.ts"),
@@ -879,14 +863,8 @@ export async function createPluginDriverRealFixture(
 
   let serviceAccountDriverFactory: ServiceAccountDriverFactory | undefined;
   if (codexServiceAccountImport !== undefined) {
-    assert.ok(
-      apiDrivers.computeDriver instanceof KubernetesComputeDriver,
-      "the configured Kubernetes Compute Driver must store imported ServiceAccount credentials",
-    );
-    serviceAccountDriverFactory = createImportedCodexServiceAccountDriverFactory(
-      codexServiceAccountImport,
-      apiDrivers.computeDriver,
-    );
+    serviceAccountDriverFactory =
+      createImportedCodexServiceAccountDriverFactory(codexServiceAccountImport);
   }
 
   const databasePool = new pg.Pool({ connectionString: selectedDatabaseUrl, max: 4 });

@@ -6,17 +6,24 @@ import test, { type TestContext } from "node:test";
 import pg from "pg";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
-import {
-  createOpenShellBackend,
-  openShellProviderName,
-} from "../../apps/controller/src/backends/openshell.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import { openShellCredentialProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
+import { stagedCredentialPolicies } from "../../apps/controller/src/drivers/sandbox/openshell-staged-credential-policy.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  managedCliInstalls,
+  managedMcpInstalls,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -25,7 +32,7 @@ import type {
   CredentialProxyDriver,
   CredentialSourceReference,
   CredentialUpdateNotification,
-  InstallationSecretStore,
+  PrivateSecretStore,
   ResolvedCredential,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -37,18 +44,21 @@ import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-ses
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.ts";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
+import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 import { digest } from "../helpers/kubernetes-routed-scenarios.mjs";
 import type { FixtureDriver } from "../helpers/kubernetes-workspace-setup.ts";
 import { createDedicatedDeployKubernetesFixture } from "../conformance/kubernetes-dedicated-deploy-fixture.ts";
 import { bindWireServer } from "../conformance/openshell-gateway-wire-fixture.ts";
-import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
+import {
+  buildSandboxInstallation,
+  loadSelectedOpenShellAgentInstallation,
+} from "./sandbox-driver-installation-fixture.ts";
 
 type Wire = Record<string, unknown>;
 
@@ -288,8 +298,7 @@ async function controlledRetirementTransport(
   });
   return {
     client,
-    seed(sourceId: string) {
-      const name = openShellProviderName(sourceId);
+    seed(sourceId: string, name = openShellProviderName(sourceId)) {
       const ownership = {
         "app.kubernetes.io/managed-by": "openclaw-enterprise",
         "openclaw.dev/credential-source-id": sourceId,
@@ -306,11 +315,15 @@ async function controlledRetirementTransport(
         profile: { id: name, resource_version: "1", annotations: ownership },
       });
     },
-    seedSandbox(sourceId: string, revision: Readonly<AgentRevision>, name: string, id: string) {
-      const binding = revision.credentialDeployment!.bindings[0]!;
-      const request = revision.credentialDeployment!.injectionPolicies[0]!.allowedRequests[0]!;
-      const grant = revision.sandboxPolicy!.additions.find((entry) => entry.host === request.host)!;
-      const rule = `oce-agent-${grant.id}`;
+    seedSandbox(revision: Readonly<AgentRevision>, name: string, id: string) {
+      assert.ok(revision.credentialDeployment && revision.sandboxPolicy);
+      const { bindings, injectionPolicies } = revision.credentialDeployment;
+      const request = injectionPolicies[0]!.allowedRequests[0]!;
+      const { admitted } = stagedCredentialPolicies(
+        { version: 1, network_policies: revision.sandboxPolicy.defaults },
+        revision,
+        revision.sandboxPolicy,
+      );
       const sandbox = {
         metadata: {
           id,
@@ -331,35 +344,9 @@ async function controlledRetirementTransport(
           },
         },
         spec: {
-          providers: [openShellProviderName(sourceId)],
+          providers: bindings.map(openShellCredentialProviderName),
           provider_attachment_epoch: randomUUID(),
-          policy: {
-            version: 1,
-            network_policies: {
-              ...revision.sandboxPolicy!.defaults,
-              [rule]: {
-                name: rule,
-                binaries: [{ path: request.binary }],
-                endpoints: [
-                  {
-                    host: request.host,
-                    ports: request.ports.map(({ from }) => from),
-                    protocol: "rest",
-                    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-                    rules: [
-                      {
-                        allow: {
-                          method: request.requestPolicy!.method,
-                          path: request.requestPolicy!.path,
-                        },
-                      },
-                    ],
-                    credential_binding: { provider: openShellProviderName(binding.sourceRef.id) },
-                  },
-                ],
-              },
-            },
-          },
+          policy: admitted,
         },
       };
       sandboxes.set(name, {
@@ -422,11 +409,11 @@ test(
     // The selected owner and Secret Driver are concrete; only the Kubernetes API transport is simulated.
     const { core, driver } = useInstallationSecretDriver(controller);
     // Controlled pre-write supplier failures exercise the privacy boundary; normal custody uses the concrete Secret Driver.
-    const privateStore = driver.installationSecrets;
+    const privateStore = driver.privateSecrets;
     assert.ok(privateStore);
     let controlledStoreFailure: Error | undefined;
     const sourceCountsBeforeCustody: number[] = [];
-    const ownerStore: InstallationSecretStore = {
+    const ownerStore: PrivateSecretStore = {
       create: async (ref, value) => {
         // An independent connection must not see an OCC reservation before TokenService takes custody.
         const existing = await pool.query(
@@ -444,6 +431,7 @@ test(
         }
         await privateStore.update(ref, value);
       },
+      compareAndSwap: (ref, expected, value) => privateStore.compareAndSwap(ref, expected, value),
       withValue: (ref, use) => privateStore.withValue(ref, use),
       delete: (ref) => privateStore.delete(ref),
     };
@@ -477,6 +465,12 @@ test(
       instanceId,
       state,
       { notifyCredentialUpdated: notify },
+      new OAuthAccountTokens(
+        state,
+        ownerStore,
+        controller.resolveConnectionClient.bind(controller),
+        refreshCodexOAuthGrant,
+      ),
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", owner.id);
@@ -510,21 +504,21 @@ test(
         name: "Invalid static source",
         type: "static",
         config: { unsupported: "setting" },
-        secret: { opaque: invalidMaterial },
+        secret: invalidMaterial,
       }),
     );
     assert.equal(invalidSource.statusCode, 400, invalidSource.body);
     assert.equal(invalidSource.json().error.code, "INVALID_REQUEST");
     assert.equal(
       invalidSource.json().error.message,
-      "Static sources accept only the optional provider_preset=openai configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
+      "Static sources accept an approved provider_preset configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
     );
     const invalidPreset = remember(
       await inject("POST", `${base}/credential-sources`, {
         name: "Invalid preset",
         type: "static",
         config: { provider_preset: "unknown" },
-        secret: { opaque: invalidMaterial },
+        secret: invalidMaterial,
       }),
     );
     assert.equal(invalidPreset.statusCode, 400, invalidPreset.body);
@@ -534,19 +528,196 @@ test(
       details: [{ path: "/config/provider_preset", code: "INVALID_VALUE" }],
     });
     assert.deepEqual((await inject("GET", `${base}/credential-sources`)).json().data, []);
+    // Template selection is validated before the concrete TokenService takes custody.
+    const template = await inject("POST", "/connection-templates", {
+      namespaceId,
+      displayName: "Plugin API access",
+      mode: "static_bearer",
+      destinations: [{ method: "GET", host: "api.example.test", port: 443, path: "/v1/**" }],
+    });
+    assert.equal(template.statusCode, 201, template.body);
+    const templateId: string = template.json().data.id;
+    const selectedMaterial = randomUUID();
+    material.push(selectedMaterial);
+    const selectedBody = {
+      name: "Plugin Source",
+      type: "static",
+      connectionTemplateId: templateId,
+      secret: selectedMaterial,
+    };
+    // A Template scoped to the first ready Namespace is unavailable in another real Namespace.
+    const otherNamespace = await inject("POST", "/namespaces", { name: `Other ${randomUUID()}` });
+    assert.equal(otherNamespace.statusCode, 201, otherNamespace.body);
+    const otherNamespaceId: string = otherNamespace.json().data.id;
+    await controller.handleNamespaceLifecycle(principal.id, otherNamespaceId, "ready");
+    const otherBase = `/namespaces/${otherNamespaceId}`;
+    const foreign = remember(await inject("POST", `${otherBase}/credential-sources`, selectedBody));
+    assert.equal(foreign.statusCode, 404, foreign.body);
+    assert.deepEqual(
+      sourceCountsBeforeCustody,
+      [],
+      "foreign Template selection must fail before custody",
+    );
+    assert.deepEqual((await inject("GET", `${otherBase}/credential-sources`)).json().data, []);
+
+    // Installation-wide Templates are available in either ready Namespace.
+    const installedTemplate = await inject("POST", "/connection-templates", {
+      displayName: "Installed API access",
+      mode: "static_bearer",
+      destinations: [{ method: "GET", host: "api.example.test", port: 443, path: "/shared/**" }],
+    });
+    assert.equal(installedTemplate.statusCode, 201, installedTemplate.body);
+    const installedTemplateId: string = installedTemplate.json().data.id;
+    const installedSource = remember(
+      await inject("POST", `${otherBase}/credential-sources`, {
+        ...selectedBody,
+        name: "Installed Source",
+        connectionTemplateId: installedTemplateId,
+      }),
+    );
+    assert.equal(installedSource.statusCode, 201, installedSource.body);
+    assert.equal(installedSource.json().data.connectionTemplateId, installedTemplateId);
+    assert.equal(Object.hasOwn(installedSource.json().data, "connectionTemplateVersion"), false);
+    assert.equal(
+      (await inject("DELETE", `${otherBase}/credential-sources/${installedSource.json().data.id}`))
+        .statusCode,
+      204,
+    );
+    assert.equal(
+      (await inject("DELETE", `/connection-templates/${installedTemplateId}`)).statusCode,
+      204,
+    );
+    sourceCountsBeforeCustody.length = 0;
+
+    // A Source selects identity only; a caller cannot pin a Template version in this API.
+    const versionSelection = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        ...selectedBody,
+        connectionTemplateVersion: 1,
+      }),
+    );
+    assert.equal(versionSelection.statusCode, 400, versionSelection.body);
+    const catalog = await inject("GET", "/connection-templates");
+    assert.equal(catalog.statusCode, 200, catalog.body);
+    const oauthTemplate = catalog
+      .json()
+      .data.find((entry: { current: { mode: string } }) => entry.current.mode !== "static_bearer");
+    assert.ok(oauthTemplate);
+    const wrongMode = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        ...selectedBody,
+        connectionTemplateId: oauthTemplate.id,
+      }),
+    );
+    assert.equal(wrongMode.statusCode, 409, wrongMode.body);
+    const mixed = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        ...selectedBody,
+        config: { provider_preset: "openai" },
+      }),
+    );
+    assert.equal(mixed.statusCode, 409, mixed.body);
+    assert.deepEqual(
+      sourceCountsBeforeCustody,
+      [],
+      "invalid Template selection must not reach private custody",
+    );
+    const enrolled = remember(await inject("POST", `${base}/credential-sources`, selectedBody));
+    assert.equal(enrolled.statusCode, 201, enrolled.body);
+    const selectedId: string = enrolled.json().data.id;
+    const addPreset = remember(
+      await inject("PATCH", `${base}/credential-sources/${selectedId}`, {
+        config: { provider_preset: "openai" },
+      }),
+    );
+    assert.equal(addPreset.statusCode, 409, addPreset.body);
+    // The limited application role cannot bypass the same persisted policy boundary.
+    await assert.rejects(
+      pool.query("UPDATE occ.credential_sources SET config=$2::jsonb WHERE id=$1", [
+        selectedId,
+        JSON.stringify({ provider_preset: "openai" }),
+      ]),
+      { code: "23514" },
+    );
+    const advanced = await inject("PATCH", `/connection-templates/${templateId}`, {
+      mode: "static_bearer",
+      destinations: [{ method: "GET", host: "api.example.test", port: 443, path: "/v2/**" }],
+    });
+    assert.equal(advanced.statusCode, 200, advanced.body);
+    assert.equal(advanced.json().data.current.version, 2);
+    // Updating the Template preserves the existing association and permits selection by the same ID.
+    const afterUpdate = remember(
+      await inject("POST", `${base}/credential-sources`, {
+        ...selectedBody,
+        name: "Updated Template Source",
+      }),
+    );
+    assert.equal(afterUpdate.statusCode, 201, afterUpdate.body);
+    assert.equal(afterUpdate.json().data.connectionTemplateId, templateId);
+    assert.equal(Object.hasOwn(afterUpdate.json().data, "connectionTemplateVersion"), false);
+    assert.equal(
+      (await inject("DELETE", `${base}/credential-sources/${afterUpdate.json().data.id}`))
+        .statusCode,
+      204,
+    );
+    const selectedReplacement = randomUUID();
+    material.push(selectedReplacement);
+    const selectedUpdate = remember(
+      await inject("PATCH", `${base}/credential-sources/${selectedId}`, {
+        secret: selectedReplacement,
+      }),
+    );
+    assert.equal(selectedUpdate.statusCode, 200, selectedUpdate.body);
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0]?.notification.sourceRef.id, selectedId);
+    assert.equal(notifications[0]?.resolved.credential, selectedReplacement);
+    const selectedRead = remember(await inject("GET", `${base}/credential-sources/${selectedId}`));
+    const selectedList = remember(await inject("GET", `${base}/credential-sources`));
+    assert.equal(selectedRead.statusCode, 200, selectedRead.body);
+    assert.equal(selectedList.statusCode, 200, selectedList.body);
+    const listed = selectedList
+      .json()
+      .data.find((entry: { id: string }) => entry.id === selectedId);
+    for (const projected of [
+      enrolled.json().data,
+      selectedUpdate.json().data,
+      selectedRead.json().data,
+      listed,
+    ]) {
+      assert.equal(projected?.connectionTemplateId, templateId);
+      assert.equal(Object.hasOwn(projected, "connectionTemplateVersion"), false);
+    }
+    // The Template cannot be removed while a Source references it. Deleting the Source
+    // through the TokenService releases its immutable Template reference.
+    assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 409);
+    assert.equal(
+      (await inject("DELETE", `${base}/credential-sources/${selectedId}`)).statusCode,
+      204,
+    );
+    sourceCountsBeforeCustody.length = 0;
+    notifications.length = 0;
     // Enrollment must reach the selected concrete TokenService through the supported Source route.
     const createdSource = remember(
       await inject("POST", `${base}/credential-sources`, {
         name: "Private source",
         type: "static",
         config: { provider_preset: "openai" },
-        secret: { opaque: enrollmentMaterial },
+        secret: enrollmentMaterial,
       }),
     );
     assert.equal(createdSource.statusCode, 201, createdSource.body);
     assert.deepEqual(sourceCountsBeforeCustody, [0]);
     const source = createdSource.json().data;
     const sourceId = source.id;
+    // Nor can the application role attach a Template to an existing model-preset Source.
+    await assert.rejects(
+      pool.query("UPDATE occ.credential_sources SET connection_template_id=$2 WHERE id=$1", [
+        sourceId,
+        templateId,
+      ]),
+      { code: "42501" },
+    );
+    assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 204);
     const sourceRef: CredentialSourceReference = {
       kind: "credential_source",
       namespaceId,
@@ -555,11 +726,17 @@ test(
     const sourcePath = `${base}/credential-sources/${sourceId}`;
     const assertPublicSource = (value: Record<string, unknown>) => {
       assert.equal(value.id, sourceId);
-      assert.equal(value.ownerCapability, "token_service");
       assert.equal(value.type, "static");
       assert.deepEqual(value.config, { provider_preset: "openai" });
-      assert.deepEqual(value.secrets, {});
-      for (const privateField of ["secret", "driverId", "tokenServiceInstanceId"]) {
+      assert.equal(Object.hasOwn(value, "connectionTemplateId"), false);
+      assert.equal(Object.hasOwn(value, "connectionTemplateVersion"), false);
+      for (const privateField of [
+        "secret",
+        "secrets",
+        "ownerCapability",
+        "driverId",
+        "tokenServiceInstanceId",
+      ]) {
         assert.equal(Object.hasOwn(value, privateField), false, privateField);
       }
     };
@@ -576,7 +753,6 @@ test(
       view.credentialSources.findCredentialSource(namespaceId, sourceId),
     );
     assert.ok(recorded?.ownerCapability === "token_service");
-    assert.deepEqual(recorded.secrets, {});
     assert.equal(JSON.stringify(recorded).includes(enrollmentMaterial), false);
     assert.equal(
       (
@@ -672,6 +848,7 @@ test(
       JSON.stringify([
         { action: "create", resourceKind: "agent" },
         { action: "deploy", resourceKind: "agent" },
+        { action: "update", resourceKind: "agent" },
         { action: "read", resourceKind: "configuration" },
         { action: "read", resourceKind: "namespace" },
       ]),
@@ -721,7 +898,7 @@ test(
     assert.deepEqual(hiddenWithoutOwner.json().data, []);
 
     // An unauthorized creator must receive an attributable denial before OCC validates
-    // the schema-valid but unrecognized preset in the request body.
+    // the schema-valid but unavailable Template and unrecognized preset in the request body.
     const deniedEnrollmentMaterial = randomUUID();
     material.push(deniedEnrollmentMaterial);
     const deniedEnrollment = remember(
@@ -729,7 +906,8 @@ test(
         name: "Unauthorized source",
         type: "static",
         config: { provider_preset: "unknown" },
-        secret: { opaque: deniedEnrollmentMaterial },
+        connectionTemplateId: `ctp_${randomUUID()}`,
+        secret: deniedEnrollmentMaterial,
       }),
     );
     assert.equal(deniedEnrollment.statusCode, 403, deniedEnrollment.body);
@@ -741,12 +919,19 @@ test(
     assert.deepEqual(enrollmentDenial.rows, [{ kind: "authorization_denial", outcome: "denied" }]);
     const deniedMaterial = randomUUID();
     material.push(deniedMaterial);
-    const deniedUpdate = remember(
-      await memberRequest("PATCH", sourcePath, {
-        secret: { opaque: deniedMaterial },
-      }),
+    // Source update authorization must conceal whether the requested Source exists.
+    await assertSameAnswer(
+      async (id) => {
+        const response = remember(
+          await memberRequest("PATCH", `${base}/credential-sources/${id}`, {
+            secret: deniedMaterial,
+          }),
+        );
+        return { status: response.statusCode, body: response.json() };
+      },
+      [sourceId, `cs_${randomUUID()}`],
+      { label: "unauthorized Source update" },
     );
-    assert.equal(deniedUpdate.statusCode, 403, deniedUpdate.body);
     assert.equal(await resolve(), enrollmentMaterial);
     const denialAudit = await pool.query(
       `SELECT kind,outcome FROM occ.audit_events
@@ -774,7 +959,7 @@ test(
     material.push(replacementMaterial);
     const updated = remember(
       await memberRequest("PATCH", sourcePath, {
-        secret: { opaque: replacementMaterial },
+        secret: replacementMaterial,
       }),
     );
     assert.equal(updated.statusCode, 200, updated.body);
@@ -791,7 +976,7 @@ test(
     const deliveryLogOffset = logs.length;
     controlledDeliveryFailure = new Error(`Controlled delivery failure ${deliveryFailureMaterial}`);
     const failedDelivery = remember(
-      await memberRequest("PATCH", sourcePath, { secret: { opaque: deliveryFailureMaterial } }),
+      await memberRequest("PATCH", sourcePath, { secret: deliveryFailureMaterial }),
     );
     assert.equal(controlledDeliveryFailure, undefined, "the delivery failure must be reached");
     assert.equal(failedDelivery.statusCode, 503, failedDelivery.body);
@@ -857,7 +1042,7 @@ test(
       const logOffset = logs.length;
       controlledStoreFailure = new errorType(`Controlled supplier failure ${submittedMaterial}`);
       const refused = remember(
-        await memberRequest("PATCH", sourcePath, { secret: { opaque: submittedMaterial } }),
+        await memberRequest("PATCH", sourcePath, { secret: submittedMaterial }),
       );
       assert.equal(
         controlledStoreFailure,
@@ -889,12 +1074,12 @@ test(
       );
       assert.equal(JSON.stringify(attemptAudit.rows).includes(submittedMaterial), false);
     }
-    const createAgent = () =>
+    const createAgent = (credentialSources = [{ sourceId }]) =>
       memberRequest("POST", `${base}/agents`, {
         name: `Agent ${randomUUID()}`,
         configurationId,
         harnessAuth: { method: "credential_source", sourceId },
-        credentialSources: [{ sourceId }],
+        credentialSources,
       });
     const denied = await createAgent();
     assert.equal(denied.statusCode, 403, denied.body);
@@ -930,6 +1115,29 @@ test(
     const agent = createdAgent.json().data;
     assert.deepEqual(agent.credentialSources, [{ sourceId }]);
 
+    const duplicate = await createAgent([{ sourceId }, { sourceId }]);
+    assert.equal(duplicate.statusCode, 400, duplicate.body);
+    assert.equal(duplicate.json().error.code, "INVALID_REQUEST");
+    assert.match(duplicate.json().error.message, /credentialSources.*no duplicate items/u);
+    assert.deepEqual(duplicate.json().error.details, [
+      { path: "/credentialSources", code: "INVALID_VALUE" },
+    ]);
+
+    // The request limit applies before OCC looks up any of the additional Source IDs.
+    const oversized = await memberRequest("PATCH", `${base}/agents/${agent.id}`, {
+      configurationId,
+      credentialSources: [
+        { sourceId },
+        ...Array.from({ length: 64 }, () => ({ sourceId: `cs_${randomUUID()}` })),
+      ],
+    });
+    assert.equal(oversized.statusCode, 400, oversized.body);
+    assert.equal(oversized.json().error.code, "INVALID_REQUEST");
+    assert.match(oversized.json().error.message, /credentialSources.*at most 64 items/u);
+    const unchangedAgent = await inject("GET", `${base}/agents/${agent.id}`);
+    assert.equal(unchangedAgent.statusCode, 200, unchangedAgent.body);
+    assert.deepEqual(unchangedAgent.json().data.credentialSources, [{ sourceId }]);
+
     // The actual Agent draft now references this source. A policy reduction must wait for
     // withdrawal, including when submitted with a new secret. Rejection must precede custody.
     const refusedMaterial = randomUUID();
@@ -939,7 +1147,7 @@ test(
     const combinedReduction = remember(
       await memberRequest("PATCH", sourcePath, {
         config: {},
-        secret: { opaque: refusedMaterial },
+        secret: refusedMaterial,
       }),
     );
     assert.equal(combinedReduction.statusCode, 409, combinedReduction.body);
@@ -962,7 +1170,7 @@ test(
     const combinedNoOp = remember(
       await memberRequest("PATCH", sourcePath, {
         config: { provider_preset: "openai" },
-        secret: { opaque: boundMaterial },
+        secret: boundMaterial,
       }),
     );
     assert.equal(combinedNoOp.statusCode, 200, combinedNoOp.body);
@@ -1109,29 +1317,12 @@ test(
         },
       },
     });
-    for (const configuration of [unknown, hostileEndpoint]) {
-      assert.equal(configuration.statusCode, 201, configuration.body);
-      const selected = await inject("PATCH", `${base}/agents/${agent.id}`, {
-        configurationId: configuration.json().data.id,
-      });
-      assert.equal(selected.statusCode, 200, selected.body);
-      const mismatch = await inject("POST", `${base}/agents/${agent.id}/deploy`, {});
-      assert.equal(mismatch.statusCode, 409, mismatch.body);
-      assert.equal(
-        mismatch.json().error.message,
-        "The selected model has no matching approved source preset and explicit inference route.",
-      );
-      assert.deepEqual(await deploymentEffects(), noDeploymentEffects);
-    }
-
-    const restoredConfig = await inject("PATCH", `${base}/agents/${agent.id}`, { configurationId });
-    assert.equal(restoredConfig.statusCode, 200, restoredConfig.body);
 
     // Explicitly dropping both bindings remains possible when the previously selected owner is unavailable.
     const replacement = new OCCTokenServiceDriver(
       "replacement-owner",
       controller.installation.id,
-      driver.installationSecrets,
+      driver.privateSecrets,
       instanceId,
       state,
     );
@@ -1228,24 +1419,30 @@ test(
       ports: [{ from: 443, to: 443 }],
     };
     const ambiguousGrant = { ...grant, id: "alternate-model-egress", binary: "/usr/bin/other" };
+    const codexGrant = { ...grant, id: "codex-model-egress", binary: OPEN_SHELL_CODEX_BINARIES[0] };
+    const wildcardGrant = { ...codexGrant, id: "wildcard-model-egress", host: "*.openai.com" };
+    const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
+    assert.ok(slack);
+    const slackGrant = {
+      id: "slack",
+      binary: slack.binaryPath,
+      host: slack.endpoint.host,
+      ports: grant.ports,
+    };
     const installation = {
       ...buildSandboxInstallation(),
-      sandboxNetworkPolicyCeiling: [grant, ambiguousGrant],
+      sandboxNetworkPolicyCeiling: [
+        { ...grant, id: "openclaw-model", binary: "/usr/local/bin/node" },
+        grant,
+        ambiguousGrant,
+        codexGrant,
+        wildcardGrant,
+        slackGrant,
+      ],
       runtime: { nativeWorkerSupport: "custom-image" },
     };
     Reflect.deleteProperty(installation.drivers, "credential_gateway");
     Reflect.deleteProperty(installation.backend[0]!.drivers, "credential_gateway");
-    Object.assign(installation.drivers, { token_service: { id: "occ", configuration: {} } });
-    installation.drivers.compute.id = controller.selectedDriver("compute").id;
-    Reflect.deleteProperty(installation.drivers.compute.configuration.network, "gatewayClients");
-    Object.assign(installation.drivers.compute.configuration, {
-      gatewayRouting: {
-        hostname: "agents.example.test",
-        gatewayName: "gateways",
-        gatewayNamespace: "occ-system",
-        envoyNamespace: "envoy",
-      },
-    });
     const baseline = installation.drivers.sandbox.configuration.policy.networkPolicies[0]!;
     baseline.name = "baseline";
     baseline.endpoints[0]!.host = "baseline.example.test";
@@ -1265,25 +1462,13 @@ test(
       namespaceId,
       kubernetesNamespace,
     );
-    const runtime = await loadInstallationFile(t, installation, {
-      createOpenShellBackend: (definition) =>
-        createOpenShellBackend(definition, { gatewayClient: nativeTransport.client }),
+    const runtime = await loadSelectedOpenShellAgentInstallation(t, {
+      installation,
+      computeId: controller.selectedDriver("compute").id,
+      tokenServiceId: "occ",
+      core,
+      gatewayClient: nativeTransport.client,
     });
-    assert.ok(runtime);
-    assert.ok(
-      Reflect.set(
-        runtime.computeDriver,
-        "apiClients",
-        Promise.resolve({
-          core,
-          apps: {
-            async listNamespacedDeployment() {
-              return { items: [] };
-            },
-          },
-        }),
-      ),
-    );
     const credentialDeliveryRegistration = runtime.credentialDeliveryRegistration;
     assert.ok(credentialDeliveryRegistration);
     const sandbox = credentialDeliveryRegistration.require("sandbox");
@@ -1313,7 +1498,10 @@ test(
     );
     installSelectedSandboxDrivers(nativeController, runtime);
     assert.equal(nativeController.selectedDriver("credential_proxy_delivery"), proxy);
+    const pluginDriver = new OCCPluginDriver();
+    nativeController.installPluginDrivers([pluginDriver]);
     const nativeApp = createApp(nativeController);
+
     const nativeMaterial = randomUUID();
     material.push(nativeMaterial);
     const enrolledNative = remember(
@@ -1324,7 +1512,7 @@ test(
           name: "Production admission source",
           type: "static",
           config: { provider_preset: "openai" },
-          secret: { opaque: nativeMaterial },
+          secret: nativeMaterial,
         },
         nativeApp,
       ),
@@ -1429,7 +1617,7 @@ test(
         {
           name: "Source without a provider preset",
           type: "static",
-          secret: { opaque: providerlessMaterial },
+          secret: providerlessMaterial,
         },
         nativeApp,
       ),
@@ -1470,6 +1658,172 @@ test(
       nativeApp,
     );
     assert.equal(selectedNative.statusCode, 200, selectedNative.body);
+
+    // Exercise model and destination refusals through the qualified Compute/Sandbox path.
+    // The same transaction must roll back temporary IAM grants, revision, and queued work.
+    for (const configuration of [unknown, hostileEndpoint]) {
+      assert.equal(configuration.statusCode, 201, configuration.body);
+      const selected = await inject(
+        "PATCH",
+        `${base}/agents/${dedicatedId}`,
+        { configurationId: configuration.json().data.id },
+        nativeApp,
+      );
+      assert.equal(selected.statusCode, 200, selected.body);
+      const mismatch = await inject("POST", `${base}/agents/${dedicatedId}/deploy`, {}, nativeApp);
+      assert.equal(mismatch.statusCode, 409, mismatch.body);
+      assert.equal(
+        mismatch.json().error.message,
+        "The selected model has no matching approved source preset and explicit inference route.",
+      );
+      assert.deepEqual(
+        await deploymentEffects(nativeSource.id, dedicatedAgent),
+        noDeploymentEffects,
+      );
+    }
+    const restoredConfig = await inject(
+      "PATCH",
+      `${base}/agents/${dedicatedId}`,
+      { configurationId },
+      nativeApp,
+    );
+    assert.equal(restoredConfig.statusCode, 200, restoredConfig.body);
+
+    // The Google release declares its account in Agent.plugins. Submit only that selection.
+    const google = managedCliInstalls.find(
+      ({ packageName }) => packageName === "oce-google-workspace",
+    );
+    assert.ok(google);
+    const googleTemplate = await inject(
+      "POST",
+      "/connection-templates",
+      {
+        namespaceId,
+        displayName: "Gmail Plugin access",
+        mode: "static_bearer",
+        destinations: [
+          { method: "GET", host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/**" },
+        ],
+      },
+      nativeApp,
+    );
+    assert.equal(googleTemplate.statusCode, 201, googleTemplate.body);
+    const googleTemplateId = googleTemplate.json().data.id;
+    const googleMaterial = randomUUID();
+    material.push(googleMaterial);
+    const googleSourceResponse = remember(
+      await inject(
+        "POST",
+        `${base}/credential-sources`,
+        {
+          name: "Gmail Source",
+          type: "static",
+          connectionTemplateId: googleTemplateId,
+          secret: googleMaterial,
+        },
+        nativeApp,
+      ),
+    );
+    assert.equal(googleSourceResponse.statusCode, 201, googleSourceResponse.body);
+    const googleSource = googleSourceResponse.json().data;
+    const pluginSelection = (sourceId: string) => ({
+      [google.id]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: google.releaseSha256,
+          credentials: { account: sourceId },
+        },
+      },
+    });
+    const googleSelection = pluginSelection(googleSource.id);
+    const updateUrl = `${base}/agents/${dedicatedId}`;
+    // The member may update the Agent and operate its model Source, but lacks access to the
+    // separately selected Plugin Source. The audit must identify that exact Source.
+    const modelGrant = await inject(
+      "POST",
+      `${base}/iam/access-bindings`,
+      {
+        subjectKind: "identity",
+        subjectId: authorId,
+        roleId: sourceRole.json().data.id,
+        resourceKind: "credential_source",
+        resourceId: nativeSource.id,
+      },
+      nativeApp,
+    );
+    assert.equal(modelGrant.statusCode, 201, modelGrant.body);
+    const deniedSelection = await memberRequest(
+      "PATCH",
+      updateUrl,
+      { configurationId, plugins: googleSelection },
+      nativeApp,
+    );
+    assert.equal(deniedSelection.statusCode, 403, deniedSelection.body);
+    const selectionDenial = await pool.query(
+      `SELECT details->'__occAuditMetadata'->'authorization' AS authorization
+       FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2 AND actor_id=$3
+         AND action='openclaw.agents.update' AND kind='authorization_denial' AND outcome='denied'
+         AND details->'__occAuditMetadata'->>'requestId'=$4`,
+      [namespaceId, dedicatedId, authorId, deniedSelection.json().meta.requestId],
+    );
+    assert.deepEqual(selectionDenial.rows, [
+      {
+        authorization: {
+          principalId: authorId,
+          action: "operate",
+          resource: { kind: "credential_source", namespaceId, id: googleSource.id },
+        },
+      },
+    ]);
+    // The generic Source is valid for a draft Harness. A Plugin also requires a Template.
+    const missingTemplate = pluginSelection(providerlessId);
+    const preflight = (plugins: typeof googleSelection) => ({
+      configuration: { kind: "agent", values: createHarnessConfiguration("openclaw", "gpt-4.1") },
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key" },
+      plugins,
+    });
+    const deniedPreflight = await memberRequest(
+      "POST",
+      `${base}/agents/validate`,
+      preflight(googleSelection),
+      nativeApp,
+    );
+    assert.equal(deniedPreflight.statusCode, 403, deniedPreflight.body);
+    const refusedPreflight = await inject(
+      "POST",
+      `${base}/agents/validate`,
+      preflight(missingTemplate),
+      nativeApp,
+    );
+    assert.equal(refusedPreflight.statusCode, 409, refusedPreflight.body);
+    assert.match(refusedPreflight.json().error.message, /Connection Template/);
+    const refusedAssociation = await inject(
+      "PATCH",
+      updateUrl,
+      { configurationId, plugins: missingTemplate },
+      nativeApp,
+    );
+    assert.equal(refusedAssociation.statusCode, 409, refusedAssociation.body);
+    assert.match(refusedAssociation.json().error.message, /Connection Template/);
+
+    // A valid static Template cannot make its Source eligible for Google's OAuth slot.
+    const refusedSlot = await inject(
+      "PATCH",
+      updateUrl,
+      { configurationId, plugins: googleSelection },
+      nativeApp,
+    );
+    assert.equal(refusedSlot.statusCode, 400, refusedSlot.body);
+    assert.match(refusedSlot.json().error.message, /matches the reviewed credential slot/);
+    const unchanged = await inject("GET", updateUrl, undefined, nativeApp);
+    assert.equal(unchanged.statusCode, 200, unchanged.body);
+    assert.equal(Object.hasOwn(unchanged.json().data, "plugins"), false);
+    assert.deepEqual(unchanged.json().data.credentialSources, [{ sourceId: nativeSource.id }]);
+    for (const id of [googleSource.id, providerlessId]) {
+      assert.deepEqual(await deploymentEffects(id, dedicatedAgent), noDeploymentEffects);
+    }
+
     assert.equal(
       (await inject("DELETE", `${base}/credential-sources/${providerlessId}`, undefined, nativeApp))
         .statusCode,
@@ -1486,7 +1840,7 @@ test(
           name: "Native retirement source",
           type: "static",
           config: { provider_preset: "openai" },
-          secret: { opaque: retirementMaterial },
+          secret: retirementMaterial,
         },
         nativeApp,
       ),
@@ -1519,16 +1873,12 @@ test(
     );
     assert.deepEqual([...core.secrets], custodyBeforeRefusal);
     const deliveryName = openShellProviderName(retirementId);
-    const readProvider = () =>
-      nativeTransport.client.getProvider(
-        kubernetesNamespace,
-        deliveryName,
-        AbortSignal.timeout(5_000),
-      );
-    const readProfile = () =>
+    const readProvider = (name = deliveryName) =>
+      nativeTransport.client.getProvider(kubernetesNamespace, name, AbortSignal.timeout(5_000));
+    const readProfile = (name = deliveryName) =>
       nativeTransport.client.getProviderProfile(
         kubernetesNamespace,
-        deliveryName,
+        name,
         AbortSignal.timeout(5_000),
       );
     assert.ok(await readProvider());
@@ -1546,6 +1896,75 @@ test(
     assert.equal(core.secrets.size, custodyBeforeRefusal.length - 1);
     assert.equal(await readProvider(), undefined);
     assert.equal(await readProfile(), undefined);
+
+    // Issue a grant at the trusted post-exchange boundary. The controlled copy represents
+    // delivery state retained after its Sandbox detached.
+    const accessToken = randomUUID();
+    const refreshToken = randomUUID();
+    material.push(accessToken, refreshToken);
+    const oauth = await owner.createSource(
+      {
+        type: "oauth2-refresh-token",
+        namespaceId,
+        name: "Native OAuth retirement source",
+        consent: {
+          kind: "builtin_codex",
+          ownerPrincipalId: principal.id,
+          account: { accountId: "retirement-account", planType: "plus", isFedramp: false },
+        },
+        grant: {
+          accessToken,
+          refreshToken,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          requestedScopes: ["openid"],
+          grantedScopes: ["openid"],
+        },
+      },
+      AbortSignal.timeout(5_000),
+    );
+    const oauthPath = `${base}/credential-sources/${oauth.id}`;
+    const oauthDeliveryName = openShellProviderName(oauth.id);
+    const readCustody = () =>
+      state.read((view) => view.oauthCredentials.findTokenCustody(namespaceId, oauth.id));
+    const custody = await readCustody();
+    assert.ok(custody);
+    const storedGrant = await privateStore.withValue(custody.secret, async (value) => value);
+    nativeTransport.seed(oauth.id);
+
+    nativeTransport.refused = true;
+    const refusedOAuthRetirement = remember(
+      await inject("DELETE", oauthPath, undefined, nativeApp),
+    );
+    assert.equal(refusedOAuthRetirement.statusCode, 503, refusedOAuthRetirement.body);
+    const retiringOAuth = remember(await inject("GET", oauthPath, undefined, nativeApp));
+    assert.equal(retiringOAuth.statusCode, 200, retiringOAuth.body);
+    assert.equal(retiringOAuth.json().data.state, "deleting");
+    assert.equal(retiringOAuth.json().data.consent.revocationRequestedBy, principal.id);
+    assert.equal(retiringOAuth.json().data.consent.revokedAt, undefined);
+    assert.deepEqual(await readCustody(), custody);
+    assert.equal(
+      await privateStore.withValue(custody.secret, async (value) => value === storedGrant),
+      true,
+    );
+    assert.ok(await readProvider(oauthDeliveryName));
+    assert.ok(await readProfile(oauthDeliveryName));
+
+    nativeTransport.refused = false;
+    const completedOAuthRetirement = remember(
+      await inject("DELETE", oauthPath, undefined, nativeApp),
+    );
+    assert.equal(completedOAuthRetirement.statusCode, 204, completedOAuthRetirement.body);
+    assert.equal(await readProvider(oauthDeliveryName), undefined);
+    assert.equal(await readProfile(oauthDeliveryName), undefined);
+    assert.equal(remember(await inject("GET", oauthPath, undefined, nativeApp)).statusCode, 404);
+    assert.equal(await readCustody(), undefined);
+    await assert.rejects(
+      privateStore.withValue(custody.secret, async () => true),
+      {
+        message: "The Kubernetes Secret backend is unavailable.",
+      },
+    );
+
     const networking = `${base}/agents/${dedicatedId}/sandbox-policy/networking`;
     const editing = await inject("PATCH", `${networking}/editing`, { enabled: true }, nativeApp);
     assert.equal(editing.statusCode, 200, editing.body);
@@ -1574,17 +1993,28 @@ test(
       refusedGrant.body,
     );
     assert.deepEqual(await deploymentEffects(nativeSource.id, dedicatedAgent), noDeploymentEffects);
-    const exactGrant = await inject(
+    const clearAmbiguousGrants = await inject(
       "PUT",
       networking,
-      { expectedVersion: 2, additions: [grant] },
+      { expectedVersion: 2, additions: [] },
       nativeApp,
     );
-    assert.equal(exactGrant.statusCode, 200, exactGrant.body);
+    assert.equal(clearAmbiguousGrants.statusCode, 200, clearAmbiguousGrants.body);
     const admitted = await inject("POST", `${base}/agents/${dedicatedId}/deploy`, {}, nativeApp);
     assert.equal(admitted.statusCode, 202, admitted.body);
+    const admittedRevision = admitted.json().data;
+    const expectedSources = [{ sourceId: nativeSource.id }];
+    assert.deepEqual(admittedRevision.credentialSources, expectedSources);
+    const publicRevision = await inject(
+      "GET",
+      `${base}/agents/${dedicatedId}/revisions/${admittedRevision.id}`,
+      undefined,
+      nativeApp,
+    );
+    assert.equal(publicRevision.statusCode, 200, publicRevision.body);
+    assert.deepEqual(publicRevision.json().data.credentialSources, expectedSources);
     const revision = await nativeController.transact((unit) =>
-      unit.revisions.findRevision(namespaceId, dedicatedId, admitted.json().data.id),
+      unit.revisions.findRevision(namespaceId, dedicatedId, admittedRevision.id),
     );
     assert.equal(revision?.executionAdmission.version, 8);
     assert.deepEqual(revision?.credentialDeployment?.injectionPolicies, [
@@ -1592,7 +2022,7 @@ test(
         bindingRef: "model",
         allowedRequests: [
           {
-            binary: grant.binary,
+            binary: "/usr/local/bin/node",
             host: grant.host,
             ports: grant.ports,
             requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
@@ -1601,55 +2031,419 @@ test(
       },
     ]);
 
+    assert.deepEqual(
+      revision?.credentialDeployment?.networkAccessPolicy.allowed,
+      revision?.credentialDeployment?.injectionPolicies[0]?.allowedRequests,
+    );
     assert.ok(revision);
-    // A second admitted Agent uses the same Source and native Provider. The following setup
-    // controls only deployment transport state; both drafts and immutable revisions are real.
-    const siblingResponse = await inject(
+    // Exercise the PostgreSQL CHECK separately with a candidate mixed policy. Only the
+    // model revision above passed deployment admission. No Plugin revision is saved here.
+    const storedSpec = (
+      await pool.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [revision.id])
+    ).rows[0].admitted_spec;
+    const mixedSpec = structuredClone(storedSpec);
+    const pluginRequest = {
+      binary: google.binaryPath,
+      host: "gmail.googleapis.com",
+      ports: [{ from: 443, to: 443 }],
+      requestPolicy: { type: "http", method: "GET", path: "/gmail/v1/users/**" },
+    };
+    const pluginBinding = {
+      bindingRef: "plugin-structural-check",
+      sourceRef: { kind: "credential_source", namespaceId, id: googleSource.id },
+      consumer: {
+        kind: "plugin",
+        pluginId: google.id,
+        requirement: "account",
+        connection: "default",
+      },
+      projection: {
+        environment: "GOG_ACCESS_TOKEN",
+        presentation: "bearer",
+      },
+    };
+    mixedSpec.plugins = {
+      driver: { id: pluginDriver.id, implementation: pluginDriver.implementation },
+      plugins: googleSelection,
+    };
+    mixedSpec.credential_sources.push({
+      sourceId: googleSource.id,
+      sourceType: "static",
+      tokenServiceInstanceId: instanceId,
+      connectionTemplate: { id: googleTemplateId, version: 1 },
+    });
+    mixedSpec.credential_deployment.networkAccessPolicy.allowed.push(pluginRequest);
+    mixedSpec.credential_deployment.bindings.push(pluginBinding);
+    mixedSpec.credential_deployment.injectionPolicies.push({
+      bindingRef: pluginBinding.bindingRef,
+      allowedRequests: [pluginRequest],
+    });
+    const structurallyValid = async (spec: unknown) =>
+      (
+        await pool.query(
+          "SELECT occ.standalone_credential_deployment_is_valid($1::jsonb,$2) AS valid",
+          [JSON.stringify(spec), namespaceId],
+        )
+      ).rows[0].valid;
+    assert.equal(
+      await structurallyValid(mixedSpec),
+      true,
+      "a mixed policy preserves the exact model/Harness linkage",
+    );
+    const missingReceipt = structuredClone(mixedSpec);
+    delete missingReceipt.credential_sources[1].connectionTemplate;
+    assert.equal(
+      await structurallyValid(missingReceipt),
+      false,
+      "a Plugin binding requires its admitted Template version",
+    );
+    const missingModel = structuredClone(mixedSpec);
+    missingModel.credential_deployment.bindings.shift();
+    missingModel.credential_deployment.injectionPolicies.shift();
+    missingModel.credential_sources.shift();
+    assert.equal(
+      await structurallyValid(missingModel),
+      false,
+      "managed Harness auth requires its model binding",
+    );
+    const numericRef = structuredClone(mixedSpec);
+    numericRef.credential_deployment.bindings[1].bindingRef = "1";
+    numericRef.credential_deployment.injectionPolicies[1].bindingRef = 1;
+    assert.equal(
+      await structurallyValid(numericRef),
+      false,
+      "an injection bindingRef must be a JSON string",
+    );
+    const missingSelector = structuredClone(mixedSpec);
+    delete missingSelector.credential_deployment.networkAccessPolicy.allowed.at(-1).requestPolicy;
+    delete missingSelector.credential_deployment.injectionPolicies[1].allowedRequests[0]
+      .requestPolicy;
+    // The network grant covers the whole destination, but injecting a Plugin credential
+    // still requires a request selector.
+    const requestShape = await pool.query(
+      "SELECT occ.deployment_request_matches_have_valid_shape($1::jsonb) AS network, occ.deployment_request_matches_have_valid_shape($2::jsonb) AS injection",
+      [
+        JSON.stringify(missingSelector.credential_deployment.networkAccessPolicy.allowed),
+        JSON.stringify(missingSelector.credential_deployment.injectionPolicies[1].allowedRequests),
+      ],
+    );
+    assert.deepEqual(requestShape.rows[0], { network: true, injection: true });
+    assert.equal(
+      await structurallyValid(missingSelector),
+      false,
+      "a Plugin credential injection requires a request selector",
+    );
+    const duplicatePluginConsumer = structuredClone(mixedSpec);
+    duplicatePluginConsumer.credential_deployment.bindings.push({
+      ...pluginBinding,
+      bindingRef: "duplicate",
+      projection: { environment: "OTHER_TOKEN", presentation: "bearer" },
+    });
+    duplicatePluginConsumer.credential_deployment.injectionPolicies.push({
+      bindingRef: "duplicate",
+      allowedRequests: [pluginRequest],
+    });
+    assert.equal(
+      await structurallyValid(duplicatePluginConsumer),
+      false,
+      "Plugin consumer keys must be unique",
+    );
+
+    // Console's standard Codex Configuration deliberately keeps its Gateway provider on
+    // loopback. Admission must approve the Compute-owned upstream without widening the Source.
+    const codexValues = createHarnessConfiguration("codex", "gpt-4.1");
+    const codexConfiguration = await inject(
+      "POST",
+      `${base}/configurations`,
+      { kind: "agent", values: codexValues },
+      nativeApp,
+    );
+    assert.equal(codexConfiguration.statusCode, 201, codexConfiguration.body);
+    const codexResponse = await inject(
       "POST",
       `${base}/agents`,
       {
-        name: `Native sibling ${randomUUID()}`,
-        configurationId,
+        name: `Native Codex ${randomUUID()}`,
+        configurationId: codexConfiguration.json().data.id,
         executionMode: "dedicated",
         harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
         credentialSources: [{ sourceId: nativeSource.id }],
       },
       nativeApp,
     );
-    assert.equal(siblingResponse.statusCode, 201, siblingResponse.body);
-    const siblingId: string = siblingResponse.json().data.id;
-    const siblingNetworking = `${base}/agents/${siblingId}/sandbox-policy/networking`;
+    assert.equal(codexResponse.statusCode, 201, codexResponse.body);
+    const codexAgent = codexResponse.json().data;
+    const codexNetworking = `${base}/agents/${codexAgent.id}/sandbox-policy/networking`;
     assert.equal(
-      (await inject("PATCH", `${siblingNetworking}/editing`, { enabled: true }, nativeApp))
+      (await inject("PATCH", `${codexNetworking}/editing`, { enabled: true }, nativeApp))
         .statusCode,
       200,
     );
-    const siblingGrant = await inject(
+    // The editor may save this grant because it is in the Installation ceiling, but it must
+    // not become a Codex credential recipient merely because its host and port match.
+    const arbitraryPolicy = await inject(
       "PUT",
-      siblingNetworking,
+      codexNetworking,
       { expectedVersion: 1, additions: [grant] },
       nativeApp,
     );
-    assert.equal(siblingGrant.statusCode, 200, siblingGrant.body);
-    const siblingAdmitted = await inject(
+    assert.equal(arbitraryPolicy.statusCode, 200, arbitraryPolicy.body);
+    const codexDeploymentBeforeRefusal = await deploymentEffects(nativeSource.id, codexAgent);
+    const arbitraryExecutable = await inject(
       "POST",
-      `${base}/agents/${siblingId}/deploy`,
+      `${base}/agents/${codexAgent.id}/deploy`,
       {},
       nativeApp,
     );
-    assert.equal(siblingAdmitted.statusCode, 202, siblingAdmitted.body);
-    const siblingRevision = await nativeController.transact((unit) =>
-      unit.revisions.findRevision(namespaceId, siblingId, siblingAdmitted.json().data.id),
+    assert.equal(arbitraryExecutable.statusCode, 409, arbitraryExecutable.body);
+    assert.equal(
+      arbitraryExecutable.json().error.message,
+      "The staged model credential needs one exact, unambiguous network grant for its approved inference route.",
     );
-    assert.ok(siblingRevision);
+    assert.deepEqual(
+      await deploymentEffects(nativeSource.id, codexAgent),
+      codexDeploymentBeforeRefusal,
+    );
+    // A saved wildcard on the credential recipient must not trigger an automatic exact-host grant.
+    const wildcardPolicy = await inject(
+      "PUT",
+      codexNetworking,
+      { expectedVersion: 2, additions: [wildcardGrant] },
+      nativeApp,
+    );
+    assert.equal(wildcardPolicy.statusCode, 200, wildcardPolicy.body);
+    const wildcardDeployment = await inject(
+      "POST",
+      `${base}/agents/${codexAgent.id}/deploy`,
+      {},
+      nativeApp,
+    );
+    assert.equal(wildcardDeployment.statusCode, 409, wildcardDeployment.body);
+    assert.deepEqual(
+      await deploymentEffects(nativeSource.id, codexAgent),
+      codexDeploymentBeforeRefusal,
+    );
+    const clearedPolicy = await inject(
+      "PUT",
+      codexNetworking,
+      { expectedVersion: 3, additions: [] },
+      nativeApp,
+    );
+    assert.equal(clearedPolicy.statusCode, 200, clearedPolicy.body);
+    const unapprovedCodex = await inject(
+      "POST",
+      `${base}/agents/${codexAgent.id}/deploy`,
+      {
+        harnessOverrides: {
+          modelProvider: {
+            protocol: "openai-responses",
+            baseUrl: "https://unapproved.example.test/v1",
+          },
+        },
+      },
+      nativeApp,
+    );
+    assert.equal(unapprovedCodex.statusCode, 409, unapprovedCodex.body);
+    assert.deepEqual(
+      await deploymentEffects(nativeSource.id, codexAgent),
+      codexDeploymentBeforeRefusal,
+    );
+    const codexAdmitted = await inject(
+      "POST",
+      `${base}/agents/${codexAgent.id}/deploy`,
+      {},
+      nativeApp,
+    );
+    assert.equal(codexAdmitted.statusCode, 202, codexAdmitted.body);
+    const codexRevision = await nativeController.transact((unit) =>
+      unit.revisions.findRevision(namespaceId, codexAgent.id, codexAdmitted.json().data.id),
+    );
+    const savedCodexConfiguration = codexRevision?.configuration as typeof codexValues | undefined;
+    const savedCodexUpstream = codexRevision?.harness.configuration?.modelProvider as
+      { baseUrl?: string } | undefined;
+    assert.equal(savedCodexConfiguration?.agents.defaults.model, "codex/gpt-4.1");
+    assert.equal(savedCodexConfiguration?.models.providers.codex?.baseUrl, "http://127.0.0.1:9");
+    assert.equal(savedCodexUpstream?.baseUrl, "https://api.openai.com/v1");
+    assert.deepEqual(codexRevision?.credentialDeployment?.bindings[0]?.consumer, {
+      kind: "model",
+      providerId: "codex",
+    });
+    assert.deepEqual(codexRevision?.credentialDeployment?.injectionPolicies, [
+      {
+        bindingRef: "model",
+        allowedRequests: [
+          {
+            binary: codexGrant.binary,
+            host: codexGrant.host,
+            ports: codexGrant.ports,
+            requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+          },
+        ],
+      },
+    ]);
+
+    assert.deepEqual(
+      codexRevision?.credentialDeployment?.networkAccessPolicy.allowed,
+      codexRevision?.credentialDeployment?.injectionPolicies[0]?.allowedRequests,
+    );
+
+    const searchableCodexResponse = await inject(
+      "POST",
+      `${base}/agents`,
+      {
+        name: `Native Codex search ${randomUUID()}`,
+        configurationId: codexConfiguration.json().data.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
+        credentialSources: [{ sourceId: nativeSource.id }],
+      },
+      nativeApp,
+    );
+    assert.equal(searchableCodexResponse.statusCode, 201, searchableCodexResponse.body);
+    const searchableCodexId = searchableCodexResponse.json().data.id;
+    const firstDeploy = `${base}/agents/${searchableCodexId}/deploy-first`;
+    const intent = {
+      key: "codex-search-source",
+      expectedConfigurationId: codexConfiguration.json().data.id,
+      expectedGeneration: codexConfiguration.json().data.generation,
+    };
+    const modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      supportsStandaloneWebSearch: true,
+    };
+    const submitFirst = (provider: typeof modelProvider) =>
+      inject(
+        "POST",
+        firstDeploy,
+        { ...intent, harnessOverrides: { modelProvider: provider } },
+        nativeApp,
+      );
+    const searchableCodex = await submitFirst(modelProvider);
+    assert.equal(searchableCodex.statusCode, 202, searchableCodex.body);
+    const { revisionId: searchId } = searchableCodex.json().data;
+    const replay = await submitFirst({ ...modelProvider, baseUrl: modelProvider.baseUrl + "/" });
+    assert.equal(replay.statusCode, 202, replay.body);
+    assert.equal(replay.json().data.revisionId, searchId);
+    const conflict = await submitFirst({ ...modelProvider, supportsStandaloneWebSearch: false });
+    assert.equal(conflict.statusCode, 409, conflict.body);
+    const recoveryPath = `${firstDeploy}/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}?harnessOverrides=${encodeURIComponent(JSON.stringify({ modelProvider }))}`;
+    const receipt = await inject("GET", recoveryPath, undefined, nativeApp);
+    assert.equal(receipt.statusCode, 200, receipt.body);
+    assert.equal(receipt.json().data.revisionId, searchId);
+    const searchableRevision = await nativeController.transact((unit) =>
+      unit.revisions.findRevision(namespaceId, searchableCodexId, searchId),
+    );
+    assert.equal(
+      (
+        searchableRevision?.harness.configuration?.modelProvider as
+          { supportsStandaloneWebSearch?: boolean } | undefined
+      )?.supportsStandaloneWebSearch,
+      true,
+    );
+    assert.deepEqual(searchableRevision?.credentialDeployment?.injectionPolicies, [
+      {
+        bindingRef: "model",
+        allowedRequests: ["/v1/responses", "/v1/alpha/search"].map((path) => ({
+          binary: codexGrant.binary,
+          host: codexGrant.host,
+          ports: codexGrant.ports,
+          requestPolicy: { type: "http", method: "POST", path },
+        })),
+      },
+    ]);
+
+    assert.deepEqual(
+      searchableRevision?.credentialDeployment?.networkAccessPolicy.allowed,
+      searchableRevision?.credentialDeployment?.injectionPolicies[0]?.allowedRequests,
+    );
+
+    assert.ok(revision);
+    assert.ok(codexRevision);
+    // The already admitted default Codex Agent is the sibling using the same Source and Provider.
+    // The following setup controls transport state; both Agents and immutable revisions are real.
+    const siblingId = codexAgent.id;
+    const siblingRevision = codexRevision;
+
+    const request = async (
+      method: string,
+      path: string,
+      body: object | undefined,
+      status: number,
+    ) => {
+      const response = remember(await inject(method, path, body, nativeApp));
+      assert.equal(response.statusCode, status, response.body);
+      return status === 204 ? undefined : response.json().data;
+    };
+    const slackTemplate = await request(
+      "POST",
+      "/connection-templates",
+      {
+        namespaceId,
+        displayName: "Slack MCP",
+        mode: "static_bearer",
+        destinations: [{ method: "POST", ...slack.endpoint }],
+      },
+      201,
+    );
+    const slackMaterial = randomUUID();
+    material.push(slackMaterial);
+    const slackSource = await request(
+      "POST",
+      `${base}/credential-sources`,
+      {
+        name: "Slack withdrawal Source",
+        type: "static",
+        connectionTemplateId: slackTemplate.id,
+        secret: slackMaterial,
+      },
+      201,
+    );
+    const twoSourceAgent = await request(
+      "POST",
+      `${base}/agents`,
+      {
+        name: "Shared withdrawal claim",
+        configurationId,
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
+        credentialSources: [{ sourceId: nativeSource.id }],
+        plugins: {
+          [slack.id]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: slack.releaseSha256,
+              credentials: { [slack.slotId]: slackSource.id },
+              toolNames: ["slack_search_public"],
+            },
+          },
+        },
+      },
+      201,
+    );
+    const twoSourcePath = `${base}/agents/${twoSourceAgent.id}`;
+    const twoSourceNetworking = `${twoSourcePath}/sandbox-policy/networking`;
+    await request("PATCH", `${twoSourceNetworking}/editing`, { enabled: true }, 200);
+    await request("PUT", twoSourceNetworking, { expectedVersion: 1, additions: [grant] }, 200);
+    const twoSourceDeployment = await request("POST", `${twoSourcePath}/deploy`, {}, 202);
+    const twoSourceRevision = await state.read((view) =>
+      view.revisions.findRevision(namespaceId, twoSourceAgent.id, twoSourceDeployment.id),
+    );
+    assert.ok(twoSourceRevision?.credentialDeployment);
+    assert.deepEqual(
+      twoSourceRevision.credentialDeployment.bindings.map(({ sourceRef }) => sourceRef.id),
+      [nativeSource.id, slackSource.id],
+    );
 
     // Simulate an admitted deployment that reached staged delivery. The retained ConfigMap and
     // native Provider are transport state, not substitutes for withdrawal or Proxy decisions.
     const compute = runtime.computeDriver as unknown as FixtureDriver;
     const targetName = `credential-target-${digest(dedicatedId)}-rev-${digest(revision.id)}`;
     const siblingTargetName = `credential-target-${digest(siblingId)}-rev-${digest(siblingRevision.id)}`;
+    const twoSourceTargetName = `credential-target-${digest(twoSourceAgent.id)}-rev-${digest(twoSourceRevision.id)}`;
     const sandboxId = "controlled-sandbox";
     const siblingSandboxId = "controlled-sibling-sandbox";
+    const twoSourceSandboxId = "controlled-two-source-sandbox";
     const stopTransport = createDedicatedDeployKubernetesFixture(
       {
         namespace: kubernetesNamespace,
@@ -1669,6 +2463,7 @@ test(
         for (const [candidate, name, id] of [
           [revision, targetName, sandboxId],
           [siblingRevision, siblingTargetName, siblingSandboxId],
+          [twoSourceRevision, twoSourceTargetName, twoSourceSandboxId],
         ] as const) {
           const target = compute.manifest(
             "v1",
@@ -1738,22 +2533,20 @@ test(
       namespace: placedNamespace,
       revision: siblingRevision,
     }).resourceName;
-    nativeTransport.seedSandbox(nativeSource.id, revision, sandboxName, sandboxId);
-    nativeTransport.seedSandbox(
-      nativeSource.id,
-      siblingRevision,
-      siblingSandboxName,
-      siblingSandboxId,
-    );
-    // Activation is a controlled prerequisite here. Use the same PostgreSQL state transition
-    // as the deployment worker, and defer its simulated deployment work before starting the
-    // real withdrawal worker. This test does not claim to qualify deployment itself.
-    for (const candidate of [revision, siblingRevision]) {
+    nativeTransport.seedSandbox(revision, sandboxName, sandboxId);
+    nativeTransport.seedSandbox(siblingRevision, siblingSandboxName, siblingSandboxId);
+    // Activation is a controlled prerequisite here. Defer all admitted deployment work,
+    // including the search-only admission, before starting the real withdrawal worker.
+    // This test does not claim to qualify deployment itself.
+    assert.ok(searchableRevision);
+    for (const candidate of [revision, siblingRevision, searchableRevision, twoSourceRevision]) {
       const deferred = await pool.query(
         "UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour' WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3 AND idempotency_key=$4 AND state='queued'",
         [namespaceId, candidate.agentId, candidate.id, `agent_revision:${candidate.id}:reconcile`],
       );
       assert.equal(deferred.rowCount, 1);
+    }
+    for (const candidate of [revision, siblingRevision]) {
       const active = await state.transact((unit) =>
         unit.agents.compareAndSetActiveRevision(
           namespaceId,
@@ -1790,24 +2583,26 @@ test(
     assert.equal(requested.statusCode, 202, requested.body);
     assert.equal(requested.json().data.state, "pending");
     nativeTransport.effectivePolicyPermissive = true;
-    const worker = createControllerWorker({
-      pool: new pg.Pool({ connectionString: databaseUrl }),
-      drivers: {
-        ...runtime,
-        installation: {
-          ...runtime.installation,
-          drivers: {
-            ...runtime.installation.drivers,
-            secret: { ...runtime.installation.drivers.secret, id: driver.id },
-            token_service: { ...runtime.installation.drivers.token_service!, id: owner.id },
+    const createWorker = () =>
+      createControllerWorker({
+        pool: new pg.Pool({ connectionString: databaseUrl }),
+        drivers: {
+          ...runtime,
+          installation: {
+            ...runtime.installation,
+            drivers: {
+              ...runtime.installation.drivers,
+              secret: { ...runtime.installation.drivers.secret, id: driver.id },
+              token_service: { ...runtime.installation.drivers.token_service!, id: owner.id },
+            },
           },
+          secretDriver: driver,
         },
-        secretDriver: driver,
-      },
-      pollIntervalMs: 15,
-      maxAttempts: 1,
-      emit() {},
-    });
+        pollIntervalMs: 15,
+        maxAttempts: 1,
+        emit() {},
+      });
+    const worker = createWorker();
     try {
       await worker.start();
       // The effective configuration can report admission while another rule still permits the
@@ -1989,6 +2784,140 @@ test(
       ).statusCode,
       200,
     );
+
+    await t.test("Worker honors each withdrawal requester's authority at dispatch", async () => {
+      const snapshot = await state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(
+          namespaceId,
+          twoSourceAgent.id,
+          undefined,
+          twoSourceRevision.id,
+        ),
+      );
+      assert.equal(snapshot?.activeRevisionId, twoSourceRevision.id);
+      const sandboxName = sandbox.harnessResource!({
+        namespace: placedNamespace,
+        revision: twoSourceRevision,
+      }).resourceName;
+      const [modelProvider, slackProvider] = twoSourceRevision.credentialDeployment!.bindings.map(
+        openShellCredentialProviderName,
+      );
+      nativeTransport.seed(nativeSource.id, modelProvider);
+      nativeTransport.seed(slackSource.id, slackProvider);
+      nativeTransport.seedSandbox(twoSourceRevision, sandboxName, twoSourceSandboxId);
+      const role = await request(
+        "POST",
+        `${base}/iam/roles`,
+        {
+          name: "Exact Agent operator",
+          permissions: [{ action: "operate", resourceKind: "agent" }],
+        },
+        201,
+      );
+      const access = await request(
+        "POST",
+        `${base}/iam/access-bindings`,
+        {
+          subjectKind: "identity",
+          subjectId: authorId,
+          roleId: role.id,
+          resourceKind: "agent",
+          resourceId: twoSourceAgent.id,
+        },
+        201,
+      );
+      const sourcePath = (id: string) => `${twoSourcePath}/credential-sources/${id}`;
+      // The authorized operator opens the claim. A second requester adds a model withdrawal
+      // to that claim, then loses the only grant that allowed them to operate this Agent.
+      await request("POST", `${sourcePath(slackSource.id)}/withdraw`, undefined, 202);
+      const queuedModel = await memberRequest(
+        "POST",
+        `${sourcePath(nativeSource.id)}/withdraw`,
+        undefined,
+        nativeApp,
+      );
+      assert.equal(queuedModel.statusCode, 202, queuedModel.body);
+      assert.equal(queuedModel.json().data.requestedBy, authorId);
+      const { rows: claim } = await pool.query(
+        `SELECT actor_id FROM occ.controller_work WHERE namespace_id=$1 AND revision_id=$2
+           AND agent_target='credentials_withdrawn' AND state='queued'`,
+        [namespaceId, twoSourceRevision.id],
+      );
+      assert.deepEqual(claim, [{ actor_id: principal.id }]);
+      await request("DELETE", `${base}/iam/access-bindings/${access.id}`, undefined, 204);
+
+      const withdrawalWorker = createWorker();
+      try {
+        await withdrawalWorker.start();
+        await waitUntil("the shared withdrawal claim to settle", async () => {
+          const slackStatus = await request(
+            "GET",
+            `${sourcePath(slackSource.id)}/withdrawal`,
+            undefined,
+            200,
+          );
+          const modelStatus = await request(
+            "GET",
+            `${sourcePath(nativeSource.id)}/withdrawal`,
+            undefined,
+            200,
+          );
+          return (
+            slackStatus.state === "revoked" &&
+            modelStatus.state === "pending" &&
+            modelStatus.reason === "AUTHORIZATION_DENIED" &&
+            !modelStatus.withdrawalInProgress
+          );
+        });
+      } finally {
+        await withdrawalWorker.stop();
+      }
+      const residual = nativeTransport.sandbox(sandboxName)!.spec as Wire;
+      assert.deepEqual(residual.providers, [modelProvider]);
+      const loaded = await nativeTransport.client.getPolicyStatus(
+        {
+          workspace: kubernetesNamespace,
+          sandbox: sandboxName,
+        },
+        t.signal,
+      );
+      assert.equal(loaded.state, "POLICY_STATUS_LOADED");
+      assert.deepEqual(
+        Object.values((loaded.policy as Wire).network_policies as Record<string, Wire>)
+          .flatMap(({ endpoints }) => endpoints as Wire[])
+          .flatMap(({ credential_binding }) =>
+            credential_binding ? [(credential_binding as Wire).provider] : [],
+          ),
+        [modelProvider],
+      );
+      assert.equal(
+        (await request("GET", twoSourcePath, undefined, 200)).activeRevisionId,
+        twoSourceRevision.id,
+      );
+      assert.deepEqual([...core.secrets], custodyBeforeStop);
+      const { rows: audit } = await pool.query(
+        `SELECT actor_id, outcome, details->'credentialSourceIds' AS sources FROM occ.audit_events
+         WHERE namespace_id=$1 AND resource_id=$2 AND action='openclaw.agents.lifecycle.credentials_withdraw'`,
+        [namespaceId, twoSourceAgent.id],
+      );
+      assert.equal(audit.length, 2);
+      assert.deepEqual(
+        audit.find(({ outcome }) => outcome === "success"),
+        {
+          outcome: "success",
+          actor_id: principal.id,
+          sources: [slackSource.id],
+        },
+      );
+      assert.deepEqual(
+        audit.find(({ outcome }) => outcome === "denied"),
+        {
+          outcome: "denied",
+          actor_id: authorId,
+          sources: [nativeSource.id],
+        },
+      );
+    });
 
     for (const value of material) {
       assert.equal(

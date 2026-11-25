@@ -155,8 +155,8 @@ export async function checkCredentialProxySelection(
   // This is real startup composition; no gateway connection or listener is started.
   const loaded = await load();
   assert.ok(loaded);
-  const { proxyDriver, protectedDriver, sandboxDriver, credentialGatewayDriver } = loaded;
-  assert.ok(proxyDriver && protectedDriver && sandboxDriver && credentialGatewayDriver);
+  const { proxyDriver, protectedDriver, sandboxDriver } = loaded;
+  assert.ok(proxyDriver && protectedDriver && sandboxDriver);
   const backend = loaded.installation.backend[0];
   assert.ok(backend?.type === "openshell" && loaded.installation.drivers.credential_proxy);
   assert.equal(proxyDriver.capability, "credential_proxy");
@@ -190,7 +190,6 @@ export async function checkCredentialProxySelection(
             candidate.backend,
             {
               sandbox: sandboxDriver,
-              credential_gateway: credentialGatewayDriver,
               ...(selected ? { credential_proxy: proxyDriver } : {}),
             },
             protectedDriver,

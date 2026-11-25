@@ -1300,12 +1300,10 @@ export async function importTenants(
       if (body.harnessAuth === undefined || body.harnessAuth === null) {
         delete body.harnessAuth;
       }
-      if (Array.isArray(agent.repositoryBindings) && agent.repositoryBindings.length > 0) {
-        body.repositoryBindings = agent.repositoryBindings.map((binding: unknown) =>
-          pick(requireRecord(binding, "bundle namespaces[].agents[].repositoryBindings[]"), [
-            "repositoryRef",
-            "profile",
-          ]),
+      if (agent.repositoryAccess !== undefined) {
+        body.repositoryAccess = requireRecord(
+          agent.repositoryAccess,
+          "bundle namespaces[].agents[].repositoryAccess",
         );
       }
       const workspaceFiles = agent.workspaceFiles;

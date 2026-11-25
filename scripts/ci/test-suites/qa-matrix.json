@@ -6,6 +6,14 @@
   "optionalEnv": [
     "OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE",
     "OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE",
+    "OCC_TEST_OPENSHELL_K3D_REAL",
+    "OCC_TEST_OPENSHELL_HARNESS",
+    "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+    "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+    "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+    "OCC_TEST_OPENSHELL_HELM",
+    "OCC_TEST_OPENSHELL_HELM_CHART",
+    "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
     "OCC_TEST_KUBERNETES_KUBECONFIG",
     "OCC_TEST_KUBERNETES_CONTEXT",
     "OCC_TEST_QA_SANDBOX_ENV",
@@ -75,7 +83,6 @@
   "prepare": {
     "sourceBuildFiles": [
       "tests/integration/qa-matrix-real.test.mjs",
-      "tests/integration/openshell-git-retention-real.test.ts",
       "tests/integration/channel-egress-disabled-helm-real.test.ts",
       "tests/integration/channel-egress-upgrade-helm-real.test.ts"
     ]

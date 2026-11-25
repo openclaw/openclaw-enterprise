@@ -106,6 +106,7 @@ func TestAuthenticatedPlatformInstallationOrder(t *testing.T) {
 				"kubectl": `"get namespace oce-system") ;;
 "apply -f "*) ;;
 "get node k3d-occ-dev-owned-server-0 -o json") echo '{"spec":{"podCIDR":"10.42.0.0/24"}}' ;;
+"get nodes -o json") echo '{"items":[{"status":{"nodeInfo":{"operatingSystem":"linux","architecture":"arm64"}}}]}' ;;
 "get service openshell-gateway --namespace oce-system -o jsonpath={.spec.clusterIP}") echo 10.43.0.50 ;;
 ` + controlPlaneKubectlCases,
 				"docker": `"exec k3d-occ-dev-owned-server-0 ip route get 10.42.0.2") echo '10.42.0.2 dev cni0 src 10.42.0.1' ;;
@@ -159,6 +160,14 @@ func TestAuthenticatedPlatformInstallationOrder(t *testing.T) {
 				!slices.Contains(strings.Fields(log[control[0]]), "--wait") ||
 				strings.Contains(log[control[0]], "worker.replicaCount") {
 				t.Fatalf("expected one ordinary OCE install after Gateway readiness: %v", log)
+			}
+			if len(state.SandboxNetworkPolicyCeiling) != 3 {
+				t.Fatalf("expected one model ceiling rule per approved host: %#v", state.SandboxNetworkPolicyCeiling)
+			}
+			for _, grant := range state.SandboxNetworkPolicyCeiling {
+				if grant.(map[string]any)["binary"] != openShellCodexBinaries()[1] {
+					t.Fatal("Local Setup must authorize only the cluster's Codex executable")
+				}
 			}
 			checkWorkerAccess(t, state.directory, state.PlatformNamespace)
 			oce := readJSONFile(t, filepath.Join(state.directory, "helm-values.json"))
