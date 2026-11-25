@@ -16,6 +16,7 @@ The proposed [CredentialSource ownership amendment](credential-source-ownership.
 The proposed [OAuth client selection amendment](oauth-client-associations.md) separates templates from client selection and defines scope admission.
 The proposed [worker credential configuration amendment](worker-credential-configuration.md) defines the Driver entry points needed to configure a staged target without giving Compute a credential resolver.
 The proposed [Codex device login amendment](codex-device-login.md) moves completed account grants and renewal to TokenService and supplies the dedicated Harness with a Proxy placeholder and trusted account context.
+The proposed [generic credential presentation amendment](generic-credential-presentations.md) defines placement and value format independently of Source custody and API provider.
 
 ## Decision
 
