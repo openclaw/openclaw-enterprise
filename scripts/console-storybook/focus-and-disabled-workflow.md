@@ -213,23 +213,17 @@ still on the Configuration tab, check that the same lines are visible. Tab back
 into **Configuration JSON** and type `X`. Check that only the selected word
 changes. Repeat at desktop width and at 390 px.
 
-In **Pages / Agent detail**, open `pages-agent-detail--new-version`. The
-preview says **Open draft**. Choose **Edit Configuration** and change the JSON
-until it is long enough to scroll. Place the caret after a word. Hold Shift and
-press Left Arrow until the word is selected. In **Viewing version**, choose **v1**, then
-**Draft**. Focus returns to the Agent heading. Tab to **Configuration JSON**.
-Before typing, check that the previous insertion point is visible inside both
-the textarea and the viewport. Type `X`. It should appear before the word and
-leave the word intact.
+In **Pages / Agent detail**, open `pages-agent-detail--new-version`. Choose
+**Edit Configuration**. Make the draft long enough to scroll. Select a word
+backward with Shift+Left. Using the keyboard, switch to **v1**, then
+**Draft**, and Tab from the heading to **Configuration JSON**. Check that the
+insertion point is visible in the editor and viewport. Type `X`. It should
+appear before the word, leaving it intact.
 
-Reset the story and make the same unsaved edit and selection. Choose **v1**,
-then activate **Edit current Configuration**. This action focuses
-**Configuration JSON** directly. Before typing, check that the previous
-insertion point is visible inside both the textarea and the viewport. The first
-`X` should appear there. Repeat both routes at desktop width and at 390 px. Do
-not save. For a fresh draft, open **Pages / Agent detail / Edit current
-Configuration**. Check that the **New version** notice remains visible above
-the focused editor when both fit in the viewport. These stories simulate the version switch.
+Reset and repeat via **v1** and **Edit current Configuration**, which focuses
+the editor directly. Test both routes at desktop and 390 px. Do not save. In
+the fresh **Edit current Configuration** story, check the **New version**
+notice above the focused editor when both fit.
 
 ## Configuration save conflict
 
