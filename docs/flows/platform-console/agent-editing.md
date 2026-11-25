@@ -95,12 +95,12 @@ Conditions reveal details without deploying. Missing guidance leaves repository 
 
 `agents/deployment-recovery.mts` places failure recovery above the summary;
 `deployment-failure-steps.ts` classifies `deploy-again`, `logs` or `change`.
-Denied log/version reads hide Logs for this sign-in. **Open Configuration** requires
+Denied log/version reads hide Logs for this sign-in. **Open Configuration draft** requires
 Configuration `update`, bound Secret `operate`, and no known read denial.
 Read-only **Open draft** and **Deploy again** (`deploy-again`) require `deploy` and readable
 Configuration; the latter focuses **Deploy new version**. Credential recovery
 requires Agent saves. Hidden/unlisted current versions suppress recovery; viewed
-versions retain their results.
+versions retain results.
 **Current observations** in `agents/deployment-diagnostics.mts` requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.

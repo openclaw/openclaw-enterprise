@@ -2585,10 +2585,10 @@ export function createAgentDetailScenarios({
         candidateDeploymentStatus: "failed",
         candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
         description:
-          "The recovery banner names the model configured for v7 and leads with Open Configuration so the operator can correct the model and deploy the same Agent.",
+          "The recovery banner names the model configured for v7 and leads with Open Configuration draft so the operator can correct the model and deploy the same Agent.",
         steps: [
-          "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
-          "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration in the recovery card.",
+          "Open v7 Logs and confirm the failed version, then go Back. Select Open Configuration draft. The Configuration tab scrolls into view and receives focus. No deployment starts.",
+          "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration draft in the recovery card.",
           "Focus returns to Repositories with your selection intact and a reminder to save or cancel. Choose Cancel, then go Back once to Channels and Forward to Repositories.",
           "At phone width, the failure, both recovery links, and selected version are still near the top.",
         ],
@@ -2694,10 +2694,10 @@ export function createAgentDetailScenarios({
           sandboxPolicyRead: false,
         },
         description:
-          "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration.",
+          "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration draft.",
         steps: [
-          "Check that Open Configuration is first. Recovery tells the editor to choose a model and ask someone with deploy access to redeploy.",
-          "Select Open Configuration and confirm the draft's Configuration tab opens in view with Edit Configuration available.",
+          "Check that Open Configuration draft is first. Recovery tells the editor to choose a model and ask someone with deploy access to redeploy.",
+          "Select Open Configuration draft. The Configuration tab comes into view with Edit Configuration available.",
         ],
         gap: "The failure and permissions are simulated; the API still authorizes every save.",
       },
