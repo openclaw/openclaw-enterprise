@@ -213,14 +213,15 @@ export function registerExecutionClusterSecretCases({
     // Supply the CIDRs only through YAML so the indexed fixture override cannot mask the shape.
     await writeFile(valuesFile, `executionCluster:\n  apiCidrs:\n    - "${cidr}"\n`);
     const objects = await resources((await render(executionClusterValues, options)).stdout);
-    const policy = findResource(
+    const spec = findResource(
       objects,
       "NetworkPolicy",
       "openclaw-enterprise-execution-api-egress",
-    );
-    assert.partialDeepStrictEqual(policy?.spec, {
-      egress: [{ to: [{ ipBlock: { cidr } }], ports: [{ protocol: "TCP", port: 6443 }] }],
-    });
+    )?.spec;
+    assert.ok(spec && typeof spec === "object" && "egress" in spec);
+    assert.deepEqual(spec.egress, [
+      { to: [{ ipBlock: { cidr } }], ports: [{ protocol: "TCP", port: 6443 }] },
+    ]);
 
     // Helm can iterate a map too, which would treat an entry named "disabled" as an allow rule.
     await writeFile(valuesFile, `executionCluster:\n  apiCidrs:\n    disabled: "${cidr}"\n`);
