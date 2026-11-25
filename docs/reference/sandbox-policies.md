@@ -129,14 +129,12 @@ its failed application, and audit evidence commit in one transaction; interrupti
 rolls back all three so a later worker can retry recovery. Refresh, inspect, and
 retry explicitly. Failure never triggers automatic redeployment.
 
-A `failed` application carries a `reason` code. The console shows its meaning
-and next step. The worker repeats its checks on every pass, including passes
-after it sent the policy. A failure after a send can leave the Sandbox running
-that policy, and the worker does not send it again:
+For `failed` applications, the Console explains `reason`. The worker rechecks
+each pass; failure after sending can leave rules enforced. It does not resend.
 
 | `reason`                               | Cause and next step                                                                                    |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `SANDBOX_POLICY_REVISION_CHANGED`      | The current version changed or the Agent stopped. Apply again.                                         |
+| `SANDBOX_POLICY_REVISION_CHANGED`      | The Namespace or Agent changed state, or the revision changed. Refresh the Agent and policy.           |
 | `AUTHORIZATION_DENIED`                 | The requester lost Agent `manage_policy` or SandboxPolicy `update`. Ask an Installation administrator. |
 | `SANDBOX_POLICY_CEILING_CHANGED`       | The delegation ceiling no longer covers every rule. Remove those rules and save.                       |
 | `SANDBOX_POLICY_UNSUPPORTED`           | The version's Sandbox Driver cannot apply or refused the rules. Deploy instead.                        |
@@ -146,12 +144,18 @@ that policy, and the worker does not send it again:
 | `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure or changed version. Refresh and apply again.                             |
 | `SANDBOX_POLICY_UNCONFIRMED`           | No confirmation in time; the provider may have applied part. Refresh and retry.                        |
 
-Last confirmed live evidence survives desired changes. GET exposes `defaultsRevisionId`
-and `deployedPolicyVersion`. If that version is saved and no application targets
-it, the console shows **Deployed**. Snapshots and audit evidence retain admission.
+Policy GET reports stored `defaultsRevisionId` and `deployedPolicyVersion`;
+check workload status separately. If the running replacement deployed the saved
+version and no application targets it, skip retrying. An earlier failure can still
+show **Application unconfirmed** instead of **Deployed**.
 
-The console shows read-only defaults from the running revision, or the selected
-Driver before deployment, separately from the delegation ceiling and additions.
+After `SANDBOX_POLICY_REVISION_CHANGED`, retry only for a ready Namespace,
+an active, running Agent and a revision needing the rules. Deploy a stopped
+Agent only to start it.
+
+Changing additions preserves the last confirmed live version. Revision snapshots
+and attributable audit records preserve original admission. The Console separates
+read-only revision or Driver defaults from the ceiling and additions.
 
 OpenShell changes network rules through `UpdateConfig`, using a fixed nonzero CAS
 version and request ID. It retains static filesystem/process policy and generated
