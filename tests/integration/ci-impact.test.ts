@@ -3204,8 +3204,8 @@ test("main test advisory reports only a verified single modification and leaves 
     ],
     [editTest(path), {}, narrow],
     [
-      ...registeredEdit("postgres-external-session-provider", "mjs"),
-      ["postgres-application", "postgres-auth"],
+      ...registeredEdit("postgres-external-session-provider", "ts"),
+      ["checks-baseline-2", "postgres-application", "postgres-auth"],
     ],
     [...registeredEdit("postgres-worker-agent-revision-health", "mjs"), ["postgres-application"]],
     [...registeredEdit("production-kubernetes-packaging", "mjs"), ["images-packaging"]],
