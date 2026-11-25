@@ -3003,13 +3003,43 @@ test(
         assert.equal(refused.statusCode, 409, refused.body);
         assert.deepEqual(await deploymentEffects(nativeSource.id, other), before);
 
-        const deployed = await inject("POST", `${base}/agents/${approved.id}/deploy`, {}, boxApp);
+        const approvedPath = `${base}/agents/${approved.id}`;
+        // A previous installation can leave a saved selection without a Source client.
+        // It could use standing approval, so Box must refuse it until explicitly removed.
+        const empty = { defaultProfile: "github-repository", repositories: [] };
+        await pool.query(
+          "UPDATE occ.agents SET repository_access=$3::jsonb WHERE namespace_id=$1 AND id=$2",
+          [
+            namespaceId,
+            approved.id,
+            JSON.stringify({ ...empty, repositories: [{ repositoryRef: "previous-repository" }] }),
+          ],
+        );
+        const selected = await inject("POST", `${approvedPath}/deploy`, {}, boxApp);
+        assert.equal(selected.statusCode, 409, selected.body);
+        const cleared = await inject(
+          "PATCH",
+          approvedPath,
+          {
+            configurationId: approved.configurationId,
+            repositoryAccess: empty,
+          },
+          boxApp,
+        );
+        assert.equal(cleared.statusCode, 200, cleared.body);
+        assert.deepEqual(cleared.json().data.repositoryAccess, empty);
+        const deployed = await inject("POST", `${approvedPath}/deploy`, {}, boxApp);
         assert.equal(deployed.statusCode, 202, deployed.body);
         const revision = await boxed.transact((unit) =>
           unit.revisions.findRevision(namespaceId, approved.id, deployed.json().data.id),
         );
         assert.ok(revision);
         assert.deepEqual(revision.executionAdmission, { version: 8, mode: "standalone" });
+        assert.equal(revision.repositoryCredentials, undefined);
+        assert.deepEqual(
+          revision.credentialDeployment?.bindings.map(({ consumer }) => consumer.kind),
+          ["model"],
+        );
         const allowed = [
           {
             subject: "agent",

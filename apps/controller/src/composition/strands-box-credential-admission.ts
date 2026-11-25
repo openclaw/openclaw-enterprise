@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { SOURCE_PROVIDER_PRESET_CONFIG_KEY } from "@openclaw-enterprise/contracts";
 import { ResourceStateConflictError, type ControllerOptions } from "@openclaw-enterprise/occ";
 
@@ -26,7 +27,13 @@ export const strandsBoxAgentModelGrant: NonNullable<ControllerOptions["agentMode
     grant.agentId !== agent.id ||
     agent.harnessAuth?.method !== "credential_source" ||
     agent.harnessAuth.sourceId !== grant.sourceId ||
-    agent.repositoryAccess !== undefined ||
+    // Removing Git on a saved Agent leaves the empty selection. No client or
+    // binding, including one eligible for standing approval, may survive it.
+    (agent.repositoryAccess !== undefined &&
+      !isDeepStrictEqual(agent.repositoryAccess, {
+        defaultProfile: "github-repository",
+        repositories: [],
+      })) ||
     Object.keys(agent.plugins ?? {}).length !== 0 ||
     agent.networkProxy !== undefined ||
     agent.credentialSources?.some(({ sourceId }) => sourceId !== grant.sourceId) ||
