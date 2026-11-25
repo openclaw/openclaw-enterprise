@@ -8,7 +8,7 @@ import {
   AgentPluginDetailsResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { PluginDiscoveryError } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
 import {
   accessToken,

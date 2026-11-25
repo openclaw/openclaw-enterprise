@@ -12,7 +12,7 @@ import {
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture, memberRole } from "../helpers/console-app.mjs";
 import {
   persistedDeploymentError,
