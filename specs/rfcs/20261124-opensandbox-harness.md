@@ -8,7 +8,7 @@ author: freeqaz-openai
 
 - **ID:** RFC-20261124-opensandbox-harness
 - **Created:** 2026-11-24
-- **Last updated:** 2026-11-24
+- **Last updated:** 2026-11-25
 - **Implementation plan:**
   [Delivery steps and pilot results](../plans/20261124-opensandbox-harness.md)
 
@@ -17,10 +17,11 @@ author: freeqaz-openai
 ## Summary
 
 Let operators select OpenSandbox as the [Sandbox Driver](../../docs/reference/drivers/sandbox.md)
-for a dedicated Codex Harness. The OpenSandbox controller creates one Pod per Agent revision.
-Kubernetes Compute keeps the Gateway, routing and workspace. For protected access,
-OpenClaw Control Plane (OCC) must let an operator withdraw Git without interrupting chat
-or another Agent's access.
+for a dedicated Codex Harness. Kubernetes Compute keeps the Gateway, routing and workspace.
+The OpenSandbox controller creates one Pod per Agent revision.
+
+Start with placement and refuse protected credentials. After qualification, a dedicated
+agentgateway endpoint outside the Pod and any guest VM could grant read access to one repository.
 
 ## Motivation
 
@@ -32,17 +33,24 @@ already manages that lifecycle. Running individual tools in OpenSandbox would le
 
 ## Proposal
 
-1. **Deploy.** The worker rechecks authority and passes the admitted image, command, identity,
-   Secret references, labels and mounts to `provisionHarness`.
-2. **Start.** Create one non-pooled `BatchSandbox` in the tenant Namespace. Preserve restricted
-   Pod Security and default-deny networking. After a lost reply, verify ownership and template before reuse.
-3. **Activate.** Confirm Pod ownership, Gateway authentication and workspace node enrollment before routing.
-4. **Stop.** Withdraw the route. Delete by the UID first observed for cleanup and confirm the old Pod is gone before another writer starts.
-   Retain the claim across stops. Remove it on Agent deletion.
+1. **Deploy.** The worker rechecks authority. For placement alone, Compute calls
+   `provisionHarness` with the admitted image, command, identity, Secret references, labels and mounts.
+2. **Provision.** The Driver creates one non-pooled `BatchSandbox` in the tenant Namespace. Preserve
+   restricted Pod Security and default-deny networking. After a lost reply, verify ownership and
+   the template before reuse. For protected access, keep the Harness idle until both Drivers
+   confirm that the policy for this sandbox is in effect.
+3. **Activate.** Start the prepared Harness. Confirm Pod ownership, Gateway authentication and
+   workspace node enrollment before routing.
+4. **Stop.** Withdraw the route. Delete by the UID first observed for cleanup. Confirm the old Pod
+   is gone before another writer starts. Retain the workspace claim across stops. Remove it on Agent deletion.
 
 ### Keep provider credentials outside the Agent
 
-The pilot used an operator-managed tool. The proposed serving path requires no Pod exec access.
+OpenClaw Control Plane (OCC) admits the policy. TokenService keeps the App signing key
+and issues and renews the scoped GitHub token. The Credential Proxy Driver pushes the token and
+policy to agentgateway. Git can fetch while OCC is offline. Model access stays independent.
+
+Dashed arrows show the proposed connections.
 
 ```mermaid
 ---
@@ -61,35 +69,37 @@ config:
     padding: 12
 ---
 flowchart TB
-  H["<b>Agent Pod</b><br/>Codex and its tools"]
-  S["<b>Credential Proxy</b><br/>Trusted sender outside the Pod"]
-  O["<b>OCC</b><br/>Check the current grant"]
-  M["<b>Model provider</b>"]
-  G["<b>GitHub</b><br/>One repository"]
-  H -.->|Request a model turn or a Git read| S
-  S -.->|Authorize each send| O
-  S -.->|Allowed model request| M
-  S -.->|Allowed Git request| G
+  H["<b>Codex Harness</b><br/>OpenSandbox Pod"]
+  M["<b>Model route</b><br/>Separate credential"]
+  T["<b>OCC and TokenService</b><br/>Admit policy and issue token"]
+  P["<b>Credential Proxy Driver</b><br/>Configure and verify"]
+  G["<b>agentgateway</b><br/>Outside the Pod and VM"]
+  R["<b>GitHub</b><br/>One repository"]
+  H -.->|Model turn| M
+  H -.->|Git fetch| G
+  T -.->|Supply policy and token| P
+  P -.->|Install, rotate or remove| G
+  G -.->|Authenticated read| R
   classDef workload fill:#EDF2F7,stroke:#879AB0,color:#25364A
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532
   classDef provider fill:#F1EEF5,stroke:#A091AD,color:#3A3243
   class H workload
-  class S,O gate
-  class M,G provider
+  class T,P,G gate
+  class M,R provider
 ```
 
-TokenService owns the model Credential Source independently of Sandbox selection. The GitHub Backend
-keeps the App signing key and issues a token for the approved repository. Only the trusted sender
-adds a provider credential to an authorized request. The Harness may hold a credential for its own
-connection to the sender. Providers must reject it.
-
-Authenticate the sender and the running execution. Bind each grant to its Installation, Namespace,
-Agent, revision, process, network and policy generation. A change of controller, Pod or execution
-invalidates the binding until the new recipient is verified. Check repository ID and operation on every request.
-Validate responses before returning them to the authenticated recipient. Reject malformed responses
-and any that expose credentials. Block direct provider and control-plane access. Refuse restrictions the sender cannot enforce.
-After withdrawal, deny new Git requests even if the token works. An authorized send in progress may
-finish. Persist the reduction across restarts. Stop serving if enforcement fails.
+- **Caller.** Bind access to the Installation, Namespace, Agent, revision and sandbox instance.
+  Enforce the executable rule in the Sandbox. A client certificate alone cannot identify a program.
+  Block direct egress, proxy administration and access by other workloads.
+- **Requests.** Pin the repository ID and name. Grant only contents and metadata reads.
+  Check the authority, method and exact `pathAndQuery` over HTTP/2 before injection.
+  Allow only `GET /OWNER/REPO.git/info/refs?service=git-upload-pack` and
+  `POST /OWNER/REPO.git/git-upload-pack`. Reject caller-supplied authorization, redirects and ambiguous targets.
+  Verify upstream TLS. Reject malformed replies and credential leaks.
+- **Withdrawal.** Enforce a local deadline no later than token expiry. Recheck grants before renewal.
+  Verify the policy and token version on every serving copy. Confirm that withdrawal blocks new reads
+  across restarts. An authorized send may finish. If denial is uncertain, isolate the endpoint,
+  stop the execution and keep withdrawal pending. Otherwise preserve chat and other Agents’ access.
 
 ## Interface changes
 
@@ -103,28 +113,26 @@ No changes. Keep exact resource checks for the deploying actor and Agent service
 
 ### Database entities
 
-Version the Agent revision to pin both grants, the Source owner, the Driver pair and required capabilities. Refuse unknown versions.
+No changes. The [existing staged revision](https://github.com/openclaw/openclaw-enterprise/blob/454af32efaf499b367f8d435434ce633e8a09ed6/packages/contracts/src/credential-deployment.ts#L129-L179)
+can record separate model and repository bindings.
 
 ### Driver contracts
 
 Use the [existing package loader](../../docs/reference/drivers/selection.md#select-the-installed-driver).
-The placement pilot refuses protected inputs. Review three changes.
+The placement pilot refuses protected inputs. Two requirements need review.
 
-1. **Pod ownership.** Add an optional `confirmHarnessPod` check for Compute-owned storage.
-   Pass the Namespace, revision, and selected Pod name and UID. OpenSandbox must verify the Pod's
-   controller against the originally observed `BatchSandbox` UID at readiness and activation. Block routing on
-   uncertainty. Restrict writes to Pod labels, Service selectors and ownership metadata throughout the revision.
-   Other Drivers keep their existing behavior.
-2. **Model access.** Keep new Sources with TokenService and preserve existing Source owners.
-   Register the Sandbox and Credential Proxy together. Verify the recipient, model route and credential
-   delivery before release. Refuse direct provider keys and missing senders.
-3. **Git access.** Extend `github-repository` to support read-only `exact-dispatch`. Each permit
-   authorizes one request with a deadline to start. Require the running sender to support
-   `policyReduction` version 2 so it can remove Git alone. Refuse combined admission if either
-   capability is missing. Never widen the repository grant.
+1. **Pod ownership.** Compute must verify that the selected Pod belongs to the original
+   `BatchSandbox` UID at readiness and activation. Restrict changes to Pod labels, Service selectors
+   and ownership metadata. Add the optional `confirmHarnessPod` check for Compute-owned storage.
+   Pass the Namespace, revision, Pod name and UID.
+   Block routing on uncertainty. Other Drivers keep their existing behavior.
+2. **Protected access.** Register `sandbox` and `credential_proxy_delivery` together. Use the
+   existing staged operations. Keep the legacy `credential_proxy` path unchanged. Qualify the
+   complete policy and mandatory routing before admitting this pair. Today the
+   [qualifier accepts only OpenShell](https://github.com/openclaw/openclaw-enterprise/blob/454af32efaf499b367f8d435434ce633e8a09ed6/apps/controller/src/composition/openshell-credential-admission.ts#L25-L49).
+   Qualification of other pairs is [deferred until after 1.0](https://github.com/openclaw/openclaw-enterprise/blob/454af32efaf499b367f8d435434ce633e8a09ed6/docs/reference/credential-sources.md#implementation-status).
 
-Keep existing admission versions unchanged. See the
-[credential design](../../docs/reference/credential-sources.md#implementation-status) and the
+See the [credential design](../../docs/reference/credential-sources.md#implementation-status) and the
 related proposals for
 [external Sandboxes](https://github.com/openclaw/openclaw-enterprise/pull/6346),
 [Strands Box](https://github.com/openclaw/openclaw-enterprise/pull/6505) and
@@ -132,23 +140,20 @@ related proposals for
 
 ## Simplifications
 
-Using the operator directly avoids a second allocation service, execution daemon and workspace owner.
-For VM isolation alone, first test the existing Harness with a VM-backed RuntimeClass such as Kata.
+The operator avoids a second lifecycle server. A dedicated Git endpoint avoids sending model
+traffic through OpenSandbox forward mode. For VM isolation alone, try a Kata RuntimeClass first.
 
 ## Acceptance Criteria
 
-- **AC-1. Docker.** Start the pinned runtime, authenticate to Codex, refuse missing and incorrect
-  credentials, and verify deletion.
-- **AC-2. Agent.** Deploy through OCC and its worker. Verify chat, workspace reads and writes, and
-  allowed and denied traffic. Refuse a foreign Pod, wrong identity or revision, invalid bearer,
-  missing node or unsupported policy.
-- **AC-3. Recovery.** Lose create and delete replies. Verify one writer, preserve the file across
-  replacement and stop, and leave foreign resources intact.
-- **AC-4. Protected access.** Have Codex fetch through the installed pair. Verify provider
-  credentials stay outside the Agent. Deny other repositories, writes, bypass attempts and credential reflection. Withdraw
-  Git through OCC while the token works. Verify refusal, continued chat and a second Agent's access.
-- **AC-5. VM.** Repeat AC-2 through AC-4 in a verified guest. Check missing handler refusal, volume
-  reassignment and guest termination after node failure.
+- **AC-1. Docker.** Verify Codex startup, authentication, refusal and deletion.
+- **AC-2. Agent.** Deploy through OCC. Verify chat, workspace access and policy enforcement.
+  Refuse a foreign Pod, invalid identity or bearer, stale revision, missing node or unsupported policy.
+- **AC-3. Recovery.** Lose create and delete replies. Preserve one writer, files and foreign resources.
+- **AC-4. Protected access.** Fetch through the installed pair without Pod exec or a callback to OCC.
+  Verify custody, executable identity, rotation, expiry and zero forbidden requests at the origin.
+  Test withdrawal with a valid token, continued chat, peer access and stop on failed withdrawal.
+- **AC-5. VM.** Repeat AC-2 through AC-4 in a verified guest. Refuse a missing runtime handler.
+  Verify guest termination and volume reassignment after node loss.
 
 ## Delivery and verification
 
