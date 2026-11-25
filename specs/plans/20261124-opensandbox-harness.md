@@ -26,8 +26,11 @@ The Driver owns the `BatchSandbox` and must account for its child Pod during cle
 
 The [credential lifecycle RFC](../rfcs/0023-egress-proxy-credential-lifecycle/index.md) owns staged
 delivery. At `454af32e`, [admission](https://github.com/openclaw/openclaw-enterprise/blob/454af32efaf499b367f8d435434ce633e8a09ed6/packages/occ/src/agent-deployment-admission.ts#L485-L530)
-can save repository and model bindings together using admission version 8. Two checks block this pair.
+can save repository and model bindings together using admission version 8. Three checks block this pair.
 
+- [Git recipient admission](https://github.com/openclaw/openclaw-enterprise/blob/454af32efaf499b367f8d435434ce633e8a09ed6/apps/controller/src/composition/installation-config.ts#L257)
+  requires a dedicated Codex Harness and a matching OpenShell pair. Qualify the OpenSandbox
+  recipient separately. Verify that an unqualified or mismatched recipient receives no credential.
 - The [Installation loader](https://github.com/openclaw/openclaw-enterprise/blob/454af32efaf499b367f8d435434ce633e8a09ed6/apps/controller/src/composition/installation-config.ts#L277)
   selects the OpenShell qualifier. Keep that check. Qualification of other pairs is deferred until
   after 1.0. Add a separate check for OpenSandbox only when it can enforce the complete admitted policy.
@@ -111,17 +114,17 @@ These were local experiments. The RFC change itself installs no Driver.
   invoked a fixed stdio tool through Codex 0.164.0 with `mcpServer/tool/call`. The tool ran Git over
   mutual TLS to [agentgateway 1.7.0](https://github.com/agentgateway/agentgateway/releases/tag/v1.7.0).
   A host preloaded the policy and a synthetic Basic credential. No OCC service or model ran.
-  The isolated Docker bridge had no external route. The Git origin listened on HTTP loopback
+  The workload had no default IPv4 route. The Git origin listened on HTTP loopback
   in the proxy's network namespace.
   - Two fresh shallow fetches verified the commit and file content. The origin counted six
     authenticated reads. A real push, a public sibling's `ls-remote`, duplicate service queries,
     caller authorization and the wrong client certificate produced zero origin requests. Direct
     controls proved the sibling was public and the origin accepted push discovery.
-  - Require HTTP/2 on the Git listener. With HTTP/1.1, `Connection: authorization` hid a caller's
-    header from policy evaluation. The HTTP/2-only policy refused that request.
+  - The HTTP/2-only listener refused an HTTP/1.1 request with `Connection: authorization`.
+    [agentgateway removes headers named by Connection](https://github.com/agentgateway/agentgateway/blob/26f5aebe99a36a037fe54f8080a608aca5547e15/crates/agentgateway/src/proxy/httpproxy.rs#L4717).
   - The workload held test client keys and an execution daemon token. The provider secret and its Basic encoding were absent
     from inspected workload inputs, Codex files and protocol streams, Git traces and responses.
-    The host could not run bubblewrap. This trial did not verify executable identity or a model turn.
+    `execd` could not create a bubblewrap namespace in the workload. This trial did not verify executable identity or a model turn.
     A repeat run matched the results. Both trials removed their workloads and networks.
 - **AC-4. Local policy updates.** In a separate agentgateway test on one HTTP/2 connection,
   an invalid withdrawal left the old policy active. A `request.startTime` deadline then blocked a
