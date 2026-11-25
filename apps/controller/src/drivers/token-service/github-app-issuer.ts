@@ -102,7 +102,11 @@ export function createGitHubAppSourceIssuer(options: GitHubAppIssuerOptions = {}
         throw new Error("The GitHub App identity could not be verified.");
       }
     },
-    async issue(scope: GitHubAppRepositorySelection, privateKey: string, signal: AbortSignal) {
+    async mintInstallationToken(
+      scope: GitHubAppRepositorySelection,
+      privateKey: string,
+      signal: AbortSignal,
+    ) {
       signal.throwIfAborted();
       const key = signingKey(privateKey, scope.appId, clock);
       const attempt = providerAttempt(clock, signal, providerTimeoutMs);

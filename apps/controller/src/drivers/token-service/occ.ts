@@ -14,6 +14,7 @@ import type {
   StoredCredentialSource,
   CredentialSourceReference,
   ErrorDetail,
+  GitHubAppClient,
   GitHubAppInstallationCredentialSource,
   GitHubAppInstallationScope,
   PrivateSecretRef,
@@ -112,7 +113,11 @@ function decodeCredential(value: string): ResolvedCredential {
 }
 
 function encodeGitHubAppCredential(
-  { credential, expiresAt, providerExpiresAt }: Awaited<ReturnType<GitHubAppSourceIssuer["issue"]>>,
+  {
+    credential,
+    expiresAt,
+    providerExpiresAt,
+  }: Awaited<ReturnType<GitHubAppSourceIssuer["mintInstallationToken"]>>,
   deliveryPending = false,
 ) {
   const version = randomUUID();
@@ -416,7 +421,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     return { status: "ready", source };
   }
 
-  private githubAppSigningKeyRef(
+  private assertGitHubAppClient(
     client: (Readonly<CredentialClient> & { readonly tokenServiceInstanceId?: string }) | undefined,
     {
       namespaceId,
@@ -427,7 +432,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       readonly clientId: string;
       readonly scope: Pick<GitHubAppRepositorySelection, "appId">;
     },
-  ): PrivateSecretRef {
+  ): asserts client is Readonly<GitHubAppClient> & { readonly tokenServiceInstanceId: string } {
     if (
       client?.kind !== "github-app" ||
       client.id !== clientId ||
@@ -437,28 +442,6 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     ) {
       throw new ResourceStateConflictError("The GitHub App client is unavailable for this Source.");
     }
-    return this.clientSecretRef({
-      ...client,
-      tokenServiceInstanceId: client.tokenServiceInstanceId,
-    });
-  }
-
-  private mintGitHubInstallationToken(
-    registration:
-      (Readonly<CredentialClient> & { readonly tokenServiceInstanceId?: string }) | undefined,
-    source: {
-      readonly namespaceId: string;
-      readonly clientId: string;
-      readonly scope: GitHubAppRepositorySelection;
-    },
-    signal: AbortSignal,
-  ) {
-    const signingKey = this.githubAppSigningKeyRef(registration, source);
-    return withComputeAbortSignal(signal, () =>
-      this.store.withValue(signingKey, (privateKey) =>
-        this.githubAppIssuer.issue(source.scope, privateKey, signal),
-      ),
-    );
   }
 
   private assertCurrentGitHubAppRegistryScope(
@@ -482,7 +465,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     const client = await this.state.read(({ connectionTemplates }) =>
       connectionTemplates.findCredentialClient(source.clientId),
     );
-    this.githubAppSigningKeyRef(client, source);
+    this.assertGitHubAppClient(client, source);
+    this.clientSecretRef(client);
   }
 
   private async createGitHubAppSource(
@@ -502,10 +486,16 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       }
       // Serialize enrollment with client retirement before issuing against its signing key.
       const client = await connectionTemplates.lockCredentialClient(input.clientId);
-      const issued = await this.mintGitHubInstallationToken(
-        client,
-        { namespaceId: ref.namespaceId, clientId: input.clientId, scope },
-        signal,
+      this.assertGitHubAppClient(client, {
+        namespaceId: ref.namespaceId,
+        clientId: input.clientId,
+        scope,
+      });
+      const signingKeyRef = this.clientSecretRef(client);
+      const installationToken = await withComputeAbortSignal(signal, () =>
+        this.store.withValue(signingKeyRef, (privateKey) =>
+          this.githubAppIssuer.mintInstallationToken(scope, privateKey, signal),
+        ),
       );
       const source: GitHubAppInstallationCredentialSource = {
         id: ref.id,
@@ -516,18 +506,18 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         ownerCapability: "token_service",
         tokenServiceInstanceId: this.tokenServiceInstanceId,
         state: "ready",
-        scope: { ...scope, repositories: issued.repositories },
+        scope: { ...scope, repositories: installationToken.repositories },
         createdAt: new Date().toISOString(),
       };
       try {
         await credentialSources.createCredentialSource(source);
-        const { stored } = encodeGitHubAppCredential(issued);
+        const { stored } = encodeGitHubAppCredential(installationToken);
         await withComputeAbortSignal(signal, () => this.store.create(this.storageRef(ref), stored));
         signal.throwIfAborted();
       } catch (error) {
         // The Source cannot commit after a custody failure. Try to retire its token.
         await this.githubAppIssuer
-          .revoke(source.scope, issued.credential, AbortSignal.timeout(3_000))
+          .revoke(source.scope, installationToken.credential, AbortSignal.timeout(3_000))
           .catch(() => false);
         throw error;
       }
@@ -862,8 +852,17 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
           }
         }
         const client = await connectionTemplates.findCredentialClient(current.clientId);
-        const issued = await this.mintGitHubInstallationToken(client, current, signal);
-        const replacement = encodeGitHubAppCredential(issued, this.credentialProxy !== undefined);
+        this.assertGitHubAppClient(client, current);
+        const signingKeyRef = this.clientSecretRef(client);
+        const installationToken = await withComputeAbortSignal(signal, () =>
+          this.store.withValue(signingKeyRef, (privateKey) =>
+            this.githubAppIssuer.mintInstallationToken(current.scope, privateKey, signal),
+          ),
+        );
+        const replacement = encodeGitHubAppCredential(
+          installationToken,
+          this.credentialProxy !== undefined,
+        );
         await withComputeAbortSignal(signal, () => this.store.update(stored, replacement.stored));
         return { version: replacement.version, minted: true };
       },
