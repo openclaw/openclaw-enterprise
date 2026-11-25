@@ -7464,14 +7464,9 @@ export async function renderAgentDetail(
           return;
         }
         const { status } = requestFailure(error);
-        // Validation and rate limits leave the merge intact. After an access refusal,
-        // keep only a reminder for the reader if they can save this draft again.
-        if (mutationStarted && reviewNote) {
-          if (status === 403 || status === 404) {
-            reviewNote = reviewReminder;
-          } else if (status !== 400 && status !== 429) {
-            clearReview();
-          }
+        // After an access refusal, never repeat the saved values from the earlier review.
+        if (reviewNote && (status === 403 || status === 404)) {
+          reviewNote = reviewReminder;
         }
         if (status === 401) {
           context.onExpired();
@@ -7490,6 +7485,7 @@ export async function renderAgentDetail(
           refusedSave(error, "configuration", mutationStarted);
         }
         if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
+          clearReview();
           setStatusTone(feedback, "danger");
           feedback.textContent = CONFIGURATION_CHANGED;
           feedbackLocked = true;
@@ -7517,6 +7513,10 @@ export async function renderAgentDetail(
         }
         feedbackLocked = true;
         outcomeUnknown = mutationStarted && !refusedWriteStatuses.includes(status);
+        // A definite refusal leaves the same merge to review after Refresh.
+        if (outcomeUnknown) {
+          clearReview();
+        }
       } finally {
         if (context.isCurrent()) {
           pending = false;

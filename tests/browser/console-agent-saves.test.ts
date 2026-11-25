@@ -1709,6 +1709,9 @@ for (const c of declinedCarryCases) {
   });
 }
 
+const CONFIGURATION_RESERVED =
+  "The Configuration is reserved for provisioning and is not available for this operation.";
+
 // A Configuration reserved for provisioning also answers 409 RESOURCE_CONFLICT. The console took
 // it for another browser's save and offered a Reload draft that met the same refusal forever
 // (finding 1511). Only the stale-generation refusal, marked by its /expectedGeneration detail,
@@ -1774,9 +1777,7 @@ for (const [c, generic] of configurationSaveCases.flatMap((c) => [
   test(`a ${c.name} save refused ${generic ? "with the catch-all conflict" : "for provisioning"} shows ${generic ? "its own conflict text" : "the refusal"}, not Reload draft`, async (t) => {
     const context = await slackAgentWithNewSecrets(t, `Reserved ${c.name}`);
     const { fixture, namespace, agent } = context;
-    const refusal = generic
-      ? RESOURCE_CONFLICT
-      : "The Configuration is reserved for provisioning and is not available for this operation.";
+    const refusal = generic ? RESOURCE_CONFLICT : CONFIGURATION_RESERVED;
     let writes = 0;
     const page = await openTab(t, fixture, namespace, agent, c.tab, {
       beforeLogin: (routed) =>
@@ -2010,19 +2011,32 @@ test("a Configuration conflict merges the JSON edits over the reread document", 
   await page.getByRole("alert").filter({ hasText: "The read could not be completed" }).waitFor();
   await refreshAndCheckReview();
 
-  // Let both reads through. A refused write also leaves the conflicting saved value intact.
-  await page.route(url, (route, request) =>
-    request.method() === "PATCH"
-      ? route.fulfill({ status: 429, json: { error: "too_many_requests" } })
-      : route.fallback(),
-  );
-  const patched = page.waitForResponse((r) => r.url() === url && r.request().method() === "PATCH");
-  await save.click();
-  assert.equal((await patched).status(), 429);
-  await page.unroute(url);
-  await page.getByRole("alert").filter({ hasText: "Too many requests" }).waitFor();
-  assert.equal((await fixture.request("GET", configurationPath(context))).data.generation, 2);
-  await refreshAndCheckReview();
+  // Neither a rate limit nor a provisioning reservation changes the saved generation.
+  for (const refusal of [
+    {
+      response: { status: 429, json: { error: "too_many_requests" } },
+      message: "Too many requests",
+    },
+    {
+      response: apiErrorResponse(409, "RESOURCE_CONFLICT", CONFIGURATION_RESERVED, {
+        requestId: "req_00000000-0000-4000-8000-000000000001",
+      }),
+      message: CONFIGURATION_RESERVED,
+    },
+  ]) {
+    const refusePatch = (route: Route) =>
+      route.request().method() === "PATCH" ? route.fulfill(refusal.response) : route.fallback();
+    await page.route(url, refusePatch);
+    const patched = page.waitForResponse(
+      (r) => r.url() === url && r.request().method() === "PATCH",
+    );
+    await save.click();
+    assert.equal((await patched).status(), refusal.response.status);
+    await page.unroute(url, refusePatch);
+    await page.getByRole("alert").filter({ hasText: refusal.message }).waitFor();
+    assert.equal((await fixture.request("GET", configurationPath(context))).data.generation, 2);
+    await refreshAndCheckReview();
+  }
 
   await save.click();
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
