@@ -5,7 +5,7 @@ import {
   type ExecFileOptionsWithStringEncoding,
 } from "node:child_process";
 import { promisify } from "node:util";
-import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
+import { maskPrivateKeyLines, redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { followContainer } from "./docker-follow.ts";
 import { withTestOwnerLabel } from "./docker-test-owner.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.ts";
@@ -111,11 +111,12 @@ const dockerStdoutTailLimit = 4 * 1024;
 const dockerStderrTailLimit = 8 * 1024;
 
 // Replaces each value in `redact`. Run on the whole text, before any cut can split a value.
-function withoutRedactValues(text: string | Buffer, redact: readonly string[]) {
+function withoutRedactValues(text: string | Buffer, redact: readonly string[], keepLines = false) {
   let result = String(text);
   for (const value of redact) {
     if (typeof value === "string" && value.length > 0) {
-      result = result.replaceAll(value, "[redacted]");
+      const breaks = keepLines ? value.match(/\n/g)?.length : 0;
+      result = result.replaceAll(value, "[redacted]" + "\n".repeat(breaks ?? 0));
     }
   }
   return result;
@@ -170,13 +171,17 @@ function dockerCommandFailure(
     outcome.push("killed");
   }
   const sections = [`${command} failed (${outcome.join(", ")}).`];
-  const stdout = withoutRedactValues(error.stdout ?? "", redact);
-  const stderr = withoutRedactValues(error.stderr ?? "", redact);
+  const stdout = String(error.stdout ?? "");
+  const stderr = String(error.stderr ?? "");
   if (stdout.trim() !== "") {
-    sections.push(`stdout:\n${redactDockerText(failureTail(stdout, dockerStdoutTailLimit))}`);
+    sections.push(
+      `stdout:\n${redactDockerText(failureTail(stdout, dockerStdoutTailLimit, redact))}`,
+    );
   }
   if (stderr.trim() !== "") {
-    sections.push(`stderr:\n${redactDockerText(failureTail(stderr, dockerStderrTailLimit))}`);
+    sections.push(
+      `stderr:\n${redactDockerText(failureTail(stderr, dockerStderrTailLimit, redact))}`,
+    );
   }
   if (stdout.trim() === "" && stderr.trim() === "") {
     sections.push("(no stdout or stderr)");
@@ -254,7 +259,28 @@ export function commandOutput(error: object) {
 // would redact.
 const failureOutputLimit = 12 * 1024;
 
-export function failureTail(output: string, limit = failureOutputLimit) {
+function maskFailureOutput(output: string, redact: readonly string[]) {
+  const lines = output.split("\n");
+  const masked = maskPrivateKeyLines(lines);
+  if (redact.length === 0) {
+    return masked.join("\n");
+  }
+  if (masked.every((line, i) => line === lines[i])) {
+    return withoutRedactValues(output, redact);
+  }
+
+  // A caller's literal can cross a block boundary. Match it against the original text and
+  // keep line positions so neither the literal nor the block loses its surrounding context.
+  const literalLines = withoutRedactValues(output, redact, true).split("\n");
+  return masked.map((line, i) => (line === lines[i] ? literalLines[i] : line)).join("\n");
+}
+
+export function failureTail(
+  output: string,
+  limit = failureOutputLimit,
+  redact: readonly string[] = [],
+) {
+  output = maskFailureOutput(output, redact);
   if (output.length <= limit) {
     return output;
   }
