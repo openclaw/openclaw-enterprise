@@ -367,7 +367,6 @@ function checkTemplate(template: unknown): asserts template is PresetDraftTempla
         "plugins",
         "pluginApprovers",
         "repositoryAccess",
-        "repositoryBindings",
         "initialWorkspaceFiles",
       ],
       "agent",
@@ -481,25 +480,18 @@ function render(
 }
 
 function validateRepositorySettings(agent: Readonly<Record<string, unknown>>, partial: boolean) {
-  if (Object.hasOwn(agent, "repositoryAccess") && Object.hasOwn(agent, "repositoryBindings")) {
-    fail("agent", "repositoryAccess and repositoryBindings cannot be combined.");
-  }
-  const access = agent.repositoryAccess;
-  if (Object.hasOwn(agent, "repositoryAccess")) {
-    closedObject(access, ["defaultProfile", "repositories"], "agent.repositoryAccess");
-    if (!Object.hasOwn(access, "defaultProfile") || !Object.hasOwn(access, "repositories")) {
-      fail("agent.repositoryAccess", "requires defaultProfile and repositories.");
-    }
-    selector(access.defaultProfile, "agent.repositoryAccess.defaultProfile");
-  }
-  const entries =
-    access !== undefined && record(access) ? access.repositories : agent.repositoryBindings;
-  if (entries === undefined) {
+  if (!Object.hasOwn(agent, "repositoryAccess")) {
     return;
   }
-  const listPath =
-    access !== undefined ? "agent.repositoryAccess.repositories" : "agent.repositoryBindings";
-  const limitPath = access !== undefined ? "agent.repositoryAccess" : "agent.repositoryBindings";
+  const access = agent.repositoryAccess;
+  const limitPath = "agent.repositoryAccess";
+  const listPath = "agent.repositoryAccess.repositories";
+  closedObject(access, ["defaultProfile", "repositories"], limitPath);
+  if (!Object.hasOwn(access, "defaultProfile") || !Object.hasOwn(access, "repositories")) {
+    fail(limitPath, "requires defaultProfile and repositories.");
+  }
+  selector(access.defaultProfile, "agent.repositoryAccess.defaultProfile");
+  const entries = access.repositories;
   if (!array(entries) || entries.length > 16) {
     fail(limitPath, "requires at most 16 repository selections.");
   }

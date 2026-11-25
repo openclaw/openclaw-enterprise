@@ -352,7 +352,7 @@ compatibility allowlist in source-backed cases; it does not relax filesystem or
 network policy. [Pod and container hardening](../../security.md#pod-and-container-hardening)
 states when Codex `0.164.0` needs it and which components own those boundaries.
 
-See [service-account credential delivery](../../service-accounts.md#backend-managed-access-tokens)
+See [service-account credential delivery](../../service-accounts.md#version-snapshots-and-credential-delivery)
 for provider-issued credentials and supported execution modes.
 
 ## Related

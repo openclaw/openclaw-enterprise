@@ -10,7 +10,7 @@ import { caAndLeaf } from "../certificates.ts";
 import { ownPortForward } from "../port-forward-cleanup.ts";
 import { fixtureFetch } from "./custody-probes.ts";
 
-const modules = ["oidc-provider-server.ts", "oidc-provider.ts", "id-token.mjs"];
+const modules = ["oidc-provider-server.ts", "oidc-provider.ts", "id-token.ts"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const providerName = "signin-rehearsal-oidc";
 const host = "idp.signin-rehearsal.test";
@@ -450,7 +450,6 @@ export async function prepareMaterialization({
           clientSecretKey: "client-secret",
           caSecretName: "signin-rehearsal-oidc-ca",
           caSecretKey: "ca.pem",
-          egressCidrs: [initial.status.podIP + "/32"],
         },
       };
       values.agentNativeAdmin = { enabled: false };

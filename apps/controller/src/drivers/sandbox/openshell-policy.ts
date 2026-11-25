@@ -4,6 +4,8 @@ import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant, SandboxPolicySnapshot } from "@openclaw-enterprise/contracts";
 
 export const AGENT_POLICY_PREFIX = "oce-agent-";
+export const OPEN_SHELL_PROXY_CREDENTIAL_RULE_PREFIX = "oce-proxy-credential-";
+export const OPEN_SHELL_STAGED_HTTP_RULE_PREFIX = "oce-staged-http-";
 
 /** Unknown native selectors or numeric destinations cannot be proved disjoint. */
 function openShellHostMayOverlap(candidate: string, host: string): boolean {
@@ -139,13 +141,22 @@ export function sameOpenShellPolicy(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(canonical(left), canonical(right));
 }
 
-/** Bind the admitted policy while letting live applications replace Agent grants. */
-export function openShellPolicyBaselineDigest(policy: Readonly<Record<string, unknown>>): string {
+/** Bind fixed policy while Agent grants and Proxy-owned credential routes are reconciled. */
+export function openShellPolicyBaselineDigest(
+  policy: Readonly<Record<string, unknown>>,
+  stagedRepository = false,
+): string {
   const network = asRecord(policy.network_policies) ?? {};
   const baseline = canonical({
     ...policy,
     network_policies: Object.fromEntries(
-      Object.entries(network).filter(([name]) => !name.startsWith(AGENT_POLICY_PREFIX)),
+      Object.entries(network).filter(
+        ([name]) =>
+          !name.startsWith(AGENT_POLICY_PREFIX) &&
+          (!stagedRepository ||
+            (!name.startsWith(OPEN_SHELL_PROXY_CREDENTIAL_RULE_PREFIX) &&
+              !name.startsWith(OPEN_SHELL_STAGED_HTTP_RULE_PREFIX))),
+      ),
     ),
   });
   return sha256Hex(JSON.stringify(baseline));

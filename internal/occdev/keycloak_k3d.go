@@ -362,20 +362,6 @@ func developmentKeycloakManifests(in developmentKeycloakInput) []any {
 				"issuerRef":  map[string]string{"group": "cert-manager.io", "kind": "Issuer", "name": issuer},
 			},
 		},
-		map[string]any{
-			"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-api-keycloak-egress", in.PlatformNamespace, labels),
-			"spec": map[string]any{
-				"podSelector": map[string]any{"matchLabels": map[string]string{"app.kubernetes.io/name": "openclaw-enterprise", "app.kubernetes.io/instance": "openclaw-enterprise", "app.kubernetes.io/component": "api"}},
-				"policyTypes": []string{"Egress"},
-				"egress": []any{map[string]any{
-					"to": []any{map[string]any{
-						"namespaceSelector": map[string]any{"matchLabels": map[string]string{"kubernetes.io/metadata.name": "envoy-gateway-system"}},
-						"podSelector":       map[string]any{"matchLabels": map[string]string{"gateway.envoyproxy.io/owning-gateway-name": developmentKeycloakGateway, "gateway.envoyproxy.io/owning-gateway-namespace": namespace}},
-					}},
-					"ports": []any{map[string]any{"protocol": "TCP", "port": developmentKeycloakEnvoyTargetPort}},
-				}},
-			},
-		},
 		developmentKeycloakDNS(in.Cluster),
 	}
 }
@@ -659,9 +645,8 @@ func developmentKeycloakSubject(realm []byte, username string) (string, error) {
 	return "", fmt.Errorf("%s has no user %s with a fixed ID", developmentKeycloakRealmFile, username)
 }
 
-// developmentKeycloakEgressCIDRs accepts only the dedicated Gateway's Service.
-// These pre-DNAT hosts complement the selector-scoped post-DNAT 10443 policy.
-func developmentKeycloakEgressCIDRs(data []byte) ([]string, error) {
+// validateDevelopmentKeycloakService accepts only the dedicated Gateway's Service.
+func validateDevelopmentKeycloakService(data []byte) error {
 	var service struct {
 		Metadata struct {
 			Name      string            `json:"name"`
@@ -682,34 +667,32 @@ func developmentKeycloakEgressCIDRs(data []byte) ([]string, error) {
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(data, &service); err != nil {
-		return nil, fmt.Errorf("read Keycloak Envoy Service: %w", err)
+		return fmt.Errorf("read Keycloak Envoy Service: %w", err)
 	}
 	if service.Metadata.Name != developmentKeycloakEnvoyService || service.Metadata.Namespace != "envoy-gateway-system" || service.Spec.Type != "NodePort" {
-		return nil, fmt.Errorf("Keycloak Envoy Service identity does not match the owned publication")
+		return fmt.Errorf("Keycloak Envoy Service identity does not match the owned publication")
 	}
 	for key, want := range map[string]string{
 		"gateway.envoyproxy.io/owning-gateway-name":      developmentKeycloakGateway,
 		"gateway.envoyproxy.io/owning-gateway-namespace": developmentKeycloakNamespace,
 	} {
 		if service.Metadata.Labels[key] != want || service.Spec.Selector[key] != want {
-			return nil, fmt.Errorf("Keycloak Envoy Service is not owned by the dedicated Gateway")
+			return fmt.Errorf("Keycloak Envoy Service is not owned by the dedicated Gateway")
 		}
 	}
 	if len(service.Spec.Ports) != 1 || service.Spec.Ports[0].Protocol != "TCP" || service.Spec.Ports[0].Port != 443 || service.Spec.Ports[0].TargetPort != developmentKeycloakEnvoyTargetPort || service.Spec.Ports[0].NodePort != developmentKeycloakNodePort {
-		return nil, fmt.Errorf("Keycloak Envoy Service does not expose the expected TLS listener")
+		return fmt.Errorf("Keycloak Envoy Service does not expose the expected TLS listener")
 	}
 	if len(service.Spec.ClusterIPs) == 0 || service.Spec.ClusterIP != service.Spec.ClusterIPs[0] {
-		return nil, fmt.Errorf("Keycloak Envoy Service has no consistent ClusterIP addresses")
+		return fmt.Errorf("Keycloak Envoy Service has no consistent ClusterIP addresses")
 	}
-	cidrs := make([]string, 0, len(service.Spec.ClusterIPs))
 	for _, value := range service.Spec.ClusterIPs {
 		address, err := netip.ParseAddr(value)
 		if err != nil || !address.IsGlobalUnicast() || !address.Is4() || address.Zone() != "" {
-			return nil, fmt.Errorf("Keycloak Envoy Service requires a unicast IPv4 ClusterIP supported by auth.oidc.egressCidrs")
+			return fmt.Errorf("Keycloak Envoy Service requires a unicast IPv4 ClusterIP")
 		}
-		cidrs = append(cidrs, netip.PrefixFrom(address, address.BitLen()).String())
 	}
-	return cidrs, nil
+	return nil
 }
 
 // developmentKeycloakSignInValues derives the second Helm pass from the first:
@@ -729,8 +712,7 @@ func developmentKeycloakSignInValues(first []byte, cluster, recoveryUserID strin
 	if baseURL, _ := auth["baseUrl"].(string); !strings.HasPrefix(baseURL, "https://") {
 		return nil, fmt.Errorf("Keycloak sign-in needs the first Helm pass's HTTPS auth.baseUrl")
 	}
-	cidrs, err := developmentKeycloakEgressCIDRs(service)
-	if err != nil {
+	if err := validateDevelopmentKeycloakService(service); err != nil {
 		return nil, err
 	}
 	issuer := developmentKeycloakIssuer(cluster)
@@ -747,7 +729,6 @@ func developmentKeycloakSignInValues(first []byte, cluster, recoveryUserID strin
 		"clientIdKey":      "client-id",
 		"clientSecretKey":  "client-secret",
 		"displayName":      developmentKeycloakSignInName,
-		"egressCidrs":      cidrs,
 	}
 	return json.Marshal(values)
 }

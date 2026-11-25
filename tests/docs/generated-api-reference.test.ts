@@ -232,12 +232,43 @@ test("Agent and CredentialSource operations document the permissions they check"
   ] as const) {
     assert.deepEqual(
       installationGrants(operationId),
-      [{ action: "administer", resourceKind: "installation", scope: "installation", condition }],
+      [
+        { action: "administer", resourceKind: "installation", scope: "installation", condition },
+        ...(operationId === "validateAgentCreate"
+          ? []
+          : [
+              {
+                action: "administer",
+                resourceKind: "installation",
+                scope: "installation",
+                condition: "github_app_client_selection",
+              },
+            ]),
+      ],
       operationId,
     );
   }
   // Deploy applies the mode already authorized on the saved draft.
   assert.deepEqual(installationGrants("deployAgent"), []);
+  assert.deepEqual(
+    permissions("deployAgent").filter((permission) =>
+      String(record(permission, "permission").condition).startsWith("github_app_source"),
+    ),
+    [
+      {
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+        condition: "github_app_source_for_deployment",
+      },
+      {
+        action: "create",
+        resourceKind: "credential_source",
+        scope: "namespace",
+        condition: "github_app_source_missing",
+      },
+    ],
+  );
 
   const sourceOperate = (scope: string) => ({
     action: "operate",
@@ -245,7 +276,7 @@ test("Agent and CredentialSource operations document the permissions they check"
     scope,
     condition: "bound_credential_source",
   });
-  // OCC authorizes the caller's operate on every listed or Harness source.
+  // OCC authorizes the caller's operate on every listed, Harness, or Plugin Source.
   assert.ok(
     permissions("createAgent").some((permission) =>
       isDeepStrictEqual(permission, sourceOperate("request_body")),
@@ -265,21 +296,19 @@ test("Agent and CredentialSource operations document the permissions they check"
       (permission) => record(permission, "permission").resourceKind === "credential_source",
     ),
   );
-  // Registration and update read each referenced Secret's value for the gateway.
+  // Source registration and update deliver write-only material directly to TokenService.
   assert.deepEqual(permissions("createCredentialSource"), [
     { action: "create", resourceKind: "credential_source", scope: "namespace" },
-    { action: "operate", resourceKind: "secret", scope: "request_body", condition: "bound_secret" },
   ]);
   assert.deepEqual(permissions("updateCredentialSource"), [
     { action: "update", resourceKind: "credential_source", scope: "requested" },
-    { action: "operate", resourceKind: "secret", scope: "requested", condition: "bound_secret" },
   ]);
 
   const page = generateApiReferenceOutputs(document)[0].content;
   assert.match(page, /^\| `operate` \| `credential_source` \| `requested` \(when bound\) \|$/m);
   assert.match(
     page,
-    /Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists\./,
+    /Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists or selects at a Plugin connection\./,
   );
 });
 

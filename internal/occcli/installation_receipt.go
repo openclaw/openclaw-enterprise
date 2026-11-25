@@ -85,12 +85,23 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			if err = os.WriteFile(frozenValues, data, 0600); err != nil {
 				return err
 			}
+			noticeLegacyInstallationBootstrap(cmd.ErrOrStderr(), data)
+			var attemptBytes [32]byte
+			if _, err := rand.Read(attemptBytes[:]); err != nil {
+				return err
+			}
+			attempt := hex.EncodeToString(attemptBytes[:])
+			attemptValue := "installation.attemptId=" + attempt
 			var bootstrapSecret installationBootstrapSecret
 			if bootstrapMode == "generate" {
-				bootstrapSecret, err = resolveInstallationBootstrap(preflight, frozenChart, frozenValues, namespace, release)
-				if err != nil {
-					return err
-				}
+				bootstrapSecret, err = resolveInstallationBootstrap(preflight, frozenChart, frozenValues, namespace, release, "--set-string", attemptValue)
+			} else {
+				// Existing mode accepts historical chart hooks and leaves
+				// credential provisioning to the operator.
+				err = renderInstallationChart(preflight, frozenChart, frozenValues, namespace, release, nil, "--set-string", attemptValue)
+			}
+			if err != nil {
+				return err
 			}
 			// Select every release state on both Helm 3 and 4. Helm 4 removed --all,
 			// but the Helm 3 default would omit pending and retained releases.
@@ -113,11 +124,7 @@ func (app *application) installationInstallCommand() *cobra.Command {
 					return err
 				}
 			}
-			var attempt [32]byte
-			if _, err := rand.Read(attempt[:]); err != nil {
-				return err
-			}
-			intent := installationIntent{Version: 1, Operation: "helm-install", Attempt: hex.EncodeToString(attempt[:]), CreatedAt: time.Now().UTC().Format(time.RFC3339), ClusterSHA256: cluster, Namespace: namespace, Release: release, ChartSHA256: chartHash, ValuesSHA256: installationDigest(data)}
+			intent := installationIntent{Version: 1, Operation: "helm-install", Attempt: attempt, CreatedAt: time.Now().UTC().Format(time.RFC3339), ClusterSHA256: cluster, Namespace: namespace, Release: release, ChartSHA256: chartHash, ValuesSHA256: installationDigest(data)}
 			if err = os.Mkdir(receipt, 0700); err != nil {
 				return errors.New("receipt directory must be new; never reuse an installation receipt")
 			}
@@ -146,7 +153,7 @@ func (app *application) installationInstallCommand() *cobra.Command {
 				return err
 			}
 			runCtx := cmd.Context()
-			install := exec.CommandContext(runCtx, "helm", "install", release, frozenChart, "--kubeconfig", frozenConfig, "--kube-context", kctx, "--namespace", namespace, "--values", frozenValues, "--set-string", "installation.attemptId="+intent.Attempt, "--wait", "--timeout", wait.String())
+			install := exec.CommandContext(runCtx, "helm", "install", release, frozenChart, "--kubeconfig", frozenConfig, "--kube-context", kctx, "--namespace", namespace, "--values", frozenValues, "--set-string", attemptValue, "--wait", "--timeout", wait.String())
 			// Helm/auth-plugin diagnostics may contain sensitive values. Retain only
 			// bounded in-memory evidence for static guidance, never raw output.
 			var diagnostic installationDiagnostic
@@ -194,10 +201,7 @@ func (app *application) installationInstallCommand() *cobra.Command {
 			if err != nil {
 				text := diagnostic.buf.String()
 				if !diagnostic.overflow && (strings.Contains(text, "execution error at (") || strings.Contains(text, "parse error at (") || strings.Contains(text, "YAML parse error on ")) {
-					fmt.Fprintln(cmd.OutOrStdout(), "Helm reported a template validation failure. Run offline helm template with the same chart, values, release and namespace; keep manifests and diagnostics in protected local outputs. This does not establish cluster effects or permission to retry; preserve the receipt and reconcile the original attempt.")
-					if strings.Contains(text, "auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix") {
-						fmt.Fprintln(cmd.OutOrStdout(), "Check auth.baseUrl and agentNativeAdmin.domain: the host in auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix.")
-					}
+					fmt.Fprintln(cmd.OutOrStdout(), "Helm reported a template validation failure. Run offline helm template with the same chart, values, release and namespace; keep manifests and diagnostics in protected local outputs. This does not establish cluster effects or permission to retry; preserve the receipt and reconcile the original attempt."+diagnostic.templateHint())
 				}
 				return &ExitStatusError{Code: 1}
 			}
@@ -232,6 +236,23 @@ func (b *installationDiagnostic) Write(p []byte) (int, error) {
 		_, _ = b.doctorBuffer.Write(p)
 	}
 	return len(p), nil
+}
+
+func (b *installationDiagnostic) templateHint() string {
+	if b.overflow {
+		return ""
+	}
+	text := b.buf.String()
+	switch {
+	case strings.Contains(text, "bootstrap.credentials.secretName"):
+		return " Check bootstrap.credentials.secretName. Select an unused Secret name in the release namespace for generated mode or a precreated Secret in that namespace for existing mode."
+	case strings.Contains(text, "bootstrap credential key"):
+		return " Check bootstrap.credentials.passwordKey and bootstrap.credentials.serviceKeyKey. Use two distinct Kubernetes Secret key names."
+	case strings.Contains(text, "auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix"):
+		return " Check auth.baseUrl and agentNativeAdmin.domain. The host in auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix."
+	default:
+		return ""
+	}
 }
 
 func installationDigest(data []byte) string {

@@ -661,6 +661,7 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, op
         if controller is None:
             parser.error("--controller-compatibility-results requires a selected controller image")
     mappings = {}
+    effects = []
     for role, filename in paths.items():
         if role in digests:
             continue
@@ -671,7 +672,11 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, op
         elif check_compatibility:
             try:
                 evidence = runpy.run_path("scripts/upgrade-evidence.py")
-                evidence["validate_compatibility_preview"](content, controller)
+                if evidence["validate_compatibility_preview"](content, controller):
+                    effects.append(
+                        "The released controller rejected the upgraded migration history in at least "
+                        "one reported check. Qualify a recovery controller before maintenance."
+                    )
             except (OSError, AttributeError, TypeError, ValueError, RecursionError):
                 parser.error(
                     "Supply a passing PostgreSQL compatibility report for the selected controller and retry."
@@ -697,12 +702,15 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, op
         migration = "hook"
     if migration not in ("hook", "separate"):
         parser.error("candidate Helm values must select hook or separate database.upgradeMigration")
-    effects = [
+    effects.extend([
         f"Database migration mode: {migration}",
         "The upgrade can overwrite values.yaml and submit a Helm upgrade.",
-    ]
+    ])
     if migration == "separate":
-        effects.append("The upgrade can stop OCC writers and pause for separate database migration (exit 3).")
+        effects.append(
+            "If apply reports a separate migration pause (exit 3), confirm both writers are stopped. "
+            "Apply and verify the migration, then resume the original run."
+        )
     values_changes = changed_categories(before_values, values, {
         **VALUES_CHANGES,
         ("agentNativeAdmin", RETIRED_COOKIE): "retired native admin cookie domain",
@@ -812,7 +820,10 @@ def show_plan(parser, profile, profile_relative_path, input_names, effects, oper
         report_status(parser, original_run)
         print("Resume can continue deployment. Reconcile previous effects before approving.")
     else:
-        print("Apply runs preflight and can stop OCC writers. Use the maintenance window.")
+        print(
+            "Apply runs preflight before deployment. Deployment interrupts the OCC API and Worker "
+            "even when no migration is pending. Schedule a maintenance window."
+        )
 
 
 def confirm(parser, operation):

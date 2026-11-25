@@ -1,0 +1,74 @@
+name: Prepare OCC CLI
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      ci_run_id:
+        description: Required for the standalone Release OCC CLI workflow
+        type: string
+    outputs:
+      version:
+        value: ${{ jobs.prepare.outputs.version }}
+      ci_attempt:
+        value: ${{ jobs.prepare.outputs.ci_attempt }}
+      artifact_name:
+        value: ${{ jobs.prepare.outputs.artifact_name }}
+      sha256sums_digest:
+        value: ${{ jobs.prepare.outputs.sha256sums_digest }}
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  CI_RUN_ID: ${{ inputs.ci_run_id }}
+
+jobs:
+  prepare:
+    name: Build versioned OCC CLI binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      version: ${{ steps.gate.outputs.version }}
+      ci_attempt: ${{ steps.gate.outputs.ci_attempt }}
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+      sha256sums_digest: ${{ steps.package.outputs.sha256sums_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+          package-manager-cache: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+      - name: Validate selected main source and release policy
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/cli-release.ts validate
+      - name: Cross-compile and verify four CLI binaries
+        id: package
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/occ-source" "$SOURCE_SHA"
+          cd "$RUNNER_TEMP/occ-source"
+          node "$GITHUB_WORKSPACE/scripts/ci/cli-release.ts" package "$RUNNER_TEMP/occ-cli"
+          echo "sha256sums_digest=$(sha256sum "$RUNNER_TEMP/occ-cli/SHA256SUMS" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=occ-cli-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ runner.temp }}/occ-cli/
+          if-no-files-found: error
+          retention-days: 30
