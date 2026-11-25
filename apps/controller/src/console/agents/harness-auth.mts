@@ -78,12 +78,12 @@ export function configuredHarnessId(values: unknown): "codex" | "openclaw" | und
 }
 
 type AuthBinding = HarnessAuthBinding | null | undefined;
-type ModelSourcePreset = "openai" | "codex-pat";
+type ModelSourcePurpose = "openai" | "codex-pat" | "builtin_codex";
 
 export const CODEX_SOURCE_DESTINATION_HINT =
   "An OpenAI Source requires the OpenAI Responses destination. The Console cannot check Codex's effective destination before saving; deployment checks it. If the Installation default differs, set Harness destination to an override with Provider base URL https://api.openai.com/v1 and Provider protocol Responses.";
 
-/** Return the configured model provider only when its approved static Source presets can apply. */
+/** Return the configured model provider only when managed model Sources can apply. */
 export function modelSourceProvider(
   configuration: unknown,
   harnessId: string | undefined,
@@ -132,12 +132,12 @@ export function createModelCredentialSourceField(
     id: string;
     initial?: CredentialSourceReference | null;
     currentId?: string;
-    preset?: ModelSourcePreset;
+    purpose?: ModelSourcePurpose;
     onChange(source: CredentialSourceReference | null): void;
   },
 ) {
   let selected = options.initial ?? null;
-  let preset = options.preset;
+  let purpose = options.purpose;
   let sources: CredentialSourceSummary[] = [];
   let loaded = false;
   let loading = false;
@@ -157,12 +157,20 @@ export function createModelCredentialSourceField(
     retry,
   );
   function eligibleSource(source: CredentialSourceSummary) {
+    if (purpose === "builtin_codex") {
+      return (
+        source.type === "oauth2-refresh-token" &&
+        source.state === "ready" &&
+        source.connectionTemplateId === undefined &&
+        source.oauthConsentKind === "builtin_codex"
+      );
+    }
     return (
       source.type === "static" &&
       source.state === "ready" &&
       source.connectionTemplateId === undefined &&
       source.modelPreset !== undefined &&
-      (preset === undefined || source.modelPreset === preset)
+      (purpose === undefined || source.modelPreset === purpose)
     );
   }
   function acceptedSelection() {
@@ -173,9 +181,16 @@ export function createModelCredentialSourceField(
       : null;
   }
   function showListStatus() {
-    hint.textContent = sources.some(eligibleSource)
-      ? "Listing confirms read access. Saving the Agent checks Credential Source operate permission."
-      : "No matching ready static model Credential Sources are readable in this Namespace.";
+    if (sources.some(eligibleSource)) {
+      hint.textContent =
+        "Listing confirms read access. Saving the Agent checks Credential Source operate permission.";
+    } else if (purpose === "builtin_codex") {
+      hint.textContent =
+        "No matching ready ChatGPT OAuth Credential Sources are readable in this Namespace.";
+    } else {
+      hint.textContent =
+        "No matching ready static model Credential Sources are readable in this Namespace.";
+    }
   }
   function renderOptions() {
     const eligible = sources.filter(eligibleSource);
@@ -241,9 +256,18 @@ export function createModelCredentialSourceField(
       if (!context.isCurrent()) {
         return;
       }
-      if (requestFailure(error).status === 401) {
+      const status = requestFailure(error).status;
+      if (status === 401) {
         context.onExpired();
         return;
+      }
+      if (status === 400 || status === 403 || status === 404) {
+        sources = [];
+        loaded = false;
+        if (selected && selected.id !== options.currentId) {
+          selected = null;
+          options.onChange(null);
+        }
       }
       retry.textContent = "Retry Source list";
       retry.hidden = false;
@@ -270,14 +294,14 @@ export function createModelCredentialSourceField(
   renderOptions();
   return {
     field,
-    setActive(value: boolean, nextPreset = preset) {
+    setActive(value: boolean, nextPurpose = purpose) {
       active = value;
       field.hidden = !value;
-      if (nextPreset !== preset) {
-        preset = nextPreset;
+      if (nextPurpose !== purpose) {
+        purpose = nextPurpose;
         if (
           selected &&
-          sources.some((source) => source.id === selected!.id && source.modelPreset !== preset)
+          sources.some((source) => source.id === selected!.id && !eligibleSource(source))
         ) {
           selected = null;
           options.onChange(null);
@@ -470,7 +494,7 @@ export function createHarnessAuthFields(
     id: "harness-auth-existing-source",
     initial: selectedCredentialSource,
     ...(binding?.method === "credential_source" ? { currentId: binding.sourceId } : {}),
-    ...(harnessId !== "codex" || providerId !== "codex" ? { preset: "openai" as const } : {}),
+    ...(harnessId !== "codex" || providerId !== "codex" ? { purpose: "openai" as const } : {}),
     onChange(source) {
       selectedCredentialSource = source;
       options.onChange?.();

@@ -1944,6 +1944,11 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   const mode = page.getByLabel("Execution mode");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
   assert.equal(await mode.inputValue(), "embedded");
+  const sourceModeHint = page.getByText("Credential Sources require Dedicated execution.", {
+    exact: false,
+  });
+  assert.equal(await sourceModeHint.isVisible(), true);
+  assert.equal(await page.getByLabel("Credential storage").isVisible(), false);
   assert.equal(
     await page.locator("#execution-mode-hint").textContent(),
     "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation selects no Sandbox Driver. Slack requires Codex.",
@@ -1963,6 +1968,8 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   await page.getByLabel("Provider", { exact: true }).selectOption("openai");
   // Codex does not need the Sandbox Driver and keeps Dedicated.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  assert.equal(await sourceModeHint.isVisible(), false);
+  assert.equal(await page.getByLabel("Credential storage").isVisible(), true);
   // The select is unavailable with Codex (aria-disabled, finding 2945); its option is not refused.
   assert.equal(
     await mode.locator('option[value="dedicated"]').evaluate((node) => {

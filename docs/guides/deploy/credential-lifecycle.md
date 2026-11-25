@@ -118,7 +118,10 @@ The initial Codex exchange runs in the OCE API Pods. If sign-in reports
 `auth.openai.com` unreachable, check API Pod DNS, routing, and HTTPS connectivity
 to that issuer, then retry. The refresh Worker also needs issuer connectivity.
 
-1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
+1. Choose **ChatGPT OAuth (Experimental)** when creating a Dedicated Codex Agent.
+   Under **Credential storage**, select **Existing Credential Source** to reuse a
+   readable, ready built-in Codex OAuth Source in the same Namespace. Saving needs
+   `operate` on that Source. Otherwise, select **New ChatGPT sign-in**, open the
    verification link, enter the displayed code, and complete sign-in.
 2. Search and select plugins using the resulting credential source, then create
    the Agent. When the Installation network ceiling allows one stock Codex binary
@@ -136,7 +139,7 @@ to that issuer, then retry. The refresh Worker also needs issuer connectivity.
    [delete it](../../reference/credential-sources.md#delete-a-source). A refused
    deletion leaves the Source and grant unchanged.
 
-Starting requires Agent-create and credential-source-create in the Namespace.
+Starting a new login requires Agent-create and credential-source-create in the Namespace.
 For an existing Agent, exact Agent `read` and `update` replace Agent-create.
 Only the person who started the login can poll or close it, while retaining
 those Agent permissions. Completing a pending login rechecks

@@ -22,6 +22,7 @@ import type { StoryAction } from "../../story-action.mts";
 import type {
   AgentDeploymentStatusWire,
   OpenClawConfigurationDocument,
+  CredentialSourceResponse,
   CredentialSourceType,
   InstallationCapabilities,
   NamespaceStatus,
@@ -43,6 +44,7 @@ type CreateAgentScenario = {
   actions?: readonly StoryAction[];
   rules?: Parameters<typeof createFixtureFetch>[0];
   credentialSourceTypes?: readonly CredentialSourceType[];
+  initialCredentialSources?: readonly CredentialSourceResponse["data"][];
   deviceAuthorization?: true;
   modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
   extraSecrets?: readonly { id: string; name: string }[];
@@ -106,6 +108,50 @@ const oauthForm: StoryAction[] = [
 ];
 
 const startOAuthLogin: StoryAction[] = [...oauthForm, click("Sign in with OAuth")];
+
+const oauthNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
+const savedCodexOAuthId = "cs_00000000-0000-4000-8000-000000000026";
+const savedTemplateOAuthId = "cs_00000000-0000-4000-8000-000000000027";
+const oauthSource = (id: string, name: string) => ({
+  id,
+  namespaceId: oauthNamespaceId,
+  name,
+  type: "oauth2-refresh-token" as const,
+  state: "ready" as const,
+  ref: { kind: "credential_source" as const, namespaceId: oauthNamespaceId, id },
+  createdAt: "2026-09-01T12:00:00.000Z",
+});
+const savedOAuthSources = [
+  {
+    ...oauthSource(savedCodexOAuthId, "Saved ChatGPT login"),
+    consent: {
+      kind: "builtin_codex",
+      ownerPrincipalId: "storybook-operator",
+      requestedScopes: ["openid"],
+      grantedScopes: ["openid"],
+      issuer: "https://auth.openai.com",
+      tokenUrl: "https://auth.openai.com/oauth/token",
+      clientId: "storybook-builtin-codex-client",
+      account: { accountId: "storybook-account", planType: "demo", isFedramp: false },
+    },
+  },
+  {
+    ...oauthSource(savedTemplateOAuthId, "Template OAuth login"),
+    connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000004",
+    consent: {
+      kind: "connection_template",
+      version: 1,
+      ownerPrincipalId: "storybook-operator",
+      oauthClientId: "ccr_00000000-0000-4000-8000-000000000006",
+      issuer: "https://identity.example.com",
+      tokenUrl: "https://identity.example.com/token",
+      clientId: "storybook-template-client",
+      requestedScopes: ["messages.read"],
+      grantedScopes: ["messages.read"],
+      destinations: [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
+    },
+  },
+] satisfies readonly CredentialSourceResponse["data"][];
 
 const dedicatedOpenclawForm: StoryAction[] = [
   ...form,
@@ -1495,7 +1541,7 @@ export const createAgentProvisioningScenarios = {
       { selector: ".launch-runtime summary", click: true },
     ],
     description:
-      "Selecting OpenClaw defaults to Embedded, keeping OpenClaw and its model credential together in the Gateway. Unsupported channel editing remains disabled.",
+      "Selecting OpenClaw defaults to Embedded, keeping OpenClaw and its model credential together in the Gateway. The model credential field explains that Credential Sources require Dedicated execution. Unsupported channel editing remains disabled.",
   },
   createOpenclawWithoutNativeWorkers: {
     group: "Pages/Create Agent",
@@ -2742,6 +2788,29 @@ export const createAgentProvisioningScenarios = {
     actions: oauthForm,
     description:
       "Experimental login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
+  },
+  createWithSavedCodexOAuth: {
+    group: "Pages/Create Agent",
+    name: "Reuse a saved ChatGPT OAuth Source",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    deviceAuthorization: true,
+    initialCredentialSources: savedOAuthSources,
+    actions: [
+      ...oauthForm,
+      { selector: "#agent-name", value: "OAuth reuse example" },
+      click("Enter model ID manually"),
+      { selector: "#agent-model-manual", value: "gpt-5.1" },
+      { selector: "#model-credential-storage", value: "existing_source" },
+      { selector: "#agent-model-existing-source", value: savedCodexOAuthId },
+    ],
+    description:
+      "The simulated Create Agent form selects a readable, ready built-in Codex OAuth Source instead of starting another sign-in. The Template OAuth Source is not a compatible model credential and is excluded from the picker.",
+    steps: [
+      "Confirm Provider is OpenAI, Harness is Codex, and Authentication method is ChatGPT OAuth. The saved Source is selected under Existing Credential Source; no sign-in is required.",
+      "Select Create Agent. Inspect the simulated request log: the Agent draft references the selected Source ID and no device login or Source enrollment request was sent.",
+    ],
+    gap: "Simulated UI proof only; this story does not prove OAuth exchange, persistence, deployment, or runtime delivery.",
   },
   createOAuthPending: {
     group: "Pages/Create Agent",

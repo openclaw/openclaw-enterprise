@@ -301,6 +301,10 @@ export const CreateAnthropic = {
 };
 export const CreateCodexPat = { ...story("createCodexPat"), name: "Service Accounts" };
 export const CreateOAuth = story("createOAuth");
+export const CreateWithSavedCodexOAuth = {
+  ...story("createWithSavedCodexOAuth"),
+  name: "Reuse a saved ChatGPT OAuth Source",
+};
 export const CreateOAuthPending = story("createOAuthPending");
 export const CreateOAuthReady = story("createOAuthReady");
 export const CreateOAuthDenied = story("createOAuthDenied");

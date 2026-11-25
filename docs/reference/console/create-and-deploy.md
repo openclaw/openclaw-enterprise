@@ -36,24 +36,10 @@ as the reason Dedicated OpenClaw is disabled.
 2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
    Review defaults and choose the model credential.
    **Start with default Preset** loads `default-codex`. **Start without Preset** skips Presets.
-3. Name the Agent uniquely within its Namespace. Choose **Provider**, then
-   **Harness**. OpenAI offers **Codex** (default, Dedicated **Execution mode**)
-   and **OpenClaw**. Anthropic offers only Embedded **OpenClaw**. OpenAI OpenClaw
-   starts Embedded unless a Sandbox Driver provisions Dedicated (**Runtime details**).
-   For Codex, choose **OpenAI API key**, **Service Accounts**, or **ChatGPT
-   OAuth** ([experimental](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)).
-   OpenClaw uses provider API keys. Get an
-   [OpenAI API key](https://platform.openai.com/api-keys) or create a Codex-scoped
-   token in [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**.
-   For a Dedicated OpenAI API key, **Credential storage** defaults to **Credential Source**.
-   Enter the key to create a TokenService-owned Source and save the Agent as a draft.
-   You can also select an existing ready model Source with the matching preset. The Agent save requires `operate` on that exact Source; listing it establishes only `read`.
-   Deploy from the saved Agent page. When offered, select **Namespace Secret** to use the separate
-   Secret-backed path; Preset bindings and Service Accounts also use Secrets.
-   Wait for the access check. Changing provider or method clears your choice.
-   No model is preselected. Choose a starter model or **Enter model ID manually**.
-   **Choose a model from the list** keeps listed models and other settings.
-   Reselect unlisted IDs when you return.
+3. Give the Agent a unique Namespace name. Choose **Provider** and **Harness**. OpenAI offers Dedicated **Codex** by default and **OpenClaw**; Anthropic requires Embedded **OpenClaw**. OpenClaw normally starts Embedded, which uses a Secret. For Source reuse, choose Dedicated under **Runtime details** when supported.
+   Codex accepts an [OpenAI API key](https://platform.openai.com/api-keys), a PAT from [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**, or [experimental ChatGPT OAuth](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login). OpenClaw accepts provider API keys.
+   For a Dedicated API key, **Credential storage** defaults to **Credential Source**. It can enroll a new key, use a **Namespace Secret** when offered, or select an **Existing Credential Source**. Existing Sources must be readable, ready, in this Namespace, and match the API-key/PAT preset or built-in Codex OAuth consent. Template OAuth cannot authenticate a model. Saving requires exact Source `operate`; enrollment or **New ChatGPT sign-in** creates a Source and saves a draft for later deployment. Changing provider or method clears the choice.
+   No model is preselected. Choose a starter model or **Enter model ID manually**. Returning to the list preserves listed models and other settings; reselect an unlisted ID.
 4. Check Installation, credential, and runtime model support. Primary and
    fallback models must share a supported provider and Harness. Model changes keep
    unrelated JSON and authored `plugins.allow`/`plugins.deny`. **Advanced settings** → **Reset template** replaces them.

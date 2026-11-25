@@ -11,6 +11,7 @@ export type CredentialSourceSummary = {
   ref: CredentialSourceReference;
   connectionTemplateId?: string;
   modelPreset?: "openai" | "codex-pat";
+  oauthConsentKind?: "builtin_codex" | "connection_template";
 };
 
 /** Keep only the public fields the Console needs, and require the exact Namespace identity. */
@@ -43,6 +44,8 @@ export function readCredentialSourceMetadata(
     return null;
   }
   const preset = data.type === "static" ? responseFields(data.config).provider_preset : undefined;
+  const consentKind =
+    data.type === "oauth2-refresh-token" ? responseFields(data.consent).kind : undefined;
   return {
     id: data.id,
     namespaceId,
@@ -55,5 +58,8 @@ export function readCredentialSourceMetadata(
       ? { connectionTemplateId: data.connectionTemplateId }
       : {}),
     ...(preset === "openai" || preset === "codex-pat" ? { modelPreset: preset } : {}),
+    ...(consentKind === "builtin_codex" || consentKind === "connection_template"
+      ? { oauthConsentKind: consentKind }
+      : {}),
   };
 }

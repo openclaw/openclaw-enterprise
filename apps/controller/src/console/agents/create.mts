@@ -1267,6 +1267,11 @@ function renderAgentForm(
     disabled: Boolean(binding || passwordAuth),
   });
   const modelCredentialField = modelCredentialPicker.field;
+  const embeddedSourceHint = element(
+    "p",
+    { className: "hint", hidden: true },
+    "Credential Sources require Dedicated execution. If this Installation supports it, choose Codex or select Dedicated under Runtime details.",
+  );
   const existingModelSource = createModelCredentialSourceField(context, {
     id: "agent-model-existing-source",
     initial:
@@ -1359,7 +1364,10 @@ function renderAgentForm(
     initial: draft.oauthLogin,
     hint: "Sign in for this dedicated Codex Agent. The same saved login supports plugin browsing before deployment and when editing later versions.",
     onChange(source) {
-      if (authMethod.value === "credential_source") {
+      if (
+        authMethod.value === "credential_source" &&
+        credentialStorage.value !== "existing_source"
+      ) {
         modelCredentialSource = source;
         modelCredentialSecret = source;
         resetPluginDiscovery();
@@ -1415,6 +1423,7 @@ function renderAgentForm(
           existingModelSource.field,
           existingSourceDestinationHint,
           modelCredentialField,
+          embeddedSourceHint,
           oauthLogin.section,
           transientCredentialField,
           secretConflictRecovery,
@@ -2826,7 +2835,8 @@ function renderAgentForm(
     credentialStorage.value === "existing_source" &&
     nativeProvider.value === "openai" &&
     mode.value === "dedicated" &&
-    ["api_key", "codex_pat"].includes(authMethod.value);
+    (authMethod.value === "api_key" ||
+      (harness.value === "codex" && ["codex_pat", "credential_source"].includes(authMethod.value)));
   // TokenService enrollment and per-repository GitHub access use the draft path.
   const shouldProvision = () =>
     !repositories.scoped() &&
@@ -3065,11 +3075,11 @@ function renderAgentForm(
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
-    if (usesOAuth && !binding) {
+    if (usesOAuth && !binding && !usesExistingModelSource()) {
       modelCredentialSource = oauthLogin.source;
       modelCredentialSecret = oauthLogin.source;
     }
-    oauthLogin.setActive(usesOAuth && !binding);
+    oauthLogin.setActive(usesOAuth && !binding && !usesExistingModelSource());
     oauthLogin.setDisabled(planLocked || saved);
     // Anthropic and a runtime binding fix the mode too; with a pending or saved form they keep it
     // natively disabled. The Codex harness lock is applied below, once its hint is set.
@@ -3282,15 +3292,19 @@ function renderAgentForm(
     const sourceRequired = staticSourceRequired();
     const secretStorage =
       credentialStorage.querySelector<HTMLOptionElement>('option[value="secret"]')!;
-    secretStorage.disabled = sourceRequired;
-    if (sourceRequired && credentialStorage.value === "secret") {
+    const sourceStorage =
+      credentialStorage.querySelector<HTMLOptionElement>('option[value="source"]')!;
+    sourceStorage.textContent = usesOAuth ? "New ChatGPT sign-in" : "Credential Source";
+    secretStorage.hidden = usesOAuth;
+    secretStorage.disabled = sourceRequired || usesOAuth;
+    if ((sourceRequired || usesOAuth) && credentialStorage.value === "secret") {
       credentialStorage.value = "source";
     }
     credentialStorageField.hidden = Boolean(
       binding ||
       nativeProvider.value !== "openai" ||
       mode.value !== "dedicated" ||
-      !["api_key", "codex_pat"].includes(authMethod.value),
+      !["api_key", "codex_pat", "credential_source"].includes(authMethod.value),
     );
     credentialStorage.disabled ||= Boolean(
       savedCredentialSource || savedSecret || savedConfiguration,
@@ -3299,11 +3313,24 @@ function renderAgentForm(
     modelCredentialField.hidden = Boolean(
       binding || passwordAuth || managedStatic || existingSource || usesOAuth,
     );
+    embeddedSourceHint.hidden = Boolean(
+      binding ||
+      nativeProvider.value !== "openai" ||
+      harness.value !== "openclaw" ||
+      mode.value !== "embedded",
+    );
     transientCredentialField.hidden =
       usesOAuth || existingSource || (!passwordAuth && !managedStatic);
-    existingModelSource.setActive(existingSource, usesPat ? "codex-pat" : "openai");
+    let modelSourcePurpose: "openai" | "codex-pat" | "builtin_codex" = "openai";
+    if (usesOAuth) {
+      modelSourcePurpose = "builtin_codex";
+    } else if (usesPat) {
+      modelSourcePurpose = "codex-pat";
+    }
+    existingModelSource.setActive(existingSource, modelSourcePurpose);
     existingModelSource.setDisabled(planLocked || Boolean(savedAgent));
-    existingSourceDestinationHint.hidden = !existingSource || harness.value !== "codex" || usesPat;
+    existingSourceDestinationHint.hidden =
+      !existingSource || harness.value !== "codex" || usesPat || usesOAuth;
     credentialStorageHelp.textContent = managedStatic
       ? "Saves a Credential Source with the selected TokenService. Use it to load hosted plugins and deploy the Agent."
       : "Stores the model credential as a Namespace Secret.";
@@ -3944,7 +3971,7 @@ function renderAgentForm(
   function plannedHarnessAuth(
     usesOAuth: boolean,
   ): HarnessAuthBinding | { method: "api_key" | "codex_pat" } | undefined {
-    if (usesOAuth) {
+    if (usesOAuth && !usesExistingModelSource()) {
       return undefined;
     }
     // The operator-managed runtime binding names no Secret, so it is sent as it is everywhere.
@@ -4105,11 +4132,13 @@ function renderAgentForm(
       modelCredentialSource?.kind !==
         (usesOAuth || usesExistingModelSource() ? "credential_source" : "secret")
     ) {
-      feedback.textContent = usesOAuth
-        ? "Complete ChatGPT sign-in before creating the Agent."
-        : usesExistingModelSource()
-          ? "Choose an existing Credential Source before creating the Agent."
-          : "Choose a model credential Secret before creating the Agent.";
+      if (usesExistingModelSource()) {
+        feedback.textContent = "Choose an existing Credential Source before creating the Agent.";
+      } else if (usesOAuth) {
+        feedback.textContent = "Complete ChatGPT sign-in before creating the Agent.";
+      } else {
+        feedback.textContent = "Choose a model credential Secret before creating the Agent.";
+      }
       return;
     }
     pending = true;

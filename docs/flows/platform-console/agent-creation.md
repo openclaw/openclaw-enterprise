@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-25
-last_updated_session: authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9
+last_updated_session: authoring-run/8b9726b9-2263-4930-b132-f170f536f67e
 ---
 
 # Console Agent creation
@@ -155,19 +155,11 @@ credential access. Deployment refuses stale policy versions with HTTP 409.
 
 With eligible scoped repository choices but none selected, **Create Agent** warns before requesting deployment without a repository policy. Selecting a repository changes the action to **Save Agent draft**.
 
-Eligible Dedicated runtimes preflight and provision inline Configuration, repository access and Secret references. A selected Gateway login binds its returned Source ID. **Credential Source** storage enrolls the key with TokenService, clears it, and opens a bound draft. Reuse saves the same Source ID in both Agent bindings; Agent save checks exact Source `operate`.
+Eligible Dedicated runtimes provision inline Configuration, repositories and Secret references. Gateway login binds its returned Source ID. **Credential Source** enrolls and clears a static key, then opens a draft. `harness-auth.mts:createModelCredentialSourceField` filters readable, ready Namespace Sources by API-key/PAT preset or built-in Codex OAuth consent (`builtin_codex`, no Template). Reuse skips enrollment and login, saves the ID in both Agent bindings, and checks exact Source `operate`. **New ChatGPT sign-in** starts device login.
 
-The Installation capabilities do not show whether the Compute Driver supplies a Preset's
-operator-managed (`runtime`) binding. When the capabilities are read, `checkRuntimeBinding` sends
-that binding to the preflight below; a `harnessAuth.method` refusal disables **Create Agent** and
-names what an administrator changes, because the form can change neither the binding nor the mode.
+Capabilities do not report whether Compute supplies a Preset's fixed `runtime` binding. `checkRuntimeBinding` preflights it; a `harnessAuth.method` refusal disables **Create Agent** and names the required administrator action.
 
-Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
-(`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
-`agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
-settings to it. A new Secret gets no `operate` grant, so where the `operate` answer above denies
-any readable Secret, the Preset's **Create new Secret** choice is disabled and a typed model key
-is refused before any write. It then checks the Agent name, draft values with their staged channel
+Before writing, `create.mts:renderAgentForm` checks the Agent name (`namespaces.mts:namespaceNameProblem`) and workspace files (`agents/workspace.mts:workspaceFileProblem`); a file error opens Advanced settings. If the permission answer denies any readable Secret, the form disables **Create new Secret** and refuses a typed key because a new Secret has no `operate` grant. It then checks the name, draft values with staged channel
 `secretBindings`, plugins and the planned `harnessAuth`
 (only the planned method for a credential it saves next; none for
 ChatGPT sign-in) with
@@ -261,6 +253,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-25 17:02: Trace reuse of a saved built-in Codex OAuth Source in the accompanying Console changes. (authoring-run/8b9726b9-2263-4930-b132-f170f536f67e - 3b195612619556d60097c9fbd0fbfbbd3ba9b0e7)
 - 2026-11-25 11:30: Trace reuse and replacement of an existing managed model Source. (authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9 - 105ffee9962176cf42fc7cfe013b8b94831435db)
 
 - 2026-11-24 05:45: Reconcile Source enrollment with first-deployment repository warning. (authoring-run/816f6bc5-1b99-4a82-8903-be3d98e6dd07 - d6403c2401e338964f5486f8db2fcb40a3758448)

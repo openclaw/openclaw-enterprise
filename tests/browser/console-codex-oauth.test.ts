@@ -97,9 +97,9 @@ async function createOAuthConsoleNamespace(
     },
   });
   assert.ok(state);
-  await installDeviceTokenService(result.fixture.controller, state, secrets);
+  const { owner } = await installDeviceTokenService(result.fixture.controller, state, secrets);
   const issuer = controlDeviceIssuer(t, issuerOptions);
-  return { ...result, issuer };
+  return { ...result, issuer, owner };
 }
 
 async function sourceCount(
@@ -132,13 +132,13 @@ async function signInReady(page: Page, advanceApiClock: (ms: number) => void) {
     .waitFor();
 }
 
-test("Codex OAuth console saves a credential source and reuses it for plugin editing", async (t) => {
+test("Codex OAuth console saves and reuses a Source for Agent creation and plugin editing", async (t) => {
   let apiClockAheadMs = 0;
   const advanceApiClock = (ms: number) => {
     apiClockAheadMs += ms;
   };
   let approved = false;
-  const { fixture, namespace, issuer } = await createOAuthConsoleNamespace(
+  const { fixture, namespace, issuer, owner } = await createOAuthConsoleNamespace(
     t,
     "OAuth console",
     {
@@ -454,6 +454,9 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal((await racedSave).status(), 200);
   releaseDiscard.resolve();
   assert.equal(await within(slowDiscard.promise, "the server's answer to the held discard"), 204);
+  // The save rebuilds the draft after its PATCH response. Wait for that rebuild before
+  // navigating, so its late completion cannot replace the Credentials inventory.
+  await page.getByText("Authentication source saved.", { exact: true }).waitFor();
   const retainedAgent = jsonObject((await fixture.request("GET", agentPath)).data);
   assert.deepEqual(retainedAgent.harnessAuth, replaced);
   assert.deepEqual(retainedAgent.credentialSources, replacedAgent.credentialSources);
@@ -501,6 +504,130 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
       "visible body text must not contain credential material",
     );
   }
+  // A Template OAuth Source is a valid readable OAuth credential, but it does not carry the
+  // built-in Codex consent needed to authenticate this model provider.
+  const externalIssuer = "https://issuer.example.test";
+  const template = await fixture.request("POST", "/connection-templates", {
+    body: {
+      namespaceId: namespace.id,
+      displayName: "External account",
+      mode: "manual",
+      issuer: externalIssuer,
+      authorizationUrl: `${externalIssuer}/authorize`,
+      tokenUrl: `${externalIssuer}/token`,
+      scopes: ["read"],
+      destinations: [{ host: "api.example.test", path: "/v1/**" }],
+    },
+  });
+  assert.equal(template.status, 201);
+  const templateData = jsonObject(template.data);
+  const client = await fixture.request("POST", "/credential-clients", {
+    body: {
+      kind: "oauth2",
+      namespaceId: namespace.id,
+      issuer: externalIssuer,
+      tokenUrl: `${externalIssuer}/token`,
+      displayName: "External account client",
+      clientId: "public-fixture-client",
+      tokenEndpointAuthMethod: "none",
+    },
+  });
+  assert.equal(client.status, 201);
+  const templateSource = await owner.createSource(
+    {
+      type: "oauth2-refresh-token",
+      namespaceId: namespace.id,
+      name: "External OAuth account",
+      connectionTemplateId: jsonString(templateData.id),
+      consent: {
+        kind: "connection_template",
+        version: Number(jsonObject(templateData.current).version),
+        oauthClientId: jsonString(jsonObject(client.data).id),
+        ownerPrincipalId: fixture.principal.id,
+      },
+      grant: {
+        accessToken: "external-access-fixture",
+        refreshToken: "external-refresh-fixture",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        requestedScopes: ["read"],
+        grantedScopes: ["read"],
+      },
+    },
+    t.signal,
+  );
+
+  // Reuse the already issued built-in Source through the actual Create Agent form. Discovery
+  // needs read; saving checks operate on the exact Source and never starts another OAuth login.
+  const loginsBeforeReuse = issuer.operations.filter((operation) => operation === "start").length;
+  const reuseRequestStart = requests.length;
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Provider", { exact: true }).selectOption("openai");
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await page.getByLabel("Authentication method").selectOption("credential_source");
+  await page.getByLabel("Credential storage", { exact: true }).selectOption("existing_source");
+  const existing = page.getByLabel("Existing Credential Source", { exact: true });
+  await existing.selectOption(originalAuth.sourceId);
+  assert.equal(await existing.locator(`option[value="${templateSource.id}"]`).count(), 0);
+  // A confirmed Namespace refusal removes previously readable candidates and the staged choice.
+  const restoreRead = revokeAdministratorGrant(fixture, ["read", "namespace"]);
+  const refusedList = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === collectionPath && response.request().method() === "GET",
+  );
+  await page.getByRole("button", { name: "Refresh Source list", exact: true }).click();
+  assert.equal((await refusedList).status(), 403);
+  await page.getByRole("button", { name: "Retry Source list", exact: true }).waitFor();
+  assert.equal(await existing.locator(`option[value="${originalAuth.sourceId}"]`).count(), 0);
+  assert.equal(await existing.inputValue(), "");
+  restoreRead();
+  await page.getByRole("button", { name: "Retry Source list", exact: true }).click();
+  await existing.selectOption(originalAuth.sourceId);
+  await page.getByLabel("Agent name", { exact: true }).fill("Reused OAuth Agent");
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
+  const restoreOperate = revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
+  const denial = await submitCreateAgent(page, fixture, namespace.id, { status: 403 });
+  const denialMessage = jsonString(jsonObject(jsonObject(await denial.json()).error).message);
+  assert.match(denialMessage, /CredentialSource operate/);
+  assert.ok(denialMessage.includes(originalAuth.sourceId));
+  const agentsAfterDenial = await fixture.request("GET", `/namespaces/${namespace.id}/agents`);
+  assert.ok(Array.isArray(agentsAfterDenial.data));
+  assert.equal(
+    agentsAfterDenial.data.some((agent) => jsonObject(agent).name === "Reused OAuth Agent"),
+    false,
+  );
+  restoreOperate();
+  const reused = responseData(
+    await (await submitCreateAgent(page, fixture, namespace.id, { status: 201 })).json(),
+  );
+  assert.deepEqual(reused.harnessAuth, {
+    method: "credential_source",
+    sourceId: originalAuth.sourceId,
+  });
+  assert.deepEqual(reused.credentialSources, [{ sourceId: originalAuth.sourceId }]);
+  const savedReuse = jsonObject(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${jsonString(reused.id)}`))
+      .data,
+  );
+  assert.deepEqual(savedReuse.harnessAuth, reused.harnessAuth);
+  assert.deepEqual(savedReuse.credentialSources, reused.credentialSources);
+  const reuseRequests = requests.slice(reuseRequestStart);
+  assert.equal(
+    reuseRequests.some(
+      (request) => request.method === "POST" && request.path.endsWith("/device-authorizations"),
+    ),
+    false,
+  );
+  assert.equal(
+    reuseRequests.some((request) => request.method === "POST" && request.path === collectionPath),
+    false,
+  );
+  assert.equal(
+    issuer.operations.filter((operation) => operation === "start").length,
+    loginsBeforeReuse,
+  );
   assert.equal(
     providerRequests.some((url) => url.includes("revoke") || url.includes("whoami")),
     false,
