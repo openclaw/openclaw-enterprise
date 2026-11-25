@@ -28,7 +28,7 @@ import {
   runOpenClawRuntimeHelper,
   workspaceNodeBinding,
   WORKSPACE_NODE_BINDING_PATH,
-} from "../helpers/plugin-runtime.mjs";
+} from "../helpers/plugin-runtime.ts";
 import { tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
   nativeHarnessResource,
