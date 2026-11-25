@@ -26,10 +26,18 @@ import {
   type InstallationWire,
   type SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
-import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
+import {
+  InstalledDriver,
+  OpenClawController,
+  type NamespaceLifecycleBinding,
+  type PlatformStateStore,
+} from "../../packages/occ/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -44,6 +52,7 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
 import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
@@ -234,7 +243,7 @@ async function modelSourceFixture(
   });
   await fixture.bootstrap();
   const controller = controllerOf(fixture);
-  const { driver } = useInstallationSecretDriver(controller);
+  const { core, driver } = useInstallationSecretDriver(controller);
   assert.ok(driver.privateSecrets);
   assert.ok(state);
   const instanceId = await controller.activateTokenServiceInstance(
@@ -250,7 +259,7 @@ async function modelSourceFixture(
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);
-  return { fixture };
+  return { fixture, core };
 }
 
 // Codex with its "Service Accounts" sign-in, a new model Secret and a listed model.
@@ -821,9 +830,73 @@ async function enrollModelSource(
 }
 
 test("Credential Sources lists and creates public metadata; an exact create denial saves nothing", async (t) => {
-  const { fixture } = await modelSourceFixture(t);
+  const { backend, sandboxDriver, driverConfigurations } = openShellSandbox(t);
+  const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
+  const { fixture, core } = await modelSourceFixture(t, {
+    driverConfigurations,
+    namespaceLifecycleBindings,
+  });
   const namespace = await readyNamespace(fixture, "Credential Source inventory");
+  const placed = core.addNamespace(namespace.id);
+  Object.assign(core.namespaces.get(placed)!, { apiVersion: "v1", kind: "Namespace" });
+  core.secretUid = randomUUID();
   const base = `/namespaces/${namespace.id}/credential-sources`;
+  const secretMaterial = "synthetic-inventory-secret-value";
+  const secret = await createSecret(fixture, namespace.id, "Inventory Secret", secretMaterial);
+  const controller = controllerOf(fixture);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Proxy scoped Agent",
+    createHarnessConfiguration("codex", "example-model"),
+    { executionMode: "dedicated", harnessAuth: { method: "api_key", source: secret.ref } },
+  );
+  const proxyOptions = { middlewareName: "console-egress", authorityScope: "execution" } as const;
+  // Only the counterpart discovery transport is controlled; Source admission and custody use
+  // the actual selected owner, IAM, platform state, and controller operations.
+  backend.client.clientForNamespace("").getGatewayInfo = async () => ({
+    gateway_version: "0.1.8",
+    extensions: [
+      {
+        configured_name: proxyOptions.middlewareName,
+        kind: 4,
+        protocol_major: 1,
+        required_capabilities: [...openShellExchangeCapabilities],
+        supported_capabilities: [...openShellExchangeCapabilities],
+      },
+    ],
+  });
+  const proxy = new OpenShellLegacyEgressProxyDriver(proxyOptions, {
+    id: sandboxDriver.id,
+    backend,
+    sandbox: sandboxDriver,
+  });
+  const owner = new InstalledDriver(
+    {
+      id: sandboxDriver.id,
+      implementation: sandboxDriver.implementation,
+      configuration: proxyOptions,
+    },
+    { capabilities: { sandbox: sandboxDriver, credential_proxy: proxy } },
+  );
+  namespaceLifecycleBindings.push(
+    sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver, owner),
+  );
+  controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+  // Create an offered credential-free Source through its actual selected Proxy owner. The
+  // browser then reads the real collection route; this does not claim runtime delivery proof.
+  const protectedSource = await controller.createCredentialSource(fixture.principal.id, {
+    namespaceId: namespace.id,
+    name: "Protected Proxy Source",
+    type: "credential-free-repository-metadata",
+    config: {
+      origin: "https://private.example.test",
+      repository_id: "123",
+      repository: "private/application",
+      agent_id: agent.id,
+      authority: "execution",
+    },
+  });
+  const proxyId = protectedSource.id;
   const templateResult = await fixture.request("POST", "/connection-templates", {
     body: {
       namespaceId: namespace.id,
@@ -837,8 +910,43 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   assert.equal(templateResult.status, 201);
   const templateId = resourceId(templateResult.data);
   const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, `/console/credentials/sources?namespace=${namespace.id}`);
-  await page.getByRole("heading", { name: "Credential Sources", exact: true }).waitFor();
+  const secretsPath = `/namespaces/${namespace.id}/secrets`;
+  await page.route(
+    fixture.origin + secretsPath,
+    (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill(
+            apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Secret storage unavailable."),
+          )
+        : route.fallback(),
+    { times: 1 },
+  );
+  await login(page, fixture, `/console/secrets?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Credentials", exact: true }).waitFor();
+  const sections = page.getByRole("navigation", { name: "Credential sections" });
+  assert.equal(await sections.getByRole("link", { name: "Credentials", exact: true }).count(), 1);
+  assert.equal(await sections.getByRole("link", { name: "Secrets", exact: true }).count(), 0);
+  assert.equal(await sections.getByRole("link", { name: "Sources", exact: true }).count(), 0);
+  await page.getByText("Secrets unavailable", { exact: true }).waitFor();
+  const sources = page.getByRole("table", { name: "Credential Sources", exact: true });
+  const proxyRow = sources.getByRole("row").filter({ hasText: "Protected Proxy Source" });
+  await proxyRow.getByText(proxyId, { exact: true }).waitFor();
+  const collection = await fixture.request("GET", base);
+  assert.equal(collection.status, 200);
+  const returnedProxy = (collection.data as Record<string, unknown>[]).find(
+    (item) => item.id === proxyId,
+  );
+  assert.equal(returnedProxy?.ownerCapability, "credential_proxy");
+  assert.equal(object(returnedProxy?.config).repository, "private/application");
+  assert.deepEqual(returnedProxy?.secrets, {});
+  const proxyText = await proxyRow.innerText();
+  for (const hidden of ["private/application", "private.example.test", secret.id, secretMaterial]) {
+    assert.equal(proxyText.includes(hidden), false, `Source row must not show ${hidden}`);
+  }
+  assert.equal((await page.locator("body").innerText()).includes(secretMaterial), false);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Create Secret", exact: true }).waitFor();
+  await page.getByRole("list", { name: "Secrets" }).getByText("Inventory Secret").waitFor();
   const open = async () => {
     await page.getByRole("button", { name: "Create Source", exact: true }).click();
     return page.getByRole("dialog", { name: "Create Credential Source", exact: true });
@@ -929,6 +1037,8 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   );
   await page.getByText(/Not authorized: this needs Namespace read/).waitFor();
   assert.equal(await page.getByRole("row", { name: /Research model/ }).count(), 0);
+  assert.equal(await page.getByRole("list", { name: "Secrets" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Create Secret", exact: true }).count(), 0);
   restoreNamespaceRead();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("row", { name: /Created before inventory denial/ }).waitFor();
@@ -947,12 +1057,12 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   const inventory = await fixture.request("GET", base);
   assert.deepEqual(
     (inventory.data as { id: string }[]).map(({ id }) => id).sort(),
-    [source.id, templateSource.id, unreadableId, inventoryDeniedId].sort(),
+    [proxyId, source.id, templateSource.id, unreadableId, inventoryDeniedId].sort(),
   );
   revokeAdministratorGrant(fixture, ["read", "credential_source"]);
   await page.reload();
   await page
-    .getByRole("heading", { name: "No readable managed Credential Sources", exact: true })
+    .getByRole("heading", { name: "No readable Credential Sources", exact: true })
     .waitFor();
   assert.deepEqual((await fixture.request("GET", base)).data, []);
 });
@@ -963,14 +1073,13 @@ test("a lost successful Source create reply blocks another create until Refresh 
   const base = `/namespaces/${namespace.id}/credential-sources`;
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
-  await login(page, fixture, `/console/credentials/sources?namespace=${namespace.id}`);
-  await page.route(fixture.origin + base, async (route) => {
-    if (route.request().method() !== "POST") {
-      return route.continue();
-    }
-    const committed = await route.fetch();
-    assert.equal(committed.status(), 201);
-    return route.abort("failed");
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
+  const held = await holdRequests(t, page, fixture.origin + base, {
+    method: "POST",
+    afterServer: true,
+    loseResponse: true,
+    once: true,
   });
   await page.getByRole("button", { name: "Create Source", exact: true }).click();
   const form = page.getByRole("dialog", { name: "Create Credential Source", exact: true });
@@ -980,6 +1089,11 @@ test("a lost successful Source create reply blocks another create until Refresh 
     .getByLabel("Credential value", { exact: true })
     .fill("synthetic-source-uncertain-value");
   await form.getByRole("button", { name: "Create Source", exact: true }).click();
+  assert.equal((await held.requested)?.status(), 201);
+  // The combined page must keep the Source write's guard as well as the Secret write's guard.
+  await page.goBack();
+  await page.waitForURL(new RegExp(`/console/secrets\\?namespace=${namespace.id}`));
+  held.release();
   await form.getByText(/outcome is unknown/i).waitFor();
   assert.equal(await form.getByLabel("Credential value", { exact: true }).inputValue(), "");
   assert.equal(

@@ -765,7 +765,12 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       }
       if (resource === "credential-sources") {
         if (method === "GET") {
-          return response([...credentialSources.values()]);
+          return response(
+            [...credentialSources.values()].filter(
+              (source) =>
+                !("ownerCapability" in source && source.ownerCapability === "credential_gateway"),
+            ),
+          );
         }
         if (method === "POST") {
           if (body === null || body === undefined) {

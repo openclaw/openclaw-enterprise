@@ -49,7 +49,6 @@ import { createViewLifetime } from "./view-lifetime.mjs";
 import {
   connectionTemplatesPage,
   credentialClientsPage,
-  credentialSourcesPage,
   createNavigation,
   pages,
   type AgentsLanding,
@@ -534,9 +533,7 @@ async function rereadNamespacesAfterAdministration() {
   setNamespaces(readable);
   const current = route();
   if (
-    (current.feature === "agents" ||
-      current.feature === "secrets" ||
-      current.feature === credentialSourcesPage) &&
+    (current.feature === "agents" || current.feature === "secrets") &&
     !namespaces.some((item) => item.id === namespaceId)
   ) {
     clearRetainedViewsForNamespace(namespaceId);
@@ -1389,9 +1386,6 @@ function collectionPath(feature: string, namespacePath: string | null) {
   if (feature === "backends") {
     return "/backends";
   }
-  if (namespacePath !== null && feature === credentialSourcesPage) {
-    return `${namespacePath}/credential-sources`;
-  }
   return namespacePath !== null && ["secrets", "agents"].includes(feature)
     ? `${namespacePath}/${feature}`
     : null;
@@ -2235,7 +2229,7 @@ async function loadPage({
     const namespacePath =
       selectedNamespace === null ? null : `/namespaces/${encodeURIComponent(selectedNamespace)}`;
     const scopedNamespaceUnavailable =
-      ["agents", "secrets", credentialSourcesPage].includes(current.feature) &&
+      ["agents", "secrets"].includes(current.feature) &&
       (namespacePath === null || !namespaces.some((item) => item.id === selectedNamespace));
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
       // Namespace admission is done, so the header selector, when the shown page has one, is
@@ -2249,6 +2243,7 @@ async function loadPage({
     // The destination's first read runs before its shell renders, so the held page (or
     // loading) is replaced once, by the page itself (finding 1407).
     let firstItems: unknown = null;
+    let secretCollectionFailure: ReturnType<typeof requestFailure> | null = null;
     let firstAgent: AgentRead | null = null;
     // The Agents and Secrets lists, and Create Agent, paint with the caller's permission answer,
     // never enabled and then refused (findings 1517, 1521, 2365). Gating only: the API still
@@ -2298,10 +2293,26 @@ async function loadPage({
         try {
           firstItems = current.feature === "namespaces" ? namespaces : await request(itemsPath);
         } catch (error) {
-          if (search && document.hasFocus() && retryableAgentRecheck(error)) {
-            searchForRetry = pendingSearch();
+          const failure = requestFailure(error);
+          const { status } = failure;
+          const { name } = responseFields(error);
+          if (
+            current.feature === "secrets" &&
+            status !== 401 &&
+            !isAccessRefusal(status) &&
+            name !== "AbortError"
+          ) {
+            // The Credentials page can still show independently readable Sources when the
+            // Secret collection is temporarily unavailable. Never reuse the partial view.
+            secretCollectionFailure = failure;
+            firstItems = [];
+            reuseView = false;
+          } else {
+            if (search && document.hasFocus() && retryableAgentRecheck(error)) {
+              searchForRetry = pendingSearch();
+            }
+            throw error;
           }
-          throw error;
         }
       }
       if (!lifetime.isCurrent(active)) {
@@ -2787,10 +2798,7 @@ async function loadPage({
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
     }
-    if (
-      current.creating ||
-      (["agents", "secrets", credentialSourcesPage].includes(current.feature) && !current.agentId)
-    ) {
+    if (current.creating || (["agents", "secrets"].includes(current.feature) && !current.agentId)) {
       // The Agent and Secret pages show the selected Namespace's status (finding 1895), so a
       // return rebuilds them when it changed. Other Namespaces' changes keep the view.
       const shownNamespace = namespaceId;
@@ -2951,7 +2959,11 @@ async function loadPage({
     if (!Array.isArray(items) || itemsPath === null) {
       throw new Error("Invalid collection response");
     }
-    viewState.reads.set(itemsPath, JSON.stringify(items));
+    if (secretCollectionFailure) {
+      viewState.reusable = false;
+    } else {
+      viewState.reads.set(itemsPath, JSON.stringify(items));
+    }
     if (current.feature === "agents" && selectedNamespace !== null) {
       renderAgentList({
         ...agentContext,
@@ -3002,33 +3014,117 @@ async function loadPage({
         const rebuiltView = shell.view;
         restoreRefocus = () => focus.restore(rebuiltView, { rebuilt: restoreFocus !== null });
       }
-    } else if (current.feature === credentialSourcesPage && selectedNamespace !== null) {
-      renderCredentialSources({
-        ...agentContext,
-        namespaceId: selectedNamespace,
-        items,
-      });
     } else if (current.feature === "secrets" && selectedNamespace !== null) {
       // Only carry the reader's filter into freshly admitted rows for the same owner and route.
       const previous =
         retained && reuseView && selectedNamespace === current.namespace && !linkedSecretId
           ? retainedView?.snapshot
           : undefined;
-      renderSecrets({
-        ...agentContext,
-        searchQuery: previous?.querySelector<HTMLInputElement>("#secret-search")?.value ?? "",
-        namespaceId: selectedNamespace,
-        items,
-        sorted,
-        permissions: firstPermissions,
-        openSecretId: linkedSecretId,
+      const sourceView = element("section", { "aria-label": "Credential Sources" });
+      const secretView = element("section", { "aria-label": "Secrets" });
+      const credentialsNamespaceId = selectedNamespace;
+      shell.view.replaceChildren(
+        element("div", { className: "credential-inventories" }, sourceView, secretView),
+      );
+      type WritingHold = Parameters<NamespacePageContext["holdWhileWriting"]>[0];
+      const holds: WritingHold[] = [];
+      const holdWhileWriting = (hold: WritingHold) => holds.push(hold);
+      agentContext.holdWhileWriting({
+        writing: () => holds.some((hold) => hold.writing()),
+        held: () => holds.filter((hold) => hold.writing()).forEach((hold) => hold.held()),
+        released: () => holds.forEach((hold) => hold.released?.()),
       });
+      if (secretCollectionFailure) {
+        secretView.replaceChildren(
+          statusBlock(
+            "warning",
+            "Secrets unavailable",
+            "The Secret inventory could not be loaded. Select Refresh to check again.",
+            secretCollectionFailure.requestId
+              ? [requestIdDisclosure(secretCollectionFailure.requestId)]
+              : [],
+          ),
+        );
+      } else {
+        renderSecrets({
+          ...agentContext,
+          view: secretView,
+          holdWhileWriting,
+          searchQuery: previous?.querySelector<HTMLInputElement>("#secret-search")?.value ?? "",
+          namespaceId: selectedNamespace,
+          items,
+          sorted,
+          permissions: firstPermissions,
+          openSecretId: linkedSecretId,
+        });
+        // Shown (its dialog opened or the unlisted note), so a later load does not reopen it.
+        linkedSecret = null;
+      }
+      async function loadSources() {
+        sourceView.replaceChildren(statusBlock("info", null, "Loading Credential Sources…"));
+        try {
+          const sourceItems = await agentContext.request(
+            `/namespaces/${encodeURIComponent(credentialsNamespaceId)}/credential-sources`,
+          );
+          if (agentContext.isCurrent()) {
+            renderCredentialSources({
+              ...agentContext,
+              view: sourceView,
+              holdWhileWriting,
+              namespaceId: credentialsNamespaceId,
+              items: sourceItems,
+              onInventoryAccessRefused(cause) {
+                if (!agentContext.isCurrent()) {
+                  return;
+                }
+                clearRetainedViewsForNamespace(credentialsNamespaceId);
+                resetReads();
+                const denied = renderShell("secrets");
+                const { status, requestId } = requestFailure(cause);
+                panel(
+                  denied.view,
+                  status === 403 ? "Access denied" : "Namespace unavailable",
+                  `The Source was created, but Namespace access was refused while refreshing the inventory. ${namedDenial(cause) ?? "Select Refresh to check access again."}`,
+                );
+                if (requestId) {
+                  denied.view.querySelector(".state-panel")?.append(requestIdDisclosure(requestId));
+                }
+                denied.refresh.disabled = false;
+                denied.view.setAttribute("aria-busy", "false");
+              },
+            });
+          }
+        } catch (error) {
+          if (!agentContext.isCurrent()) {
+            return;
+          }
+          const { status, requestId } = requestFailure(error);
+          if (status === 401 || isAccessRefusal(status)) {
+            // Both inventories authorize Namespace read. A refusal invalidates the whole page,
+            // including Secret metadata already rendered by the first collection read.
+            throw error;
+          }
+          sourceView.replaceChildren(
+            statusBlock(
+              "warning",
+              "Credential Sources unavailable",
+              "The Source inventory could not be loaded. Retry to check current access and saved state.",
+              [
+                button("Retry Source inventory", () => void loadPage()),
+                requestId ? requestIdDisclosure(requestId) : null,
+              ],
+            ),
+          );
+        }
+      }
+      await loadSources();
+      if (!agentContext.isCurrent()) {
+        return;
+      }
       if (previous) {
         const rebuiltView = shell.view;
         restoreRefocus = () => restoreFocus?.restore(rebuiltView, { rebuilt: true });
       }
-      // Shown (its dialog opened or the unlisted note), so a later load does not reopen it.
-      linkedSecret = null;
     } else if (current.feature === "backends") {
       if (backendsDenied) {
         backendsDenied = false;
@@ -3170,10 +3266,8 @@ async function loadPage({
         : installationDenied
           ? `Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. ${askForGrant("access")}`
           : status === 403
-            ? current.feature === credentialSourcesPage
-              ? (namedDenial(error) ??
-                `Your account does not have access to Credential Sources in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`)
-              : `Your account does not have access to this page in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`
+            ? ((current.feature === "secrets" ? namedDenial(error) : undefined) ??
+              `Your account does not have access to this page in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`)
             : "The read could not be completed. Retry to check current access and saved state.",
       // Retrying a permission refusal gives the same answer; the header's Refresh checks access
       // again after a grant (finding 2549). The Request ID stays for whoever traces the denial,

@@ -2,14 +2,24 @@ import { story } from "./story.ts";
 
 export default { title: "Pages/Credentials" };
 
-export const CredentialSources = story("credentialsSourceInventory");
+export const CredentialSources = { ...story("credentialsSourceInventory"), name: "Credentials" };
 export const CredentialSourcesMobile = story("credentialsSourceInventory", {
-  name: "Credential Sources on mobile",
+  name: "Credentials on mobile",
   frameWidth: "390px",
   frameHeight: "844px",
 });
-export const CredentialSourcesEmpty = story("credentialsSourceEmpty");
-export const CredentialSourcesDenied = story("credentialsSourceReadDenied");
+export const CredentialSourcesEmpty = {
+  ...story("credentialsSourceEmpty"),
+  name: "No readable Credential Sources",
+};
+export const CredentialSourcesLoading = {
+  ...story("credentialsSourceLoading"),
+  name: "Credential Sources loading",
+};
+export const CredentialSourcesDenied = {
+  ...story("credentialsSourceReadDenied"),
+  name: "Credential Source inventory denied",
+};
 export const CreateCredentialSource = story("credentialsSourceCreate");
 export const CredentialSourceCreatedUnreadable = story("credentialsSourceCreatedUnreadable");
 export const CredentialSourceCreatedInventoryDenied = story(

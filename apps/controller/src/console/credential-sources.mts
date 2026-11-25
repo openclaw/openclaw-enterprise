@@ -22,19 +22,31 @@ type Context = NamespacePageContext &
     namespaceId: string;
     namespace: Pick<Namespace, "name" | "status"> | undefined;
     items: unknown;
+    onInventoryAccessRefused(cause: unknown): void;
   };
 
 type StaticTemplate = { id: string; displayName: string };
-const sourceTypeLabel: Record<CredentialSourceSummary["type"], string> = {
-  static: "Static",
-  "oauth2-refresh-token": "OAuth refresh token",
-  "github-app-installation": "GitHub App installation",
+type InventorySource = {
+  id: string;
+  name: string;
+  type: string;
+  state: "registering" | "ready" | "deleting";
+} & Pick<CredentialSourceSummary, "connectionTemplateId" | "modelPreset">;
+const sourceTypeLabel = new Map<string, string>([
+  ["static", "Static"],
+  ["oauth2-refresh-token", "OAuth refresh token"],
+  ["github-app-installation", "GitHub App installation"],
+]);
+const sourceStateLabel: Record<InventorySource["state"], string> = {
+  registering: "Registering",
+  ready: "Ready",
+  deleting: "Deleting",
 };
 const CREATE_DENIED =
   "Creating a Credential Source needs Credential Source create in this Namespace. Ask an Installation administrator for access.";
 const CONFLICT_RECOVERY = "source-create-conflict";
 
-function sourcePurpose(source: CredentialSourceSummary) {
+function sourcePurpose(source: InventorySource) {
   if (source.modelPreset) {
     return `Model preset: ${source.modelPreset}`;
   }
@@ -44,18 +56,49 @@ function sourcePurpose(source: CredentialSourceSummary) {
   return "—";
 }
 
+function readInventorySource(value: unknown, namespaceId: string): InventorySource | null {
+  const managed = readCredentialSourceMetadata(value, namespaceId);
+  if (managed) {
+    const { id, name, type, state, connectionTemplateId, modelPreset } = managed;
+    return {
+      id,
+      name,
+      type,
+      state,
+      ...(connectionTemplateId ? { connectionTemplateId } : {}),
+      ...(modelPreset ? { modelPreset } : {}),
+    };
+  }
+  const data = responseFields(value);
+  const ref = responseFields(data.ref);
+  if (
+    data.ownerCapability !== "credential_proxy" ||
+    typeof data.id !== "string" ||
+    !data.id ||
+    data.namespaceId !== namespaceId ||
+    typeof data.name !== "string" ||
+    !data.name ||
+    typeof data.type !== "string" ||
+    !data.type ||
+    (data.state !== "registering" && data.state !== "ready" && data.state !== "deleting") ||
+    ref.kind !== "credential_source" ||
+    ref.id !== data.id ||
+    ref.namespaceId !== namespaceId ||
+    Object.keys(ref).length !== 3
+  ) {
+    return null;
+  }
+  return { id: data.id, name: data.name, type: data.type, state: data.state };
+}
+
 function sourceList(value: unknown, namespaceId: string) {
   if (!Array.isArray(value)) {
     throw new Error("Invalid Credential Source list");
   }
-  const items: CredentialSourceSummary[] = [];
+  const items: InventorySource[] = [];
   let unavailable = 0;
   for (const entry of value) {
-    // Protected Proxy metadata is outside the managed Source workflow.
-    if (Object.hasOwn(responseFields(entry), "ownerCapability")) {
-      continue;
-    }
-    const summary = readCredentialSourceMetadata(entry, namespaceId);
+    const summary = readInventorySource(entry, namespaceId);
     if (summary === null) {
       unavailable += 1;
     } else {
@@ -179,16 +222,14 @@ export function renderCredentialSources(context: Context) {
           element(
             "h2",
             {},
-            sources.unavailable
-              ? "Source metadata unavailable"
-              : "No readable managed Credential Sources",
+            sources.unavailable ? "Source metadata unavailable" : "No readable Credential Sources",
           ),
           element(
             "p",
             {},
             sources.unavailable
               ? "Returned Sources could not be shown because their public metadata was unsupported or incomplete."
-              : "Managed Credential Sources shared with you in this Namespace appear here.",
+              : "Credential Sources shared with you in this Namespace appear here.",
           ),
         ),
       );
@@ -196,7 +237,7 @@ export function renderCredentialSources(context: Context) {
       list.replaceChildren(
         element(
           "section",
-          { className: "resource-list oauth-catalog" },
+          { className: "resource-list oauth-catalog credential-source-catalog" },
           element(
             "h2",
             { className: "resource-list-header secret-list-heading" },
@@ -230,16 +271,16 @@ export function renderCredentialSources(context: Context) {
                     { "data-label": "Source ID" },
                     element("code", { className: "resource-id" }, source.id),
                   ),
-                  element("td", { "data-label": "Type" }, sourceTypeLabel[source.type]),
+                  element(
+                    "td",
+                    { "data-label": "Type" },
+                    sourceTypeLabel.get(source.type) ?? source.type,
+                  ),
                   element("td", { "data-label": "Purpose" }, sourcePurpose(source)),
                   element(
                     "td",
                     {},
-                    element(
-                      "span",
-                      { className: "badge" },
-                      source.state === "ready" ? "Ready" : "Deleting",
-                    ),
+                    element("span", { className: "badge" }, sourceStateLabel[source.state]),
                   ),
                 ),
               ),
@@ -287,7 +328,7 @@ export function renderCredentialSources(context: Context) {
       element(
         "header",
         { className: "dialog-header" },
-        element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Sources`),
+        element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Credentials`),
         heading,
       ),
       body,
@@ -502,7 +543,6 @@ export function renderCredentialSources(context: Context) {
         created = true;
         let listed = false;
         let refreshed = false;
-        let inventoryDenial: string | undefined;
         try {
           const inventory = sourceList(await context.request(path), context.namespaceId);
           sources.items = inventory.items;
@@ -511,13 +551,14 @@ export function renderCredentialSources(context: Context) {
           refreshed = true;
           renderList();
         } catch (cause) {
-          if (requestFailure(cause).status === 401) {
+          const { status } = requestFailure(cause);
+          if (status === 401) {
             context.onExpired();
-          } else if (requestFailure(cause).status === 403) {
-            inventoryDenial = namedDenial(cause) ?? "Not authorized to read the Source inventory.";
-            sources.items = [];
-            sources.unavailable = 0;
-            renderList();
+            return;
+          }
+          if (status === 400 || status === 403 || status === 404) {
+            context.onInventoryAccessRefused(cause);
+            return;
           }
         }
         feedback.replaceChildren(
@@ -534,10 +575,9 @@ export function renderCredentialSources(context: Context) {
             statusBlock(
               "warning",
               null,
-              inventoryDenial ??
-                (refreshed
-                  ? "The created Source is not in your readable inventory. Ask an administrator for exact Source read access before reusing it."
-                  : "The Source was created, but the readable inventory could not be refreshed. Select Refresh to check it."),
+              refreshed
+                ? "The created Source is not in your readable inventory. Ask an administrator for exact Source read access before reusing it."
+                : "The Source was created, but the readable inventory could not be refreshed. Select Refresh to check it.",
             ),
           );
         }

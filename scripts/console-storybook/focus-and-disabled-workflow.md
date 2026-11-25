@@ -59,7 +59,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
    pager, and the read-only authentication and Slack token fields (finding
    2899): a select or text field fades its text, and ignores arrow keys and
    typing too. So do the Secret dialog's **Replace value** and **Delete
-   Secret** (**Pages / Secrets / Read only for this caller**) and the issued
+   Secret** (**Pages / Credentials / Secrets / Read only for this caller**) and the issued
    account select (**Components / Credentials / Issued service accounts
    unavailable**) (finding 2925). On **Pages / Agents / Stop from the list**,
    confirm Stop: the Stop icon becomes unavailable and keeps focus, described
@@ -75,7 +75,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
    outcome keeps its fields and confirmation in the Tab order, described by
    its alert, while focus moves to Cancel or Close (finding 2935): **Pages /
    Namespaces / Create permission denied** and **Create outcome unknown**,
-   **Pages / Secrets / Create denied** and **Concurrent reference conflict**,
+   **Pages / Credentials / Secrets / Create denied** and **Concurrent reference conflict**,
    and the Stop and Delete confirmations when a refusal arrives while they are
    open (**Pages / Agents / Stop from the list, permission arrives while
    confirmation is open**, **Components / Stop Agent / Permission arrives while

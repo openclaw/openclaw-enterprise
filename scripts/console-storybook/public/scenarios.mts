@@ -1461,9 +1461,9 @@ const authoredScenarios = {
     description:
       "The compact drawer keeps the document in place while its own contents scroll. API responses are simulated.",
     steps: [
-      "At 390×480, open navigation and press Page Down on the focused link. Wheel over the overlay: the Secrets page behind it stays in place.",
-      "Choose Namespaces, then use Back. The Secrets heading and search return in view.",
-      "Open navigation and press Escape. Scroll Secrets normally. Reopen navigation, widen past 760px, and check that desktop scrolling is available.",
+      "At 390×480, open navigation and press Page Down on the focused link. Wheel over the overlay: the Credentials page behind it stays in place.",
+      "Choose Namespaces, then use Back. The Credentials heading and Secret search return in view.",
+      "Open navigation and press Escape. Scroll Credentials normally. Reopen navigation, widen past 760px, and check that desktop scrolling is available.",
     ],
   } satisfies LocalScenario,
   ...channelsScenarios({

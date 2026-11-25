@@ -6,6 +6,8 @@ const sourceId = "cs_00000000-0000-4000-8000-000000000020";
 const replacementId = "cs_00000000-0000-4000-8000-000000000021";
 const codexPatId = "cs_00000000-0000-4000-8000-000000000023";
 type StaticSource = Extract<CredentialSourceResponse["data"], { type: "static" }>;
+type OAuthSource = Extract<CredentialSourceResponse["data"], { type: "oauth2-refresh-token" }>;
+type ProxySource = Extract<CredentialSourceResponse["data"], { ownerCapability: string }>;
 const source = (id: string, name: string): StaticSource => ({
   id,
   namespaceId,
@@ -28,13 +30,60 @@ const previewTemplateSource: StaticSource = {
   config: {},
   connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000005",
 };
-const previewInventory = [...previewModelSources, previewTemplateSource];
+const oauthSourceId = "cs_00000000-0000-4000-8000-000000000024";
+const previewOAuthSource: OAuthSource = {
+  id: oauthSourceId,
+  namespaceId,
+  name: "Support OAuth",
+  type: "oauth2-refresh-token",
+  connectionTemplateId: "ctp_00000000-0000-4000-8000-000000000004",
+  consent: {
+    kind: "connection_template",
+    version: 1,
+    ownerPrincipalId: "storybook-operator",
+    oauthClientId: "ccr_00000000-0000-4000-8000-000000000006",
+    issuer: "https://identity.example.com",
+    tokenUrl: "https://identity.example.com/token",
+    clientId: "support-demo",
+    requestedScopes: ["messages.read"],
+    grantedScopes: ["messages.read"],
+    destinations: [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
+  },
+  state: "ready",
+  ref: { kind: "credential_source", namespaceId, id: oauthSourceId },
+  createdAt: "2026-09-01T12:00:00.000Z",
+};
+const proxySourceId = "cs_00000000-0000-4000-8000-000000000025";
+const previewProxySource: ProxySource = {
+  id: proxySourceId,
+  namespaceId,
+  name: "Repository metadata",
+  type: "credential-free-repository-metadata",
+  ownerCapability: "credential_proxy",
+  config: {
+    origin: "https://api.github.com",
+    repository_id: "12345",
+    repository: "example/widgets",
+    agent_id: "agt_00000000-0000-4000-8000-000000000001",
+    authority: "execution",
+  },
+  secrets: {},
+  egress: { adoption: "credential_free", retention: "none" },
+  state: "registering",
+  ref: { kind: "credential_source", namespaceId, id: proxySourceId },
+};
+const previewInventory = [
+  ...previewModelSources,
+  previewTemplateSource,
+  previewOAuthSource,
+  previewProxySource,
+];
 const previewCodexPatSource: StaticSource = {
   ...source(codexPatId, "Codex PAT"),
   config: { provider_preset: "codex-pat" },
 };
 
-const path = `/console/credentials/sources?namespace=${namespaceId}`;
+const path = `/console/secrets?namespace=${namespaceId}`;
 const openExistingSource = [
   ...form,
   { selector: "#model-credential-storage", value: "existing_source" },
@@ -49,20 +98,28 @@ const createInventorySource = [
 export const credentialSourceScenarios = {
   credentialsSourceInventory: {
     group: "Pages/Credentials",
-    name: "Credential Sources",
+    name: "Credentials",
     path,
     oauthCatalog: "ready",
     initialCredentialSources: previewInventory,
     description:
-      "Inspect the public Source name, type, state and purpose. TokenService material is absent from the preview data and is never read by this page.",
+      "Inspect the single Credentials tab with readable static, OAuth and protected Proxy Source metadata alongside Namespace Secrets. The fixture contains no credential values, and the page does not show OAuth consent or Proxy configuration.",
   },
   credentialsSourceEmpty: {
     group: "Pages/Credentials",
-    name: "No readable managed Credential Sources",
+    name: "No readable Credential Sources",
     path,
     initialCredentialSources: [],
     description:
       "The simulated inventory is empty. Create Source remains available when the Namespace is ready.",
+  },
+  credentialsSourceLoading: {
+    group: "Pages/Credentials",
+    name: "Credential Sources loading",
+    path,
+    rules: [{ suffix: "/credential-sources", method: "GET", hold: true }],
+    description:
+      "The Source collection is still loading. Namespace Secrets remain available in the same Credentials tab.",
   },
   credentialsSourceReadDenied: {
     group: "Pages/Credentials",
@@ -78,7 +135,7 @@ export const credentialSourceScenarios = {
       },
     ],
     description:
-      "The simulated inventory read is denied. No Source names or credential material are disclosed.",
+      "The simulated Source read is denied because Namespace access was revoked. The entire Credentials page clears, including Secret metadata.",
   },
   credentialsSourceCreate: {
     group: "Pages/Credentials",
@@ -118,7 +175,7 @@ export const credentialSourceScenarios = {
     ],
     actions: createInventorySource,
     description:
-      "The simulated create succeeds, then the inventory read is denied. The page confirms creation, removes previously displayed rows, and shows the exact denial.",
+      "The simulated create succeeds, then Namespace access is denied on the inventory read. The page states that creation succeeded, clears both inventories, and shows the exact denial.",
   },
   createExistingSourceLoading: {
     group: "Pages/Create Agent",

@@ -1,5 +1,3 @@
-export const credentialSourcesPage = "credentials/sources";
-
 export const connectionTemplatesPage = "credentials/connection-templates";
 
 export const credentialClientsPage = "credentials/credential-clients";
@@ -7,7 +5,6 @@ export const credentialClientsPage = "credentials/credential-clients";
 export const pages = Object.freeze({
   agents: "Agents",
   secrets: "Credentials",
-  [credentialSourcesPage]: "Credential Sources",
   [connectionTemplatesPage]: "Credentials",
   [credentialClientsPage]: "Credentials",
   backends: "Backends",

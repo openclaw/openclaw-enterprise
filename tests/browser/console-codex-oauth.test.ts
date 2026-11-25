@@ -457,7 +457,27 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const retainedAgent = jsonObject((await fixture.request("GET", agentPath)).data);
   assert.deepEqual(retainedAgent.harnessAuth, replaced);
   assert.deepEqual(retainedAgent.credentialSources, replacedAgent.credentialSources);
+  // The Namespace inventory uses the actual filtered collection route for both OAuth Sources
+  // created by the controlled issuer flow, including the retained Source from before replacement.
+  const collectionPath = `/namespaces/${namespace.id}/credential-sources`;
+  const collectionRead = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === collectionPath && response.request().method() === "GET",
+  );
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
+  const collectionResponse = await collectionRead;
+  assert.equal(collectionResponse.status(), 200);
+  const collectionBody = await collectionResponse.json();
+  const listed = jsonObject(collectionBody).data;
+  assert.ok(Array.isArray(listed));
+  const sources = page.getByRole("table", { name: "Credential Sources", exact: true });
+  for (const sourceId of [originalAuth.sourceId, replaced.sourceId]) {
+    assert.ok(listed.some((source) => jsonObject(source).id === sourceId));
+    const row = sources.getByRole("row").filter({ hasText: sourceId });
+    await row.getByText("OAuth refresh token", { exact: true }).waitFor();
+  }
   const serializedRequests = JSON.stringify(requests);
+  const serializedCollection = JSON.stringify(collectionBody);
   const bodyText = await page.locator("body").innerText();
   assert.ok(issuer.handles.size > 0, "the issuer must issue a private device handle");
   for (const credential of [
@@ -469,6 +489,11 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
       serializedRequests.includes(credential),
       false,
       "browser API requests must not contain credential material",
+    );
+    assert.equal(
+      serializedCollection.includes(credential),
+      false,
+      "the Source collection must not contain credential material",
     );
     assert.equal(
       bodyText.includes(credential),

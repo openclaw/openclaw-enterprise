@@ -187,7 +187,6 @@ const CONSOLE_SHELL_ROUTES = new Set([
   "/console/backends",
   "/console/namespaces",
   "/console/secrets",
-  "/console/credentials/sources",
   "/console/credentials/connection-templates",
   "/console/credentials/credential-clients",
   "/console/settings",

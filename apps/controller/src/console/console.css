@@ -1120,6 +1120,10 @@ p {
 .collection-toolbar > input[type="search"] {
   max-width: 360px;
 }
+.credential-inventories {
+  display: grid;
+  gap: var(--space-8);
+}
 .agent-list-toolbar {
   container-type: inline-size;
 }
@@ -3520,6 +3524,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .oauth-catalog-table thead th:last-child {
   width: 6rem;
+}
+.credential-source-catalog .oauth-catalog-table thead th:last-child {
+  width: 8rem;
 }
 .connection-template-catalog .oauth-catalog-table thead th:nth-last-child(2) {
   width: 6rem;

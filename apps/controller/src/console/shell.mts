@@ -4,7 +4,6 @@ import { button, element, focusSaveOutcome, requestIdLine, setUnavailable } from
 import {
   connectionTemplatesPage,
   credentialClientsPage,
-  credentialSourcesPage,
   type createNavigation,
   type pages,
 } from "./navigation.mjs";
@@ -567,7 +566,7 @@ export function createShell({
       return;
     }
     const scope = app.querySelector(".content .scope");
-    if (scope && ["agents", "secrets", credentialSourcesPage].includes(route().feature)) {
+    if (scope && ["agents", "secrets"].includes(route().feature)) {
       scope.textContent = `Namespace · ${readable.find((item) => item.id === namespaceId)?.name ?? "No available selection"}`;
     }
   }
@@ -635,9 +634,8 @@ export function createShell({
         navigate(name);
       });
     }
-    const credentialAdministration =
+    const credentialSection =
       feature === connectionTemplatesPage || feature === credentialClientsPage;
-    const credentialSection = credentialAdministration || feature === credentialSourcesPage;
     const icons = {
       agents:
         "M12 3v3M4 9a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M9 11v2m6-2v2M2 12v3m20-3v3",
@@ -787,8 +785,7 @@ export function createShell({
         "aria-label": "Credential sections",
       });
       for (const [name, label] of [
-        ["secrets", "Secrets"],
-        [credentialSourcesPage, "Sources"],
+        ["secrets", "Credentials"],
         [connectionTemplatesPage, "Connection templates"],
         [credentialClientsPage, "Credential clients"],
       ] as const) {
@@ -815,7 +812,7 @@ export function createShell({
     if (
       recovery &&
       session &&
-      !["agents", "secrets", credentialSourcesPage].includes(feature) &&
+      !["agents", "secrets"].includes(feature) &&
       namespaceId !== null &&
       !selected
     ) {

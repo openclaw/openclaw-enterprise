@@ -20,7 +20,9 @@ creation does not change that configuration.
 
 ## Discover, create, and reuse a Source
 
-Open **Pages/Credentials → Credential Sources** to inspect readable public metadata.
+Open **Pages/Credentials → Credentials**. The single **Credentials** tab shows readable
+static, OAuth, and protected Proxy Source metadata alongside Namespace Secrets. Confirm that
+the page does not show OAuth consent, Proxy configuration, or credential values.
 In **Create a Credential Source**, choose an OpenAI or Codex PAT model purpose, or
 an available static Bearer Template. Enter a dummy value and select **Create Source**.
 Confirm that the Source appears in the inventory and its value is not returned.
@@ -44,7 +46,8 @@ fixed destination. This story does not deploy the draft.
 
 Inspect these list and failure stories:
 
-- **Pages/Credentials → No readable managed Credential Sources** shows an empty inventory.
+- **Pages/Credentials → No readable Credential Sources** shows an empty Source inventory.
+- **Credential Sources loading** keeps Namespace Secrets available while the Source read waits.
 - **Pages/Create Agent → Existing Source list loading**, **Retry an unavailable Source list**,
   and **No eligible model Credential Source** show pending, retry, and missing-choice states.
 - **Pages/Credentials → Credential Source inventory denied** and **Credential Source
