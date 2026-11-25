@@ -481,6 +481,7 @@ test("apply requires approval of the current target before reserving private evi
   assert.match(plan.stdout, /Database migration mode: hook/);
   assert.match(plan.stdout, /interrupts the OCC API and Worker even when no migration is pending/);
   assert.doesNotMatch(plan.stdout, /separate migration pause/);
+  assert.doesNotMatch(plan.stdout, /Qualify a recovery controller before maintenance/);
   assert.ok(plan.stdout.includes(profile.images.controller));
   assert.ok(plan.stdout.includes(`Kubeconfig: ${join(f.directory, profile.kubeconfig)}`));
   assert.ok(
@@ -917,7 +918,7 @@ test("the same local candidate is explained by plan and apply without printing i
   const releasedController = `sha256:${"b".repeat(64)}`;
   const candidateController = f.input.images.controller.split("@")[1];
   assert.ok(candidateController);
-  // The existing preview accepts the pair and does not promote the advisory to live proof.
+  // The candidate can pass even when the released image rejected the upgraded history.
   const compatibilityReceipt = {
     ...postgresCompatibilityReport(releasedController, candidateController, "unsupported"),
     privateReceipt: receiptCanary,
@@ -955,6 +956,9 @@ test("the same local candidate is explained by plan and apply without printing i
   assert.match(plan.stdout, /select a staged immutable Installation Secret/);
   assert.match(plan.stdout, /compatibility receipt matches the selected controller/);
   assert.match(plan.stdout, /installed controller digest requires live preflight/);
+  const historyWarning =
+    /released controller rejected the upgraded migration history in at least one reported check\. Qualify a recovery controller before maintenance/;
+  assert.match(plan.stdout, historyWarning);
   assert.ok(plan.stdout.includes(f.input.images.controller));
   const output = plan.stdout + plan.stderr + apply.stdout + apply.stderr;
   assert.doesNotMatch(output, /rejected the candidate migration history/);
@@ -983,6 +987,25 @@ test("the same local candidate is explained by plan and apply without printing i
     "operator.json",
     "rendered",
   ]);
+
+  // A passing check must not hide another check's rejection.
+  const [file] = compatibilityReceipt.files;
+  const current = [{ kind: "released-controller-history", status: "current" }];
+  const cases = [
+    { measurements: [...current, ...file.measurements], warn: true },
+    { measurements: current, warn: false },
+    { measurements: undefined, warn: false },
+  ];
+  for (const { measurements, warn } of cases) {
+    await writeFile(
+      receipt,
+      JSON.stringify({ ...compatibilityReceipt, files: [{ ...file, measurements }] }),
+    );
+    const result = run("plan", f, options);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /installed controller digest requires live preflight/);
+    assert.equal(historyWarning.test(result.stdout), warn);
+  }
 
   const valid = JSON.stringify(compatibilityReceipt);
   for (const invalid of [
