@@ -25,7 +25,7 @@ import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-with
 import {
   createAuthenticatedControllerRequest,
   createTestAuthPrincipal,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { relaySockets } from "../helpers/socket-relay.ts";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";

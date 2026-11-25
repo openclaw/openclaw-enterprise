@@ -18,7 +18,7 @@ import {
   productionBootstrapEnvironment,
   runBootstrapInstallation,
 } from "./bootstrap-installation.mjs";
-import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "./auth-session.ts";
 import { createReadyComputeDriver } from "./development.mjs";
 import { createOidcProvider } from "./oidc-provider.ts";
 import { composeProduction } from "./password-hasher.ts";

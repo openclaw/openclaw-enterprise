@@ -18,7 +18,7 @@ import {
 import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OpenShellTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/openshell.ts";
-import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
+import { createAuthenticatedControllerRequest } from "../helpers/auth-session.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
