@@ -41,9 +41,9 @@ with different rights.
 
 ### Interim preview for a dedicated Codex API key
 
-**Any process in the Agent workload may call `POST https://api.openai.com/v1/responses`
-with the temporary placeholder. None may read or recover the provider key.** The trusted
-supervisor runs in a separate container.
+**Any process in the contained Agent workload may call
+`POST https://api.openai.com/v1/responses` with the temporary placeholder. None may read or
+recover the provider key.** The trusted supervisor runs in a separate container.
 Callers choose the query, request body and other headers. They can use any model, provider
 tool or remote MCP server the key permits. A compromised process can spend money and send
 Agent data through the provider. The route imposes no spending limit.

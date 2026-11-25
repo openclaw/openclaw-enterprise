@@ -152,12 +152,17 @@ that container alone. The direct launch experiment has no separate receiver.
   profile on the operator’s behalf. Include the selection in the revision’s preparation inputs.
   A change requires a new revision.
 
-Before scheduling on a node, the operator must verify the intended policy is loaded in enforce
-mode. The profile name alone proves neither its contents nor its mode. Test an installed launch
-with the selected profile and check each container’s effective profile. Keep seccomp, private
-user namespaces, proc masks, dropped capabilities, the ban on privilege escalation and TLS.
-Test omission against the original manifest and verify that a missing profile prevents startup.
-The receiver still needs the Box patch and an authenticated descriptor handoff for protected use.
+Load the same policy on every eligible node and verify that each node enforces it. Give a
+changed policy a new name. Replacing the policy under its old name leaves the recorded
+installation setting unchanged.
+
+Test an installed launch with the selected profile. Verify each container’s effective AppArmor
+profile. Keep the existing seccomp rules, private user namespaces, proc masks, dropped
+capabilities, disabled privilege escalation and TLS. Confirm that the receiver can perform the
+required mount and that the contained child cannot use that permission to undo its confinement.
+Stop the revision through OCE and verify that the receiver exits. Test omission against the
+original manifest and verify that a missing profile prevents startup. Protected use still requires
+the Box receiver patch and an authenticated descriptor handoff.
 
 ## Trust boundary
 
@@ -178,11 +183,21 @@ handshakes, HTTP requests and authenticated provider operations separately.
 Verify that the file node can edit a file, reconnect and read it back. Confirm that Box can make
 an authorized HTTPS request before and after the file node’s connection attempt. The file node
 must fail to connect to the proxy and succeed against a test listener on the same port at another
-address. Check new processes and replacement containers. Test transfer of an already connected
-socket separately. A rule blocking new connections cannot revoke that socket. In an isolated test,
-remove the caller restriction while the proxy is serving. Record whether an in-flight request
-finishes. Record whether a new connection succeeds and require that no fresh file-node request
-reaches the upstream service.
+address. Repeat with new processes and replacement containers.
+
+Test the following cases in isolation with no provider credentials. Use a permitted test endpoint
+that needs no credential, so a missing placeholder cannot explain the refusal. Verify that the
+workload can reach it before each test.
+
+- **Existing connection.** Let the file node open a connection before applying the restriction.
+  Apply it, then send a fresh request on that same socket. The request must not reach the endpoint.
+- **Transferred socket.** Separately test passing an already connected socket from another process
+  to the file node. Block the transfer or prevent a fresh request on that socket from reaching the
+  endpoint.
+- **Loss of the restriction.** Remove the restriction while the proxy is serving. Record whether
+  an in-flight request finishes. A new file-node connection is an isolation failure. Require that
+  no fresh file-node request reaches the endpoint. If a connection opened during the lapse,
+  restore the restriction and test a fresh request on that same socket as above.
 
 | Boundary            | Sandbox requirement                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
