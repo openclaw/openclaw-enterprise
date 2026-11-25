@@ -1247,7 +1247,16 @@ export async function renderAgentDetail(
     // Retire an obsolete observation before its response can reach the shared client.
     harnessAbort?.abort();
     harnessRequested = wanted;
-    harnessRead = null;
+    // Keep the loss warning and recovery step visible while rechecking the same version.
+    const previous = harnessRead?.status;
+    if (
+      !recheck ||
+      previous?.status !== "observed" ||
+      previous.revisionId !== wanted ||
+      previous.harness?.state !== "lost"
+    ) {
+      harnessRead = null;
+    }
     if (wanted === null) {
       harnessAbort = undefined;
       return;
