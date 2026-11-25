@@ -23,7 +23,11 @@ import {
   grantAndRevokeHumanAccess,
   consoleShareScope,
 } from "./postgres-namespace-iam-human-access-cases.ts";
-import { actorAuthorityThroughCommit } from "./postgres-namespace-iam-authority-cases.ts";
+import {
+  actorAuthorityThroughCommit,
+  httpRoleDeletionAfterRevocation,
+  roleDeletionAfterRevocation,
+} from "./postgres-namespace-iam-authority-cases.ts";
 
 test(
   "selected native IAM sees original-unit grants and revocations before rollback",
@@ -94,6 +98,16 @@ test(
   "PostgreSQL IAM policy writes keep the actor's authority current through COMMIT",
   requiresPostgres,
   actorAuthorityThroughCommit,
+);
+test(
+  "PostgreSQL Role deletion observes Namespace read revoked during the lock wait",
+  requiresPostgres,
+  roleDeletionAfterRevocation,
+);
+test(
+  "HTTP Role deletion denies and audits a revoked Namespace read under Repeatable Read defaults",
+  requiresPostgres,
+  httpRoleDeletionAfterRevocation,
 );
 test(
   "native IAM reads the policy once per unit of work and never across units",
