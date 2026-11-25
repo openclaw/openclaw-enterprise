@@ -1449,7 +1449,7 @@ test("Codex Agent Credentials with an openai model provider excludes codex-pat S
   assert.equal(await createPage.getByText(destinationGuidance).isVisible(), true);
 });
 
-test("Replacing an OpenAI Source with a Codex PAT drops the prior model provider override before deployment", async (t) => {
+test("Replacing an OpenAI Source with a fixed Codex Source drops the prior model provider override before deployment", async (t) => {
   // This scenario needs actual staged Source admission, which the lighter enrollment
   // fixture cannot provide. Kubernetes transport is controlled; selected Drivers and
   // the Console, IAM, and deployment API remain real.
@@ -1497,11 +1497,33 @@ test("Replacing an OpenAI Source with a Codex PAT drops the prior model provider
   const controller = controllerOf(fixture);
   controller.registerDriver(runtime.computeDriver);
   controller.selectDriver("compute", runtime.computeDriver.id);
-  await installTokenServiceDriver(controller, runtime, present(state));
+  const owner = present(await installTokenServiceDriver(controller, runtime, present(state)));
   installSelectedSandboxDrivers(controller, runtime);
 
   const openaiSource = await enrollModelSource(fixture, namespace.id, "OpenAI model");
   const patSource = await enrollModelSource(fixture, namespace.id, "Codex PAT", "codex-pat");
+  // Seed the selected TokenService at the trusted post-exchange boundary. The separate OAuth
+  // browser test covers issuing this grant through the controlled device issuer.
+  const oauthSource = await owner.createSource(
+    {
+      type: "oauth2-refresh-token",
+      namespaceId: namespace.id,
+      name: "Codex OAuth",
+      consent: {
+        kind: "builtin_codex",
+        ownerPrincipalId: fixture.principal.id,
+        account: { accountId: "replacement-account", planType: "plus", isFedramp: false },
+      },
+      grant: {
+        accessToken: randomUUID(),
+        refreshToken: randomUUID(),
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        requestedScopes: ["openid"],
+        grantedScopes: ["openid"],
+      },
+    },
+    t.signal,
+  );
   const configurationId = resourceId(
     await fixture.createConfiguration(
       namespace.id,
@@ -1509,19 +1531,6 @@ test("Replacing an OpenAI Source with a Codex PAT drops the prior model provider
     ),
   );
   const base = `/namespaces/${namespace.id}`;
-  const created = await fixture.request("POST", `${base}/agents`, {
-    body: {
-      name: "Codex replacement Agent",
-      executionMode: "dedicated",
-      configurationId,
-      harnessAuth: { method: "credential_source", sourceId: openaiSource },
-      credentialSources: [{ sourceId: openaiSource }],
-    },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const agent = object(created.data);
-  const agentId = resourceId(agent);
-  const agentPath = `${base}/agents/${agentId}`;
   const role = await fixture.request("POST", `${base}/iam/roles`, {
     body: {
       name: "Use model Source",
@@ -1529,66 +1538,92 @@ test("Replacing an OpenAI Source with a Codex PAT drops the prior model provider
     },
   });
   assert.equal(role.status, 201, JSON.stringify(role.body));
-  const grant = await fixture.request("POST", `${base}/iam/access-bindings`, {
-    body: {
-      subjectKind: "identity",
-      subjectId: agent.servicePrincipalId,
-      roleId: resourceId(role.data),
-      resourceKind: "credential_source",
-      resourceId: openaiSource,
-    },
-  });
-  assert.equal(grant.status, 201, JSON.stringify(grant.body));
-  const prior = await fixture.request("POST", `${agentPath}/deploy`, {
-    body: {
-      harnessOverrides: {
-        modelProvider: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" },
+  async function replaceWithFixedSource(sourceId: string, label: string) {
+    const created = await fixture.request("POST", `${base}/agents`, {
+      body: {
+        name: `Codex ${label} replacement Agent`,
+        executionMode: "dedicated",
+        configurationId,
+        harnessAuth: { method: "credential_source", sourceId: openaiSource },
+        credentialSources: [{ sourceId: openaiSource }],
       },
-    },
-  });
-  assert.equal(prior.status, 202, JSON.stringify(prior.body));
-  const priorId = resourceId(prior.data);
-  await fixture.activateRevision(namespace.id, agentId, priorId);
-  const stopped = await fixture.request("POST", `${agentPath}/stop`);
-  assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
-  // A real worker would clear the active pointer on shutdown. The fixture only
-  // models this completion; it does not claim to run a worker or runtime.
-  assert.ok(
-    await present(state).transact((unit) =>
-      unit.agents.compareAndClearActiveRevision(namespace.id, agentId, priorId),
-    ),
-  );
-
-  const { page } = await newPage(t, fixture, { browser });
-  await login(
-    page,
-    fixture,
-    `/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=credentials`,
-  );
-  await page.getByLabel("Existing Credential Source", { exact: true }).selectOption(patSource);
-  const savedResponse = page.waitForResponse(
-    (response) =>
-      response.url() === fixture.origin + agentPath && response.request().method() === "PATCH",
-  );
-  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
-  assert.equal((await savedResponse).status(), 200);
-  await page.getByText("Authentication source saved.", { exact: true }).waitFor();
-  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
-  await waitForEnabled(deploy);
-  const settings = page.getByLabel("Harness settings", { exact: true });
-  assert.equal(await settings.inputValue(), "default");
-  assert.equal(await settings.locator('option[value="custom"]').isDisabled(), true);
-  const deployedResponse = page.waitForResponse(
-    (response) =>
-      response.url() === fixture.origin + `${agentPath}/deploy` &&
-      response.request().method() === "POST",
-  );
-  await deploy.click();
-  const deployed = await deployedResponse;
-  assert.equal(deployed.status(), 202, await deployed.text());
-  assert.deepEqual(object(deployed.request().postDataJSON()).harnessOverrides, {});
-  const revision = object(object(await deployed.json()).data);
-  assert.equal(Object.hasOwn(object(object(revision.harness).overrides), "modelProvider"), false);
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const agent = object(created.data);
+    const agentId = resourceId(agent);
+    const agentPath = `${base}/agents/${agentId}`;
+    const grant = await fixture.request("POST", `${base}/iam/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: resourceId(role.data),
+        resourceKind: "credential_source",
+        resourceId: openaiSource,
+      },
+    });
+    assert.equal(grant.status, 201, JSON.stringify(grant.body));
+    const prior = await fixture.request("POST", `${agentPath}/deploy`, {
+      body: {
+        harnessOverrides: {
+          modelProvider: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" },
+        },
+      },
+    });
+    assert.equal(prior.status, 202, JSON.stringify(prior.body));
+    const priorId = resourceId(prior.data);
+    await fixture.activateRevision(namespace.id, agentId, priorId);
+    const stopped = await fixture.request("POST", `${agentPath}/stop`);
+    assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+    // A real worker clears this pointer after shutdown. The fixture models that completion;
+    // it does not run a worker or runtime.
+    assert.ok(
+      await present(state).transact((unit) =>
+        unit.agents.compareAndClearActiveRevision(namespace.id, agentId, priorId),
+      ),
+    );
+    const { page } = await newPage(t, fixture, { browser });
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    );
+    await page.getByLabel("Existing Credential Source", { exact: true }).selectOption(sourceId);
+    const savedResponse = page.waitForResponse(
+      (response) =>
+        response.url() === fixture.origin + agentPath && response.request().method() === "PATCH",
+    );
+    await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+    assert.equal((await savedResponse).status(), 200);
+    await page.getByText("Authentication source saved.", { exact: true }).waitFor();
+    const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+    await waitForEnabled(deploy);
+    const settings = page.getByLabel("Harness settings", { exact: true });
+    assert.equal(await settings.inputValue(), "default", label);
+    assert.equal(await settings.locator('option[value="custom"]').isDisabled(), true, label);
+    assert.equal(
+      await page
+        .getByText(
+          `This Codex ${label} Source has a fixed destination. Model provider overrides are unavailable.`,
+          { exact: true },
+        )
+        .count(),
+      1,
+    );
+    const deployedResponse = page.waitForResponse(
+      (response) =>
+        response.url() === fixture.origin + `${agentPath}/deploy` &&
+        response.request().method() === "POST",
+    );
+    await deploy.click();
+    const deployed = await deployedResponse;
+    assert.equal(deployed.status(), 202, await deployed.text());
+    assert.deepEqual(object(deployed.request().postDataJSON()).harnessOverrides, {});
+    const revision = object(object(await deployed.json()).data);
+    assert.equal(Object.hasOwn(object(object(revision.harness).overrides), "modelProvider"), false);
+    return { page, agentId, agentPath };
+  }
+  const { page, agentId, agentPath } = await replaceWithFixedSource(patSource, "PAT");
+  await replaceWithFixedSource(oauthSource.id, "OAuth");
 
   // Source read is useful for the Console's destination guidance, but deployment
   // authorization requires operate. A read denial must not invent a new prerequisite.

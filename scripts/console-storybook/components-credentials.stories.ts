@@ -142,6 +142,7 @@ export const AuthMissing = { ...story("authMissing"), name: "No authentication s
 export const ReplaceExistingCredentialSource = story("credentialsReplaceExistingSource");
 export const FirstManagedCredentialSource = story("credentialsFirstManagedSource");
 export const CodexPatFixedDestination = story("credentialsCodexPatFixedDestination");
+export const CodexOAuthFixedDestination = story("credentialsCodexOAuthFixedDestination");
 export const UnsupportedModelCredentialSource = story("credentialsUnsupportedModelSource");
 export const ReplaceCredentialSourceDenied = story("credentialsReplaceSourceDenied");
 export const ExistingCredentialSource = story("credentialsExistingSource");

@@ -157,18 +157,17 @@ export function createModelCredentialSourceField(
     retry,
   );
   function eligibleSource(source: CredentialSourceSummary) {
-    if (purpose === "builtin_codex") {
+    if (source.state !== "ready" || source.connectionTemplateId !== undefined) {
+      return false;
+    }
+    if (source.type === "oauth2-refresh-token") {
       return (
-        source.type === "oauth2-refresh-token" &&
-        source.state === "ready" &&
-        source.connectionTemplateId === undefined &&
+        (purpose === undefined || purpose === "builtin_codex") &&
         source.oauthConsentKind === "builtin_codex"
       );
     }
     return (
       source.type === "static" &&
-      source.state === "ready" &&
-      source.connectionTemplateId === undefined &&
       source.modelPreset !== undefined &&
       (purpose === undefined || source.modelPreset === purpose)
     );
@@ -187,6 +186,9 @@ export function createModelCredentialSourceField(
     } else if (purpose === "builtin_codex") {
       hint.textContent =
         "No matching ready ChatGPT OAuth Credential Sources are readable in this Namespace.";
+    } else if (purpose === undefined) {
+      hint.textContent =
+        "No matching ready model Credential Sources are readable in this Namespace.";
     } else {
       hint.textContent =
         "No matching ready static model Credential Sources are readable in this Namespace.";

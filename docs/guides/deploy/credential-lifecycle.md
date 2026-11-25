@@ -132,8 +132,8 @@ to that issuer, then retry. The refresh Worker also needs issuer connectivity.
 3. For later plugin edits, use the saved Source. Authorized hosted Apps discovery
    resolves a usable access token through TokenService. Another device login is
    needed only when replacing or recovering the connection.
-4. To replace the connection, sign in from the credential editor and save the new
-   Source. Complete **Stop** before deploying the replacement; deploying managed
+4. To replace the connection, choose a compatible existing Source or sign in from
+   the credential editor, then save the Source. Complete **Stop** before deploying the replacement; deploying managed
    credentials over an active revision returns `409`. Once no Agent, active
    revision, or pending deployment references the old Source,
    [delete it](../../reference/credential-sources.md#delete-a-source). A refused

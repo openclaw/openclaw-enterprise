@@ -613,6 +613,17 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
   );
   assert.deepEqual(savedReuse.harnessAuth, reused.harnessAuth);
   assert.deepEqual(savedReuse.credentialSources, reused.credentialSources);
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  const detailSource = page.getByLabel("Existing Credential Source", { exact: true });
+  const originalName = jsonString(
+    jsonObject(listed.find((source) => jsonObject(source).id === originalAuth.sourceId)).name,
+  );
+  await detailSource
+    .getByRole("option", { name: `${originalName} · ${originalAuth.sourceId}` })
+    .waitFor({ state: "attached" });
+  assert.equal(await detailSource.inputValue(), originalAuth.sourceId);
+  assert.equal(await detailSource.locator(`option[value="${replaced.sourceId}"]`).count(), 1);
+  assert.equal(await detailSource.locator(`option[value="${templateSource.id}"]`).count(), 0);
   const reuseRequests = requests.slice(reuseRequestStart);
   assert.equal(
     reuseRequests.some(

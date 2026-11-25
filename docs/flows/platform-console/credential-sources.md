@@ -1,7 +1,7 @@
 ---
 created: 2026-11-25
 updated: 2026-11-25
-last_updated_session: authoring-run/94d8a178-9510-4094-9563-77b4d2369ac1
+last_updated_session: authoring-run/8b9726b9-2263-4930-b132-f170f536f67e
 ---
 
 # Console Credential Source discovery and creation
@@ -53,7 +53,7 @@ The dialog requests the Namespace's usable Connection Templates. This operation 
 
 Submission sends the write-only credential string with either the approved model preset or Template ID to the Source POST route, then clears the input. The Source API authorizes the collection operation; TokenService accepts or rejects registration. Console confirms the returned public Source identity, resource scope, type, state and purpose before showing success. It reloads the filtered inventory before showing the Source in the library; creation does not grant exact Source `read`. If this read refuses Namespace access after creation, Console confirms that creation succeeded and clears both inventories. A denied or uncertain result blocks resubmission. A `409` is uncertain because owner custody can begin before the conflict. Refresh rechecks the inventory. If the Source name is absent, Console keeps the operator-inspection warning because the inventory cannot rule out owner custody. The page also shows this recovery instruction after a browser reload, without persisting the submitted name or value. A Template-associated Source cannot authenticate a model or be admitted directly to an Agent.
 
-The next owner is [Agent creation](agent-creation.md), which uses Compute's endpoint normalization to refuse an incompatible configured OpenClaw model destination before saving Configuration or Agent state. Console cannot confirm Codex's effective Installation destination before save; deployment admission checks it. Agent save checks exact Source `operate` and binds the eligible Source. For a Dedicated Codex draft, `agents/detail.mts:loadDetails` checks the bound Source's public metadata without blocking the draft tabs. Deploy waits for this check. A readable Codex PAT preset removes the retained model provider override and disables new overrides. If the Source cannot be read, Console warns and leaves admission authoritative. Refresh retries the read after access changes.
+The next owner is [Agent creation](agent-creation.md), which uses Compute's endpoint normalization to refuse an incompatible configured OpenClaw model destination before saving Configuration or Agent state. Console cannot confirm Codex's effective Installation destination before save; deployment admission checks it. Agent save checks exact Source `operate` and binds the eligible Source. For a Dedicated Codex draft, `agents/detail.mts:loadDetails` checks the bound Source's public metadata without blocking the draft tabs. Deploy waits for this check. A readable Codex PAT or built-in Codex OAuth Source removes the retained model provider override and disables new overrides. If the Source cannot be read, Console warns and leaves admission authoritative. Refresh retries the read after access changes.
 
 ## Debugging and Verification
 
@@ -72,5 +72,6 @@ The next owner is [Agent creation](agent-creation.md), which uses Compute's endp
 
 ## Changelog
 
+- 2026-11-25 17:14: Trace fixed-destination handling for saved Codex OAuth Sources in the accompanying Console changes. (authoring-run/8b9726b9-2263-4930-b132-f170f536f67e - 3f9d71609ae39e4841355c5a4bf60409f39a609d)
 - 2026-11-25 11:47: Trace Console Source discovery and registration. (authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9 - 105ffee9962176cf42fc7cfe013b8b94831435db)
 - 2026-11-25 08:41: Trace the unified Credentials tab and readable OAuth and Proxy Source inventory in the accompanying changes. (authoring-run/94d8a178-9510-4094-9563-77b4d2369ac1 - 6e4615ac5539e0ca0ae1773c0b469c9d84689ecf)

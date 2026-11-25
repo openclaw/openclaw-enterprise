@@ -5000,13 +5000,13 @@ export async function renderAgentDetail(
           if (!context.isCurrent() || generation !== detailsGeneration) {
             return;
           }
-          if (source.modelPreset === "codex-pat") {
+          if (source.modelPreset === "codex-pat" || source.oauthConsentKind === "builtin_codex") {
             harnessChoice.querySelector('option[value="retain"]')?.remove();
             harnessChoice.querySelector<HTMLOptionElement>('option[value="custom"]')!.disabled =
               true;
             harnessChoice.value = "default";
-            sourceDestinationHint.textContent =
-              "This Codex PAT Source has a fixed destination. Model provider overrides are unavailable.";
+            const kind = source.modelPreset === "codex-pat" ? "PAT" : "OAuth";
+            sourceDestinationHint.textContent = `This Codex ${kind} Source has a fixed destination. Model provider overrides are unavailable.`;
             sourceDestinationHint.hidden = false;
           }
         } catch (cause) {

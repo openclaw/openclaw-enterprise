@@ -82,6 +82,26 @@ const previewCodexPatSource: StaticSource = {
   ...source(codexPatId, "Codex PAT"),
   config: { provider_preset: "codex-pat" },
 };
+const codexOAuthId = "cs_00000000-0000-4000-8000-000000000028";
+const previewCodexOAuthSource: OAuthSource = {
+  id: codexOAuthId,
+  namespaceId,
+  name: "Saved ChatGPT login",
+  type: "oauth2-refresh-token",
+  state: "ready",
+  ref: { kind: "credential_source", namespaceId, id: codexOAuthId },
+  createdAt: "2026-09-01T12:00:00.000Z",
+  consent: {
+    kind: "builtin_codex",
+    ownerPrincipalId: "storybook-operator",
+    requestedScopes: ["openid"],
+    grantedScopes: ["openid"],
+    issuer: "https://auth.openai.com",
+    tokenUrl: "https://auth.openai.com/oauth/token",
+    clientId: "storybook-codex-client",
+    account: { accountId: "storybook-account", planType: "demo", isFedramp: false },
+  },
+};
 
 const path = `/console/secrets?namespace=${namespaceId}`;
 const openExistingSource = [
@@ -351,6 +371,32 @@ export const credentialSourceScenarios = {
     ],
     description:
       "The previous simulated version used an OpenAI Source with a model provider override. After the draft switches to a Codex PAT Source, its exact metadata read identifies the fixed destination. Harness settings selects Use Installation default, does not retain the old model provider override, and disables a new override. Deployment is not exercised.",
+  },
+  credentialsCodexOAuthFixedDestination: {
+    group: "Components/Credentials",
+    name: "Saved Codex OAuth Source with a previous model provider override",
+    path: `/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=${namespaceId}&revision=draft&tab=credentials`,
+    harnessId: "codex",
+    auth: "api-source",
+    deployed: true,
+    harnessOverrides: {
+      modelProvider: {
+        baseUrl: "https://api.openai.com/v1",
+        protocol: "openai-responses",
+        supportsStandaloneWebSearch: false,
+      },
+    },
+    initialCredentialSources: [previewCodexOAuthSource],
+    actions: [
+      { selector: "#harness-auth-existing-source", value: codexOAuthId },
+      click("Save authentication source"),
+      {
+        selector: '.agent-harness-settings:has(option[value="custom"]:disabled) > summary',
+        click: true,
+      },
+    ],
+    description:
+      "The simulated draft replaces an OpenAI Source with a saved built-in Codex OAuth Source. Harness settings drops the old model provider override, selects Use Installation default, and disables a new override. Deployment is not exercised.",
   },
   credentialsUnsupportedModelSource: {
     group: "Components/Credentials",
