@@ -122,7 +122,7 @@ export async function smoke(directory: string | undefined, env: NodeJS.ProcessEn
         "--test",
         "--test-concurrency=1",
         ...(env.IMAGE === "controller"
-          ? ["tests/integration/production-image-startup.test.mjs"]
+          ? ["tests/integration/production-image-startup.test.ts"]
           : runtimeImageSmokeTests),
       ],
       {

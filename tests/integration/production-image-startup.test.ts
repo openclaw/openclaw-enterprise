@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import { asRecord } from "../../packages/utils/src/objects.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
 import {
   assertNoPackagingFailure,
@@ -20,11 +21,13 @@ function productionResourceRequirements() {
   };
 }
 
-function workloadPeer(namespace, labels) {
+function workloadPeer(namespace: string, labels: Record<string, string>) {
   return { namespace, podLabels: labels };
 }
 
-function productionInstallation(adminKeyPath) {
+const adminKeyPath = "/tmp/oce-production-image/admin-key";
+
+function productionInstallation() {
   return {
     occ: { cluster: "production-image-smoke" },
     backend: [
@@ -134,19 +137,18 @@ function productionInstallation(adminKeyPath) {
   };
 }
 
-async function productionFixture(t) {
+async function productionFixture(t: TestContext) {
   const fixture = await mkdtemp(join(tmpdir(), "oce-production-image-"));
   await chmod(fixture, 0o755);
   t.after(() => rm(fixture, { recursive: true, force: true }));
 
-  const adminKeyPath = "/tmp/oce-production-image/admin-key";
   await writeFile(join(fixture, "admin-key"), "test-chatgpt-admin-key\n", {
     encoding: "utf8",
     mode: 0o644,
   });
   await writeFile(
     join(fixture, "installation.json"),
-    `${JSON.stringify(productionInstallation(adminKeyPath), undefined, 2)}\n`,
+    `${JSON.stringify(productionInstallation(), undefined, 2)}\n`,
     { encoding: "utf8", mode: 0o644 },
   );
   // The nonroot container must read these synthetic files under any host umask.
@@ -196,16 +198,21 @@ test(
     assertNoPackagingFailure(passed.stderr);
 
     const path = join(fixture, "installation.json");
-    const installation = JSON.parse(await readFile(path, "utf8"));
+    const installation = productionInstallation();
     const invalidDriver = structuredClone(installation);
     invalidDriver.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
     await writeFile(path, JSON.stringify(invalidDriver), { mode: 0o644 });
     await assert.rejects(
       runDocker(check, { timeout: 60_000 * imageSmokeTimeoutMultiplier }),
       (error) => {
-        assert.equal(error.code, 1);
-        assert.match(error.stderr, /installation-check:.*DRIVER_CONFIGURATION_INVALID/);
-        const details = JSON.parse(error.stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1]);
+        const failure = asRecord(error);
+        assert.equal(failure?.code, 1);
+        const stderr = failure?.stderr;
+        assert.ok(typeof stderr === "string");
+        assert.match(stderr, /installation-check:.*DRIVER_CONFIGURATION_INVALID/);
+        const diagnostic = stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1];
+        assert.ok(diagnostic, "expected structured driver validation diagnostics");
+        const details: unknown = JSON.parse(diagnostic);
         assert.deepEqual(details, [
           {
             path: "/runtime/gatewayStorageClassName",
@@ -214,21 +221,22 @@ test(
               "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
           },
         ]);
-        assert.doesNotMatch(error.stderr, /Bad_Class/);
+        assert.doesNotMatch(stderr, /Bad_Class/);
         return true;
       },
     );
-    installation.presets = { files: ["presets/missing.json"] };
-    await writeFile(path, `${JSON.stringify(installation, undefined, 2)}\n`, {
+    const missingPreset = { ...installation, presets: { files: ["presets/missing.json"] } };
+    await writeFile(path, `${JSON.stringify(missingPreset, undefined, 2)}\n`, {
       encoding: "utf8",
       mode: 0o644,
     });
     await assert.rejects(
       runDocker(check, { timeout: 60_000 * imageSmokeTimeoutMultiplier }),
       (error) => {
-        assert.equal(error.code, 1);
+        const failure = asRecord(error);
+        assert.equal(failure?.code, 1);
         assert.equal(
-          error.stderr,
+          failure?.stderr,
           "installation-check: API and worker startup would refuse the Installation (PRESET_FILE_INVALID): presets.files: Preset file /tmp/oce-production-image/presets/missing.json is unavailable.\n",
         );
         return true;
@@ -282,7 +290,9 @@ test("production image includes console shell and public assets", imageTestOptio
     "{{json .Config.Labels}}",
     image,
   ]);
-  const revision = JSON.parse(labels)?.["org.opencontainers.image.revision"] ?? "";
+  const parsedLabels: unknown = JSON.parse(labels);
+  const revision = asRecord(parsedLabels)?.["org.opencontainers.image.revision"] ?? "";
+  assert.ok(typeof revision === "string", "expected a string image revision label");
   const probe = String.raw`
     import assert from "node:assert/strict";
     import { execFileSync } from "node:child_process";
