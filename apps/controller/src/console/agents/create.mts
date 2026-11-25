@@ -4032,8 +4032,9 @@ function renderAgentForm(
       return;
     }
     if (usesExistingModelSource() && !modelSourceProvider(values, harness.value, mode.value)) {
-      feedback.textContent =
-        "The existing Credential Source cannot be used with this model provider or destination. Update the Configuration JSON or choose compatible authentication.";
+      configurationError.show(
+        "The existing Credential Source cannot be used with this model provider or destination. Update the Configuration JSON or choose compatible authentication.",
+      );
       focusConfiguration();
       return;
     }

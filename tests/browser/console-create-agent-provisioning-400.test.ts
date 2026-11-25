@@ -1018,12 +1018,16 @@ test("Create Agent reuses a Source without enrolling it; replacement persists th
   object(object(object(custom.models).providers).openai).baseUrl = "https://models.example.test/v1";
   await configuration.fill(JSON.stringify(custom, null, 2));
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page
-    .getByText(
-      "The existing Credential Source cannot be used with this model provider or destination.",
-      { exact: false },
-    )
-    .waitFor();
+  const mismatch = page.getByText(
+    "The existing Credential Source cannot be used with this model provider or destination.",
+    { exact: false },
+  );
+  await mismatch.waitFor();
+  const mismatchBounds = await mismatch.boundingBox();
+  assert.ok(
+    mismatchBounds && mismatchBounds.y >= 0 && mismatchBounds.y < page.viewportSize()!.height,
+  );
+  assert.equal(await configuration.getAttribute("aria-invalid"), "true");
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   await configuration.fill(originalConfiguration);
