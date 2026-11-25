@@ -19,6 +19,7 @@ export function stagedCredentialPolicies(
   revision: Readonly<AgentRevision>,
   snapshot: SandboxPolicySnapshot,
   activeBindingRefs?: ReadonlySet<string>,
+  nativeSourceOwner = false,
 ): {
   readonly idle: Readonly<Record<string, unknown>>;
   readonly admitted: Readonly<Record<string, unknown>>;
@@ -30,6 +31,7 @@ export function stagedCredentialPolicies(
   const { credentialRoutes: routes, publicRoutes } = compileOpenShellCredentialPolicy(
     deployment,
     snapshot.defaults,
+    nativeSourceOwner,
   );
   const httpDestinations = [...routes, ...publicRoutes];
   const networks = asRecord(policy.network_policies);

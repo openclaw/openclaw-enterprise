@@ -4,12 +4,19 @@ import { once } from "node:events";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
-import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  openShellProviderName,
+  openShellSourceCredentialEnvironment,
+} from "../../apps/controller/src/backends/openshell.ts";
 import {
   stagedHarnessSupervisor,
   STAGED_HARNESS_ACTIVATE,
   STAGED_HARNESS_PREPARE,
 } from "../../apps/controller/src/drivers/sandbox/openshell-staged-harness.ts";
+import {
+  MANAGED_PLUGIN_CREDENTIAL_HELPER,
+  managedCredentialAliasesEnvironment,
+} from "../../apps/controller/src/drivers/sandbox/openshell-plugin-runtime.ts";
 import { supportsOpenShellCredentialDeployment } from "../../apps/controller/src/composition/openshell-credential-admission.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import {
@@ -533,9 +540,107 @@ export async function verifyStagedCodexAccountProjection(t: TestContext): Promis
   assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), { placeholder, account });
 }
 
+export async function verifyStagedNativeSourceProjection(t: TestContext): Promise<void> {
+  const home = await temporaryDirectory(t, "staged-native-source-");
+  const marker = join(home, "launch.json");
+  const modelAlias = openShellSourceCredentialEnvironment("cs_model_fixture");
+  const pluginAlias = openShellSourceCredentialEnvironment("cs_plugin_fixture");
+  const modelPlaceholder = `openshell:resolve:env:s${"a".repeat(64)}_${modelAlias}`;
+  const pluginPlaceholder = `openshell:resolve:env:s${"b".repeat(64)}_${pluginAlias}`;
+  const launcher = stagedHarnessSupervisor([
+    process.execPath,
+    "-e",
+    `${MANAGED_PLUGIN_CREDENTIAL_HELPER}
+require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+  model: process.env.OPENAI_API_KEY,
+  plugin: process.env.GOOGLE_TOKEN,
+  pluginAccepted: isManagedPluginPlaceholder("GOOGLE_TOKEN", process.env.GOOGLE_TOKEN, "cli"),
+  wrongSourceAccepted: isManagedPluginPlaceholder("GOOGLE_TOKEN", process.env.OPENAI_API_KEY, "cli"),
+  modelAliasPresent: Object.hasOwn(process.env, ${JSON.stringify(modelAlias)}),
+  pluginAliasPresent: Object.hasOwn(process.env, ${JSON.stringify(pluginAlias)}),
+  aliasMapPresent: Object.hasOwn(process.env, ${JSON.stringify(managedCredentialAliasesEnvironment)})
+}));`,
+  ]);
+  const supervisor = spawn(process.execPath, ["-e", launcher], {
+    env: {
+      ...process.env,
+      HOME: home,
+      [modelAlias]: "inherited-model-value",
+      [pluginAlias]: "inherited-plugin-value",
+      [managedCredentialAliasesEnvironment]: JSON.stringify({ GOOGLE_TOKEN: modelAlias }),
+    },
+    stdio: "ignore",
+  });
+  t.after(() => supervisor.kill());
+  await waitFor(
+    "native Source staged supervisor",
+    () => existsSync(join(home, ".oce-staged-harness.sock")),
+    5000,
+  );
+  const projections = [
+    {
+      bindingRef: "model",
+      environment: "OPENAI_API_KEY",
+      placeholder: { kind: "runtime" },
+      runtimeEnvironment: modelAlias,
+    },
+    {
+      bindingRef: "plugin",
+      environment: "GOOGLE_TOKEN",
+      placeholder: { kind: "runtime" },
+      runtimeEnvironment: pluginAlias,
+      plugin: true,
+    },
+  ];
+  const prepare = spawnSync(process.execPath, ["-e", STAGED_HARNESS_PREPARE], {
+    env: { ...process.env, HOME: home },
+    input: JSON.stringify(projections),
+  });
+  assert.equal(prepare.status, 0);
+
+  // Activation must refuse a Provider placeholder for the wrong Source, before launching the Harness.
+  const wrong = spawnSync(process.execPath, ["-e", STAGED_HARNESS_ACTIVATE], {
+    env: {
+      ...process.env,
+      HOME: home,
+      [modelAlias]: modelPlaceholder,
+      [pluginAlias]: modelPlaceholder,
+    },
+  });
+  assert.notEqual(wrong.status, 0);
+  assert.equal(existsSync(marker), false);
+  const activate = spawnSync(process.execPath, ["-e", STAGED_HARNESS_ACTIVATE], {
+    env: {
+      ...process.env,
+      HOME: home,
+      [modelAlias]: modelPlaceholder,
+      [pluginAlias]: pluginPlaceholder,
+    },
+  });
+  assert.equal(activate.status, 0);
+  await waitFor("native Source staged launch", () => existsSync(marker), 5000);
+
+  // Only the requested consumer projections survive; the native aliases and private mapping do not.
+  assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), {
+    model: modelPlaceholder,
+    plugin: pluginPlaceholder,
+    pluginAccepted: true,
+    wrongSourceAccepted: false,
+    modelAliasPresent: false,
+    pluginAliasPresent: false,
+    aliasMapPresent: false,
+  });
+}
+
 export async function stagedManagedMcpPolicy(): Promise<Record<string, unknown>> {
   const gateway = workspaceGatewayClient();
-  const driver = openShellDriver(gateway, openShellWorkspaceHarnessConfiguration());
+  const configuration = openShellWorkspaceHarnessConfiguration();
+  const occBackend = backendFor(gateway);
+  const driver = new OpenShellSandboxDriver(configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: occBackend,
+  });
   const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
   fixture.requirements.credentialAttachments = [];
   const modelGrant = {
@@ -633,13 +738,81 @@ export async function stagedManagedMcpPolicy(): Promise<Record<string, unknown>>
     id: driver.id,
     implementation: driver.implementation,
     tokenServiceImplementation: "occ/token-service",
-    backend: backendFor(gateway),
+    backend: occBackend,
     sandbox: driver,
   });
   assert.equal(
     supportsOpenShellCredentialDeployment({ sandbox: driver, proxy, policy: credentialDeployment }),
     true,
   );
+  const nativeBackend = {
+    ...occBackend,
+    drivers: { sandbox: driver.id, token_service: "openshell-token-service" },
+  };
+  const nativeDriver = new OpenShellSandboxDriver(configuration, {
+    id: driver.id,
+    implementation: driver.implementation,
+    backend: nativeBackend,
+  });
+  const nativeProxy = new OpenShellCredentialProxyDriver({
+    id: driver.id,
+    implementation: driver.implementation,
+    tokenServiceImplementation: "openshell/token-service",
+    backend: nativeBackend,
+    sandbox: nativeDriver,
+  });
+  assert.equal(
+    supportsOpenShellCredentialDeployment({
+      sandbox: nativeDriver,
+      proxy: nativeProxy,
+      policy: credentialDeployment,
+    }),
+    true,
+  );
+  // Structural Driver-contract backstop: a Plugin Driver can describe two static-bearer
+  // consumers whose Template permits both routes. The bundled catalog cannot currently
+  // produce this pairing, so this does not claim a reachable bundled Plugin scenario.
+  const sharedPluginSource = { ...slack.sourceRef, id: "cs_shared_plugin" };
+  const pluginRequests = ["one", "two"].map((name) => ({
+    binary: "/usr/local/bin/node",
+    host: `${name}.example.test`,
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http" as const, method: "GET", path: "/api" },
+  }));
+  const pluginBindings = ["one", "two"].map((name): DeploymentCredentialBinding => ({
+    bindingRef: JSON.stringify(["plugin", `fixture-plugin:${name}`, "token", "default"]),
+    sourceRef: sharedPluginSource,
+    consumer: {
+      kind: "plugin",
+      pluginId: `fixture-plugin:${name}`,
+      requirement: "token",
+      connection: "default",
+    },
+    projection: { environment: `PLUGIN_${name.toUpperCase()}_TOKEN`, presentation: "bearer" },
+  }));
+  const duplicateSource = {
+    ...credentialDeployment,
+    networkAccessPolicy: { allowed: pluginRequests },
+    bindings: pluginBindings,
+    injectionPolicies: pluginBindings.map(({ bindingRef }, index) => ({
+      bindingRef,
+      allowedRequests: [pluginRequests[index]!],
+    })),
+  };
+  assert.equal(gateway.sandboxes.size, 0);
+  assert.equal(
+    supportsOpenShellCredentialDeployment({
+      sandbox: nativeDriver,
+      proxy: nativeProxy,
+      policy: duplicateSource,
+    }),
+    false,
+  );
+  assert.equal(
+    supportsOpenShellCredentialDeployment({ sandbox: driver, proxy, policy: duplicateSource }),
+    true,
+  );
+  assert.equal(gateway.sandboxes.size, 0);
 
   // Matching network and injection rules cannot move a managed credential off its reviewed endpoint.
   const movedRequests = requests.map((request) => ({ ...request, host: "mcp.example.test" }));
