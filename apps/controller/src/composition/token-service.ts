@@ -14,7 +14,6 @@ import {
   type OpenClawController,
   type PlatformStateStore,
 } from "@openclaw-enterprise/occ";
-import { asRecord } from "@openclaw-enterprise/utils";
 import type { FastifyInstance } from "fastify";
 
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
@@ -57,7 +56,7 @@ async function credentialStoreIdentity(
   return value;
 }
 
-/** Install the selected owner after the private Secret store is available. */
+/** Activate and install the selected TokenService owner. */
 export async function installTokenServiceDriver(
   controller: OpenClawController,
   drivers: InstallationRuntimeDrivers | undefined,
@@ -77,35 +76,10 @@ export async function installTokenServiceDriver(
     if (!backend || !(delivery instanceof OpenShellCredentialProxyDriver)) {
       throw new Error("The OpenShell TokenService requires its paired native Credential Proxy.");
     }
-    const client = backend.client.clientForNamespace("");
-    const readStoreIdentity = async (signal: AbortSignal) => {
-      const [workspace, info] = await Promise.all([
-        client.getWorkspace("default", signal),
-        client.getGatewayInfo?.(signal),
-      ]);
-      const extensions = Array.isArray(info?.extensions) ? info.extensions : [];
-      const credentialDrivers = extensions.map(asRecord).filter((extension) => {
-        const kind = extension?.kind;
-        return kind === 2 || kind === "EXTENSION_KIND_CREDENTIAL_DRIVER";
-      });
-      const credentialStore = credentialDrivers[0];
-      if (
-        workspace?.name !== "default" ||
-        !workspace.id ||
-        !uuid.test(workspace.id) ||
-        (workspace.phase !== "WORKSPACE_PHASE_ACTIVE" && workspace.phase !== 1) ||
-        credentialDrivers.length !== 1 ||
-        credentialStore?.configured_name !== "openshell-driver-db-credstore" ||
-        credentialStore.implementation_name !== "openshell/openshell-driver-db-credstore"
-      ) {
-        throw new DependencyUnavailableError(
-          "The OpenShell TokenService preview requires the Gateway's local credential store.",
-        );
-      }
-      // The Gateway persists this undeletable Workspace in the same database as local Providers.
-      return workspace.id;
-    };
-    const storeIdentity = await readStoreIdentity(AbortSignal.timeout(30_000));
+    const storeIdentity = await OpenShellTokenServiceDriver.readStoreIdentity(
+      backend,
+      AbortSignal.timeout(30_000),
+    );
     const instanceId = await controller.activateTokenServiceInstance(
       selection.id,
       `openshell:${backend.id}:${storeIdentity}`,
@@ -114,11 +88,9 @@ export async function installTokenServiceDriver(
       id: selection.id,
       tokenServiceInstanceId: instanceId,
       backend,
+      storeIdentity,
       state,
-      resolveNamespace: async (namespace, signal) => {
-        if ((await readStoreIdentity(signal)) !== storeIdentity) {
-          throw new DependencyUnavailableError("The OpenShell TokenService store changed.");
-        }
+      resolveNamespace: async (namespace) => {
         const placed = await drivers.computeDriver.resolveSandboxNamespace?.(namespace);
         if (!placed) {
           throw new DependencyUnavailableError(

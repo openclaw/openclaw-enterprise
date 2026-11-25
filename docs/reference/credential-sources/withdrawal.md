@@ -25,7 +25,7 @@ records `revoked` after that receipt reaches `REVOKED`, or after Proxy independe
 the withdrawal `pending` with `DEPENDENCY_UNAVAILABLE` for retry. Proxy retains an OpenShell Provider
 still attached to another Agent and retires its owned Provider and profile after the last binding is
 removed. TokenService keeps the Source and its credential; other Agents using that Source retain their
-access.
+access. With OpenShell custody, the authoritative Provider and profile remain until Source deletion.
 
 For other supported delivery paths, the Worker detaches the Source from the version's Sandbox. The
 Worker records `revoked` only after the selected delivery owner confirms revocation. While confirmation

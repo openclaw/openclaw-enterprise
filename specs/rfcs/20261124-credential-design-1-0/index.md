@@ -103,11 +103,11 @@ OCC derives injection authority from the Source and the consumer's requested ope
 
 ## Refresh, retry, and withdraw
 
-TokenService issues and renews credentials. After a commit, it notifies the Proxy with the Source reference and version if known. If a delivery resource exists, the Proxy resolves the current value, updates the resource, and acknowledges only when every serving copy can use that version. Otherwise, notification succeeds without resolving material or creating a resource. OpenShell can renew its Provider.
+TokenService commits updates before notifying Credential Proxy. For OCC custody, Proxy resolves the credential only for existing delivery copies, updates them, and waits for each serving copy to load the version. With OpenShell custody, TokenService updates the authoritative Provider; Proxy checks its version. A manual push verifies metadata, not Harness consumption.
 
 If delivery fails after commit, the replacement remains authoritative. OCC reports delivery separately from issuance or refresh, and authorized operators can retry the push. On main, the OCC API schedules Git renewal through TokenService. Before renewal is due, it retries recorded pending delivery with the committed version. This narrows the earlier [automatic-retry deferral](token-service-instance-and-updates.md#notify-the-proxy-when-a-credential-changes). Detecting missed notifications without a pending record and broad reconciliation remain deferred.
 
-Withdrawal detaches the Agent binding and removes request authority. Other Agents can still use the Source. Stop removes the deployment but preserves Source registration. The Proxy retires its delivery resource after the last binding is removed. OCC refuses deletion while blocking references remain. After delivery cleanup, TokenService removes the Source and authoritative material.
+Withdrawal removes the Agent's request authority and detaches its binding. Other Agents retain access. Stop removes the deployment but preserves Source registration. Proxy retires only its delivery copies after the last detach. OpenShell custody keeps the authoritative Provider until Source deletion. OCC refuses deletion while blocking references remain; TokenService then removes the Source and custody.
 
 ## Examples
 

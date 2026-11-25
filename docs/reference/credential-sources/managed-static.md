@@ -64,9 +64,11 @@ If the private-store write cannot be confirmed, registration can fail while leav
 
 A development Installation can select `drivers.token_service: { id: openshell, configuration: {} }` and add `token_service: openshell` to the selected OpenShell Backend's `drivers`. Use the bundled Kubernetes Compute and OpenShell Sandbox and Credential Proxy. Configure one fixed HTTPS Gateway endpoint with authenticated management access. Direct Provider attachment uses that management connection. Configure separate operator mTLS only for authorized control-plane callers that need to read the credential.
 
-Use a Gateway that keeps its Provider records and credentials in its own database. OCC uses the Gateway database's built-in `default` Workspace ID to recognize the store and refuses advertised external credential drivers. The management identity must be able to read Gateway info and the default Workspace. PostgreSQL stores each Source's private Workspace and Provider IDs. The selected TokenService stores the credential in the Source's OpenShell Provider, which the Proxy attaches directly.
+Use a Gateway that keeps its Provider records and credentials in its own database. OCC requires an active built-in `default` Workspace UUID and exactly one advertised credential driver: `openshell-driver-db-credstore` of type `openshell/openshell-driver-db-credstore`. TokenService rechecks the store identity before Workspace operations. The management identity must be able to read Gateway info and the default Workspace. PostgreSQL stores each Source's private Workspace and Provider IDs. TokenService stores the credential in that Provider, which Proxy attaches directly.
 
-The preview accepts static Sources with the `openai` preset and the single model binding. Provider RPCs still select by name. If an administrator deletes and recreates a Workspace, Provider, or Profile between verification and mutation, the Gateway can act on the replacement. Keep this preview in disposable development state. [OpenShell #5931](https://github.com/ai-openshell/openshell/issues/5931)
+The preview accepts static Sources with the `openai` preset and the single model binding. Credentials must not exceed 8,192 UTF-8 bytes. POST or PATCH returns `400` for a larger credential before changing Gateway resources. Provider RPCs still select by name. If an administrator deletes and recreates a Workspace, Provider, or Profile between verification and mutation, the Gateway can act on the replacement. Keep this preview in disposable development state. [OpenShell #5931](https://github.com/ai-openshell/openshell/issues/5931)
+
+Live Agent rotation and withdrawal with OpenShell custody remain unverified.
 
 ## Deploy an Agent with the source
 
