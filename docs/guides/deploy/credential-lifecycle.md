@@ -150,16 +150,16 @@ remains available to its other bindings.
 Codex OAuth login is experimental. Use dedicated Codex with OCC TokenService,
 the OpenShell Sandbox, and native Credential Proxy. [Driver setup](../integrations/drivers.md#configure-managed-credential-delivery)
 
-1. From the intended owner's signed-in Console session, open **Create Agent**,
-   choose **ChatGPT OAuth (Experimental)**, then open the
-   verification link and complete sign-in using the displayed code.
-2. Select **Create Agent**. Confirm that the deployer and Agent service principal
-   have exact Source `operate` access, then deploy from the draft that opens.
-   The Installation must allow the [preset requests](../../reference/credential-sources.md#codex-account-model-requests)
-   for the Codex executable. Verify a model response.
-3. For later Plugin edits, select the saved Source. For reauthorization, sign
-   in again, select the replacement Source, stop the running Agent, and deploy
-   the new draft. Delete the old Source after removing its Agent references.
+Complete [Installation setup](deploy-first-agent.md#prepare-the-installation), then
+follow the [personally owned Codex login procedure](deploy-first-agent.md#use-a-personally-owned-codex-login)
+to create and deploy the Agent, including browser chat and the Kubernetes peer
+policies. The Installation must allow the
+[preset requests](../../reference/credential-sources.md#codex-account-model-requests)
+for the Codex executable. Verify a model response.
+
+For later Plugin edits, select the saved Source. For reauthorization, sign in
+again, select the replacement Source, stop the running Agent, and deploy the
+new draft. Delete the old Source after removing its Agent references.
 
 Starting a login requires Agent-create and Source-create permissions in the
 Namespace. For an existing Agent, exact Agent `read` and `update` replace

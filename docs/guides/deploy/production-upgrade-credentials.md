@@ -2,10 +2,11 @@
 
 Before stopping Agents for an upgrade from Credential Gateway or Credential
 Refresh, inventory each affected Namespace, Source type and ID, Agent binding,
-active and retained Repository revision, and pending operation without recording
-credential values. A retained standalone v8 Repository revision without
-Source-backed authorization blocks the migration even after Stop. Legacy Gateway
-OAuth client-credentials tool Sources are dropped and have no TokenService
+active revision, retained Agent revisions with Repository credentials, and pending
+operation without recording credential values. A retained standalone v8 Agent
+revision blocks migration if it has Repository credentials without Source-backed
+authorization, even after Stop. Legacy Gateway OAuth client-credentials tool
+Sources are dropped and have no TokenService
 successor. Obtain an approved disposition for retained revisions and a replacement
 workflow for those tools before starting the cutover. Keep the inventory for
 the OpenShell operator. Existing OAuth grant or confidential Client custody

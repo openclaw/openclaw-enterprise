@@ -51,18 +51,49 @@ If you already have a ready TokenService Source in this Namespace, set
 `modelSource` to its ID and continue to [Agent creation](#2-create-the-configuration-and-agent).
 Otherwise, use one of the methods below.
 
+### Use a personally owned Codex login
+
+The Console user who starts the login owns the resulting Source.
+
+1. In the intended person's signed-in Console session, select the same Namespace
+   as the operator session and open **Create Agent**. Name the Agent **fred**,
+   choose dedicated Codex and **ChatGPT OAuth (Experimental)**, and select
+   **Enable browser chat**. The checkbox is initially unchecked and requires
+   [native browser setup](native-admin.md). Complete Codex sign-in.
+2. Select **Create Agent**. The saved draft opens. Confirm that the deployer and
+   Agent service principal can operate the selected Source.
+3. In the prepared operator shell, check the deployment's network prerequisites:
+
+   ```bash
+   deployment_preflight
+   ```
+
+4. In the Console draft, select **Deploy new version**. From the URL that opens,
+   copy the Agent ID, the `revision` value, and the `namespace` value.
+5. In the same operator shell, match the Namespace and wait for that submitted
+   deployment:
+
+   ```bash
+   agent='<Agent ID from the Console URL>'
+   revision='<revision from the Console URL>'
+   test "$namespace" = '<namespace from the Console URL>' &&
+     wait_deployment "$revision" &&
+     modelSource=$(request GET "$base/agents/$agent/revisions/$revision" |
+       jq -er '.data.harnessAuth | select(.method == "credential_source") | .sourceId')
+   ```
+
+   On Kubernetes and EKS, this applies the required Agent Service peer policies
+   before checking deployment success. It does not submit another deployment.
+   The saved Source ID supports the later Codex Apps procedure.
+   Continue to [Control UI onboarding](#4-complete-onboarding-in-the-control-ui).
+
 ### Sign in with Codex OAuth
 
 This operator shell authenticates as an OCC service principal. That principal
 will own the Source, even if another person completes Codex sign-in. A different
 person needs exact `credential_source:delete` permission to disconnect it.
-For personal ownership, start from the intended person's Console session:
-choose **Create Agent → ChatGPT OAuth (Experimental)**, complete sign-in,
-select **Create Agent**, then deploy from the draft that opens. Use that draft
-instead of the shell creation steps below. See
-[personal Codex login](credential-lifecycle.md#use-a-personal-codex-login).
-
-For a service-principal-owned Source, start device login below. Open the returned
+For personal ownership, use the [Console procedure above](#use-a-personally-owned-codex-login).
+Otherwise, start device login below. Open the returned
 verification URL and enter the code there. Keep the code and saved response private.
 
 ```bash
