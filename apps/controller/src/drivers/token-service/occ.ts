@@ -16,7 +16,6 @@ import type {
   ErrorDetail,
   GitHubAppClient,
   GitHubAppInstallationCredentialSource,
-  GitHubAppInstallationScope,
   PrivateSecretRef,
   PrivateSecretStore,
   JSONSchema,
@@ -506,7 +505,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     } catch (error) {
       if (!(error instanceof PostgresCommitOutcomeUnknownError)) {
         await this.githubAppIssuer
-          .revoke(source.scope, installationToken.credential, AbortSignal.timeout(3_000))
+          .revoke(installationToken.credential, AbortSignal.timeout(3_000))
           .catch(() => false);
       }
       throw error;
@@ -928,7 +927,6 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   }
 
   private async retireGitHubAppCredential(
-    scope: GitHubAppInstallationScope,
     stored: PrivateSecretRef,
     signal: AbortSignal,
   ): Promise<void> {
@@ -943,7 +941,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     ) {
       return;
     }
-    if (!(await this.githubAppIssuer.revoke(scope, current.credential, signal))) {
+    if (!(await this.githubAppIssuer.revoke(current.credential, signal))) {
       throw new ResourceStateConflictError(
         "GitHub App Source credential retirement is unconfirmed.",
       );
@@ -1005,7 +1003,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         const stored = this.storageRef(ref);
         const githubApp = found.type === "github-app-installation";
         if (githubApp) {
-          await this.retireGitHubAppCredential(found.scope, stored, signal);
+          await this.retireGitHubAppCredential(stored, signal);
         }
         // Erase material before deletion; an installation Secret may remain terminating under a finalizer.
         await withoutMutationDeadline(() =>
