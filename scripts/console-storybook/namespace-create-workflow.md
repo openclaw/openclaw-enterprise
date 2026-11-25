@@ -19,13 +19,13 @@ in-memory storage for those API boundaries.
 3. Open **Create Required**: the inline error describes the focused field.
    In **Create Invalid Name**, the pasted tab is refused at the field; replace
    it with a space and the error clears. More than 200 characters is refused too.
-   In **Create Conflict**, the refusal for **Engineering** describes the
-   name field alongside its usual help. There is no request ID. Enter another
-   name and pause before submitting. The refusal disappears and the help
-   remains. Enter **Engineering** again. The refusal returns without another
-   request. Editing the name does not check availability.
-   In **Create Denied**, inspect the access
-   guidance, its request ID for support, and the disabled submit. In
+   In **Create Conflict**, the refusal for **Engineering** appears in place
+   of the dialog introduction. The field keeps its help and focus. There is
+   no request ID. Enter another name and pause before submitting. The
+   introduction returns. Enter **Engineering** again. The refusal returns
+   without another request. Editing the name does not check availability.
+   In **Create Denied**, inspect the access guidance, its request ID for
+   support, and the disabled submit. In
    **Create refused, then closed**, the closed form leaves **Create Namespace** disabled
    with its reason focused; the reason says to select **Refresh** after an administrator
    grants access, and Refresh offers **Create Namespace** again.

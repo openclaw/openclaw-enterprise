@@ -331,6 +331,7 @@ export function renderNamespaces(
       // A 409 describes this attempt, without making the name invalid or blocking a retry.
       if (conflict) {
         const matches = name.value.trim() === conflict.name;
+        description.hidden = matches;
         conflict.alert.hidden = !matches;
         setDescription(name, conflict.alert.id, matches);
       }
@@ -504,6 +505,8 @@ export function renderNamespaces(
       const submittedName = name.value.trim();
       if (conflict) {
         setDescription(name, conflict.alert.id, false);
+        conflict.alert.remove();
+        description.hidden = false;
         conflict = undefined;
       }
       feedback.replaceChildren();
@@ -571,13 +574,20 @@ export function renderNamespaces(
           // it is edited (finding 2046).
           feedback.replaceChildren(...requestId);
           name.setCustomValidity(message);
+        } else if (error.status === 409) {
+          // Keep the dialog description linked while the conflict takes its place above the field.
+          const alert = element(
+            "p",
+            { id: "create-namespace-refusal", role: "alert" },
+            element("span", { className: "error" }, message),
+          );
+          feedback.replaceChildren();
+          description.after(alert);
+          conflict = { name: submittedName, alert };
+          showConflict();
         } else {
           refusal = statusBlock("danger", null, message, [], { id: "create-namespace-refusal" });
           feedback.replaceChildren(refusal, ...requestId);
-          if (error.status === 409) {
-            conflict = { name: submittedName, alert: refusal };
-            showConflict();
-          }
         }
         // A refused or unconfirmed creation leaves the name and Create Namespace in the Tab
         // order, described by the alert that says why (finding 2935); focus moves to Cancel.

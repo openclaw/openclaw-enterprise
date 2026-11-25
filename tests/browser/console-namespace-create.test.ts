@@ -172,8 +172,12 @@ test("a Namespace name conflict keeps the form editable for correction", async (
   // The API's own sentence: a live Namespace has the name (not one a deleted Namespace keeps).
   const conflict = dialog.getByRole("alert").filter({ hasText: NAMESPACE_NAME_CONFLICT });
   const described = dialog.getByRole("textbox", { description: NAMESPACE_NAME_CONFLICT });
+  const withHelp = dialog.getByRole("textbox", {
+    description: "Names cannot currently be changed.",
+  });
   await conflict.waitFor();
   assert.equal(await described.count(), 1);
+  assert.equal(await withHelp.count(), 1);
   // A taken name is the reader's to fix: no request ID beside it (finding 2102).
   assert.equal(await dialog.getByText(/Request ID/).count(), 0);
   assert.equal(await name.inputValue(), " Existing team ");
@@ -185,6 +189,7 @@ test("a Namespace name conflict keeps the form editable for correction", async (
   await page.keyboard.type("2");
   assert.equal(await conflict.isVisible(), false);
   assert.equal(await described.count(), 0);
+  assert.equal(await withHelp.count(), 1);
   await page.keyboard.press("Backspace");
   await page.keyboard.press("Backspace");
   assert.equal(await conflict.isVisible(), true);
@@ -322,7 +327,7 @@ test("a rate-limited or malformed creation answer is reported, not shown as crea
     {
       status: 201,
       contentType: "application/json",
-      json: { data: { id: "ns_fake", name: "Odd team", status: "ready" } },
+      json: { data: { id: "ns_fake", name: "Another team", status: "ready" } },
     },
   ];
   await page.route(`${fixture.origin}/namespaces`, (route) =>
