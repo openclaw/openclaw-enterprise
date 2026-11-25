@@ -29,7 +29,7 @@ limited to eligible tests can include allowlisted docs and matching edits to
 existing lane manifests. CI selects the lanes that own those tests and adds
 `Checks and Conformance 2` for TypeScript tests.
 For other changes, CI Impact selects `full` mode and runs all ordinary lanes.
-A failed CI run for a push to `main` blocks container and CLI publication for that commit.
+A failed CI run for a push to `main` blocks standalone container and CLI publication for that commit.
 
 For a main push that modifies one registered test, the `CI main test advisory v2`
 notice in `CI Impact` can list the predicted lanes and the verified before and

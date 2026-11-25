@@ -22,7 +22,7 @@ Stop the laptop port-forward. For each run directory used by this installation, 
 ```bash
 delete_service_peers
 if [[ -f $RUN_DIR/listener.json ]]; then kube delete -f "$RUN_DIR/listener.json" --ignore-not-found; fi
-kube -n "$PLATFORM_NS" delete networkpolicy oce-initialization-dns-vip oce-controller-openshell-management --ignore-not-found
+kube -n "$PLATFORM_NS" delete networkpolicy oce-initialization-dns-vip --ignore-not-found
 ```
 
 | Created or used during setup                                                                                                        | Cleanup outcome                                                                                            |

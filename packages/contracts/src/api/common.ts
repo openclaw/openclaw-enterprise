@@ -36,6 +36,7 @@ export const ConfigurationId = Type.String({ pattern: `^cfg_${UUID_V4}$` });
 export const ServiceAccountId = Type.String({ pattern: `^sa_${UUID_V4}$` });
 export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
 export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
+export const CredentialClientId = Type.String({ pattern: `^ccr_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMAccessBindingId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMServicePrincipalId = Type.String({ minLength: 1, maxLength: 200 });
@@ -460,29 +461,10 @@ export const CreateCredentialSourceBody = Type.Object(
     config: Type.Optional(CredentialSourceConfig),
     secrets: Type.Optional(CredentialSourceSecrets),
   },
-  { additionalProperties: false },
-);
-
-export const UpdateCredentialSourceBody = Type.Object(
-  {
-    adoption: Type.Optional(
-      Type.Literal("live", {
-        description:
-          "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
-      }),
-    ),
-    authorityScope: Type.Optional(
-      Type.Literal("execution", {
-        description:
-          "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
-      }),
-    ),
-    secrets: Type.Optional(CredentialSourceSecrets),
-  },
   {
     additionalProperties: false,
     description:
-      "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+      "Register a prepared or credential-free Source offered by the selected Credential Proxy.",
   },
 );
 
@@ -546,13 +528,6 @@ export const DiscoverAgentModelsBody = Type.Object(
   { additionalProperties: false },
 );
 
-const PluginDiscoveryAccessToken = Type.String({
-  minLength: 1,
-  maxLength: 16384,
-  pattern: "\\S",
-  writeOnly: true,
-});
-
 export const PluginCatalogHarnessId = Type.Union([Type.Literal("openclaw"), Type.Literal("codex")]);
 
 const PluginCatalogPageFields = {
@@ -572,30 +547,24 @@ export const DiscoverAgentPluginsBody = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object(PluginCatalogPageFields, { additionalProperties: false }),
-  Type.Object(
-    { ...PluginCatalogPageFields, accessToken: PluginDiscoveryAccessToken },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    { ...PluginCatalogPageFields, secretRef: SecretReference },
-    { additionalProperties: false },
-  ),
 ]);
 
 export const DiscoverAgentPluginDetailsBody = Type.Union([
+  Type.Object(
+    {
+      ...PluginCatalogDetailsFields,
+      managedConnection: Type.Object(
+        { slot: Type.String({ minLength: 1, maxLength: 64 }), sourceId: CredentialSourceId },
+        { additionalProperties: false },
+      ),
+    },
+    { additionalProperties: false },
+  ),
   Type.Object(
     { ...PluginCatalogDetailsFields, credentialSource: CredentialSourceReference },
     { additionalProperties: false },
   ),
   Type.Object(PluginCatalogDetailsFields, { additionalProperties: false }),
-  Type.Object(
-    { ...PluginCatalogDetailsFields, accessToken: PluginDiscoveryAccessToken },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    { ...PluginCatalogDetailsFields, secretRef: SecretReference },
-    { additionalProperties: false },
-  ),
 ]);
 
 export const DiscoverSavedAgentPluginsBody = Type.Object(
@@ -721,11 +690,7 @@ export const UpdateConfigurationBody = Type.Object(
 
 export const ServiceAccountCredentialSchema = Type.Object(
   {
-    kind: Type.Union([
-      Type.Literal("api_key"),
-      Type.Literal("access_token"),
-      Type.Literal("oauth_access_token"),
-    ]),
+    kind: Type.Union([Type.Literal("api_key"), Type.Literal("oauth_access_token")]),
     secretRef: Type.Object(
       {
         name: Type.String({
@@ -774,21 +739,25 @@ export const RepositoryBindingSelectionSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const RepositoryBindingRequestsSchema = Type.Array(RepositoryBindingRequestSchema, {
-  maxItems: 16,
-  description:
-    "Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references.",
-});
-
 export const RepositoryAccessSchema = Type.Object(
   {
     defaultProfile: RepositoryBindingSelector,
-    repositories: Type.Array(RepositoryBindingRequestSchema, { maxItems: 16 }),
+    githubAppClientId: Type.Optional(CredentialClientId),
+    repositories: Type.Array(
+      Type.Object(
+        {
+          ...RepositoryBindingRequestSchema.properties,
+          access: Type.Optional(Type.Union([Type.Literal("read"), Type.Literal("write")])),
+        },
+        { additionalProperties: false },
+      ),
+      { maxItems: 16 },
+    ),
   },
   {
     additionalProperties: false,
     description:
-      "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+      "Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source.",
   },
 );
 
@@ -859,7 +828,6 @@ export const CreateAgentBody = Type.Object(
     networkProxy: Type.Optional(AgentNetworkProxySchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
-    repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
     repositoryNetworkPolicy: Type.Optional(
       Type.Array(RepositoryNetworkGrantSchema, {
@@ -899,7 +867,7 @@ export const ProvisionAgentBody = Type.Object(
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
         description:
-          "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission.",
+          "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. TokenService Sources require direct Agent creation; guided provisioning returns 409.",
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
@@ -907,7 +875,6 @@ export const ProvisionAgentBody = Type.Object(
     networkProxy: Type.Optional(AgentNetworkProxySchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
-    repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
   },
   { additionalProperties: false },
@@ -998,7 +965,6 @@ export const UpdateAgentBody = Type.Object(
     networkProxy: Type.Optional(Type.Union([AgentNetworkProxySchema, Type.Null()])),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
-    repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
   },
   {
@@ -1181,8 +1147,7 @@ export const ErrorResponse = Type.Object(
           Type.Literal("INTERNAL_ERROR"),
           Type.Literal("DEPENDENCY_UNAVAILABLE"),
           Type.Literal("CREDENTIAL_GATEWAY_NOT_CONFIGURED", {
-            description:
-              "The Installation selects no Credential Gateway, so credential sources cannot be registered.",
+            description: "The operation requires a configured Credential Gateway.",
           }),
           Type.Literal("CREDENTIAL_WITHDRAWAL_IN_PROGRESS", {
             description:
@@ -1332,7 +1297,6 @@ export type ProvisionAgentBody = Type.Static<typeof ProvisionAgentBody>;
 export type UpdateAgentBody = Type.Static<typeof UpdateAgentBody>;
 export type ChannelDirectoryLookupBody = Type.Static<typeof ChannelDirectoryLookupBody>;
 export type UpdateWorkspaceFileBody = Type.Static<typeof UpdateWorkspaceFileBody>;
-export type UpdateCredentialSourceBody = Type.Static<typeof UpdateCredentialSourceBody>;
 export type AgentCredentialSourceParams = Type.Static<typeof AgentCredentialSourceParams>;
 export type ErrorDetail = Type.Static<typeof ErrorDetail>;
 export type ErrorResponse = Type.Static<typeof ErrorResponse>;
@@ -1376,7 +1340,6 @@ export const PresetTemplateSchema = Type.Object(
               "harnessAuth",
               "plugins",
               "pluginApprovers",
-              "repositoryBindings",
               "repositoryAccess",
             ].map((key) => [key, Type.Optional(Type.Ref("SafeJsonValue"))]),
           ),

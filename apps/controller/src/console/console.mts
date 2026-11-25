@@ -5,8 +5,9 @@ import type {
   NamespaceCallerPermissionsResponse,
 } from "@openclaw-enterprise/contracts";
 import type { ConsolePageContext, LeaveGuard, TabNavigation } from "./page-context.mjs";
-import { renderOAuthClients } from "./oauth-clients.mjs";
+import { renderCredentialClients } from "./credential-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
+import { finishPluginConsentTab } from "./agents/plugin-connection.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -46,7 +47,7 @@ import {
 import { createViewLifetime } from "./view-lifetime.mjs";
 import {
   connectionTemplatesPage,
-  oauthClientsPage,
+  credentialClientsPage,
   createNavigation,
   pages,
   type AgentsLanding,
@@ -2590,7 +2591,7 @@ async function loadPage({
     if (shell.diagnostics) {
       attachDiagnostics(shell.diagnostics);
     }
-    if (current.feature === connectionTemplatesPage || current.feature === oauthClientsPage) {
+    if (current.feature === connectionTemplatesPage || current.feature === credentialClientsPage) {
       // Re-enter with current administrator access and a fresh editor on history navigation.
       viewState.reusable = false;
       const view = shell.view;
@@ -2598,14 +2599,16 @@ async function loadPage({
         panel(
           view,
           "Installation administrator access required",
-          current.feature === oauthClientsPage
-            ? "Installation administrators manage OAuth clients."
+          current.feature === credentialClientsPage
+            ? "Installation administrators manage credential clients."
             : "Installation administrators manage connection templates.",
         );
       if (installationAdmin) {
         viewState.administrationEnded.add(showRequiredAccess);
         const render =
-          current.feature === oauthClientsPage ? renderOAuthClients : renderConnectionTemplates;
+          current.feature === credentialClientsPage
+            ? renderCredentialClients
+            : renderConnectionTemplates;
         view.append(
           render(
             { request: viewRequest, isCurrent: viewIsCurrent },
@@ -4202,4 +4205,6 @@ window.addEventListener("pageshow", (event) => {
     void loadPage();
   }
 });
-void loadPage();
+if (!finishPluginConsentTab()) {
+  void loadPage();
+}

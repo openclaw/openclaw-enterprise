@@ -197,7 +197,6 @@ export function message(cause: unknown, mutation = false, need?: AccessNeed): st
     const fieldLabels: Record<string, string> = {
       plugins: "plugin selections",
       pluginApprovers: "plugin approvers",
-      repositoryBindings: "repository access",
       harnessAuth: "harness authentication",
       secretBindings: "Secret bindings",
       repositoryCredentials: "repository credentials",

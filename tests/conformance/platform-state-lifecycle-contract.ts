@@ -4,7 +4,6 @@ import type {
   Agent,
   AgentRevision,
   AgentRevisionSummaryPage,
-  HarnessAuthBinding,
   Namespace,
   ServiceAccountCredential,
 } from "@openclaw-enterprise/contracts";
@@ -14,7 +13,6 @@ import type {
   PlatformStateStore,
   PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
-import { SERVICE_ACCOUNT_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import {
   assertCreatedRevision,
   identifier,
@@ -27,9 +25,10 @@ import {
 export async function verifyPlatformStateLifecycle(
   store: PlatformStateStore,
   seed: Pick<PlatformStateSeed, "agent" | "audit" | "configuration" | "namespace" | "revision">,
+  tokenServiceInstanceId: string,
 ) {
   const { lifecycleNamespace, deletedAt } = await verifyNamespaceLifecycle(store, seed);
-  const accounts = await verifyServiceAccountLifecycle(store, seed);
+  const accounts = await verifyServiceAccountLifecycle(store, seed, tokenServiceInstanceId);
   const lifecycleAgent = await verifyAgentDeletionAdmission(store, seed);
   return { lifecycleNamespace, deletedAt, lifecycleAgent, ...accounts };
 }
@@ -217,12 +216,8 @@ async function verifyNamespaceLifecycle(
 
 async function verifyServiceAccountLifecycle(
   store: PlatformStateStore,
-  {
-    agent,
-    configuration,
-    namespace,
-    revision,
-  }: Pick<PlatformStateSeed, "agent" | "configuration" | "namespace" | "revision">,
+  { namespace, revision }: Pick<PlatformStateSeed, "namespace" | "revision">,
+  tokenServiceInstanceId: string,
 ) {
   const accountNamespace = {
     id: identifier("ns"),
@@ -230,13 +225,6 @@ async function verifyServiceAccountLifecycle(
     status: "ready",
     createdAt: new Date().toISOString(),
   } satisfies Namespace;
-  const accountConfiguration = {
-    id: identifier("cfg"),
-    namespaceId: accountNamespace.id,
-    kind: "agent",
-    generation: 1,
-    createdAt: new Date().toISOString(),
-  } satisfies Parameters<PlatformUnitOfWork["configurations"]["createConfiguration"]>[0];
   const account = {
     id: identifier("sa"),
     namespaceId: accountNamespace.id,
@@ -244,62 +232,40 @@ async function verifyServiceAccountLifecycle(
   };
   const credential = {
     kind: "access_token",
-    secretRef: { name: "account-source.credentials", key: "account-token" },
+    sourceId: identifier("cs"),
   } satisfies ServiceAccountCredential;
-  const alternateCredential = {
-    kind: "access_token",
-    secretRef: { name: "rotated-source", key: "next-account-token" },
-  } satisfies ServiceAccountCredential;
-  const alternateAccount = {
-    id: identifier("sa"),
+  const foreignSourceId = identifier("cs");
+  const accountConfiguration = {
+    id: identifier("cfg"),
     namespaceId: accountNamespace.id,
-    name: "Alternate " + randomUUID(),
-    credential,
-  };
-  const accountAgent = {
+    kind: "agent",
+    generation: 1,
+    createdAt: accountNamespace.createdAt,
+  } satisfies Parameters<PlatformUnitOfWork["configurations"]["createConfiguration"]>[0];
+  const pagingAgent = {
     id: identifier("agt"),
     namespaceId: accountNamespace.id,
-    name: "Account agent " + randomUUID(),
+    name: "Revision paging " + randomUUID(),
     configurationId: accountConfiguration.id,
     backendId: null,
-    executionMode: "dedicated",
+    executionMode: "embedded",
     gatewayManagedMode: true,
     sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
-    harnessAuth: {
-      method: "codex_pat",
-      source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
-    },
+    harnessAuth: { method: "runtime" },
     desiredRuntimeState: "stopped",
     status: "active",
-    createdAt: new Date().toISOString(),
+    createdAt: accountNamespace.createdAt,
   } satisfies Agent;
-  const sharedAccountAgent = {
-    ...accountAgent,
-    id: identifier("agt"),
-    name: "Shared account agent " + randomUUID(),
-    servicePrincipalId: identifier("service-agent"),
-  };
-  const accountRevision = {
+  const pagingRevision = {
     ...revision,
     id: identifier("rev"),
     namespaceId: accountNamespace.id,
-    agentId: accountAgent.id,
+    agentId: pagingAgent.id,
     configurationId: accountConfiguration.id,
     configurationGeneration: accountConfiguration.generation,
-    servicePrincipalId: accountAgent.servicePrincipalId,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
-    harnessAuth: {
-      method: "codex_pat",
-      source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
-      credential,
-      backendBinding: {
-        backendId: "chatgpt-contract",
-        driverId: "service-account-contract",
-        workspaceId: "workspace-contract",
-        credentialIssued: true,
-      },
-    },
+    servicePrincipalId: pagingAgent.servicePrincipalId,
+    harnessAuth: pagingAgent.harnessAuth,
   } satisfies AgentRevision;
 
   await store.transact(async (transaction) => {
@@ -308,170 +274,73 @@ async function verifyServiceAccountLifecycle(
     assert.equal(await transaction.namespaces.hasServiceAccounts(accountNamespace.id), false);
     assert.deepEqual(await transaction.serviceAccounts.createServiceAccount(account), account);
     assert.equal(await transaction.namespaces.hasServiceAccounts(accountNamespace.id), true);
-    assert.deepEqual(
-      await transaction.serviceAccounts.updateCredential(
-        accountNamespace.id,
-        account.id,
-        credential,
-      ),
-      { ...account, credential },
-    );
-    assert.deepEqual(
-      await transaction.serviceAccounts.createServiceAccount(alternateAccount),
-      alternateAccount,
-    );
-    assert.deepEqual(await transaction.agents.createAgent(accountAgent), accountAgent);
-    assert.deepEqual(await transaction.agents.createAgent(sharedAccountAgent), sharedAccountAgent);
+    // Model consumers bind to the issued Source, so revision paging is independent of the account.
+    await transaction.agents.createAgent(pagingAgent);
     assertCreatedRevision(
-      await transaction.revisions.createRevision(accountRevision),
-      accountRevision,
+      await transaction.revisions.createRevision(pagingRevision),
+      pagingRevision,
     );
+    const second = { ...pagingRevision, id: identifier("rev"), revision: 2 };
+    assertCreatedRevision(await transaction.revisions.createRevision(second), second);
+
+    for (const [id, namespaceId] of [
+      [credential.sourceId, accountNamespace.id],
+      [foreignSourceId, namespace.id],
+    ] as const) {
+      await transaction.credentialSources.createCredentialSource({
+        id,
+        namespaceId,
+        name: `Issued account Source ${id}`,
+        type: "static",
+        ownerCapability: "token_service",
+        tokenServiceInstanceId,
+        config: { provider_preset: "codex-pat" },
+        state: "ready",
+        createdAt: accountNamespace.createdAt,
+      });
+    }
   });
 
-  const oauthCredential = {
-    kind: "oauth_access_token",
-    secretRef: { name: "oauth-reference", key: "access-token" },
-  } satisfies ServiceAccountCredential;
-  await store.transact(async (transaction) => {
-    const updated = await transaction.serviceAccounts.updateCredential(
-      accountNamespace.id,
-      account.id,
-      oauthCredential,
-    );
-    assert.ok(updated);
-    assert.deepEqual(updated.credential, oauthCredential);
-    await transaction.serviceAccounts.updateCredential(accountNamespace.id, account.id, credential);
-  });
-
-  // ChatGPT revisions require an exact issued access-token reference with safe Secret keys.
-  for (const invalidCredential of [
-    oauthCredential,
-    { ...credential, kind: "api_key" as const },
-    ...[".", ".."].map((key) => ({ ...credential, secretRef: { ...credential.secretRef, key } })),
-  ]) {
-    await assert.rejects(
-      store.transact((transaction) =>
-        transaction.revisions.createRevision({
-          ...accountRevision,
-          id: identifier("rev"),
-          revision: 2,
-          // @ts-expect-error Unchecked callers can pass other credential kinds at admission.
-          harnessAuth: {
-            ...accountRevision.harnessAuth,
-            credential: invalidCredential,
-          },
-        }),
-      ),
-      storeRefusal(
-        "ScopeViolationError",
-        "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
-        "The AgentRevision harness authentication is invalid or legacy.",
-      ),
-      "Admitted revisions reject unsupported credentials and unsafe Secret keys.",
-    );
-  }
-  // The admitted ServiceAccount source belongs to the revision's own Namespace, even when
-  // the account ID exists there.
-  await assert.rejects(
+  const update = (issued: ServiceAccountCredential) =>
     store.transact((transaction) =>
-      transaction.revisions.createRevision({
-        ...accountRevision,
-        id: identifier("rev"),
-        revision: 2,
-        harnessAuth: {
-          ...accountRevision.harnessAuth,
-          source: { ...accountRevision.harnessAuth.source, namespaceId: namespace.id },
-        },
-      }),
-    ),
+      transaction.serviceAccounts.updateCredential(accountNamespace.id, account.id, issued),
+    );
+  await assert.rejects(
+    update({ ...credential, sourceId: foreignSourceId }),
     storeRefusal(
       "ScopeViolationError",
-      "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
-      "The AgentRevision harness authentication is invalid or legacy.",
+      "The managed ServiceAccount Source is invalid.",
+      postgresOwnershipViolation,
     ),
-    "Admitted revisions reject a ServiceAccount source naming another Namespace.",
+    "An issued Source must belong to the exact account Namespace.",
   );
-  // A revision admits exactly the account its Agent is bound to, not a sibling account.
-  await assert.rejects(
-    store.transact((transaction) =>
-      transaction.revisions.createRevision({
-        ...accountRevision,
-        id: identifier("rev"),
-        revision: 2,
-        harnessAuth: {
-          ...accountRevision.harnessAuth,
-          source: { ...accountRevision.harnessAuth.source, id: alternateAccount.id },
-        },
-      }),
-    ),
-    { name: "ScopeViolationError", message: "The AgentRevision belongs to an unavailable Agent." },
-    "Admitted revisions reject an account other than the Agent's binding.",
-  );
-
-  await store.read(async (state) => {
-    const stored = await state.serviceAccounts.findServiceAccount(accountNamespace.id, account.id);
-    assert.deepEqual(stored, { ...account, credential });
-    for (const value of [stored, stored.credential, stored.credential.secretRef]) {
-      assert.ok(Object.isFrozen(value));
-    }
-    assert.equal(
-      await state.serviceAccounts.findServiceAccount(namespace.id, account.id),
-      undefined,
-      "A ServiceAccount cannot be read from another Namespace.",
-    );
-    const snapshot = await state.revisions.findRevision(
-      accountNamespace.id,
-      accountAgent.id,
-      accountRevision.id,
-    );
-    assert.ok(snapshot);
-    assert.deepEqual(snapshot.harnessAuth, accountRevision.harnessAuth);
-    for (const value of [
-      snapshot.harnessAuth,
-      snapshot.harnessAuth.credential,
-      snapshot.harnessAuth.credential.secretRef,
-      snapshot.harnessAuth.backendBinding,
-    ]) {
-      assert.ok(Object.isFrozen(value));
-    }
+  await store.transact(async (transaction) => {
+    await transaction.credentialSources.markCredentialSourceDeleting(namespace.id, foreignSourceId);
+    await transaction.credentialSources.deleteCredentialSource(namespace.id, foreignSourceId);
   });
 
-  await assert.rejects(
-    store.transact((transaction) =>
-      transaction.serviceAccounts.createServiceAccount({ ...account, id: identifier("sa") }),
-    ),
-    {
-      name: "ResourceStateConflictError",
-      message: SERVICE_ACCOUNT_NAME_CONFLICT,
-    },
-    "ServiceAccount names must be unique within their Namespace.",
-  );
-
   for (const [description, invalidCredential] of [
-    ["unsupported credential kind", { kind: "bearer", secretRef: credential.secretRef }],
+    ["unsupported credential kind", { ...credential, kind: "bearer" }],
+    ["invalid issued Source identity", { ...credential, sourceId: "../foreign" }],
     [
-      "invalid source Secret name",
-      { ...credential, secretRef: { name: "../foreign", key: "valid" } },
-    ],
-    ["invalid source Secret key", { ...credential, secretRef: { name: "valid", key: "../token" } }],
-    [
-      "current-directory source Secret key",
-      { ...credential, secretRef: { name: "valid", key: "." } },
+      "retired issued token Secret reference",
+      { kind: "access_token", secretRef: { name: "retired-token", key: "token" } },
     ],
     [
-      "parent-directory source Secret key",
-      { ...credential, secretRef: { name: "valid", key: ".." } },
+      "invalid Secret name",
+      { kind: "oauth_access_token", secretRef: { name: "../foreign", key: "valid" } },
     ],
+    ...["../token", ".", ".."].map(
+      (key) =>
+        [
+          "invalid Secret key",
+          { kind: "oauth_access_token", secretRef: { name: "valid", key } },
+        ] as const,
+    ),
   ] as const) {
     await assert.rejects(
-      store.transact((transaction) =>
-        transaction.serviceAccounts.updateCredential(
-          accountNamespace.id,
-          account.id,
-          // @ts-expect-error Unchecked callers can pass an unsupported credential kind.
-          invalidCredential,
-        ),
-      ),
+      // @ts-expect-error Unchecked callers can pass unsupported credential shapes.
+      update(invalidCredential),
       storeRefusal(
         "ScopeViolationError",
         "The ServiceAccount credential reference is invalid.",
@@ -480,110 +349,8 @@ async function verifyServiceAccountLifecycle(
       description,
     );
   }
-  await assert.rejects(
-    store.transact((transaction) =>
-      transaction.agents.createAgent({
-        ...agent,
-        id: identifier("agt"),
-        name: "Cross Namespace " + randomUUID(),
-        servicePrincipalId: identifier("service-agent"),
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
-        },
-      }),
-    ),
-    {
-      name: "ScopeViolationError",
-      message: "The Agent harness authentication references an unavailable ServiceAccount.",
-    },
-    "An Agent cannot associate a ServiceAccount from another Namespace.",
-  );
-  await assert.rejects(
-    store.transact((transaction) =>
-      transaction.agents.updateConfiguration(namespace.id, agent.id, configuration.id, undefined, {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
-      }),
-    ),
-    {
-      name: "ScopeViolationError",
-      message: "The Agent harness authentication references an unavailable ServiceAccount.",
-    },
-    "An existing Agent cannot associate a ServiceAccount from another Namespace.",
-  );
-  await assert.rejects(
-    store.transact((transaction) =>
-      transaction.agents.updateConfiguration(
-        accountNamespace.id,
-        accountAgent.id,
-        accountConfiguration.id,
-        undefined,
-        {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
-        },
-      ),
-    ),
-    {
-      name: "ScopeViolationError",
-      message: "The Agent harness authentication references an unavailable ServiceAccount.",
-    },
-    "A source naming another Namespace is refused even when the account ID exists here.",
-  );
-  await assert.rejects(
-    store.transact((transaction) =>
-      transaction.serviceAccounts.deleteServiceAccount(accountNamespace.id, account.id),
-    ),
-    {
-      name: "ScopeViolationError",
-      message: "The ServiceAccount is referenced by active platform state.",
-    },
-    "An Agent-bound ServiceAccount cannot be deleted.",
-  );
 
-  await store.transact(async (transaction) => {
-    assert.ok(
-      await transaction.serviceAccounts.lockServiceAccount(accountNamespace.id, account.id),
-    );
-    await transaction.serviceAccounts.updateCredential(
-      accountNamespace.id,
-      account.id,
-      alternateCredential,
-    );
-    // Credential updates affect future deployments, never an admitted immutable revision.
-    const snapshot = await transaction.revisions.findRevision(
-      accountNamespace.id,
-      accountAgent.id,
-      accountRevision.id,
-    );
-    assert.ok(snapshot);
-    assert.deepEqual(snapshot.harnessAuth, accountRevision.harnessAuth);
-    const alternateBinding = {
-      method: "codex_pat",
-      source: {
-        kind: "service_account",
-        namespaceId: alternateAccount.namespaceId,
-        id: alternateAccount.id,
-      },
-    } satisfies HarnessAuthBinding;
-    for (const [requested, expected] of [
-      [alternateBinding, alternateBinding],
-      [undefined, alternateBinding],
-      [null, null],
-    ] as const) {
-      const updated = await transaction.agents.updateConfiguration(
-        accountNamespace.id,
-        accountAgent.id,
-        accountConfiguration.id,
-        undefined,
-        requested,
-      );
-      assert.ok(updated);
-      assert.deepEqual(updated.harnessAuth, expected);
-    }
-  });
-
+  // An aborted issuance must leave the account unissued and eligible for retry.
   await assert.rejects(
     store.transact(async (transaction) => {
       await transaction.serviceAccounts.updateCredential(
@@ -599,85 +366,25 @@ async function verifyServiceAccountLifecycle(
     await store.read((state) =>
       state.serviceAccounts.findServiceAccount(accountNamespace.id, account.id),
     ),
-    { ...account, credential: alternateCredential },
+    account,
   );
-
-  await store.transact(async (transaction) => {
-    // The second consumer's draft still blocks deletion after the first consumer detaches.
-    assert.equal(
-      await transaction.serviceAccounts.hasReferences(accountNamespace.id, account.id),
-      true,
-    );
-    assert.equal(await transaction.serviceAccounts.hasReferences(namespace.id, account.id), false);
-    await transaction.agents.updateConfiguration(
-      accountNamespace.id,
-      sharedAccountAgent.id,
-      accountConfiguration.id,
-      undefined,
-      null,
-    );
-    assert.equal(
-      await transaction.serviceAccounts.hasReferences(accountNamespace.id, account.id),
-      false,
-    );
-    // Completed deployment state has an active pointer even after every draft detaches.
-    await transaction.agents.compareAndSetActiveRevision(
-      accountNamespace.id,
-      accountAgent.id,
-      undefined,
-      accountRevision.id,
-    );
-  });
-  await assert.rejects(
-    store.transact((transaction) =>
-      transaction.serviceAccounts.deleteServiceAccount(accountNamespace.id, account.id),
-    ),
-    {
-      name: "ScopeViolationError",
-      message: "The ServiceAccount is referenced by active platform state.",
-    },
-    "An active revision must protect its account even without pending work or draft references.",
-  );
-  await store.transact(async (transaction) => {
-    const replacementBinding = {
-      method: "codex_pat",
-      source: {
-        kind: "service_account",
-        namespaceId: alternateAccount.namespaceId,
-        id: alternateAccount.id,
-      },
-    } satisfies HarnessAuthBinding;
-    await transaction.agents.updateConfiguration(
-      accountNamespace.id,
-      accountAgent.id,
-      accountConfiguration.id,
-      undefined,
-      replacementBinding,
-    );
-    const replacement = await transaction.revisions.createRevision({
-      ...accountRevision,
-      harnessAuth: { ...accountRevision.harnessAuth, source: replacementBinding.source },
-      id: identifier("rev"),
-      revision: 2,
-    });
-    await transaction.agents.compareAndSetActiveRevision(
-      accountNamespace.id,
-      accountAgent.id,
-      accountRevision.id,
-      replacement.id,
-    );
-    // Retaining an inactive historical snapshot does not retain the upstream account forever.
-    assert.equal(
-      await transaction.serviceAccounts.hasReferences(accountNamespace.id, account.id),
-      false,
-    );
-  });
-
-  // Revision summary pages run newest first; `nextBefore` continues below the page's last
-  // revision and is absent on the last page.
+  const issuedAccount = { ...account, credential };
+  assert.deepEqual(await update(credential), issuedAccount);
   await store.read(async (state) => {
+    const stored = await state.serviceAccounts.findServiceAccount(accountNamespace.id, account.id);
+    assert.deepEqual(stored, issuedAccount);
+    for (const value of [stored, stored.credential]) {
+      assert.ok(Object.isFrozen(value));
+    }
+    assert.equal(
+      await state.serviceAccounts.findServiceAccount(namespace.id, account.id),
+      undefined,
+      "A ServiceAccount cannot be read from another Namespace.",
+    );
+
+    // Revision summary pages run newest first and omit full Configuration data.
     const page = (options: Parameters<AgentRevisionReadRepository["pageRevisionSummaries"]>[2]) =>
-      state.revisions.pageRevisionSummaries(accountNamespace.id, accountAgent.id, options);
+      state.revisions.pageRevisionSummaries(accountNamespace.id, pagingAgent.id, options);
     const numbers = (result: AgentRevisionSummaryPage) =>
       result.revisions.map(({ revision }) => revision);
     const first = await page({ limit: 1 });
@@ -686,7 +393,7 @@ async function verifyServiceAccountLifecycle(
     const latest = first.revisions[0];
     assert.ok(latest);
     assert.equal(Object.hasOwn(latest, "configuration"), false);
-    assert.deepEqual(latest.harness, accountRevision.harness);
+    assert.deepEqual(latest.harness, pagingRevision.harness);
     const second = await page({ before: first.nextBefore, limit: 1 });
     assert.deepEqual([numbers(second), Object.hasOwn(second, "nextBefore")], [[1], false]);
     const whole = await page({ limit: 5 });
@@ -745,13 +452,46 @@ async function verifyServiceAccountLifecycle(
     );
   });
 
-  return {
-    accountNamespace,
-    accountConfiguration,
-    accountAgent,
-    serviceAccount: { ...account, credential: alternateCredential },
-    serviceAccountRevision: accountRevision,
+  const unmanagedAccount = {
+    ...account,
+    id: identifier("sa"),
+    name: `Unmanaged account ${randomUUID()}`,
   };
+  const serviceAccount = {
+    ...unmanagedAccount,
+    credential: {
+      kind: "oauth_access_token",
+      secretRef: { name: "oauth-reference", key: "access-token" },
+    } satisfies ServiceAccountCredential,
+  };
+  await store.transact(async (transaction) => {
+    // Later contract cases can select a new TokenService after this case's own Source is gone.
+    assert.equal(
+      await transaction.serviceAccounts.deleteServiceAccount(accountNamespace.id, account.id),
+      true,
+    );
+    await transaction.credentialSources.markCredentialSourceDeleting(
+      accountNamespace.id,
+      credential.sourceId,
+    );
+    assert.equal(
+      await transaction.credentialSources.deleteCredentialSource(
+        accountNamespace.id,
+        credential.sourceId,
+      ),
+      true,
+    );
+    await transaction.serviceAccounts.createServiceAccount(unmanagedAccount);
+    assert.deepEqual(
+      await transaction.serviceAccounts.updateCredential(
+        accountNamespace.id,
+        unmanagedAccount.id,
+        serviceAccount.credential,
+      ),
+      serviceAccount,
+    );
+  });
+  return { accountNamespace, serviceAccount };
 }
 
 async function verifyAgentDeletionAdmission(

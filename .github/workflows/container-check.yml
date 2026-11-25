@@ -13,14 +13,31 @@ on:
         required: true
         type: string
       ci_run_id:
-        required: true
+        required: false
         type: string
       ci_attempt:
-        required: true
+        required: false
         type: string
       node_base_image:
-        required: true
+        required: false
         type: string
+      assemble_images:
+        description: Assemble the tested architectures for publication
+        type: boolean
+        default: false
+      prepare_chart:
+        description: Assemble both images and package the digest-pinned chart
+        type: boolean
+        default: false
+    outputs:
+      controller_digest:
+        value: ${{ jobs.assemble.outputs.controller_digest }}
+      runtime_digest:
+        value: ${{ jobs.assemble.outputs.runtime_digest }}
+      chart_sha256:
+        value: ${{ jobs.chart.outputs.chart_sha256 }}
+      version:
+        value: ${{ jobs.chart.outputs.version }}
 
 permissions:
   contents: read
@@ -57,26 +74,22 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Pin image timestamps to the source commit
-        run: |
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          SOURCE_DATE_EPOCH="$(git show --no-patch --format=%ct "$SOURCE_SHA")"
-          test -n "$SOURCE_DATE_EPOCH"
-          printf 'SOURCE_DATE_EPOCH=%s\n' "$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          fetch-depth: ${{ inputs.source_sha != github.sha && inputs.source_sha != '' && '0' || '1' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.22.1"
-      - name: Select the checked-in Node base for standalone verification
-        if: ${{ !inputs.ci_run_id }}
+      - name: Select image recipes and verify the source Node base
+        run: node scripts/ci/container-release.ts select-source "$RUNNER_TEMP/release-source"
+      - name: Pin image timestamps to the source commit
         run: |
-          NODE_BASE_IMAGE="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
-          [[ "$NODE_BASE_IMAGE" =~ ^[^[:space:]]+@sha256:[a-fA-F0-9]{64}$ ]]
-          printf 'NODE_BASE_IMAGE=%s\n' "$NODE_BASE_IMAGE" >> "$GITHUB_ENV"
+          SOURCE_DATE_EPOCH="$(git show --no-patch --format=%ct "$SOURCE_SHA")"
+          test -n "$SOURCE_DATE_EPOCH"
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
       - name: Read the OpenClaw source pin
         if: ${{ matrix.image == 'runtime' }}
         id: openclaw-source
         run: |
-          values="$(node scripts/lib/openclaw-source.ts build-args)"
+          values="$(node scripts/lib/openclaw-source.ts build-args "$NATIVE_BUILD_CONTEXT/deploy/runtime/openclaw-source.json")"
           {
             echo 'build-args<<EOF'
             printf '%s\n' "$values"
@@ -122,8 +135,8 @@ jobs:
         env:
           DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
-          context: .
-          file: ${{ matrix.file }}
+          context: ${{ env.NATIVE_BUILD_CONTEXT }}
+          file: ${{ env.NATIVE_BUILD_CONTEXT }}/${{ matrix.file }}
           target: openclaw-bridge-tests
           platforms: linux/${{ matrix.arch }}
           build-args: |
@@ -146,8 +159,8 @@ jobs:
         env:
           DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
-          context: .
-          file: ${{ matrix.file }}
+          context: ${{ env.NATIVE_BUILD_CONTEXT }}
+          file: ${{ env.NATIVE_BUILD_CONTEXT }}/${{ matrix.file }}
           target: ${{ matrix.target }}
           platforms: linux/${{ matrix.arch }}
           build-args: |
@@ -225,17 +238,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Check the exact source
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          fetch-depth: ${{ inputs.source_sha != github.sha && inputs.source_sha != '' && '0' || '1' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.22.1"
-      - name: Select the checked-in Node base for standalone verification
-        if: ${{ !inputs.ci_run_id }}
-        run: |
-          NODE_BASE_IMAGE="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
-          [[ "$NODE_BASE_IMAGE" =~ ^[^[:space:]]+@sha256:[a-fA-F0-9]{64}$ ]]
-          printf 'NODE_BASE_IMAGE=%s\n' "$NODE_BASE_IMAGE" >> "$GITHUB_ENV"
+      - name: Verify the selected source and Node base
+        run: node scripts/ci/container-release.ts select-source
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: built-runtime-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -267,3 +275,65 @@ jobs:
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
+
+  assemble:
+    name: Assemble ${{ matrix.image }} OCI image
+    if: ${{ inputs.assemble_images || inputs.prepare_chart }}
+    needs: [prepare, runtime-smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      controller_digest: ${{ steps.seal.outputs.controller_digest }}
+      runtime_digest: ${{ steps.seal.outputs.runtime_digest }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [controller, runtime]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: ${{ inputs.source_sha != github.sha && inputs.source_sha != '' && '0' || '1' }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Verify the selected source and Node base
+        run: node scripts/ci/container-release.ts select-source
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: platform-${{ matrix.image }}-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci/amd64
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: platform-${{ matrix.image }}-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci/arm64
+      - name: Assemble and seal tested platform bytes without rebuilding
+        id: seal
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          node scripts/ci/container-release.ts assemble "$RUNNER_TEMP/oci"
+          IMAGE_DIGEST="$(sed -n 's/^digest=//p' "$GITHUB_OUTPUT")"
+          export IMAGE_DIGEST
+          node scripts/ci/container-release.ts seal "$RUNNER_TEMP/oci"
+          echo "${IMAGE}_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: container-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oci
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+  chart:
+    if: ${{ inputs.prepare_chart }}
+    needs: assemble
+    uses: ./.github/workflows/release-chart-prepare.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      ci_run_id: ${{ inputs.ci_run_id }}
+      ci_attempt: ${{ inputs.ci_attempt }}
+      node_base_image: ${{ inputs.node_base_image }}
+      controller_digest: ${{ needs.assemble.outputs.controller_digest }}
+      runtime_digest: ${{ needs.assemble.outputs.runtime_digest }}

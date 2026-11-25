@@ -8,7 +8,7 @@ author: freeqaz
 
 - **ID:** RFC-20261123-repository-token-source
 - **Created:** 2026-11-23
-- **Last updated:** 2026-11-24
+- **Last updated:** 2026-11-25
 - **RFC PR:** [#7149](https://github.com/openclaw/openclaw-enterprise/pull/7149)
 - **Companions:** [Token lifecycle](lifecycle.md) and [Acceptance and evidence](acceptance.md)
 - **Related:** [Issue #6993](https://github.com/openclaw/openclaw-enterprise/issues/6993), [Per-Agent repository network policy](../20261119-repository-network-policy.md), [credential source ownership](../0023-egress-proxy-credential-lifecycle/credential-source-ownership.md)
@@ -17,27 +17,27 @@ author: freeqaz
 
 ## Summary
 
-You can clone a private repository on your laptop. To give your first OpenClaw Enterprise (OCE) Agent the same ability today, you need a GitHub App. Let the Agent clone one repository using a fine-grained personal access token (PAT) you already have or can create. The token stays outside the Agent.
+Give a saved Agent Git access to a private repository without installing a GitHub App. On a fresh local installation, one proposed command prepares the repository. You still choose which Agent can clone it. The Agent never receives your personal access token (PAT).
 
 ## Motivation
 
-Many teams have no GitHub App. Trying OCE means finding someone who can install one and configuring its private key before the first clone. A developer whose organization allows fine-grained PATs can skip that work.
+You may already be able to clone a repository on your laptop, even if your team has no GitHub App. The usual browser login for `gh` gives you an OAuth token. The [standalone development client](../../../docs/guides/repository-credentials/development-token.md) can use it. This proposal for saved Agents accepts a fine-grained PAT, including one already on your machine.
 
-If you already ran `gh auth login`, the kind of token matters. The usual browser login gives the GitHub CLI an OAuth token. The [standalone development client](../../../docs/guides/repository-credentials/development-token.md) can use it. A saved Agent needs a fine-grained PAT for this path. You supply it explicitly. `occ dev up` leaves your CLI login alone.
+Why does setup take two steps? OCE assigns the credential a Source ID when you save it. The installation’s repository registry must refer to that ID before an Agent can select the repository. Let the local launcher do this for you on a fresh install. Keep the administrator in control of an existing registry.
 
 <a id="scope"></a>
 
 ## Goals
 
-- **G1.** Enforce each Agent's read and write grants on each repository, as on the App path.
-- **G2.** Keep the PAT out of API responses, workloads and model credentials.
-- **G3.** Replace a PAT without redeploying. Show when each Sandbox has applied it.
-- **G4.** End access after revocation or Stop, even during an outage. Retire every copy before deleting its Source.
-- **G5.** Start without an App. Preserve existing App registrations and pull request access.
+- **G1.** Enforce Read and Write per repository and Agent.
+- **G2.** Keep the PAT out of workloads, responses and model credentials.
+- **G3.** Rotate in place and show when each Sandbox has applied the change.
+- **G4.** Bound access after revocation, end it at Stop and retire every copy before deletion.
+- **G5.** Make the first local clone simple. Preserve existing App grants and pull request access.
 
 ## Non-goals
 
-This covers Git with one credential per revision. [#7243](https://github.com/openclaw/openclaw-enterprise/pull/7243) covers issue and pull request access separately. Other token types and GraphQL are out of scope.
+This proposal covers Git with one credential per revision. [#7243](https://github.com/openclaw/openclaw-enterprise/pull/7243) addresses GitHub API access separately. Neither shortcut imports a GitHub CLI login or enables Write.
 
 <a id="design"></a>
 
@@ -46,29 +46,24 @@ This covers Git with one credential per revision. [#7243](https://github.com/ope
 <a id="enrol-the-source"></a>
 <a id="select-it-from-the-registration"></a>
 
-### Clone the first repository
+### First local clone
 
-Start with [OpenShell configured for native Git](lifecycle.md#install-and-start-without-a-github-app). Locally, you can administer OCE yourself. On a team, an administrator can do the first three steps once for the Namespace.
+1. Choose an existing fine-grained PAT or create one limited to `acme/docs` with Metadata and Contents read access. Check the owner, selection and permissions again on replacement. OCE cannot verify the token’s reach.
+2. The proposed command is `occ dev up --github-repo acme/docs < "$PAT_FILE"`. The launcher [prepares a new local Namespace](lifecycle.md#install-and-start-without-a-github-app), registers the repository and verifies it is available for Read.
+3. Select `acme/docs` on the Agent, explicitly save Read and deploy. Ask it to clone `https://github.com/acme/docs.git`.
 
-1. **Choose a token.** For a first clone, use a PAT limited to `acme/docs` with Metadata and Contents read access. Check the owner, repositories and permissions in GitHub. OCE cannot verify them.
-2. **Save it in OCE.** Register a [credential Source](../../../docs/reference/credential-sources/managed-static.md) with `occ credential-source create --file FILE`. In the private input file, set `config.provider_preset` to `github` and `config.repositories` to `acme/docs:read`. Keep the returned Source ID.
-3. **Make the repository available.** Put that ID in the repository registration’s `credentialSource` field. Apply the registry change with Helm so the controller and Worker load it. This step is still manual.
-4. **Give the Agent access.** Select `acme/docs` on a new Agent, save a Read grant and deploy. Ask it to clone `https://github.com/acme/docs.git`. The clone succeeds. If the Agent tries to push, OpenShell blocks the request before it reaches GitHub.
+### Existing installation
 
-### Effective access
-
-The Installation, [Namespace registration](lifecycle.md#register-and-read-a-source), Source and Agent grant must all allow the operation. GitHub can still refuse it. For example, two Agents can use one write-capable token while only one can push. Repositories selected together need one credential and identical registration permissions. Set Read on A and Write on B in the Agent’s grants.
+Use the proposed `occ credential-source create --github-repo acme/docs < "$PAT_FILE"` to save just the Source. Both commands also accept a pipe, so the token need not be written to disk. An administrator [registers its ID](lifecycle.md#register-and-read-a-source) in that Namespace and applies the configuration. Step 3 stays the same.
 
 <a id="custody-and-loan"></a>
 <a id="lifecycle"></a>
 
-The repository Worker supplies the PAT to one OpenShell Provider per Agent revision. The Provider has no endpoints. The Sandbox Driver binds only the allowed Git paths. OpenShell checks each request and substitutes the PAT for a placeholder. Read permits fetch. Write adds push. Direct GitHub REST and GraphQL requests stay blocked.
+### Effective access
 
-In [#7153](https://github.com/openclaw/openclaw-enterprise/pull/7153), Git can keep working for up to 15 minutes after permission is revoked, even on a healthy network. We propose [withdrawing access when the Worker detects revocation](lifecycle.md#revocation-stale-sources-and-stop). If it cannot reach the Sandbox, the credential expires there. An administrator could choose a shorter limit.
+The Installation, registration, Source and saved grant must all permit an operation. GitHub can still refuse it. OpenShell substitutes the PAT for a placeholder on authorized Git requests. Read allows fetch. Write adds push. Direct REST and GraphQL stay blocked.
 
-### Save and deploy
-
-OCE [checks the grants](lifecycle.md#save-and-deploy) before saving or deploying. An editor can still clear grants and a user with Agent `operate` can still stop the Agent after losing access to the Source.
+The earlier Worker let Git continue until expiry even on a healthy network. On [revocation](lifecycle.md#revocation-stale-sources-and-stop), a connected Worker should withdraw the credential promptly. During an outage, the Sandbox must stop using it by the earlier of grant expiry and 15 minutes from the last authority check. We propose allowing a shorter limit.
 
 <a id="read-the-policy"></a>
 
@@ -76,38 +71,36 @@ OCE [checks the grants](lifecycle.md#save-and-deploy) before saving or deploying
 
 ### APIs
 
-- `POST /namespaces/{namespaceId}/credential-sources` accepts the `github` preset. OCE checks token format and size without calling GitHub.
-- `PATCH` on `.../credential-sources/{credentialSourceId}` [rotates the token](lifecycle.md#replace). `DELETE` [returns `409`](lifecycle.md#retire) while the registry still uses the Source or any copy is unretired.
-- `GET .../sandbox-policy/networking` shows [which credential the Agent uses](lifecycle.md#register-and-read-a-source). Policy save, validation and deployment enforce the [same limits](lifecycle.md#save-and-deploy).
+[Source create, replace and delete](lifecycle.md#register-and-read-a-source) use the Namespace API. The networking policy shows the credential and delivery state to authorized readers.
 
 ### IAM
 
-Creation requires `credential_source:create` on the Namespace collection. Replacement and deletion require `credential_source:update` and `credential_source:delete`, respectively, on that Source. Save and deploy additionally require `credential_source:operate` for caller and Agent principal. Policy readers need `credential_source:read` on the exact Source for details. Clearing and Stop need no Source permission.
+Source creation requires `credential_source:create` on the collection. Read, update and delete require the respective permission on the Source. Save and deploy require Source `operate` for caller and Agent principal. Clearing grants and Stop retain normal Agent permissions.
 
 ### Database entities
 
-[#7153](https://github.com/openclaw/openclaw-enterprise/pull/7153) records each revision’s copy before queuing deployment. [#7202](https://github.com/openclaw/openclaw-enterprise/pull/7202) records the expected version and time on rotation. The copy record contains no token value.
+[Track each revision’s delivery](lifecycle.md#record-installed-copies), including pending writes, through cleanup. Store no PAT in these records.
 
 ### Driver contracts
 
-The Repo Driver resolves a GitHub App installation or a Source in the same Namespace. Changing the Source invalidates earlier grants. App grant identities stay unchanged. The repository Worker uses the Credential Proxy Driver’s native Git Provider to install, track and retire each copy. The Sandbox Driver accepts its distinct name prefix. TokenService already returns the version.
+The Repo Driver resolves an App or a same-Namespace Source. Changing the Source invalidates earlier grants. The native Credential Proxy delivers to one endpointless Provider per revision. The Sandbox Driver binds the saved Git paths.
 
 ## Simplifications
 
-Reusing Sources gives us [audited replacement](https://github.com/openclaw/openclaw-enterprise/pull/7006) and [guarded deletion](../../../packages/occ/src/managed-credential-sources.ts). We avoid mounting a Secret in the Worker or handing the Agent the developer’s CLI credentials. No new service or Agent field is needed.
+Reuse TokenService for custody and native delivery for the installed copy. Passing the token on standard input keeps it out of setup subprocesses and Helm values. A globally exported token could be inherited by build tools.
 
 ## Acceptance Criteria
 
-[AC-1 through AC-10](acceptance.md#acceptance-criteria) cover first use without an App, denied operations, replacement and withdrawal.
+[AC-1 through AC-10](acceptance.md#acceptance-criteria) include a cold start with no App, CLI login or hand-edited registry.
 
 ## Delivery and verification
 
-[#7152](https://github.com/openclaw/openclaw-enterprise/pull/7152) registers the token. #7153 delivers it. [Installed results](acceptance.md#delivery-and-verification) include a GitHub clone and push. Prompt withdrawal and a configurable expiry remain proposals.
+[The credential changes in #7224](https://github.com/openclaw/openclaw-enterprise/commit/105ffee9962176cf42fc7cfe013b8b94831435db) include TokenService and the native Credential Proxy. [#7152](https://github.com/openclaw/openclaw-enterprise/pull/7152) covers enrollment. The local launcher and saved-Agent delivery on this baseline remain proposed. [Earlier installed runs](acceptance.md#delivery-and-verification) used a different implementation.
 
 <a id="alternatives-and-open-decisions"></a>
 
 ## Unresolved questions
 
-- **Revocation.** How quickly should a connected Sandbox stop using the PAT? What shorter expiry limits should an installation be able to choose? [AC-5](acceptance.md#acceptance-criteria) measures the two cases separately.
-- **Rotation.** Does the lock and write record described in [the lifecycle](lifecycle.md#serialize-provider-writes) cover a write that arrives late? AC-4 requires that it cannot extend access.
-- **Configuration.** Should the repository list have a typed field? The existing string field holds 2,048 characters.
+- How quickly must a connected Sandbox withdraw access? Which shorter expiry limits should operators get?
+- Can a delayed Provider write restore access after the Worker loses its lock?
+- Should a typed repository list replace the 2,048-character configuration field?

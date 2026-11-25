@@ -82,7 +82,8 @@ Each alias identifies the last publication to that channel. The two channels can
 
 ## Check publication and source
 
-Open the [Enterprise Containers runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/container-publish.yml)
+Open the [Release OCE runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/release-oce.yml)
+or the standalone [Enterprise Containers runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/container-publish.yml)
 and find the successful publication for the printed source commit. Compare
 both resolved image references with its publication summary or receipt. Matching
 labels establish consistency; the publication record establishes which bytes
@@ -146,7 +147,7 @@ to a private mirror. For local setup, export the resolved pair as
 Use Node.js 24.22.1 or newer, Python 3, and Docker with the containerd image
 store and `--platform` support for `docker image inspect` and `docker image save`.
 Download the `container-publication-<run-id>-<attempt>` artifact from the
-successful protected [Enterprise Containers run](#check-publication-and-source).
+successful protected [image publication run](#check-publication-and-source).
 It contains `publication.json`. From the matching release checkout, pull the
 receipt's runtime index by digest for the target platform with
 `docker pull --platform`.

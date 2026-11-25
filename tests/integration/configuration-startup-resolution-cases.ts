@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync, type SpawnOptions } from "node:child_process";
+import type { SpawnOptions } from "node:child_process";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmod, mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { constants } from "node:os";
@@ -88,15 +88,6 @@ type RepositoryStartupInput = BaseInstallation & {
   backend: [RepositoryBackendInput, ...RepositoryBackendInput[]];
   repository: RepositoryOptionsInput;
 };
-type ProxyLifecycleInput = Omit<ProxyInstallation, "drivers"> & {
-  drivers: Omit<ProxyInstallation["drivers"], "credential_proxy"> & {
-    credential_proxy: Omit<ProxyInstallation["drivers"]["credential_proxy"], "configuration"> & {
-      configuration: ProxyInstallation["drivers"]["credential_proxy"]["configuration"] & {
-        preparedGitHub?: { custodyKeyPath: string };
-      };
-    };
-  };
-};
 type CombinedRepositoryInput = Omit<RepositoryStartupInput, "backend" | "drivers"> & {
   backend: (RepositoryBackendInput | ChatGPTBackendDefinition)[];
   drivers: BaseInstallation["drivers"] & { service_account?: ChatGPTServiceAccountInput };
@@ -117,7 +108,6 @@ type ProtectedWorkerInput = Omit<ProxyInstallation, "backend" | "drivers"> & {
     openShell: OpenShellGitRuntimeConfiguration;
   };
 };
-type RepositoryLifecycleMode = "native" | "selected-blocked" | "selected";
 type RepositoryFiles = Awaited<ReturnType<typeof prepareRepositoryFiles>>;
 
 type RepositoryInstallation = Readonly<Record<string, unknown>> & {
@@ -789,37 +779,6 @@ export async function prepareRepositoryFiles(
   const publicCaPath = join(directory, "ca.crt");
   await symlink(certificatePath, publicCaPath);
   return { writableCaPath, registry, registrySource, registryPath, publicCaPath };
-}
-
-export async function checkRepositoryLifecycle(
-  t: TestContext,
-  mode: RepositoryLifecycleMode,
-  fixture: StartupFixture,
-  {
-    native,
-    proxy,
-  }: {
-    native: () => Promise<RepositoryStartupInput>;
-    proxy: typeof createCredentialProxyInstallationConfiguration;
-  },
-): Promise<void> {
-  const configuration: RepositoryStartupInput | ProxyLifecycleInput =
-    mode === "native" ? await native() : proxy();
-  if (mode !== "native") {
-    assert.ok("credential_proxy" in configuration.drivers);
-    configuration.drivers.credential_proxy.configuration.preparedGitHub = {
-      custodyKeyPath: "/nonexistent/fixture-custody.key",
-    };
-  }
-  const path = await fixture(t, configuration);
-  const result = spawnSync(
-    process.execPath,
-    ["tests/fixtures/repository-credentials/installation-module-guard.ts", path, mode],
-    { encoding: "utf8", timeout: 30_000, env: { PATH: process.env.PATH } },
-  );
-  assert.equal(result.error, undefined);
-  assert.equal(result.signal, null);
-  assert.equal(result.status, 0, result.stderr);
 }
 
 export async function checkRepositoryResolution(
