@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: "2026-11-17 01:37"
-last_updated_session: "authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a"
+updated: "2026-11-24 23:47"
+last_updated_session: "authoring-run/f9dc0945-c022-47d3-8c97-555d11f20d19"
 ---
 
 # Compose development startup
@@ -285,7 +285,7 @@ With Docker and a selected runtime, Compose overlaps bootstrap and cluster setup
 after creating PostgreSQL. For OpenShell,
 `internal/occdev/gateway_k3d.go:installDevelopmentRoutingControllers` starts after
 kubeconfig setup, alongside runtime import and OpenShell installation. Both finish
-before routing resolves PostgreSQL’s address and starts OCC. Failure cancels and
+before routing resolves PostgreSQL’s address and starts OCC. The Compose profile with OpenShell creates the private Kubernetes Namespace `oce-installation-secrets` in its owned cluster. The OCC TokenService uses it to establish its store identity during API startup. Failure cancels and
 drains siblings before rollback. Cold builds and Podman install routing afterward.
 
 Both concurrently install cert-manager and Envoy, verifying checksums, CRDs and rollout before GatewayClass acceptance or routing
@@ -420,6 +420,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 23:47: Document private Namespace creation during Compose and OpenShell startup. (authoring-run/f9dc0945-c022-47d3-8c97-555d11f20d19 - 454af32efa)
 
 - 2026-11-17 01:37: Remove duplicate full-access probe; retain real Agent qualification. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - 8d3f95dd5)
 
