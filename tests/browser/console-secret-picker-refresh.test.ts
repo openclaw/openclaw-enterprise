@@ -719,7 +719,6 @@ test("Create Agent discards a pending model Secret even after switching provider
   await page.getByRole("button", { name: "Start without Preset" }).click();
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   await waitForEnabled(submit);
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const key = page.getByLabel("API key Secret", { exact: true });
   const provider = page.getByLabel("Provider", { exact: true });
   const permission = `${fixture.origin}/namespaces/${namespace.id}/permissions/secrets`;
@@ -758,7 +757,6 @@ test("Create Agent waits for the replacement model Secret before validating", as
   await page.getByRole("button", { name: "Start without Preset" }).click();
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   await waitForEnabled(submit);
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const key = page.getByLabel("API key Secret", { exact: true });
   const base = `${fixture.origin}/namespaces/${namespace.id}`;
   const permission = `${base}/permissions/secrets`;

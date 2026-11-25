@@ -370,7 +370,7 @@ export function renderSecrets(
     const header = element(
       "header",
       { className: "dialog-header" },
-      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Secrets`),
+      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Credentials`),
       heading,
     );
     dialog.append(header, element("div", { className: "dialog-body" }, body, notice), actions);

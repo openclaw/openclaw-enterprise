@@ -46,14 +46,13 @@ HTML.
 
 ## Browse and select a Namespace
 
-The sidebar opens **Agents**, **Credentials**, or **Namespaces**. **Credentials** opens the Secrets tab for the selected Namespace. Installation administrators can also open [Connection templates](connection-templates.md). **Refresh** repeats the read.
-Configure models during creation. [Experimental Backends](backends.md) stay
-hidden. Namespace rows open their Agents.
+**Credentials** opens Namespace Secrets; administrators can open [Connection templates](connection-templates.md). **Refresh** rereads. Configure models during creation. [Experimental Backends](backends.md) stay hidden. Namespaces open Agents.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Agents        | Selected Namespace; Namespace `read`, then exact Agent `read` filtering.                                             |
 | Secrets       | Selected Namespace; Namespace `read`, then exact Secret `read` filtering.                                            |
+| Sources       | Selected Namespace; Namespace `read`, then exact Credential Source `read` filtering.                                 |
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
@@ -143,6 +142,8 @@ Namespace. **Refresh** clears it.
 
 Follow [Manage Secrets in the console](../guides/console/secrets.md) for procedures,
 replacement delivery, deletion effects, and uncertain-write recovery.
+
+See [Managed static Sources](credential-sources/managed-static.md#console) for creation and reuse.
 
 ## Agent creation and deployment
 
