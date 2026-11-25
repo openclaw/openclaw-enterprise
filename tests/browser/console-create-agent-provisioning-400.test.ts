@@ -1184,6 +1184,8 @@ test("Agent Credentials preserves the current Source but cannot replace it for a
 });
 
 test("Codex Agent Credentials with an openai model provider excludes codex-pat Sources", async (t) => {
+  const destinationGuidance =
+    /Console cannot check Codex's effective destination.*Provider base URL https:\/\/api\.openai\.com\/v1 and Provider protocol Responses/;
   const { fixture } = await modelSourceFixture(t);
   const namespace = await readyNamespace(fixture, "Codex openai provider choices");
   const openaiSource = await enrollModelSource(fixture, namespace.id, "OpenAI model");
@@ -1215,12 +1217,7 @@ test("Codex Agent Credentials with an openai model provider excludes codex-pat S
     await page.getByText(/complete Stop before deploying this managed Source/).isVisible(),
     true,
   );
-  assert.equal(
-    await page
-      .getByText(/Console cannot check Codex's effective destination before saving/)
-      .isVisible(),
-    true,
-  );
+  assert.equal(await page.getByText(destinationGuidance).isVisible(), true);
   const picker = page.getByLabel("Existing Credential Source", { exact: true });
   await page
     .getByText(
@@ -1261,12 +1258,7 @@ test("Codex Agent Credentials with an openai model provider excludes codex-pat S
   await createPage
     .getByLabel("Credential storage", { exact: true })
     .selectOption("existing_source");
-  assert.equal(
-    await createPage
-      .getByText(/Console cannot check Codex's effective destination before saving/)
-      .isVisible(),
-    true,
-  );
+  assert.equal(await createPage.getByText(destinationGuidance).isVisible(), true);
 });
 
 test("Source operate denial leaves an honestly reported saved Configuration and no Agent", async (t) => {
