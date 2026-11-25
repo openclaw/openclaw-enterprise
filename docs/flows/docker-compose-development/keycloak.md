@@ -1,7 +1,7 @@
 ---
 created: 2026-10-07
-updated: 2026-11-24
-last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
+updated: 2026-11-25
+last_updated_session: authoring-run/06feb2e3-996e-40d6-a270-aeddb1788c6e
 ---
 
 # Local Keycloak startup and teardown
@@ -48,8 +48,8 @@ with sandbox `none`. Before claiming state, startup rejects another publication
 on reserved port 443 and checks that no listener already serves it. The engine
 must also be able to bind and forward that port. k3d publishes
 `127.0.0.1:443` to NodePort 30443; the dedicated Envoy listener forwards to
-Keycloak on port 8080. The API's NetworkPolicy permits the Envoy Pod's post-DNAT
-port 10443 without opening general egress.
+Keycloak on port 8080. Inside the cluster, the Envoy Service sends HTTPS traffic
+to the Envoy Pod on port 10443.
 
 ### 2. Provision the realm and its network path
 
@@ -110,9 +110,9 @@ Certificate renewal is not propagated to the copied Secret by this launcher.
 
 Run the [real launcher cases](../../testing/kubernetes.md#keycloak-local-launcher-coverage)
 only with their owned disposable fixture. They cover browser login, recovery,
-realm persistence, second-pass failure and cleanup. After the OIDC upgrade, API
-probes must reach Keycloak and reject unrelated HTTPS between successful
-listener controls. The browser imports the two printed CA files into a fresh
+realm persistence, second-pass failure and cleanup. After the OIDC upgrade, the
+test verifies HTTPS from each API Pod to the Keycloak discovery endpoint and a
+separate test listener. The browser imports the two printed CA files into a fresh
 NSS database and maps only the printed hosts line. The realm-hash warning runs only at
 installation. A retained-state error names the directory needed by `occ dev down`;
 repair access to its recorded engine and cluster before retrying cleanup.
@@ -128,6 +128,8 @@ repair access to its recorded engine and cluster before retrying cleanup.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 01:56: Correct the Keycloak API egress verification. (authoring-run/06feb2e3-996e-40d6-a270-aeddb1788c6e - b864dac3a0b3ff56f58a08def6ad50c8e4c0c821)
 
 - 2026-11-24 10:41: Remove issuer CIDR derivation from API control-plane egress. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 
