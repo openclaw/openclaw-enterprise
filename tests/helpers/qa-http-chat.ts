@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { posix } from "node:path";
-import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.ts";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import { parseNativeRolloutProvenance } from "./native-rollout-provenance.ts";
 import { runQaHttpChatWithCleanup } from "./qa-http-chat-cleanup.ts";

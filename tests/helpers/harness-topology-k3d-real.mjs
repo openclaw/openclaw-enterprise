@@ -27,7 +27,7 @@ import {
   authenticatedHeaders,
   createAuthenticatedControllerRequest,
   signInWithEmailPassword,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.ts";
 import { buildControllerTopologyManifests } from "./topology-controller-manifests.ts";
@@ -62,7 +62,7 @@ import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
 import { installedGatewayRpc } from "./installed-gateway-rpc.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.ts";
-import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.mjs";
+import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.ts";
 import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -482,6 +482,7 @@ async function startInClusterControllers(
     authBaseURL,
     controller,
     controllerImage: selectedControllerImage = controllerImage,
+    controlPlaneAuditEnabled,
     databaseUrl: selectedDatabaseUrl = databaseUrl,
     controllerPort,
     databaseAddress,
@@ -517,6 +518,7 @@ async function startInClusterControllers(
       authSecret,
       controller,
       controllerImage: selectedControllerImage,
+      controlPlaneAuditEnabled,
       databaseAddress,
       databaseServiceName,
       inClusterDatabaseUrl,
@@ -1731,6 +1733,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       databaseUrl,
       databaseAddress,
       controllerPort: options.controllerPort,
+      controlPlaneAuditEnabled: options.controlPlaneAuditEnabled,
       events,
       nativeAdminDomain: nativeAdmin.domain,
       nativeAdminEnabled: nativeAdmin.enabled,
@@ -2610,6 +2613,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         databaseUrl,
         databaseAddress,
         controllerPort: port,
+        controlPlaneAuditEnabled: options.controlPlaneAuditEnabled,
         events,
         nativeAdminDomain: nativeAdmin.domain,
         nativeAdminEnabled: nativeAdmin.enabled,

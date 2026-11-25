@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_CONFLICT,
@@ -385,6 +385,7 @@ test("choosing a model credential Secret by click clears its required error", as
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await waitForCreateFormReads(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Picker Agent");
+  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const picker = page.getByLabel("API key Secret", { exact: true });
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
@@ -516,6 +517,7 @@ for (const viewport of consoleViewports) {
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await waitForCreateFormReads(page);
     await page.getByLabel("Agent name", { exact: true }).fill("Picker Label Agent");
+    await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
     // A valid picker still opens on focus alone, as Tab gives it (#2922; finding 2076).
     const apiKey = page.getByLabel("API key Secret", { exact: true });
     await apiKey.focus();

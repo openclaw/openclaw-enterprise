@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,11 @@ import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 import { array, jsonRecord, present, record, text } from "./full-integration-json-fixture.ts";
 import { readSuiteLane, reuseFixture } from "./full-integration-reuse-fixture.ts";
+import {
+  readLaneAction,
+  readWorkflow,
+  workflowCondition,
+} from "./full-integration-workflow-fixture.ts";
 
 function files(lane: Record<string, unknown>) {
   return array(lane.files).map((raw) => {
@@ -52,8 +57,8 @@ test("full coverage receipts require real case evidence and retain approved same
       ![
         "tests/integration/openshell-refresh-real.test.ts",
         "tests/integration/openshell-withdrawal-real.test.ts",
+        "tests/integration/openshell-optional-plugin-withdrawal-real.test.ts",
         "tests/integration/openshell-gateway-tool-policy-real.test.ts",
-        "tests/integration/openshell-git-retention-real.test.ts",
       ].includes(path),
     );
   }
@@ -87,7 +92,7 @@ test("full coverage receipts require real case evidence and retain approved same
         env: {
           ...process.env,
           GITHUB_SHA: sha,
-          GITHUB_WORKFLOW: "Full Integration",
+          GITHUB_WORKFLOW: "Release OCE",
           OCC_CI_SUITE_VIEW: "full-integration",
           GITHUB_REF: "refs/heads/main",
           GITHUB_RUN_ATTEMPT: "1",
@@ -195,6 +200,9 @@ test("full coverage receipts require real case evidence and retain approved same
   await writeFile(reusedPath, reusedReceipt);
   const policyReceipt = join(fixtureRoot, "results/openshell-policy.json");
   const needsPath = join(fixtureRoot, "needs.json");
+  const execution = await readWorkflow("full-integration-execution");
+  const aggregate = present(execution.jobs["full-aggregate"]);
+  const qualified = present(aggregate.steps?.find((step) => step.id === "qualified"));
   let serial = 0;
   const verify = async (
     expectedExit: number,
@@ -219,6 +227,32 @@ test("full coverage receipts require real case evidence and retain approved same
       assert.equal(jsonRecord(result.stdout).fullCoverageExercised, undefined);
       await assert.rejects(readFile(marker), { code: "ENOENT" });
     }
+    // A coverage marker also records a fully exercised failing suite. Only a
+    // passing full aggregate can supply the release workflow with evidence.
+    const outputs = expectedMarker ? { full_coverage_exercised: "true" } : {};
+    const eligible = workflowCondition(qualified.if, {
+      success: () => result.status === 0,
+      needs: { preflight: { outputs: { selected_lane: "all" } } },
+      steps: {
+        "aggregate-full": { outcome: result.status === 0 ? "success" : "failure", outputs },
+      },
+    });
+    assert.equal(eligible, expectedExit === 0 && expectedMarker);
+    if (eligible) {
+      const qualificationOutput = join(fixtureRoot, `qualified-${serial}`);
+      const emitted = spawnSync("/bin/sh", ["-ec", text(qualified.run)], {
+        env: {
+          GITHUB_OUTPUT: qualificationOutput,
+          GITHUB_SHA: "0".repeat(40),
+          TEST_SOURCE: sha,
+          GITHUB_RUN_ID: "456",
+          GITHUB_RUN_ATTEMPT: "1",
+        },
+        encoding: "utf8",
+      });
+      assert.equal(emitted.status, 0, emitted.stderr);
+      assert.equal(await readFile(qualificationOutput, "utf8"), `full_suite=all:${sha}:456:1\n`);
+    }
   };
   const needs = {
     preflight: { result: "success" },
@@ -230,6 +264,7 @@ test("full coverage receipts require real case evidence and retain approved same
   await generate(policyPath, ["sentinel"], "assert.equal(1, 1);");
   assert.equal(produce("openshell-policy").status, 0);
   await verify(0, true);
+  await verify(0, true, { GITHUB_WORKFLOW: "Full Integration" });
   // Installed Skipper always requires file cleanup; ordinary no-callback files
   // can legitimately retain null, so enforce the owning Skipper contract here.
   const installedReceipt = await readFile(skipperPath, "utf8");
@@ -517,4 +552,148 @@ test("full coverage receipts require real case evidence and retain approved same
   needs.openshell.result = "cancelled";
   await json(needsPath, needs);
   await verify(1, false);
+});
+
+test("release qualification runs and aggregates the selected ancestor after main advances", async (t) => {
+  const directory = await temporaryDirectory(t, "release-test-source-");
+  const artifactDirectory = await temporaryDirectory(t, "release-qualification-artifacts-");
+  const env: NodeJS.ProcessEnv = {
+    PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
+    GITHUB_WORKFLOW_REF:
+      "openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main",
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_REF_PROTECTED: "true",
+    GITHUB_EVENT_NAME: "workflow_dispatch",
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_RUN_ID: "456",
+    GITHUB_WORKFLOW: "Release OCE",
+    OCC_CI_SUITE_VIEW: "full-integration",
+    RUNNER_TEMP: artifactDirectory,
+    GITHUB_ENV: join(directory, "environment"),
+    GITHUB_OUTPUT: join(directory, "output"),
+  };
+  const exec = (program: string, args: string[], expected = 0, extra = {}) => {
+    const result = spawnSync(program, args, {
+      cwd: directory,
+      env: { ...env, ...extra },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(result.status, expected, result.stderr || result.stdout);
+    return result.stdout.trim();
+  };
+  const git = (...args: string[]) =>
+    exec("git", [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.org",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ]);
+  git("init", "-q");
+  const file = "tests/integration/source.test.mjs";
+  const suite = join(directory, "scripts/ci");
+  await mkdir(join(directory, "tests/integration"), { recursive: true });
+  await mkdir(suite, { recursive: true });
+  const fixtureSuite = loadTestSuites(
+    fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
+    "full-integration",
+  );
+  const installerPaths = files(readSuiteLane(fixtureSuite, "openshell-installers")).map(
+    ({ path }) => path,
+  );
+  await writeFile(
+    join(suite, "test-suites.json"),
+    JSON.stringify({
+      version: 1,
+      lanes: {
+        openshell: {
+          files: [file, ...installerPaths].map((path) => ({
+            path,
+            expectedTests: ["source test"],
+          })),
+        },
+      },
+      groups: { full: ["openshell"] },
+    }),
+  );
+  for (const path of [file, ...installerPaths]) {
+    await writeFile(
+      join(directory, path),
+      'import test from "node:test"; test("source test", () => {});',
+    );
+  }
+  const runner = fileURLToPath(new URL("../../scripts/ci/run-tests.ts", import.meta.url));
+  // A historical commit supplies data to the aggregator. Executing its runner must fail.
+  await writeFile(join(suite, "run-tests.ts"), 'throw Error("executed the source runner");');
+  git("add", ".");
+  git("commit", "-qm", "Selected source");
+  const selected = git("rev-parse", "HEAD");
+  await writeFile(
+    join(directory, file),
+    'import test from "node:test"; test("source test", () => { throw Error("main tip ran"); });',
+  );
+  await rm(join(suite, "run-tests.ts"));
+  await symlink(runner, join(suite, "run-tests.ts"));
+  // The dispatch manifest must also fail if it substitutes for the selected one.
+  await writeFile(join(suite, "test-suites.json"), "{}");
+  git("commit", "-qam", "Later dispatch");
+  const dispatch = git("rev-parse", "HEAD");
+  env.GITHUB_SHA = dispatch;
+  env.GITHUB_WORKFLOW_SHA = dispatch;
+  env.DISPATCH_SOURCE = selected;
+  const workflow = await readWorkflow("full-integration-execution");
+  const verify = text(
+    present(workflow.jobs.preflight?.steps?.find((step) => step.id === "source")).run,
+  );
+  const bash = (command: string, extra = {}, exit = 0) =>
+    exec("/bin/bash", ["--noprofile", "--norc", "-ec", command], exit, extra);
+  bash(verify, { SELECTED_LANE: "all", SELECTED_SOURCE: "" }, 1);
+  bash(verify, { SELECTED_LANE: "docker-model", SELECTED_SOURCE: selected }, 1);
+  bash(verify, { SELECTED_LANE: "all", SELECTED_SOURCE: selected });
+  assert.equal(await readFile(env.GITHUB_OUTPUT!, "utf8"), `sha=${selected}\n`);
+  const bind = text(present((await readLaneAction("select-integration-source"))[0]).run);
+  bash(bind, { TEST_SOURCE: dispatch, DISPATCH_SOURCE: selected }, 1);
+  bash(bind, { TEST_SOURCE: selected, DISPATCH_SOURCE: selected });
+  assert.equal(git("rev-parse", "HEAD"), selected);
+  const shellEnv = (await readFile(env.GITHUB_ENV!, "utf8")).trim().slice("BASH_ENV=".length);
+  const cleanup = fileURLToPath(new URL("../../scripts/ci/cleanup.ts", import.meta.url));
+  // Execute the test that passes only in the ancestor, record its cleanup, then verify
+  // the receipt with dispatch-owned code and the selected source's manifest.
+  for (const lane of ["openshell-policy", "openshell-installers"]) {
+    const paths = {
+      NODE: process.execPath,
+      RUNNER: runner,
+      CLEANUP: cleanup,
+      LANE: lane,
+      BASH_ENV: shellEnv,
+    };
+    bash(
+      '"$NODE" "$RUNNER" run "$LANE" --root . --state "state/$LANE.json" --results "$RUNNER_TEMP/results/$LANE.json"',
+      paths,
+    );
+    bash(
+      '"$NODE" "$CLEANUP" --state "state/$LANE.json" --results "$RUNNER_TEMP/results/$LANE.json"',
+      paths,
+    );
+  }
+  await writeFile(
+    join(artifactDirectory, "needs.json"),
+    JSON.stringify({
+      openshell: { result: "success", lanes: ["openshell-policy", "openshell-installers"] },
+    }),
+  );
+  git("checkout", "--detach", dispatch);
+  const aggregate = text(
+    present(workflow.jobs["full-aggregate"]?.steps?.find((step) => step.id === "aggregate-full"))
+      .run,
+  );
+  bash(aggregate, { TEST_SOURCE: dispatch }, 1);
+  const summary = jsonRecord(bash(aggregate, { TEST_SOURCE: selected }));
+  assert.equal(summary.sourceSha, selected);
+  assert.equal(summary.fullCoverageExercised, true);
+  assert.equal(summary.status, "passed");
+  assert.equal(git("rev-parse", "HEAD"), dispatch);
 });

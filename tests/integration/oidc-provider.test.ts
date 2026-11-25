@@ -167,7 +167,7 @@ test("OIDC issuer starts from projected-volume links and remains importable", as
   const projection = join(parent, "projected");
   const snapshot = join(projection, "..snapshot");
   await mkdir(snapshot, { recursive: true });
-  const modules = ["oidc-provider-server.ts", "oidc-provider.ts", "id-token.mjs"];
+  const modules = ["oidc-provider-server.ts", "oidc-provider.ts", "id-token.ts"];
   for (const name of modules) {
     await copyFile(new URL(`../helpers/${name}`, import.meta.url), join(snapshot, name));
   }

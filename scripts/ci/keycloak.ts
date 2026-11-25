@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 // Keycloak for the keycloak-oidc lane (RFC-0019): a digest-pinned `start-dev` server that
-// imports tests/fixtures/keycloak/realm-oce.json and serves HTTPS on 127.0.0.1:443 as
-// keycloak.oce.localhost, so its issuer satisfies OCE's endpoint rule unchanged.
+// imports tests/fixtures/keycloak/realm-oce.json. Its canonical HTTPS issuer
+// uses port 443, including when Podman publishes the fixture on a high port.
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
@@ -27,6 +27,7 @@ export const keycloakResourceKind = "keycloak-server";
 
 const clientId = "oce-console";
 const containerHttpsPort = 8443;
+const podmanHostPort = 18443;
 const containerTlsDirectory = "/opt/keycloak/conf/oce-tls";
 const readinessDeadlineMs = 180_000;
 const ownedNamePattern = /^openclaw-ci-kc-[a-z0-9-]+$/;
@@ -67,6 +68,7 @@ type ResolverFailure = { loopbackOnly: false; host: string; addresses: string[];
 type ResolverAnswer = { loopbackOnly: true } | ResolverFailure;
 type HttpsOptions = {
   ca: Buffer;
+  hostPort: number;
   method?: string;
   headers?: OutgoingHttpHeaders;
   body?: string;
@@ -74,6 +76,7 @@ type HttpsOptions = {
 type HttpsResponse = { status: number | undefined; json: unknown };
 type ReadinessCheck = {
   ca: Buffer;
+  hostPort: number;
   adminUsername: string;
   adminPassword: string;
   expected: { clientSecret: string; redirectUri: string };
@@ -297,13 +300,23 @@ function loopbackPortAccepts(port: number): Promise<boolean> {
   });
 }
 
-// Real DNS, real TLS: the request trusts only the lane CA (plus the system store).
+// Preserve the canonical Host and TLS server name when opening the loopback socket.
 function httpsJSON(
   url: string,
-  { ca, method = "GET", headers = {}, body }: HttpsOptions,
+  { ca, hostPort, method = "GET", headers = {}, body }: HttpsOptions,
 ): Promise<HttpsResponse> {
+  const endpoint = new URL(url);
+  const options = {
+    hostname: "127.0.0.1",
+    port: hostPort,
+    servername: endpoint.hostname,
+    method,
+    headers: { ...headers, host: endpoint.host },
+    ca,
+    timeout: 10_000,
+  };
   return new Promise((resolvePromise, reject) => {
-    const req = request(url, { method, headers, ca, family: 4, timeout: 10_000 }, (response) => {
+    const req = request(endpoint, options, (response) => {
       let text = "";
       response.setEncoding("utf8");
       response.on("data", (chunk: string) => {
@@ -327,10 +340,18 @@ function httpsJSON(
 
 class PermanentReadinessError extends Error {}
 
-async function checkReadiness({ ca, adminUsername, adminPassword, expected }: ReadinessCheck) {
-  const discovery = await httpsJSON(`${keycloakIssuer}/.well-known/openid-configuration`, {
-    ca,
-  });
+async function checkReadiness({
+  ca,
+  hostPort,
+  adminUsername,
+  adminPassword,
+  expected,
+}: ReadinessCheck) {
+  const transport = { ca, hostPort };
+  const discovery = await httpsJSON(
+    `${keycloakIssuer}/.well-known/openid-configuration`,
+    transport,
+  );
   if (discovery.status !== 200) {
     throw new Error(`discovery answered HTTP ${discovery.status}`);
   }
@@ -343,7 +364,7 @@ async function checkReadiness({ ca, adminUsername, adminPassword, expected }: Re
   const token = await httpsJSON(
     `https://${keycloakHost}/realms/master/protocol/openid-connect/token`,
     {
-      ca,
+      ...transport,
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -361,7 +382,7 @@ async function checkReadiness({ ca, adminUsername, adminPassword, expected }: Re
   const authorization = { authorization: `Bearer ${accessToken}` };
   const clients = await httpsJSON(
     `https://${keycloakHost}/admin/realms/oce/clients?clientId=${clientId}`,
-    { ca, headers: authorization },
+    { ...transport, headers: authorization },
   );
   const client = readField(clients.json, 0);
   if (clients.status !== 200 || readField(client, "clientId") !== clientId) {
@@ -369,7 +390,7 @@ async function checkReadiness({ ca, adminUsername, adminPassword, expected }: Re
   }
   const clientSecret = await httpsJSON(
     `https://${keycloakHost}/admin/realms/oce/clients/${encodeURIComponent(String(readField(client, "id")))}/client-secret`,
-    { ca, headers: authorization },
+    { ...transport, headers: authorization },
   );
   const value = readField(clientSecret.json, "value");
   // A literal `${...}` means the import read an unset variable; never hand that to a test.
@@ -455,16 +476,18 @@ export async function prepareKeycloak<Resource extends KeycloakResource>({
     return pinned;
   });
 
-  const port = await step("port", async () => {
-    if (await portAccepts(443)) {
-      throw new Error("127.0.0.1:443 is already in use; stop the service holding it.");
+  const podman = basename(docker) === "podman";
+  const hostPort = podman ? podmanHostPort : 443;
+  const consolePort = await step("port", async () => {
+    if (await portAccepts(hostPort)) {
+      throw new Error(`127.0.0.1:${hostPort} is already in use; stop the service holding it.`);
     }
     return reservePort();
   });
 
   const values = {
     OCE_KEYCLOAK_CLIENT_SECRET: secret(),
-    OCE_KEYCLOAK_REDIRECT_URI: `https://${keycloakConsoleHost}:${port}/api/auth/providers/oidc/callback`,
+    OCE_KEYCLOAK_REDIRECT_URI: `https://${keycloakConsoleHost}:${consolePort}/api/auth/providers/oidc/callback`,
     OCE_KEYCLOAK_ALICE_PASSWORD: secret(),
     OCE_KEYCLOAK_CAROL_PASSWORD: secret(),
   };
@@ -496,6 +519,9 @@ export async function prepareKeycloak<Resource extends KeycloakResource>({
   const { ca, leaves } = await step("certificates", () => createCertificates(directory, execFile));
 
   await step("hosts", async () => {
+    if (podman) {
+      return;
+    }
     // Readiness uses IPv4, matching the container publication. An additional ::1
     // alias is normal on macOS; nonloopback answers remain forbidden.
     const answer = await resolverAnswer(lookupAll);
@@ -543,7 +569,7 @@ export async function prepareKeycloak<Resource extends KeycloakResource>({
         "--memory",
         "1536m",
         "--publish",
-        `127.0.0.1:443:${containerHttpsPort}`,
+        `127.0.0.1:${hostPort}:${containerHttpsPort}`,
         "--volume",
         `${realmFile}:/opt/keycloak/data/import/realm-oce.json:ro`,
         "--volume",
@@ -574,6 +600,7 @@ export async function prepareKeycloak<Resource extends KeycloakResource>({
         sleep,
         deadlineMs,
         ca: await readFile(ca.certPath),
+        hostPort,
         adminUsername: admin.username,
         adminPassword: admin.password,
         expected: {
@@ -594,8 +621,9 @@ export async function prepareKeycloak<Resource extends KeycloakResource>({
     resource,
     env: {
       OCC_TEST_KEYCLOAK_ISSUER: keycloakIssuer,
+      OCC_TEST_KEYCLOAK_HOST_PORT: String(hostPort),
       OCC_TEST_KEYCLOAK_TOKEN_ORIGIN: `https://${keycloakTokenHost}`,
-      OCC_TEST_KEYCLOAK_CONSOLE_PORT: String(port),
+      OCC_TEST_KEYCLOAK_CONSOLE_PORT: String(consolePort),
       OCC_TEST_KEYCLOAK_SECRETS_FILE: secretsPath,
       OCC_TEST_KEYCLOAK_CA_CERT: ca.certPath,
       OCC_TEST_KEYCLOAK_CONSOLE_CERT: leaves.console.certPath,

@@ -10,18 +10,34 @@ follows `:focus-visible`. No part of any ring may be cut off.
    links. Every stop, including the Namespace select, Refresh, search, Create
    Agent and each Agent name, shows the same 3 px accent ring just outside its
    edge.
-2. Open **Pages / Agent detail / Draft**. Tab to the selected tab, arrow through
-   the others, then Tab to Edit Configuration and the **View native
-   Configuration** disclosure. Each tab shows the inset ring on all four sides;
-   the other stops show the outer ring.
+2. Open **Pages / Agent detail / Draft**. Tab to the selected tab, then arrow
+   through its unselected neighbors. Tab into the panel, then press Shift+Tab to
+   return to the selected tab. At 390 px, check that its label and entire focus
+   ring are clear of both horizontal fades. Tab to Edit Configuration and the
+   **View native Configuration** disclosure. Each tab shows the inset ring on all
+   four sides. The other stops show the outer ring. With **Configuration**
+   selected, use the arrow keys to focus **Repositories**. Switch to another
+   browser tab and return. After the healthy check finishes and focus returns to
+   **Repositories**, press Shift+Tab once to leave the strip. Press Tab to return
+   to the selected **Configuration** tab.
 3. Open **Pages / Agent detail / Long version history**. Tab to **Viewing
-   version**. The native picker is one Tab stop and names v8 as the viewed version.
-   Use its native keyboard controls to choose a version. Tab to **Load older
-   versions** and press Enter: while the next page loads it reads **Loading older
-   versions…**, looks disabled, and keeps focus. When the last page loads, focus
+   version**. The picker is one Tab stop. It starts on Draft, with v8
+   selected for service. Choose v8 with the keyboard. Wait for focus to move
+   to the Agent heading. Tab back to the picker and repeat with v7. Tab to
+   **Load older versions** and press Enter. While the next page loads, the
+   button reads **Loading older versions…**, looks disabled, and keeps focus. When the last page loads, focus
    returns to the picker and the viewed version stays selected. On **New version
-   in progress, then current**, focus the picker before the poll finishes: its
+   in progress, then current**, focus the picker before the poll finishes. Its
    service marker updates without moving focus or changing the viewed version.
+
+   **Long version history** delays loading older versions. To check a slow version
+   switch, use the signed-in Console. Switch versions, then press Shift+Tab to
+   **← Agents** while the version loads. After it opens, the link should still
+   have visible focus. Press Enter to return to Agents. Repeat the switch,
+   this time tabbing forward to **Copy Agent ID** or **Namespace**. Both
+   should stay in view when focused, even on a return to a version you left
+   scrolled down. Check desktop and phone widths.
+
 4. Open **Pages / Agent detail / Runtime logs**. Tab to the log pane. Its ring
    sits inside the pane edge (inset). Tab to a log row summary. Its ring sits
    outside, like a button, and the pane scrolls far enough to show its bottom
@@ -120,7 +136,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
     accent, and still opens the JSON. In **Components / Dialogs / Plugins
     (wide)**, **Access and credential setup** looks the same.
 15. Open **Components / Native admin / Refreshing access**. Tab to **Refresh
-    access** and press Enter: while it reads (1.5 s) it keeps focus. Repeat and
+    access** and press Enter. While it reads (1.5 s) it keeps focus. Repeat and
     press Tab during the read: focus stays where you moved it. On **Available
     once a deployment completes**, focus the unavailable **Open Agent UI**
     before the poll lands: the live link that replaces it keeps focus.
@@ -143,7 +159,32 @@ for step 5).
 In **Pages / Agents / No search matches**, press Escape and type `assistant`.
 Enter keeps the list open because two Agents match. Down Arrow visits each
 name. Escape returns to search without clearing it. Replace the query with
-`Research` and press Enter. Go back and check that the Agent name has focus.
+`Research` and press Enter. Go back and check that the query remains and the
+focused Agent name is visible. Repeat at phone width.
+
+In **Pages / Agents / Resume a search after Retry**, type `Research` in the
+list filter. Hold Shift and press Left Arrow three times to select `rch`, then
+switch away and back. The fixture returns one 503 when it reads the list again.
+Press Enter on the focused **Retry** button. Check that focus returns to
+**Search Agents** with `rch` still selected and that typing replaces those letters.
+Reset the story and repeat after moving to another control before returning to **Retry**. Focus
+must not return to **Search Agents** in that case. Repeat at phone width.
+
+In **Pages / Agents / Namespace focus during list refresh**, reset the story.
+Type `Research` in **Search Agents** and press Shift+Left Arrow three times to
+select `rch` backwards. Switch away and back, then switch away again while the
+simulated list refresh is pending. Stay away for 6.5 seconds. Return and wait
+for the next successful check. **Search Agents** has focus with `rch` still
+selected. Type `X` and check that the query becomes `ReseaX`. Repeat at desktop
+and phone widths.
+
+Reset the same story. Type `Research` in **Search Agents**, select `rch`
+backwards, then switch windows and return. Stay in the foreground while the
+delayed healthy check is pending. Tab to the **Namespace**
+selector, then click the plain **Namespace · Research** line below the Agents
+heading. When the check finishes, type `X` without clicking or tabbing. Search
+must not regain focus, and the query must remain `Research`. Repeat at desktop
+and phone widths.
 
 ## Agent collection access checks
 
@@ -175,3 +216,7 @@ merges the local draft. The story simulates a conflict before sending a write.
 The Agent detail browser test also returns to the tab while a save is pending.
 If the Controller returns `409` during the access check, focus should move from
 the save status to **Reload draft** once access is confirmed.
+
+After the conflict, choose **← Agents**. The existing explanation comes into view
+and takes focus. Press **Shift+Tab** to return to **Reload draft**. Merely focusing
+the link while the save settles must keep focus on the link when the conflict appears.

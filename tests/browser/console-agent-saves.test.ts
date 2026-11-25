@@ -26,7 +26,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { responseTo } from "./console-action-helpers.ts";
 import {
@@ -735,19 +735,21 @@ test("saving and reloading the authentication source update the Agent page in pl
   for (const secret of [second, first]) {
     await selectSecret(page, "API key Secret", secret);
     await saveAuthentication.scrollIntoViewIfNeeded();
-    const scrollBefore = await scrollY(page);
-    assert.ok(scrollBefore > 0, "the Save button sits below the first screen");
+    assert.ok((await scrollY(page)) > 0, "the Save button sits below the first screen");
     await saveAuthentication.click();
     await page.getByRole("status").filter({ hasText: "Authentication source saved." }).waitFor();
     await waitForInputValue(secretField, secretOptionLabel(secret));
     assert.deepEqual(await kept(), { marker: "kept", reloadedText: [] });
     assert.equal(await focusedText(page), "Save authentication source");
     assert.equal(await focusedDescription(page), "Authentication source saved.");
-    // The staged-Secret hint is gone after the save, so the page may end one line shorter.
-    const scrollAfter = await scrollY(page);
+    // The staged Secret hint can disappear after save. Keep the action in view as the card shrinks.
     assert.ok(
-      Math.abs(scrollAfter - scrollBefore) <= 40,
-      `the page kept its scroll: ${scrollBefore} -> ${scrollAfter}`,
+      await saveAuthentication.evaluate((button) => {
+        const { top, height } = button.getBoundingClientRect();
+        const center = top + height / 2;
+        return center >= 0 && center < globalThis.innerHeight;
+      }),
+      "the Save button stays in the viewport after the authentication source is saved",
     );
     assert.deepEqual(await savedAgent(), { method: "api_key", source: secret.ref });
   }

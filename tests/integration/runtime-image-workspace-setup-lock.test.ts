@@ -11,7 +11,7 @@ import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
 } from "../helpers/harness-configuration.mjs";
-import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
+import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.ts";
 import { docker, runDocker } from "../helpers/runtime-image-docker.ts";
 import { image, imageTestOptions, runtimeImageModel } from "../helpers/runtime-image-startup.ts";
 

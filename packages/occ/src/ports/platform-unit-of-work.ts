@@ -9,6 +9,7 @@ import type {
 import type { AuthenticationStateRepository } from "./authentication-states.ts";
 import type { ConfigurationRepository } from "./configurations.ts";
 import type { ConnectionTemplateRepository } from "./connection-templates.ts";
+import type { CredentialClientRepository } from "./credential-clients.ts";
 import type { CredentialSourceRepository } from "./credential-sources.ts";
 import type { InstallationRepository } from "./installations.ts";
 import type { NamespaceRepository } from "./namespaces.ts";
@@ -16,7 +17,7 @@ import type { PlatformOperationRepository } from "./platform-operations.ts";
 import { platformReadMethods, type PlatformReadView } from "./platform-read-view.ts";
 import type { PresetRepository } from "./presets.ts";
 import type { RepositorySessionRepository } from "./repository-sessions.ts";
-import type { SavedConnectionRepository } from "./saved-connections.ts";
+import type { OAuthCredentialRepository } from "./oauth-credentials.ts";
 import type { SecretRepository } from "./secrets.ts";
 import type { ServiceAccountRepository } from "./service-accounts.ts";
 import type {
@@ -40,7 +41,8 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
   readonly connectionTemplates: ConnectionTemplateRepository;
-  readonly savedConnections: SavedConnectionRepository;
+  readonly credentialClients: CredentialClientRepository;
+  readonly oauthCredentials: OAuthCredentialRepository;
   readonly presets: PresetRepository;
   readonly authenticationStates: AuthenticationStateRepository;
   readonly secrets: SecretRepository;
@@ -117,29 +119,29 @@ export function bindPlatformUnitOfWork(
     connectionTemplates: bindRepository(repositories.connectionTemplates, lifetime, [
       ...platformReadMethods.connectionTemplates,
       "lockConnectionTemplate",
-      "setOAuthClientCleanup",
-      "lockOAuthClient",
-      "lockOAuthClientForCleanup",
-      "createOAuthClient",
-      "deleteOAuthClient",
       "createConnectionTemplate",
       "updateConnectionTemplate",
       "deleteConnectionTemplate",
     ]),
-    savedConnections: bindRepository(repositories.savedConnections, lifetime, [
-      ...platformReadMethods.savedConnections,
+    credentialClients: bindRepository(repositories.credentialClients, lifetime, [
+      ...platformReadMethods.credentialClients,
+      "lock",
+      "lockForCleanup",
+      "setCleanup",
+      "create",
+      "delete",
+    ]),
+    oauthCredentials: bindRepository(repositories.oauthCredentials, lifetime, [
+      ...platformReadMethods.oauthCredentials,
       "createTokenCustody",
       "recordTokenSchedule",
-      "createSavedConnection",
-      "requestConnectionRevocation",
-      "confirmConnectionRevocation",
-      "deleteSavedConnection",
     ]),
     authenticationStates: bindRepository(repositories.authenticationStates, lifetime, [
       ...platformReadMethods.authenticationStates,
       "create",
       "replaceDevice",
       "consumeOAuth",
+      "releaseOAuth",
       "expire",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
@@ -151,6 +153,8 @@ export function bindPlatformUnitOfWork(
     ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
       ...platformReadMethods.credentialSources,
+      "requestOAuthRevocation",
+      "confirmOAuthRevocation",
       "lockCredentialSource",
       "createCredentialSource",
       "markCredentialSourceDeleting",
