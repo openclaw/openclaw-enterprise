@@ -40,8 +40,14 @@ function positiveInteger(value: unknown): value is number {
 
 function requireMainTip(sourceSha: string) {
   const ref = readMetadata("git/ref/heads/main", "the Enterprise main ref");
-  if (field(ref, "ref") !== "refs/heads/main" || field(field(ref, "object"), "sha") !== sourceSha) {
-    throw new Error("Enterprise main does not match. Review the current tip before selecting it.");
+  const tip = field(field(ref, "object"), "sha");
+  if (field(ref, "ref") !== "refs/heads/main" || typeof tip !== "string" || !shaPattern.test(tip)) {
+    throw new Error("Could not verify the Enterprise main ref. Check the ref in GitHub.");
+  }
+  if (tip !== sourceSha) {
+    throw new Error(
+      `Review the current main tip ${tip} for Enterprise Containers. If a full release is appropriate, Release OCE can rehearse a reviewed earlier main commit.`,
+    );
   }
 }
 
@@ -78,7 +84,9 @@ function main() {
   }
   const { run, id, attempt } = selectRun(sourceSha);
   if (field(run, "status") !== "completed") {
-    throw new Error("CI is not complete. Wait for the selected run and recheck the same source.");
+    throw new Error(
+      `CI is not complete. Watch https://github.com/${repository}/actions/runs/${id}/attempts/${attempt} and recheck the same source.`,
+    );
   }
 
   const response = readMetadata(
