@@ -279,35 +279,33 @@ Sandbox record.
 
 ## Read OpenShell sandbox and supervisor logs
 
-The [Sandbox source](agent-logs.md#sandbox-source) shows only gateway records.
-With `pods/log` access, use the shared Sandbox ID to read both Pods. Handle
-Kubernetes output as sensitive. It bypasses OCC redaction.
+[Sandbox logs](agent-logs.md#sandbox-source) show only gateway records.
+Set `NS` to the Agent's Kubernetes execution namespace and `REVISION_ID` to
+its version ID. You need read access to Pods, Pod logs, Sandboxes and events
+there. Kubernetes output bypasses OCC redaction. Treat it as sensitive.
 
 ```bash
-REVISION_ID=<revision-id>
-HARNESS_SELECTOR="openclaw.dev/workload-role=agent,openclaw.dev/revision=$REVISION_ID"
-NS="$(kubectl get pod -A -l "$HARNESS_SELECTOR" \
-  -o jsonpath='{.items[*].metadata.namespace}' | cut -d' ' -f1)"
-SANDBOX_ID="$(kubectl -n "${NS:?no Harness Pod for this revision}" get pod -l "$HARNESS_SELECTOR" \
-  -o jsonpath='{.items[*].metadata.annotations.openshell\.ai/sandbox-id}' | cut -d' ' -f1)"
-kubectl -n "$NS" logs --all-containers --tail=200 -l "$HARNESS_SELECTOR"
-kubectl -n "$NS" logs --all-containers --tail=200 \
-  -l "openshell.ai/sandbox-id=${SANDBOX_ID:?no Sandbox ID on the Harness Pod},openshell.ai/boundary-role=supervisor"
+(
+  set -eu
+  harness="openclaw.dev/workload-role=agent,openclaw.dev/revision=${REVISION_ID:?}"
+  id=$(kubectl -n "${NS:?}" get pods -l "$harness" \
+    -o jsonpath='{.items[*].metadata.annotations.openshell\.ai/sandbox-id}') || exit 1
+  pair="openshell.ai/sandbox-id=${id:?missing Sandbox ID}"
+  supervisor="$pair,openshell.ai/boundary-role=supervisor"
+  kubectl -n "$NS" get sandbox,pod -l "$pair" -o wide
+  kubectl -n "$NS" describe pod -l "$supervisor"
+  kubectl -n "$NS" logs --all-containers --tail=200 -l "$harness"
+  kubectl -n "$NS" logs --all-containers --tail=200 -l "$supervisor"
+)
 ```
 
-For `no Harness Pod for this revision`, check
-[deployment status](../../reference/agents.md#deployment-status).
-The Sandbox never started or its Pods are gone.
+For `missing Sandbox ID`, check [deployment status](../../reference/agents.md#deployment-status).
+Check permissions for `Forbidden`.
 
-If the Harness cannot reach its supervisor, inspect the pair with
-`kubectl -n "$NS" get sandbox,pod -l "openshell.ai/sandbox-id=$SANDBOX_ID" -o wide`.
-Check events with `kubectl -n "$NS" describe pod SUPERVISOR_POD`. If `FailedMount` names a missing
-`csi.spiffe.io` driver, check `kubectl get csinode NODE -o yaml` on **every**
-eligible node.
-
-Choose a RuntimeClass with a compatible handler and `scheduling.nodeSelector`
-restricted to nodes with working SPIFFE mounts. Merge its name into OpenShell
-Helm values.
+For `FailedMount` naming `csi.spiffe.io`, the cluster operator needs read
+access to Nodes, CSINodes and RuntimeClasses. Check
+`kubectl get csinode NODE -o yaml` on every eligible node. Select a RuntimeClass with a compatible handler and `scheduling.nodeSelector`
+restricted to nodes with working SPIFFE mounts.
 
 ```yaml
 gatewayConfig:
@@ -315,7 +313,11 @@ gatewayConfig:
     supervisor_runtime_class_name: openshell-identity-supervisor
 ```
 
-Plan for a gateway restart. This affects every new dedicated supervisor on
-that gateway. Preserve the Harness class. After a failed deployment finishes
-cleanup, redeploy the Agent. Replacing the supervisor Pod alone can lose its
-bootstrap Secret.
+Have the release owner upgrade the [OpenShell release](../deploy/eks-openshell-installation.md)
+with that class name in its Helm values. Preserve the Harness class. This
+restarts the gateway and affects all new dedicated supervisors.
+Wait for a successful gateway rollout and failed deployment cleanup before
+redeploying. Verify the
+replacement supervisor's `runtimeClassName`, node and readiness, then
+[verify a model response](../operate/model-verification.md).
+A manually replaced supervisor Pod can lack its bootstrap Secret.
