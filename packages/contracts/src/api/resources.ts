@@ -1239,19 +1239,7 @@ export const ServiceAccountSchema = Type.Object(
     id: ServiceAccountId,
     namespaceId: NamespaceId,
     name: Name,
-    credential: Type.Optional(
-      Type.Object(
-        {
-          kind: Type.Union([
-            Type.Literal("api_key"),
-            Type.Literal("oauth_access_token"),
-            Type.Literal("access_token"),
-          ]),
-          sourceId: Type.Optional(CredentialSourceId),
-        },
-        { additionalProperties: false },
-      ),
-    ),
+    credentialSourceId: Type.Optional(CredentialSourceId),
   },
   { additionalProperties: false },
 );

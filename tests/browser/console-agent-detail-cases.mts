@@ -4156,10 +4156,7 @@ export function registerSharingCredentialsAndChannelsCases(
         namespaceId: namespace.id,
         name: "Issued research account",
       });
-      return state.serviceAccounts.updateCredential(namespace.id, created.id, {
-        kind: "access_token",
-        sourceId,
-      });
+      return state.serviceAccounts.setCredentialSource(namespace.id, created.id, sourceId);
     });
     assert.ok(account);
     const agent = await fixture.createAgent(

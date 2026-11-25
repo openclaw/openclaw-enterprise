@@ -119,15 +119,14 @@ function issuedAccounts(
     throw new Error("Invalid service account list");
   }
   return value.flatMap((item: unknown) => {
-    const { id, name, credential } = responseFields(item);
-    const issued = responseFields(credential);
-    if (issued.kind !== "access_token" || typeof issued.sourceId !== "string" || !issued.sourceId) {
+    const { id, name, credentialSourceId } = responseFields(item);
+    if (typeof credentialSourceId !== "string" || !credentialSourceId) {
       return [];
     }
     if (typeof id !== "string" || typeof name !== "string") {
       throw new Error("Invalid issued service account");
     }
-    return [{ id, name, sourceId: issued.sourceId }];
+    return [{ id, name, sourceId: credentialSourceId }];
   });
 }
 

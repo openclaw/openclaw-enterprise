@@ -19,7 +19,6 @@ import type {
   PresetTemplate,
   RepositoryAccess,
   SecretBindings,
-  ServiceAccountCredential,
 } from "@openclaw-enterprise/contracts";
 import { sql } from "drizzle-orm";
 import {
@@ -203,10 +202,7 @@ export const serviceAccounts = occSchema.table(
       .notNull()
       .references(() => namespaces.id, { onDelete: "restrict", onUpdate: "restrict" }),
     name: collatedText("name").notNull(),
-    credential: jsonb("credential").$type<ServiceAccountCredential>(),
-    credentialSourceId: text("credential_source_id").generatedAlwaysAs(
-      sql`CASE WHEN credential->>'kind' = 'access_token' THEN credential->>'sourceId' END`,
-    ),
+    credentialSourceId: text("credential_source_id"),
   },
   (table): PgTableExtraConfigValue[] => [
     unique("service_accounts_namespace_id_id_unique").on(table.namespaceId, table.id),
@@ -220,33 +216,6 @@ export const serviceAccounts = occSchema.table(
     check(
       "service_accounts_name_normalized",
       sql`${table.name} = btrim(${table.name}) AND ${table.name} !~ '[[:cntrl:]]'`,
-    ),
-    check(
-      "service_accounts_credential_valid",
-      sql`${table.credential} IS NULL OR (
-        jsonb_typeof(${table.credential}) = 'object'
-        AND (${table.credential} ?& ARRAY['kind', 'sourceId'])
-        AND (${table.credential} - 'kind' - 'sourceId') = '{}'::jsonb
-        AND ${table.credential}->>'kind' = 'access_token'
-        AND jsonb_typeof(${table.credential}->'sourceId') = 'string'
-        AND ${table.credential}->>'sourceId' ~ ${identifierPatterns.credentialSource}
-      ) OR (
-        jsonb_typeof(${table.credential}) = 'object'
-        AND (${table.credential} ?& ARRAY['kind', 'secretRef'])
-        AND (${table.credential} - 'kind' - 'secretRef') = '{}'::jsonb
-        AND jsonb_typeof(${table.credential}->'kind') = 'string'
-        AND (${table.credential}->>'kind') IN ('api_key', 'oauth_access_token')
-        AND jsonb_typeof(${table.credential}->'secretRef') = 'object'
-        AND ((${table.credential}->'secretRef') ?& ARRAY['name', 'key'])
-        AND ((${table.credential}->'secretRef') - 'name' - 'key') = '{}'::jsonb
-        AND jsonb_typeof(${table.credential} #> '{secretRef,name}') = 'string'
-        AND char_length(${table.credential} #>> '{secretRef,name}') BETWEEN 1 AND 253
-        AND (${table.credential} #>> '{secretRef,name}') ~ '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
-        AND jsonb_typeof(${table.credential} #> '{secretRef,key}') = 'string'
-        AND char_length(${table.credential} #>> '{secretRef,key}') BETWEEN 1 AND 253
-        AND (${table.credential} #>> '{secretRef,key}') ~ '^[-._a-zA-Z0-9]+$'
-        AND (${table.credential} #>> '{secretRef,key}') NOT IN ('.', '..')
-      )`,
     ),
     foreignKey({
       name: "service_accounts_credential_source_owner",

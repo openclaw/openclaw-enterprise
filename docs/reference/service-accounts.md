@@ -2,9 +2,8 @@
 
 A service account is an OCC-owned, Namespace-scoped identity that links Agents
 to one credential without exposing its value. It is neither a platform
-ServicePrincipal, a Kubernetes ServiceAccount, nor a provider account. Native
-accounts accept existing API-key references; an optionally selected
-`ServiceAccountDriver` can instead create and manage an upstream account while
+ServicePrincipal, a Kubernetes ServiceAccount, nor a provider account. The selected
+`ServiceAccountDriver` creates and manages an upstream account while
 keeping its provider-specific identity private. A managed account's private
 binding records its exact Backend, Driver, and workspace ownership.
 
@@ -26,7 +25,6 @@ Namespace is `provisioning` or `ready`.
 | `GET /namespaces/:namespaceId/service-accounts`                                | `read` on the Namespace and each returned account.                       |
 | `GET /namespaces/:namespaceId/service-accounts/:serviceAccountId`              | `read` on the account.                                                   |
 | `POST /namespaces/:namespaceId/service-accounts/:serviceAccountId/credentials` | `update` on the account and `credential_source:create` on the Namespace. |
-| `PATCH /namespaces/:namespaceId/service-accounts/:serviceAccountId/credential` | `update` on the native account.                                          |
 | `DELETE /namespaces/:namespaceId/service-accounts/:serviceAccountId`           | `delete` on the unreferenced account.                                    |
 
 Account creation and credential issuance are separate. OCC authorizes each
@@ -66,7 +64,7 @@ Issuance accepts `{}` at
 `POST /namespaces/:namespaceId/service-accounts/:serviceAccountId/credentials`.
 It requires exact ServiceAccount update and Namespace Source create grants.
 The selected TokenService enrolls a static `codex-pat` Source. The `201`
-account response includes `credential: { kind: "access_token", sourceId }`.
+account response includes `credentialSourceId`.
 The PAT and the provider credential ID stay private. A second issuance
 returns `409`.
 
@@ -113,27 +111,6 @@ A Dedicated Codex revision freezes the TokenService Source binding and its
 admitted native request policy. The Worker prepares a Proxy placeholder for
 the Harness. The Source owns the stored bearer. See [PAT enrollment and
 delivery](credential-sources.md#use-a-codex-pat-source).
-
-### Native API-key references
-
-`PATCH /namespaces/:namespaceId/service-accounts/:serviceAccountId/credential`
-sets or replaces a native credential reference. It cannot set an `access_token`
-or manually replace a provider-issued access token. The native API-key body
-names an existing Secret and key in the account's exact backing namespace:
-
-```json
-{
-  "kind": "api_key",
-  "secretRef": { "name": "provider-key", "key": "api-key" }
-}
-```
-
-Native account references are not model-auth selectors. To supply an OpenAI API
-key to a supported Harness, [enroll a static Source](credential-sources.md#register-a-source) and select it in the Agent.
-
-`oauth_access_token` references remain representable, but deployment and
-refresh are unsupported. OAuth refresh belongs to a future credential-owning
-provider, not IAM, Compute, OCC, or the Harness.
 
 ## Failures and current limitations
 

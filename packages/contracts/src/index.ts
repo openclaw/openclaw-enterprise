@@ -1240,21 +1240,11 @@ export interface ConfigurationReference extends Scope {
   readonly namespaceId: string;
 }
 
-export type ServiceAccountCredential =
-  | {
-      readonly kind: "access_token";
-      readonly sourceId: string;
-    }
-  | {
-      readonly kind: "api_key" | "oauth_access_token";
-      readonly secretRef: { readonly name: string; readonly key: string };
-    };
-
 export interface ServiceAccount extends Scope {
   readonly id: string;
   readonly namespaceId: string;
   readonly name: string;
-  readonly credential?: ServiceAccountCredential;
+  readonly credentialSourceId?: string;
 }
 
 export type AgentDesiredRuntimeState = "running" | "stopped";

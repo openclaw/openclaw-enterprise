@@ -355,12 +355,12 @@ Records one credential source withdrawn from one Agent revision, until the gatew
 
 ### `service_accounts`
 
-Stores Namespace service accounts and any credential Secret references.
+Stores Namespace service accounts and their issued TokenService Source associations.
 
 - `id`
 - `namespace_id`
 - `name`
-- `credential`
+- `credential_source_id`
 
 ### `service_account_driver_bindings`
 

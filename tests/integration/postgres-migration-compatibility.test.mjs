@@ -1573,6 +1573,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preServiceAccountSource"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -2011,6 +2012,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preServiceAccountSource"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -2460,6 +2462,77 @@ test(
       { code: "55000" },
     );
     assert.deepEqual(await readSource(), before);
+  },
+);
+
+test(
+  "ServiceAccount Source migration preserves issued PATs and retires manual associations",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "service_account_source", { prefix: 96 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const instanceId = randomUUID();
+    const sourceId = `cs_${randomUUID()}`;
+    const issuedId = `sa_${randomUUID()}`;
+    const manualId = `sa_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Account fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Account owner','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity) VALUES($1,$2,'occ-token-service','account-store')",
+      [installationId, instanceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,owner_capability,state,created_at,token_service_instance_id) VALUES($1,$2,'Issued Source','static','{"provider_preset":"codex-pat"}','token_service','ready',now(),$3)`,
+      [sourceId, namespaceId, instanceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.service_accounts(id,namespace_id,name,credential) VALUES($1,$3,'Issued',$4::jsonb),($2,$3,'Manual',$5::jsonb)`,
+      [
+        issuedId,
+        manualId,
+        namespaceId,
+        JSON.stringify({ kind: "access_token", sourceId }),
+        JSON.stringify({ kind: "api_key", secretRef: { name: "manual-provider", key: "value" } }),
+      ],
+    );
+
+    assert.deepEqual(await runHistoryCommand(db, "production"), {
+      ok: true,
+      history: "preServiceAccountSource",
+    });
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT id,credential_source_id FROM occ.service_accounts WHERE namespace_id=$1 ORDER BY name",
+          [namespaceId],
+        )
+      ).rows,
+      [
+        { id: issuedId, credential_source_id: sourceId },
+        { id: manualId, credential_source_id: null },
+      ],
+    );
+    assert.equal(
+      (await db.app.query("SELECT id FROM occ.credential_sources WHERE id=$1", [sourceId]))
+        .rowCount,
+      1,
+    );
+    // The application role can set only a valid ready PAT Source, under the existing Namespace FK and guard.
+    await assert.rejects(
+      db.app.query("UPDATE occ.service_accounts SET credential_source_id=$1 WHERE id=$2", [
+        `cs_${randomUUID()}`,
+        manualId,
+      ]),
+      { code: "23503", constraint: "service_accounts_credential_source_owner" },
+    );
   },
 );
 
@@ -3151,6 +3224,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preServiceAccountSource"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3289,6 +3363,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preServiceAccountSource"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3460,6 +3535,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preServiceAccountSource"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

@@ -283,10 +283,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     {
       id: "sa_demo",
       name: "Research service",
-      credential: {
-        kind: "access_token",
-        sourceId: "cs_00000000-0000-4000-8000-000000000010",
-      },
+      credentialSourceId: "cs_00000000-0000-4000-8000-000000000010",
       backendId: "chatgpt-demo",
       status: "active",
       createdAt,

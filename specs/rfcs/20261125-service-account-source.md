@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Implemented
 author: stevenlee-oai
 ---
 
@@ -44,3 +44,7 @@ Remove the duplicate credential kind, manual Secret association API, JSON repres
 - Issuing a PAT through the real account API returns an authorized static Source ID without exposing the bearer; the Agent can bind that Source.
 - Issuance denies callers missing either required grant before issuer effects, and existing issuer compensation and revocation still work.
 - The removed manual association endpoint is unavailable. Upgrading preserves issued Source associations and unrelated Namespace Secrets.
+
+## Implementation
+
+The [ServiceAccount reference](../../docs/reference/service-accounts.md) describes the supported account and Source lifecycle.

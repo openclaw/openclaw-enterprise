@@ -582,10 +582,15 @@ async function account(label: string): Promise<Account> {
 }
 async function binding(
   a: Account,
-): Promise<{ credential: unknown; external_credential_id: string | null } | undefined> {
+): Promise<
+  { credential_source_id: string | null; external_credential_id: string | null } | undefined
+> {
   return (
-    await live.pool!.query<{ credential: unknown; external_credential_id: string | null }>(
-      "SELECT s.credential,b.external_credential_id FROM occ.service_accounts s JOIN occ.service_account_driver_bindings b ON b.service_account_id=s.id WHERE s.id=$1 AND s.namespace_id=$2",
+    await live.pool!.query<{
+      credential_source_id: string | null;
+      external_credential_id: string | null;
+    }>(
+      "SELECT s.credential_source_id,b.external_credential_id FROM occ.service_accounts s JOIN occ.service_account_driver_bindings b ON b.service_account_id=s.id WHERE s.id=$1 AND s.namespace_id=$2",
       [a.id, live.namespaceId],
     )
   ).rows[0];
@@ -593,7 +598,7 @@ async function binding(
 async function noBinding(a: Account): Promise<void> {
   assert.deepEqual(
     await binding(a),
-    { credential: null, external_credential_id: null },
+    { credential_source_id: null, external_credential_id: null },
     "failed issuance must roll back both fields",
   );
 }
@@ -989,9 +994,7 @@ test(
     );
     const issued = await issue(a, { key });
     expect(issued, 201);
-    const credential = safeObject(data(issued).credential);
-    assert.equal(credential.kind, "access_token");
-    const sourceId = textField(credential, "sourceId");
+    const sourceId = textField(data(issued), "credentialSourceId");
     assert.match(sourceId, /^cs_/);
     const c = credentialFor(a);
     assert.ok(

@@ -190,10 +190,7 @@ async function seedIssuedSource(controller: OpenClawController, account: Service
       config: { provider_preset: "codex-pat" },
       createdAt: new Date().toISOString(),
     });
-    await unit.serviceAccounts.updateCredential(account.namespaceId, account.id, {
-      kind: "access_token",
-      sourceId,
-    });
+    await unit.serviceAccounts.setCredentialSource(account.namespaceId, account.id, sourceId);
   });
 }
 
@@ -273,7 +270,8 @@ test("issuance checks grants and account identity before requiring Codex PAT Sou
     },
   );
   assert.equal(
-    (await controller.getServiceAccount(administrator, namespace.id, account.id)).credential,
+    (await controller.getServiceAccount(administrator, namespace.id, account.id))
+      .credentialSourceId,
     undefined,
   );
 });
@@ -320,8 +318,9 @@ test("deleting an account with an issued token without a ChatGPT Backend names t
     },
   );
   assert.equal(
-    (await controller.getServiceAccount(administrator, namespace.id, account.id)).credential?.kind,
-    "access_token",
+    (await controller.getServiceAccount(administrator, namespace.id, account.id))
+      .credentialSourceId !== undefined,
+    true,
   );
   // An explicit `force: false` is the same refusal.
   await assert.rejects(
@@ -439,8 +438,9 @@ test("force never deletes past a configured ServiceAccount Driver that is unavai
     );
   }
   assert.equal(
-    (await controller.getServiceAccount(administrator, namespace.id, account.id)).credential?.kind,
-    "access_token",
+    (await controller.getServiceAccount(administrator, namespace.id, account.id))
+      .credentialSourceId !== undefined,
+    true,
   );
 });
 
@@ -1010,7 +1010,7 @@ test("a ChatGPT account delete that applied but answered an error completes on r
       id: "sa_own",
       namespaceId: "ns_own",
       name: "own",
-      credential: { kind: "access_token", sourceId: `cs_${randomUUID()}` },
+      credentialSourceId: `cs_${randomUUID()}`,
     };
     // Revocation applied, then the account deletion applied but its reply was lost: OCC
     // rolls its records back and the provider account cannot be recreated.

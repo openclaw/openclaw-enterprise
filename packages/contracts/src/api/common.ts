@@ -688,37 +688,12 @@ export const UpdateConfigurationBody = Type.Object(
   { additionalProperties: false },
 );
 
-export const ServiceAccountCredentialSchema = Type.Object(
-  {
-    kind: Type.Union([Type.Literal("api_key"), Type.Literal("oauth_access_token")]),
-    secretRef: Type.Object(
-      {
-        name: Type.String({
-          maxLength: 253,
-          pattern: "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:[.][a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$",
-        }),
-        key: Type.String({ maxLength: 253, pattern: "^(?![.]{1,2}$)[-._a-zA-Z0-9]+$" }),
-      },
-      { additionalProperties: false },
-    ),
-  },
-  { additionalProperties: false },
-);
-
 export const CreateServiceAccountBody = Type.Object(
   { name: Name },
   { additionalProperties: false },
 );
 
 export const CreateServiceAccountCredentialBody = Type.Object({}, { additionalProperties: false });
-
-export const UpdateServiceAccountCredentialBody = Type.Object(
-  {
-    kind: Type.Union([Type.Literal("api_key"), Type.Literal("oauth_access_token")]),
-    secretRef: ServiceAccountCredentialSchema.properties.secretRef,
-  },
-  { additionalProperties: false },
-);
 
 const RepositoryBindingSelector = Type.String({
   minLength: 1,
@@ -1288,9 +1263,6 @@ export type UpdateConfigurationBody = Type.Static<typeof UpdateConfigurationBody
 export type CreateServiceAccountBody = Type.Static<typeof CreateServiceAccountBody>;
 export type CreateServiceAccountCredentialBody = Type.Static<
   typeof CreateServiceAccountCredentialBody
->;
-export type UpdateServiceAccountCredentialBody = Type.Static<
-  typeof UpdateServiceAccountCredentialBody
 >;
 export type CreateAgentBody = Type.Static<typeof CreateAgentBody>;
 export type ProvisionAgentBody = Type.Static<typeof ProvisionAgentBody>;

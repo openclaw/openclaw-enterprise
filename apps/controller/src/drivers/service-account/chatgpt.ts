@@ -1,6 +1,5 @@
 import type {
   ServiceAccount,
-  ServiceAccountCredential,
   ServiceAccountDriver,
   StaticCredentialSource,
 } from "@openclaw-enterprise/contracts";
@@ -75,12 +74,12 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
     );
   }
 
-  async createCredential(account: ServiceAccount): Promise<ServiceAccountCredential> {
+  async createCredential(account: ServiceAccount): Promise<string> {
     let linked = await this.findBinding(account);
     if (linked === undefined) {
       throw new ScopeViolationError("The service account has no exact backend binding.");
     }
-    if (account.credential !== undefined) {
+    if (account.credentialSourceId !== undefined) {
       throw new ResourceConflictError("The service account already has a credential.");
     }
     const originalCredentialId = linked.externalCredentialId;
@@ -126,10 +125,11 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
             );
           }
           if (source) {
-            await unit.serviceAccounts.updateCredential(account.namespaceId, account.id, {
-              kind: "access_token",
-              sourceId: source.id,
-            });
+            await unit.serviceAccounts.setCredentialSource(
+              account.namespaceId,
+              account.id,
+              source.id,
+            );
           }
         });
         throw error;
@@ -169,7 +169,7 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
     if (result.rowCount !== 1) {
       throw new DependencyUnavailableError("The exact service-account Driver binding is missing.");
     }
-    return { kind: "access_token", sourceId: source.id };
+    return source.id;
   }
 
   async delete(account: ServiceAccount): Promise<void> {

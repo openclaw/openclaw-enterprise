@@ -13,7 +13,6 @@ import {
   ServiceAccountListResponse,
   ServiceAccountResponse,
   type ErrorCode,
-  type ServiceAccountCredential,
 } from "../../packages/contracts/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
@@ -142,10 +141,7 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
       state: "ready",
       createdAt: new Date().toISOString(),
     });
-    await unit.serviceAccounts.updateCredential(namespace.id, account.id, {
-      kind: "access_token",
-      sourceId: source.id,
-    });
+    await unit.serviceAccounts.setCredentialSource(namespace.id, account.id, source.id);
   });
 
   // Without force, and with an explicit force=false, deletion still refuses and names both ways out.
@@ -214,7 +210,7 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   assert.equal(Object.hasOwn(nativeEvent.details, "revocation"), false);
 });
 
-test("native ServiceAccounts keep private credential references and cannot admit Harness authentication", async () => {
+test("ServiceAccounts reject retired manual credential attachment and require Source authentication", async () => {
   const { fixture, request, auditSink } = await setupServiceAccounts({ recordOperations: true });
   const namespace = await createNamespace(request, "service-account-lifecycle");
   const namespacePath = `/namespaces/${namespace.id}`;
@@ -267,44 +263,10 @@ test("native ServiceAccounts keep private credential references and cannot admit
   });
   assert.equal(deniedIssuance.status, 403, JSON.stringify(deniedIssuance.body));
 
-  const initialCredential: ServiceAccountCredential = {
-    kind: "api_key",
-    secretRef: { name: "namespace-provider-source", key: "provider-api-key" },
-  };
-  const assigned = await request("PATCH", credentialPath, {
-    body: initialCredential,
+  const retired = await request("PATCH", credentialPath, {
+    body: { kind: "api_key", secretRef: { name: "provider-key", key: "value" } },
   });
-  assert.deepEqual(checkedBody(assigned, 200, ServiceAccountResponse).data.credential, {
-    kind: initialCredential.kind,
-  });
-  assert.deepEqual(
-    (await controller.getServiceAccount(fixture.principal.id, namespace.id, account.id)).credential,
-    initialCredential,
-  );
-
-  // OAuth references are representable, but no refresh or OAuth execution exists yet.
-  const oauthCredential: ServiceAccountCredential = {
-    kind: "oauth_access_token",
-    secretRef: { name: "namespace-oauth-source", key: "access-token" },
-  };
-  const oauthUpdate = await request("PATCH", credentialPath, {
-    body: oauthCredential,
-  });
-  assert.equal(oauthUpdate.status, 200);
-  const replacementCredential: ServiceAccountCredential = {
-    kind: "api_key",
-    secretRef: { name: "namespace-provider-rotated", key: "rotated-api-key" },
-  };
-  const replaced = await request("PATCH", credentialPath, {
-    body: replacementCredential,
-  });
-  assert.deepEqual(checkedBody(replaced, 200, ServiceAccountResponse).data.credential, {
-    kind: replacementCredential.kind,
-  });
-  assert.deepEqual(
-    (await controller.getServiceAccount(fixture.principal.id, namespace.id, account.id)).credential,
-    replacementCredential,
-  );
+  assert.equal(retired.status, 404, "manual credential attachment is no longer offered");
   const outsider = await fixture.createAuthPrincipal("service-account-outsider");
   fixture.state.identities.push(outsider.principal);
   assert(outsider.session);
@@ -325,11 +287,7 @@ test("native ServiceAccounts keep private credential references and cannot admit
   );
   assert.deepEqual(
     new Set(accountEvents.map(({ action }) => action)),
-    new Set([
-      "openclaw.service_accounts.create",
-      "openclaw.service_accounts.update",
-      "openclaw.service_accounts.delete",
-    ]),
+    new Set(["openclaw.service_accounts.create", "openclaw.service_accounts.delete"]),
   );
   const creation = accountEvents[0];
   assert(creation?.authorization);
@@ -357,7 +315,6 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   const namespaceBPath = `/namespaces/${namespaceB.id}`;
   const accountsPath = `${namespaceAPath}/service-accounts`;
   const exactAccountPath = `${accountsPath}/${accountA.id}`;
-  const credentialPath = `${exactAccountPath}/credential`;
 
   const duplicate = await request("POST", accountsPath, {
     body: { name: "account-a" },
@@ -378,36 +335,14 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     assert.equal(rejected.status, 400);
   }
 
-  for (const invalid of [
-    ...[".", ".."].map((key) => ({ kind: "api_key", secretRef: { name: "valid-source", key } })),
-    { kind: "api_key", secretRef: { name: "valid-source", key: "credential", namespace: "other" } },
-    { kind: "provider_token", secretRef: { name: "valid-source", key: "credential" } },
-  ]) {
-    const rejected = await request("PATCH", credentialPath, {
-      body: invalid,
-    });
-    checkRefusal(rejected, 400, "INVALID_REQUEST");
-  }
-
-  const credential: ServiceAccountCredential = {
-    kind: "api_key",
-    secretRef: { name: "account-a-source", key: "api-key" },
-  };
-  const assigned = await request("PATCH", credentialPath, {
-    body: credential,
-  });
-  const { data: updatedAccount } = checkedBody(assigned, 200, ServiceAccountResponse);
-
   // A real account ID never becomes accessible by substituting a sibling Namespace in the URL.
-  for (const { method, suffix, options } of [
+  for (const { method, suffix } of [
     { method: "GET", suffix: "" },
-    { method: "PATCH", suffix: "/credential", options: { body: credential } },
     { method: "DELETE", suffix: "" },
   ]) {
     const crossNamespace = await request(
       method,
       `${namespaceBPath}/service-accounts/${accountA.id}${suffix}`,
-      options,
     );
     assert.equal(crossNamespace.status, 404);
   }
@@ -456,7 +391,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
 
   const accountList = await injectedRequest(readerApp, "GET", accountsPath);
   const { data: visibleAccounts } = checkedBody(accountList, 200, ServiceAccountListResponse);
-  assert.deepEqual(visibleAccounts, [updatedAccount]);
+  assert.deepEqual(visibleAccounts, [accountA]);
   assert.equal(JSON.stringify(visibleAccounts).includes(accountB.id), false);
   const [visibleAccount] = visibleAccounts;
   assert(visibleAccount);
