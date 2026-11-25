@@ -311,23 +311,18 @@ scripts/upgrade-production-images "${target[@]}" \
 With repository credentials, also pass `--controller-image` (current
 digest) and `--broker-image` (selected digest). The worker and broker still restart.
 
-A runtime upgrade cannot replace an active revision that uses staged credentials
-or deploy a draft that selects a TokenService Harness source over an active revision.
-For each refusal, plan an interruption. Stop the Agent, wait for Stop to complete
-and prepare the upgrade with fresh evidence. Deploy the stopped Agent separately
-after the upgrade.
+Preflight refuses replacement if the active revision uses staged credentials
+or the draft selects a TokenService Harness source. Plan an interruption. Complete Agent Stop, upgrade with fresh evidence
+and deploy those Agents separately afterward.
 
-Check preflight warnings. The controller image checks saved Agent Configurations
-if it supports draft validation and the drafts fit in the temporary Secret.
-Otherwise, OCC checks them at deployment. Correct refused drafts or stop their
-Agents before retrying. Deployment checks Drivers, credentials, plugins and repositories.
+Check warnings. Older images or oversized drafts defer Configuration checks
+until deployment, which also checks Drivers, credentials, plugins and repositories.
+Correct refused drafts or stop affected Agents.
 
-Before mutation, the command requires a complete authorized inventory with no
-deployment in progress. Every running Agent must have a readable selected version
-in a ready Namespace. A running Agent without one, usually a failed initial
-deployment, stops the command before any change; the refusal lists up to ten
-by ID, name and Namespace. Stop, delete or successfully deploy each, then start
-again with a new evidence directory.
+Preparation requires complete authorized inventory without pending deployments.
+Each running Agent needs a readable active revision in a ready Namespace.
+For missing revisions, the refusal lists up to ten Agents by ID, name and
+Namespace. Stop, delete or deploy them successfully and prepare fresh evidence.
 
 The command writes the runtime digest to both Kubernetes Compute image fields,
 updates the mutable Installation Secret or selects its staged immutable successor,

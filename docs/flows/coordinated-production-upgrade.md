@@ -158,25 +158,18 @@ keeps policy labels and checks recognized history with `--check` or
 migrator and CA Secret identities and requires `migration.checked-for-installation`.
 After cleanup, recheck and bind the Secret identities to the evidence.
 
-The API Job tests themes. Both Jobs load startup and Installation
-configuration without database access and check token file readability without
-reading tokens.
+The API Job tests themes. Both Jobs load startup and Installation configuration
+and check token file readability. `connectionPlan` preserves OIDC CA
+mounts and database preload. Read-only queries verify Installation identity
+against OCC and the Secret. Timeouts are five seconds per statement or lock,
+15 seconds overall. Logs omit connection details.
 
-`connectionPlan` retains private OIDC CA mounts and database preload. A read-only
-`OCC_DATABASE_URL` query must return the Installation matching OCC and the Secret.
-Statement and lock timeouts are five seconds, with 15 seconds for the full
-check. Logs omit connection errors and rows.
+Before handoff or Helm submission, including resume, runtime preflight
+compares revisions and Configuration generations on schemas supporting staged
+credentials. Version 8 admissions or TokenService Harness selections block replacement.
 
-For runtime replacements, the API Job compares the running fleet and Configuration
-generations with the recorded targets. It refuses a version 8 admission or a
-TokenService Harness selection, as in
-`packages/occ/src/agent-deployment-admission.ts`. This read repeats on resume
-before Helm submission or migration handoff. Schemas without TokenService
-instances cannot stage credentials.
-
-`preflight_resume` checks history and writer identities before shutdown or Helm,
-even when stopped. Completed Helm releases skip these Jobs. Preflight verifies
-Job and Pod identities around log retrieval and rejects NUL bytes.
+`preflight_resume` verifies history and writer identities until Helm completes.
+Preflight verifies Job and Pod identities around log retrieval and rejects NUL.
 `formatStartupConfigurationFailure` reports up to 32 field diagnostics.
 
 Kubernetes Compute uses the Pod service account and refuses single-cluster
