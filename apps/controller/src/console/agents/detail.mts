@@ -235,6 +235,7 @@ interface EditorState {
 
 interface ConfigurationDraft {
   text: string;
+  caret?: number;
   initialText: string;
   baseline: Pick<Configuration, "id" | "generation">;
   outcomeUnknown?: boolean;
@@ -7092,17 +7093,17 @@ export async function renderAgentDetail(
   ) {
     const retained = context.drafts.get("configuration") as ConfigurationDraft | undefined;
     if (!retained?.carried) {
-      // The note describes the saved values used for this merge. Refresh can keep the
-      // draft even when it rereads a different Configuration or generation.
-      const note =
-        retained?.reviewNote &&
-        retained.baseline.id === snapshot.id &&
+      // Refresh can retain the text even when the saved Configuration has changed.
+      const current =
+        retained?.baseline.id === snapshot.id &&
         retained.baseline.generation === snapshot.generation &&
         !retained.outcomeUnknown &&
-        !retained.reloadRequired
-          ? retained.reviewNote
-          : "";
-      return { retained, note };
+        !retained.reloadRequired;
+      return {
+        retained,
+        note: current ? (retained.reviewNote ?? "") : "",
+        caret: current && retained.text !== retained.initialText ? retained.caret : undefined,
+      };
     }
     const initialText = JSON.stringify(values, null, 2);
     if (retained.baseline?.id !== snapshot.id) {
@@ -7188,7 +7189,11 @@ export async function renderAgentDetail(
       ),
       safety.node,
     );
-    const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
+    const {
+      retained,
+      note: carriedNote,
+      caret,
+    } = carriedConfigurationDraft(context, snapshot, values);
     const reviewReminder = "Review the merged draft. Saving may replace other changes.";
     let reviewNote = retained ? carriedNote : "";
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
@@ -7209,10 +7214,18 @@ export async function renderAgentDetail(
     // Invalid JSON is reported under the editor, never by the browser's bubble (finding 1903).
     const editorError = fieldError(editor);
     editor.value = retained?.text ?? initialText;
+    if (caret !== undefined) {
+      // Restore just the caret so typing cannot replace a selection outside the visible area.
+      editor.setSelectionRange(caret, caret);
+    }
     context.drafts.track("configuration", () =>
       editing
         ? {
             text: editor.value,
+            caret:
+              editor.selectionDirection === "backward"
+                ? editor.selectionStart
+                : editor.selectionEnd,
             initialText,
             baseline,
             reviewNote,
