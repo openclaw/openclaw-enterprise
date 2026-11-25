@@ -20,7 +20,7 @@ import {
 import { accountProvisioning } from "./postgres-auth-account-provisioning-cases.ts";
 import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { signInToControllerApp } from "../helpers/auth-session.mjs";
+import { signInToControllerApp } from "../helpers/auth-session.ts";
 import { injectJson as injectJsonRequest } from "../helpers/inject-json.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";

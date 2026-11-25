@@ -392,7 +392,7 @@ export function registerInstallationKeycloak() {
       assert.equal(auth.passwordSignIn, "recovery-only");
       assert.equal(nativeAdmin.enabled, true);
       assert.equal(nativeAdmin.domain, `agents.${fixture.cluster}.oce.localhost`);
-      // Probe the actual API after the OIDC upgrade, when the additive policy is active.
+      // Probe HTTPS from the installed API after Keycloak configuration takes effect.
       await verifyKeycloakAPIEgress(fixture, state, values);
       const issuer = `https://${fixture.keycloakHost}/realms/oce`;
       const discovery = await publishedJSON(

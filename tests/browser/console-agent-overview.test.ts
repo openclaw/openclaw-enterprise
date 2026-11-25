@@ -252,6 +252,21 @@ function routeFailedRecord(
   });
 }
 
+// v1 keeps serving while the replacement (v2) fails its startup model check.
+async function failedRedeployPage(
+  t: TestContext,
+  namespaceName: string,
+  agentName = namespaceName,
+  fixtureOptions?: object,
+) {
+  const context = await agentPage(t, namespaceName, agentName, fixtureOptions);
+  const { fixture, namespace, agent, page } = context;
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, revision);
+  return { ...context, active, revision };
+}
+
 // The in-memory fixture never runs deployment work, so its Versions list reports a deployment as
 // queued at most. This lists `revision` as failed with `code`, as the API does once its record
 // ended that way (finding 2422; postgres-agent-provisioning.test.ts and
@@ -1869,7 +1884,8 @@ test("Recovery offers Open Configuration draft when the caller may edit the Conf
       { exact: false },
     )
     .waitFor();
-  await recovery.getByRole("link", { name: "Open draft", exact: true }).waitFor();
+  const draft = recovery.getByRole("link", { name: "Open draft", exact: true });
+  await draft.waitFor();
   assert.deepEqual(await links(), ["Open v1 Logs", "Open draft"]);
 
   // The inverse: an Agent editor whose Agent update would pass but who may not update the
@@ -1881,13 +1897,12 @@ test("Recovery offers Open Configuration draft when the caller may edit the Conf
   answer = await shown();
   assert.equal(answer.configurationUpdate, false);
   assert.equal(answer.agentSourcesOperate, true);
-  await recovery.getByRole("link", { name: "Open draft", exact: true }).waitFor();
+  await draft.waitFor();
   assert.deepEqual(await links(), ["Open v1 Logs", "Open draft"]);
   role.permissions = without("read_logs", "agent");
   answer = await shown();
   assert.equal(answer.readLogs, false);
   assert.equal(answer.operate, false);
-  const draft = recovery.getByRole("link", { name: "Open draft", exact: true });
   await draft.waitFor();
   assert.deepEqual(await links(), ["Open draft"]);
   assert.equal(await draft.getAttribute("class"), "button button--primary");
@@ -1897,34 +1912,81 @@ test("Recovery offers Open Configuration draft when the caller may edit the Conf
   );
   await askForLogs.waitFor();
 
-  role.permissions.push({ action: "operate", resourceKind: "agent" });
-  await shown();
-  await draft.waitFor();
-  assert.deepEqual(await links(), ["Open v1 Logs", "Open draft"]);
-
   role.permissions = without("deploy", "agent");
+  role.permissions.push({ action: "operate", resourceKind: "agent" });
   answer = await shown();
   assert.equal(answer.deploy, false);
   assert.equal(answer.operate, true);
   assert.equal(answer.readLogs, false);
-  assert.deepEqual(await links(), ["Open v1 Logs"]);
+  const shortcut = recovery
+    .getByRole("link", { name: /\bv1\b/ })
+    .and(page.locator('[href*="tab=logs"]'));
+  assert.equal(await shortcut.isVisible(), true);
+  assert.equal((await links()).length, 1);
   await recovery
     .getByText(
       "Ask a Configuration editor to choose a model this account can use. Someone with deploy access must then redeploy this Agent.",
       { exact: false },
     )
     .waitFor();
-  // Runtime status makes the tab useful, but the log text read is skipped.
+  // A local text skip must still let the operator return to the failed version's status.
+  role.permissions.push({ action: "deploy", resourceKind: "agent" });
+  await page.clock.install();
+  await shown();
+  await draft.waitFor();
   const requests = apiRequests(page, fixture.origin);
-  const status = page.waitForResponse(
-    (r) => new URL(r.url()).pathname === `${path}/deployments/${failed.id}/runtime`,
+  const statusUrl = `${fixture.origin}${path}/deployments/${failed.id}/runtime`;
+  const configuration = page.getByRole("tab", { name: "Configuration", exact: true });
+  const visitStatus = async () => {
+    assert.equal(await shortcut.isVisible(), true, "the operator can return to v1 status");
+    assert.deepEqual((await links()).slice(1), ["Open draft"]);
+    const status = page.waitForResponse(statusUrl);
+    await shortcut.press("Enter");
+    assert.equal((await status).status(), 200);
+    await page.locator(".runtime-pod").first().waitFor();
+    await page.getByText(LOG_TEXT_DENIED).waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(await versionChooser(page).inputValue(), failed.id);
+    for (const name of ["Follow", "Refresh logs", "Download"]) {
+      assert.equal(await page.getByRole("button", { name, exact: true }).isDisabled(), true);
+    }
+  };
+  await visitStatus();
+  await configuration.press("Enter");
+  await waitForIdleFetches(page);
+  await visitStatus();
+  assert.deepEqual(await links(), ["View v1 runtime status in Logs", "Open draft"]);
+  assert.equal(await askForLogs.isVisible(), true);
+
+  // A real refusal on the next poll withdraws only the status shortcut, even before
+  // the permission summary can report the revocation.
+  const poll = await holdRequests(t, page, statusUrl, { once: true });
+  await page.clock.fastForward(10_000);
+  await poll.requested;
+  await shortcut.press("Tab");
+  const focusedDraft = required(await draft.elementHandle());
+  const draftHref = required(await draft.getAttribute("href"));
+  assert.ok(await focusedDraft.evaluate((node) => node.matches(":focus-visible")));
+  const permissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`);
+  restrict(fixture.policy, "operate", "agent", { namespaceId: namespace.id, resourceId: agent.id });
+  const refused = page.waitForResponse(statusUrl);
+  poll.release();
+  assert.equal((await refused).status(), 403);
+  await page.getByText(/runtime status is no longer shown/).waitFor();
+  assert.deepEqual(await links(), ["Open draft"]);
+  assert.ok(
+    await focusedDraft.evaluate((node) => node.matches(":focus-visible")),
+    "withdrawing the status shortcut keeps keyboard focus on Open draft",
   );
-  await recovery.getByRole("link", { name: "Open v1 Logs" }).click();
-  assert.equal((await status).status(), 200);
-  await page.getByText(LOG_TEXT_DENIED).waitFor();
+  assert.equal(await draft.getAttribute("class"), "button button--primary");
+  assert.equal(await draft.getAttribute("href"), draftHref);
+  permissions.release();
+  await waitForIdleFetches(page);
+  assert.ok(await focusedDraft.evaluate((node) => node.matches(":focus-visible")));
+  await configuration.press("Enter");
+  await waitForIdleFetches(page);
+  assert.deepEqual(await links(), ["Open draft"]);
   assert.ok(!requests.some(({ path }) => path.includes("/runtime/logs")));
-  await askForLogs.waitFor();
-  assert.deepEqual(await links(), []);
 });
 
 test("A failed version raises no recovery while the current version is on no loaded page", async (t) => {
@@ -2066,10 +2128,7 @@ test("A succeeded version says when the current version is on no loaded page", a
 // reader can read and leaves it out (finding D791). Here it is readable and on an older page: v2,
 // a later failed deployment, is the only version on the first page. The page still reads v1.
 test("A readable current version on an older page is still read", async (t) => {
-  const { fixture, namespace, agent, page } = await agentPage(t, "Paged current", "Paged current");
-  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const revision = await fixture.deployAgent(namespace.id, agent.id);
-  await routeFailedRecord(page, fixture, namespace, agent, revision);
+  const { fixture, namespace, agent, page, active } = await failedRedeployPage(t, "Paged current");
   await routeOneVersionPerPage(page, fixture, namespace, agent);
   await trackSettledFetches(page);
   const snapshotPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${active.revision.id}`;
@@ -2085,15 +2144,11 @@ test("A readable current version on an older page is still read", async (t) => {
 });
 
 test("Recovery offers no draft link without Agent update or deploy permission", async (t) => {
-  const { fixture, namespace, agent, page } = await agentPage(
+  const { fixture, namespace, agent, page, active } = await failedRedeployPage(
     t,
     "Read-only recovery",
     "Read-only Agent",
   );
-  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  // v1 keeps serving; the v2 redeploy failed.
-  const revision = await fixture.deployAgent(namespace.id, agent.id);
-  await routeFailedRecord(page, fixture, namespace, agent, revision);
   // Agent permissions do not describe this reader's Configuration permissions.
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
@@ -2121,16 +2176,12 @@ test("Recovery offers no draft link without Agent update or deploy permission", 
 });
 
 test("Recovery stops offering a failed version's Logs once this page saw log text denied", async (t) => {
-  const { fixture, namespace, agent, page } = await agentPage(
+  const { fixture, namespace, agent, page, revision } = await failedRedeployPage(
     t,
     "Denied logs",
     "Denied logs",
     runtimeLogs(),
   );
-  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  // v1 keeps serving; the v2 redeploy failed.
-  const revision = await fixture.deployAgent(namespace.id, agent.id);
-  await routeFailedRecord(page, fixture, namespace, agent, revision);
   await login(page, fixture, draftConfigUrl(fixture, namespace.id, agent.id));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
@@ -2162,11 +2213,12 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
     { exact: true },
   );
   await askForLogs.waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
+  const links = recovery.getByRole("link");
+  assert.deepEqual(await links.allTextContents(), ["Open Configuration draft"]);
   // Leaving Logs for another tab of the same version keeps that.
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await askForLogs.waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
+  assert.deepEqual(await links.allTextContents(), ["Open Configuration draft"]);
   const configuration = recovery.getByRole("link", {
     name: "Open Configuration draft",
     exact: true,
@@ -2177,8 +2229,8 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("link", { name: "Denied logs" }).click();
   await recovery.getByText("Ask someone with log access", { exact: false }).waitFor();
-  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   await configuration.waitFor();
+  assert.deepEqual(await links.allTextContents(), ["Open Configuration draft"]);
 });
 
 // When a failed newer version replaced the running one, the replacement sentence overrode the
@@ -2229,15 +2281,7 @@ test("A replaced current version still says who can check the logs once Logs is 
 
 test("Recovery waits for the caller's permission answer before offering the draft link", async (t) => {
   const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
-  const { fixture, namespace, agent, page } = await agentPage(
-    t,
-    "Pending permissions",
-    "Pending permissions",
-  );
-  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  // v1 keeps serving; the v2 redeploy failed.
-  const revision = await fixture.deployAgent(namespace.id, agent.id);
-  await routeFailedRecord(page, fixture, namespace, agent, revision);
+  const { fixture, namespace, agent, page } = await failedRedeployPage(t, "Pending permissions");
   const permissions = await holdRequests(
     t,
     page,
@@ -2274,15 +2318,7 @@ test("Recovery waits for the caller's permission answer before offering the draf
 });
 
 test("Recovery offers no draft link when the caller's permission answer fails", async (t) => {
-  const { fixture, namespace, agent, page } = await agentPage(
-    t,
-    "Failed permissions",
-    "Failed permissions",
-  );
-  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  // v1 keeps serving; the v2 redeploy failed.
-  const revision = await fixture.deployAgent(namespace.id, agent.id);
-  await routeFailedRecord(page, fixture, namespace, agent, revision);
+  const { fixture, namespace, agent, page } = await failedRedeployPage(t, "Failed permissions");
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
     (route) =>

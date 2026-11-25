@@ -8,6 +8,7 @@ import {
   MANAGED_BY_LABEL,
   SOURCE_ID_LABEL,
   openShellProviderName,
+  openShellSourceCredentialEnvironment,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -200,6 +201,10 @@ test(
     assert.equal(provider.type, providerName);
     const profile = await gateway.getProviderProfile(workspace, providerName, rpc());
     assert.ok(profile?.resourceVersion);
+    const credentials = profile.definition?.credentials;
+    assert.ok(Array.isArray(credentials) && credentials.length === 1);
+    assert.equal(credentials[0].name, openShellSourceCredentialEnvironment(sourceId));
+    assert.deepEqual(credentials[0].env_vars, [openShellSourceCredentialEnvironment(sourceId)]);
     assert.equal(provider.labels[MANAGED_BY_LABEL], MANAGED_BY);
     assert.equal(provider.labels[SOURCE_ID_LABEL], sourceId);
     assert.equal(provider.labels["openclaw.dev/token-service"], "openshell");

@@ -14,7 +14,7 @@ import { composePostgresDevelopment, createPostgresControllerAuth } from "./pass
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import type { standingExecutionPlatform } from "./postgres-standing-execution.ts";
-import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.mjs";
+import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.ts";
 
 /** API composition has its own Git owner and database pool. Only Kubernetes discovery is
  * controlled; the disposition travels through authenticated Fastify, OCC, Compute and Sandbox. */
