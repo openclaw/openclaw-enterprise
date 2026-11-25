@@ -5,7 +5,6 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/conformance/strands-box-transport.test.ts",
-    "tests/integration/prepared-refresh-enrollment.test.ts",
     "tests/integration/staging-upgrade-return.test.ts",
     "tests/integration/controller-endpoint-observation.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
@@ -24,6 +23,7 @@
     "tests/conformance/module-policy.test.ts",
     "tests/integration/native-admin-access.test.mjs",
     "tests/integration/repository-credentials-transport-bounds.test.ts",
+    "tests/integration/release-oce.test.ts",
     "tests/integration/cli-release.test.ts",
     "tests/integration/container-resume.test.ts",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
@@ -191,14 +191,6 @@
         "a loopback readiness probe retains capacity when all session channels are busy",
         "a terminal frame flushes queued TCP output",
         "the policy proxy delivers the complete response to a slow reader at EOF"
-      ]
-    },
-    {
-      "path": "tests/integration/prepared-refresh-enrollment.test.ts",
-      "expectedTests": [
-        "prepared refresh enrollment refuses before effects (legacy Refresh installed)",
-        "prepared refresh enrollment refuses before effects (legacy Refresh missing)",
-        "non-refresh prepared enrollment uses only its issuer with legacy Refresh installed"
       ]
     },
     {
@@ -512,6 +504,9 @@
       "path": "tests/integration/container-release.test.ts"
     },
     {
+      "path": "tests/integration/release-oce.test.ts"
+    },
+    {
       "path": "tests/integration/cli-release.test.ts",
       "expectedTests": [
         "CLI release builds four installable platform binaries and rejects changed assets"
@@ -619,7 +614,6 @@
         "Agent save refuses initial workspace files in a Sandbox with a 409 that names the Sandbox",
         "Agent create admits private workspace files through the OpenShell initializer contract",
         "Agent admission refuses projected identity only for OpenShell-owned Harnesses",
-        "Credential-source deployment refuses OpenShell projected identity before creating a revision",
         "Agent create refuses dedicated OpenClaw on OpenShell settings its workspace preparation refuses",
         "Agent save refuses a dedicated Harness the Kubernetes Compute settings cannot place",
         "Create Agent's preflight refuses a planned Harness authentication that Agent save refuses"

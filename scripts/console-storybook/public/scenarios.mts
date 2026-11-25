@@ -41,7 +41,7 @@ import {
   create,
   createSlackBotSecret,
   presetSecretsPath,
-  readyForm,
+  provisionableForm,
 } from "./create-agent-form-data.mts";
 import {
   calendarPlugin,
@@ -1840,6 +1840,28 @@ const authoredScenarios = {
     description: "The Agent was unavailable, so the editor cannot assume AGENTS.md is empty.",
     steps: ["Choose Reload AGENTS.md. Once its contents load, edit the file to enable Save."],
   } satisfies LocalScenario,
+  workspaceUnreachable: {
+    group: "Components/Workspace",
+    name: "Gateway unreachable",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    // The gateway answers no file's first read. Each read after that succeeds.
+    rules: ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"].map((name) => ({
+      suffix: `/workspace/files/${name}`,
+      method: "GET",
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message: "Workspace access is unavailable.",
+      once: true,
+    })),
+    description:
+      "The Agent's gateway answers none of the four file reads. One notice above the files names the four files, each file shows the reason under its editor, and no file is marked Needs attention.",
+    steps: [
+      "Switch between the four files, or use Workspace file on a phone. Each editor is disabled with the reason and request ID under it, and no file has an indicator.",
+      "Choose Retry. The notice goes, the four files load, and focus moves to the selected file.",
+    ],
+    gap: "Simulated files; no live Agent gateway. The browser test covers a Retry that fails again, a refusal for one file beside the notice, and a file with unsaved edits or an unknown save, which Retry does not read.",
+  } satisfies LocalScenario,
   workspaceUnknown: {
     group: "Components/Workspace",
     name: "Write outcome unknown",
@@ -2142,6 +2164,29 @@ const authoredScenarios = {
       "Tab to Delete Agent. It takes focus and looks unavailable, described by the Outcome unknown alert; Enter, Space or a click sends nothing (finding 2935).",
     ],
   } satisfies LocalScenario,
+  deletionStatusUnavailable: {
+    group: "Components/Deletion",
+    name: "Status unavailable after deletion request",
+    path: draft,
+    deleting: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        skip: 1,
+        once: true,
+        delayMs: 1300,
+        status: 404,
+        code: "NOT_FOUND",
+      },
+    ],
+    description:
+      "An Agent is already marked for deletion. Its next status check returns 404, and the Agents list is still readable.",
+    steps: [
+      "Wait for the status check to return you to Agents. Read the notice above the list. It says deletion was requested and cleanup could not be confirmed.",
+      "Check that the Agent still shows Deleting. Open Namespaces, then return to Agents and check that the notice has cleared.",
+    ],
+  } satisfies LocalScenario,
   createFlow: {
     group: "Flows",
     name: "Create and deploy an Agent",
@@ -2162,7 +2207,7 @@ const authoredScenarios = {
     group: "Flows",
     name: "Choose provider, harness, and authentication",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     description:
       "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
     steps: [
@@ -2221,7 +2266,7 @@ const authoredScenarios = {
     emptyAgents: true,
     transport: false,
     actions: [
-      ...readyForm,
+      ...provisionableForm,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },

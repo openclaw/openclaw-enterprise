@@ -4,6 +4,7 @@ import type { ProxyRevisionContext } from "../../packages/contracts/src/index.ts
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
 import * as fixtures from "../helpers/static-egress.mjs";
 
 type ConsoleAppFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
@@ -152,7 +153,7 @@ function mutateObservation(
 
 export function registerPolicyAdmissionCases(): void {
   test("retained Sandbox policy versions are independent of plan generation but still fence installation", async (t) => {
-    const f = await staticEgressFixture(t, { recordInstallation: false });
+    const f = await fixtures.protectedMetadataFixture(t, { recordInstallation: false });
     const context = await deployedContext(f);
     const observed = record(f.observed, "fixture observation");
     const evidence = record(observed.evidence, "fixture enforcement evidence");
@@ -194,8 +195,8 @@ export function registerPolicyAdmissionCases(): void {
     assert.equal(await f.egress.verifyInstallation(context, replacement), true);
   });
 
-  test("V1 permits only the exact inert runtime rule and fences both policies before Secret access and send", async (t) => {
-    const f = await staticEgressFixture(t, { inertProviderRule: true });
+  test("V1 permits only the exact inert runtime rule and fences both policies before resolution and send", async (t) => {
+    const f = await fixtures.protectedMetadataFixture(t, { inertProviderRule: true });
     const context = await deployedContext(f);
     const observed = record(f.observed, "fixture observation");
     const observation = structuredClone(record(observed.observation, "loaded policy observation"));
@@ -215,13 +216,13 @@ export function registerPolicyAdmissionCases(): void {
       { name: ruleName },
     );
     assert.equal(await f.egress.verifyInstallation(context, f.installation), true);
-    const capture = f.capture();
-    const ready = (await f.resolve(capture)).ready;
+    const capture = captureMetadata(f);
+    const ready = (await f.resolve(capture)).ready_without_material;
     assert.ok(ready, "the real consumer accepts the passive source != effective wire fixture");
-    assert.ok((await f.authorize(f.permitRequest(capture, ready))).allowed);
+    assert.ok((await f.authorize(f.permitRequest(capture, ready, { noMaterial: true }))).allowed);
     const reads = f.secretReads;
     // Each independently malformed derivation must refuse installation and current
-    // authority before the versioned Secret Driver is called.
+    // authority before the protected read is allowed.
     const endpoint = { host: "unexpected.example.test", ports: [443] };
     const inert = `effective_policy.network_policies.${ruleName}`;
     const route = "effective_policy.network_policies.oce-egress-0.endpoints";
@@ -254,7 +255,7 @@ export function registerPolicyAdmissionCases(): void {
       mutateObservation(changed, path, value);
       observed.observation = changed;
       assert.equal(await f.egress.wiringStatus(context, f.attachment), undefined);
-      assert.ok((await f.resolve(f.capture())).refused, path);
+      assert.ok((await f.resolve(captureMetadata(f))).refused, path);
       assert.equal(f.secretReads, reads, "a widened or stale observation cannot read a Secret");
     }
     observed.observation = structuredClone(observation);
@@ -282,7 +283,7 @@ export function registerPolicyAdmissionCases(): void {
       },
     ]) {
       change();
-      assert.ok((await f.resolve(f.capture())).refused);
+      assert.ok((await f.resolve(captureMetadata(f))).refused);
       assert.equal(f.secretReads, reads);
       observed.evidence = structuredClone(originalEvidence);
       observed.policyHash = observation.source_policy_hash;
@@ -290,10 +291,10 @@ export function registerPolicyAdmissionCases(): void {
       observed.observation = structuredClone(observation);
     }
     assert.equal(await f.egress.verifyInstallation(context, f.installation), true);
-    const sendCapture = f.capture();
-    const sendReady = (await f.resolve(sendCapture)).ready;
+    const sendCapture = captureMetadata(f);
+    const sendReady = (await f.resolve(sendCapture)).ready_without_material;
     assert.ok(sendReady, "Resolve succeeds while the runtime rule is still inert");
-    // Widen after material resolution: the fresh send check must reject a usable
+    // Widen after a request resolves: the fresh send check must reject a usable
     // endpoint even though this operation already holds valid access evidence.
     const liveObservation = record(observed.observation, "loaded policy observation");
     const effective = record(liveObservation.effective_policy, "effective policy");
@@ -307,7 +308,9 @@ export function registerPolicyAdmissionCases(): void {
     );
     widenedRule.endpoints = structuredClone(protectedRule.endpoints);
     widenedRule.binaries = structuredClone(protectedRule.binaries);
-    assert.ok((await f.authorize(f.permitRequest(sendCapture, sendReady))).refused);
+    assert.ok(
+      (await f.authorize(f.permitRequest(sendCapture, sendReady, { noMaterial: true }))).refused,
+    );
     assert.equal(
       f.providerRequests.length,
       0,

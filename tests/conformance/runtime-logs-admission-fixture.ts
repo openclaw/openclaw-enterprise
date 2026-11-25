@@ -5,7 +5,7 @@ import type { Socket } from "node:net";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createRuntimeLogFixture } from "../helpers/runtime-logs.ts";
 
 const publicOrigin = "https://console.oce.localhost";

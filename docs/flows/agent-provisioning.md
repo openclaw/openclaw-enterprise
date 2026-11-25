@@ -60,9 +60,9 @@ OpenClaw uses the same provisioning, retry, and deployment navigation as
 dedicated Codex. Preset restoration and Credentials read native model runtime
 policy through `apps/controller/src/console/agents/harness-auth.mts:configuredHarnessId`.
 
-The Slack modal saves tokens through `POST /namespaces/:namespaceId/secrets` before Agent creation, then clears them. Apply stages references and environment bindings; Cancel retains created Secrets. Model discovery does not save its API key or service account token. After preflight, Create Agent saves the credential as a Namespace Secret, clears the input, and reuses its reference on retries. Bound Presets retain their credential/provider. Recover a lost Secret-save response before retrying.
+The Slack modal saves Channel tokens through `POST /namespaces/:namespaceId/secrets` and stages the references for the Gateway process. Apply stages references and environment bindings. Cancel retains created Secrets.
 
-Console registers the model Secret as directed by the Credential Gateway catalog before provisioning. [Recovery](../reference/console/create-and-deploy.md) reuses confirmed sources or retries uncertain registration. Installation discovery preserves catalog metadata.
+When the Installation offers the selected model preset through TokenService, Console enrolls the credential as a Source and saves an Agent draft bound to that Source. Codex PAT enrollment can also happen before hosted Apps discovery. Retries reuse a confirmed Source. If Console cannot confirm enrollment, it asks the caller to check Credential Sources before retrying. For a model that uses direct authentication on the Installation, preflight precedes the Namespace Secret write and subsequent provisioning.
 
 Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
 
@@ -74,11 +74,11 @@ For drafts, Console creates the Configuration and Agent, then grants Slack Secre
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
-OCC authorizes the exact Credential Source. Guided Create Agent returns `409` for TokenService-owned Sources before queueing; see the [implementation gap](../reference/credential-sources.md#implementation-status). Compute validates the catalog entry and login mode for Gateway-owned Sources.
+Source-backed models deploy through the Agent draft path. [Credential Source lifecycle](credential-source-lifecycle.md#3-bind-and-admit-an-agent-revision) describes its admission and delivery.
 
 OCC requires Agent `create`, Configuration `create`, and Installation `administer` for the Namespace; status and retry require the same grants or return `403`. It validates Configuration, references, workspace inputs, execution mode, and authority. A taken Agent name returns `409`; reserved Secret destinations, cross-Namespace references, or missing/`runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule. An absent Secret returns `404`. Before Compute planning, Secret bindings receive Agent save’s Harness authentication check and named `400`.
 
-A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
+For supported model presets with selected TokenService and native delivery, OCC requires Source-backed authentication at Agent save and deployment. Guided provisioning refuses a direct model Secret for those presets before creating a job.
 
 After a Secret Driver change, authorized request, status, and retry return `503` for Secrets owned by the previous Driver and ask for replacement Secrets and a new request. The worker fails with `PROVISIONING_REJECTED`; an unavailable Driver still retries.
 

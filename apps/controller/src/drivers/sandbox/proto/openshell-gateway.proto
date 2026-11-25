@@ -580,6 +580,7 @@ message SupervisorMiddlewareService {
 }
 message ListSandboxesRequest {
   int32 page_size = 1;
+  string page_token = 2;
   WorkspaceSelector workspace_scope = 4;
 }
 message ListSandboxesResponse {

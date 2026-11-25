@@ -123,14 +123,13 @@ its failed application, and audit evidence commit in one transaction; interrupti
 rolls back all three so a later worker can retry recovery. Refresh, inspect, and
 retry explicitly. Failure never triggers automatic redeployment.
 
-A `failed` application carries a `reason` code. The console shows its meaning
-and next step. The worker repeats its checks on every pass, including passes
-after it sent the policy. A failure after a send can leave the Sandbox running
-that policy, and the worker does not send it again:
+For a `failed` application, the Console explains the `reason`.
+The worker checks on every pass. If a check fails after sending, the Sandbox
+may enforce the rules. The worker does not resend them.
 
 | `reason`                               | Cause and next step                                                                                    |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `SANDBOX_POLICY_REVISION_CHANGED`      | The current version changed or the Agent stopped. Apply again.                                         |
+| `SANDBOX_POLICY_REVISION_CHANGED`      | The Namespace or Agent changed state, or the revision changed. Refresh the Agent and policy.           |
 | `AUTHORIZATION_DENIED`                 | The requester lost Agent `manage_policy` or SandboxPolicy `update`. Ask an Installation administrator. |
 | `SANDBOX_POLICY_CEILING_CHANGED`       | The delegation ceiling no longer covers every rule. Remove those rules and save.                       |
 | `SANDBOX_POLICY_UNSUPPORTED`           | The version's Sandbox Driver cannot apply or refused the rules. Deploy instead.                        |
@@ -140,15 +139,19 @@ that policy, and the worker does not send it again:
 | `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure or changed version. Refresh and apply again.                             |
 | `SANDBOX_POLICY_UNCONFIRMED`           | No confirmation in time; the provider may have applied part. Refresh and retry.                        |
 
-The last
-confirmed live version remains recorded separately when desired additions change.
-Policy GET returns the running revision as `defaultsRevisionId` and the saved
-policy version it was deployed with as `deployedPolicyVersion`. When that version
-is the saved version and no application targets that revision, the Sandbox
-enforces the saved rules without live application. The console shows **Deployed**.
-Revision snapshots and attributable audit evidence preserve the original admission.
-The console shows read-only defaults from the running revision, or the selected
-Driver before deployment, separately from the delegation ceiling and additions.
+Policy GET reports the stored active revision (`defaultsRevisionId`) and deployed policy
+version (`deployedPolicyVersion`). Check workload status separately.
+If the running replacement deployed with the saved version and no application
+targets it, skip the retry. An earlier failure can still show **Application
+unconfirmed** instead of **Deployed**.
+
+After `SANDBOX_POLICY_REVISION_CHANGED`, retry only with a ready Namespace,
+an active, running Agent and a revision that needs the rules. Deploy a stopped
+Agent only if you intend to start it.
+
+Changing additions preserves the last confirmed live version. Revision snapshots and
+attributable audit records preserve the original admission. The Console separates read-only revision
+or Driver defaults from the ceiling and additions.
 
 OpenShell changes network rules through `UpdateConfig`, using a fixed nonzero CAS
 version and request ID. It retains static filesystem/process policy and generated
@@ -186,15 +189,14 @@ permissions committed before it acquires the lock. It releases the lock before
 waiting for the provider and checks deployment admission again before saving the
 revision.
 
-To opt in, save an explicit repository list before first deployment. Later revisions
-can update it. If any revision lacked a list, scoped deployment returns 409
-even after Stop. A delayed Gateway write can outlive both the Worker claim
-and Stop. The Worker rechecks history before preparing a queued scoped revision.
+Save a repository list before first deployment to opt in. A Dedicated Agent with
+only standalone TokenService model revisions can opt in later. Save the list,
+complete Stop, then deploy. The Worker rechecks revision history before preparation.
 
-An unscoped Agent can keep deploying without a list. For scoped access,
-create a draft Agent and save its list before deploying. Keep the original
-Agent and its storage for existing chats and files. Reusing a name or
-[conversation label](agent-http-chat.md#conversations-and-execution)
+With earlier unscoped Git, scoped deployment returns 409 even after Stop. A
+delayed Gateway write can outlive Stop. Create a draft for scoped access and
+save its list before deploying. Keep the original Agent and its storage for
+existing chats and files. Reusing a [conversation label](agent-http-chat.md#conversations-and-execution)
 does not transfer history.
 
 After refusing a scoped replacement before its first provider call, the Worker

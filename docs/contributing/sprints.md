@@ -37,8 +37,9 @@ the picker rather than assuming that a particular sprint number is still current
 1. [Create an issue](https://github.com/openclaw/openclaw-enterprise/issues/new/choose)
    in `openclaw/openclaw-enterprise`. Give it a clear title and describe the
    expected outcome and how completion will be checked.
-2. Add it to the project and assign its Sprint using the steps above.
-3. Confirm that it appears in the sprint view and set its assignee and status.
+2. Follow steps 1–3 above to add the issue and assign its Sprint.
+3. Check the Sprint in the issue’s row and set its assignee and status. Then
+   restore `sprint:@current`.
 
 You can also use the **+** control in the project's bottom row to create an issue
 or add an existing one. Select `openclaw/openclaw-enterprise` when creating a

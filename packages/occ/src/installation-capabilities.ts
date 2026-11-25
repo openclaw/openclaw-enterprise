@@ -6,6 +6,7 @@ import type {
   InstallationCapabilities,
   PluginDriver,
   SandboxDriver,
+  TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { HARNESS_EXECUTION_MODES } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
@@ -16,11 +17,11 @@ import type { NativeWorkerSupportSource } from "./native-worker-support.ts";
 import { exactNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 interface InstallationCapabilityDependencies {
-  readonly readGatewaySourceTypes: () => Promise<readonly CredentialSourceType[]> | undefined;
   readonly protectedSourceTypes: () => readonly CredentialSourceType[];
-  readonly allowsGatewaySourceType: (sourceType: CredentialSourceType) => boolean;
   readonly enabledPluginDrivers: () => readonly PluginDriver[];
   readonly sandboxDriver: () => SandboxDriver | undefined;
+  readonly tokenServiceDriver: () => TokenServiceDriver | undefined;
+  readonly modelCredentialSourcePresets: () => InstallationCapabilities["modelCredentialSourcePresets"];
 }
 
 async function readInstallationCapabilities(
@@ -34,29 +35,20 @@ async function readInstallationCapabilities(
     nativeWorkers: _unchecked,
     openclaw: _derived,
     pluginCatalogs: _catalogs,
+    deviceAuthorization: _deviceAuthorization,
+    modelCredentialSourcePresets: _modelCredentialSourcePresets,
     ...declared
   } = installation.capabilities ?? {};
   const openclaw = openClawExecutionModes(nativeWorkerSupport, dependencies.sandboxDriver);
   const nativeWorkers = openclaw.executionModes.includes("dedicated")
     ? nativeWorkerSupport
     : undefined;
-  // Without a Gateway, read the remaining selections in the same turn.
-  const gatewayTypeRead = dependencies.readGatewaySourceTypes();
-  const gatewayTypes = gatewayTypeRead === undefined ? undefined : await gatewayTypeRead;
-  const protectedTypes = dependencies.protectedSourceTypes();
-  const types = [
-    ...protectedTypes,
-    ...(gatewayTypes ?? []).filter(
-      (type) =>
-        !protectedTypes.some((p) => p.type === type.type) &&
-        dependencies.allowsGatewaySourceType(type),
-    ),
-  ];
+  const types = dependencies.protectedSourceTypes();
   const capabilities = {
     ...declared,
     ...(nativeWorkers === undefined ? {} : { nativeWorkers: { support: nativeWorkers } }),
     openclaw,
-    ...(gatewayTypes || types.length ? { credentialSources: { types } } : {}),
+    ...(types.length > 0 ? { credentialSources: { types } } : {}),
   };
   const catalogs = dependencies.enabledPluginDrivers().map((driver) => ({
     harnessId: driver.harnessId,
@@ -68,8 +60,15 @@ async function readInstallationCapabilities(
       ? { pluginDiscovery: { credential: driver.discoveryCredential ?? "required" } }
       : {}),
   }));
+  const owner = dependencies.tokenServiceDriver();
+  const deviceAuthorization =
+    typeof owner?.startDeviceAuthorization === "function" &&
+    typeof owner.pollDeviceAuthorization === "function";
+  const modelCredentialSourcePresets = dependencies.modelCredentialSourcePresets();
   return {
     ...capabilities,
+    ...(modelCredentialSourcePresets?.length ? { modelCredentialSourcePresets } : {}),
+    ...(deviceAuthorization ? { deviceAuthorization: true as const } : {}),
     ...(catalogs.length > 0 ? { pluginCatalogs: catalogs } : {}),
   };
 }

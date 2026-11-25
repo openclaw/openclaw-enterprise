@@ -416,13 +416,11 @@ export async function productionHelmLoggingRefusals() {
     "repositoryCredentials.appKeySecretName": "repository-app-key",
     "repositoryCredentials.tlsSecretName": "repository-tls",
     "repositoryCredentials.publicCaSecretName": "repository-public-ca",
-    "repositoryCredentials.upstreamCidrs[0]": "198.51.100.0/24",
   };
   const executionCluster = {
     "executionCluster.enabled": "true",
     "executionCluster.apiKubeconfigSecretName": "execution-api",
     "executionCluster.workerKubeconfigSecretName": "execution-worker",
-    "executionCluster.apiCidrs[0]": "10.44.0.2/32",
   };
   const enabledFeatures: Array<[ChartValues, string[]]> = [
     [oidc, ["occ-oidc-login"]],

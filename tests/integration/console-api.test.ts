@@ -13,7 +13,7 @@ import { text } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   authorizationDenials,
   backendFixtures,
@@ -25,12 +25,15 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { bindRole, grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   authenticatedHeaders,
   cookieHeaderFromSetCookie,
+  createAuthenticatedControllerRequest,
   setCookieHeaders,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 
 import { Check } from "typebox/value";
 import { Type, type TSchema } from "typebox";
@@ -66,6 +69,7 @@ import {
   NamespaceCallerPermissionsResponse,
   NamespaceSecretPermissionsResponse,
   NamespaceListResponse,
+  NamespaceResponse,
   AgentListResponse,
   ConfigurationResponse,
   SecretDetailResponse,
@@ -121,6 +125,32 @@ function noSecretProviderFields(backend: unknown) {
   assert.equal(typeof backend.id, "string");
   assert.equal(backend.type, "chatgpt");
 }
+
+test("the authenticated injection fixture forwards the console origin and session", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const request = await createAuthenticatedControllerRequest(
+    fixture.app,
+    fixture.credentials,
+    fixture.origin,
+  );
+  const { status: createdStatus, ...created } = await request("POST", "/namespaces", {
+    name: "Injected session",
+  });
+  const createdEnvelope: unknown = created;
+  assert.equal(createdStatus, 201);
+  assert.ok(Check(NamespaceResponse, createdEnvelope));
+  assert.equal(createdEnvelope.data.name, "Injected session");
+  const { status: observedStatus, ...observed } = await request(
+    "GET",
+    `/namespaces/${createdEnvelope.data.id}`,
+  );
+  const observedEnvelope: unknown = observed;
+  assert.equal(observedStatus, 200);
+  assert.ok(Check(NamespaceResponse, observedEnvelope));
+  assert.equal(observedEnvelope.data.id, createdEnvelope.data.id);
+  assert.equal(observedEnvelope.data.name, createdEnvelope.data.name);
+});
 
 test("console Backend API returns only safe Installation-admin summaries", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -1519,7 +1549,15 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
 // Secrets and the Harness authentication Secret, and only for a caller who may update the Agent
 // and read its Configuration. Each step proves the answer against the same real Agent PATCH.
 test("the Agent sources answer matches what a real Agent update checks", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const secretDriver = createTestSecretDriver();
+  let state: PlatformStateStore | undefined;
+  const fixture = await createConsoleAppFixture(t, {
+    secretDriver,
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent sources", { ready: true });
   const bound = await fixture.createSecret(namespace.id, "Bound token", "bound-token-value");
@@ -1628,33 +1666,46 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   assert.equal(withoutUpdate.agentSourcesOperate, false);
   assertApiError(await save(), 403, "FORBIDDEN");
 
-  // A ServiceAccount used for Harness authentication is checked with read, not operate: every
-  // update reads it, so the answer needs that grant too (finding 2459).
+  // A current managed Harness Source requires exact Source operate, not ServiceAccount read.
   editor.permissions.push({ action: "update", resourceKind: "agent" });
-  // Issuance is outside this test: the account is seeded through State as the console tests do.
-  const controller: unknown = fixture.controller;
-  assert.ok(controller instanceof OpenClawController);
-  const account = await controller.transact((state) =>
-    state.serviceAccounts.createServiceAccount({
-      id: `sa_${randomUUID()}`,
-      namespaceId: namespace.id,
-      name: "Harness account",
-    }),
+  assert.ok(fixture.controller instanceof OpenClawController && state);
+  const { driver: privateSecrets } = useInstallationSecretDriver(fixture.controller);
+  assert.ok(privateSecrets.privateSecrets);
+  fixture.controller.selectDriver("secret", secretDriver.id);
+  const instance = await fixture.controller.activateTokenServiceInstance(
+    "answer-tokens",
+    randomUUID(),
   );
+  const tokens = new OCCTokenServiceDriver(
+    "answer-tokens",
+    fixture.controller.installation.id,
+    privateSecrets.privateSecrets,
+    instance,
+    state,
+  );
+  fixture.controller.registerDriver(tokens);
+  fixture.controller.selectDriver("token_service", tokens.id);
+  const source = await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+    body: {
+      name: "Managed Harness Source",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: "controlled-answer-model-key",
+    },
+  });
+  assert.equal(source.status, 201);
+  const sourceId = source.data.id;
   const switched = await fixture.request("PATCH", agentPath, {
     body: {
       configurationId: agent.configurationId,
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
-      },
+      harnessAuth: { method: "credential_source", sourceId },
+      credentialSources: [{ sourceId }],
     },
   });
   assert.equal(switched.status, 200, JSON.stringify(switched.body));
-  // Operate on every bound Secret and Configuration read, but no ServiceAccount read.
   assert.equal(await answer(), false);
   assertApiError(await save(), 403, "FORBIDDEN");
-  grant("agent-sources-account", "read", "service_account", account.id);
+  grant("agent-sources-managed", "operate", "credential_source", sourceId);
   assert.equal(await answer(), true);
   assert.equal((await save()).status, 200);
 });
