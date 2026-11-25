@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { connect, createServer, type Socket } from "node:net";
 import { Check } from "typebox/value";
 import { createWorkspaceFilesAccess } from "../../../apps/controller/src/composition/workspace-files.ts";
 import type { ControllerWorkspaceFileReadRequest } from "../../../apps/controller/src/gateway/contracts.ts";
@@ -88,9 +90,10 @@ const keyPath = process.env.OCC_WORKSPACE_PROOF_KEY_PATH;
 const endpoint = process.env.OCC_WORKSPACE_PROOF_ENDPOINT;
 assert.ok(keyPath, "OCC_WORKSPACE_PROOF_KEY_PATH is required");
 assert.ok(endpoint, "OCC_WORKSPACE_PROOF_ENDPOINT is required");
+let gatewayEndpoint = endpoint;
 const compute = {
   ...createDevelopmentComputeDriver(),
-  getGatewayEndpoint: () => endpoint,
+  getGatewayEndpoint: () => gatewayEndpoint,
 };
 const access = createWorkspaceFilesAccess(compute, keyPath);
 const readableResources: Permission["resourceKind"][] = [
@@ -270,6 +273,73 @@ if (explicitAgentId !== undefined) {
     apiKey: "proof-admin",
   }));
   assert.deepEqual(await main.read(request), { status: "unavailable" });
+
+  if (scenario.deniedWrite.identity === "proof-read") {
+    const successor = await call(`/namespaces/${namespaceId}/agents/${agent.id}/deploy`, {
+      method: "POST",
+    });
+    assert.equal(successor.response.status, 202, "Expected replacement deploy to be admitted");
+    const successorId = resourceId(successor.payload.data);
+    assert.notEqual(successorId, revisionId);
+
+    const activate = async () => {
+      const active = await controller.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(namespaceId, agent.id, revisionId, successorId),
+      );
+      assert.equal(active?.activeRevisionId, successorId, "Expected predecessor to be replaced");
+    };
+    const upstreamUrl = new URL(endpoint);
+    const sockets = new Set<Socket>();
+    let activation: Promise<void> | undefined;
+    const relay = createServer((client) => {
+      const upstream = connect(Number(upstreamUrl.port), upstreamUrl.hostname);
+      for (const [socket, peer] of [
+        [client, upstream],
+        [upstream, client],
+      ] as const) {
+        sockets.add(socket);
+        socket.on("error", () => peer.destroy());
+        socket.on("close", () => {
+          sockets.delete(socket);
+          peer.destroy();
+        });
+      }
+      // OCC has opened the predecessor connection. Withhold the TLS handshake until
+      // activation commits, then forward unchanged bytes to the same real Gateway.
+      activation ??= activate();
+      void activation.then(
+        () => client.pipe(upstream).pipe(client),
+        () => client.destroy(),
+      );
+    });
+    relay.listen(0, "127.0.0.1");
+    await once(relay, "listening");
+    try {
+      const address = relay.address();
+      assert.ok(address && typeof address === "object");
+      const relayUrl = new URL(upstreamUrl);
+      relayUrl.port = String(address.port);
+      gatewayEndpoint = relayUrl.href;
+
+      const stale = await put("Stale predecessor write");
+      assert.ok(activation, "The predecessor PUT must reach the TCP relay");
+      await activation;
+      assert.equal(stale.response.status, 503, "The PUT crossed activation before native Hello");
+      assert.equal(responseRecord(stale.payload.error).code, "DEPENDENCY_UNAVAILABLE");
+
+      // The successor uses the same route and admin key. Its live file must retain
+      // the earlier successful PUT even though the stale PUT targeted this Gateway.
+      const current = await call(path);
+      assert.equal(current.response.status, 200, "Expected a live GET on the cutover route");
+      assert.equal(responseRecord(current.payload.data).content, scenario.content);
+    } finally {
+      gatewayEndpoint = endpoint;
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  }
 }
 // Finish with one denied write so the parent can inspect native disk before
 // another probe's successful admin PUT could hide an unauthorized file change.

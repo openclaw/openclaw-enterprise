@@ -90,9 +90,10 @@ type Fixture = Omit<SharedFixture, "app"> & {
 // app and run one at a time. Each gets a new Namespace and Agent, its own workspace file
 // provider (the app's forwards to the running case's) and the audit events since it started.
 // An app with a shorter workspace file deadline is built once per deadline, on the same controller.
-const running: { workspaceFilesAccess: ControllerWorkspaceFilesAccess | undefined } = {
-  workspaceFilesAccess: undefined,
-};
+const running: {
+  workspaceFilesAccess: ControllerWorkspaceFilesAccess | undefined;
+  exclusiveReplacement: boolean;
+} = { workspaceFilesAccess: undefined, exclusiveReplacement: false };
 const deadlineApps = new Map<number, TenantReaderApp>();
 let shared: Promise<SharedFixture> | undefined;
 
@@ -110,6 +111,7 @@ async function createFixture({
       ...createDevelopmentComputeDriver(),
       id: "compute-workspace-files",
       implementation: "deterministic-test",
+      requiresStoppedPredecessors: () => running.exclusiveReplacement,
     },
     secretDriver: createTestSecretDriver(),
     appOptions: (overrides) => ({
@@ -371,6 +373,77 @@ test("Agent workspace file routes read and replace fixed files through the selec
   );
   assert.equal(JSON.stringify(audits).includes("content from"), false);
   assert.equal(JSON.stringify(audits).includes("new soul"), false);
+});
+
+test("workspace files remain available until an exclusive deployment starts stopping the predecessor", async (t) => {
+  const attempts: string[] = [];
+  const fixture = await createFixture({
+    workspaceFilesAccess: {
+      async read({ revision }) {
+        attempts.push(revision.id);
+        return { status: "missing" };
+      },
+      async write({ revision, filename }) {
+        attempts.push(revision.id);
+        return { status: "ok", file: { name: filename } };
+      },
+    },
+  });
+  const ns = await createNamespace(fixture, "Workspace handoff");
+  const { agent, revision } = await createAgent(fixture, ns, "Workspace predecessor");
+  assert.ok(revision);
+  const base = `/namespaces/${ns.id}/agents/${agent.id}`;
+  const path = `${base}/workspace/files/USER.md`;
+
+  // A non-exclusive successor shares no stop boundary with the serving revision.
+  const deploy = () => request(fixture.app, `${base}/deploy`, { method: "POST" });
+  assert.equal((await deploy()).response.status, 202);
+  assert.equal((await request(fixture.app, path)).response.status, 404);
+
+  // The successor is now seen by an exclusive Driver, as for an older deployment
+  // admitted before stop boundaries were recorded.
+  replaceForCase(t, running, "exclusiveReplacement", true);
+  const legacy = await request(fixture.app, path);
+  assert.equal(legacy.response.status, 503);
+  assert.equal(errorOf(legacy).code, "DEPENDENCY_UNAVAILABLE");
+  assert.deepEqual(attempts, [revision.id]);
+
+  // A distinct Agent's first exclusive replacement records pre-stop at admission.
+  const next = await createAgent(fixture, ns, "Exclusive workspace");
+  assert.ok(next.revision);
+  const nextBase = `/namespaces/${ns.id}/agents/${next.agent.id}`;
+  const nextPath = `${nextBase}/workspace/files/USER.md`;
+  const deployed = await request(fixture.app, `${nextBase}/deploy`, { method: "POST" });
+  assert.equal(deployed.response.status, 202);
+  const successor = resourceOf(deployed);
+  const predecessor = next.revision.id;
+  assert.equal((await request(fixture.app, nextPath)).response.status, 404);
+  assert.equal((await put(fixture.app, nextPath, { content: "pre-stop" })).response.status, 200);
+
+  await fixture.controller.transact((unit) =>
+    unit.agents.recordPredecessorReplacement(ns.id, next.agent.id, {
+      predecessorRevisionId: predecessor,
+      candidateRevisionId: successor.id,
+      phase: "stopping",
+    }),
+  );
+  for (const refused of [
+    await request(fixture.app, nextPath),
+    await put(fixture.app, nextPath, { content: "during stop" }),
+  ]) {
+    assert.equal(refused.response.status, 503);
+    assert.equal(errorOf(refused).code, "DEPENDENCY_UNAVAILABLE");
+  }
+  assert.deepEqual(attempts, [revision.id, predecessor, predecessor]);
+  assert.equal(fileAudits(fixture).at(-1)?.reasonCode, "DEPENDENCY_UNAVAILABLE");
+
+  await fixture.controller.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(ns.id, next.agent.id, predecessor, successor.id),
+  );
+  const missing = await request(fixture.app, nextPath);
+  assert.equal(missing.response.status, 404);
+  assert.equal(errorOf(missing).message, "The requested workspace file was not found.");
+  assert.equal(attempts.at(-1), successor.id);
 });
 
 test("Agent workspace file routes enforce read and operate permissions separately", async (context) => {
@@ -863,7 +936,7 @@ test("Agent workspace file requests are bounded before and during provider acces
   const restoreLookup = replaceForCase(
     context,
     preAccess.controller,
-    "getReadableActiveAgentRevision",
+    "getWorkspaceFileRevision",
     async () => new Promise(() => {}),
   );
 

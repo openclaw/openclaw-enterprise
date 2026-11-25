@@ -4,6 +4,7 @@ import { NoActiveAgentRevisionError } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
+  gatewayPredecessorUnavailable,
   isAllowedWorkspaceFileName,
   type ControllerWorkspaceFileReadResult,
   type ControllerWorkspaceFilesAccess,
@@ -154,12 +155,17 @@ export function createWorkspaceFileHandlers(
       if (signal.aborted) {
         throw dependencyUnavailable();
       }
-      const { agent, revision } = await withWorkspaceFileRequestSignal(
-        signal,
-        writing
-          ? controller.getOperableActiveAgentRevision(context.actorId, namespaceId, agentId)
-          : controller.getReadableActiveAgentRevision(context.actorId, namespaceId, agentId),
-      ).catch((error: unknown) => {
+      const selectRevision = () =>
+        withWorkspaceFileRequestSignal(
+          signal,
+          controller.getWorkspaceFileRevision(
+            context.actorId,
+            namespaceId,
+            agentId,
+            writing ? "operate" : "read",
+          ),
+        );
+      const selection = await selectRevision().catch((error: unknown) => {
         // Only a caller who passed Agent authorization may learn that the Agent has no running version.
         throw error instanceof NoActiveAgentRevisionError
           ? workspaceWithoutRunningVersion(agentId, error.stopped)
@@ -171,16 +177,22 @@ export function createWorkspaceFileHandlers(
         throw dependencyUnavailable();
       }
 
+      const { agent, revision } = selection;
+      const isRevisionCurrent = async () => {
+        const current = await selectRevision();
+        return (
+          current.revision.id === revision.id && !gatewayPredecessorUnavailable(controller, current)
+        );
+      };
+      const fileRequest = { revision, filename, signal, deadline, isRevisionCurrent };
+
       if (!writing) {
         let result: ControllerWorkspaceFileReadResult;
         try {
-          if (signal.aborted) {
+          if (signal.aborted || gatewayPredecessorUnavailable(controller, selection)) {
             throw dependencyUnavailable();
           }
-          result = await withWorkspaceFileRequestSignal(
-            signal,
-            access.read({ revision, filename, signal, deadline }),
-          );
+          result = await withWorkspaceFileRequestSignal(signal, access.read(fileRequest));
         } catch {
           throw dependencyUnavailable();
         }
@@ -225,12 +237,12 @@ export function createWorkspaceFileHandlers(
       };
       let result: ControllerWorkspaceFileWriteResult;
       try {
-        if (signal.aborted) {
+        if (signal.aborted || gatewayPredecessorUnavailable(controller, selection)) {
           throw dependencyUnavailable();
         }
         result = await withWorkspaceFileRequestSignal(
           signal,
-          access.write({ revision, filename, content: writeBody.content, signal, deadline }),
+          access.write({ ...fileRequest, content: writeBody.content }),
           () =>
             new ControllerWorkspaceFileUnknownOutcomeError(
               "The workspace file write reached the OCC request deadline before the controller observed its outcome.",
