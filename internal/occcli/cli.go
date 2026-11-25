@@ -518,12 +518,19 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 	)
 
 	var createFile string
+	var githubRepos []string
 	create := &cobra.Command{
 		Use:     "create",
-		Short:   "Register a credential source from a JSON document",
+		Short:   "Register a credential source from JSON or a GitHub token on stdin",
 		Example: credentialSourceCreateExample,
 		Args:    cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if len(githubRepos) != 0 {
+				if len(githubRepos) != 1 {
+					return errors.New("supply --github-repo exactly once")
+				}
+				return app.createGitHubSource(githubRepos[0], cmd.InOrStdin())
+			}
 			namespace, body, client, err := app.namespaceJSONClient(createFile)
 			if err != nil {
 				return err
@@ -536,7 +543,9 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		},
 	}
 	create.Flags().StringVar(&createFile, "file", "", "JSON document path")
-	_ = create.MarkFlagRequired("file")
+	create.Flags().StringArrayVar(&githubRepos, "github-repo", nil, "One lowercase `owner/name` for Git Read; pipe a fine-grained token on stdin")
+	create.MarkFlagsMutuallyExclusive("file", "github-repo")
+	create.MarkFlagsOneRequired("file", "github-repo")
 
 	list := &cobra.Command{
 		Use:   "list",
