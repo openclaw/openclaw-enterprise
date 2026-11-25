@@ -10,7 +10,9 @@ This proposed amendment extends the [Installation credential ownership amendment
 
 ## Decision
 
-A reviewed Plugin slot, model profile, or other supported consumer supplies a typed credential presentation. OCC admits that presentation with the Source binding. Compute carries the admitted value into CredentialProxyDriver. The Proxy installs an injection rule for the exact destination, request location, and value format; the Sandbox enforces its routing and containment policy. TokenService owns the credential and its lifecycle, independent of presentation.
+A reviewed Plugin slot, model profile, or other supported consumer declares a credential presentation. OCC admits it and saves it as `DeploymentCredentialBinding.projection.presentation` in the Agent revision. This is the shared representation at the OCC-to-Driver boundary.
+
+During deployment, the OCC Worker passes that binding to `CredentialProxyDriver.configureDeployment()` in `input.bindings[].binding`. It also passes the injection policies for the binding. The Driver must understand the admitted presentation, combine it with the matching policy's allowed requests, and install the corresponding rule in its Proxy implementation. If it cannot enforce the declaration, it refuses the binding. The Sandbox enforces routing and containment. TokenService still owns the credential and its lifecycle.
 
 Replace the Plugin's fixed `bearer` projection and the model's `bearer | x-api-key` projection with one shared representation:
 
@@ -25,6 +27,21 @@ type CredentialPresentation =
   | { readonly kind: "path"; readonly template: string }
   | { readonly kind: "path_subtree"; readonly template: string };
 ```
+
+For example, OCC records this model projection and passes it unchanged in the binding to CredentialProxyDriver:
+
+```ts
+const projection = {
+  environment: "OPENAI_API_KEY",
+  presentation: {
+    kind: "header",
+    name: "authorization",
+    value: { kind: "prefix", prefix: "Bearer " },
+  },
+};
+```
+
+The presentation specifies the credential's request location and format. The separate injection policy specifies which requests may receive it; the environment name specifies where the Harness receives its placeholder.
 
 For a header or query parameter, `raw` permits only the placeholder as the value; `prefix` permits only a nonempty reviewed literal prefix followed by the placeholder. Admission rejects an empty prefix; use `raw` for that value. Store header names in lowercase. Bearer uses one canonical header declaration: `name: "authorization"` with `prefix: "Bearer "`. An `x-api-key` model profile uses `name: "x-api-key"` with `raw`. A query declaration applies to the decoded value of each occurrence of the exact named parameter; repeated occurrences do not change the permitted format. `basic` is distinct because the proxy substitutes inside a syntactically valid, base64-encoded Basic Authorization value. It does not restrict the placeholder to one Basic component.
 
@@ -60,7 +77,7 @@ No new entity. The admitted revision records the canonical presentation as part 
 
 ### Driver contracts
 
-Extend PluginDriver's reviewed credential slot and deployment binding/projection contracts to carry `CredentialPresentation`. CredentialProxyDriver must accept or refuse every declared presentation and configure exact per-binding enforcement. SandboxDriver must preserve that rule under the selected Proxy pairing. TokenServiceDriver custody and update contracts are unchanged.
+Extend PluginDriver's reviewed credential slot and `DeploymentCredentialBinding.projection.presentation` to carry `CredentialPresentation`. The existing `CredentialProxyDriver.configureDeployment()` binding input carries the same type to each implementation. SandboxDriver must preserve the configured rule under the selected Proxy pairing. TokenServiceDriver custody and update contracts are unchanged.
 
 ## Simplifications
 
