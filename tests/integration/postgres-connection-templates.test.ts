@@ -17,20 +17,52 @@ import {
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { oauthIssuerWithTransport } from "../helpers/oauth-issuer.ts";
 
+const issuer = "https://accounts.example.test";
+const tokenUrl = issuer + "/token";
 const options = {
   label: "connection-templates",
   authSecret: "connection-templates-test-session-secret",
+  controllerOptions: {
+    oauthIssuer: oauthIssuerWithTransport({
+      resolveHost: async () => [{ address: "1.1.1.1", family: 4 }],
+      async fetchMetadata(value) {
+        const url = new URL(String(value));
+        if (url.origin === issuer) {
+          return Response.json({
+            issuer,
+            authorization_endpoint: issuer + "/authorize",
+            token_endpoint: tokenUrl,
+            revocation_endpoint: issuer + "/revoke",
+            response_types_supported: ["code"],
+            token_endpoint_auth_methods_supported: [
+              "none",
+              "client_secret_basic",
+              "client_secret_post",
+            ],
+          });
+        }
+        if (url.origin === "https://accounts.google.com") {
+          return Response.json({
+            issuer: url.origin,
+            authorization_endpoint: url.origin + "/o/oauth2/v2/auth",
+            token_endpoint: "https://oauth2.googleapis.com/token",
+            revocation_endpoint: "https://oauth2.googleapis.com/revoke",
+            response_types_supported: ["code"],
+            token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"],
+          });
+        }
+        return new Response(null, { status: 404 });
+      },
+    }),
+  },
 };
-const issuer = "https://accounts.example.test";
-const tokenUrl = issuer + "/token";
 const clientStoreIdentity = randomUUID();
 const clientInput = (namespaceId?: string) => ({
   kind: "oauth2" as const,
   ...(namespaceId && { namespaceId }),
   issuer,
-  tokenUrl,
-  revocationUrl: issuer + "/revoke",
   displayName: "Example OAuth application",
   clientId: randomUUID(),
   tokenEndpointAuthMethod: "client_secret_basic" as const,
@@ -430,7 +462,8 @@ test(
     assert.equal(created.statusCode, 201, created.body);
     const global = created.json().data;
     assert.equal(global.issuer, issuer);
-    assert.equal(global.tokenUrl, tokenUrl);
+    assert.equal("tokenUrl" in global, false);
+    assert.equal("revocationUrl" in global, false);
     assert.equal(created.body.includes(input.clientSecret), false);
     assert.equal(created.body.includes(driver.id), false);
     assert.equal(
@@ -449,7 +482,7 @@ test(
     assert.equal(scoped.statusCode, 201, scoped.body);
     const incompatible = await inject("POST", "/credential-clients", {
       ...clientInput(namespaceId),
-      tokenUrl: issuer + "/other",
+      issuer: "https://other.example.test",
     });
     assert.equal(incompatible.statusCode, 201, incompatible.body);
     const eligible = async (id: string) => {
@@ -469,8 +502,6 @@ test(
     const pub = await inject("POST", "/credential-clients", {
       kind: "oauth2",
       issuer,
-      tokenUrl,
-      revocationUrl: manual.revocationUrl,
       displayName: "Public client",
       clientId: randomUUID(),
       tokenEndpointAuthMethod: "none",
@@ -817,6 +848,7 @@ test(
         discoverMcpAuthorization: (url: string, choice?: string) =>
           discoverMcpAuthorization(url, choice, undefined, transport),
       },
+      controllerOptions: { oauthIssuer: oauthIssuerWithTransport(transport) },
     });
     const preview = await inject("POST", "/connection-templates/discover", { serverUrl });
     assert.equal(preview.statusCode, 200, preview.body);

@@ -2,6 +2,7 @@ import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
   ConnectionTemplate,
   ConnectionTemplateVersion,
+  OAuthClientAuthMethod,
   OAuthConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "../errors.ts";
@@ -10,7 +11,7 @@ import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 type Row = Record<string, unknown>;
 
-const versionColumns = `v.template_id, v.version, v.issuer, v.mode, v.observed_metadata, v.revocation_url,
+const versionColumns = `v.template_id, v.version, v.issuer, v.mode, v.observed_metadata, v.issuer_verification, v.revocation_url,
   v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.destinations, v.created_at AS version_created_at`;
 
 function invalid(): never {
@@ -32,9 +33,31 @@ function integer(row: Row, key: string): number {
   return Number.isSafeInteger(value) ? value : invalid();
 }
 
+function issuerVerification(value: unknown): OAuthConnectionTemplateVersion["issuerVerification"] {
+  if (value === null) {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return invalid();
+  }
+  const methods = (value as Row).tokenEndpointAuthMethods;
+  if (
+    !Array.isArray(methods) ||
+    !methods.every(
+      (method) =>
+        typeof method === "string" &&
+        ["none", "client_secret_basic", "client_secret_post"].includes(method),
+    )
+  ) {
+    return invalid();
+  }
+  return { tokenEndpointAuthMethods: methods as OAuthClientAuthMethod[] };
+}
+
 function versionFromRow(row: Row): OAuthConnectionTemplateVersion {
   const scopes = row.scopes;
   const parameters = row.authorization_parameters;
+  const verification = issuerVerification(row.issuer_verification);
   if (
     !Array.isArray(scopes) ||
     !scopes.every((scope) => typeof scope === "string") ||
@@ -49,6 +72,7 @@ function versionFromRow(row: Row): OAuthConnectionTemplateVersion {
     templateId: text(row, "template_id"),
     version: integer(row, "version"),
     mode: row.mode === "manual" || row.mode === "mcp_discovery" ? row.mode : invalid(),
+    ...(verification && { issuerVerification: verification }),
     ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
     ...(row.observed_metadata === null
       ? {}
@@ -115,8 +139,8 @@ async function insertVersion(
   await client.query(
     `INSERT INTO occ.oauth_connection_template_versions
      (template_id, version, issuer, mode, authorization_url, token_url, revocation_url, scopes,
-      authorization_parameters, destinations, observed_metadata, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      authorization_parameters, destinations, observed_metadata, issuer_verification, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
     [
       version.templateId,
       version.version,
@@ -129,6 +153,7 @@ async function insertVersion(
       JSON.stringify(version.authorizationParameters),
       JSON.stringify(version.destinations),
       version.observed ?? null,
+      version.issuerVerification ?? null,
       version.createdAt,
     ],
   );
@@ -173,12 +198,9 @@ export function postgresConnectionTemplates(
            JOIN occ.oauth_connection_template_versions v
              ON v.template_id=t.id AND v.version=t.current_oauth_version
            JOIN occ.oauth_clients c ON c.kind='oauth2' AND c.cleanup_after IS NULL
-             AND c.issuer=v.issuer AND c.token_url=v.token_url
-             AND (v.revocation_url IS NULL OR c.revocation_url=v.revocation_url)
+             AND c.issuer=v.issuer
              AND (t.namespace_id IS NULL OR c.namespace_id IS NULL OR t.namespace_id=c.namespace_id)
-             AND (v.observed_metadata IS NULL OR
-                  coalesce(v.observed_metadata->'tokenEndpointAuthMethods', '["client_secret_basic"]'::jsonb)
-                    ? c.token_endpoint_auth_method)
+             AND v.issuer_verification->'tokenEndpointAuthMethods' ? c.token_endpoint_auth_method
            WHERE v.issuer<>$1
            UNION ALL
            SELECT 1 FROM occ.authentication_states a

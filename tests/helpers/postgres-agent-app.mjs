@@ -1,3 +1,4 @@
+import { oauthIssuerOperations } from "../../apps/controller/src/connections/oauth-issuer.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
@@ -111,6 +112,7 @@ export async function createPostgresAgentApp(
   });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
   const controller = new OpenClawController(installation, {
+    oauthIssuer: oauthIssuerOperations,
     state,
     ...(appOptions?.agentAuditCursorSecret === undefined
       ? {}

@@ -32,6 +32,7 @@ import { deferred } from "../helpers/deferred.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { oauthIssuerWithTransport } from "../helpers/oauth-issuer.ts";
 
 test(
   "saved Agent catalog discovery releases the database connection while reading Configuration",
@@ -145,6 +146,30 @@ test(
       {
         label: "plugin-slack-oauth",
         authSecret: "plugin-slack-oauth-postgres-auth-secret",
+        controllerOptions: {
+          oauthIssuer: oauthIssuerWithTransport({
+            resolveHost: transport.resolveHost,
+            async fetchMetadata(value) {
+              if (
+                String(value) ===
+                "https://accounts.google.com/.well-known/oauth-authorization-server"
+              ) {
+                return Response.json({
+                  issuer: "https://accounts.google.com",
+                  authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+                  token_endpoint: "https://oauth2.googleapis.com/token",
+                  revocation_endpoint: "https://oauth2.googleapis.com/revoke",
+                  response_types_supported: ["code"],
+                  token_endpoint_auth_methods_supported: [
+                    "client_secret_basic",
+                    "client_secret_post",
+                  ],
+                });
+              }
+              return transport.fetchMetadata(value);
+            },
+          }),
+        },
         appOptions: {
           provisionAuthAccount: (
             ...args: Parameters<ReturnType<typeof createPostgresAuthAccountProvisioner>>
@@ -245,7 +270,6 @@ test(
       kind: "oauth2",
       namespaceId,
       issuer: slot.issuer,
-      tokenUrl: discoveredTokenUrl,
       displayName: "Slack public client",
       clientId: `slack-probe-${randomUUID()}`,
       tokenEndpointAuthMethod: "none",
@@ -331,11 +355,10 @@ test(
       kind: "oauth2",
       namespaceId,
       issuer,
-      tokenUrl,
-      revocationUrl,
-      displayName: "Google public client",
+      displayName: "Google confidential client",
       clientId: `google-admission-${randomUUID()}`,
-      tokenEndpointAuthMethod: "none",
+      tokenEndpointAuthMethod: "client_secret_basic",
+      clientSecret: randomUUID(),
     });
     assert.equal(googleClient.statusCode, 201, googleClient.body);
     const googleClientId = googleClient.json().data.id;

@@ -279,7 +279,12 @@ export class OAuthGrantStore {
     try {
       const client = await resolveClient();
       registration = client.registration;
-      refreshGrant = client.refreshGrant ?? refreshGrant;
+      refreshGrant =
+        client.refreshGrant ??
+        (client.fetchToken
+          ? (grant, tokenSignal, secret) =>
+              this.refreshGrant(grant, tokenSignal, secret, client.fetchToken)
+          : refreshGrant);
       const { readSecret } = client;
       clientSecret =
         registration.tokenEndpointAuthMethod === "none" ? undefined : await readSecret?.(signal);

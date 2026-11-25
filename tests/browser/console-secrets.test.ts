@@ -53,6 +53,7 @@ import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
+import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   accessibleDescription,
@@ -79,6 +80,17 @@ const secretsUrl = (namespace: Namespace) => `/console/secrets?namespace=${names
 const secretPath = (namespace: Namespace) => `/namespaces/${namespace.id}/secrets`;
 const dialog = (page: Page, name: string) => page.getByRole("dialog", { name, exact: true });
 const SECRET_REFERENCED = "This Secret is referenced.";
+const directoryIssuer = {
+  issuer: "https://identity.example.test",
+  authorizationUrl: "https://identity.example.test/authorize",
+  tokenUrl: "https://identity.example.test/token",
+};
+const googleIssuer = {
+  issuer: "https://accounts.google.com",
+  authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+  tokenUrl: "https://oauth2.googleapis.com/token",
+  revocationUrl: "https://oauth2.googleapis.com/revoke",
+};
 
 async function expectSecretFocusInView(control: Locator, stop: string) {
   const { focused, outlined, clearance } = await control.evaluate((node) => {
@@ -130,6 +142,7 @@ async function clientConsoleFixture(
 ) {
   let state: PlatformStateStore | undefined;
   const fixture = await createConsoleAppFixture(t, {
+    oauthIssuer: fixtureOAuthIssuer(directoryIssuer, ["none", "client_secret_basic"]),
     ...options,
     wrapState(current: PlatformStateStore) {
       state = current;
@@ -159,7 +172,9 @@ async function clientConsoleFixture(
 }
 
 test("Credentials opens Secrets and lets an Installation administrator manage shared templates", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Template editors");
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Template editors", {
+    oauthIssuer: fixtureOAuthIssuer(googleIssuer),
+  });
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, "/console/settings");
   await page.getByRole("heading", { name: "Signed-in account" }).waitFor();
@@ -171,6 +186,7 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
     .and(page.locator('[aria-current="page"]'))
     .waitFor();
   await sections.getByRole("link", { name: "Connection templates" }).click();
+  await page.getByText("https://accounts.google.com · Unverified", { exact: true }).waitFor();
   const editGoogle = page.getByRole("button", { name: "Edit Google OAuth", exact: true });
   await editGoogle.click();
   const googleEditor = dialog(page, "Edit connection template");
@@ -214,6 +230,9 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
     ),
   );
   assert.equal(template.current.oauthClientId, undefined);
+  assert.deepEqual(template.current.issuerVerification, {
+    tokenEndpointAuthMethods: ["client_secret_basic"],
+  });
   assert.equal(template.current.version, 2);
   await page.getByText("Saved Google OAuth, version 2.", { exact: true }).waitFor();
   const googleRow = page.getByRole("row").filter({
@@ -376,7 +395,8 @@ test("a template needs an explicit availability when the administrator has no Na
   const registration = dialog(page, "Register credential client");
   assert.equal(await registration.getByLabel("Availability").inputValue(), "installation");
   assert.equal(await registration.getByLabel("Issuer URL").inputValue(), template.current.issuer);
-  assert.equal(await registration.getByLabel("Token URL").inputValue(), template.current.tokenUrl);
+  assert.equal(await registration.getByLabel("Token URL").count(), 0);
+  assert.equal(await registration.getByLabel("Revocation URL").count(), 0);
   await registration.getByLabel("Client name").fill("Tools client");
   await registration.getByLabel("Client ID", { exact: true }).fill("tools-client");
   const publicMethod = registration.getByLabel("Token endpoint authentication method", {
@@ -393,7 +413,6 @@ test("a template needs an explicit availability when the administrator has no Na
     kind: "oauth2",
     displayName: "Tools client",
     issuer: template.current.issuer,
-    tokenUrl: template.current.tokenUrl,
     clientId: "tools-client",
     tokenEndpointAuthMethod: "none",
   });
@@ -441,7 +460,7 @@ test("an administrator registers independent OAuth clients with exact availabili
   await form.getByLabel("Availability").selectOption(namespace.id);
   await form.getByLabel("Client name").fill("Engineering directory");
   await form.getByLabel("Issuer URL").fill("https://identity.example.test");
-  await form.getByLabel("Token URL").fill("https://identity.example.test/token");
+  assert.equal(await form.getByLabel("Token URL").count(), 0);
   await form.getByLabel("Client ID", { exact: true }).fill("engineering-directory");
   const privateValue = "browser-write-only-client-material";
   await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
@@ -492,7 +511,6 @@ test("a Template neither assigns nor fences an independent credential client", a
       displayName: "Google app",
       clientId: "google-app",
       issuer: google.current.issuer,
-      tokenUrl: google.current.tokenUrl,
       tokenEndpointAuthMethod: "none",
     },
   });
@@ -626,7 +644,9 @@ test("an administrator registers and rotates a verified GitHub App signing key",
 
 for (const outcome of ["lost", "versionless"]) {
   test(`a ${outcome} Template creation response does not start Client registration`, async (t) => {
-    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery");
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery", {
+      oauthIssuer: fixtureOAuthIssuer(directoryIssuer),
+    });
     const { page } = await newPage(t, fixture, { browser });
     await login(page, fixture, secretsUrl(namespace));
     await page

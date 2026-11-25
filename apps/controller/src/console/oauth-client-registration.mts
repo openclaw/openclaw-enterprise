@@ -1,7 +1,6 @@
 import type {
   ConnectionTemplate,
   CredentialClient,
-  McpAuthorizationMetadata,
   Namespace,
   OAuthClient,
   OAuthConnectionTemplateVersion,
@@ -27,10 +26,6 @@ export type OAuthTemplate = ConnectionTemplate & {
 
 export function isOAuthTemplate(template: ConnectionTemplate): template is OAuthTemplate {
   return template.current.mode === "manual" || template.current.mode === "mcp_discovery";
-}
-
-export function advertisedClientMethods(observed: McpAuthorizationMetadata | undefined) {
-  return observed?.tokenEndpointAuthMethods ?? ["client_secret_basic"];
 }
 
 export function availableInNamespace(value: { namespaceId?: string }, namespaceId: string | null) {
@@ -143,21 +138,8 @@ export function openCredentialClientRegistration(
     required: true,
     value: options.selected?.current.issuer ?? "",
   });
-  const tokenUrl = element("input", {
-    id: "credential-client-token-url",
-    type: "url",
-    required: true,
-    value: options.selected?.current.tokenUrl ?? "",
-  });
-  const revocationUrl = element("input", {
-    type: "url",
-    value: options.selected?.current.revocationUrl ?? "",
-  });
   const clientId = element("input", { required: true, autocomplete: "off", maxLength: 256 });
-  const allowedMethods =
-    options.selected?.current.mode === "mcp_discovery"
-      ? advertisedClientMethods(options.selected.current.observed)
-      : undefined;
+  const allowedMethods = options.selected?.current.issuerVerification?.tokenEndpointAuthMethods;
   const availableMethods = methods.filter(
     (value) => !allowedMethods || allowedMethods.includes(value),
   );
@@ -182,8 +164,6 @@ export function openCredentialClientRegistration(
     "fieldset",
     { className: "connection-template-fields" },
     field({ label: "Issuer URL", control: issuer }),
-    field({ label: "Token URL", control: tokenUrl }),
-    field({ label: "Revocation URL (optional)", control: revocationUrl }),
     field({
       label: "Redirect URI",
       control: element("input", {
@@ -268,7 +248,7 @@ export function openCredentialClientRegistration(
     const github = kind.value === "github-app";
     const controls = github
       ? [name, scope, appId, key]
-      : [name, scope, issuer, tokenUrl, revocationUrl, clientId, method, secret];
+      : [name, scope, issuer, clientId, method, secret];
     if (pending || uncertain || !validateFields(controls)) {
       return;
     }
@@ -288,8 +268,6 @@ export function openCredentialClientRegistration(
             ...client,
             kind: "oauth2",
             issuer: issuer.value.trim(),
-            tokenUrl: tokenUrl.value.trim(),
-            ...(revocationUrl.value.trim() && { revocationUrl: revocationUrl.value.trim() }),
             clientId: clientId.value.trim(),
             tokenEndpointAuthMethod: method.value,
             ...(method.value !== "none" && { clientSecret: secret.value }),
@@ -313,8 +291,6 @@ export function openCredentialClientRegistration(
           ? result.kind === "github-app" && result.appId === appId.value.trim()
           : result.kind === "oauth2" &&
             result.issuer === issuer.value.trim() &&
-            result.tokenUrl === tokenUrl.value.trim() &&
-            result.revocationUrl === (revocationUrl.value.trim() || undefined) &&
             result.clientId === clientId.value.trim() &&
             result.tokenEndpointAuthMethod === method.value);
       if (!confirmed) {

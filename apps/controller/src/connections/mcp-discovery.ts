@@ -18,25 +18,26 @@ import { isIP } from "node:net";
 import ipaddr from "ipaddr.js";
 import { Agent, fetch as undiciFetch } from "undici";
 
-type ResolveHost = (host: string) => Promise<LookupAddress[]>;
+export type ResolveHost = (host: string) => Promise<LookupAddress[]>;
 
 type McpRequest = (
   url: string | URL,
   options?: RequestInit,
   headersOnly?: boolean,
 ) => Promise<Response>;
-interface McpTransport {
+export interface OAuthTransport {
   fetch: McpRequest;
   pinEndpoint: (value: string | URL) => Promise<URL>;
 }
-interface TransportOptions {
+export interface OAuthTransportOptions {
   fetchMetadata?: FetchLike;
   resolveHost?: ResolveHost;
 }
 
-function mcpHttpsEndpoint(value: string | URL): URL {
+export type OAuthTransportMode = "manual" | "mcp";
+
+function oauthHttpsEndpoint(value: string | URL, mode: OAuthTransportMode): URL {
   const url = new URL(value);
-  // The management path supports DNS names. A literal IP would bypass the socket lookup hook.
   if (
     url.protocol !== "https:" ||
     url.username ||
@@ -44,16 +45,21 @@ function mcpHttpsEndpoint(value: string | URL): URL {
     url.href.includes("#") ||
     url.port === "0" ||
     url.hostname.includes("*") ||
-    !url.hostname.includes(".") ||
-    isIP(url.hostname) ||
-    url.hostname.startsWith("[")
+    (mode === "mcp" &&
+      (!url.hostname.includes(".") || isIP(url.hostname) || url.hostname.startsWith("[")))
   ) {
     throw new ConnectionTemplateValidationError(
-      "serverUrl",
-      "Use a public HTTPS MCP endpoint without credentials or a fragment.",
+      mode === "mcp" ? "serverUrl" : "issuer",
+      mode === "mcp"
+        ? "Use a public HTTPS MCP endpoint without credentials or a fragment."
+        : "Use an HTTPS OAuth endpoint without credentials or a fragment.",
     );
   }
   return url;
+}
+
+function mcpHttpsEndpoint(value: string | URL): URL {
+  return oauthHttpsEndpoint(value, "mcp");
 }
 
 /** The MCP transport URL determines where a worker may present a credential. */
@@ -78,38 +84,52 @@ function isTemplateOAuthUrl(value: string, allowQuery = false): boolean {
   );
 }
 
-const mcpUnavailable = () =>
-  new DependencyUnavailableError("OCC could not reach the MCP OAuth endpoint.");
+const oauthUnavailable = (mode: OAuthTransportMode) =>
+  new DependencyUnavailableError(
+    mode === "mcp"
+      ? "OCC could not reach the MCP OAuth endpoint."
+      : "OCC could not reach the OAuth endpoint.",
+  );
 
-async function withMcpTransport<T>(
-  operation: (transport: McpTransport) => Promise<T>,
+export async function withOAuthTransport<T>(
+  mode: OAuthTransportMode,
+  purpose: "metadata" | "token",
+  operation: (transport: OAuthTransport) => Promise<T>,
   invalidResponseCode: string,
   signal?: AbortSignal,
-  { fetchMetadata, resolveHost = (host) => lookup(host, { all: true }) }: TransportOptions = {},
+  {
+    fetchMetadata,
+    resolveHost = (host) => lookup(host, { all: true }),
+  }: OAuthTransportOptions = {},
 ): Promise<T> {
-  const timeout = AbortSignal.timeout(10_000);
+  const timeout = AbortSignal.timeout(purpose === "metadata" ? 10_000 : 15_000);
   const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
   if (deadline.aborted) {
-    throw mcpUnavailable();
+    throw oauthUnavailable(mode);
   }
 
   const approved = new Map<string, LookupAddress[]>();
   async function pinEndpoint(value: string | URL) {
-    const url = mcpHttpsEndpoint(value);
+    const url = oauthHttpsEndpoint(value, mode);
+    // A literal manual address is already pinned by the immutable URL; it has no DNS lookup.
+    if (mode === "manual" && (isIP(url.hostname) || url.hostname.startsWith("["))) {
+      return url;
+    }
     if (!approved.has(url.hostname)) {
       const addresses = await resolveHost(url.hostname).catch(() => {
-        throw mcpUnavailable();
+        throw oauthUnavailable(mode);
       });
       deadline.throwIfAborted();
       if (
         !addresses.length ||
-        addresses.some(({ address }) => {
-          const ip = ipaddr.parse(address);
-          return (
-            ip.range() !== "unicast" ||
-            (ip.kind() === "ipv6" && !ip.match(ipaddr.parse("2000::"), 3))
-          );
-        })
+        (mode === "mcp" &&
+          addresses.some(({ address }) => {
+            const ip = ipaddr.parse(address);
+            return (
+              ip.range() !== "unicast" ||
+              (ip.kind() === "ipv6" && !ip.match(ipaddr.parse("2000::"), 3))
+            );
+          }))
       ) {
         throw new ConnectionTemplateValidationError(
           "serverUrl",
@@ -125,7 +145,7 @@ async function withMcpTransport<T>(
   // operation, even if the authoritative DNS server changes its answer between requests.
   const dispatcher = new Agent({
     allowH2: false,
-    maxResponseSize: 256 * 1024,
+    maxResponseSize: (purpose === "metadata" ? 256 : 64) * 1024,
     connect: {
       lookup(host, options, callback) {
         const addresses = approved.get(host);
@@ -146,7 +166,9 @@ async function withMcpTransport<T>(
     headers.set("Accept-Encoding", "identity");
     const request = {
       method: options?.method ?? "GET",
-      ...(typeof options?.body === "string" ? { body: options.body } : {}),
+      ...(typeof options?.body === "string" || options?.body instanceof URLSearchParams
+        ? { body: options.body.toString() }
+        : {}),
       headers,
       dispatcher,
       signal: deadline,
@@ -158,7 +180,7 @@ async function withMcpTransport<T>(
         ? fetchMetadata(url, request)
         : undiciFetch(url, { ...request, headers: Object.fromEntries(headers) })
     ).catch(() => {
-      throw mcpUnavailable();
+      throw oauthUnavailable(mode);
     });
     const encoding = response.headers.get("content-encoding");
     if (
@@ -167,18 +189,22 @@ async function withMcpTransport<T>(
     ) {
       await response.body?.cancel();
       throw new ConnectionTemplateValidationError(
-        "serverUrl",
-        "The MCP server returned an unsupported metadata response.",
+        mode === "mcp" ? "serverUrl" : "issuer",
+        mode === "mcp"
+          ? "The MCP server returned an unsupported metadata response."
+          : "The issuer returned an unsupported OAuth response.",
       );
     }
-    if (headersOnly || !response.ok) {
+    if (headersOnly || (!response.ok && purpose === "metadata")) {
       await response.body?.cancel();
     }
-    if (response.status >= 500) {
-      throw mcpUnavailable();
+    if (response.status >= 500 && purpose === "metadata") {
+      throw oauthUnavailable(mode);
     }
     const body =
-      headersOnly || !response.ok || !response.body ? null : await response.arrayBuffer();
+      headersOnly || (!response.ok && purpose === "metadata") || !response.body
+        ? null
+        : await boundedBody(response, (purpose === "metadata" ? 256 : 64) * 1024);
     return new Response(body, {
       status: response.status,
       headers: Object.fromEntries(response.headers),
@@ -195,7 +221,7 @@ async function withMcpTransport<T>(
     ]);
   } catch (error) {
     if (deadline.aborted) {
-      throw mcpUnavailable();
+      throw oauthUnavailable(mode);
     }
     if (
       error instanceof ConnectionTemplateValidationError ||
@@ -204,19 +230,35 @@ async function withMcpTransport<T>(
       throw error;
     }
     // SDK, JSON and URL parser errors can include untrusted document values.
-    throw new ConnectionTemplateValidationError("serverUrl", invalidResponseCode);
+    throw new ConnectionTemplateValidationError(
+      mode === "mcp" ? "serverUrl" : "issuer",
+      invalidResponseCode,
+    );
   } finally {
     await dispatcher.destroy();
   }
+}
+
+async function boundedBody(
+  response: { arrayBuffer(): Promise<ArrayBuffer> },
+  limit: number,
+): Promise<ArrayBuffer> {
+  // The production Agent enforces maxResponseSize while reading from the socket. Check again
+  // here because controlled test fetches do not use that Agent.
+  const body = await response.arrayBuffer();
+  if (body.byteLength > limit) {
+    throw new Error("OAuth response exceeded its size limit.");
+  }
+  return body;
 }
 
 export async function discoverMcpAuthorization(
   serverUrl: string,
   selectedIssuer?: string,
   signal?: AbortSignal,
-  options?: TransportOptions,
+  options?: OAuthTransportOptions,
 ): Promise<McpAuthorizationMetadata> {
-  async function discover({ fetch: readMetadata, pinEndpoint }: McpTransport) {
+  async function discover({ fetch: readMetadata, pinEndpoint }: OAuthTransport) {
     const server = new URL(serverUrl);
     mcpCredentialEndpoint(server);
     const initial = await readMetadata(
@@ -309,5 +351,12 @@ export async function discoverMcpAuthorization(
       }),
     };
   }
-  return withMcpTransport(discover, "The MCP metadata is invalid.", signal, options);
+  return withOAuthTransport(
+    "mcp",
+    "metadata",
+    discover,
+    "The MCP metadata is invalid.",
+    signal,
+    options,
+  );
 }

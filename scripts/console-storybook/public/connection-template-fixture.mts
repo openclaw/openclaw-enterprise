@@ -31,6 +31,7 @@ export function createConnectionTemplateFixture(
             issuer,
             authorizationUrl: issuer + "/authorize",
             tokenUrl: issuer + "/token",
+            issuerVerification: { tokenEndpointAuthMethods: ["none", "client_secret_basic"] },
             scopes: mode === "plugin-consent" ? [] : ["messages.read"],
             authorizationParameters: {},
             destinations: [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
@@ -101,7 +102,6 @@ export function createConnectionTemplateFixture(
           displayName: "Support service",
           namespaceId,
           issuer: "https://identity.example.com",
-          tokenUrl: "https://identity.example.com/token",
           clientId: "support-demo",
           tokenEndpointAuthMethod: "none",
           createdAt,
@@ -111,7 +111,6 @@ export function createConnectionTemplateFixture(
           id: "ccr_00000000-0000-4000-8000-000000000007",
           displayName: "Customer operations reporting",
           issuer: "https://identity.example.com/organizations/customer-operations",
-          tokenUrl: "https://identity.example.com/organizations/customer-operations/token",
           clientId: "customer-reporting-demo",
           tokenEndpointAuthMethod: "client_secret_basic",
           createdAt,
@@ -168,6 +167,8 @@ export function createConnectionTemplateFixture(
         (candidate) => candidate.id === query?.get("connectionTemplateId"),
       );
       const version = template && isRecord(template.current) ? template.current : undefined;
+      const verification =
+        version && isRecord(version.issuerVerification) ? version.issuerVerification : undefined;
       return response(
         oauthClients.filter(
           (client) =>
@@ -175,8 +176,8 @@ export function createConnectionTemplateFixture(
             (!client.namespaceId || client.namespaceId === namespaceId) &&
             version &&
             client.issuer === version.issuer &&
-            client.tokenUrl === version.tokenUrl &&
-            (version.revocationUrl === undefined || client.revocationUrl === version.revocationUrl),
+            Array.isArray(verification?.tokenEndpointAuthMethods) &&
+            verification.tokenEndpointAuthMethods.includes(client.tokenEndpointAuthMethod),
         ),
       );
     }
@@ -251,10 +252,6 @@ export function createConnectionTemplateFixture(
                 tokenEndpointAuthMethod: body.tokenEndpointAuthMethod,
                 ...(typeof body.namespaceId === "string" && { namespaceId: body.namespaceId }),
                 issuer: body.issuer,
-                tokenUrl: body.tokenUrl,
-                ...(typeof body.revocationUrl === "string" && {
-                  revocationUrl: body.revocationUrl,
-                }),
                 createdAt,
               };
         oauthClients.push(client);
@@ -298,6 +295,14 @@ export function createConnectionTemplateFixture(
             templateId: template.id,
             version: template.current.version + 1,
             createdAt,
+            ...(config.mode !== "static_bearer" && {
+              issuerVerification: {
+                tokenEndpointAuthMethods:
+                  config.mode === "mcp_discovery"
+                    ? observed.tokenEndpointAuthMethods
+                    : ["client_secret_basic", "client_secret_post"],
+              },
+            }),
           };
         }
         if (mode === "unconfirmed-save" && isRecord(template.current)) {
@@ -315,6 +320,14 @@ export function createConnectionTemplateFixture(
           templateId: id,
           version: 1,
           createdAt,
+          ...(config.mode !== "static_bearer" && {
+            issuerVerification: {
+              tokenEndpointAuthMethods:
+                config.mode === "mcp_discovery"
+                  ? observed.tokenEndpointAuthMethods
+                  : ["client_secret_basic", "client_secret_post"],
+            },
+          }),
           ...(config.mode === "mcp_discovery"
             ? {
                 issuer: observed.issuer,

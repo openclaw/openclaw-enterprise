@@ -30,12 +30,10 @@ interface CredentialClientRegistration {
   readonly createdAt: string;
 }
 
-/** A client may send its credentials only to its configured provider endpoints. */
+/** An independent client registration for one OAuth issuer. */
 export interface OAuthClient extends CredentialClientRegistration {
   readonly kind: "oauth2";
   readonly issuer: string;
-  readonly tokenUrl: string;
-  readonly revocationUrl?: string;
   readonly clientId: string;
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
 }
@@ -76,6 +74,10 @@ export interface ConnectionTemplateValues {
   readonly destinations: readonly ConnectionEndpoint[];
   readonly mcp?: { readonly serverUrl: string; readonly resource: string };
   readonly observed?: McpAuthorizationMetadata;
+  /** Present only after the issuer metadata verifies this immutable version's endpoints. */
+  readonly issuerVerification?: {
+    readonly tokenEndpointAuthMethods: readonly OAuthClientAuthMethod[];
+  };
 }
 
 export interface StaticKeyTemplateValues {

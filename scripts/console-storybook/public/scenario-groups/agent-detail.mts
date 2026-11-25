@@ -1560,6 +1560,42 @@ export function createAgentDetailScenarios({
           "Review the compatible simulated MCP Template, the first eligible OAuth Client selected by default, and its preselected scopes in the same account consent dialog used by Create Agent.",
         gap: "Storybook supplies Template and Plugin metadata. It does not complete OAuth, create a Source, or grant an Agent access.",
       },
+      pluginAccountConsentMultipleClients: {
+        ...accountConsent,
+        name: "Choose an eligible OAuth Client",
+        rules: [
+          {
+            suffix: "/connections/oauth-clients",
+            method: "GET",
+            data: [
+              {
+                kind: "oauth2",
+                id: "ccr_00000000-0000-4000-8000-000000000006",
+                displayName: "Support service",
+                issuer: "https://identity.example.com",
+                namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+                clientId: "support-demo",
+                tokenEndpointAuthMethod: "none",
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+              {
+                kind: "oauth2",
+                id: "ccr_00000000-0000-4000-8000-000000000011",
+                displayName: "Support alternate",
+                issuer: "https://identity.example.com",
+                namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+                clientId: "support-alternate",
+                tokenEndpointAuthMethod: "client_secret_basic",
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+            ],
+          },
+        ],
+        description:
+          "The first eligible Client is selected automatically. Choosing another Client preserves that explicit selection for consent.",
+        steps: ["Choose Support alternate and confirm it remains selected."],
+        gap: "Client eligibility is simulated. This does not complete OAuth or create a Source.",
+      },
       pluginAccountConsentNoClients: {
         ...accountConsent,
         name: "No eligible OAuth Client for a Plugin Template",
@@ -1643,8 +1679,8 @@ export function createAgentDetailScenarios({
           click("Connect account"),
         ],
         description:
-          "An Installation admin sees the existing Google OAuth Template that needs a client and can configure it instead of creating a duplicate. Connect stays unavailable until a client is assigned.",
-        gap: "Template and permission responses are simulated. This does not register an OAuth client or start consent.",
+          "An Installation administrator sees the unverified Google starter and can edit it instead of creating a duplicate. Consent remains unavailable until a verified version and eligible client exist.",
+        gap: "Template verification and permission responses are simulated. This does not contact Google, register an OAuth client, or start consent.",
       },
       slackMcpSavedToolsUnavailable: {
         ...slackMcpBase,

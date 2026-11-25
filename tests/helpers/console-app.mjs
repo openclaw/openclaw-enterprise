@@ -504,6 +504,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       /** @type {import("../../packages/occ/src/index.ts").ControllerOptions} */
       const controllerOptions = {
+        ...(options.oauthIssuer === undefined ? {} : { oauthIssuer: options.oauthIssuer }),
         state: platformState,
         authenticationStateEncryptionSecret: authSecret,
         namespaceLifecycleBindings:

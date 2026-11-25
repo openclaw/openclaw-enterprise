@@ -61,16 +61,30 @@ export type UpdateConnectionTemplateInput =
   { readonly displayName: string } | (TemplateInput & { readonly displayName?: string });
 export type CreateCredentialClientInput = Pick<CredentialClient, "displayName" | "namespaceId"> &
   (
-    | (Pick<
-        OAuthClient,
-        "kind" | "clientId" | "tokenEndpointAuthMethod" | "issuer" | "tokenUrl" | "revocationUrl"
-      > & { readonly clientSecret?: string })
+    | (Pick<OAuthClient, "kind" | "clientId" | "tokenEndpointAuthMethod" | "issuer"> & {
+        readonly clientSecret?: string;
+      })
     | { readonly kind: "github-app"; readonly appId: string; readonly privateKey: string }
   );
 export type RotateCredentialClientInput =
   | { readonly kind: "oauth2"; readonly clientSecret: string }
   | { readonly kind: "github-app"; readonly privateKey: string };
 export type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
+
+/** Code-only collaborator for issuer-owned endpoint validation and pinned token requests. */
+export interface OAuthIssuerOperations {
+  verifyTemplate(
+    template: ConnectionTemplateValues,
+    signal: AbortSignal,
+  ): Promise<NonNullable<ConnectionTemplateValues["issuerVerification"]>>;
+  revalidate(
+    template: ConnectionTemplateValues & {
+      readonly tokenEndpointAuthMethod: OAuthClient["tokenEndpointAuthMethod"];
+    },
+    signal: AbortSignal,
+  ): Promise<void>;
+  fetchToken(template: ConnectionTemplateValues, init: RequestInit): Promise<Response>;
+}
 
 async function effectiveConnectionTemplate(
   input: TemplateInput,
@@ -160,6 +174,7 @@ interface ConnectionAdministrationDependencies {
   readonly tokenServiceDriver: (expectedInstanceId?: string) => TokenServiceDriver;
   readonly tokenServiceInstanceId: () => string;
   readonly tokenServiceTimeoutMs: number;
+  readonly oauthIssuer: OAuthIssuerOperations | undefined;
   readonly now: () => Date;
   readonly timestamp: () => string;
 }
@@ -171,6 +186,7 @@ export function createConnectionAdministration({
   tokenServiceDriver,
   tokenServiceInstanceId,
   tokenServiceTimeoutMs,
+  oauthIssuer,
   now,
   timestamp,
 }: ConnectionAdministrationDependencies) {
@@ -228,9 +244,10 @@ export function createConnectionAdministration({
     discover: DiscoverMcp,
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+    verifyIssuer = true,
   ): Promise<Readonly<ConnectionTemplate>> {
     await authorizeAdministration(principalId);
-    const values = await effectiveConnectionTemplate(input, discover);
+    const values = await approvedTemplate(input, discover, verifyIssuer);
     return transact(async (state) => {
       await authorizeAdministration(principalId);
       await lockTemplateScope(state, input.namespaceId);
@@ -269,7 +286,7 @@ export function createConnectionAdministration({
         "Create a new connection template to change its authentication method.",
       );
     }
-    const values = "mode" in input ? await effectiveConnectionTemplate(input, discover) : undefined;
+    const values = "mode" in input ? await approvedTemplate(input, discover) : undefined;
     return transact(async (state) => {
       await authorizeAdministration(principalId);
       const current = await state.connectionTemplates.lockConnectionTemplate(id);
@@ -277,7 +294,11 @@ export function createConnectionAdministration({
         throw new ScopeViolationError("The connection template does not exist.");
       }
       const version =
-        values && connectionValuesChanged(current.current, values)
+        values &&
+        (connectionValuesChanged(current.current, values) ||
+          (current.current.mode !== "static_bearer" &&
+            values.mode !== "static_bearer" &&
+            !isDeepStrictEqual(current.current.issuerVerification, values.issuerVerification)))
           ? {
               ...values,
               templateId: id,
@@ -347,14 +368,26 @@ export function createConnectionAdministration({
     };
     return client.kind === "github-app"
       ? { ...owner, kind: client.kind, appId: client.appId }
-      : { ...owner, kind: client.kind, tokenUrl: client.tokenUrl };
+      : { ...owner, kind: client.kind, issuer: client.issuer };
   }
 
   function signal() {
     return AbortSignal.timeout(tokenServiceTimeoutMs);
   }
 
-  function checkedOAuthUrl(field: "issuer" | "tokenUrl" | "revocationUrl", value: string) {
+  async function approvedTemplate(input: TemplateInput, discover: DiscoverMcp, verify = true) {
+    const values = await effectiveConnectionTemplate(input, discover);
+    if (values.mode === "static_bearer" || !verify) {
+      return values;
+    }
+    if (!oauthIssuer) {
+      throw new DependencyUnavailableError("OAuth issuer verification is unavailable.");
+    }
+    const issuerVerification = await oauthIssuer.verifyTemplate(values, signal());
+    return { ...values, issuerVerification };
+  }
+
+  function checkedOAuthUrl(field: "issuer", value: string) {
     if (
       !/^https:\/\/[^/?#@\s\\]+(?:[/?][^#\s\\]*)?$/.test(value) ||
       !URL.canParse(value) ||
@@ -404,10 +437,6 @@ export function createConnectionAdministration({
     } else {
       const oauth = input;
       checkedOAuthUrl("issuer", oauth.issuer);
-      checkedOAuthUrl("tokenUrl", oauth.tokenUrl);
-      if (oauth.revocationUrl !== undefined) {
-        checkedOAuthUrl("revocationUrl", oauth.revocationUrl);
-      }
       if (
         !/^[!-~]{1,256}$/.test(oauth.clientId) ||
         !["none", "client_secret_basic", "client_secret_post"].includes(
@@ -434,9 +463,7 @@ export function createConnectionAdministration({
         kind: "oauth2",
         clientId: oauth.clientId,
         issuer: oauth.issuer,
-        tokenUrl: oauth.tokenUrl,
         tokenEndpointAuthMethod: oauth.tokenEndpointAuthMethod,
-        ...(oauth.revocationUrl !== undefined && { revocationUrl: oauth.revocationUrl }),
       };
       material = oauth.clientSecret;
     }

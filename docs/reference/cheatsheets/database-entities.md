@@ -179,9 +179,9 @@ Stores each immutable static Bearer template version, including the exact HTTP m
 
 Pins the saved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
 
-- `template_id`, `version`, `oauth_client_id`, `mode`
+- `template_id`, `version`, `mode`
 - `issuer`, `authorization_url`, `token_url`, `revocation_url`
-- `scopes`, `authorization_parameters`, `observed_metadata`
+- `scopes`, `authorization_parameters`, `observed_metadata`, `issuer_verification`
 - `destinations` (exact host, port, and path for each allowed HTTPS destination)
 - `created_at`
 
@@ -190,8 +190,8 @@ Pins the saved OAuth configuration and the HTTPS destinations that can receive t
 Identifies an independently managed OAuth client. A connection template version defines the approved credential destinations. OCC uses the registration ID to locate a confidential client’s private value on the owning Secret Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
 
 - `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
-- `token_url`, `revocation_url`, `token_endpoint_auth_method`
-- `secret_driver_id`, `cleanup_after`, `created_at`
+- `kind`, `token_endpoint_auth_method`, `app_id`
+- `token_service_instance_id`, `cleanup_after`, `created_at`
 
 ### `connection_token_custody`
 
