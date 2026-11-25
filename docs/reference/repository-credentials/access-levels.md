@@ -87,6 +87,10 @@ Use a dedicated Codex Agent with a supported TokenService model Source,
 Kubernetes Compute, and the paired OpenShell Sandbox and Credential Proxy.
 [Installation and Agent setup](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 
+Dedicated OpenClaw with native Git is unsupported. Compute contains a guarded
+placement path, but OCC refuses that recipient at deployment and no qualified
+OpenClaw image pin is supplied. A live combined run remains unverified.
+
 In the Namespace registry, select `nativeGit: "v1"` with the
 `github-repository` profile for each selected repository. Register the GitHub
 App Client and choose it on the Agent. Set each repository to **Read-only Git**

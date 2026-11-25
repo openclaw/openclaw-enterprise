@@ -66,14 +66,19 @@ The adapter discards other repository fields. If the ID differs, the sender
 withholds the response. If the same process tries `POST /repos/acme/widgets/pulls`
 on the same host, the adapter refuses the request before it reaches GitHub.
 
-## Which checks does OpenShell provide?
+<a id="which-checks-does-openshell-provide"></a>
 
-| Delivery path               | What happens to a request                                                                                                                                                                                                         |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Native Credential Proxy     | OpenShell applies the revision's network and injection rules. It substitutes the credential on a matching request. Managed MCP can also restrict RPC methods and tools. The native Proxy does not filter upstream replies.        |
-| Protected repository sender | Before issuing credentials, OCE matches the held launcher request to an authenticated middleware denial. The worker checks subsequent GitHub requests against the grant. GitHub enforces token permissions and branch rules.      |
-| Online GitHub preview       | On stock OpenShell 0.1.5, a one-use probe must receive the expected denial before the Agent starts. This observes the hook at startup. The opt-in profile grants installation-wide GitHub access.                                 |
-| Protected exchange above    | A qualified sender must capture the request, obtain permission to send it and release only the approved response to the original caller. Stock OpenShell lacks the protected exchange’s exact-send and filtered-reply guarantees. |
+## Which path checks the request?
+
+Native TokenService Git uses the first path. The protected paths below require
+separate configuration and do not participate in native Git delivery.
+
+| Delivery path                                                                             | What happens to a request                                                                                                                                                                                                                       |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Native TokenService Git                                                                   | OCC admits the policy at deployment. OpenShell checks each Git request locally and injects the credential when the network and injection rules match. It makes no request-time call to OCC. GitHub enforces token permissions and branch rules. |
+| [Protected OpenShell Git](../reference/repository-credentials/protected-openshell-git.md) | Before release, OCC verifies an authenticated denial for the held launcher request. For each later GitHub request, the OpenShell supervisor calls the Worker, which checks the grant before credential injection.                               |
+| Online GitHub preview                                                                     | On stock OpenShell 0.1.5, a one-use probe must receive the expected denial before the Agent starts. This observes the hook at startup. The opt-in profile grants installation-wide GitHub access.                                               |
+| Protected exchange above                                                                  | A qualified sender must capture the request, obtain permission to send it and release only the approved response to the original caller. Stock OpenShell lacks the protected exchange’s exact-send and filtered-reply guarantees.               |
 
 <a id="read-further"></a>
 

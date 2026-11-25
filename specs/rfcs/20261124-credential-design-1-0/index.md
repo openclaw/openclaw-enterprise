@@ -147,4 +147,4 @@ Companions preserve earlier registration and startup decisions, including the Co
 - [Worker preparation and activation](worker-credential-configuration.md), including [optional Plugin Source withdrawal](worker-credential-configuration.md#amendment-continue-without-a-withdrawn-optional-plugin-source)
 - [Codex device login and account projection](codex-device-login.md)
 - [Shared GitHub App tokens and Agent repository access](github-app-template-policy.md)
-- [PAT and native Git follow-up RFC #7217](https://github.com/openclaw/openclaw-enterprise/pull/7217), including proposed Dedicated OpenClaw native Git placement
+- [RFC #7217](https://github.com/openclaw/openclaw-enterprise/pull/7217) (open). [#7224](https://github.com/openclaw/openclaw-enterprise/pull/7224) implemented [PAT enrollment](../../../docs/reference/credential-sources.md#use-a-codex-pat-source), [ServiceAccount issuance and revocation](../../../docs/reference/service-accounts.md#account-and-credential-lifecycle), and [Dedicated Codex Git](../../../docs/reference/repository-credentials/access-levels.md#native-git-delivery). Dedicated OpenClaw Git remains unsupported.
