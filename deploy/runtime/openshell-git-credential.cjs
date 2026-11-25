@@ -18,7 +18,7 @@ if (process.argv[2] === "get" && process.env.OPENCLAW_WORKER_TOOL_DATA) {
     typeof data.gitRepositories === "string" &&
     data.gitRepositories.split(" ").some((repo) => request.get("path") === repo + ".git") &&
     typeof data.gitPlaceholder === "string" &&
-    /^openshell:resolve:env:s[0-9a-f]{64}_OCE_SOURCE_[0-9A-F]{24}$/.test(data.gitPlaceholder)
+    /^openshell:resolve:env:s[0-9a-f]{64}_GITHUB_TOKEN$/.test(data.gitPlaceholder)
   ) {
     process.stdout.write("username=x-access-token\npassword=" + data.gitPlaceholder + "\n");
   }

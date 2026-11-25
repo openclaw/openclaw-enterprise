@@ -3824,12 +3824,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     let spec = launchSpec;
     if (staged) {
       const { workspaceSetup: _workspaceSetup, ...requirements } = context.requirements;
-      const workerRepository =
-        !codex && stagedRepository && this.nativeSourceOwner
-          ? context.revision.credentialDeployment!.bindings.find(
-              ({ consumer }) => consumer.kind === "repository",
-            )
-          : undefined;
       const supervisorSpec = this.harnessSpec(
         {
           ...context,
@@ -3841,12 +3835,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
               ...nodeProgramArguments(
                 stagedHarnessSupervisor(
                   launchSpec.command,
-                  workerRepository && {
-                    sourceEnvironment: openShellSourceCredentialEnvironment(
-                      workerRepository.sourceRef.id,
-                    ),
-                    repositories: repositoryPolicy!.grants.map(({ repository }) => repository),
-                  },
+                  !codex && stagedRepository
+                    ? repositoryPolicy!.grants.map(({ repository }) => repository)
+                    : undefined,
                 ),
               ),
             ],

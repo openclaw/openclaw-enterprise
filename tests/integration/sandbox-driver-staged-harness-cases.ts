@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestContext } from "node:test";
+import { getCACertificates } from "node:tls";
 import {
   openShellProviderName,
   openShellSourceCredentialEnvironment,
@@ -83,7 +84,9 @@ export async function verifyStagedModelPolicyObservation(
     mode === "service"
       ? new ManagedOpenShellSandbox(configuration, selection)
       : new OpenShellSandboxDriver(configuration, selection);
-  const fixture = runtimeSandboxFixture(driver);
+  const fixture = runtimeSandboxFixture(driver, {
+    harnessId: mode === "service" ? "openclaw" : "codex",
+  });
   if (mode === "service") {
     fixture.requirements.workspaceMounts = [];
   }
@@ -250,6 +253,7 @@ export async function verifyStagedModelPolicyObservation(
   const gatewayDigest = "sha256:" + "a".repeat(64);
   const agentDigest = "sha256:" + "b".repeat(64);
   t.mock.getter(inspectedWorkspaceBuild, "release", () => ({ gatewayDigest, agentDigest }));
+  t.mock.getter(inspectedWorkspaceBuild, "openClawRelease", () => ({ gatewayDigest }));
   const gatewayImage = `docker.io/example/gateway@${gatewayDigest}`;
   const agentImage = `docker.io/example/agent@${agentDigest}`;
   const workspaceUrl = `wss://gateway.example.test${workspaceNodePathFor(revision.namespaceId, revision.agentId)}`;
@@ -320,7 +324,14 @@ export async function verifyStagedModelPolicyObservation(
     revision: repositoryRevision,
     requirements: {
       ...context.requirements,
-      image: agentImage,
+      image: mode === "service" ? gatewayImage : agentImage,
+      ...(mode === "service" && {
+        command: harnessRuntimeCommand(`(() => {
+require("node:fs").writeFileSync(process.env.MARKER, process.env.OPENCLAW_NODE_WORKER_EXECUTION ?? "");
+return;
+${NATIVE_WORKER_ENTRYPOINT}
+})();`),
+      }),
       environment: [
         ...context.requirements.environment,
         { name: "OCE_INSPECTED_WORKSPACE_NODE_URL", value: workspaceUrl },
@@ -397,6 +408,12 @@ export async function verifyStagedModelPolicyObservation(
   }
   const repositoryIdle = repositorySandbox.spec!.policy as Record<string, unknown>;
   if (mode === "service") {
+    await verifyWorkerGitActivation(
+      t,
+      repositorySandbox.spec!.command,
+      repositoryGrants[0].repository,
+      marker,
+    );
     // Both image-owned worker Git files live here. Landlock must allow reading
     // the configuration and executing the helper without granting write access.
     const filesystem = repositoryIdle.filesystem as { read_only: string[]; read_write: string[] };
@@ -564,28 +581,23 @@ export async function verifyStagedNativeSourceProjection(t: TestContext): Promis
   const marker = join(home, "launch.json");
   const modelAlias = openShellSourceCredentialEnvironment("cs_model_fixture");
   const pluginAlias = openShellSourceCredentialEnvironment("cs_plugin_fixture");
-  const gitAlias = openShellSourceCredentialEnvironment("cs_git_fixture");
   const modelPlaceholder = `openshell:resolve:env:s${"a".repeat(64)}_${modelAlias}`;
   const pluginPlaceholder = `openshell:resolve:env:s${"b".repeat(64)}_${pluginAlias}`;
-  const gitPlaceholder = `openshell:resolve:env:s${"c".repeat(64)}_${gitAlias}`;
-  const launcher = stagedHarnessSupervisor(
-    [
-      process.execPath,
-      "-e",
-      `${MANAGED_PLUGIN_CREDENTIAL_HELPER}
+  const launcher = stagedHarnessSupervisor([
+    process.execPath,
+    "-e",
+    `${MANAGED_PLUGIN_CREDENTIAL_HELPER}
 require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
   model: process.env.OPENAI_API_KEY,
   plugin: process.env.GOOGLE_TOKEN,
-  workerExecution: JSON.parse(process.env.OPENCLAW_NODE_WORKER_EXECUTION),
+  inheritedWorkerExecution: Object.hasOwn(process.env, "OPENCLAW_NODE_WORKER_EXECUTION"),
   pluginAccepted: isManagedPluginPlaceholder("GOOGLE_TOKEN", process.env.GOOGLE_TOKEN, "cli"),
   wrongSourceAccepted: isManagedPluginPlaceholder("GOOGLE_TOKEN", process.env.OPENAI_API_KEY, "cli"),
   modelAliasPresent: Object.hasOwn(process.env, ${JSON.stringify(modelAlias)}),
   pluginAliasPresent: Object.hasOwn(process.env, ${JSON.stringify(pluginAlias)}),
   aliasMapPresent: Object.hasOwn(process.env, ${JSON.stringify(managedCredentialAliasesEnvironment)})
 }));`,
-    ],
-    { sourceEnvironment: gitAlias, repositories: ["fixture/selected"] },
-  );
+  ]);
   const supervisor = spawn(process.execPath, ["-e", launcher], {
     env: {
       ...process.env,
@@ -617,12 +629,6 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       runtimeEnvironment: pluginAlias,
       plugin: true,
     },
-    {
-      bindingRef: "repository",
-      environment: "GITHUB_TOKEN",
-      placeholder: { kind: "runtime" },
-      runtimeEnvironment: gitAlias,
-    },
   ];
   function prepare(plan: typeof projections) {
     const result = spawnSync(process.execPath, ["-e", STAGED_HARNESS_PREPARE], {
@@ -632,23 +638,6 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
     assert.equal(result.status, 0);
   }
 
-  // A genuine placeholder for another Provider cannot become this Agent's Git Source.
-  // Its alias and value agree, so the refusal must come from the frozen Repository binding.
-  prepare(
-    projections.map((p) =>
-      p.environment === "GITHUB_TOKEN" ? { ...p, runtimeEnvironment: pluginAlias } : p,
-    ),
-  );
-  const wrongGitSource = spawnSync(process.execPath, ["-e", STAGED_HARNESS_ACTIVATE], {
-    env: {
-      ...process.env,
-      HOME: home,
-      [modelAlias]: modelPlaceholder,
-      [pluginAlias]: pluginPlaceholder,
-    },
-  });
-  assert.notEqual(wrongGitSource.status, 0);
-  assert.equal(existsSync(marker), false);
   prepare(projections);
 
   // Activation must refuse a Provider placeholder for the wrong Source, before launching the Harness.
@@ -658,7 +647,6 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       HOME: home,
       [modelAlias]: modelPlaceholder,
       [pluginAlias]: modelPlaceholder,
-      [gitAlias]: gitPlaceholder,
     },
   });
   assert.notEqual(wrong.status, 0);
@@ -669,7 +657,6 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       HOME: home,
       [modelAlias]: modelPlaceholder,
       [pluginAlias]: pluginPlaceholder,
-      [gitAlias]: gitPlaceholder,
     },
   });
   assert.equal(activate.status, 0);
@@ -680,15 +667,76 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
   assert.deepEqual(launch, {
     model: modelPlaceholder,
     plugin: pluginPlaceholder,
-    workerExecution: {
-      gitConfigFile: "/usr/local/lib/oce/openshell-worker.gitconfig",
-      toolData: { gitRepositories: "fixture/selected", gitPlaceholder },
-    },
+    inheritedWorkerExecution: false,
     pluginAccepted: true,
     wrongSourceAccepted: false,
     modelAliasPresent: false,
     pluginAliasPresent: false,
     aliasMapPresent: false,
+  });
+}
+
+async function verifyWorkerGitActivation(
+  t: TestContext,
+  command: unknown,
+  repository: string,
+  gitPlaceholder: string,
+): Promise<void> {
+  assert.ok(Array.isArray(command));
+  const home = await temporaryDirectory(t, "staged-worker-git-");
+  const receipt = join(home, "launch.json");
+  const planPath = join(home, ".oce-staged-harness.json");
+  const caPath = join(home, "ca.pem");
+  writeFileSync(caPath, getCACertificates("bundled")[0]!);
+  const environment = { ...process.env, HOME: home, MARKER: receipt, NODE_EXTRA_CA_CERTS: caPath };
+  const localNodeArgs = (command: readonly string[]) => {
+    const args = command.slice(RUNTIME_WRAPPER_COMMAND.indexOf("node") + 1);
+    // The container already prepared its HOME and /sandbox mounts in this fixture.
+    assert.match(
+      args[1]!,
+      /^require\("\/opt\/oce\/runtime\/openshell-bootstrap\.cjs"\)\.prepareManaged/,
+    );
+    args[1] = args[1]!.slice(args[1]!.indexOf("\n") + 1);
+    return args;
+  };
+  // Run the production Sandbox supervisor and activation programs locally. Only the
+  // unavailable container init binary and the boundary that observes the child differ.
+  const supervisor = spawn(process.execPath, localNodeArgs(command), {
+    env: environment,
+    stdio: "ignore",
+  });
+  t.after(() => supervisor.kill());
+  await waitFor(
+    "staged worker socket",
+    () => existsSync(join(home, ".oce-staged-harness.sock")),
+    5000,
+  );
+  const plan = JSON.parse(readFileSync(planPath, "utf8"));
+  writeFileSync(
+    planPath,
+    JSON.stringify({ ...plan, command: [process.execPath, ...localNodeArgs(plan.command)] }),
+  );
+  const prepare = spawnSync(process.execPath, ["-e", STAGED_HARNESS_PREPARE], {
+    env: environment,
+    input: JSON.stringify([
+      { bindingRef: "repository", environment: "GITHUB_TOKEN", placeholder: { kind: "runtime" } },
+    ]),
+  });
+  assert.equal(prepare.status, 0);
+  const wrong = spawnSync(process.execPath, ["-e", STAGED_HARNESS_ACTIVATE], {
+    env: { ...environment, GITHUB_TOKEN: "openshell:resolve:env:v2_GITHUB_TOKEN" },
+  });
+  assert.notEqual(wrong.status, 0);
+  assert.equal(existsSync(receipt), false);
+  const activate = spawnSync(process.execPath, ["-e", STAGED_HARNESS_ACTIVATE], {
+    env: { ...environment, GITHUB_TOKEN: gitPlaceholder },
+  });
+  assert.equal(activate.status, 0);
+  await waitFor("staged worker launch", () => existsSync(receipt), 5000);
+  const launch = JSON.parse(readFileSync(receipt, "utf8"));
+  assert.deepEqual(launch, {
+    gitConfigFile: "/usr/local/lib/oce/openshell-worker.gitconfig",
+    toolData: { gitRepositories: repository, gitPlaceholder },
   });
 
   // Run the Runner configuration with stock Git. Only the immutable helper's
@@ -703,9 +751,9 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
     ),
   );
   for (const [host, path, allowed] of [
-    ["github.com", "fixture/selected.git", true],
+    ["github.com", `${repository}.git`, true],
     ["github.com", "fixture/omitted.git", false],
-    ["example.invalid", "fixture/selected.git", false],
+    ["example.invalid", `${repository}.git`, false],
   ] as const) {
     const result: SpawnSyncReturns<string> = spawnSync("/usr/bin/git", ["credential", "fill"], {
       cwd: home,
@@ -716,7 +764,7 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
         GIT_TERMINAL_PROMPT: "0",
         RUNNER_NODE: process.execPath,
         RUNNER_GIT_HELPER: fileURLToPath(new URL("openshell-git-credential.cjs", runtimeFiles)),
-        OPENCLAW_WORKER_TOOL_DATA: JSON.stringify(launch.workerExecution.toolData),
+        OPENCLAW_WORKER_TOOL_DATA: JSON.stringify(launch.toolData),
       },
       encoding: "utf8",
       input: `protocol=https\nhost=${host}\npath=${path}\n\n`,

@@ -3,7 +3,7 @@ import { managedCredentialAliasesEnvironment } from "./openshell-plugin-runtime.
 /** The canonical Sandbox process stays idle until Compute activates its prepared launch. */
 export function stagedHarnessSupervisor(
   command: readonly string[],
-  workerGit?: { sourceEnvironment: string; repositories: readonly string[] },
+  workerRepositories?: readonly string[],
 ): string {
   return String.raw`
 const fs = require("node:fs");
@@ -14,7 +14,7 @@ process.umask(0o077);
 const socketPath = path.join(process.env.HOME, ".oce-staged-harness.sock");
 const planPath = path.join(process.env.HOME, ".oce-staged-harness.json");
 const command = ${JSON.stringify(command)};
-const workerGit = ${JSON.stringify(workerGit ?? null)};
+const workerRepositories = ${JSON.stringify(workerRepositories ?? null)};
 fs.mkdirSync(process.env.HOME, { recursive: true, mode: 0o700 });
 fs.writeFileSync(planPath, JSON.stringify({ state: "idle", command }), { mode: 0o600 });
 let child;
@@ -53,12 +53,11 @@ const server = net.createServer((peer) => {
           : projection.placeholder.value;
         if (typeof value !== "string" || value.length === 0) throw new Error();
         environment[projection.environment] = value;
-        if (workerGit && projection.environment === "GITHUB_TOKEN") {
-          const match = /^openshell:resolve:env:s[0-9a-f]{64}_(OCE_SOURCE_[0-9A-F]{24})$/.exec(value);
-          if (projection.placeholder.kind !== "runtime" || projection.runtimeEnvironment !== workerGit.sourceEnvironment || match?.[1] !== workerGit.sourceEnvironment) throw new Error();
+        if (workerRepositories && projection.environment === "GITHUB_TOKEN") {
+          if (projection.placeholder.kind !== "runtime" || projection.runtimeEnvironment !== undefined || !/^openshell:resolve:env:s[0-9a-f]{64}_GITHUB_TOKEN$/.test(value)) throw new Error();
           environment.OPENCLAW_NODE_WORKER_EXECUTION = JSON.stringify({
             gitConfigFile: "/usr/local/lib/oce/openshell-worker.gitconfig",
-            toolData: { gitRepositories: workerGit.repositories.join(" "), gitPlaceholder: value },
+            toolData: { gitRepositories: workerRepositories.join(" "), gitPlaceholder: value },
           });
         }
         if (projection.account !== undefined) {

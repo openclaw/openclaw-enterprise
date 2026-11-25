@@ -154,9 +154,10 @@ drops its acknowledgment and stops the process that holds the old File Transfer
 policy. The restart reads the current binding and rebuilds the policy from the
 admitted configuration. A changed image or route blocks startup.
 
-For a Dedicated OpenClaw Agent, the staged Sandbox launcher selects the
-Runner's read-only Git configuration and passes the worker its admitted
-repository paths and the attached Git Source's placeholder. Stock Git verifies
+For a Dedicated OpenClaw Agent with an OCC TokenService Git Source, the staged
+Sandbox launcher selects the Runner's read-only Git configuration and passes
+the worker its admitted repository paths and the attached Provider's stable
+`GITHUB_TOKEN` placeholder. Stock Git verifies
 HTTPS with the managed Supervisor's mounted CA bundle and asks the image's
 credential helper for the exact repository. OpenShell substitutes the
 installation token only on the admitted request. This path
