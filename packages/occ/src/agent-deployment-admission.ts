@@ -331,7 +331,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
 
   function admitModelCredentialBinding(
     { source, preset }: PreparedModelCredentialDeployment,
-    networkGrants: readonly DeploymentRequestMatch[],
+    networkGrants: readonly SandboxNetworkGrant[],
   ) {
     const presetId = permittedModelCredentialPresetId(source);
     const fixedCodexModel = presetId === "builtin_codex" || presetId === "codex-pat";
@@ -433,7 +433,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     if (stagedModel !== undefined) {
       const { binding, injectionPolicy, automaticNetwork } = admitModelCredentialBinding(
         stagedModel,
-        network,
+        additions,
       );
       network.push(...automaticNetwork);
       bindings.push(binding);
