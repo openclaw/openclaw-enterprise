@@ -584,6 +584,10 @@ export async function verifyNativeGitAgent(t: TestContext, harness: "openclaw" |
           reader,
           [
             'test -x "$(git --exec-path)/git-remote-https"',
+            // The worker's Git config must resolve to the Supervisor's readable trust bundle.
+            `ca_bundle=$(git config --get-urlmatch http.sslCAInfo ${url})`,
+            'test -r "$ca_bundle"',
+            'test -s "$ca_bundle"',
             `${read} >/dev/null`,
             `code=0; git ls-remote --exit-code https://github.com/${deniedName}.git HEAD >/dev/null 2>&1 || code=$?; test "$code" -eq 128`,
           ].join("\n"),

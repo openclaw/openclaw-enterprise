@@ -9,4 +9,4 @@
 	sslVerify = true
 	followRedirects = false
 [http "https://github.com"]
-	sslCAInfo = /etc/openshell-tls/ca-bundle.pem
+	sslCAInfo = /run/openshell-supervisor-ca/material/ca-bundle.crt

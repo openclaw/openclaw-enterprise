@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
 updated: "2026-11-25"
-last_updated_session: authoring-run/3a63e1a9-f687-4e19-9a63-f0b30ad5c0b2
+last_updated_session: authoring-run/54f2bbef-5382-4917-8b10-9f9feba47c47
 ---
 
 # Managed OpenShell workload flow
@@ -156,9 +156,10 @@ admitted configuration. A changed image or route blocks startup.
 
 For a Dedicated OpenClaw Agent, the staged Sandbox launcher selects the
 Runner's read-only Git configuration and passes the worker its admitted
-repository paths and the attached Git Source's placeholder. Stock Git asks
-the image's credential helper for the exact HTTPS repository. OpenShell
-substitutes the installation token only on the admitted request. This path
+repository paths and the attached Git Source's placeholder. Stock Git verifies
+HTTPS with the managed Supervisor's mounted CA bundle and asks the image's
+credential helper for the exact repository. OpenShell substitutes the
+installation token only on the admitted request. This path
 requires an OpenClaw worker build that supports node-owned execution settings.
 
 `deploy/runtime/openshell-bootstrap.cjs:prepareManaged` creates the private
@@ -183,8 +184,9 @@ selects `/sandbox/oce/workspace`. See
 
 ### 4. Retain or delete
 
-`ManagedOpenShellSandbox.cleanup` checks the Sandbox owner and revision. For the
-current running revision, it calls `StopSandbox` and reads the Sandbox again to
+`apps/controller/src/drivers/sandbox/openshell/managed.ts:cleanup` checks the
+Sandbox owner and revision. For the current running revision, it calls
+`StopSandbox` and reads the Sandbox again to
 confirm that it stopped. A stop retains Sandbox storage. Cleanup for an older
 revision leaves the successor workload running.
 
@@ -227,6 +229,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-25 23:14: Use the managed Supervisor CA bundle for Dedicated OpenClaw Git HTTPS. (authoring-run/54f2bbef-5382-4917-8b10-9f9feba47c47 - 34c49c709384dbaa815bdd931eb22c75778052ad)
 
 - 2026-11-25 15:17: Trace activation while OpenShell loads the approved Repository policy. (authoring-run/3a63e1a9-f687-4e19-9a63-f0b30ad5c0b2 - 2c1e993be144fa534cedf292aa82c5e54455b9eb)
 
