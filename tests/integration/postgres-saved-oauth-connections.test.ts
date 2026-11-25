@@ -841,7 +841,9 @@ test(
     // The provider grant remains refreshable through its original consent even if the current issuer changes.
     const incompatible = await inject("PATCH", templatePath, {
       ...manualConfig,
-      issuer: issuer + "/different",
+      issuer: secondIssuer,
+      authorizationUrl: secondIssuer + "/authorize",
+      tokenUrl: secondIssuer + "/token",
       scopes: [],
     });
     assert.equal(incompatible.statusCode, 200, incompatible.body);
