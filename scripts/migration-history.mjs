@@ -303,7 +303,7 @@ export async function migrateWithHistory(
     }
     await client.query("SELECT pg_catalog.pg_advisory_lock($1, $2)", lock);
     locked = true;
-    const history = await preflight(client, manifest, classifyReceipts);
+    const { history, installedCount } = await preflight(client, manifest, classifyReceipts);
     // Check first-install intent while holding the migration lock. A separate --check
     // could observe empty history and then lose a race to another installer.
     if (expectEmpty && history !== "empty") {
@@ -355,6 +355,21 @@ export async function migrateWithHistory(
               "Reconcile the registration with its original owner before retrying the upgrade.",
           ),
           { code: "MIGRATION_REGISTRATION_PENDING" },
+        );
+      }
+    }
+    // 0082 introduced device logins. Check before stopping writers, while cancellation
+    // is still available. The 0095 transaction guards logins started after this read.
+    if (checkOnly && installedCount >= 82 && installedCount < 95 && migrations.length >= 95) {
+      const { rows } = await client.query(
+        `SELECT 1 FROM occ.authentication_states
+         WHERE kind = 'device_authorization' AND phase NOT IN ('ready', 'cancelled')
+           AND expires_at > pg_catalog.now() LIMIT 1`,
+      );
+      if (rows.length > 0) {
+        throw Object.assign(
+          new Error("Cancel or let outstanding Codex device logins expire before cutover."),
+          { code: "MIGRATION_DEVICE_LOGIN_PENDING" },
         );
       }
     }

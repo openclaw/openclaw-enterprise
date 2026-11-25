@@ -273,7 +273,7 @@ export async function preflight(
   client: MigrationSession,
   manifest: MigrationManifest,
   classifyReceipts: (receipts: MigrationReceipt[], manifest: MigrationManifest) => MigrationHistory,
-): Promise<MigrationHistory> {
+): Promise<{ history: MigrationHistory; installedCount: number }> {
   await requireMigrationRoles(client);
   const ledger = catalogDigest(await migrationCatalog(client, "drizzle"));
   let receipts: MigrationReceipt[] = [];
@@ -303,5 +303,5 @@ export async function preflight(
   if (shape === "providerCompleted" || shape === "backendCompleted") {
     await requireUnambiguousTerminologyData(client);
   }
-  return shape;
+  return { history: shape, installedCount: receipts.length };
 }

@@ -640,7 +640,19 @@ exec "$0.fixture" "$@"
     };
     const unsupported =
       '{"event":"migration.failed","code":"MIGRATION_HISTORY_UNSUPPORTED","message":"private detail"}\n';
+    const login =
+      '{"event":"migration.failed","code":"MIGRATION_DEVICE_LOGIN_PENDING","message":"private detail"}\n';
     for (const [scenario, guarded, refusal] of [
+      [
+        "pending device login",
+        { phase: "Failed", log: "diagnostic\n" + login },
+        /MIGRATION_DEVICE_LOGIN_PENDING.*No OCC writer was stopped.*Cancel .* or wait for them to expire/,
+      ],
+      [
+        "conflicting login receipt",
+        { phase: "Failed", log: login + ordinary.log },
+        /failed the guarded database migration check/,
+      ],
       [
         "unsupported option",
         { phase: "Failed", log: '{"event":"migration.failed","code":"MIGRATION_FAILED"}\n' },
@@ -677,26 +689,36 @@ exec "$0.fixture" "$@"
           join(f.directory, "state.json"),
           JSON.stringify({
             ...(await f.state()),
-            // The command fixture supplies an older image's outcomes. The real
-            // helper must require its guarded invocation and result before any stop.
-            preflightResults: { "--check": ordinary, "--check-for-installation": guarded },
+            // A confirmed login refusal applies to both modes. An ordinary success
+            // must never substitute for a guarded check before writer shutdown.
+            preflightResults: {
+              "--check": scenario === "pending device login" ? guarded : ordinary,
+              "--check-for-installation": guarded,
+            },
           }),
         );
-        if (scenario === "unsupported option") {
-          const { stdout } = await f.run(
+        if (scenario === "unsupported option" || scenario === "pending device login") {
+          const check = f.run(
             "--migration-check-only",
             "--candidate-installation",
             "",
             "--evidence-dir",
             join(f.directory, "standalone-migration-check"),
           );
-          assert.match(stdout, /Migration check passed/);
+          if (scenario === "pending device login") {
+            await assert.rejects(check, { code: 1, stderr: refusal });
+          } else {
+            assert.match((await check).stdout, /Migration check passed/);
+          }
         }
         await assert.rejects(f.run(), (error: unknown) => {
           assert.ok(error instanceof Error && "code" in error && "stderr" in error);
           assert.equal(error.code, 1);
           assert.match(String(error.stderr), refusal);
           assert.doesNotMatch(String(error.stderr), /private detail/);
+          if (scenario === "conflicting login receipt") {
+            assert.doesNotMatch(String(error.stderr), /MIGRATION_DEVICE_LOGIN_PENDING/);
+          }
           return true;
         });
         await assertStoppedBeforeWriters(f, [], originalSecrets);

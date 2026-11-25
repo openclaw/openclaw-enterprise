@@ -824,6 +824,17 @@ async function runHistoryCommand(db, mode = "development", flag, refusal, instal
     if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_PENDING"')) {
       return { ok: false, code: "MIGRATION_HISTORY_PENDING" };
     }
+    if (code === 1 && output.includes('"code":"MIGRATION_DEVICE_LOGIN_PENDING"')) {
+      assert.ok(stdout === "", "A blocked migration must not report success.");
+      assert.ok(
+        output.includes('"event":"migration.failed"'),
+        "Expected a migration failure event.",
+      );
+      if (refusal !== undefined) {
+        assert.ok(refusal.test(output), "Expected device login cancellation or expiry advice.");
+      }
+      return { ok: false, code: "MIGRATION_DEVICE_LOGIN_PENDING" };
+    }
     if (code === 1 && output.includes('"code":"MIGRATION_REGISTRATION_PENDING"')) {
       assert.ok(stdout === "", "A blocked registration must not report migration success.");
       if (refusal !== undefined) {
@@ -2910,6 +2921,19 @@ test(
     const retainedBefore = await retainedData();
     assert.equal(before.receipts.length, 94);
     assert.equal(retainedBefore.length, 4);
+    // Refuse before writer shutdown so the old controller can still cancel the login.
+    assert.deepEqual(
+      await runHistoryCommand(
+        db,
+        "production",
+        "--check-for-installation",
+        /Cancel or let outstanding Codex device logins expire before cutover/u,
+        installationId,
+      ),
+      { ok: false, code: "MIGRATION_DEVICE_LOGIN_PENDING" },
+    );
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(await retainedData(), retainedBefore);
     assert.deepEqual(
       await runHistoryMigration(db, "production", undefined, undefined, (error) => {
         assert.ok(error instanceof Error);
@@ -2933,6 +2957,10 @@ test(
          private_state=NULL, version=version+1 WHERE id=$1`,
       [activeId],
     );
+    assert.deepEqual(await runHistoryCommand(db, "production", "--check"), {
+      ok: true,
+      history: "preTokenServiceCredentialSources",
+    });
     assert.deepEqual(await runHistoryMigration(db, "production"), {
       ok: true,
       history: "preTokenServiceCredentialSources",
