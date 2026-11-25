@@ -17,7 +17,7 @@ images; individual Agents cannot choose implementations.
    supplied on those hosts, start with [SSH Compute](ssh-compute.md) instead.
 2. Select the required Configuration, IAM, Compute, and Secret implementations.
    The table lists each capability and its allowed choices. Omit optional
-   Sandbox, Credential Gateway, ServiceAccount, Plugin, and Repo selections
+   Sandbox, ServiceAccount, Plugin, and Repo selections
    unless you need them.
 3. Set `OCC_CONFIG_PATH` to the absolute path of that trusted YAML and select
    `NODE_ENV=development` or `NODE_ENV=production` explicitly. Run the API and
@@ -53,8 +53,8 @@ support installed IAM, Compute, Configuration, and Sandbox packages in trusted Y
 | `sandbox`                   | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                                                                   |
 | `credential_proxy`          | [LegacyEgressProxyDriver](credential-proxy.md#legacy-protected-egress)      | Optional; paired Sandbox and legacy Proxy from one bundled OpenShell or installed-package registration.                                                                                                |
 | `credential_proxy_delivery` | [CredentialProxyDriver](credential-proxy.md#interface)                      | TokenService selects delivery from the Sandbox registration. Staged Agent deployments require the bundled OpenShell pair.                                                                              |
-| `credential_gateway`        | [CredentialGatewayDriver](credential-gateway.md)                            | Optional legacy OpenShell Backend member; Credential Refresh requires it.                                                                                                                              |
-| `credential_refresh`        | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                                                                        |
+| `credential_gateway`        | [CredentialGatewayDriver](credential-gateway.md)                            | Rejected in Installation YAML and Backend membership.                                                                                                                                                  |
+| `credential_refresh`        | [CredentialRefreshDriver](credential-refresh.md)                            | Rejected in Installation YAML and Backend membership.                                                                                                                                                  |
 | `token_service`             | [TokenServiceDriver][token-service-contract]                                | Optional `occ` with Installation-private Secret storage, or `openshell` for the [development preview](../credential-sources/managed-static.md#preview-openshell-custody). Both use `{}` configuration. |
 | `service_account`           | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                                                                |
 | `plugin`                    | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                                                                           |
@@ -63,8 +63,9 @@ support installed IAM, Compute, Configuration, and Sandbox packages in trusted Y
 [token-service-contract]: ../../../packages/contracts/src/drivers/token-service/index.ts
 [token-service-flow]: ../../flows/token-service-static-custody.md
 
-The [OCC Source lifecycle][token-service-flow] is independent of Sandbox,
-Credential Gateway, and Credential Proxy.
+[OCC TokenService][token-service-flow] can hold Sources independently of Sandbox
+and Credential Proxy. Retiring delivered copies requires the paired OpenShell
+Credential Proxy and its Sandbox placement.
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.
@@ -149,9 +150,10 @@ membership, and composition injects the Backend into the concrete member.
 The generic Driver contract has no Backend identity field. All declared members
 are required and must match the selected registry `(capability, id)`. The bundled ChatGPT Backend requires its selected
 ServiceAccount Driver; the bundled GitHub Backend requires its selected Repo
-Driver. OpenShell requires its Sandbox Driver; optional Gateway, Refresh, and legacy Proxy members must match selection. Refresh requires Gateway. A
-selected Credential Gateway or Credential Refresh Driver must belong to a
-configured Backend. There is no per-Agent Driver selection.
+Driver. The OpenShell Backend requires its selected Sandbox Driver and must
+match any optional `credential_proxy` selection. Credential Gateway and
+Credential Refresh selections are rejected at both the top level and in Backend
+membership. There is no per-Agent Driver selection.
 
 Runtime Backend injection is limited to those bundled Drivers; installed
 packages keep the factory arguments below, and Backend loading or injection into
@@ -308,8 +310,7 @@ IAM, Compute, Configuration, and Sandbox selections accept only `id`, optional
 `package`, and `configuration`. Omit `package` for a bundled Driver. The
 Secret selection accepts only the bundled Kubernetes implementation. The optional
 Repo selection accepts only the bundled GitHub implementation with its declared
-Backend member, and the optional Credential Gateway selection accepts only the
-bundled OpenShell implementation; none of these selections accepts an installed package. Installed implementation identity is
+Backend member. Neither Secret nor Repo accepts an installed package. Installed implementation identity is
 `<package-name>@<installed-version>`; bundled identity is intrinsic. Operators
 cannot supply `implementation` or `version`; factory identity and capability
 must match the selection:
