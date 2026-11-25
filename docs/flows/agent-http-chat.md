@@ -1,7 +1,7 @@
 ---
 created: "2026-11-16"
-updated: "2026-11-24 15:51"
-last_updated_session: "authoring-run/b555d174-e0cc-47b5-adf4-c60dc37e5995"
+updated: "2026-11-25 05:19"
+last_updated_session: "authoring-run/b2f57b81-40a4-41f7-bf02-599337389069"
 ---
 
 # Agent HTTP chat flow
@@ -41,12 +41,14 @@ graph TD
   G -->|audit succeeds| H["<b>Private proxy</b><br/>Set chat-only authority"]
   H --> I["<b>Gateway and Harness</b><br/>Run turn and emit response"]
   I --> J["<b>OCC relay</b><br/>Forward JSON or SSE<br/>Apply backpressure"]
-  J --> K{"Gateway body ended cleanly?"}
-  K -->|yes| N["Recheck caller and revision"]
+  J --> K{"Relay still active and body complete,<br/>including any required [DONE] line?"}
+  K -->|yes| P["Wait for any pending periodic check"]
+  P -->|passed or none pending| N["Recheck caller and revision"]
+  P -->|failed| M
   N -->|current| O["End caller response"]
   O --> L["Attempt terminal audit"]
   N -->|changed or unavailable| M
-  K -->|interrupted or missing<br/>required marker| M["Abort upstream<br/>Audit uncertain execution"]
+  K -->|no| M["Abort upstream<br/>Attempt to audit uncertain execution"]
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   classDef process fill:#E9F4F1,stroke:#83A99E,color:#29443D,stroke-width:1px
   class D,E,K gate
@@ -96,10 +98,12 @@ pinned revision. For `stream: true` with Gateway HTTP 200, OCC retains the
 last 128 bytes or fewer and requires a `data: [DONE]` line there. A native
 stream error can also end with this marker.
 
-When the Gateway body ends cleanly, OCC waits for any periodic check and
-its cleanup, then runs a fresh, bounded check. On success it ends the caller
-response and releases any retained bytes. **For JSON the caller may already
-have received the entire body**, even if that final check fails.
+When the Gateway body ends cleanly, OCC still aborts the relay if the
+required line is missing. Otherwise, OCC waits for any periodic check in
+progress and its cleanup. If no check was pending or the check passed,
+OCC runs a fresh, bounded check. On success, OCC ends the caller response
+with any retained bytes. **For JSON the caller may already have received
+the entire body**, even if that final check fails.
 
 A failed check, revision change, disconnect, deadline or truncated response
 aborts the relay. Before sending headers, OCC can return its error envelope.
@@ -131,6 +135,7 @@ content. A failed audit write emits `http.audit_append_failed`.
 
 ## Changelog
 
+- 2026-11-25 05:19: Show when relay completion requires a fresh authorization check. (authoring-run/b2f57b81-40a4-41f7-bf02-599337389069 - ec84767917edc3358695b6d01c6e0fa4bec8c658)
 - 2026-11-24 15:51: Distinguish JSON and SSE completion after reauthorization. (authoring-run/b555d174-e0cc-47b5-adf4-c60dc37e5995 - 7b0d04f59c01e53e3f19e1e744daee1e428e851c)
 
 - 2026-11-18 05:48: Note that the route proxy's `503` reaches a non-stream caller when a Gateway Pod is deleted. (fix-interrupted-turns-1118 - 8cbb31a68)
