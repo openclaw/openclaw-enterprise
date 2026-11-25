@@ -209,6 +209,18 @@ deployment and pairing, not a model turn. Continue with the
 [Control UI Route](../openshift/README.md#control-ui-route) and complete a real
 model turn.
 
+## Size native worker capacity for subagents
+
+A dedicated native Agent runs its session turns as worker environments on the
+Agent's Sandbox node, and every subagent the Agent spawns takes another one.
+The node refuses additional sessions at capacity. The limit is
+`runtime.nativeOpenClawSessionCapacity` in the Installation (default `8`,
+range `1`-`1024`); a Sandbox picks up a changed value only after a redeploy.
+Idle workers are not retired automatically, and an Agent orchestrating
+parallel subagents also occupies a slot for its own turn, so size the limit
+to the Agent's peak subagent concurrency plus one. Agents that only answer
+chats never need more than the default.
+
 ## Add initial Agent files
 
 Open the Agent's **Workspace files** tab in OCC. Bootstrap may already provide
