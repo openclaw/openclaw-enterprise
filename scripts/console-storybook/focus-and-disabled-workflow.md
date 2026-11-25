@@ -216,3 +216,7 @@ merges the local draft. The story simulates a conflict before sending a write.
 The Agent detail browser test also returns to the tab while a save is pending.
 If the Controller returns `409` during the access check, focus should move from
 the save status to **Reload draft** once access is confirmed.
+
+After the conflict, choose **← Agents**. The existing explanation comes into view
+and takes focus. Press **Shift+Tab** to return to **Reload draft**. Merely focusing
+the link while the save settles must keep focus on the link when the conflict appears.
