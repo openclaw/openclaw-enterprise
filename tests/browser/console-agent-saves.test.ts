@@ -1964,18 +1964,41 @@ test("a Configuration conflict merges the JSON edits over the reread document", 
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByRole("button", { name: "Reload draft" }).click();
-  await page
-    .getByRole("status")
-    .filter({
-      hasText:
-        'Draft reloaded. Your edits are applied over the reloaded Configuration. Another browser also changed /plugins/entries/knowledge/config/marker (saved: "theirs"); yours are shown. Both browsers changed different keys in /plugins/entries/knowledge/config; check they still fit together. Review them, then save.',
-    })
-    .waitFor();
+  const review =
+    'Your edits are applied over the reloaded Configuration. Another browser also changed /plugins/entries/knowledge/config/marker (saved: "theirs"); yours are shown. Both browsers changed different keys in /plugins/entries/knowledge/config; check they still fit together. Review them, then save.';
+  const reloaded = `Draft reloaded. ${review}`;
+  await page.getByRole("status").filter({ hasText: reloaded }).waitFor();
   assert.equal(await focusedText(page), "Save Configuration");
-  const description = await focusedDescription(page);
-  assert.ok(typeof description === "string", "Expected the focused control's description");
-  assert.match(description, /^Draft reloaded\. Your edits are applied/);
-  await page.getByRole("button", { name: "Save Configuration" }).click();
+  assert.equal(await focusedDescription(page), reloaded);
+
+  const editor = page.getByLabel("Configuration JSON");
+  const mergedText = await editor.inputValue();
+  const save = page.getByRole("button", { name: "Save Configuration" });
+  async function refreshAndCheckReview() {
+    const original = await editor.elementHandle();
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.waitForFunction((node) => !node.isConnected, original);
+    await original.dispose();
+    assert.equal(await editor.inputValue(), mergedText);
+    await page.getByRole("status").filter({ hasText: review }).waitFor();
+    await save.focus();
+    assert.equal(await focusedDescription(page), review);
+  }
+  await refreshAndCheckReview();
+
+  // A failed preflight takes priority, but the same unsaved merge still needs review.
+  await page.route(
+    `**${configurationPath(context)}`,
+    (route, request) => {
+      assert.equal(request.method(), "GET");
+      return route.fulfill({ status: 503, json: { error: "unavailable" } });
+    },
+    { times: 1 },
+  );
+  await save.click();
+  await page.getByRole("alert").filter({ hasText: "The read could not be completed" }).waitFor();
+  await refreshAndCheckReview();
+  await save.click();
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
   assert.equal(saved.generation, 3);

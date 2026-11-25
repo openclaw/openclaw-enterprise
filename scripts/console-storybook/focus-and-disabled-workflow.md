@@ -220,3 +220,8 @@ the save status to **Reload draft** once access is confirmed.
 After the conflict, choose **← Agents**. The existing explanation comes into view
 and takes focus. Press **Shift+Tab** to return to **Reload draft**. Merely focusing
 the link while the save settles must keep focus on the link when the conflict appears.
+
+Choose **Reload draft** and review the warning about the other browser’s saved
+`/gateway/bind` value. Use **Refresh** in the Console header. Focus
+**Save Configuration** and check that the same warning describes it. Confirm your
+local `/gateway/bind` edit remains in the JSON editor.

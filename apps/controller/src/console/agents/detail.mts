@@ -40,6 +40,7 @@ import {
   isUnavailable,
   jsonObjectDiagnostic,
   revealStatus,
+  setDescription,
   setHidden,
   setStatusTone,
   setText,
@@ -237,6 +238,7 @@ interface ConfigurationDraft {
   outcomeUnknown?: boolean;
   reloadRequired?: boolean;
   carried?: boolean;
+  reviewNote?: string;
 }
 
 type AuthenticationFields = ReturnType<ReturnType<typeof createHarnessAuthFields>["capture"]>;
@@ -7003,7 +7005,17 @@ export async function renderAgentDetail(
   ) {
     const retained = context.drafts.get("configuration") as ConfigurationDraft | undefined;
     if (!retained?.carried) {
-      return { retained, note: "" };
+      // The note describes the saved values used for this merge. Refresh can keep the
+      // draft even when it rereads a different Configuration or generation.
+      const note =
+        retained?.reviewNote &&
+        retained.baseline.id === snapshot.id &&
+        retained.baseline.generation === snapshot.generation &&
+        !retained.outcomeUnknown &&
+        !retained.reloadRequired
+          ? retained.reviewNote
+          : "";
+      return { retained, note };
     }
     const initialText = JSON.stringify(values, null, 2);
     if (retained.baseline?.id !== snapshot.id) {
@@ -7090,6 +7102,7 @@ export async function renderAgentDetail(
       safety.node,
     );
     const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
+    let reviewNote = retained ? carriedNote : "";
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
     let pending = false;
@@ -7114,6 +7127,7 @@ export async function renderAgentDetail(
             text: editor.value,
             initialText,
             baseline,
+            reviewNote,
             outcomeUnknown: outcomeUnknown || pending,
             reloadRequired,
           }
@@ -7124,13 +7138,13 @@ export async function renderAgentDetail(
       const draft = value as ConfigurationDraft | undefined;
       return !!draft && (draft.text !== draft.initialText || !!draft.outcomeUnknown);
     });
+    const carriedMessage = [savedNotice, carriedNote].filter(Boolean).join(" ");
     const feedback = element(
       "p",
       { className: "hint", role: "status", id: "configuration-editor-feedback" },
-      [savedNotice, carriedNote].filter(Boolean).join(" "),
+      retained ? "" : carriedMessage,
     );
-    // The carried-edits note stays until the reader edits again.
-    let feedbackLocked = Boolean(carriedNote);
+    let feedbackLocked = false;
     // Entering the editor replaces the pressed button; focus moves to the editor (finding 1620).
     function startEditing() {
       editing = true;
@@ -7203,10 +7217,15 @@ export async function renderAgentDetail(
     });
     const save = button("Save Configuration", () => void saveConfiguration(), {
       tone: "primary",
-      // Reload draft focuses Save after carrying edits; the note says what was applied.
-      ...(carriedNote && retained ? { "aria-describedby": feedback.id } : {}),
     });
+    function clearReview() {
+      if (reviewNote) {
+        setDescription(save, feedback.id, false);
+        reviewNote = "";
+      }
+    }
     const cancel = button("Cancel", () => {
+      clearReview();
       baseline = { id: snapshot.id, generation: snapshot.generation };
       initialText = JSON.stringify(values, null, 2);
       editing = false;
@@ -7316,6 +7335,19 @@ export async function renderAgentDetail(
       enableGatewayPassword.disabled = pending || outcomeUnknown || reloadRequired;
       editor.readOnly = pending || outcomeUnknown || reloadRequired;
       syncSafety();
+      let reviewMessage = "";
+      if (reviewNote) {
+        // An unconfirmed permission check hides the saved values; only a denial retires them.
+        const confirmed =
+          callerPermissions !== unconfirmedPermissions &&
+          isAgentPermissionSummary(callerPermissions);
+        if (confirmed && (!callerPermissions?.configurationRead || configurationReadOnly())) {
+          clearReview();
+        } else if (pending || !feedbackLocked) {
+          reviewMessage = confirmed && !pending ? carriedMessage : "";
+          setDescription(save, feedback.id, Boolean(reviewMessage));
+        }
+      }
       if (outcomeUnknown) {
         setStatusTone(feedback, "danger");
         feedback.textContent =
@@ -7333,7 +7365,10 @@ export async function renderAgentDetail(
         }
       } else if (dirty) {
         if (!feedbackLocked) {
-          feedback.textContent = "Save or cancel these Configuration edits before deploying.";
+          setText(
+            feedback,
+            reviewMessage || "Save or cancel these Configuration edits before deploying.",
+          );
         }
       } else if (!pending && editing) {
         if (!feedbackLocked) {
@@ -7347,6 +7382,9 @@ export async function renderAgentDetail(
       feedback.textContent = "";
       setStatusTone(feedback, null);
       feedback.setAttribute("role", "status");
+      if (editor.value !== retained?.text) {
+        clearReview();
+      }
       feedbackLocked = false;
       reloadRequired = false;
       updateState();
@@ -7394,6 +7432,8 @@ export async function renderAgentDetail(
           return;
         }
         assertReadableConfiguration(freshAgent);
+        // A failed preflight read leaves the merge intact. A conflict or write supersedes it.
+        reviewNote = "";
         if (
           freshAgent.configurationId !== baseline.id ||
           freshConfig.generation !== baseline.generation
