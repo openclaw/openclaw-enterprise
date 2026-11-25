@@ -149,7 +149,9 @@ profile label alone is not proof of enforcement. Verify real file operations and
 HTTPS request before and after, a refused sibling connection to the same live proxy port, and a
 successful connection to that port at another address. Check new processes, replacements, and
 already-connected sockets. A connection policy alone cannot revoke a socket that another process
-already opened and passed to the file node. Test descriptor transfer separately.
+already opened and passed to the file node. Test descriptor transfer separately. While the proxy
+is serving, remove the caller restriction in an isolated test. Check whether an in-flight request
+finishes and require a fresh file-node request to stop before it reaches the upstream service.
 
 | Boundary            | Sandbox requirement                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

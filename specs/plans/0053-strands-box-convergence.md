@@ -56,7 +56,7 @@ The [overview criteria](../rfcs/20261118-strands-box/index.md#acceptance-criteri
    another destination, a dangerous redirect, a missing credential, incompatible presentation, and
    unsupported authentication. Require refusal. Use invented sentinels to verify that the injector
    blocks known disclosures in response headers, bodies, trailers, errors, and logs.
-3. **Admit model and Git together.** Use the saved Agent revision already admitted for both grants.
+3. **Push and open a draft.** Use the saved Agent revision already admitted for both grants.
    Current staged `credentialDeployment` admission (v8) can represent both bindings under one
    TokenService owner and checks the complete policy, but only OpenShell currently qualifies.
    No signed joint Strands release exists. The legacy `egressPlan` path requires exact dispatch,
