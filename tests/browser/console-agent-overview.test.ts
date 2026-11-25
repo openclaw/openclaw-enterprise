@@ -4525,30 +4525,73 @@ function holdShareWrite(t: TestContext, page: Page, fixture: Fixture, namespaceI
   });
 }
 
+async function startHeldShare(
+  page: Page,
+  principalId: string,
+  write: Awaited<ReturnType<typeof holdShareWrite>>,
+) {
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await panel.getByLabel("Existing person’s Principal ID").fill(principalId);
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await write.requested;
+  return panel;
+}
+
+async function assertShareGrants(
+  fixture: Fixture,
+  namespaceId: string,
+  agentId: string,
+  principalId: string,
+) {
+  const result = await fixture.request("GET", `/namespaces/${namespaceId}/iam/access-bindings`);
+  assert.equal(result.status, 200);
+  const grants = records(result.data).filter((binding) => binding.subjectId === principalId);
+  assert.equal(grants.length, 2);
+  for (const [kind, id] of [
+    ["namespace", namespaceId],
+    ["agent", agentId],
+  ]) {
+    const grant = required(grants.find((binding) => binding.resourceKind === kind));
+    assert.equal(grant.subjectKind, "identity");
+    assert.equal(grant.resourceId, id);
+  }
+}
+
 // The sharing panel is built once per page with the page's own context, as it was on the
 // overview: a share still running when the reader opens another tab finishes, and its outcome
 // shows when they come back. Each grant is written once.
 test("A share in flight finishes across a tab switch", async (t) => {
-  const { fixture, namespace } = await readyNamespace(t, "Share in flight", {
-    provisionedPeople: ["flight-recipient"],
-  });
-  const agent = await fixture.createAgent(namespace.id, "Flight Agent", nativeValues("v1"));
-  const person = fixture.provisionedAccounts[0];
-  assert.ok(person);
-  const { page } = await newPage(t, fixture, { browser });
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Share in flight",
+    "Flight Agent",
+    { provisionedPeople: ["flight-recipient"] },
+  );
+  const person = required(fixture.provisionedAccounts[0]);
   const requests = apiRequests(page, fixture.origin);
   const write = await holdShareWrite(t, page, fixture, namespace.id);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
-  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
-  await panel.getByRole("checkbox").check();
-  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-  await write.requested;
+  const panel = await startHeldShare(page, person.principal.id, write);
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "plugins");
+  const plugins = page.getByRole("tab", { name: "Plugins", exact: true, selected: true });
+  await plugins.waitFor();
   assert.equal(await panel.count(), 0);
+  const bindingsUrl = `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`;
+  const agentGrant = page.waitForResponse(
+    (response) =>
+      response.url() === bindingsUrl &&
+      response.request().method() === "POST" &&
+      record(response.request().postDataJSON()).resourceKind === "agent",
+    { timeout: 10_000 },
+  );
   write.release();
+  assert.equal((await agentGrant).status(), 201);
+  await assertShareGrants(fixture, namespace.id, agent.id, person.principal.id);
+  assert.equal(await plugins.isVisible(), true);
+  assert.equal(await panel.count(), 0);
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
   const writes = requests.filter(
@@ -4561,10 +4604,7 @@ test("A share in flight finishes across a tab switch", async (t) => {
       ["agent", person.principal.id],
     ],
   );
-  const bindings = records(
-    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
-  ).filter((binding) => binding.subjectId === person.principal.id);
-  assert.equal(bindings.length, 2);
+  await assertShareGrants(fixture, namespace.id, agent.id, person.principal.id);
 });
 
 // A share writes the Namespace discovery grant, then the Agent grant. Leaving the page between
@@ -4577,8 +4617,7 @@ test("A share in flight holds version and page changes until it finishes", async
   });
   const agent = await fixture.createAgent(namespace.id, "Hold Agent", nativeValues("v1"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const person = fixture.provisionedAccounts[0];
-  assert.ok(person);
+  const person = required(fixture.provisionedAccounts[0]);
   const { page } = await newPage(t, fixture, { browser });
   const write = await holdShareWrite(t, page, fixture, namespace.id);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
@@ -4624,34 +4663,25 @@ test("A share in flight holds version and page changes until it finishes", async
   await held.waitFor({ state: "detached" });
   await waitForEnabled(version);
   assert.equal(await asksBeforeUnload(page), false);
-  const bindings = records(
-    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
-  ).filter((binding) => binding.subjectId === person.principal.id);
-  assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
+  await assertShareGrants(fixture, namespace.id, agent.id, person.principal.id);
 });
 
 // The page's own reloads of its current address (here a failed read's Retry) rebuild it, so a
 // share waits for them too (finding 2108; untested until finding 2125).
 test("A share in flight holds a Retry that would rebuild the page", async (t) => {
-  const { fixture, namespace } = await readyNamespace(t, "Share retry hold", {
-    provisionedPeople: ["retry-recipient"],
-  });
-  const agent = await fixture.createAgent(namespace.id, "Retry Hold Agent", nativeValues("v1"));
-  const person = fixture.provisionedAccounts[0];
-  assert.ok(person);
-  const { page } = await newPage(t, fixture, { browser });
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Share retry hold",
+    "Retry Hold Agent",
+    { provisionedPeople: ["retry-recipient"] },
+  );
+  const person = required(fixture.provisionedAccounts[0]);
   // The draft's Configuration read fails, so its tab offers Retry.
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
     (route) =>
       route.request().method() === "GET"
-        ? route.fulfill({
-            status: 503,
-            contentType: "application/json",
-            body: JSON.stringify({
-              error: { code: "DEPENDENCY_UNAVAILABLE", message: "Read unavailable" },
-            }),
-          })
+        ? route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Read unavailable"))
         : route.fallback(),
   );
   const write = await holdShareWrite(t, page, fixture, namespace.id);
@@ -4660,12 +4690,7 @@ test("A share in flight holds a Retry that would rebuild the page", async (t) =>
   const retry = page.getByRole("tabpanel").getByRole("button", { name: "Retry", exact: true });
   await retry.waitFor();
   await page.getByRole("tab", { name: "Access", exact: true }).click();
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
-  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
-  await panel.getByRole("checkbox").check();
-  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-  await write.requested;
+  await startHeldShare(page, person.principal.id, write);
 
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
@@ -4682,31 +4707,23 @@ test("A share in flight holds a Retry that would rebuild the page", async (t) =>
 
   write.release();
   await held.waitFor({ state: "detached" });
-  const bindings = records(
-    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
-  ).filter((binding) => binding.subjectId === person.principal.id);
-  assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
+  await assertShareGrants(fixture, namespace.id, agent.id, person.principal.id);
 });
 
 // Delete replaces the page with its deletion row. During a share that took the hold's note with
 // it, so ← Agents was refused in silence until the share finished (finding 2125).
 test("Delete during a share in flight keeps saying why the page stays open", async (t) => {
-  const { fixture, namespace } = await readyNamespace(t, "Share delete hold", {
-    provisionedPeople: ["delete-recipient"],
-  });
-  const agent = await fixture.createAgent(namespace.id, "Delete Hold Agent", nativeValues("v1"));
-  const person = fixture.provisionedAccounts[0];
-  assert.ok(person);
-  const { page } = await newPage(t, fixture, { browser });
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Share delete hold",
+    "Delete Hold Agent",
+    { provisionedPeople: ["delete-recipient"] },
+  );
+  const person = required(fixture.provisionedAccounts[0]);
   const write = await holdShareWrite(t, page, fixture, namespace.id);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, url);
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
-  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
-  await panel.getByRole("checkbox").check();
-  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-  await write.requested;
+  const panel = await startHeldShare(page, person.principal.id, write);
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const beforeDelete = page.url();
   await page.getByRole("button", { name: "Delete Agent" }).click();
@@ -4807,8 +4824,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
   });
   const agent = await fixture.createAgent(namespace.id, "Hold Version Agent", nativeValues("v1"));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const person = fixture.provisionedAccounts[0];
-  assert.ok(person);
+  const person = required(fixture.provisionedAccounts[0]);
   const { page } = await newPage(t, fixture, { browser });
   const write = await holdShareWrite(t, page, fixture, namespace.id);
   await login(page, fixture, configUrl(fixture, namespace.id, agent.id, revision.id));
@@ -4825,12 +4841,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
   await waitForChosenVersion(page);
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "access");
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
-  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
-  await panel.getByRole("checkbox").check();
-  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
-  await write.requested;
+  await startHeldShare(page, person.principal.id, write);
 
   const held = page.getByRole("tabpanel").getByText("This page stays open until sharing finishes.");
   const entries = () => page.evaluate(() => globalThis.history.length);
@@ -4857,10 +4868,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
 
   write.release();
   await held.waitFor({ state: "detached" });
-  const bindings = records(
-    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
-  ).filter((binding) => binding.subjectId === person.principal.id);
-  assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
+  await assertShareGrants(fixture, namespace.id, agent.id, person.principal.id);
 
   // A held Back used to overwrite the draft entry. Visit the actual destinations in both
   // directions: replacing the draft or pushing a copy of Configuration loses one of them.
@@ -5031,15 +5039,58 @@ test("Viewing version matches the Configuration snapshot when revisiting a queue
     assert.equal(new URL(page.url()).searchParams.get("revision"), id);
     assert.equal(await chooser.inputValue(), id);
   };
+  const heading = page.getByRole("heading", { name: "Picker Agent", exact: true });
+  const back = page.getByRole("link", { name: "← Agents", exact: true });
+  const copy = page.getByRole("button", { name: "Copy Agent ID", exact: true });
+  const hasFocus = (control: Locator) => control.evaluate((node) => node.matches(":focus-visible"));
+  const openQueuedVersion = async (control: Locator, ...keys: string[]) => {
+    const url = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/revisions/${second.id}`;
+    const read = await holdRequests(t, page, url, { method: "GET", once: true, afterServer: true });
+    await chooser.press("ArrowUp");
+    assert.equal((await read.requested)?.status(), 200);
+    assert.ok(await hasFocus(heading));
+    for (const key of keys) {
+      await page.keyboard.press(key);
+    }
+    assert.ok(await hasFocus(control));
+    read.release();
+    await checkVersion(second.id, "openai/gpt-5.1");
+    assert.deepEqual(
+      await control.evaluate((node) => {
+        const { top, bottom } = node.getBoundingClientRect();
+        return {
+          focused: node.matches(":focus-visible"),
+          inView: top >= 0 && bottom <= innerHeight,
+        };
+      }),
+      { focused: true, inView: true },
+    );
+  };
+
   await checkVersion(first.id, "openai/gpt-4.1");
-  await chooser.selectOption(second.id);
-  await checkVersion(second.id, "openai/gpt-5.1");
+  const destination = await back.getAttribute("href");
+  await openQueuedVersion(back, "Shift+Tab");
+  assert.equal(await back.getAttribute("href"), destination);
   const queuedPicker = required(await chooser.elementHandle());
-  await chooser.selectOption(first.id);
-  await checkVersion(first.id, "openai/gpt-4.1");
-  await chooser.selectOption(second.id);
-  await checkVersion(second.id, "openai/gpt-5.1");
-  assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+  const namespaceSelect = page.getByRole("combobox", { name: "Namespace", exact: true });
+  for (const [control, ...keys] of [
+    [copy, "Tab"],
+    [namespaceSelect, "Tab", "Tab"],
+  ] as const) {
+    // Leave the header above the viewport but keep the picker in view.
+    await chooser.focus();
+    await page.mouse.wheel(0, 240);
+    await page.waitForFunction(
+      (button) => button.getBoundingClientRect().bottom < 0,
+      required(await copy.elementHandle()),
+    );
+    assert.ok(await chooser.evaluate((node) => node.getBoundingClientRect().top >= 0));
+    await page.keyboard.press("ArrowDown");
+    await checkVersion(first.id, "openai/gpt-4.1");
+    assert.ok(await hasFocus(heading));
+    await openQueuedVersion(control, ...keys);
+    assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+  }
 });
 
 // The Versions list marked only the current version: a failed v2 looked like v1 (finding 2095),

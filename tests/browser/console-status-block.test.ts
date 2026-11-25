@@ -754,6 +754,7 @@ test("Configuration save outcomes", async (t) => {
         await lineState(feedback),
         quietStatus("Reload this draft before leaving the editor."),
       );
+      await assertFocusedInView(t, feedback);
     },
   );
 

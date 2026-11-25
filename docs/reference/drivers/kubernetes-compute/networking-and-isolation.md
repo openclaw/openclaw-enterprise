@@ -320,9 +320,14 @@ namespace with the Helm value
 Workload Pods use the restricted
 [Pod and container hardening](../../security.md#pod-and-container-hardening),
 including the optional `runtime.codexSeccompProfile`, which applies only to the
-dedicated Codex Agent container. Agents get identity from an
-audience-scoped, short-lived projected ServiceAccount token. Workloads never
-receive controller credentials.
+dedicated Codex Agent container. Workloads never receive controller credentials.
+
+For [dedicated Agents on OpenShell](../openshell-sandbox.md#workload-identity),
+set Kubernetes Compute's `servicePrincipalCredentials.mode` to `disabled`.
+Agent admission rejects token projection for this combination. On supported
+deployments, a projected ServiceAccount token is short-lived, audience-scoped
+evidence from the issuing cluster. OCC does not accept it to
+[authenticate Agent requests](../../authorization.md#principals).
 
 ## Related
 

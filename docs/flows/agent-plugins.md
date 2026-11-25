@@ -31,11 +31,10 @@ graph TD
   E0 -->|managed MCP| M0["Check current Source or verified Agent binding"] --> D5
   E0 -->|credentialSource| E1
   D1 -->|stored source or managed connection| D2["Caller Source operate"] --> D6["Select Harness catalog"]
-  D1 -->|token or none| D6
+  D1 -->|no credential| D6
   D6 -->|unsupported| D7["Unsupported"]
-  D6 -->|token or none| D4["Call PluginDriver"]
-  D6 -->|Secret| D3["Read and recheck"] --> D4
-  D6 -->|CredentialSource| D9["Check Source and selected owner; resolve unless canceled"]
+  D6 -->|credentialless catalog| D4["Call PluginDriver"]
+  D6 -->|TokenService Source| D9["Check Source and owner, then resolve"]
   D9 -->|success| D10["Recheck authority, source and catalog"]
   D10 -->|allowed and connected| D4
   D9 -->|canceled or failed| D12["Stop"]
@@ -112,7 +111,7 @@ On save, the [Plugin Driver](../../packages/occ/src/plugin-credential-bindings.t
 
 Worker checks Driver–Harness compatibility. Gateway and Worker verify Compute descriptors.
 
-- **CLI packages.** Gateway loads skills; Harness runs the pinned executable. OpenShell restricts staged Google injection by endpoint/method/path; Google enforces permissions. The legacy [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) verifies the [Gateway guard](../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts) version before attachment; that guard enforces Source scope and requests. Unsigned WebSockets and timely frames naming another Sandbox return `PERMISSION_DENIED`; matching or live late frames return `http_only`. Signed silence waits up to 400 ms, unless the caller deadline expires first. Preflights, independent of HTTP, cap at 256 per Sandbox and 1,024 per guard.
+- **CLI packages.** Gateway loads skills; Harness runs the pinned executable. OpenShell restricts staged Google injection by endpoint/method/path; Google enforces permissions. The [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) verifies the [Plugin guard](../../apps/controller/src/plugin-request-guard.ts) version; the guard enforces Source scope and requests. It still uses [shared egress code](../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts), which legacy removal must preserve or relocate. Unsigned WebSockets and timely frames naming another Sandbox return `PERMISSION_DENIED`; matching or live late frames return `http_only`. Signed silence waits up to 400 ms, unless the caller deadline expires first. Preflights, independent of HTTP, cap at 256 per Sandbox and 1,024 per guard.
 - **Hosted MCP packages.** Worker advertises selected tools. Gateway grants same-node execution. Hooks and cross-node calls return Code Mode results or denials. The credential Driver attaches the Source. Sandbox supplies its placeholder. OpenShell enforces tool names and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
