@@ -119,6 +119,14 @@ test(
     native.registerDriver(tokenService);
     native.selectDriver("token_service", tokenService.id);
     installSelectedSandboxDrivers(native, runtime);
+    // Bootstrap saved an empty ceiling. Only an authorized owner update can
+    // delegate these routes; a later controller's startup seed preserves saved state.
+    const ceiling = await native.getInstallationSandboxNetworkPolicyCeiling(principal.id);
+    await native.updateInstallationSandboxNetworkPolicyCeiling(
+      principal.id,
+      ceiling.version,
+      grants,
+    );
     const app = createApp(native);
     const request = (method: string, path: string, body?: object) =>
       inject(method, path, body, app);

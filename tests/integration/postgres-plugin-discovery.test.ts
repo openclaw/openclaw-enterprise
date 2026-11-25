@@ -458,6 +458,14 @@ test(
     native.selectDriver("compute", runtime.computeDriver.id);
     assert.equal(await native.activateTokenServiceInstance(owner.id, storeIdentity), instanceId);
     installSelectedSandboxDrivers(native, runtime);
+    // Bootstrap saved an empty ceiling. Only an authorized owner update can
+    // delegate these routes; a later controller's startup seed preserves saved state.
+    const ceiling = await native.getInstallationSandboxNetworkPolicyCeiling(principal.id);
+    await native.updateInstallationSandboxNetworkPolicyCeiling(
+      principal.id,
+      ceiling.version,
+      installation.sandboxNetworkPolicyCeiling,
+    );
     native.installPluginDrivers([new OCCPluginDriver()]);
     const app = createApp(native);
     const model = await inject(
