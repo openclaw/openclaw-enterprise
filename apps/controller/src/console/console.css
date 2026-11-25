@@ -1070,6 +1070,7 @@ p {
   min-width: 0;
   height: 100%;
   min-height: 0;
+  scroll-margin-block: var(--space-2);
   padding: 0 var(--space-8) 0 0;
   border: 0;
   border-radius: var(--radius-sm);

@@ -290,30 +290,33 @@ function loadYaml(path: string) {
 function evaluateInContext(code: string, context: object): unknown {
   return runInNewContext(code, context);
 }
-const reasons = [
-  "docs_only",
-  "tests_only",
-  "ineligible_change",
-  "manifest_change",
-  "manifest_unavailable",
-  "unmapped_test",
-  "referenced_test",
+const fullSummaryReasons = [
   "non_pr_event",
   "invalid_event",
   "invalid_identity",
   "event_unavailable",
   "checkout_mismatch",
   "git_inspection_failed",
+  "malformed_diff",
+  "empty_diff",
+  "unsupported_change",
+  "filename_not_utf8",
+  "ineligible_change",
   "bootstrap_non_pr_event",
   "bootstrap_event_unavailable",
   "bootstrap_invalid_identity",
   "bootstrap_checkout_mismatch",
   "bootstrap_git_inspection_failed",
   "bootstrap_policy_unavailable",
-  "malformed_diff",
-  "empty_diff",
-  "unsupported_change",
-  "filename_not_utf8",
+];
+const reasons = [
+  ...fullSummaryReasons,
+  "docs_only",
+  "tests_only",
+  "manifest_change",
+  "manifest_unavailable",
+  "unmapped_test",
+  "referenced_test",
   "unavailable",
 ].join("|");
 
@@ -496,15 +499,21 @@ function classifyIn(cwd: string, env: NodeJS.ProcessEnv) {
   }
 }
 
-// The selector's exit status for a command line and a classification: main()
-// exits 1 when it refuses the command line or the mode does not verify.
-function verifyStatus(args: string[], result: ReturnType<typeof classify>) {
+const selectorRefusal = "CI impact: unable to select or verify mode\n";
+function validSelectorArgs(args: string[]) {
   try {
     checkArguments(args);
-  } catch {
-    return 1;
+    return true;
+  } catch (error) {
+    if (!(error instanceof Error && error.message.startsWith("usage: impact.ts "))) {
+      throw error;
+    }
+    return false;
   }
-  return respond(args, result).verified ? 0 : 1;
+}
+
+function verifyStatus(args: string[], result: ReturnType<typeof classify>) {
+  return validSelectorArgs(args) && respond(args, result).verified ? 0 : 1;
 }
 
 // The selections a selector process has made, by mode and reason. expect,
@@ -620,96 +629,68 @@ async function fixture(
     GITHUB_EVENT_PATH: eventPath,
     GITHUB_SHA: tested,
   };
-  let outputs = 0;
-  const output = (content = "") => {
-    const path = join(dir, `output-${(outputs += 1)}`);
-    writeFileSync(path, content);
-    return path;
-  };
   const runSelector = (args: string[], overrides: NodeJS.ProcessEnv = {}) =>
     run(process.execPath, [selector, ...args], { cwd: repo, env: { ...env, ...overrides } });
-  // The selector's GitHub output for the current checkout and event.
-  const select = async (overrides: NodeJS.ProcessEnv = {}) => {
-    const path = output();
-    const selected = await runSelector(["--github-output", path], overrides);
-    assert.equal(selected.status, 0, selected.stderr);
-    return readFileSync(path, "utf8");
-  };
-  // Exit statuses of --verify-mode command lines for the current checkout and
-  // event, and the GitHub output the same evidence selects (null with
-  // `cliVerify`). With `cliVerify` each command line is its own selector
-  // process. Otherwise the selector classifies once in this process and answers
-  // each command line with the code its CLI runs (checkArguments, respond), so
-  // a selection's verifications cost one Git inspection instead of one
-  // selector process each; its caller still runs the CLI selection and checks
-  // that the CLI wrote the same output.
-  const verify = async (commandLines: string[][], overrides: NodeJS.ProcessEnv = {}) => {
-    if (cliVerify) {
-      const results = await settle(commandLines.map((args) => runSelector(args, overrides)));
-      return { statuses: results.map((result) => result.status), output: null };
-    }
-    const result = classifyIn(repo, { ...env, ...overrides });
-    return {
-      statuses: commandLines.map((args) => verifyStatus(args, result)),
-      output: present(respond(["--github-output", "-"], result).output),
-    };
-  };
-  // The selection for the verified evidence: the in-process classification's
-  // output, which a selector process must also write when it is the first of its
-  // mode and reason (see cliSelections) or the case runs every check as a CLI.
-  // The CLI appends to an output file that already holds a line.
-  const selection = async (
-    verified: Awaited<ReturnType<typeof verify>>,
-    overrides: NodeJS.ProcessEnv,
-  ) => {
-    if (verified.output !== null && !needsCliSelection(verified.output)) {
-      return verified.output;
-    }
-    const path = output("prior=value\n");
+  let outputs = 0;
+  const select = async (overrides: NodeJS.ProcessEnv = {}, prior = "") => {
+    const path = join(dir, `output-${(outputs += 1)}`);
+    writeFileSync(path, prior);
     const selected = await runSelector(["--github-output", path], overrides);
     assert.equal(selected.status, 0, selected.stderr);
     const written = readFileSync(path, "utf8");
-    assert.ok(written.startsWith("prior=value\n"), written);
-    const cli = written.slice("prior=value\n".length);
-    if (verified.output !== null) {
-      assert.equal(cli, verified.output);
-    }
-    return cli;
+    assert.ok(written.startsWith(prior), written);
+    return written.slice(prior.length);
   };
-  // `reason`, when given, is the exact reason the selection must report.
-  const expect = async (mode: string, overrides: NodeJS.ProcessEnv = {}, reason = reasons) => {
-    const lanes = JSON.stringify(["checks-baseline-1"]);
-    const verified = await verify(
+  // The first argv must verify, all others must be refused on the same evidence.
+  const verifySelection = async (commandLines: string[][], overrides: NodeJS.ProcessEnv) => {
+    const prior = "prior=value\n";
+    if (cliVerify) {
+      const results = await settle(commandLines.map((args) => runSelector(args, overrides)));
+      const accepted = present(results[0]);
+      for (const [i, args] of commandLines.entries()) {
+        const result = present(results[i]);
+        const context = `${JSON.stringify(args)}: ${result.stderr}`;
+        assert.equal(result.status, i === 0 ? 0 : 1, context);
+        if (i === 0) {
+          assert.match(result.stdout, /^CI impact: /, context);
+        } else {
+          // Invalid argv fails before the CLI prints its classification. A valid
+          // but mismatched request prints the same decision as the accepted one.
+          assert.equal(result.stderr, selectorRefusal, context);
+          assert.equal(result.stdout, validSelectorArgs(args) ? accepted.stdout : "", context);
+        }
+      }
+      return select(overrides, prior);
+    }
+
+    // Classify once in-process. Sample a real CLI append for each mode and reason.
+    const result = classifyIn(repo, { ...env, ...overrides });
+    for (const [i, args] of commandLines.entries()) {
+      assert.equal(verifyStatus(args, result), i === 0 ? 0 : 1, JSON.stringify(args));
+    }
+    const expected = present(respond(["--github-output", "-"], result).output);
+    if (needsCliSelection(expected)) {
+      assert.equal(await select(overrides, prior), expected);
+    }
+    return expected;
+  };
+  const expect = async (mode: string, overrides: NodeJS.ProcessEnv = {}, reason?: string) => {
+    const selected = await verifySelection(
       [
         ["--verify-mode", mode],
         ["--verify-mode", mode === "docs" ? "full" : "docs"],
-        ["--verify-mode", "tests", "--lanes", lanes],
+        ["--verify-mode", "tests", "--lanes", JSON.stringify(["checks-baseline-1"])],
       ],
       overrides,
     );
-    const [same, other, tests] = verified.statuses;
-    assert.match(
-      await selection(verified, overrides),
-      new RegExp(`^mode=${mode}\nreason=(?:${reason})\n$`),
-    );
-    assert.equal(same, 0);
-    assert.notEqual(other, 0);
-    assert.notEqual(tests, 0);
+    if (reason === undefined) {
+      assert.match(selected, new RegExp(`^mode=${mode}\nreason=(?:${reasons})\n$`));
+    } else {
+      assert.equal(selected, `mode=${mode}\nreason=${reason}\n`);
+    }
   };
-  // Full mode with an exact reason, verified as full and not as docs.
-  const expectReason = async (reason: string, overrides: NodeJS.ProcessEnv = {}) => {
-    const verified = await verify(
-      [
-        ["--verify-mode", "full"],
-        ["--verify-mode", "docs"],
-      ],
-      overrides,
-    );
-    const [full, docs] = verified.statuses;
-    assert.equal(await selection(verified, overrides), `mode=full\nreason=${reason}\n`);
-    assert.equal(full, 0);
-    assert.notEqual(docs, 0);
-  };
+  const expectReason = (reason: string, overrides?: NodeJS.ProcessEnv) =>
+    expect("full", overrides, reason);
   const expectTests = async (lanes: string[], overrides: NodeJS.ProcessEnv = {}) => {
     const json = JSON.stringify(lanes);
     const bad = [
@@ -725,17 +706,10 @@ async function fixture(
         ? [["--verify-mode", "tests", "--lanes", JSON.stringify([...lanes].reverse())]]
         : []),
     ];
-    const verifications = await verify(
-      [["--verify-mode", "tests", "--lanes", json], ...bad],
-      overrides,
-    );
-    const [verified, ...rejected] = verifications.statuses;
     assert.equal(
-      await selection(verifications, overrides),
+      await verifySelection([["--verify-mode", "tests", "--lanes", json], ...bad], overrides),
       `mode=tests\nreason=tests_only\nlanes=${json}\n`,
     );
-    assert.equal(verified, 0);
-    rejected.forEach((status, i) => assert.notEqual(status, 0, present(bad[i]).join(" ")));
   };
   return {
     dir,
@@ -752,7 +726,6 @@ async function fixture(
     tested,
     run: runSelector,
     select,
-    verify,
     expect,
     expectReason,
     expectTests,
@@ -1446,31 +1419,35 @@ test("output must be an existing regular file and mode must verify", async (t) =
     ],
     async (args) => {
       const result = await f.run(args);
-      assert.notEqual(result.status, 0, args.join(" "));
-      assert.match(result.stderr, /CI impact: unable to select or verify mode/, args.join(" "));
+      const context = `${JSON.stringify(args)}: ${result.stderr}`;
+      assert.equal(result.status, 1, context);
+      assert.equal(result.stderr, selectorRefusal, context);
+      if (args[0] === "--github-output") {
+        assert.match(result.stdout, /^CI impact: docs /, context);
+      } else {
+        assert.equal(result.stdout, "", context);
+      }
     },
   );
 });
 
-function workflowBootstrap(step: string) {
-  const start = ciWorkflow.indexOf(step);
-  assert.notEqual(start, -1, "workflow step exists");
-  const block = ciWorkflow.slice(start).split("        run: |\n")[1];
-  assert.ok(block, "workflow step has an inline bootstrap");
-  const lines = [];
-  for (const line of block.split("\n")) {
-    if (line && !line.startsWith("          ")) {
-      break;
-    }
-    lines.push(line.slice(10));
-  }
-  return lines.join("\n");
+const { jobs: ciJobs } = loadYaml(".github/workflows/ci.yml");
+
+function workflowRun(job: string, key: "id" | "name", value: string) {
+  const label = `${job} step with ${key} "${value}"`;
+  const matches = present(ciJobs[job]).steps.filter((step) => step[key] === value);
+  assert.equal(matches.length, 1, `expected exactly one ${label}`);
+  const run = matches[0]?.run;
+  assert.ok(run && run.trim(), `expected a nonempty run for ${label}`);
+  return run;
 }
 
+const summarizeRun = workflowRun("impact", "name", "Summarize impact selection");
+const matrixRun = workflowRun("impact", "id", "matrix");
 const bootstrapSteps = {
-  select: "      - id: select\n",
-  advisory: "      - name: Report main test advisory\n",
-  verify: "      - name: Verify selected mode\n",
+  select: workflowRun("impact", "id", "select"),
+  advisory: workflowRun("impact", "name", "Report main test advisory"),
+  verify: workflowRun("ci-required", "name", "Verify selected mode"),
 };
 
 async function shallowBootstrap(f: Fixture) {
@@ -1496,24 +1473,20 @@ async function shallowBootstrap(f: Fixture) {
   ) => {
     const output = join(f.dir, `github-output-${(outputs += 1)}`);
     writeFileSync(output, "");
-    const result = await run(
-      "bash",
-      ["-e", "-o", "pipefail", "-c", workflowBootstrap(bootstrapSteps[action])],
-      {
-        cwd: checkout,
-        env: {
-          ...process.env,
-          RUNNER_TEMP: f.dir,
-          GITHUB_EVENT_NAME: "pull_request",
-          GITHUB_EVENT_PATH: f.eventPath,
-          GITHUB_SHA: f.tested,
-          GITHUB_OUTPUT: output,
-          IMPACT_ACTION: action,
-          EXPECTED_MODE: expected,
-          ...overrides,
-        },
+    const result = await run("bash", ["-e", "-o", "pipefail", "-c", bootstrapSteps[action]], {
+      cwd: checkout,
+      env: {
+        ...process.env,
+        RUNNER_TEMP: f.dir,
+        GITHUB_EVENT_NAME: "pull_request",
+        GITHUB_EVENT_PATH: f.eventPath,
+        GITHUB_SHA: f.tested,
+        GITHUB_OUTPUT: output,
+        IMPACT_ACTION: action,
+        EXPECTED_MODE: expected,
+        ...overrides,
       },
-    );
+    });
     return { ...result, output: readFileSync(output, "utf8") };
   };
   const select = async (overrides: NodeJS.ProcessEnv = {}) => {
@@ -1530,28 +1503,21 @@ async function shallowBootstrap(f: Fixture) {
       runStep("verify", mode === "docs" ? "full" : "docs", overrides),
     ]);
     assert.equal(selected.status, 0, selected.stderr);
-    assert.match(
-      selected.output,
-      new RegExp(
-        reason === undefined
-          ? `^mode=${mode}\n(?:reason=(?:${reasons})\n)?$`
-          : `^mode=${mode}\nreason=${reason}\n$`,
-      ),
-      selected.stdout,
-    );
+    if (reason === undefined) {
+      // Older trusted policies can select a mode without reporting a reason.
+      assert.match(
+        selected.output,
+        new RegExp(`^mode=${mode}\n(?:reason=(?:${reasons})\n)?$`),
+        selected.stdout,
+      );
+    } else {
+      assert.equal(selected.output, `mode=${mode}\nreason=${reason}\n`, selected.stdout);
+    }
     assert.equal(same.status, 0);
     assert.notEqual(other.status, 0);
   };
-  const expectReason = async (reason: string, overrides: NodeJS.ProcessEnv = {}) => {
-    const [selected, full, docs] = await settle([
-      select(overrides),
-      runStep("verify", "full", overrides),
-      runStep("verify", "docs", overrides),
-    ]);
-    assert.equal(selected, `mode=full\nreason=${reason}\n`);
-    assert.equal(full.status, 0);
-    assert.notEqual(docs.status, 0);
-  };
+  const expectReason = (reason: string, overrides?: NodeJS.ProcessEnv) =>
+    expect("full", overrides, reason);
   // Each caller also runs f.expectTests on the same evidence, which checks that the
   // selector refuses every other lane list and mode in process. Here the workflow
   // step refuses one wrong lane list and one wrong mode, one through each branch
@@ -1851,11 +1817,10 @@ test("the tested merge's first parent supplies the trusted policy", async (t) =>
     ),
   ]);
   const [addedCheckout, removedCheckout] = await each([added, removed], shallowBootstrap);
-  await settle([present(addedCheckout).expect("docs"), present(removedCheckout).expect("full")]);
-  assert.equal(
-    await present(removedCheckout).select(),
-    "mode=full\nreason=bootstrap_policy_unavailable\n",
-  );
+  await settle([
+    present(addedCheckout).expect("docs"),
+    present(removedCheckout).expectReason("bootstrap_policy_unavailable"),
+  ]);
 });
 
 test("an event base that is present but not behind the tested base selects full", async (t) => {
@@ -1962,7 +1927,7 @@ test("documentation workflow selects documentation checks and omits product test
 });
 
 test("CI Required always reports and fails at once when a dependency was cancelled", () => {
-  const required = present(loadYaml(".github/workflows/ci.yml").jobs["ci-required"]);
+  const required = present(ciJobs["ci-required"]);
   // A skipped required job counts as passing, so failed dependencies must not skip it.
   assert.equal(required.if, "always()");
   // cancelled() is false in a job that starts after a cancellation, so the
@@ -2065,12 +2030,9 @@ test("full-integration preserves qualified runners for kernel, sandbox, and imag
 });
 
 test("Suite Audit and Static Checks runs the audit and every check the lanes skip", () => {
-  const workflow = loadYaml(".github/workflows/ci.yml");
   const action = loadYaml(".github/actions/run-ci-lane/action.yml");
   const lane = present(
-    present(workflow.jobs["pr-safe"]).steps.find(
-      (step) => step.uses === "./.github/actions/run-ci-lane",
-    ),
+    present(ciJobs["pr-safe"]).steps.find((step) => step.uses === "./.github/actions/run-ci-lane"),
   );
   assert.equal(lane.with["static-checks"], "false");
   assert.equal(present(action.inputs["static-checks"]).default, "true");
@@ -2088,7 +2050,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
-  const staticChecks = present(workflow.jobs["static-checks"]);
+  const staticChecks = present(ciJobs["static-checks"]);
   assert.equal(staticChecks.needs, undefined, "start alongside CI Impact");
   assert.equal(staticChecks.if, undefined, "every selection needs these checks");
   assert.equal(staticChecks["continue-on-error"], undefined);
@@ -2112,7 +2074,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
     assert.equal(step.if, undefined, step.name ?? "workflow step");
     assert.equal(step["continue-on-error"], undefined, step.name ?? "workflow step");
   }
-  assert.ok(present(present(workflow.jobs["ci-required"]).needs).includes("static-checks"));
+  assert.ok(present(present(ciJobs["ci-required"]).needs).includes("static-checks"));
 });
 
 test("every formatting check provisions pinned Bun and scans without a formatter cache", () => {
@@ -2122,7 +2084,7 @@ test("every formatting check provisions pinned Bun and scans without a formatter
     present(scripts["format:fix"]).replace("bun fmt --no-script", "bun fmt --no-script --check"),
   );
   assert.match(read(".bun-version").trim(), /^\d+\.\d+\.\d+$/);
-  const staticSteps = present(loadYaml(".github/workflows/ci.yml").jobs["static-checks"]).steps;
+  const staticSteps = present(ciJobs["static-checks"]).steps;
   const laneSteps = loadYaml(".github/actions/run-ci-lane/action.yml").runs.steps;
   for (const steps of [staticSteps, laneSteps]) {
     const setup = present(steps.find((step) => step.name === "Set up formatter"));
@@ -2400,8 +2362,8 @@ test("every lane job stops its test files before its own timeout", (t) => {
 
   const callers = [];
   for (const name of readdirSync(join(repositoryRoot, ".github/workflows"))) {
-    const workflow = loadYaml(`.github/workflows/${name}`);
-    for (const [id, job] of Object.entries(workflow.jobs ?? {})) {
+    const jobs = name === "ci.yml" ? ciJobs : loadYaml(`.github/workflows/${name}`).jobs;
+    for (const [id, job] of Object.entries(jobs)) {
       for (const step of job.steps ?? []) {
         if (step.uses !== "./.github/actions/run-ci-lane") {
           continue;
@@ -2457,6 +2419,7 @@ function runGate(root: string, needs: object, mode: string, lanes?: string) {
   const raw = join(root, "raw-needs.json");
   writeFileSync(raw, JSON.stringify(needs));
   const output = join(root, "needs.json");
+  rmSync(output, { force: true });
   const selection = lanes === undefined ? [] : ["--lanes", lanes];
   return run(process.execPath, [
     gate,
@@ -2637,6 +2600,15 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     });
     await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
 
+    // The gate writes the new job state even when it then rejects a failed job.
+    const setPrSafe = async (result: "success" | "failure") => {
+      needs["pr-safe"].result = result;
+      const gated = await runGate(root, needs, mode);
+      assert.equal(gated.status === 0, result === "success", gated.stderr);
+      const written = needsData(readFileSync(join(root, "needs.json"), "utf8"));
+      assert.equal(written["pr-safe"]?.result, result);
+    };
+
     for (const lane of ["checks-baseline-2", "postgres"]) {
       const artifact = join(root, `results/${lane}.json`);
       const original = readFileSync(artifact);
@@ -2654,8 +2626,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
       );
       assert.notEqual((await runLane(lane)).status, 0);
       // A failed matrix job does not make its passing sibling lanes fail.
-      needs["pr-safe"].result = "failure";
-      assert.notEqual((await runGate(root, needs, mode)).status, 0);
+      await setPrSafe("failure");
       const summary = await aggregate({ issue: { code: "lane-failed", lane } });
       assert.deepEqual(
         summary.issues
@@ -2699,12 +2670,10 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
         assertAggregateLanes(misplaced, ["checks-baseline-2", lane], lane);
         writeFileSync(sibling, siblingOriginal);
       }
-      needs["pr-safe"].result = "success";
-      assert.equal((await runGate(root, needs, mode)).status, 0);
+      await setPrSafe("success");
       writeFileSync(artifact, original);
     }
-    needs["pr-safe"].result = "failure";
-    assert.notEqual((await runGate(root, needs, mode)).status, 0);
+    await setPrSafe("failure");
     const failedJob = await aggregate({ issue: { code: "need-not-success", need: "pr-safe" } });
     assertAggregateLanes(failedJob, fixtureLanes);
   });
@@ -2719,20 +2688,16 @@ async function summarizeImpact(
 ) {
   const summary = join(temporaryDirectorySync(t, "ci-impact-summary-"), "summary");
   writeFileSync(summary, "");
-  const result = await run(
-    "bash",
-    ["-e", "-o", "pipefail", "-c", workflowBootstrap("      - name: Summarize impact selection\n")],
-    {
-      env: {
-        ...process.env,
-        GITHUB_STEP_SUMMARY: summary,
-        SELECT_OUTCOME: outcome,
-        SELECT_MODE: mode,
-        SELECT_REASON: reason,
-        ...extra,
-      },
+  const result = await run("bash", ["-e", "-o", "pipefail", "-c", summarizeRun], {
+    env: {
+      ...process.env,
+      GITHUB_STEP_SUMMARY: summary,
+      SELECT_OUTCOME: outcome,
+      SELECT_MODE: mode,
+      SELECT_REASON: reason,
+      ...extra,
     },
-  );
+  });
   assert.equal(result.status, 0, result.stderr);
   return readFileSync(summary, "utf8");
 }
@@ -2879,25 +2844,7 @@ test("selector distinguishes conservative inspection outcomes", async (t) => {
 
 test("summary accepts only mode and reason pairings", async (t) => {
   await settle([
-    ...[
-      "non_pr_event",
-      "invalid_event",
-      "invalid_identity",
-      "event_unavailable",
-      "checkout_mismatch",
-      "git_inspection_failed",
-      "malformed_diff",
-      "empty_diff",
-      "unsupported_change",
-      "filename_not_utf8",
-      "ineligible_change",
-      "bootstrap_non_pr_event",
-      "bootstrap_event_unavailable",
-      "bootstrap_invalid_identity",
-      "bootstrap_checkout_mismatch",
-      "bootstrap_git_inspection_failed",
-      "bootstrap_policy_unavailable",
-    ].flatMap((reason) => [
+    ...fullSummaryReasons.flatMap((reason) => [
       assertFullSummary(t, reason, /SECRET|change\.md|injected/),
       assertSummary(t, "success", "docs", reason, "docs", "unavailable"),
     ]),
@@ -3685,19 +3632,15 @@ test("test-only selection is limited to pull request events", async (t) => {
 async function buildMatrix(t: TestContext, mode: string, lanes: string) {
   const output = join(temporaryDirectorySync(t, "ci-impact-matrix-"), "output");
   writeFileSync(output, "");
-  const result = await run(
-    "bash",
-    ["-e", "-o", "pipefail", "-c", workflowBootstrap("      - id: matrix\n")],
-    {
-      env: {
-        ...process.env,
-        GITHUB_OUTPUT: output,
-        SELECT_MODE: mode,
-        SELECT_LANES: lanes,
-        LANE_TABLE: JSON.stringify(laneTable()),
-      },
+  const result = await run("bash", ["-e", "-o", "pipefail", "-c", matrixRun], {
+    env: {
+      ...process.env,
+      GITHUB_OUTPUT: output,
+      SELECT_MODE: mode,
+      SELECT_LANES: lanes,
+      LANE_TABLE: JSON.stringify(laneTable()),
     },
-  );
+  });
   const values =
     result.status === 0
       ? readStepOutputs(output, ["matrix", "image-matrix", "fixture", "has-matrix", "has-images"])
@@ -3985,10 +3928,9 @@ test("the checked-in suite index and manifests support test-only selection", asy
 });
 
 test("shared runtime DAG selects only image consumers while other checks stay independent", async (t) => {
-  const workflow = loadYaml(".github/workflows/ci.yml");
   const selected = (name: string, mode: string, matrix: Awaited<ReturnType<typeof buildMatrix>>) =>
     evaluateInContext(
-      present(present(workflow.jobs[name]).if)
+      present(present(ciJobs[name]).if)
         .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
         .replaceAll("outputs.has-matrix", 'outputs["has-matrix"]')
         .replaceAll("outputs.has-images", 'outputs["has-images"]'),
@@ -4004,13 +3946,10 @@ test("shared runtime DAG selects only image consumers while other checks stay in
         },
       },
     );
-  assert.equal(present(workflow.jobs["pr-safe"]).needs, "impact");
-  assert.deepEqual(present(workflow.jobs["image-lanes"]).needs, ["impact", "runtime-artifact"]);
-  assert.deepEqual(present(workflow.jobs["first-agent-smoke"]).needs, [
-    "impact",
-    "runtime-artifact",
-  ]);
-  assert.ok(!present(present(workflow.jobs["ci-required"]).needs).includes("first-agent-smoke"));
+  assert.equal(present(ciJobs["pr-safe"]).needs, "impact");
+  assert.deepEqual(present(ciJobs["image-lanes"]).needs, ["impact", "runtime-artifact"]);
+  assert.deepEqual(present(ciJobs["first-agent-smoke"]).needs, ["impact", "runtime-artifact"]);
+  assert.ok(!present(present(ciJobs["ci-required"]).needs).includes("first-agent-smoke"));
   for (const [mode, lanes, expected] of [
     ["docs", "", [false, false, false, false]],
     ["full", "", [true, true, true, true]],
@@ -4334,6 +4273,7 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
     ),
   ).run;
   const directory = temporaryDirectorySync(t, "full-shared-runtime-gate-");
+  const outputPath = join(directory, "needs.json");
   const execute = (
     lane: string,
     updates: Record<string, { result: string; outputs?: Record<string, string> }>,
@@ -4345,6 +4285,7 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
       ]),
     );
     Object.assign(needs, updates);
+    rmSync(outputPath, { force: true });
     const result = spawnSync("bash", ["-e", "-c", present(script)], {
       encoding: "utf8",
       env: {
@@ -4355,7 +4296,7 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
       },
     });
     assert.equal(result.status, 0, result.stderr);
-    return needsData(readFileSync(join(directory, "needs.json"), "utf8"));
+    return needsData(readFileSync(outputPath, "utf8"));
   };
   // Failed or cancelled compilation skips image tests; unrelated passing tests
   // cannot replace their results when the aggregate checks coverage.

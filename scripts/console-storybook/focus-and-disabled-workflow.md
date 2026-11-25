@@ -21,13 +21,23 @@ follows `:focus-visible`. No part of any ring may be cut off.
    **Repositories**, press Shift+Tab once to leave the strip. Press Tab to return
    to the selected **Configuration** tab.
 3. Open **Pages / Agent detail / Long version history**. Tab to **Viewing
-   version**. The native picker is one Tab stop and names v8 as the viewed version.
-   Use its native keyboard controls to choose a version. Tab to **Load older
-   versions** and press Enter: while the next page loads it reads **Loading older
-   versions…**, looks disabled, and keeps focus. When the last page loads, focus
+   version**. The picker is one Tab stop. It starts on Draft, with v8
+   selected for service. Choose v8 with the keyboard. Wait for focus to move
+   to the Agent heading. Tab back to the picker and repeat with v7. Tab to
+   **Load older versions** and press Enter. While the next page loads, the
+   button reads **Loading older versions…**, looks disabled, and keeps focus. When the last page loads, focus
    returns to the picker and the viewed version stays selected. On **New version
-   in progress, then current**, focus the picker before the poll finishes: its
+   in progress, then current**, focus the picker before the poll finishes. Its
    service marker updates without moving focus or changing the viewed version.
+
+   **Long version history** delays loading older versions. To check a slow version
+   switch, use the signed-in Console. Switch versions, then press Shift+Tab to
+   **← Agents** while the version loads. After it opens, the link should still
+   have visible focus. Press Enter to return to Agents. Repeat the switch,
+   this time tabbing forward to **Copy Agent ID** or **Namespace**. Both
+   should stay in view when focused, even on a return to a version you left
+   scrolled down. Check desktop and phone widths.
+
 4. Open **Pages / Agent detail / Runtime logs**. Tab to the log pane. Its ring
    sits inside the pane edge (inset). Tab to a log row summary. Its ring sits
    outside, like a button, and the pane scrolls far enough to show its bottom
@@ -126,7 +136,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
     accent, and still opens the JSON. In **Components / Dialogs / Plugins
     (wide)**, **Access and credential setup** looks the same.
 15. Open **Components / Native admin / Refreshing access**. Tab to **Refresh
-    access** and press Enter: while it reads (1.5 s) it keeps focus. Repeat and
+    access** and press Enter. While it reads (1.5 s) it keeps focus. Repeat and
     press Tab during the read: focus stays where you moved it. On **Available
     once a deployment completes**, focus the unavailable **Open Agent UI**
     before the poll lands: the live link that replaces it keeps focus.
