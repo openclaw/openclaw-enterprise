@@ -15,12 +15,17 @@ export type OpenShellGitNetworkTarget =
   | { readonly repository: string; readonly installationId?: never }
   | { readonly repository?: never; readonly installationId: string };
 
-const binaries = Object.freeze([
+/** Stock Git and transport helpers eligible to receive Repository credentials. */
+export const OPEN_SHELL_GIT_CREDENTIAL_BINARIES = Object.freeze([
   "/usr/bin/git",
   "/usr/lib/git-core/git-remote-https",
   "/usr/lib/git-core/git-remote-http",
   "/usr/libexec/git-core/git-remote-https",
   "/usr/libexec/git-core/git-remote-http",
+]);
+
+const binaries = Object.freeze([
+  ...OPEN_SHELL_GIT_CREDENTIAL_BINARIES,
   "/usr/bin/curl",
   "/usr/local/bin/node",
   "/usr/bin/node",
@@ -137,25 +142,29 @@ function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryN
   return policy.sort((left, right) => (left.repository < right.repository ? -1 : 1));
 }
 
-function repositoryNetworkEndpoint({ repository, access }: RepositoryNetworkGrant) {
+export function openShellGitServiceRules({ repository, access }: RepositoryNetworkGrant) {
   const root = `/${repository}.git`;
   const services =
     access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
+  return services.flatMap((service) => [
+    {
+      allow: {
+        method: "GET",
+        path: `${root}/info/refs`,
+        query: { service: { glob: service } },
+      },
+    },
+    { allow: { method: "POST", path: `${root}/${service}` } },
+  ]);
+}
+
+function repositoryNetworkEndpoint(grant: RepositoryNetworkGrant) {
   return openShellProfileEndpoint({
     host: "github.com",
     port: 443,
     protocol: "rest",
-    path: `${root}/**`,
-    rules: services.flatMap((service) => [
-      {
-        allow: {
-          method: "GET",
-          path: `${root}/info/refs`,
-          query: { service: { glob: service } },
-        },
-      },
-      { allow: { method: "POST", path: `${root}/${service}` } },
-    ]),
+    path: `/${grant.repository}.git/**`,
+    rules: openShellGitServiceRules(grant),
   });
 }
 

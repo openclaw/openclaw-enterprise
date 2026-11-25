@@ -144,7 +144,7 @@ Agent Principal, a changed Harness descriptor, or a different Compute Driver.
 `authorizeRevision()` rechecks current `deploy` and, for a ServiceAccount
 snapshot, `read` on that exact ServiceAccount. Before Compute effects, the worker
 rechecks each managed credential's frozen Backend binding; the
-[Backend-managed credential delivery flow](service-account-driver-credential-delivery.md#5-recheck-metadata-and-project-the-account-secret)
+[Backend-managed credential delivery flow](service-account-driver-credential-delivery.md#bind-the-source-and-deploy)
 owns these checks.
 
 For a deployment with an explicit [repository network policy](../reference/sandbox-policies.md#repository-network-policy),

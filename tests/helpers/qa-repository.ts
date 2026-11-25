@@ -1561,7 +1561,10 @@ export async function verifyQaRepository(
   }
   await f.api("PATCH", path, {
     configurationId: agent.configuration.id,
-    repositoryBindings: [{ repositoryRef: entry.repositoryRef, profile: "git-write" }],
+    repositoryAccess: {
+      defaultProfile: "git-write",
+      repositories: [{ repositoryRef: entry.repositoryRef, profile: "git-write" }],
+    },
   });
   let workFailure: unknown;
   let remoteEvidence: { commitSha?: string } | undefined;

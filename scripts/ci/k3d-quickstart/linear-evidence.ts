@@ -222,8 +222,8 @@ if (mode === "history") {
   if (
     before &&
     after &&
-    JSON.stringify(record(before).repositoryBindings) !==
-      JSON.stringify(record(after).repositoryBindings)
+    JSON.stringify(record(before).repositoryAccess) !==
+      JSON.stringify(record(after).repositoryAccess)
   ) {
     console.log("Linear cause: changed-git-binding");
   }

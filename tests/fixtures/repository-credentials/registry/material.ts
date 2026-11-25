@@ -8,9 +8,8 @@ import { temporaryDirectory } from "../process.ts";
 import type { FixtureOwner } from "../resources.ts";
 
 type NamespaceRegistration = GitHubRepositoryRegistration["namespaces"][number];
-export type RegistryFixtureDefinition = Pick<
-  GitHubRepositoryRegistration,
-  "repositoryRef" | "repositoryId" | "repository"
+export type RegistryFixtureDefinition = Required<
+  Pick<GitHubRepositoryRegistration, "repositoryRef" | "repositoryId" | "repository">
 > &
   Pick<NamespaceRegistration, "transport" | "pushRefAllowlist" | "pullRequestBase"> & {
     profiles?: NamespaceRegistration["profiles"];

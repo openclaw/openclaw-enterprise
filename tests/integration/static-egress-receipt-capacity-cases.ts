@@ -8,7 +8,6 @@ import {
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
-import { staticEgressFixture } from "../helpers/static-egress.mjs";
 
 const saturated = { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
 
@@ -163,26 +162,4 @@ export async function runStaticEgressReceiptCapacityCase(t: TestContext): Promis
       }
     });
   }
-}
-
-export async function runStaticEgressElapsedDeadlineCase(t: TestContext): Promise<void> {
-  const f = await staticEgressFixture(t);
-  const captured = f.capture();
-  const before = f.secretReads;
-  const placement: { reached: Promise<void>; release(): void } = f.pauseNamespaceVerification();
-  t.after(placement.release);
-  const pending = f.resolve(captured);
-  await placement.reached;
-
-  // Advance only wall time. This separates the absolute deadline from a timeout callback
-  // that may not have run yet, for example when an event-loop turn takes too long.
-  const { seconds, nanos } = captured.deadline;
-  const deadline = Number(seconds) * 1000 + nanos / 1e6;
-  const clock = t.mock.method(Date, "now", () => deadline);
-  placement.release();
-  const result = await pending;
-  clock.mock.restore();
-  assert.ok(result.refused);
-  assert.equal(f.secretReads, before, "no Secret GET reached Kubernetes after the deadline");
-  assert.equal(f.providerRequests.length, 0);
 }

@@ -21,7 +21,7 @@ import {
 import { AGENT_DELETE_DENIED, deleteRefused } from "./access-reasons.mjs";
 import { AGENT_STATUS_READ_NEED, describeFailure } from "./list.mjs";
 
-// Deletion finishes in the background; poll until the Agent is gone, then return to the list.
+// Follow asynchronous deletion while the status endpoint remains available.
 export const DELETION_POLL_MS = 3000;
 
 export function createAgentDeletion(
@@ -253,7 +253,14 @@ export function createAgentDeletion(
       if (error.status === 401) {
         context.onExpired();
       } else if (error.status === 404) {
-        context.navigate("agents");
+        if (state.deleting) {
+          // The status read no longer finds the Agent. A repeat still waiting to send must stop.
+          clearTimeout(pollTimer);
+          queuedDelete = null;
+          context.navigate("agents", agent.namespaceId, false, "deletion-status-unavailable");
+        } else {
+          context.navigate("agents");
+        }
       } else if (error.status === 403 && state.deleting) {
         // Cleanup can remove this reader’s grants; access can also end before cleanup finishes.
         // Stop following the deletion without treating this denial as a not-found response.
