@@ -1343,6 +1343,44 @@ export const gatewayRuntimeAuditGrants = occSchema.table(
   ],
 );
 
+export const gatewayRuntimeAuditReplayVerifiers = occSchema.table(
+  "gateway_runtime_audit_replay_verifiers",
+  {
+    replayVerifier: text("replay_verifier").primaryKey(),
+    tokenDigest: text("token_digest").notNull().unique(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    runtimeSource: text("runtime_source").notNull(),
+    endpoint: text("endpoint").notNull(),
+  },
+  (table) => [
+    check(
+      "gateway_runtime_audit_replay_verifiers_replay_verifier_check",
+      sql`${table.replayVerifier} ~ '^[A-Za-z0-9_-]{43}$'`,
+    ),
+    check(
+      "gateway_runtime_audit_replay_verifiers_token_digest_check",
+      sql`${table.tokenDigest} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "gateway_runtime_audit_replay_verifiers_runtime_source_check",
+      sql`${table.runtimeSource} IN ('openclaw', 'codex')`,
+    ),
+    check(
+      "gateway_runtime_audit_replay_verifiers_endpoint_check",
+      sql`octet_length(${table.endpoint}) <= 2048 AND ${table.endpoint} ~ '^https://[^/?#@[:space:]]+/internal/runtime-audit$'`,
+    ),
+    foreignKey({
+      name: "gateway_runtime_audit_replay_verifiers_revision_owner",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+  ],
+);
+
 export const auditEvents = occSchema.table(
   "audit_events",
   {

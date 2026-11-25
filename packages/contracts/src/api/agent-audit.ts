@@ -38,6 +38,14 @@ export const AgentAuditQuery = Type.Object(
       }),
     ),
     cursor: Type.Optional(AgentAuditCursor),
+    end: Type.Optional(
+      Type.String({
+        format: "date-time",
+        pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+        description:
+          "UTC end of the 24-hour period. The default is the current time. Use this only on the first page.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );

@@ -34,15 +34,14 @@ const publicColumns = `id, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T
          kind, action, outcome, actor_id AS "actorId",
          details->'__occAuditMetadata'->>'requestId' AS "requestId"`;
 
-// A message lookup has the same time window as a fresh audit page. The reader
-// holds the Agent row while checking which revision currently serves its chat.
+// The reader holds the Agent row while checking which revision currently serves its chat.
 export const SELECT_LINKED_TURN = `
   SELECT ${publicColumns}, details AS "runtimeDetails"
   FROM occ.audit_events
   WHERE namespace_id = $1 AND resource_kind = 'agent' AND resource_id = $2 AND id = $3
     AND kind = 'runtime_activity'
     AND action IN ('openclaw.runtime.turn.started', 'openclaw.runtime.turn.completed')
-    AND occurred_at BETWEEN statement_timestamp() - interval '24 hours' AND statement_timestamp()
+    AND occurred_at <= statement_timestamp()
     AND details ? 'messageId'
     AND details->>'agentRevisionId' = (
       SELECT active_revision_id FROM occ.agents

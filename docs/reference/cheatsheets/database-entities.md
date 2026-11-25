@@ -519,6 +519,19 @@ PostgreSQL deletes the matching grant.
 - `revision_id`
 - `runtime_source`
 
+### `gateway_runtime_audit_replay_verifiers`
+
+Keeps the public key and scope for signed records after a revision credential is revoked.
+Deleting the revision removes its verifier.
+
+- `replay_verifier`
+- `token_digest`
+- `namespace_id`
+- `agent_id`
+- `revision_id`
+- `runtime_source`
+- `endpoint`
+
 ### `controller_work`
 
 Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and version deployments.

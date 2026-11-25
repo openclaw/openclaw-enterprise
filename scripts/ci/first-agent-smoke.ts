@@ -30,6 +30,7 @@ import {
   runtimeAuditRowCount,
   expectPersistedRuntimeAudit,
   checkMessageDisclosure,
+  checkHistoricalAuditMessage,
   checkPostgresOutage,
   clusterName,
   routeModelProvider,
@@ -52,6 +53,7 @@ import {
   proveEmbeddedProtocols,
   proveEmbeddedRetries,
   proveRuntimeAuditQueueFull,
+  proveRuntimeAuditAgentCapacity,
   readLogs,
   runFirstAgent,
   startAuditSwitchChat,
@@ -217,6 +219,12 @@ async function smoke() {
         );
         linkedEventId = first.turn.id;
         await checkMessageDisclosure(stack, linkedEventId, first.text, codexReader.readMessage);
+        await checkHistoricalAuditMessage(
+          stack,
+          linkedEventId,
+          first.text,
+          codexReader.readMessage,
+        );
         await checkHttpTurnAudit(stack, codex.agent, codex.revisionId, codexReader, "codex");
         await expectPersistedRuntimeAudit(stack, codex.revisionId, await readCodexAudit());
       }),
@@ -319,8 +327,11 @@ async function smoke() {
     await smokeStep("runtime-audit-queue-full", () =>
       proveRuntimeAuditQueueFull(stack, embedded.agent, embeddedRevision),
     );
-    await smokeStep("embedded-model-protocol-audit", () =>
+    const protocolRevision = await smokeStep("embedded-model-protocol-audit", () =>
       proveEmbeddedProtocols(stack, embedded.agent, readEmbeddedAudit),
+    );
+    await smokeStep("runtime-audit-agent-capacity", () =>
+      proveRuntimeAuditAgentCapacity(stack, embedded.agent, protocolRevision, embeddedReader),
     );
     assert.equal(auditFailures.length, 0, auditFailures.join("\n"));
     assert.ok(modelDirectory, "First Agent smoke has no controlled provider directory");

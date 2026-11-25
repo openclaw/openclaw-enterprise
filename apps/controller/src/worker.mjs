@@ -191,7 +191,7 @@ try {
     mode,
     startupConfiguration,
     gatewayRuntimeAudit: {
-      register: (grant) => workerState.registerGatewayRuntimeGrant(grant),
+      register: (grant, replay) => workerState.registerGatewayRuntimeGrant(grant, replay),
       remove: (grant) => workerState.removeGatewayRuntimeGrant(grant),
       exists: (grant) => workerState.hasGatewayRuntimeGrant(grant),
     },

@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-24 17:02"
+updated: "2026-11-24 17:38"
 last_updated_session: "authoring-run/5f4255c4-b1d1-4890-b127-2882657adce0"
 ---
 
@@ -226,10 +226,10 @@ the Agent. OCC holds the session and locks the active Agent, ready
 Namespace and policy tables through commit. It rechecks access under lock.
 
 State selects [approved records](../guides/topics/audit-log.md#read-an-agents-audit-events)
-and derives public work IDs. Before releasing each page, OCC commits
+within the requested 24-hour window and derives public work IDs. Before releasing each page, OCC commits
 `openclaw.audit.agent.read` with the actor, Agent, request ID, window,
 projection version and count. The encrypted cursor binds the session,
-Agent and window.
+Agent and window and expires 15 minutes after issue.
 
 ### 7. A Gateway reports work for one revision
 
@@ -237,9 +237,9 @@ Agent and window.
 and `apps/controller/src/http/runtime-audit.ts`
 
 With audit and managed routing, Helm creates a private HTTPS listener.
-Compute mounts the revision token and CA certificate, permits the connection
-and stores the token hash in PostgreSQL. It revokes the grant after stop
-and deletes the Secret at retirement.
+Compute mounts the revision token and CA certificate, permits the connection,
+and registers the token hash and public replay verifier. It revokes the grant
+at stop and deletes the Secret at retirement.
 
 `PostgresWorkQueue.scheduleGatewayAuditMaintenance` queues up to eight
 updates per check when grants differ from the setting. Maintenance checks
@@ -256,7 +256,7 @@ For embedded OpenClaw, `model_call_started` supplies a trace, model API and call
 `deploy/runtime/managed-runtime-audit/openclaw.mjs:subscribeOpenClawAttempts`
 observes Undici POST requests to `/responses`, `/chat/completions` or `/messages`,
 as selected by the model API. The
-`traceparent` header must match one active OpenAI Responses call.
+`traceparent` header must match one active model call.
 The plugin numbers requests at creation. It queues the HTTP status or
 `TRANSPORT_ERROR` if the request fails before headers. It retains no URL or body.
 
@@ -280,12 +280,12 @@ Codex reported an error and keeps only `TRANSPORT_ERROR`.
 
 `deploy/runtime/managed-runtime-audit/sink.mjs:createAuditSink` keeps queued
 events in `/home/node/.openclaw/state/pending-runtime-audit/observations.sqlite`
-across Pod replacements. It sends them in the background. OCC checks the
-grant and appends the event in one transaction. The plugin removes the
-event after OCC confirms commit with HTTP 204.
-[Retries](../guides/topics/audit-log.md#recover-delayed-runtime-events)
-preserve its ID, revision, source and destination. OCC stores identical
-copies once and rejects conflicting IDs.
+across Pod replacements. The original Gateway signs each event. A later Gateway
+can relay it with its own credential to the same endpoint. OCC checks both Agent
+scopes and the original public verifier, then commits the original revision and
+event ID. HTTP 204 confirms commit. [Retries](../guides/topics/audit-log.md#recover-delayed-runtime-events)
+preserve the record. Retirement revokes the old credential; its public verifier
+cannot authorize new events. OCC rejects modified or conflicting records.
 
 The plugin warns of queue failure or overflow. Agent deletion removes the queue.
 
@@ -303,7 +303,7 @@ a hash. The link requires the original session and message IDs.
 1. In a PostgreSQL transaction, `packages/occ/src/agent-audit-reader.ts:selectAgentAuditMessage`
    requires a human session and direct `read_audit` and `read_audit_content`
    grants on this Agent. The requested event must identify a linked turn
-   within 24 hours and match `activeRevisionId`. The desired state must be `running`.
+   and match `activeRevisionId`. The desired state must be `running`.
 2. Afterward, Envoy checks the OCC service key on the [private route](../reference/gateway-routing.md#endpoint-and-route).
    OCC requires exactly the `operator.sessions.read` scope. It resolves
    the session ID with `sessions.resolve` and calls `chat.message.get`
@@ -346,6 +346,8 @@ a hash. The link requires the original session and message IDs.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 17:38: Trace signed replay after revision retirement. (authoring-run/5f4255c4-b1d1-4890-b127-2882657adce0 - 61b5d467d3ed00c9f955ab0d09c73420f332ce78)
 
 - 2026-11-24 17:02: Trace worker responses and model transport failures. (authoring-run/5f4255c4-b1d1-4890-b127-2882657adce0 - 47b6265e9ecbc11ec4d13b4309166836af2bba1d)
 

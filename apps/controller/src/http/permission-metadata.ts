@@ -293,10 +293,10 @@ function permissionDescription(
   operationId: OccApiRoute["operationId"],
 ): string {
   if (operationId === "listAgentAuditEvents") {
-    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, model call, and model response records from the preceding 24 hours.";
+    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent records for a 24-hour period. Use end on the first page to select a past period.";
   }
   if (operationId === "getAgentAuditEventMessage") {
-    return "Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event from the preceding 24 hours and its saved user message from the active revision. OCC records the disclosure before it returns the text.";
+    return "Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event and its saved user message from the active revision. OCC records the disclosure before it returns the text.";
   }
   if (operationId === "recoverAgentFirstDeployment") {
     return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";

@@ -1575,6 +1575,7 @@ test(
       [94, "preRuntimeAudit"],
       [95, "preAuditMessageRead"],
       [96, "preHttpChatAuditLimits"],
+      [97, "preRuntimeAuditReplay"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -2043,6 +2044,7 @@ test(
       [94, "preRuntimeAudit"],
       [95, "preAuditMessageRead"],
       [96, "preHttpChatAuditLimits"],
+      [97, "preRuntimeAuditReplay"],
     ]);
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
@@ -2612,6 +2614,7 @@ test(
       [94, "preRuntimeAudit"],
       [95, "preAuditMessageRead"],
       [96, "preHttpChatAuditLimits"],
+      [97, "preRuntimeAuditReplay"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2749,6 +2752,7 @@ test(
       [94, "preRuntimeAudit"],
       [95, "preAuditMessageRead"],
       [96, "preHttpChatAuditLimits"],
+      [97, "preRuntimeAuditReplay"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2921,6 +2925,7 @@ test(
       [94, "preRuntimeAudit"],
       [95, "preAuditMessageRead"],
       [96, "preHttpChatAuditLimits"],
+      [97, "preRuntimeAuditReplay"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

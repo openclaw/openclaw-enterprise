@@ -91,13 +91,9 @@ with Helm-managed Gateway routing. Each Gateway on the control cluster
 gets the `oce-runtime-audit` plugin and a revision credential.
 Disabling the plugin prevents setup.
 
-Changing the setting can restart Gateways and dedicated Codex workers.
-Revisions and chat history remain. Turns can fail or use the old setting.
-If the next turn is missing, check maintenance.
-The original deployer needs permission to deploy. After permanent failure,
-correct the cause and deploy the Agent.
-
-The API returns these `runtime_activity` records.
+Changing the setting can restart Gateways and dedicated Codex workers. A turn
+can fail or use the old setting during restart. If maintenance fails, restore
+the original deployer's permission and deploy the Agent.
 
 | Action                                     | What the Gateway observed                                                                 |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------- |
@@ -124,10 +120,9 @@ identifies the `model`, `provider` and a distinct `modelAttemptId`.
 HTTP 200 cannot confirm stream completion. With different call IDs,
 the records alone cannot identify a retry.
 
-- Embedded OpenClaw reports OpenAI Responses, OpenAI Chat Completions and
-  Anthropic Messages POST requests after headers or a transport failure.
-  The request's `traceparent` must match one
-  model call. A trace exporter can change the header and prevent that match.
+- Embedded OpenClaw reports OpenAI Responses, Chat Completions and Anthropic
+  Messages attempts. The full `traceparent` must match a model call. Background
+  session recap calls are not reported. A trace exporter can prevent a match.
 - Dedicated OpenClaw reports saved provider responses and errors, but omits request attempts and retries.
 - Dedicated Codex requires a managed Pod on the control cluster with a
   direct Gateway connection. An HTTP 503 retry can share the call ID.
@@ -154,7 +149,7 @@ The Gateway keeps 256 events per revision, source and endpoint, up to
 512 per Agent. Held events count toward both limits. Pod replacement
 preserves events. Agent deletion removes them. A full or unavailable
 queue can lose new events. The Gateway warns.
-Drain the queue before switching revisions when possible.
+A new Gateway can deliver signed records from an older revision to the same endpoint.
 
 To check delivery, set `namespace` and `pod` to the Gateway's Kubernetes
 namespace and Pod name. You need permission to run commands in that Pod.
@@ -164,8 +159,10 @@ kubectl exec -n "$namespace" "$pod" -c gateway -- node /app/oce-plugins/oce-runt
 ```
 
 `pending` counts events awaiting delivery. `held` lists event IDs and HTTP
-statuses. `otherScope` counts events for another revision, source or endpoint.
-Only the original revision, source and endpoint can deliver those events.
+statuses. `otherScope` counts records for another revision, source or endpoint.
+OCC checks the original signature and revision. The old credential remains revoked.
+A signature does not prove when the record was signed.
+A changed endpoint prevents delivery.
 
 Correct the cause of the refusal. Set `eventId` to the held ID.
 
@@ -261,9 +258,6 @@ it does not correlate separate attempts to the same person or browser.
 
 ## Read an Agent’s audit events
 
-For HTTP `501`, check that the Installation uses PostgreSQL, Native IAM and
-Control Plane audit.
-
 Sign in with a human account. Ask an Installation administrator to
 [bind a Namespace Role](../../reference/authorization.md#manage-namespace-policy)
 with the `read_audit` permission directly to your Principal and the Agent.
@@ -271,7 +265,10 @@ OCC checks the grant each time you request a page.
 
 Send `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`.
 The response lists selected Agent lifecycle records, runtime activity, API
-reads, and worker events from the preceding 24 hours, newest first. Lifecycle records show the
+reads, and worker events from a 24-hour period, newest first. The period ends
+now by default. For older records, set `end` to a UTC timestamp, such as
+`?end=2026-11-20T00:00:00.000Z`. Use `end` only on the first page and do
+not select a future time. Lifecycle records show the
 saved action, such as Agent creation, deployment admission, or activation.
 They include an Agent revision ID when OCC verifies that revision belongs to
 the Agent. A work ID connects job records without exposing the internal work key.
@@ -317,12 +314,12 @@ The link can be missing if the turn combines inputs, the Gateway skips the
 save, or the Gateway loses the ID before it reports the turn. Check for
 `details.messageId` before you offer **Open message**.
 
-| Status | What to check                                                                                                                                                  |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `403`  | Check both direct grants for this Agent.                                                                                                                       |
-| `404`  | The event must be from the active revision and the last 24 hours. Its linked user message must still be visible in chat history and fit within 64 KiB of text. |
-| `501`  | Check that the Installation uses Native IAM, PostgreSQL, and Control Plane audit with managed Gateway routing.                                                 |
-| `503`  | OCC could not finish the Gateway lookup or confirm the disclosure record. Try again.                                                                           |
+| Status | What to check                                                                                                                            |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `403`  | Check both direct grants for this Agent.                                                                                                 |
+| `404`  | The event must be from the active revision. Its linked user message must still be visible in chat history and fit within 64 KiB of text. |
+| `501`  | Check that the Installation uses Native IAM, PostgreSQL, and Control Plane audit with managed Gateway routing.                           |
+| `503`  | OCC could not finish the Gateway lookup or confirm the disclosure record. Try again.                                                     |
 
 ## Access and limitations
 

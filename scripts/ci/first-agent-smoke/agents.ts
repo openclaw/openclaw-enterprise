@@ -21,13 +21,16 @@ import {
 } from "./process.ts";
 import {
   checkHttpChatDelivery,
+  expectNoRuntimeAuditGrant,
   kubectl,
   modelEvents,
   podList,
   runtimeAuditRowCount,
+  runtimeAuditIds,
   signInConsole,
   wireField,
   withRefusedTurnWrite,
+  withRefusedAgentRuntimeWrites,
   withRejectedAuditCredential,
   type KubernetesAccess,
   type LocalSetup,
@@ -74,8 +77,10 @@ export function cli(
   });
 }
 
-async function cliJson(stack: SmokeStack, args: string[]): Promise<unknown> {
-  const result: unknown = JSON.parse((await cli(stack, [...args, "-o", "json"])).stdout);
+async function cliJson(stack: SmokeStack, args: string[], signal?: AbortSignal): Promise<unknown> {
+  const result: unknown = JSON.parse(
+    (await cli(stack, [...args, "-o", "json"], { signal })).stdout,
+  );
   return result;
 }
 
@@ -86,14 +91,15 @@ async function waitForDeployment(
   agentId: string,
   revisionId: string | undefined,
   label: string,
+  signal?: AbortSignal,
 ) {
   const base = `/namespaces/${stack.namespaceId}/agents/${agentId}`;
   await waitFor(
     `${label} revision ${revisionId}`,
     async () => {
       const [deployment, agent] = await Promise.all([
-        stack.api("GET", `${base}/deployments/${revisionId}`),
-        stack.api("GET", base),
+        stack.api("GET", `${base}/deployments/${revisionId}`, undefined, { signal }),
+        stack.api("GET", base, undefined, { signal }),
       ]);
       const status = wireField(deployment, "status");
       if (status === "failed") {
@@ -279,7 +285,19 @@ export async function allowAgentAuditRead(
   const base = `/namespaces/${stack.namespaceId}`;
   const api = await signInConsole(stack, reader);
   const path = `${base}/agents/${agent.id}/audit-events`;
-  const readAudit = async () => (await api("GET", `${path}?limit=100`)) as AgentAuditPage;
+  const readAudit = async (signal?: AbortSignal) =>
+    (await api("GET", `${path}?limit=100`, undefined, { signal })) as AgentAuditPage;
+  async function readAllAudit(signal?: AbortSignal) {
+    const events: AgentAuditPage["events"] = [];
+    let cursor: string | null = null;
+    do {
+      const query = cursor === null ? "limit=100" : `cursor=${encodeURIComponent(cursor)}`;
+      const page = (await api("GET", `${path}?${query}`, undefined, { signal })) as AgentAuditPage;
+      events.push(...page.events);
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    return events;
+  }
   const readMessage = (id: string) => api("GET", `${path}/${id}/message`);
   // The same human session gains access only after the direct Agent grant.
   await assert.rejects(readAudit(), /HTTP 403$/);
@@ -297,7 +315,7 @@ export async function allowAgentAuditRead(
     });
   }
   await grant("read_audit");
-  return { readAudit, readMessage, grantContent: () => grant("read_audit_content") };
+  return { readAudit, readAllAudit, readMessage, grantContent: () => grant("read_audit_content") };
 }
 
 type AuditReader = Awaited<ReturnType<typeof allowAgentAuditRead>>;
@@ -1037,32 +1055,169 @@ export async function proveEmbeddedRetries(
   }
 }
 
+async function runtimeAuditQueueStatus(stack: KubernetesAccess, gateway: GatewayPod) {
+  const { stdout } = await kubectl(stack, [
+    "exec",
+    "-n",
+    gateway.namespace,
+    gateway.pod,
+    "-c",
+    "gateway",
+    "--",
+    "node",
+    "/app/oce-plugins/oce-runtime-audit/sink.mjs",
+    "status",
+  ]);
+  const status = JSON.parse(stdout);
+  const pending = wireField(status, "pending");
+  const held = wireField(status, "held");
+  const otherScope = wireField(status, "otherScope");
+  assert.ok(Number.isSafeInteger(pending) && Number(pending) >= 0);
+  assert.ok(Array.isArray(held));
+  assert.ok(Number.isSafeInteger(otherScope) && Number(otherScope) >= 0);
+  return {
+    pending: Number(pending),
+    held: held.length,
+    otherScope: Number(otherScope),
+    current: Number(pending) + held.length,
+  };
+}
+
+interface QueuedRuntimeObservation {
+  revisionId: string;
+  eventId: string;
+  action: string;
+  occurredAt: string;
+  sessionId: string | null;
+  turnId: string | null;
+  modelCallId: string | null;
+  modelAttemptId: string | null;
+}
+
+type RuntimeAuditEntry = Extract<AgentAuditPage["events"][number], { event: "runtime_activity" }>;
+
+async function queuedRuntimeObservations(stack: KubernetesAccess, gateway: GatewayPod) {
+  // Read only the observation identity. Do not export signed bodies, signatures,
+  // tokens, model content, or the producer's private signing key from the Pod.
+  const script = `
+    import { DatabaseSync } from 'node:sqlite';
+    const db = new DatabaseSync('/home/node/.openclaw/state/pending-runtime-audit/observations.sqlite', { readOnly: true });
+    const rows = db.prepare(\`SELECT revision_id AS revisionId,
+      json_extract(body, '$.eventId') AS eventId,
+      json_extract(body, '$.action') AS action,
+      json_extract(body, '$.occurredAt') AS occurredAt,
+      json_extract(body, '$.sessionId') AS sessionId,
+      json_extract(body, '$.turnId') AS turnId,
+      json_extract(body, '$.modelCallId') AS modelCallId,
+      json_extract(body, '$.modelAttemptId') AS modelAttemptId
+      FROM observations ORDER BY rowid\`).all();
+    db.close();
+    process.stdout.write(JSON.stringify(rows));
+  `;
+  const { stdout } = await kubectl(stack, [
+    "exec",
+    "-n",
+    gateway.namespace,
+    gateway.pod,
+    "-c",
+    "gateway",
+    "--",
+    "node",
+    "--input-type=module",
+    "-e",
+    script,
+  ]);
+  const rows: unknown = JSON.parse(stdout);
+  assert.ok(Array.isArray(rows));
+  for (const row of rows) {
+    for (const field of ["revisionId", "eventId", "action", "occurredAt"]) {
+      assert.equal(typeof wireField(row, field), "string", `queued observation has no ${field}`);
+    }
+  }
+  return rows as QueuedRuntimeObservation[];
+}
+
+function observationIdentity(event: QueuedRuntimeObservation) {
+  return JSON.stringify([
+    event.revisionId,
+    event.action,
+    event.occurredAt,
+    event.sessionId,
+    event.turnId,
+    event.modelCallId,
+    event.modelAttemptId,
+  ]);
+}
+
+function auditIdentity(event: RuntimeAuditEntry) {
+  return JSON.stringify([
+    event.details.agentRevisionId,
+    event.action,
+    event.occurredAt,
+    event.details.sessionId ?? null,
+    wireField(event.details, "turnId") ?? null,
+    wireField(event.details, "modelCallId") ?? null,
+    wireField(event.details, "modelAttemptId") ?? null,
+  ]);
+}
+
+async function fillRuntimeAuditQueue(
+  stack: SmokeStack & KubernetesAccess,
+  agent: SmokeAgent,
+  gateway: GatewayPod,
+) {
+  let queued = 0;
+  let lastTurn = "";
+  for (let turns = 0; queued < 256 && turns < 80; turns += 8) {
+    for (let pair = 0; pair < 4; pair++) {
+      const sent = await Promise.all([
+        openHttpChat(stack, agent).send(),
+        openHttpChat(stack, agent).send(),
+      ]);
+      lastTurn = sent[1]!;
+    }
+    queued = (await runtimeAuditQueueStatus(stack, gateway)).current;
+  }
+  assert.equal(queued, 256, "real chat events did not fill the revision queue");
+  return lastTurn;
+}
+
+async function assertRuntimeOverflowChat(
+  stack: SmokeStack & KubernetesAccess,
+  agent: SmokeAgent,
+  gateway: GatewayPod,
+) {
+  const since = new Date().toISOString();
+  const last = openHttpChat(stack, agent);
+  const turn = await last.send();
+  const requests = (await modelEvents(stack.commandOptions)).filter(
+    (event) =>
+      event.event === "request" && event.caller === agent.label && event.text === last.nonce,
+  );
+  assert.equal(requests.length, 1, "the chat was repeated while the runtime queue was full");
+  const { stdout } = await kubectl(stack, [
+    "logs",
+    "-n",
+    gateway.namespace,
+    gateway.pod,
+    "-c",
+    "gateway",
+    `--since-time=${since}`,
+  ]);
+  assert.match(
+    stdout,
+    /The Gateway could not queue a runtime audit event\. The record is missing\./,
+  );
+  return { turn, nonce: last.nonce };
+}
+
 export async function proveRuntimeAuditQueueFull(
   stack: SmokeStack & KubernetesAccess,
   agent: SmokeAgent,
   revisionId: string,
 ) {
   const gateway = await readyGateway(stack, agent.id, revisionId);
-  const queueStatus = async () => {
-    const { stdout } = await kubectl(stack, [
-      "exec",
-      "-n",
-      gateway.namespace,
-      gateway.pod,
-      "-c",
-      "gateway",
-      "--",
-      "node",
-      "/app/oce-plugins/oce-runtime-audit/sink.mjs",
-      "status",
-    ]);
-    const status = JSON.parse(stdout);
-    const pending = wireField(status, "pending");
-    const held = wireField(status, "held");
-    assert.ok(Number.isSafeInteger(pending) && Number(pending) >= 0);
-    assert.ok(Array.isArray(held));
-    return Number(pending) + held.length;
-  };
+  const queueStatus = async () => (await runtimeAuditQueueStatus(stack, gateway)).current;
   await waitFor(
     "the embedded runtime audit queue to drain",
     async () => ({
@@ -1080,41 +1235,10 @@ export async function proveRuntimeAuditQueueFull(
   // The real PostgreSQL refusal blocks the first queued turn event. Later turns
   // must still run while their own runtime events fill the Gateway's disk queue.
   await withRefusedTurnWrite(stack, revisionId, async () => {
-    let queued = 0;
-    for (let turns = 0; queued < 256 && turns < 80; turns += 8) {
-      for (let pair = 0; pair < 4; pair++) {
-        await Promise.all([
-          openHttpChat(exercise, agent).send(),
-          openHttpChat(exercise, agent).send(),
-        ]);
-      }
-      queued = await queueStatus();
-    }
-    assert.equal(queued, 256, "real chat events did not fill the revision queue");
+    await fillRuntimeAuditQueue(exercise, agent, gateway);
     rowsBeforeRecovery = Number(await runtimeAuditRowCount(stack, revisionId));
-
-    const since = new Date().toISOString();
-    const last = openHttpChat(exercise, agent);
-    const turn = await last.send();
+    const { turn } = await assertRuntimeOverflowChat(exercise, agent, gateway);
     assert.equal(await queueStatus(), 256, "the full queue exceeded its limit");
-    const requests = (await modelEvents()).filter(
-      (event) =>
-        event.event === "request" && event.caller === agent.label && event.text === last.nonce,
-    );
-    assert.equal(requests.length, 1, "the chat was repeated while the runtime queue was full");
-    const { stdout } = await kubectl(stack, [
-      "logs",
-      "-n",
-      gateway.namespace,
-      gateway.pod,
-      "-c",
-      "gateway",
-      `--since-time=${since}`,
-    ]);
-    assert.match(
-      stdout,
-      /The Gateway could not queue a runtime audit event\. The record is missing\./,
-    );
     return turn;
   });
 
@@ -1133,6 +1257,205 @@ export async function proveRuntimeAuditQueueFull(
     "recovery did not save each queued event once",
   );
   log(`${agent.label}: a full runtime queue preserved chat and recovered 256 events`);
+}
+
+export async function proveRuntimeAuditAgentCapacity(
+  stack: SmokeStack & KubernetesAccess,
+  agent: SmokeAgent,
+  revisionId: string,
+  reader: Pick<AuditReader, "readAudit" | "readAllAudit">,
+) {
+  const bounded = AbortSignal.timeout(6 * minute);
+  const signal = stack.commandOptions?.signal
+    ? AbortSignal.any([stack.commandOptions.signal, bounded])
+    : bounded;
+  const exercise = { ...stack, commandOptions: { ...stack.commandOptions, signal } };
+
+  const before = await runtimeAuditIds(exercise, revisionId, exercise.commandOptions);
+  const result = await withRefusedAgentRuntimeWrites(
+    exercise,
+    agent.id,
+    async ({ refused, refuseRevision }) => {
+      const firstGateway = await readyGateway(exercise, agent.id, revisionId);
+      await fillRuntimeAuditQueue(exercise, agent, firstGateway);
+      const first = await queuedRuntimeObservations(exercise, firstGateway);
+      assert.equal(first.length, 256);
+      assert.ok(first.every((event) => event.revisionId === revisionId));
+
+      // A normal deployment replaces the producer Pod and revokes its bearer.
+      // The replacement must retain the signed observations on the Agent volume.
+      const second = await deployAgent(exercise, agent, signal);
+      assert.notEqual(second, revisionId);
+      await expectNoRuntimeAuditGrant(exercise, revisionId);
+      const secondGateway = await readyGateway(exercise, agent.id, second);
+      assert.notEqual(secondGateway.pod, firstGateway.pod);
+      assert.deepEqual(await runtimeAuditQueueStatus(exercise, secondGateway), {
+        pending: 0,
+        held: 0,
+        otherScope: 256,
+        current: 0,
+      });
+      await fillRuntimeAuditQueue(exercise, agent, secondGateway);
+      const both = await queuedRuntimeObservations(exercise, secondGateway);
+      assert.equal(both.length, 512);
+      assert.deepEqual(
+        new Set(
+          both.filter((event) => event.revisionId === revisionId).map((event) => event.eventId),
+        ),
+        new Set(first.map((event) => event.eventId)),
+        "the first producer's observation IDs changed after Pod replacement",
+      );
+      assert.equal(both.filter((event) => event.revisionId === second).length, 256);
+
+      const third = await deployAgent(exercise, agent, signal);
+      assert.notEqual(third, second);
+      await expectNoRuntimeAuditGrant(exercise, second);
+      const gateway = await readyGateway(exercise, agent.id, third);
+      assert.notEqual(gateway.pod, secondGateway.pod);
+      assert.deepEqual(await runtimeAuditQueueStatus(exercise, gateway), {
+        pending: 0,
+        held: 0,
+        otherScope: 512,
+        current: 0,
+      });
+      const retained = await queuedRuntimeObservations(exercise, gateway);
+      assert.deepEqual(
+        new Set(retained.map((event) => event.eventId)),
+        new Set(both.map((event) => event.eventId)),
+        "the second Pod replacement changed the original observation IDs",
+      );
+      const overflow = await assertRuntimeOverflowChat(exercise, agent, gateway);
+      assert.deepEqual(await runtimeAuditQueueStatus(exercise, gateway), {
+        pending: 0,
+        held: 0,
+        otherScope: 512,
+        current: 0,
+      });
+      await refuseRevision(revisionId);
+      await waitFor(
+        "the permitted predecessor to recover while the first revision remains refused",
+        async () => {
+          const status = await runtimeAuditQueueStatus(exercise, gateway);
+          return { done: status.otherScope === 256 && status.current === 0, state: status };
+        },
+        2 * minute,
+      );
+      const servingTurn = await openHttpChat(exercise, agent).send();
+      const servingEvents = await waitFor(
+        "current revision runtime evidence while predecessor replay still fails",
+        async () => {
+          const events = (await reader.readAudit(signal)).events.filter(
+            (event): event is RuntimeAuditEntry =>
+              event.event === "runtime_activity" &&
+              event.details.agentRevisionId === third &&
+              wireField(event.details, "turnId") === servingTurn,
+          );
+          return {
+            done:
+              events.some((event) => event.action === "openclaw.runtime.turn.started") &&
+              events.some((event) => event.action === "openclaw.runtime.turn.completed"),
+            value: events,
+          };
+        },
+        minute,
+      );
+      assert.ok(servingEvents);
+      const currentIds = await runtimeAuditIds(exercise, third, exercise.commandOptions);
+      assert.ok(
+        servingEvents.every((event) => currentIds.has(event.id)),
+        "current turn audit did not reach PostgreSQL",
+      );
+      const blocked = await queuedRuntimeObservations(exercise, gateway);
+      assert.equal(blocked.filter((event) => event.revisionId === revisionId).length, 256);
+      assert.equal(blocked.filter((event) => event.revisionId === second).length, 0);
+      const refusedIds = await refused();
+      assert.ok(refusedIds.size > 0, "PostgreSQL did not refuse an actual runtime insert");
+      return { second, third, gateway, retained, refusedIds, overflow };
+    },
+  );
+
+  // The current Gateway must replay the old signed rows after PostgreSQL
+  // recovers, although both original producer grants and Pods are gone.
+  const draining = await waitFor(
+    "retired-revision replay to start while a backlog remains",
+    async () => {
+      const status = await runtimeAuditQueueStatus(exercise, result.gateway);
+      return {
+        done: status.otherScope > 0 && status.otherScope < 256,
+        value: status.otherScope,
+        state: status,
+      };
+    },
+    minute,
+    { sleep: (duration) => delay(Math.min(duration, 200)) },
+  );
+  assert.ok(draining && draining > 0);
+  // Start real current-revision traffic after the old backlog has begun to
+  // drain. New rows must not prevent older signed rows from making progress.
+  await Promise.all([
+    openHttpChat(exercise, agent).send(),
+    openHttpChat(exercise, agent).send(),
+    waitFor(
+      "older signed rows to progress during current-revision traffic",
+      async () => {
+        const status = await runtimeAuditQueueStatus(exercise, result.gateway);
+        return { done: status.otherScope < draining, state: status };
+      },
+      minute,
+      { sleep: (duration) => delay(Math.min(duration, 200)) },
+    ),
+  ]);
+  await waitFor(
+    "signed runtime observations from retired revisions to recover",
+    async () => {
+      const status = await runtimeAuditQueueStatus(exercise, result.gateway);
+      return {
+        done: status.pending === 0 && status.held === 0 && status.otherScope === 0,
+        state: status,
+      };
+    },
+    3 * minute,
+  );
+  const apiEvents = (await reader.readAllAudit(signal)).filter(
+    (event) => event.event === "runtime_activity",
+  );
+  const wanted = new Set(result.retained.map(observationIdentity));
+  assert.equal(wanted.size, 512, "the queued observation identities are not unique");
+  const recovered = apiEvents.filter((event) => wanted.has(auditIdentity(event)));
+  assert.equal(
+    recovered.length,
+    512,
+    "the Agent audit API did not return all original observations once",
+  );
+  assert.deepEqual(new Set(recovered.map(auditIdentity)), wanted);
+  for (const revision of [revisionId, result.second]) {
+    const projected = recovered.filter((event) => event.details.agentRevisionId === revision);
+    assert.equal(projected.length, 256, `the API changed the original revision ${revision}`);
+    const persisted = await runtimeAuditIds(exercise, revision, exercise.commandOptions);
+    if (revision === revisionId) {
+      for (const id of before) {
+        persisted.delete(id);
+      }
+    }
+    assert.deepEqual(new Set(projected.map((event) => event.id)), persisted);
+    for (const id of result.refusedIds.get(revision) ?? []) {
+      assert.ok(persisted.has(id), `the refused audit ID ${id} changed during replay`);
+    }
+  }
+  assert.equal(
+    (await modelEvents(exercise.commandOptions)).filter(
+      (event) =>
+        event.event === "request" &&
+        event.caller === agent.label &&
+        event.text === result.overflow.nonce,
+    ).length,
+    1,
+    "audit recovery repeated the chat request",
+  );
+  log(
+    `${agent.label}: chat continued at capacity and all 512 retired-revision observations recovered once`,
+  );
+  return result.third;
 }
 
 export async function proveEmbeddedProtocols(
@@ -1228,6 +1551,14 @@ export async function proveEmbeddedProtocols(
     provider: "anthropic",
     path: "/v1/messages",
   });
+  // Capacity testing needs the ordinary Responses configuration. The Anthropic
+  // runtime can also make a separate session recap request after a turn.
+  const beforeRestore = await stack.api("GET", `${base}/configurations/${configurationId}`);
+  await stack.api("PATCH", `${base}/configurations/${configurationId}`, {
+    expectedGeneration: wireField(beforeRestore, "generation"),
+    values,
+  });
+  return deployAgent(stack, agent);
 }
 
 async function assertEmbeddedProtocolAttempt(
@@ -1278,8 +1609,14 @@ async function assertEmbeddedProtocolAttempt(
   assert.equal(attempts.attempt[0]!.details.provider, provider);
   assert.equal(attempts.attempt[0]!.details.model, model);
   assert.equal(attempts.attempt[0]!.outcome, "success");
+  // A session recap can make a second provider request. Match the full native
+  // request label, hashed by the independent provider, to the audited attempt.
   const providerRequests = (await modelEvents()).filter(
-    (event) => event.event === "request" && event.caller === agent.label && event.text === nonce,
+    (event) =>
+      event.event === "request" &&
+      event.caller === agent.label &&
+      event.text === nonce &&
+      event.attemptId === attempts.attempt[0]!.details.modelAttemptId,
   );
   assert.equal(providerRequests.length, 1);
   assert.equal(wireField(providerRequests[0], "path"), path);
@@ -1642,12 +1979,21 @@ export async function stopAgent(stack: SmokeStack, agent: SmokeAgent) {
   }
 }
 
-export async function deployAgent(stack: SmokeStack, agent: SmokeAgent): Promise<string> {
-  const revision = await cliJson(stack, ["agent", "deploy", agent.id]);
+export async function deployAgent(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  signal?: AbortSignal,
+): Promise<string> {
+  const revision = await cliJson(stack, ["agent", "deploy", agent.id], signal);
   const revisionId = wireField(revision, "id") as string | null | undefined;
   assert.match(revisionId ?? "", /^rev_/, `${agent.label}: deploy returned no revision`);
-  await waitForDeployment(stack, agent.id, revisionId!, agent.label);
-  const current = await stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`);
+  await waitForDeployment(stack, agent.id, revisionId!, agent.label, signal);
+  const current = await stack.api(
+    "GET",
+    `/namespaces/${stack.namespaceId}/agents/${agent.id}`,
+    undefined,
+    { signal },
+  );
   assert.equal(
     wireField(current, "desiredRuntimeState"),
     "running",

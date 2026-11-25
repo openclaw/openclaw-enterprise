@@ -7,6 +7,10 @@ import type { AgentAuditPage, AgentRevision } from "@openclaw-enterprise/contrac
 import type pg from "pg";
 
 import { startGatewayRuntimeAuditListener } from "../../apps/controller/src/http/runtime-audit.ts";
+import {
+  createRuntimeAuditReplaySigner,
+  runtimeAuditReplayVerifier,
+} from "../../packages/audit/src/index.ts";
 import { recordDedicatedModel } from "../../deploy/runtime/managed-runtime-audit/dedicated.mjs";
 import {
   ResourceConflictError,
@@ -42,7 +46,7 @@ async function startListener(t: TestContext, app: App) {
   assert.ok(address && typeof address !== "string");
   const agent = new HttpsAgent({ secureContext: createSecureContext({ ca: tls.cert }) });
   t.after(() => agent.destroy());
-  return (event: unknown, token: string, source = "openclaw", path = route) =>
+  const post = (event: unknown, token: string, source = "openclaw", path = route) =>
     new Promise<number | undefined>((resolve, reject) => {
       const request = httpsRequest(
         {
@@ -66,6 +70,7 @@ async function startListener(t: TestContext, app: App) {
       request.once("error", reject);
       request.end(JSON.stringify(event));
     });
+  return { post, endpoint: `https://127.0.0.1:${address.port}${route}` };
 }
 
 function credential(revision: AgentRevision, runtimeSource: "openclaw" | "codex" = "openclaw") {
@@ -95,10 +100,14 @@ export async function checkGatewayAudit(
   },
 ) {
   const { app, state, pool, migrationUrl, revision, replacementId } = input;
-  const post = await startListener(t, app);
+  const { post, endpoint } = await startListener(t, app);
   const { grant, token } = credential(revision);
   const replacement = credential({ ...revision, id: replacementId });
   const other = credential(input.other);
+  const registration = (token: string) => ({
+    endpoint,
+    replayVerifier: runtimeAuditReplayVerifier(token),
+  });
   const session = { sessionId: randomUUID() };
   const turn = { ...session, turnId: randomUUID(), messageId: randomUUID() };
   const attempt = { ...turn, modelCallId: randomUUID(), provider: "openai", model: "gpt-4.1" };
@@ -111,19 +120,23 @@ export async function checkGatewayAudit(
   // A retry after worker restart can reuse the credential for this revision only.
   assert.equal(await post(started, token), 401);
   await assert.rejects(
-    state.registerGatewayRuntimeGrant({ ...grant, runtimeSource: "codex" }),
+    state.registerGatewayRuntimeGrant({ ...grant, runtimeSource: "codex" }, registration(token)),
     ScopeViolationError,
   );
   await Promise.all([
-    state.registerGatewayRuntimeGrant(grant),
-    state.registerGatewayRuntimeGrant(grant),
+    state.registerGatewayRuntimeGrant(grant, registration(token)),
+    state.registerGatewayRuntimeGrant(grant, registration(token)),
   ]);
   await assert.rejects(
-    state.registerGatewayRuntimeGrant(credential(revision).grant),
+    state.registerGatewayRuntimeGrant(credential(revision).grant, registration(token)),
     ResourceConflictError,
   );
-  await state.registerGatewayRuntimeGrant(replacement.grant);
-  await state.registerGatewayRuntimeGrant(other.grant);
+  await assert.rejects(
+    state.registerGatewayRuntimeGrant(grant, registration(replacement.token)),
+    ResourceConflictError,
+  );
+  await state.registerGatewayRuntimeGrant(replacement.grant, registration(replacement.token));
+  await state.registerGatewayRuntimeGrant(other.grant, registration(other.token));
   assert.equal(await post(started, token, "codex"), 403);
 
   // Keep the private write endpoint and the public read endpoint separate.
@@ -171,7 +184,7 @@ export async function checkGatewayAudit(
 
   // Each grant can report only the model events its runtime observes.
   const codex = credential(input.codex, "codex");
-  await state.registerGatewayRuntimeGrant(codex.grant);
+  await state.registerGatewayRuntimeGrant(codex.grant, registration(codex.token));
   const model = {
     sessionId: randomUUID(),
     turnId: randomUUID(),
@@ -312,6 +325,35 @@ export async function checkGatewayAudit(
     ],
   );
 
+  // Sign the disk record while the original revision still has its credential.
+  // The replacement must deliver these exact bytes without receiving that credential.
+  const historicalEnd = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString();
+  const backlog = {
+    ...envelope(),
+    ...session,
+    action: "openclaw.runtime.session.ended",
+    occurredAt: historicalEnd,
+  };
+  const oldTurn = {
+    ...envelope(),
+    ...session,
+    action: "openclaw.runtime.turn.started",
+    turnId: randomUUID(),
+    messageId: randomUUID(),
+    occurredAt: new Date(Date.parse(historicalEnd) - 24 * 60 * 60 * 1000).toISOString(),
+  };
+  const replayFields = {
+    revisionId: revision.id,
+    source: "openclaw" as const,
+    endpoint,
+    body: JSON.stringify(backlog),
+  };
+  const signReplay = createRuntimeAuditReplaySigner(token);
+  const replay = { version: 1, ...replayFields, ...signReplay(replayFields) };
+  const oldTurnFields = { ...replayFields, body: JSON.stringify(oldTurn) };
+  const oldTurnReplay = { version: 1, ...oldTurnFields, ...signReplay(oldTurnFields) };
+  const replayRoute = `${route}/replay`;
+
   // A revocation waits for an append that has already authenticated on this credential.
   await withPool(migrationUrl, async (migrator) => {
     const holder = await migrator.connect();
@@ -340,6 +382,64 @@ export async function checkGatewayAudit(
   });
   assert.equal(await post(started, token), 401);
   assert.equal(await state.hasGatewayRuntimeGrant(grant), false);
+
+  // A revoked token cannot write. An active peer cannot use a signed record
+  // from another Agent. OCC verifies the original bytes before it parses them.
+  assert.equal(await post(replay, token, "openclaw", replayRoute), 401);
+  assert.equal(await post(replay, other.token, "openclaw", replayRoute), 403);
+  assert.equal(
+    await post({ ...replay, body: "not JSON" }, replacement.token, "openclaw", replayRoute),
+    403,
+  );
+  assert.equal(
+    await post(
+      { ...replay, revisionId: replacementId },
+      replacement.token,
+      "openclaw",
+      replayRoute,
+    ),
+    403,
+  );
+  assert.equal(
+    await post(
+      { ...replay, endpoint: `${endpoint}/other` },
+      replacement.token,
+      "openclaw",
+      replayRoute,
+    ),
+    403,
+  );
+  assert.equal(await post(replay, replacement.token, "codex", replayRoute), 403);
+  assert.equal(
+    (await app.inject({ method: "POST", url: replayRoute, headers, payload: replay })).statusCode,
+    404,
+  );
+  const wrongRoleFields = { ...replayFields, body: JSON.stringify(codexAttempt) };
+  const wrongRole = {
+    version: 1,
+    ...wrongRoleFields,
+    ...signReplay(wrongRoleFields),
+  };
+  assert.equal(await post(wrongRole, replacement.token, "openclaw", replayRoute), 403);
+  assert.deepEqual(
+    await Promise.all([
+      post(replay, replacement.token, "openclaw", replayRoute),
+      post(replay, replacement.token, "openclaw", replayRoute),
+    ]),
+    [204, 204],
+  );
+  assert.equal(await post(oldTurnReplay, replacement.token, "openclaw", replayRoute), 204);
+  const replayRows = await pool.query(
+    "SELECT id, details->>'agentRevisionId' AS revision FROM occ.audit_events WHERE kind = 'runtime_activity' AND action = $1 AND resource_id = $2 AND details->>'sessionId' = $3",
+    [backlog.action, revision.agentId, session.sessionId],
+  );
+  assert.equal(replayRows.rows.length, 1);
+  assert.equal(replayRows.rows[0].revision, revision.id);
+  const oldTurnRows = await pool.query<{ id: string }>(
+    "SELECT id FROM occ.audit_events WHERE kind = 'runtime_activity' AND action = $1 AND resource_id = $2 AND details->>'turnId' = $3",
+    [oldTurn.action, revision.agentId, oldTurn.turnId],
+  );
+  assert.equal(oldTurnRows.rows.length, 1);
   assert.equal(
     await post(
       { ...envelope(), ...session, action: "openclaw.runtime.session.started" },
@@ -399,11 +499,16 @@ export async function checkGatewayAudit(
     ],
   );
   const persisted = await pool.query<{ id: string }>(
-    "SELECT id FROM occ.audit_events WHERE kind = 'runtime_activity' AND resource_id = $1 ORDER BY occurred_at DESC, id DESC",
-    [revision.agentId],
+    "SELECT id FROM occ.audit_events WHERE kind = 'runtime_activity' AND resource_id = $1 AND occurred_at BETWEEN $2::timestamptz AND $3::timestamptz ORDER BY occurred_at DESC, id DESC",
+    [revision.agentId, page.window.start, page.window.end],
   );
   assert.deepEqual(
     persisted.rows.map((row) => row.id),
     events.map((entry) => entry.id),
   );
+  return {
+    end: historicalEnd,
+    sessionEventId: replayRows.rows[0].id as string,
+    turnEventId: oldTurnRows.rows[0]!.id,
+  };
 }

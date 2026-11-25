@@ -168,6 +168,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 96 && completedCount > 96) {
     return "preHttpChatAuditLimits";
   }
+  if (count === 97 && completedCount > 97) {
+    return "preRuntimeAuditReplay";
+  }
   if (count === completedCount) {
     return "completed";
   }

@@ -321,6 +321,7 @@ const linkedTurn = {
 
 export const parameterExamples = {
   auditEventId: linkedTurn.id,
+  end: "2026-10-01T12:00:00.000Z",
   automationId: "cron-example",
   expectedConfigRevision: "revision-1",
   modelProviderId: modelProvider.id,

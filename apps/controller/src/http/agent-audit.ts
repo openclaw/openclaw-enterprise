@@ -117,6 +117,7 @@ interface AuditCursor {
   readonly start: string;
   readonly end: string;
   readonly limit: number;
+  readonly expiresAt: number;
   readonly after: { readonly occurredAt: string; readonly id: string };
 }
 
@@ -139,7 +140,8 @@ export function createAgentAuditReader(secret: string) {
         ]).toString("utf8"),
       ) as AuditCursor;
       if (
-        Date.now() >= Date.parse(value.end) + CURSOR_LIFETIME_MS ||
+        !Number.isSafeInteger(value.expiresAt) ||
+        Date.now() >= value.expiresAt ||
         (limit !== undefined && limit !== value.limit)
       ) {
         throw new Error();
@@ -173,12 +175,36 @@ export function createAgentAuditReader(secret: string) {
     );
     const now = Date.now();
     const pageLimit = query.limit === undefined ? undefined : Number(query.limit);
+    if (query.cursor !== undefined && query.end !== undefined) {
+      throw failure(400, "INVALID_REQUEST", "Do not use end with an Agent audit cursor.");
+    }
+    const selectedEnd = query.end === undefined ? now : Date.parse(query.end);
+    if (
+      !Number.isFinite(selectedEnd) ||
+      selectedEnd > now ||
+      (query.end !== undefined && new Date(selectedEnd).toISOString() !== query.end)
+    ) {
+      throw failure(
+        400,
+        "INVALID_REQUEST",
+        "The Agent audit end must be a valid UTC time at or before the current time.",
+      );
+    }
+    const selectedStart = new Date(selectedEnd - WINDOW_MS).toISOString();
+    if (selectedStart.length !== 24) {
+      throw failure(
+        400,
+        "INVALID_REQUEST",
+        "The Agent audit period is outside the supported UTC range.",
+      );
+    }
     const selection =
       query.cursor === undefined
         ? {
-            start: new Date(now - WINDOW_MS).toISOString(),
-            end: new Date(now).toISOString(),
+            start: selectedStart,
+            end: new Date(selectedEnd).toISOString(),
             limit: pageLimit ?? DEFAULT_PAGE_LIMIT,
+            expiresAt: now + CURSOR_LIFETIME_MS,
           }
         : readCursor(query.cursor, scope, pageLimit);
     const { start, end, limit } = selection;
@@ -208,7 +234,13 @@ export function createAgentAuditReader(secret: string) {
       nextCursor:
         page.hasNextPage && last !== undefined
           ? writeCursor(
-              { start, end, limit, after: { occurredAt: last.occurredAt, id: last.id } },
+              {
+                start,
+                end,
+                limit,
+                expiresAt: selection.expiresAt,
+                after: { occurredAt: last.occurredAt, id: last.id },
+              },
               scope,
             )
           : null,

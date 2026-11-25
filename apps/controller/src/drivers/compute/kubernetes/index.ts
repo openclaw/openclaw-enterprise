@@ -2,6 +2,7 @@ import {
   admitsInspectedWorkspace,
   hasInspectedWorkspaceImages,
 } from "../../sandbox/inspected-workspace-release.ts";
+import { runtimeAuditReplayVerifier } from "@openclaw-enterprise/audit";
 import { enabledChannelEntries } from "@openclaw-enterprise/occ";
 import { resolveChannelRouting, type ChannelProviderDriver } from "../../channel/routing.ts";
 import {
@@ -687,7 +688,10 @@ interface Ownership {
 type GatewayRuntimeAuditCredential = GatewayRuntimeAuditGrant & { readonly tokenDigest: string };
 
 interface GatewayRuntimeAuditEnrollment {
-  register(grant: GatewayRuntimeAuditCredential): Promise<void>;
+  register(
+    grant: GatewayRuntimeAuditCredential,
+    replay: { readonly endpoint: string; readonly replayVerifier: string },
+  ): Promise<void>;
   remove(grant: GatewayRuntimeAuditCredential): Promise<void>;
   exists(grant: GatewayRuntimeAuditGrant): Promise<boolean>;
 }
@@ -11545,7 +11549,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
     secret: ManagedKubernetesObject<"Secret">,
-  ): { readonly grant: GatewayRuntimeAuditCredential; readonly uid: string } {
+  ): {
+    readonly grant: GatewayRuntimeAuditCredential;
+    readonly uid: string;
+    readonly replayVerifier: string;
+  } {
     const { name, uid, deletionTimestamp } = secret.metadata;
     const encoded = secret.data?.[RUNTIME_AUDIT_TOKEN_KEY];
     const bytes = typeof encoded === "string" ? Buffer.from(encoded, "base64") : undefined;
@@ -11572,6 +11580,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         tokenDigest: sha256Hex(token, 64),
       },
       uid,
+      replayVerifier: runtimeAuditReplayVerifier(token),
     };
   }
 
@@ -11626,7 +11635,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.operationSignal().throwIfAborted();
-    const { grant } = this.readGatewayRuntimeAuditCredential(revision, namespace, secret);
+    const { grant, replayVerifier } = this.readGatewayRuntimeAuditCredential(
+      revision,
+      namespace,
+      secret,
+    );
     const gatewayDocument =
       document ??
       (
@@ -11640,7 +11653,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     await this.reconcileGatewayRuntimeAuditTransport(revision, namespace, target, gatewayDocument);
     this.operationSignal().throwIfAborted();
-    await enrollment.register(grant);
+    await enrollment.register(grant, { endpoint: new URL(target.endpoint).href, replayVerifier });
   }
 
   private async releaseGatewayRuntimeAudit(

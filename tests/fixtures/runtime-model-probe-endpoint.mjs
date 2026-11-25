@@ -96,6 +96,14 @@ function emit(event) {
   process.stdout.write(`${JSON.stringify({ ...event, at: Date.now() })}\n`);
 }
 
+function firstAttemptId(request) {
+  const trace = request.headers.traceparent;
+  if (typeof trace !== "string" || !/^00-[a-f0-9]{32}-[a-f0-9]{16}-[a-f0-9]{2}$/.test(trace)) {
+    return;
+  }
+  return createHash("sha256").update(`${trace}:1`).digest("hex");
+}
+
 function sseResponse(response, events) {
   response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
   for (const event of events) {
@@ -609,7 +617,15 @@ const server = createServer(
       ) {
         const payload = JSON.parse(body);
         const text = answerText(body);
-        emit({ event: "request", transport: "https", path, turn: true, caller, text });
+        emit({
+          event: "request",
+          transport: "https",
+          path,
+          turn: true,
+          caller,
+          text,
+          attemptId: firstAttemptId(request),
+        });
         setTimeout(() => {
           if (response.destroyed) {
             return;
@@ -627,7 +643,15 @@ const server = createServer(
       ) {
         const payload = JSON.parse(body);
         const text = answerText(body);
-        emit({ event: "request", transport: "https", path, turn: true, caller, text });
+        emit({
+          event: "request",
+          transport: "https",
+          path,
+          turn: true,
+          caller,
+          text,
+          attemptId: firstAttemptId(request),
+        });
         setTimeout(() => {
           if (response.destroyed) {
             return;

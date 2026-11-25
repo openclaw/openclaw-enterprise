@@ -1487,6 +1487,18 @@ export interface GatewayRuntimeAuditGrant {
 
 type StoredGatewayRuntimeGrant = GatewayRuntimeAuditGrant & { readonly tokenDigest: string };
 
+interface GatewayRuntimeReplayRegistration {
+  readonly endpoint: string;
+  readonly replayVerifier: string;
+}
+
+interface GatewayRuntimeReplayScope {
+  readonly revisionId: string;
+  readonly source: "openclaw" | "codex";
+  readonly endpoint: string;
+  readonly verifier: string;
+}
+
 export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
   private chatQueue: ReturnType<typeof startHttpChatAuditQueue> | undefined;
@@ -1859,7 +1871,10 @@ export class PostgresPlatformState implements PlatformStateStore {
     await this.pool.end();
   }
 
-  async registerGatewayRuntimeGrant(grant: StoredGatewayRuntimeGrant): Promise<void> {
+  async registerGatewayRuntimeGrant(
+    grant: StoredGatewayRuntimeGrant,
+    replay: GatewayRuntimeReplayRegistration,
+  ): Promise<void> {
     const scope = [grant.namespaceId, grant.agentId, grant.agentRevisionId, grant.runtimeSource];
     await this.transactReadCommitted(async (unit) => {
       // Serialize enrollment for one Agent. A retry can reuse only its own credential.
@@ -1889,6 +1904,27 @@ export class PostgresPlatformState implements PlatformStateStore {
          )`,
         [...scope, grant.tokenDigest],
       );
+      await this.queryInTransaction(
+        unit,
+        `INSERT INTO occ.gateway_runtime_audit_replay_verifiers
+           (namespace_id, agent_id, revision_id, runtime_source, token_digest, endpoint, replay_verifier)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (token_digest) DO NOTHING`,
+        [...scope, grant.tokenDigest, replay.endpoint, replay.replayVerifier],
+      );
+      const registered = await this.queryInTransaction(
+        unit,
+        `SELECT 1 FROM occ.gateway_runtime_audit_replay_verifiers
+         WHERE (namespace_id, agent_id, revision_id, runtime_source, token_digest, endpoint, replay_verifier)
+           = ($1, $2, $3, $4, $5, $6, $7)
+         FOR KEY SHARE`,
+        [...scope, grant.tokenDigest, replay.endpoint, replay.replayVerifier],
+      );
+      if (registered.rows.length !== 1) {
+        throw new ResourceConflictError(
+          "The runtime audit replay verifier conflicts with its credential.",
+        );
+      }
     });
   }
 
@@ -1955,6 +1991,79 @@ export class PostgresPlatformState implements PlatformStateStore {
         }),
       );
       return true;
+    });
+  }
+
+  async appendGatewayRuntimeAuditReplay(
+    tokenDigest: string,
+    senderSource: string | undefined,
+    replay: GatewayRuntimeReplayScope,
+    verify: () => boolean,
+    build: (installationId: string, original: GatewayRuntimeAuditGrant) => AuditEvent,
+  ): Promise<"saved" | "unauthenticated" | "forbidden"> {
+    return this.transactReadCommitted(async (unit) => {
+      await this.boundAgentAuditTransaction(unit);
+      // Keep the current credential locked through COMMIT. Its holder can relay
+      // records only for the same Agent and the same registered destination.
+      const senderResult = await this.queryInTransaction(
+        unit,
+        `SELECT credential.namespace_id, credential.agent_id, credential.runtime_source, sender.endpoint
+         FROM occ.gateway_runtime_audit_grants AS credential
+         JOIN occ.gateway_runtime_audit_replay_verifiers AS sender ON sender.token_digest = credential.token_digest
+         JOIN occ.agent_revisions AS revision ON (revision.namespace_id, revision.agent_id, revision.id) =
+           (credential.namespace_id, credential.agent_id, credential.revision_id)
+         JOIN occ.agents AS agent ON (agent.namespace_id, agent.id) = (revision.namespace_id, revision.agent_id)
+         WHERE credential.token_digest = $1 AND agent.status = 'active'
+           AND revision.admitted_spec #>> '{harness,id}' = credential.runtime_source
+         FOR SHARE OF agent FOR KEY SHARE OF credential, sender`,
+        [tokenDigest],
+      );
+      const sender = decodeQueryRows(senderResult)[0];
+      if (sender === undefined) {
+        return "unauthenticated";
+      }
+      if (
+        senderSource !== text(sender, "runtime_source") ||
+        replay.endpoint !== text(sender, "endpoint")
+      ) {
+        return "forbidden";
+      }
+      const originalResult = await this.queryInTransaction(
+        unit,
+        `SELECT namespace_id, agent_id, revision_id, runtime_source
+         FROM occ.gateway_runtime_audit_replay_verifiers
+         WHERE (replay_verifier, namespace_id, agent_id, revision_id, runtime_source, endpoint)
+           = ($1, $2, $3, $4, $5, $6)
+         FOR KEY SHARE`,
+        [
+          replay.verifier,
+          text(sender, "namespace_id"),
+          text(sender, "agent_id"),
+          replay.revisionId,
+          replay.source,
+          replay.endpoint,
+        ],
+      );
+      const original = decodeQueryRows(originalResult)[0];
+      if (original === undefined || !verify()) {
+        return "forbidden";
+      }
+      const installation = await unit.installations.getInstallation();
+      if (installation === undefined) {
+        throw new ScopeViolationError("A runtime audit event requires an Installation.");
+      }
+      await unit.audit.append(
+        build(installation.id, {
+          namespaceId: text(original, "namespace_id"),
+          agentId: text(original, "agent_id"),
+          agentRevisionId: text(original, "revision_id"),
+          runtimeSource: text(
+            original,
+            "runtime_source",
+          ) as GatewayRuntimeAuditGrant["runtimeSource"],
+        }),
+      );
+      return "saved";
     });
   }
 

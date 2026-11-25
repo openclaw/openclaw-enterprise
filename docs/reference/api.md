@@ -6334,7 +6334,7 @@ List audit metadata for one Agent
 
 **Operation ID:** `listAgentAuditEvents`
 
-**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, model call, and model response records from the preceding 24 hours.
+**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent records for a 24-hour period. Use end on the first page to select a past period.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -6346,6 +6346,7 @@ List audit metadata for one Agent
 | --- | --- | --- | --- | --- | --- |
 | `limit` | query | `string` | No | pattern: `^(?:[1-9][0-9]?\|100)$` | "20" |
 | `cursor` | query | `string` | No | min length: 1; max length: 1024; pattern: `^[A-Za-z0-9_-]+$` | "YXVkaXQtbmV4dC1wYWdl" |
+| `end` | query | `string (date-time)` | No | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` | "2026-10-01T12:00:00.000Z" |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
@@ -6436,7 +6437,7 @@ Read the saved user message linked to an Agent turn
 
 **Operation ID:** `getAgentAuditEventMessage`
 
-**Permissions:** Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event from the preceding 24 hours and its saved user message from the active revision. OCC records the disclosure before it returns the text.
+**Permissions:** Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event and its saved user message from the active revision. OCC records the disclosure before it returns the text.
 
 | Action | Resource | Scope |
 | --- | --- | --- |

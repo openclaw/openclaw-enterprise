@@ -22855,7 +22855,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/audit-events": {
       "get": {
-        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent lifecycle, API request, worker, session, turn, model call, and model response records from the preceding 24 hours.",
+        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected Agent records for a 24-hour period. Use end on the first page to select a past period.",
         "operationId": "listAgentAuditEvents",
         "parameters": [
           {
@@ -22886,6 +22886,23 @@
               "maxLength": 1024,
               "minLength": 1,
               "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "UTC end of the 24-hour period. The default is the current time. Use this only on the first page.",
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "2026-10-01T12:00:00.000Z"
+              }
+            },
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
               "type": "string"
             }
           },
@@ -24053,7 +24070,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/audit-events/{auditEventId}/message": {
       "get": {
-        "description": "Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event from the preceding 24 hours and its saved user message from the active revision. OCC records the disclosure before it returns the text.",
+        "description": "Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event and its saved user message from the active revision. OCC records the disclosure before it returns the text.",
         "operationId": "getAgentAuditEventMessage",
         "parameters": [
           {

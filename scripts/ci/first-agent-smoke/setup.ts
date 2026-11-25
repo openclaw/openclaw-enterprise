@@ -22,14 +22,21 @@ import {
   type RunOptions,
 } from "./process.ts";
 
-type Api = (method: string, path: string, body?: unknown) => Promise<unknown>;
+type Api = (
+  method: string,
+  path: string,
+  body?: unknown,
+  options?: { signal?: AbortSignal | undefined },
+) => Promise<unknown>;
 
 export function createApi(origin: string, key: string) {
   return async (
     method: string,
     path: string,
     body?: unknown,
-    options?: { response: "chat"; signal: AbortSignal; expectedStatus: number },
+    options?:
+      | { signal?: AbortSignal | undefined; response?: never }
+      | { response: "chat"; signal: AbortSignal; expectedStatus: number },
   ) => {
     const url = new URL(path, origin);
     assert.equal(
@@ -336,7 +343,7 @@ export async function signInConsole(
   });
   const signIn = "/api/auth/sign-in/email";
   let cookie = "";
-  const api: Api = (method, path, body) => {
+  const api: Api = (method, path, body, options) => {
     const url = new URL(path, origin);
     assert.equal(url.origin, origin.origin, "refusing to send credentials outside the Console");
     const content = body === undefined ? undefined : JSON.stringify(body);
@@ -362,7 +369,9 @@ export async function signInConsole(
                   "content-length": Buffer.byteLength(content),
                 }),
           },
-          signal: AbortSignal.timeout(30_000),
+          signal: options?.signal
+            ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)])
+            : AbortSignal.timeout(30_000),
         },
         (response) => {
           const chunks: Buffer[] = [];
@@ -516,6 +525,36 @@ export async function checkMessageDisclosure(
   } finally {
     await query(`ALTER TABLE occ.audit_events DROP CONSTRAINT ${constraint};`);
   }
+}
+
+export async function checkHistoricalAuditMessage(
+  stack: InstalledAuditStack,
+  eventId: string,
+  text: string,
+  readMessage: (id: string) => Promise<unknown>,
+) {
+  // In this disposable database only, the administrator briefly disables the
+  // append-only trigger inside one transaction to age a genuine event. Its
+  // identity, active revision, and saved Gateway message remain unchanged.
+  const aged = await queryAudit(
+    stack,
+    { event_id: eventId },
+    `BEGIN;
+     ALTER TABLE occ.audit_events DISABLE TRIGGER audit_events_are_append_only;
+     UPDATE occ.audit_events SET occurred_at = clock_timestamp() - interval '25 hours'
+       WHERE id = :'event_id' RETURNING id;
+     ALTER TABLE occ.audit_events ENABLE TRIGGER audit_events_are_append_only;
+     COMMIT;`,
+  );
+  assert.equal(aged, eventId);
+  const result = await readMessage(eventId);
+  const event = wireField(result, "event");
+  const message = wireField(result, "message");
+  assert.ok(Date.parse(String(wireField(event, "occurredAt"))) < Date.now() - 24 * 60 * minute);
+  assert.ok(
+    wireField(message, "text") === text,
+    "historical audit lookup returned another message",
+  );
 }
 
 const runtimeRows = `FROM occ.audit_events
@@ -853,6 +892,78 @@ export async function withRefusedTurnWrite<T>(
   }
 }
 
+export async function withRefusedAgentRuntimeWrites<T>(
+  stack: InstalledAuditStack & KubernetesAccess,
+  agentId: string,
+  exercise: (controls: {
+    refused: () => Promise<Map<string, Set<string>>>;
+    refuseRevision: (revisionId: string) => Promise<void>;
+  }) => Promise<T>,
+) {
+  const marker = `smoke_audit_${randomUUID().replaceAll("-", "")}`;
+  const query = (sql: string, options?: RunOptions) =>
+    queryAudit(stack, { agent_id: agentId }, sql, options);
+  const start = new Date().toISOString();
+  const pattern = new RegExp(`${marker} (aud_[a-f0-9-]{36}) (rev_[a-f0-9-]{36})`, "g");
+  async function refused() {
+    const { stdout } = await kubectl(stack, [
+      "logs",
+      "-n",
+      stack.state.platformNamespace,
+      "statefulset/postgres",
+      "-c",
+      "postgres",
+      `--since-time=${start}`,
+    ]);
+    const ids = new Map<string, Set<string>>();
+    for (const match of stdout.matchAll(pattern)) {
+      const [, id, revisionId] = match;
+      const values = ids.get(revisionId!) ?? new Set<string>();
+      values.add(id!);
+      ids.set(revisionId!, values);
+    }
+    return ids;
+  }
+  async function refuseRevision(revisionId: string) {
+    // In one transaction, restore writes for this Agent's other revisions.
+    // The predecessor still receives a real database error on every replay.
+    await queryAudit(
+      stack,
+      { agent_id: agentId, revision_id: revisionId },
+      `BEGIN;
+       DROP TRIGGER ${marker} ON occ.audit_events;
+       CREATE TRIGGER ${marker} BEFORE INSERT ON occ.audit_events FOR EACH ROW
+         WHEN (NEW.kind = 'runtime_activity' AND NEW.resource_kind = 'agent'
+           AND NEW.resource_id = :'agent_id'
+           AND NEW.details->>'agentRevisionId' = :'revision_id')
+         EXECUTE FUNCTION occ.${marker}();
+       COMMIT;`,
+    );
+  }
+  try {
+    // Refuse runtime evidence for this Agent across revision cutovers. Other
+    // control-plane writes and other Agents remain available during the outage.
+    await query(`
+      BEGIN;
+      CREATE FUNCTION occ.${marker}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION '% % %', TG_NAME, NEW.id, NEW.details->>'agentRevisionId'; END;
+      $$;
+      CREATE TRIGGER ${marker} BEFORE INSERT ON occ.audit_events FOR EACH ROW
+        WHEN (NEW.kind = 'runtime_activity' AND NEW.resource_kind = 'agent'
+          AND NEW.resource_id = :'agent_id')
+        EXECUTE FUNCTION occ.${marker}();
+      COMMIT;
+    `);
+    return await exercise({ refused, refuseRevision });
+  } finally {
+    await query(
+      `BEGIN; DROP TRIGGER IF EXISTS ${marker} ON occ.audit_events;
+       DROP FUNCTION IF EXISTS occ.${marker}(); COMMIT;`,
+      { signal: undefined },
+    );
+  }
+}
+
 export async function withRejectedAuditCredential<T>(
   stack: InstalledAuditStack,
   revisionId: string,
@@ -913,6 +1024,20 @@ export async function expectNoRuntimeAuditGrant(stack: InstalledAuditStack, revi
 
 export function runtimeAuditRowCount(stack: LocalSetup, revisionId: string) {
   return queryRevision(stack, revisionId, `SELECT count(*) ${runtimeRows};`);
+}
+
+export async function runtimeAuditIds(
+  stack: InstalledAuditStack,
+  revisionId: string,
+  options?: RunOptions,
+) {
+  const rows = await queryRevision(
+    stack,
+    revisionId,
+    `SELECT id ${runtimeRows} ORDER BY id;`,
+    options,
+  );
+  return new Set(rows ? rows.split("\n") : []);
 }
 
 export async function apiProcess(
@@ -1046,6 +1171,7 @@ export async function routeModelProvider(
 
 interface ModelEvent {
   event?: string;
+  attemptId?: string;
   status?: number;
   text?: string;
   caller?: string;
@@ -1054,8 +1180,8 @@ interface ModelEvent {
   peer?: string;
 }
 
-export async function modelEvents(): Promise<ModelEvent[]> {
-  const { stdout } = await run("docker", ["logs", modelContainer]);
+export async function modelEvents(options?: RunOptions): Promise<ModelEvent[]> {
+  const { stdout } = await run("docker", ["logs", modelContainer], options);
   return stdout
     .split("\n")
     .filter((line) => line.startsWith("{"))

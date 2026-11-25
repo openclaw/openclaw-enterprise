@@ -9,6 +9,12 @@ import type {
 import { REDACTED, redactAuditText } from "./runtime-reference.ts";
 
 export { runtimeAuditReference } from "./runtime-reference.ts";
+export {
+  createRuntimeAuditReplaySigner,
+  runtimeAuditReplayVerifier,
+  verifyRuntimeAuditReplay,
+} from "./runtime-replay.ts";
+export type { RuntimeAuditReplayFields } from "./runtime-replay.ts";
 export type { AuditEvent, AuditEventKind, AuditOutcome } from "@openclaw-enterprise/contracts";
 
 export type AuditEventInput = Omit<AuditEvent, "id" | "occurredAt" | "kind" | "outcome">;

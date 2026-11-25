@@ -288,13 +288,14 @@ test(
       await worker.stop();
     }
 
+    let recovered: Awaited<ReturnType<typeof checkGatewayAudit>> | undefined;
     await t.test("the Gateway can write only for its registered Agent revision", async (child) => {
       const peerGrant = await inject("POST", `${iamPath}/access-bindings`, {
         ...binding,
         resourceId: peerAgent.id,
       });
       assert.equal(peerGrant.statusCode, 201, peerGrant.body);
-      await checkGatewayAudit(child, {
+      recovered = await checkGatewayAudit(child, {
         app,
         pool,
         state,
@@ -312,6 +313,87 @@ test(
           return response.json().data;
         },
       });
+    });
+
+    await t.test("an analyst can page through a recovered past period", async (child) => {
+      assert.ok(recovered);
+      const evidence = recovered;
+      const end = encodeURIComponent(evidence.end);
+      const current = await inject("GET", auditPath);
+      assert.equal(current.statusCode, 200, current.body);
+      assert.ok(
+        current
+          .json()
+          .data.events.every(
+            (event: { id: string }) =>
+              event.id !== evidence.sessionEventId && event.id !== evidence.turnEventId,
+          ),
+      );
+
+      // These records arrived through signed replay after their producer was revoked.
+      // The first-page end selects the original event time, not the delivery time.
+      const first = await inject("GET", `${auditPath}?end=${end}&limit=1`);
+      assert.equal(first.statusCode, 200, first.body);
+      const page: AgentAuditPage = first.json().data;
+      assert.deepEqual(page.window, {
+        start: new Date(Date.parse(evidence.end) - 24 * 60 * 60 * 1000).toISOString(),
+        end: evidence.end,
+      });
+      assert.deepEqual(
+        page.events.map((event) => event.id),
+        [evidence.sessionEventId],
+      );
+      assert.equal(Date.parse(page.events[0]!.occurredAt), Date.parse(page.window.end));
+      assert.ok(page.nextCursor);
+      const recorded = await disclosure(first.json().meta.requestId);
+      assert.equal(recorded.length, 1);
+      assert.equal(recorded[0].details.windowStart, page.window.start);
+      assert.equal(recorded[0].details.windowEnd, page.window.end);
+      assert.equal(recorded[0].details.returnedCount, 1);
+
+      // A cursor for a past period is valid for 15 minutes after the server issues it.
+      const second = await inject("GET", `${auditPath}?cursor=${page.nextCursor}`);
+      assert.equal(second.statusCode, 200, second.body);
+      const next: AgentAuditPage = second.json().data;
+      assert.deepEqual(next.window, page.window);
+      assert.deepEqual(
+        next.events.map((event) => event.id),
+        [evidence.turnEventId],
+      );
+      assert.equal(Date.parse(next.events[0]!.occurredAt), Date.parse(page.window.start));
+      assert.equal(next.nextCursor, null);
+      assert.equal(
+        (await inject("GET", `${auditPath}?cursor=${page.nextCursor}&end=${end}`)).statusCode,
+        400,
+      );
+      assert.equal(
+        (await inject("GET", `${auditPath}?cursor=${page.nextCursor}&limit=2`)).statusCode,
+        400,
+      );
+      assert.equal((await inject("GET", `${otherAuditPath}?end=${end}`)).statusCode, 403);
+      const future = encodeURIComponent(new Date(Date.now() + 60_000).toISOString());
+      assert.equal((await inject("GET", `${auditPath}?end=${future}`)).statusCode, 400);
+      assert.equal(
+        (await inject("GET", `${auditPath}?end=2026-01-01T00:00:00%2B00:00`)).statusCode,
+        400,
+      );
+      assert.equal(
+        (await inject("GET", `${auditPath}?end=0000-01-01T00:00:00.000Z`)).statusCode,
+        400,
+      );
+      // Advance only the application clock. A valid old-period cursor expires
+      // 15 minutes after issue, even though its selected period ended yesterday.
+      const now = Date.now();
+      child.mock.timers.enable({ apis: ["Date"], now });
+      try {
+        child.mock.timers.setTime(now + 15 * 60 * 1000 + 1);
+        assert.equal(
+          (await inject("GET", `${auditPath}?cursor=${page.nextCursor}`)).statusCode,
+          400,
+        );
+      } finally {
+        child.mock.timers.reset();
+      }
     });
 
     await t.test(
