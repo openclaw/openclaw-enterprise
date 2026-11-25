@@ -93,12 +93,16 @@ test("docs build renders every authored page and preserves repository ownership"
     join(published, "guides/repository-credentials/openshell-enrollment/index.html"),
     "utf8",
   );
-  const verifier = `${quickstartAssets}/verify-github-installation.mjs`;
-  assert.ok(enrollment.includes(`href="/${verifier}"`));
-  assert.ok(enrollment.includes(`installation_check=docs/${verifier}`));
   assert.ok(
-    enrollment.includes(`installation_check:-docs/${quickstart}/verify-github-installation.mts`),
+    enrollment.includes(
+      'rel="canonical" href="/guides/repository-credentials/#set-github-app-access-for-an-openshell-agent"',
+    ),
   );
+  const repositoryFlow = await readFile(
+    join(published, "flows/agent-repository-credentials/index.html"),
+    "utf8",
+  );
+  assert.ok(repositoryFlow.includes(`href="/${quickstartAssets}/verify-github-installation.mjs"`));
 
   // Run the shipped staging command from both trees. The published shell must copy
   // the historical download and use the same staged filename when sending a turn.

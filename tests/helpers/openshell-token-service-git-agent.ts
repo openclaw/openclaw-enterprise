@@ -592,6 +592,23 @@ export async function verifyNativeGitAgent(t: TestContext, harness: "openclaw" |
     const current = await gateway.getSandbox({ workspace, name: sandboxName }, rpc());
     assert.equal(current?.mainProcessInstanceId, sandbox.mainProcessInstanceId);
     assert.equal((await data<Agent>("GET", agentPath, 200)).activeRevisionId, revision.id);
+    await (await request("POST", `${agentPath}/stop`, 202)).body?.cancel();
+    await waitUntil(
+      "managed Sandbox stopped and its model and Git Providers detached",
+      async () => {
+        const stopped = await gateway.getSandbox({ workspace, name: sandboxName }, rpc());
+        const providers = stopped?.spec?.providers;
+        return (
+          stopped !== undefined &&
+          stopped.id === sandbox.id &&
+          (stopped.phase === "SANDBOX_PHASE_STOPPED" || stopped.phase === 7) &&
+          Array.isArray(providers) &&
+          !providers.includes(modelProvider) &&
+          !providers.includes(gitProvider)
+        );
+      },
+      poll,
+    );
     return;
   }
   assert.ok(tcpProbe);

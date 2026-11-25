@@ -217,7 +217,11 @@ selects `/sandbox/oce/workspace`. See
 preserves a successor workload when retiring an older revision. For the current
 revision it calls `StopSandbox` and confirms stopped state. It does not delete storage.
 
-For a Git revision, `OpenShellGitRuntime.withdrawConfirmed` first blocks local use
+For Source-backed Git, Compute stops the managed Sandbox. The Sandbox Driver
+clears the stopped revision's network rules and verifies the stored policy.
+The Credential Proxy can then detach its model and Git Providers from that Sandbox.
+
+For a prepared Git session, `OpenShellGitRuntime.withdrawConfirmed` first blocks local use
 and waits for the route store to record withdrawal. Failure prevents replacement.
 After stop, `ManagedOpenShellSandbox.retireGit` removes Git middleware and clears
 base network rules, then detaches the old Git Provider with readback. It deletes
