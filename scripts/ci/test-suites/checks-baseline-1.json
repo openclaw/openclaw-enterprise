@@ -79,6 +79,7 @@
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.ts",
+    "tests/conformance/local-first-agent-profile.test.ts",
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
@@ -435,6 +436,14 @@
     },
     {
       "path": "tests/conformance/test-files.test.ts"
+    },
+    {
+      "path": "tests/conformance/local-first-agent-profile.test.ts",
+      "expectedTests": [
+        "first-Agent Pod timing reports only relative milestones and aggregate restarts",
+        "first-Agent Pod timing distinguishes absent containers from missing start times",
+        "first-Agent capacity finish reports one aggregate across initial, interval and final samples"
+      ]
     },
     {
       "path": "tests/conformance/socket-directory.test.ts"

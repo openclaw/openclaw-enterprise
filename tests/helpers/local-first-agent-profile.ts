@@ -1,10 +1,35 @@
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
+import type { TestContext } from "node:test";
 
-export function recordFirstAgentPodTiming(context, stage, role, pod, requestedAt) {
+type MeasurementContext = Pick<TestContext, "diagnostic">;
+
+type PodTimingObservation = {
+  metadata: { creationTimestamp: string };
+  status: {
+    conditions?: readonly { type: string; status: string; lastTransitionTime?: string }[];
+    containerStatuses?: readonly {
+      state?: { running?: { startedAt?: string } };
+      restartCount?: number;
+    }[];
+  };
+};
+
+export function recordFirstAgentPodTiming(
+  context: MeasurementContext,
+  stage: "native-initial" | "native-replacement",
+  role: "harness" | "gateway",
+  pod: PodTimingObservation,
+  requestedAt: number,
+): void {
   const created = Date.parse(pod.metadata.creationTimestamp);
-  const sinceCreated = (value) =>
-    Number.isFinite(Date.parse(value)) ? Date.parse(value) - created : null;
-  const condition = (type) =>
+  const sinceCreated = (value: string | undefined) => {
+    if (value === undefined) {
+      return null;
+    }
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? timestamp - created : null;
+  };
+  const condition = (type: "PodScheduled" | "Initialized" | "Ready") =>
     sinceCreated(
       pod.status.conditions?.find((item) => item.type === type && item.status === "True")
         ?.lastTransitionTime,
@@ -30,9 +55,9 @@ export function recordFirstAgentPodTiming(context, stage, role, pod, requestedAt
 }
 
 // Sample the owned hosted VM while both real Agents run; retain no process names.
-export function sampleFirstAgentCapacity(context) {
-  const samples = [];
-  const sample = () => samples.push({ free: freemem(), load: loadavg()[0] });
+export function sampleFirstAgentCapacity(context: MeasurementContext): () => void {
+  const samples: { free: number; load: number }[] = [];
+  const sample = () => samples.push({ free: freemem(), load: loadavg()[0] ?? Number.NaN });
   sample();
   const timer = setInterval(sample, 2000);
   timer.unref();

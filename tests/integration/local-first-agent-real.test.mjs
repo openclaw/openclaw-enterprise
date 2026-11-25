@@ -32,7 +32,7 @@ import {
 import {
   recordFirstAgentPodTiming,
   sampleFirstAgentCapacity,
-} from "../helpers/local-first-agent-profile.mjs";
+} from "../helpers/local-first-agent-profile.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { verifyFirstAgentSandboxPolicy } from "../helpers/first-agent-sandbox-policy.ts";
