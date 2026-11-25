@@ -28,22 +28,10 @@ For static Slack MCP access, ask an Installation administrator to create a
 only `POST mcp.slack.com:443/mcp`. Obtain a valid Slack MCP OAuth user token
 for an eligible registered Slack app with the
 [scopes required by the selected tools](https://docs.slack.dev/ai/slack-mcp-server/#oauth-scopes-needed-on-user-token-for-different-tools).
-With Namespace `credential_source:create`, set `NAMESPACE_ID`, `TEMPLATE_ID`,
-and `TOKEN_FILE` to the exact IDs and private token file, then register the Source:
-
-```bash
-(
-  set -euo pipefail
-  umask 077
-  source_request=$(mktemp)
-  trap 'rm -f "$source_request"' EXIT
-  jq -n --arg template "$TEMPLATE_ID" --rawfile token "$TOKEN_FILE" \
-    '{name:"slack-mcp",type:"static",connectionTemplateId:$template,secret:($token|rtrimstr("\n"))}' \
-    > "$source_request"
-  occ credential-source create --namespace "$NAMESPACE_ID" \
-    --file "$source_request" --output json | jq -er .id
-)
-```
+With Namespace `credential_source:create`, open **Credentials** → **Create Source**.
+Enter a Source name, select the approved Slack Static Bearer Template under
+**Credential purpose**, enter the token as **Credential value**, and select
+**Create Source**. For API or CLI enrollment, see [register a static Source](../../reference/credential-sources/managed-static.md#register-a-source).
 
 Give the selecting operator exact Source `read` and `operate`. The deployer
 and Agent service principal need exact Source `operate`; Native IAM can grant

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-24
-last_updated_session: authoring-run/816f6bc5-1b99-4a82-8903-be3d98e6dd07
+updated: 2026-11-25
+last_updated_session: authoring-run/8e16452d-53c6-4819-8002-1f5cbb5601bc
 ---
 
 # Console Agent creation
@@ -70,13 +70,12 @@ While mounted, Available and Configured retain separate selected plugins, querie
 tool filters, and expanded rows without fetching pages or changing drafts.
 Removed selections clear their details; discovery resets clear both tabs.
 
-`agents/plugin-discovery.mjs:createPluginDiscovery` (`loadCatalog`, `loadTools`) implements
-[PAT discovery](../agent-plugins.md#credential-scoped-discovery): the selected or
-Preset Secret takes precedence over an entered token. OCC reads the
-Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
-Credential, provider, and Harness changes clear results and invalidate pending reads.
+`agents/plugin-discovery.mts:createPluginDiscovery` (`loadCatalog`, `loadTools`) uses
+a ready model CredentialSource reference for [credential-scoped Codex discovery](../agent-plugins.md#credential-scoped-discovery).
+Console does not send a Secret or raw token for discovery. Pagination is upstream;
+filtering is local. Credential, provider, and Harness changes invalidate pending reads.
 
-The model credential, people search and Slack token fields use the shared
+Fields for model Namespace Secrets, people search, and Slack tokens use the shared
 [Secret picker](agent-editing.md#4-render-draft-revision-or-channels). When a field first opens,
 `renderCreateAgent` reads `GET /namespaces/:namespaceId/permissions/secrets`: the readable
 Secrets the caller may not `operate`, reported only to a caller with Namespace read and Agent
@@ -169,23 +168,18 @@ credential access. Deployment refuses stale policy versions with HTTP 409.
 
 With eligible scoped repository choices but none selected, **Create Agent** warns before requesting deployment without a repository policy. Selecting a repository changes the action to **Save Agent draft**.
 
-Eligible dedicated configurations can preflight and queue guided provisioning
-with an inline Configuration and Secret references. For an eligible static
-model credential, the Console can enroll it through TokenService and clear the
-input. Codex device login returns a ready Source ID. The Console saves either
-Source ID in `harnessAuth` and `credentialSources` on the draft.
+Eligible guided provisioning uses inline Configuration and Secret references. The
+**Model credential** picker (`harness-auth.mts:createModelCredentialSourceField`)
+lists readable, ready Namespace Sources compatible with the selected API-key/PAT
+preset or built-in Codex OAuth consent (`builtin_codex`, no Template). Reuse
+skips enrollment and login. Save checks exact Source `operate` and records its ID
+in `harnessAuth.sourceId` and `credentialSources`. **Add new credential…** enrolls
+a key or PAT through TokenService and clears the input; **Sign in with OAuth**
+starts device login. Both bind the resulting Source.
 
-The Installation capabilities do not show whether the Compute Driver supplies a Preset's
-operator-managed (`runtime`) binding. When the capabilities are read, `checkRuntimeBinding` sends
-that binding to the preflight below; a `harnessAuth.method` refusal disables **Create Agent** and
-names what an administrator changes, because the form can change neither the binding nor the mode.
+Capabilities do not report whether Compute supplies a Preset's fixed `runtime` binding. `checkRuntimeBinding` preflights it; a `harnessAuth.method` refusal disables **Create Agent** and names the required administrator action.
 
-Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
-(`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
-`agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
-settings to it. A new Secret gets no `operate` grant, so where the `operate` answer above denies
-any readable Secret, the Preset's **Create new Secret** choice is disabled and a typed model key
-is refused before any write. It then checks the Agent name, draft values with their staged channel
+Before writing, `create.mts:renderAgentForm` checks the Agent name (`namespaces.mts:namespaceNameProblem`) and workspace files (`agents/workspace.mts:workspaceFileProblem`); a file error opens Advanced settings. If the permission answer denies any readable Secret, the form disables **Create new Secret** and refuses a typed key because a new Secret has no `operate` grant. It then checks the name, draft values with staged channel
 `secretBindings`, plugins and the planned `harnessAuth`
 (only the planned method for a credential it saves next; none for
 ChatGPT sign-in) with
@@ -278,6 +272,10 @@ Switching methods hides that feedback without changing the lookup or saved choic
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 18:02: Trace the Model credential picker. (authoring-run/8e16452d-53c6-4819-8002-1f5cbb5601bc - e80a503b866e06351b5557ef874183d96ab1f6b8)
+- 2026-11-25 17:02: Trace reuse of a saved built-in Codex OAuth Source in the accompanying Console changes. (authoring-run/8b9726b9-2263-4930-b132-f170f536f67e - 3b195612619556d60097c9fbd0fbfbbd3ba9b0e7)
+- 2026-11-25 11:30: Trace reuse and replacement of an existing managed model Source. (authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9 - 105ffee9962176cf42fc7cfe013b8b94831435db)
 
 - 2026-11-24 05:45: Reconcile Source enrollment with first-deployment repository warning. (authoring-run/816f6bc5-1b99-4a82-8903-be3d98e6dd07 - d6403c2401e338964f5486f8db2fcb40a3758448)
 - 2026-11-24 04:58: Trace the first-deployment repository warning and draft action. (authoring-run/02daa2dc-277c-444c-bb4d-5589ee0579e9 - 840798ada6c310271e26b3004c25bd7b253d042c)

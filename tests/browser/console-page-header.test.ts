@@ -322,7 +322,7 @@ test("Copy Agent ID gives manual copy instructions when clipboard writes are una
   await assertManualCopy();
 });
 
-test("a phone shows a short-named Agent's header in four rows, ending by 240 px", async (t) => {
+test("a phone keeps the Agent header compact and the Namespace focus outline in view", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Header phone");
   const agent = await fixture.createAgent(
     namespace.id,
@@ -335,7 +335,8 @@ test("a phone shows a short-named Agent's header in four rows, ending by 240 px"
   });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id).href);
   await page.getByRole("button", { name: "Deploy new version" }).waitFor();
-  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  const select = page.locator("#namespace-selector:not(:disabled)");
+  await select.waitFor();
   const layout = await headerLayout(page);
   t.diagnostic(JSON.stringify(layout));
   assert.equal(layout.title.lines, 1);
@@ -345,6 +346,45 @@ test("a phone shows a short-named Agent's header in four rows, ending by 240 px"
     .locator(".content .page-header")
     .evaluate((node) => node.getBoundingClientRect().width);
   assert.ok(layout.selector.right - layout.selector.left >= content - 1);
+
+  await page.locator(settledView).waitFor();
+  const focused = () => select.evaluate((node) => node.matches(":focus-visible"));
+  for (let step = 0; step < 20 && !(await focused()); step += 1) {
+    await page.keyboard.press("Tab");
+  }
+  assert.ok(await focused(), "Namespace is reachable with Tab");
+  await page.keyboard.press("Tab");
+  assert.ok(!(await focused()));
+
+  // Leave the select partly above the viewport so Shift+Tab must scroll it back into view.
+  const partiallyVisible = await select.evaluate((node) => {
+    globalThis.scrollBy({ top: node.getBoundingClientRect().top + 5, behavior: "instant" });
+    const rect = node.getBoundingClientRect();
+    return rect.top < 0 && rect.bottom > 0;
+  });
+  assert.ok(partiallyVisible);
+  await page.keyboard.press("Shift+Tab");
+  assert.ok(await focused(), "Shift+Tab returns to Namespace");
+
+  // The browser focuses the select, but the outline surrounds both the label and the select.
+  const outline = await page.locator(".page-header .namespace-selector").evaluate((wrapper) => {
+    const rect = wrapper.getBoundingClientRect();
+    const style = globalThis.getComputedStyle(wrapper);
+    const width = Number.parseFloat(style.outlineWidth);
+    const extent = width + Number.parseFloat(style.outlineOffset);
+    return {
+      visible: width > 0 && style.outlineStyle !== "none",
+      top: rect.top - extent,
+      left: rect.left - extent,
+      right: globalThis.innerWidth - rect.right - extent,
+      bottom: globalThis.innerHeight - rect.bottom - extent,
+    };
+  });
+  assert.ok(outline.visible, "Namespace has a keyboard focus outline");
+  assert.ok(
+    Math.min(outline.top, outline.left, outline.right, outline.bottom) >= 0,
+    `Namespace outline clearance: ${JSON.stringify(outline)}`,
+  );
 });
 
 test("Create Agent leads with ← Agents and puts the Namespace under its title", async (t) => {

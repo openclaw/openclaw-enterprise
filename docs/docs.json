@@ -1305,6 +1305,7 @@
               "flows/agent-runtime-logs",
               "flows/platform-console",
               "flows/platform-console/agent-creation",
+              "flows/platform-console/credential-sources",
               "flows/platform-console/agent-editing",
               "flows/platform-console/agent-workspace-files",
               "flows/platform-console/agent-stop-and-deletion",
@@ -1465,7 +1466,7 @@
     },
     {
       "from": "/guides/deploy/openshell-credential-sources/",
-      "to": "/guides/deploy/deploy-first-agent/#use-an-openai-api-key",
+      "to": "/guides/deploy/credential-lifecycle/#create-or-reuse-a-static-model-source-in-the-console",
       "anchors": {
         "rotate-the-key": "/guides/deploy/credential-lifecycle/#replace-an-occ-tokenservice-managed-model-key",
         "clean-up": "/reference/credential-sources/#delete-a-source"

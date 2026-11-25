@@ -53,14 +53,16 @@ Otherwise, use one of the methods below.
 
 ### Use a personally owned Codex login
 
-The Console user who starts the login owns the resulting Source.
+The Console user who starts a new login owns the resulting Source. Reusing a
+saved Source does not change its owner.
 
 1. In the intended person's signed-in Console session, select the same Namespace
    as the operator session and open **Create Agent**. Name the Agent **fred**,
    choose dedicated Codex and **ChatGPT OAuth (Experimental)**, and select
    **Enable browser chat**. The checkbox is initially unchecked and requires
-   [native browser setup](native-admin.md). Complete Codex sign-in and choose
-   a [Codex model available to the account](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
+   [native browser setup](native-admin.md). Under **Model credential**, select a
+   compatible saved Codex OAuth Source or choose **Sign in with OAuth** and
+   complete sign-in. Choose a [Codex model available to the account](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
 2. Select **Create Agent**. The saved draft opens. The deployer needs exact
    Source `operate` access. Native IAM grants missing Agent access at
    deployment; with another IAM Driver, grant it beforehand.

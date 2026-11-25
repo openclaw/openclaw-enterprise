@@ -132,20 +132,30 @@ upstream token. If the Backend has
 been removed, [forced deletion](../../reference/service-accounts.md#force-delete-when-the-backend-is-gone)
 can skip revocation. Retire the old Source after removing its Agent references.
 
+## Create or reuse a static model Source in the Console
+
+Complete [Installation setup](deploy-first-agent.md#prepare-the-installation).
+In **Create Agent**, choose a supported Dedicated Harness and **OpenAI API key**
+or Codex **Service Accounts**. Under **Model credential**, select a readable,
+ready Source in the same Namespace that matches the authentication method, or
+choose **Add new credential…** and enter the key or PAT. Creating a Source needs
+`credential_source:create`; selecting it needs exact `credential_source:operate`.
+For a PAT, choose **Save service account token** before hosted Apps discovery.
+
+Select the model and enable browser chat if needed, then create the Agent. Source
+authentication saves a draft; it does not deploy it. Follow steps 3–5 of the
+[Console deployment procedure](deploy-first-agent.md#use-a-personally-owned-codex-login):
+run `deployment_preflight`, deploy the draft, and use `wait_deployment` to apply
+Kubernetes peer policies and check the result. Verify a model response. If Source creation has an unknown outcome, check **Credential Sources**
+before trying again; the Console clears the entered credential and does not
+repeat the write automatically.
+
 ## Enroll a Codex PAT Source
 
-Complete [Installation setup](deploy-first-agent.md#prepare-the-installation)
-and [prepare the Agent name](deploy-first-agent.md#1-select-or-register-the-model-credential)
-in the operator shell. In the Console, select that shell's Namespace and open
-**Create Agent**. Enter the Agent name, choose dedicated Codex, **Service Accounts**,
-then **Credential Source**. Enter the PAT and choose
-**Save service account token**. Copy the saved Source ID into the operator shell:
-
-```bash
-modelSource='<saved Source ID>'
-```
-
-Continue with [Agent API creation and deployment](deploy-first-agent.md#2-create-the-configuration-and-agent).
+Use the [Console static Source procedure](#create-or-reuse-a-static-model-source-in-the-console)
+with Dedicated Codex and **Service Accounts**. A compatible saved Source can be
+reused. A new PAT is enrolled before hosted Apps discovery and bound when the
+Agent draft is saved.
 
 For an existing Agent with a PAT Secret, [register a new static Source](../../reference/credential-sources/managed-static.md#register-a-source).
 Set `config.provider_preset` to `codex-pat` and pass the PAT as a write-only
@@ -165,8 +175,12 @@ policies. The Installation must allow the
 [preset requests](../../reference/credential-sources.md#codex-account-model-requests)
 for the Codex executable. Verify a model response.
 
-For later Plugin edits, select the saved Source. For reauthorization, sign in
-again, select the replacement Source, stop the running Agent, and deploy the
+Under **Model credential**, select a readable, ready built-in Codex OAuth Source
+in the same Namespace to reuse it, or choose **Sign in with OAuth** to start a
+new login. Saving requires exact Source `operate`. For later Plugin edits, use
+the saved Source. To replace a connection, select a compatible existing Source
+or sign in again; replacing a binding requires `operate` on both Sources. Stop
+the running Agent and wait until it has no active revision before deploying the
 new draft. Delete the old Source after removing its Agent references.
 
 Starting a login requires Agent-create and Source-create permissions in the
