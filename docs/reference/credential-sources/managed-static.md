@@ -155,7 +155,7 @@ Exact GET requires `credential_source:read`; list requires Namespace `read` and 
 
 ## Update a source
 
-Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset. Use `config: {}` to remove it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. Keep the preset required by the model binding: `openai` or `codex-pat`. You can replace a credential while an active Agent revision uses the Source.
+Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset. Use `config: {}` to remove it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. You can replace a credential while an active Agent revision uses the Source.
 
 For OCC custody, TokenService commits the replacement and notifies the Credential Proxy. The Proxy updates existing delivery Providers. If delivery fails, PATCH returns `503 DEPENDENCY_UNAVAILABLE` and the replacement stays in custody. Use [manual credential delivery retry](../credential-sources.md#retry-credential-delivery) to deliver it without resending the secret.
 
