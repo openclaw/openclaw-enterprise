@@ -15,7 +15,8 @@ import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres, databaseUrl } from "../helpers/postgres-database.mjs";
-import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
+import { protectedMetadataFixture } from "../helpers/static-egress.mjs";
 import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 
@@ -25,7 +26,7 @@ for (const retained of [true, false]) {
     { ...requiresPostgres, timeout: 60_000 },
     async (t) => {
       let app!: Awaited<ReturnType<typeof postgresApp>>;
-      const f = await staticEgressFixture(t, {
+      const f = await protectedMetadataFixture(t, {
         recordInstallation: false,
         appFactory: async (context: TestContext, options = {}) => {
           app = await postgresApp(context, { ...options, recordOperations: true });
@@ -93,7 +94,6 @@ for (const retained of [true, false]) {
       const base = createBackendWorkerDrivers(compute, [], {
         secretDriver: app.controller.selectedDriver("secret"),
       }) as unknown as InstallationRuntimeDrivers;
-      const gateway = app.controller.selectedDriver("credential_gateway");
       const drivers = {
         ...base,
         installation: {
@@ -107,7 +107,6 @@ for (const retained of [true, false]) {
               configuration: {},
               definition: OpenShellSandboxDriver,
             },
-            credential_gateway: { id: gateway.id },
           },
         },
         configurationDriver: app.controller.selectedDriver("configuration"),
@@ -115,7 +114,6 @@ for (const retained of [true, false]) {
         namespaceLifecycleBindings: [
           sandboxNamespaceLifecycleBinding(compute, f.sandboxDriver, f.installedDriver),
         ],
-        credentialGatewayDriver: gateway,
         proxyDriver: f.egress,
         protectedDriver: f.installedDriver,
       };
@@ -162,8 +160,8 @@ for (const retained of [true, false]) {
       await completed(f.revision.id);
       const old = receipts.get(f.revision.id)!;
       assert.deepEqual(await current(old), old);
-      const captured = f.capture();
-      const ready = (await f.resolve(captured)).ready;
+      const captured = captureMetadata(f);
+      const ready = (await f.resolve(captured)).ready_without_material;
       assert.ok(ready, "the current receipt must authorize credential selection");
 
       failStop = retained;
@@ -235,7 +233,7 @@ for (const retained of [true, false]) {
       );
       assert.deepEqual(await current(next), next);
       assert.ok(
-        (await f.authorize(f.permitRequest(captured, ready))).refused,
+        (await f.authorize(f.permitRequest(captured, ready, { noMaterial: true }))).refused,
         "a request captured before replacement cannot use the retired receipt",
       );
       assert.equal(await contexts.get(f.revision.id)!.currentEgressInstallation!(), undefined);
@@ -245,7 +243,7 @@ for (const retained of [true, false]) {
 }
 
 test("memory enrollment custody permits replacement only after retiring the predecessor", async (t) => {
-  const f = await staticEgressFixture(t);
+  const f = await protectedMetadataFixture(t);
   assert.ok("installation" in f && "revision" in f);
   const controller: OpenClawController = f.controller;
   const nextMetadata = await f.deployAgent(f.namespace.id, f.agent.id);

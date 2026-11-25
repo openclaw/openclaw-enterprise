@@ -69,10 +69,7 @@ test("scratch requirements keep the durable workspace and exact admitted writabl
       auth: { loginMode: "api_key", environment: [] },
       provider: true,
     });
-    return (scratch) =>
-      scratch === undefined
-        ? driver.sandboxRequirements(launch, ownership.agentId)
-        : driver.sandboxRequirements(launch, ownership.agentId, [], scratch);
+    return (scratch) => driver.sandboxRequirements(launch, ownership.agentId, scratch);
   }));
 
 function scratchCompute(bindings) {

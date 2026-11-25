@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { composeOptions, readJsonLines, runDevUp } from "../helpers/dev-up-commands.ts";
-import { createFixture, prepareLifecycleCommands } from "../helpers/dev-up.mjs";
+import { createFixture, prepareLifecycleCommands } from "../helpers/dev-up.ts";
 
 // Run real Compose preflight for both Compute profiles before any resource mutation.
 

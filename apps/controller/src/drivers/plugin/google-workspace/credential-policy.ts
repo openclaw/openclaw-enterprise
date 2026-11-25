@@ -1,13 +1,15 @@
-import type {
-  CredentialSource,
-  PluginDeploymentNetworkRequirement,
+import {
+  pathCovered,
+  type ConnectionTemplateVersion,
+  type StoredCredentialSource as CredentialSource,
+  type PluginDeploymentNetworkRequirement,
 } from "@openclaw-enterprise/contracts";
 import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalog.ts";
 import {
   eligibleGoogleOperations,
-  googleActionPath,
   googleCatalog,
   googleDiscoveryRoutes,
+  googleRouteCandidates,
   googleSourcePathMatches,
   googleDiscoveryRequests,
   googleRequestScope,
@@ -19,10 +21,17 @@ const googleDiscovery = googleDiscoveryRoutes().map(({ host, path }) => ({
   method: "GET",
 }));
 
-const googleActions = Object.values(googleCatalog.operations).map((operation) => {
+const googleActions = Object.entries(googleCatalog.operations).flatMap(([id, operation]) => {
   const { origin, method } = operation;
   const host = new URL(origin).hostname;
-  const path = googleActionPath(operation);
+  // Personal Gmail accounts have a concrete `me` resource.
+  const path =
+    host === "gmail.googleapis.com" ? operation.path.replaceAll("{userId}", "me") : operation.path;
+  if (path.includes("{")) {
+    // TODO(operation-specific HTTP matching): support parameterized operations when the
+    // selected delivery path can enforce their complete method and path.
+    return [];
+  }
   if (
     origin !== `https://${host}` ||
     googleDiscovery.some(
@@ -31,7 +40,14 @@ const googleActions = Object.values(googleCatalog.operations).map((operation) =>
   ) {
     throw new Error("Google action endpoints must be HTTPS and separate from public discovery.");
   }
-  return { host, method, path };
+  const candidates = googleRouteCandidates(origin, method, path);
+  if (
+    !candidates.some((candidate) => candidate.id === id) ||
+    candidates.some((candidate) => !candidate.id || !candidate.supported)
+  ) {
+    return [];
+  }
+  return [{ host, method, path }];
 });
 
 function googleNetworks(
@@ -58,6 +74,9 @@ function googleNetworks(
 }
 
 function sourceScope(source: CredentialSource) {
+  if (source.ownerCapability === "token_service") {
+    return undefined;
+  }
   const config = source.config;
   return googleRequestScope({
     host: config.host,
@@ -80,7 +99,27 @@ export const googleWorkspaceCredentialPolicy = {
     install: ManagedCliInstall,
     slot: ManagedCredentialSlot,
     source: CredentialSource,
+    template?: ConnectionTemplateVersion,
   ): boolean {
+    if (source.ownerCapability === "token_service") {
+      return (
+        source.state === "ready" &&
+        source.type === "oauth2-refresh-token" &&
+        source.consent.kind === "connection_template" &&
+        source.consent.revocationRequestedBy === undefined &&
+        source.consent.revokedAt === undefined &&
+        template !== undefined &&
+        template.templateId === source.connectionTemplateId &&
+        template.mode === "manual" &&
+        template.issuer === slot.issuer &&
+        template.tokenUrl === slot.tokenEndpoint &&
+        template.destinations.some(
+          ({ host, port, path }) =>
+            port === 443 &&
+            googleActions.some((route) => route.host === host && pathCovered(route.path, path)),
+        )
+      );
+    }
     const config = source.config;
     const scope = sourceScope(source);
     return (
@@ -97,7 +136,7 @@ export const googleWorkspaceCredentialPolicy = {
   },
   conflict(selected: CredentialSource, sources: readonly CredentialSource[]) {
     const scope = sourceScope(selected);
-    if (!scope) {
+    if (!scope || selected.ownerCapability === "token_service") {
       return undefined;
     }
     // The qualified adapter selects middleware by host, including discovery requests.
@@ -105,6 +144,7 @@ export const googleWorkspaceCredentialPolicy = {
     if (
       sources.some(
         (s) =>
+          s.ownerCapability !== "token_service" &&
           s.id !== selected.id &&
           (s.config.env_var === selected.config.env_var || hosts.has(s.config.host ?? "")),
       )

@@ -5,8 +5,9 @@ import type {
   NamespaceCallerPermissionsResponse,
 } from "@openclaw-enterprise/contracts";
 import type { ConsolePageContext, LeaveGuard, TabNavigation } from "./page-context.mjs";
-import { renderOAuthClients } from "./oauth-clients.mjs";
+import { renderCredentialClients } from "./credential-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
+import { finishPluginConsentTab } from "./agents/plugin-connection.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -46,7 +47,7 @@ import {
 import { createViewLifetime } from "./view-lifetime.mjs";
 import {
   connectionTemplatesPage,
-  oauthClientsPage,
+  credentialClientsPage,
   createNavigation,
   pages,
   type AgentsLanding,
@@ -135,6 +136,7 @@ interface RetainedView {
   scope: string | null;
   scrollY: number;
   returnFocus: ReturnFocus | null;
+  restoreAgentControl: (() => void) | null;
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
@@ -1019,6 +1021,34 @@ function clearPasswordInputs() {
     });
 }
 
+// Detaching the live editor preserves its selection but resets its internal scroll.
+function rememberAgentControl(view: HTMLElement, control: HTMLElement) {
+  const inViewport = () => {
+    const { top, bottom, left, right } = control.getBoundingClientRect();
+    return bottom > 0 && top < window.innerHeight && right > 0 && left < window.innerWidth;
+  };
+  const usable = () =>
+    view.contains(control) &&
+    !control.closest('[inert], :disabled, [aria-disabled="true"], [aria-hidden="true"]') &&
+    control.checkVisibility({ checkVisibilityCSS: true, checkOpacity: true });
+  if (!usable() || !inViewport()) {
+    return null;
+  }
+  const { scrollTop, scrollLeft } = control;
+  return () => {
+    if (!usable()) {
+      return;
+    }
+    control.focus({ preventScroll: true });
+    if (document.activeElement === control) {
+      control.scrollTo(scrollLeft, scrollTop);
+      if (!inViewport()) {
+        control.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+    }
+  };
+}
+
 function retainMountedView(returnControl: Element | null, scrollY = window.scrollY) {
   const owner = sessionOwnerKey(session);
   // The mounted view's own node, never another page shown in its place: an Agent page renders
@@ -1027,21 +1057,24 @@ function retainMountedView(returnControl: Element | null, scrollY = window.scrol
   if (!owner || mountedRouteKey === null || !view?.isConnected || view.hidden) {
     return;
   }
+  const state =
+    mountedViewState?.reusable && mountedViewState.pending === 0 ? mountedViewState : null;
+  let restoreAgentControl: RetainedView["restoreAgentControl"] = null;
   let returnFocus: ReturnFocus | null = null;
   if (returnControl instanceof HTMLElement && view.contains(returnControl)) {
     if (returnControl instanceof HTMLAnchorElement) {
       returnFocus = { href: returnControl.dataset.returnFocusHref ?? returnControl.href };
     } else if (returnControl.dataset.refocusKey) {
       returnFocus = { key: returnControl.dataset.refocusKey };
+    } else if (state?.agent) {
+      restoreAgentControl = rememberAgentControl(view, returnControl);
     }
   }
   retainedViews.set(mountedRouteKey, {
     owner,
-    snapshot:
-      mountedViewState?.reusable && mountedViewState.pending === 0
-        ? view
-        : (view.cloneNode(true) as HTMLDivElement),
-    state: mountedViewState?.reusable && mountedViewState.pending === 0 ? mountedViewState : null,
+    snapshot: state ? view : (view.cloneNode(true) as HTMLDivElement),
+    state,
+    restoreAgentControl,
     title: app.querySelector<HTMLHeadingElement>(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
     scrollY,
@@ -1790,6 +1823,12 @@ async function loadPage({
   if (fromNavigation && previousMountedRouteKey === routeKey(current)) {
     reuseView = false;
   }
+  const agentHistory =
+    fromNavigation &&
+    restoreHistory !== null &&
+    reuseView &&
+    current.agentId !== null &&
+    namespaceId === current.namespace;
   namespaceId = current.namespace;
   if (
     fromRefresh &&
@@ -1815,6 +1854,18 @@ async function loadPage({
       ? mountedViewState?.deferredAgentSearch
       : undefined;
   const focused = document.activeElement;
+  // Only resume the tab or its editing controls. Returning must not put a destructive action under Enter.
+  const leavingDraftControl =
+    agentHistory &&
+    mountedAgent?.id === current.agentId &&
+    focused?.matches(
+      '.agent-tabs [role="tab"][aria-selected="true"], button[data-opens="configuration-editor"], textarea#configuration-json',
+    );
+  const shellHadFocus =
+    agentHistory &&
+    focused?.closest(".shell") &&
+    !focused.matches(".content h1") &&
+    !mountedViewState?.view.contains(focused);
   // The Consumers link closes its inspector before navigating, so the native dialog returns
   // focus to the Secret row that opened it. A directly linked inspector has no such row.
   const leavingSecretRow =
@@ -1827,6 +1878,7 @@ async function loadPage({
     retainView: knownPrivateState,
     // Namespaces rows and snapshot shortcuts mark themselves for return focus too.
     returnControl:
+      leavingDraftControl ||
       leavingSecretRow ||
       (focused instanceof HTMLAnchorElement &&
         (openingAgent || focused.matches("[data-return-focus-href]")))
@@ -1889,7 +1941,15 @@ async function loadPage({
     current.feature === "secrets" &&
     retainedFocus != null &&
     "key" in retainedFocus;
-  let returnFocusMoved = false;
+  const returningToDraft =
+    agentHistory &&
+    retainedView?.state?.agent?.id === current.agentId &&
+    current.url.searchParams.get("revision") === "draft" &&
+    (current.url.searchParams.get("tab") ?? "configuration") === "configuration";
+  let returnFocusMoved = Boolean(returningToDraft && shellHadFocus);
+  const mayReturnFocus = () =>
+    !(trackSecretReturn || returningToDraft) ||
+    (!returnFocusMoved && document.hasFocus() && (!returningToDraft || !document.hidden));
   const onFocus = (event: FocusEvent) => {
     if (event.target !== expectedHeading && event.target !== document.body) {
       returnFocusMoved = true;
@@ -1902,7 +1962,7 @@ async function loadPage({
       }
     }
   };
-  if (search || trackSecretReturn || trackDeletionLanding) {
+  if (search || trackSecretReturn || returningToDraft || trackDeletionLanding) {
     document.addEventListener("focusin", onFocus, { capture: true, signal: lifetime.signal });
   }
   const pendingSearch = () =>
@@ -2422,6 +2482,10 @@ async function loadPage({
       if (firstAgent) {
         retainedView.title = firstAgent.name;
       }
+      // Blurring the stand-in directly produces no focusin. Check before replacing it ourselves.
+      if (returningToDraft && heldHeading?.isConnected && document.activeElement !== heldHeading) {
+        returnFocusMoved = true;
+      }
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       shell = restoredShell;
       // Landing notices stay on a refocus of the same view and clear on a new navigation.
@@ -2441,7 +2505,12 @@ async function loadPage({
       writeInFlight = retainedState.writeInFlight ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
-      restoreRefocus = () => (restoreFocus ?? namespaceShellFocus)?.restore(restoredShell.view);
+      restoreRefocus = () => {
+        (restoreFocus ?? namespaceShellFocus)?.restore(restoredShell.view);
+        if (returningToDraft && mayReturnFocus() && document.activeElement === document.body) {
+          retainedView.restoreAgentControl?.();
+        }
+      };
       return;
     }
     // The destination rebuilds: a retained view that did not match is stale from here on.
@@ -2590,7 +2659,7 @@ async function loadPage({
     if (shell.diagnostics) {
       attachDiagnostics(shell.diagnostics);
     }
-    if (current.feature === connectionTemplatesPage || current.feature === oauthClientsPage) {
+    if (current.feature === connectionTemplatesPage || current.feature === credentialClientsPage) {
       // Re-enter with current administrator access and a fresh editor on history navigation.
       viewState.reusable = false;
       const view = shell.view;
@@ -2598,14 +2667,16 @@ async function loadPage({
         panel(
           view,
           "Installation administrator access required",
-          current.feature === oauthClientsPage
-            ? "Installation administrators manage OAuth clients."
+          current.feature === credentialClientsPage
+            ? "Installation administrators manage credential clients."
             : "Installation administrators manage connection templates.",
         );
       if (installationAdmin) {
         viewState.administrationEnded.add(showRequiredAccess);
         const render =
-          current.feature === oauthClientsPage ? renderOAuthClients : renderConnectionTemplates;
+          current.feature === credentialClientsPage
+            ? renderCredentialClients
+            : renderConnectionTemplates;
         view.append(
           render(
             { request: viewRequest, isCurrent: viewIsCurrent },
@@ -3211,7 +3282,7 @@ async function loadPage({
         heading.focus({ preventScroll: true });
       } else if (
         fromNavigation &&
-        (!trackSecretReturn || (!returnFocusMoved && document.hasFocus())) &&
+        mayReturnFocus() &&
         previousMountedRouteKey !== routeKey(current) &&
         (document.activeElement === document.body ||
           (returnFocus && document.activeElement === heldHeading))
@@ -3242,7 +3313,8 @@ async function loadPage({
         );
         // Back can leave a rebuilt list scrolled past its heading when the old link is gone.
         const revealFallback =
-          returnFocus && !focusTarget && rebuiltList && mountedRouteKey === routeKey(current);
+          (returningToDraft && shell.view === retainedView?.snapshot) ||
+          (returnFocus && !focusTarget && rebuiltList && mountedRouteKey === routeKey(current));
         if (restoreScroll && retainedView) {
           window.scrollTo({ top: retainedView.scrollY, left: 0 });
         }
@@ -4202,4 +4274,6 @@ window.addEventListener("pageshow", (event) => {
     void loadPage();
   }
 });
-void loadPage();
+if (!finishPluginConsentTab()) {
+  void loadPage();
+}

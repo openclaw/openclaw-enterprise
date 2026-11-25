@@ -119,7 +119,7 @@ see the [Driver contract](credential-proxy.md#delivery-profiles) and
 ### Supply protected Git credentials with Helm
 
 Configure the [production chart](../../../deploy/helm/openclaw-enterprise/values.yaml)
-with your resource names and approved issuer address. Keep Secret contents out of Helm values.
+with your resource names. Keep Secret contents out of Helm values.
 
 ```yaml
 repositoryCredentials:
@@ -128,7 +128,6 @@ repositoryCredentials:
   registryConfigMapName: repository-registry-v1
   appKeySecretName: repository-app-key
   preparedCustodySecretName: git-custody
-  upstreamCidrs: ["198.51.100.23/32"]
 ```
 
 Leave `repositoryCredentials.enabled` and `openshellGit.enabled` false. The chart

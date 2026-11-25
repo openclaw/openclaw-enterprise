@@ -4,13 +4,14 @@ import type { SandboxPolicyReadRepository, WorkspaceSetupReadRepository } from "
 import type { AuthenticationStateReadRepository } from "./authentication-states.ts";
 import type { ConfigurationReadRepository } from "./configurations.ts";
 import type { ConnectionTemplateReadRepository } from "./connection-templates.ts";
+import type { CredentialClientReadRepository } from "./credential-clients.ts";
 import type { CredentialSourceReadRepository } from "./credential-sources.ts";
 import type { InstallationReadRepository } from "./installations.ts";
 import type { NamespaceReadRepository } from "./namespaces.ts";
 import type { PlatformOperationReadRepository } from "./platform-operations.ts";
 import type { PresetReadRepository } from "./presets.ts";
 import type { RepositorySessionReadRepository } from "./repository-sessions.ts";
-import type { SavedConnectionReadRepository } from "./saved-connections.ts";
+import type { OAuthCredentialReadRepository } from "./oauth-credentials.ts";
 import type { SecretReadRepository } from "./secrets.ts";
 import type { ServiceAccountReadRepository } from "./service-accounts.ts";
 import type { IAMPolicyReadRepository } from "@openclaw-enterprise/contracts";
@@ -24,7 +25,8 @@ export interface PlatformReadView {
   readonly namespaces: NamespaceReadRepository;
   readonly configurations: ConfigurationReadRepository;
   readonly connectionTemplates: ConnectionTemplateReadRepository;
-  readonly savedConnections: SavedConnectionReadRepository;
+  readonly credentialClients: CredentialClientReadRepository;
+  readonly oauthCredentials: OAuthCredentialReadRepository;
   readonly presets: PresetReadRepository;
   readonly authenticationStates: AuthenticationStateReadRepository;
   readonly secrets: SecretReadRepository;
@@ -59,18 +61,9 @@ export const platformReadMethods = deepFreeze({
     "hasOtherConnectionIssuer",
     "countNamespaceConnectionTemplates",
     "findOAuthConnectionTemplateVersion",
-    "listOAuthClientCleanups",
-    "listOAuthClients",
-    "countNamespaceOAuthClients",
-    "findOAuthClient",
   ],
-  savedConnections: [
-    "findTokenCustody",
-    "listDueConnectionTokens",
-    "findSavedConnection",
-    "listNamespaceConnections",
-    "listRevokingConnections",
-  ],
+  credentialClients: ["list", "countNamespace", "find", "listCleanups"],
+  oauthCredentials: ["findTokenCustody", "listDueOAuthSources", "listRevokingOAuthSources"],
   authenticationStates: ["findDevice"],
   secrets: ["findSecret", "listSecrets", "listReferences"],
   credentialSources: [
@@ -80,12 +73,14 @@ export const platformReadMethods = deepFreeze({
     "isEgressMaterialRejected",
     "findCredentialSource",
     "listCredentialSources",
+    "scanReadyTokenServiceSourceIds",
     "findCredentialWithdrawal",
     "listCredentialWithdrawals",
   ],
   serviceAccounts: [
     "findServiceAccount",
     "listServiceAccounts",
+    "findServiceAccountByCredentialSource",
     "findServiceAccountBackendBinding",
   ],
   workspaceSetups: ["find"],
@@ -162,7 +157,8 @@ export function createPlatformReadView(
     configurations: bind(repositories.configurations, methods.configurations),
     presets: bind(repositories.presets, methods.presets),
     connectionTemplates: bind(repositories.connectionTemplates, methods.connectionTemplates),
-    savedConnections: bind(repositories.savedConnections, methods.savedConnections),
+    credentialClients: bind(repositories.credentialClients, methods.credentialClients),
+    oauthCredentials: bind(repositories.oauthCredentials, methods.oauthCredentials),
     authenticationStates: bind(repositories.authenticationStates, methods.authenticationStates),
     secrets: bind(repositories.secrets, methods.secrets),
     credentialSources: bind(repositories.credentialSources, methods.credentialSources),

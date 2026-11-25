@@ -47,7 +47,7 @@ import {
   type ControllerOptions,
   type PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { presetVariableTemplate } from "../helpers/configuration-preset-template.ts";
