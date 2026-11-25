@@ -119,6 +119,15 @@ are documented in the [historical REST reference](https://github.com/openclaw/op
 For current alternatives, see [prepared native Git](prepared-native-git.md) and
 the [development token authority](development-token.md).
 
+<details>
+<summary>Historical REST limits preview (retired)</summary>
+
+This preview describes retired Gateway-backed delivery. TokenService Git does
+not support these REST limits or operations.
+
+<div data-repository-limits></div>
+</details>
+
 ## Console access levels
 
 These profile choices apply to the separate **Access profiles** path.
