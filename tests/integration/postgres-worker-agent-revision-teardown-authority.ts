@@ -24,6 +24,16 @@ type PublishedDeploymentCase = {
   newAgent?: true;
 };
 
+function recordStops(
+  fixture: { compute: ComputeDriver },
+  stopped: string[],
+): ComputeDriver["stopRevision"] {
+  return async (revision) => {
+    stopped.push(revision.id);
+    return fixture.compute.stopRevision(revision);
+  };
+}
+
 async function assertDependencyRetry(
   events: readonly WorkerEvent[],
   work: WorkIdentity,
@@ -57,10 +67,7 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
       let iamUnavailable = false;
       const compute: ComputeDriver = {
         ...fixture.compute,
-        async stopRevision(revision) {
-          stopped.push(revision.id);
-          return fixture.compute.stopRevision(revision);
-        },
+        stopRevision: recordStops(fixture, stopped),
       };
       const events: WorkerEvent[] = [];
       const startWorker = () =>
@@ -170,10 +177,7 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
       const stopped: string[] = [];
       const compute: ComputeDriver = {
         ...fixture.compute,
-        async stopRevision(revision) {
-          stopped.push(revision.id);
-          return fixture.compute.stopRevision(revision);
-        },
+        stopRevision: recordStops(fixture, stopped),
       };
       await fixture.start(compute);
       await fixture.work(candidate, "succeeded");
@@ -279,10 +283,7 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
       let iamUnavailable = false;
       const compute: ComputeDriver = {
         ...fixture.compute,
-        async stopRevision(revision) {
-          stopped.push(revision.id);
-          return fixture.compute.stopRevision(revision);
-        },
+        stopRevision: recordStops(fixture, stopped),
         async retireRevision(revision) {
           retired.push(revision.id);
           return fixture.compute.retireRevision(revision);
@@ -451,10 +452,7 @@ export function testActiveRevisionAuthority(setup: RevisionSetup) {
         const compute: ComputeDriver = {
           ...fixture.compute,
           ...(maintained ? { maintenanceIntervalMs: 3_600_000 } : {}),
-          async stopRevision(revision) {
-            stopped.push(revision.id);
-            return fixture.compute.stopRevision(revision);
-          },
+          stopRevision: recordStops(fixture, stopped),
         };
         const events: WorkerEvent[] = [];
         const options = {
