@@ -215,12 +215,13 @@ changes. Repeat at desktop width and at 390 px.
 
 In **Pages / Agent detail**, open `pages-agent-detail--new-version`. The
 preview says **Open draft**. Choose **Edit Configuration** and change the JSON.
-Place the caret after a word, then use Shift+Left Arrow to select it backwards.
-In **Viewing version**, choose **v1**, then **Draft**. Check that focus returns
-to the Agent heading. Tab back to **Configuration JSON**. The unsaved text
-should still be there, with the caret visible just before the word. Type `X`.
-It should appear before the word and leave the word intact. Repeat at desktop
-width and at 390 px. This story simulates the version switch. Do not save.
+Place the caret after a word. Hold Shift and press Left Arrow until the word
+is selected. In **Viewing version**, choose **v1**, then **Draft**. Check that
+focus returns to the Agent heading. Tab back to **Configuration JSON**. The
+unsaved text should still be there, with the caret visible just before the word.
+Type `X`. It should appear before the word and leave the word intact. Repeat
+at desktop width and at 390 px. This story simulates the version switch. Do
+not save.
 
 ## Configuration save conflict
 
