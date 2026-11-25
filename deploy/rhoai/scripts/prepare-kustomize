@@ -12,7 +12,7 @@ stage=${1:?Usage: prepare-kustomize operators|database|admission|openshell|contr
 source="$repository/manifests/openshift"
 case "$stage" in
   operators|database|admission|openshell|routing) inputs=() ;;
-  control-plane) inputs=(bootstrap-pvc.yaml control-plane-postgres-egress.yaml control-plane-kube-api-egress.yaml console-route.yaml) ;;
+  control-plane) inputs=(control-plane-postgres-egress.yaml control-plane-kube-api-egress.yaml console-route.yaml) ;;
   control-ui) inputs=(control-ui-oauth-proxy.yaml) ;;
   control-ui-access) inputs=(control-ui-access.yaml) ;;
   *) echo "Unknown OpenShift stage: $stage" >&2; exit 1 ;;

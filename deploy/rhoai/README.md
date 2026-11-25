@@ -267,20 +267,49 @@ Review the generated `values.yaml` and `installation.yaml` before continuing.
 They assume `gp3-csi`, the `oce-role` labels, and the default OpenShift DNS and
 ingress selectors. Adjust them for another profile.
 
-Prepare the bootstrap volume with a temporary SCC, then remove the temporary
-grants:
+`agentNativeAdmin.domain` is `agents.` plus the Console host's parent domain,
+for example `agents.$CLUSTER_APPS_DOMAIN`. The chart requires this Agent DNS
+suffix even while the admin launcher is disabled, because the Console session
+cookie is scoped to the suffix it shares with the Console host. A domain already
+set in a retained `values.yaml` is kept.
+
+Generate the bootstrap administrator credentials once, then create the
+bootstrap Secret before Helm. The chart reads `admin-password` and
+`admin-service-key` from the Secret named by
+`bootstrap.credentials.secretName`, which `prepare-inputs` sets to
+`occ-bootstrap-credentials`. The service key is `occ_` plus 32 random bytes in
+unpadded base64url; the JSON file is the same key in the envelope the `occ` CLI
+reads.
 
 ```bash
-oc -n openclaw-system apply -f "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
-oc apply -f deploy/rhoai/manifests/openshift/bootstrap-prep-scc.yaml
-"$OCE_CHECKOUT/scripts/prepare-bootstrap-volume" --kubeconfig "$KUBECONFIG" \
-  --context "$(oc config current-context)" --namespace openclaw-system \
-  --claim occ-bootstrap-admin-password --image "$CONTROLLER_IMAGE" \
-  --node-selector oce-role=control
-oc -n openclaw-system delete rolebinding oce-bootstrap-volume-prep
-oc -n openclaw-system delete role oce-bootstrap-volume-prep
-oc delete scc oce-bootstrap-volume-prep
+python3 - "$OCC_INPUT_DIRECTORY" <<'PY'
+import json
+import secrets
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+key = 'occ_' + secrets.token_urlsafe(32)
+for name, value in (
+    ('initial-admin-password', secrets.token_hex(24)),
+    ('initial-admin-service-key', key),
+    ('initial-admin-service-key.json', json.dumps({'data': {'key': key}})),
+):
+    with (root / name).open('x') as output:
+        output.write(value)
+PY
+yq -e '.bootstrap.credentials.secretName == "occ-bootstrap-credentials"' \
+  "$OCC_INPUT_DIRECTORY/values.yaml"
+oc -n openclaw-system create secret generic occ-bootstrap-credentials \
+  --from-file=admin-password="$OCC_INPUT_DIRECTORY/initial-admin-password" \
+  --from-file=admin-service-key="$OCC_INPUT_DIRECTORY/initial-admin-service-key"
 ```
+
+The script refuses to overwrite existing files. Bootstrap registers these
+credentials only on a fresh install and never returns them, so keep the files.
+`occ installation install` can generate the files and create the Secret
+instead; see
+[production installation](../../docs/guides/deploy/production-installation.md#choose-bootstrap-credential-preparation).
 
 Render the pinned workspace chart and merge its four resources, the provider
 harness address, and the runtime class into the Installation:
@@ -372,23 +401,12 @@ export OCC_NAMESPACE="$(oc get namespaces -l openclaw.dev/namespace -o json |
 deploy/rhoai/scripts/grant-tenant-access
 ```
 
-### 6. Retrieve bootstrap credentials and build the CLI
+### 6. Build the CLI and sign in
+
+The bootstrap credentials are already in `$OCC_INPUT_DIRECTORY` from step 4.
+Point the CLI at the client key file:
 
 ```bash
-install -m 600 deploy/rhoai/manifests/openshift/bootstrap-read-pod.yaml \
-  "$OCC_INPUT_DIRECTORY/bootstrap-read-pod.yaml"
-yq -i '.spec.containers[0].image = strenv(CONTROLLER_IMAGE)' \
-  "$OCC_INPUT_DIRECTORY/bootstrap-read-pod.yaml"
-oc apply -f "$OCC_INPUT_DIRECTORY/bootstrap-read-pod.yaml"
-oc -n openclaw-system wait --for=condition=Ready pod/occ-bootstrap-read --timeout=90s
-oc -n openclaw-system exec pod/occ-bootstrap-read -- \
-  cat /bootstrap/initial-admin-service-key.json > "$OCC_INPUT_DIRECTORY/initial-admin-service-key.json"
-oc -n openclaw-system exec pod/occ-bootstrap-read -- \
-  cat /bootstrap/initial-admin-password > "$OCC_INPUT_DIRECTORY/initial-admin-password"
-chmod 600 "$OCC_INPUT_DIRECTORY/initial-admin-service-key.json" \
-  "$OCC_INPUT_DIRECTORY/initial-admin-password"
-oc -n openclaw-system delete pod occ-bootstrap-read --wait=true
-
 export OCC_URL="https://$OCC_CONSOLE_HOST"
 export OCC_SERVICE_KEY_FILE="$OCC_INPUT_DIRECTORY/initial-admin-service-key.json"
 deploy/rhoai/scripts/build-occ
@@ -397,8 +415,8 @@ deploy/rhoai/bin/occ namespace list
 ```
 
 The default Namespace must report `ready`. Sign in to
-`https://$OCC_CONSOLE_HOST/console/login` with `OCC_ADMIN_EMAIL` and the saved
-bootstrap password.
+`https://$OCC_CONSOLE_HOST/console/login` with `OCC_ADMIN_EMAIL` and the
+password in `$OCC_INPUT_DIRECTORY/initial-admin-password`.
 
 ### 7. Deploy the first Agent and the Control UI
 
@@ -539,8 +557,9 @@ changes.
   outside this repository.
 - The PostgreSQL example runs one instance without backups or replicas. The
   dashboard's Keycloak database inherits those limits.
-- The bootstrap SCC and its RoleBinding are temporary. Delete both after
-  preparing the bootstrap PVC.
+- The `occ-bootstrap-credentials` Secret and its source files grant both
+  bootstrap administrator identities. The chart reads the Secret only on
+  installation, and editing it does not rotate credentials.
 - The plaintext OpenShell gateway is single-tenant. Labels are not an
   authentication boundary; use the mTLS profile otherwise.
 - The storage class, node labels, DNS selectors, and router selectors assume
@@ -550,7 +569,9 @@ changes.
   router restart, or database failover, run `prepare-inputs refresh` to update
   the discovered addresses and egress inputs without resetting routing,
   approved API clients, the trusted-proxy preset, or admin-launcher settings.
-  Then apply the updated values, egress inputs, and Installation Secret.
+  It also removes the retired `agentNativeAdmin.sharedCookieDomain` and fills
+  an empty `agentNativeAdmin.domain`. Then apply the updated values, egress
+  inputs, and Installation Secret.
 - The widget preview certificate is a wildcard for the whole apps domain, so
   the private CA can vouch for every host under it. Trust that CA only on the
   clients that use previews.

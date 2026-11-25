@@ -56,6 +56,7 @@ oc -n openshift-ingress get pods \
     if length > 0 and all(type == "string" and (contains(":") | not)) then map(. + "/32")
     else error("expected IPv4 router Pod addresses") end' > "$OCC_INPUT_DIRECTORY/router-cidrs.json"
 
+values_copied=false
 for name in values installation; do
   if [[ ! -e "$OCC_INPUT_DIRECTORY/$name.yaml" ]]; then
     if [[ "$mode" == refresh ]]; then
@@ -63,11 +64,11 @@ for name in values installation; do
       exit 1
     fi
     install -m 600 "$OCE_CHECKOUT/deploy/examples/production/$name.yaml" "$OCC_INPUT_DIRECTORY/$name.yaml"
+    if [[ "$name" == values ]]; then
+      values_copied=true
+    fi
   fi
 done
-if [[ ! -e "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml" ]]; then
-  install -m 600 "$repository/manifests/openshift/base/control-plane/bootstrap-pvc.yaml" "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
-fi
 for name in control-plane-postgres-egress control-plane-kube-api-egress; do
   if [[ ! -e "$OCC_INPUT_DIRECTORY/$name.yaml" ]]; then
     install -m 600 "$repository/manifests/openshift/base/control-plane/$name.yaml" "$OCC_INPUT_DIRECTORY/$name.yaml"
@@ -78,6 +79,7 @@ if [[ "$mode" == bootstrap ]]; then
   yq -i '.images.controller = strenv(CONTROLLER_IMAGE) |
     .auth.baseUrl = "https://" + strenv(OCC_CONSOLE_HOST) |
     .bootstrap.adminEmail = strenv(OCC_ADMIN_EMAIL) |
+    .bootstrap.credentials.secretName = "occ-bootstrap-credentials" |
     .database.caSecretName = "occ-database-ca" |
     .database.cidrs = [strenv(PG_POD_CIDR)] |
     .api.clients = [{"namespace":"openshift-ingress","podLabels":{
@@ -103,14 +105,12 @@ if [[ "$mode" == bootstrap ]]; then
   # Configure it after Agent deployment; an OAuth Route alone is insufficient.
   # See deploy/rhoai/README.md#other-profiles.
   yq -i '.agentNativeAdmin.enabled = false |
-    .agentNativeAdmin.domain = "" | .agentNativeAdmin.sharedCookieDomain = "" |
     .gatewayRouting.enabled = false' "$OCC_INPUT_DIRECTORY/values.yaml"
   yq -i '.drivers.compute.configuration.network.gatewayTrustedProxyCidrs = ["127.0.0.1/32"] |
     .drivers.compute.configuration.network.gatewayClients = [{"namespace":"openclaw-system","podLabels":{
       "app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"api"}}] |
     del(.drivers.compute.configuration.gatewayRouting)' \
     "$OCC_INPUT_DIRECTORY/installation.yaml"
-  yq -i '.spec.storageClassName = "gp3-csi"' "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
 else
   if ! yq -e '.api.trustedProxy' "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null; then
     echo 'Missing api.trustedProxy in values.yaml; run prepare-inputs bootstrap first.' >&2
@@ -124,6 +124,16 @@ else
     "$OCC_INPUT_DIRECTORY/values.yaml"
 fi
 
+# The chart refuses the retired sharedCookieDomain and requires an Agent DNS
+# suffix that shares the Console's cookie scope, even with the launcher off.
+# Keep a domain from retained values; otherwise use agents.<Console parent>.
+yq -i 'del(.agentNativeAdmin.sharedCookieDomain)' "$OCC_INPUT_DIRECTORY/values.yaml"
+if [[ "$values_copied" == true ]] ||
+  ! yq -e '(.agentNativeAdmin.domain // "") != ""' "$OCC_INPUT_DIRECTORY/values.yaml" >/dev/null 2>&1; then
+  yq -i '.agentNativeAdmin.domain = (.auth.baseUrl | sub("^https://"; "") |
+    sub("[:/].*$"; "") | sub("^[^.]+[.]"; "agents."))' "$OCC_INPUT_DIRECTORY/values.yaml"
+fi
+
 yq -i '.spec.egress[0].to = (load(strenv(OCC_INPUT_DIRECTORY) + "/api-cidrs.json") | map({"ipBlock":{"cidr":.}})) |
   .spec.egress[0].ports = load(strenv(OCC_INPUT_DIRECTORY) + "/api-ports.json")' \
   "$OCC_INPUT_DIRECTORY/control-plane-kube-api-egress.yaml"
@@ -133,7 +143,7 @@ if [[ "$mode" == refresh ]]; then
   yq -i ".controlPlane.installationChecksum = \"$checksum\"" "$OCC_INPUT_DIRECTORY/values.yaml"
   printf 'Refreshed discovered addresses and egress inputs; routing, API clients, trusted-proxy preset, and admin-launcher settings were preserved.\n'
 else
-  printf 'Prepared private Helm, Installation, bootstrap PVC, and egress policy inputs.\n'
+  printf 'Prepared private Helm, Installation, and egress policy inputs.\n'
   printf 'The OCC admin launcher starts disabled; configure it after deploying the Agent.\n'
 fi
 printf 'No cluster resources were changed.\n'
