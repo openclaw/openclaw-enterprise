@@ -144,7 +144,9 @@ try {
       } else if (schema.supported !== "false") throw new Error();
       process.stdout.write("agent-replacements-checked\\n");
     } catch {
-      process.stderr.write("Runtime replacement preflight failed.\\n");
+      // A large refusal list may still be queued on the Job's stdout pipe.
+      await new Promise((done) => process.stdout.write("", done));
+      await new Promise((done) => process.stderr.write("Runtime replacement preflight failed.\\n", done));
       process.exit(1);
     }
   }
