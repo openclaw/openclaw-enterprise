@@ -73,7 +73,7 @@ graph TD
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires Agent `create`; catalog `credentialSlots` expose eligible readable Sources. Managed MCP details use `managedConnection` and require caller Source `operate`. Saved discovery requires Agent `read`/`update`; delegation requires a Driver-validated saved release, slot, Source and Template plus Agent Source `operate`.
 
-`plugin-discovery.ts:withPluginDiscoveryCredential` checks caller and saved-Agent Source access. OCC resolves the bearer through TokenService and passes it and consent account metadata to PluginDriver. Gateway Sources use their reader. OCC rechecks authority before dispatch; cancellation discards late credentials.
+`plugin-discovery.ts:withPluginDiscoveryCredential` checks caller and saved-Agent Source access. OCC resolves the bearer through TokenService and passes it and consent account metadata to PluginDriver. OCC rechecks authority before dispatch; cancellation discards late credentials.
 
 For managed MCP, OCC resolves the Source through its TokenService and rechecks the target and authorization before each server request. Discovery lists tools without selecting them. `driverPolicy.toolNames` pins the selected upstream names. Changing accounts clears names and overrides. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) limit size and time, refuse redirects and credential echoes, and send `Cache-Control: no-store`. Canonical duplicates return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`.
 

@@ -12,8 +12,12 @@ If the migration refuses other retained credential or Repository state, resolve
 the reported dependency with the matching old release before retrying.
 
 Remove `credential_gateway` and `credential_refresh` from the Installation and
-OpenShell Backend configuration, then apply the matching Helm configuration and
-controller. Select [TokenService and Credential Proxy](../../reference/drivers/selection.md#supported-selections).
+OpenShell Backend configuration. The image upgrade helper rejects these Driver
+changes. Review and rehearse a coordinated upgrade with the target chart,
+controller, and Installation settings. Use the [Installation-change guide](production-installation-changes.md)
+for Secret and checksum handling only; do not apply its old-controller upgrade
+unchanged. Follow the [controller upgrade safeguards](production-upgrade.md#upgrade-the-control-plane).
+Select [TokenService and Credential Proxy](../../reference/drivers/selection.md#supported-selections).
 The migration drops Gateway Source records and clears their draft assignments;
 it does not transfer credentials or clean external Providers. Keep the OpenShell
 gateway service and unrelated Channel Secrets. After upgrade, enroll replacement

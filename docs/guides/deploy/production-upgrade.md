@@ -245,7 +245,7 @@ acknowledged candidate write.
 
 ## Upgrade the control plane
 
-Complete [credential upgrade preparation](production-upgrade-credentials.md).
+Review [credential upgrade preparation](production-upgrade-credentials.md).
 
 Before maintenance, [check for split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations); shared-namespace releases refuse them.
 

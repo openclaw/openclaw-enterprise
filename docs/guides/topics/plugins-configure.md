@@ -59,19 +59,13 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 ## Configure a hosted MCP plugin
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
-OCE discovers available tools using the selected account. On a dedicated OpenClaw
-Agent, select an attached credential for that slot and the upstream tool names
-the Agent may call. The worker advertises those tools; the Sandbox enforces the
-selection for both worker and script calls. See
-[Get started with managed OpenClaw plugins](openclaw-plugins.md) for a complete
-walkthrough.
-[Managed MCP plugins](../../reference/agent-plugins.md#current-support)
-
 For static HTTP or MCP credentials, register a TokenService Source using a
 Static Bearer Connection Template restricted to the endpoint and method. Select
 that Source in the Plugin slot, grant the operator and Agent service principal
 `credential_source:operate`, and deploy with the paired Credential Proxy and
-Sandbox. Follow [managed OpenClaw plugins](openclaw-plugins.md) for the commands.
+Sandbox. The worker advertises selected tools; the Sandbox enforces the selection
+for worker and script calls. Follow [managed OpenClaw plugins](openclaw-plugins.md)
+for the commands. See the [support limits](../../reference/agent-plugins.md#current-support).
 Plugin OAuth serving remains deferred to [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673).
 
 For **Load tools**, verify that the OCC API can resolve and reach the MCP
@@ -92,13 +86,16 @@ Removing the plugin keeps its independently attached
 credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
 to revoke a running version's credential access.
 
-For example, Slack uses `host: mcp.slack.com`, `port: "443"`, `path: /mcp` and
-`env_var: SLACK_MCP_TOKEN`. Select `slack_search_public` if the account advertises
-it. Inspect its worker server and tool filter:
+For Slack MCP, restrict the Template to `POST https://mcp.slack.com/mcp` and select
+`slack_search_public` if the account advertises it. Inspect the worker server and
+tool filter:
 
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json
 ```
+
+These checks verify configuration and admission. A real Slack MCP tool call with
+this static Source has not been qualified.
 
 ## Before you start
 

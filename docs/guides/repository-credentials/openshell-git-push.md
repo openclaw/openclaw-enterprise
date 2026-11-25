@@ -32,12 +32,22 @@ revision has no fresh live deployment result. [Verification record](https://gith
 
 ## 1. Configure Source-backed repository access
 
-Follow [GitHub App setup](../repository-credentials.md#set-github-app-access-for-an-openshell-agent)
-to configure the Backend and register the Client. Use the test repository's
-short name in the registry and Installation ceiling. In its Namespace entry,
-use `github-repository` with `nativeGit: "v1"`, `contents: write`, and
-`metadata: read`. Set `access: write` in the
+Select the GitHub Backend with `repository.id` and
+`repository.configuration.sessionDurationSeconds`. Use the test repository's
+short name in the approved registry and grant its Namespace access. In the
+Namespace entry, use `github-repository` with `nativeGit: "v1"`, `contents: write`,
+and `metadata: read`. Set `access: write` in the
 [Installation ceiling](../../reference/repository-credentials/access-levels.md#tokenservice-registry-example).
+
+In Helm, set `repositoryCredentials.registryConfigMapName` to the approved
+registry ConfigMap. Set the Backend's `registryPath` to
+`/etc/openclaw/repository-registry/registry.json`.
+
+As Installation administrator, open **Credentials → Credential clients → Register
+client**. Select **GitHub App**, choose **Installation-wide** or the Agent's
+Namespace, enter the App ID, and select its PEM signing key. TokenService verifies
+the key and keeps it private. Use **Rotate GitHub App key** on the same Client to
+replace it later; existing installation tokens keep their own expiry.
 
 <a id="2-bind-the-agent-and-deploy-once"></a>
 
